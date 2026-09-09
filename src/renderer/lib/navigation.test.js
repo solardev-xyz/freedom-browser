@@ -169,12 +169,16 @@ const loadNavigationModule = async (options = {}) => {
     })),
     deriveDisplayAddress: jest.fn(({ url }) => `display:${url}`),
     deriveSwitchedTabDisplay: jest.fn(
-      ({ url, isLoading, addressBarSnapshot }) =>
-        (isLoading && addressBarSnapshot) ||
-        // Mirrors the real helper on the one branch the focus rule depends on:
-        // a new-tab page (home, or a private window's start page) derives to an
-        // EMPTY address bar, not to its `freedom://<page>` name (#312).
-        (url && !pageUrlsMocks.isNewTabPageUrl(url) ? `switched:${url}` : '')
+      ({ url, isLoading, addressBarSnapshot, addressBarPendingInput }) => {
+        if (typeof addressBarPendingInput === 'string') return addressBarPendingInput;
+        return (
+          (isLoading && addressBarSnapshot) ||
+          // Mirrors the real helper on the one branch the focus rule depends on:
+          // a new-tab page (home, or a private window's start page) derives to an
+          // EMPTY address bar, not to its `freedom://<page>` name (#312).
+          (url && !pageUrlsMocks.isNewTabPageUrl(url) ? `switched:${url}` : '')
+        );
+      }
     ),
     extractEnsResolutionMetadata: jest.fn(() => ({
       knownEnsPairs: [],
@@ -2542,6 +2546,8 @@ describe('navigation', () => {
       ctx.state.ensUriByName.set('vitalik.eth', 'bzz://old-reference');
       ctx.elements.addressInput.value = 'bzz://vitalik.eth';
       ctx.elements.addressInput.dispatch('input');
+      // The refresh keys on the committed page, not on the live input.
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'bzz://vitalik.eth';
       expect(ctx.elements.trustShield.hidden).toBe(false);
 
       ctx.electronAPI.resolveEns.mockReturnValue(new Promise(() => {}));
@@ -3206,6 +3212,471 @@ describe('navigation', () => {
       expect(tabA.webview.reloadIgnoringCache).not.toHaveBeenCalled();
       expect(ctx.electronAPI.resolveEns).not.toHaveBeenCalled();
       expect(ctx.electronAPI.invalidateEnsContent).not.toHaveBeenCalled();
+    });
+  });
+  describe('uncommitted address-bar edits (Chrome omnibox parity)', () => {
+    // #305/#310/#314. The three behaviours share one concept: Chrome's
+    // "user input in progress". These assert it end-to-end through the
+    // renderer's own handlers rather than through the helper alone.
+
+    const typeInAddressBar = (ctx, value) => {
+      ctx.elements.addressInput.value = value;
+      ctx.elements.addressInput.dispatch('input');
+    };
+
+    test('a page commit does not overwrite text the user is typing (#305)', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      // The page settles once with its own URL, so the bar (and the page
+      // snapshot) start out truthful.
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('display:https://page-a.example/');
+
+      typeInAddressBar(ctx, 'my-important-note.eth/deep/link');
+
+      // …and now the page redirects itself (client-side redirect, meta
+      // refresh, a slow load finishing — all arrive as navigation events).
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-b.example/' },
+      });
+      ctx.tabsMocks.webviewEventHandler('did-navigate-in-page', {
+        event: { url: 'https://page-b.example/#frag' },
+      });
+
+      // The typed text survives; the page's own URL is kept as the snapshot
+      // so Escape and tab switches still have it.
+      expect(ctx.elements.addressInput.value).toBe('my-important-note.eth/deep/link');
+      expect(ctx.activeRef.tab.navigationState.addressBarSnapshot).toBe(
+        'display:https://page-b.example/#frag'
+      );
+
+      // Committing through the address bar ends the edit, so the next page
+      // commit paints normally again.
+      ctx.elements.navForm.dispatch('submit', { preventDefault: jest.fn() });
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-c.example/' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('display:https://page-c.example/');
+    });
+
+    test('an internal-page commit is held too, not just derived URLs (#305)', async () => {
+      // Every branch of handleNavigationEvent writes the address bar; the
+      // guard has to cover all of them, not only the one the report named.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      typeInAddressBar(ctx, 'half-typed');
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'file:///app/pages/history.html' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('half-typed');
+      expect(ctx.activeRef.tab.navigationState.addressBarSnapshot).toBe('freedom://history');
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'file:///app/pages/error.html?url=https%3A%2F%2Ffailed.example' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('half-typed');
+    });
+
+    test('an in-page link click keeps the edit, a chrome-driven load ends it (#305)', async () => {
+      // A same-tab link click is replayed through `loadTarget` (the preload
+      // intercept, and the main process' will-navigate bounce for custom
+      // schemes — the exact route the #305 repro takes). Page-driven commits
+      // must leave a half-typed address alone; chrome-driven ones commit it.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      typeInAddressBar(ctx, 'half-typed');
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'link:navigate',
+        args: [{ url: 'https://linked.example/', disposition: 'currentTab' }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.elements.addressInput.value).toBe('half-typed');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed');
+
+      // The same call without the page-initiated flag (menu item, bookmark,
+      // address-bar submit) does commit.
+      ctx.mod.loadTarget('https://chrome-driven.example/');
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+    });
+
+    // Bootstrap a module whose `parseEnsInput` recognises `<name>.eth` (bare
+    // or transport-prefixed) and whose resolver never settles on its own, so
+    // a test can hold a name resolution open across a user edit.
+    const setupDeferredEns = async () => {
+      const ctx = await loadNavigationModule();
+      ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) => {
+        const m = value.match(/^(?:(bzz|ipfs|ipns|ens):\/\/)?([^?/]+\.eth)(.*)?$/i);
+        if (!m) return null;
+        const scheme = m[1]?.toLowerCase();
+        return {
+          name: m[2].toLowerCase(),
+          suffix: m[3] || '',
+          assertedTransport: !scheme || scheme === 'ens' ? null : scheme,
+        };
+      });
+      await ctx.mod.initNavigation();
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      return {
+        ctx,
+        settle: async (result) => {
+          settle(result);
+          await flushMicrotasks();
+        },
+      };
+    };
+
+    const IPFS_RESOLUTION = {
+      type: 'ok',
+      name: 'name.eth',
+      protocol: 'ipfs',
+      uri: 'ipfs://QmResolved',
+      decoded: 'QmResolved',
+      trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+    };
+
+    test('a page-driven name resolution settling keeps the edit it was held for (#305)', async () => {
+      // The report's own repro: the page scripts `location.href` to a custom
+      // scheme, the main process bounces it back through `loadTarget` as
+      // page-initiated, and the name resolution finishes a second later. The
+      // resolution hop re-enters `loadTarget`; pre-fix that second entry ran
+      // the chrome-driven branch and cleared the edit the outer call had just
+      // held, so the resolved display painted straight over the typed text.
+      const { ctx, settle } = await setupDeferredEns();
+
+      typeInAddressBar(ctx, 'my-important-note.eth/deep/link');
+      ctx.mod.loadTarget('bzz://name.eth/', null, null, { pageInitiated: true });
+      await flushMicrotasks();
+      expect(ctx.elements.addressInput.value).toBe('my-important-note.eth/deep/link');
+
+      await settle({ ...IPFS_RESOLUTION, protocol: 'bzz', uri: `bzz://${'a'.repeat(64)}` });
+
+      expect(ctx.elements.addressInput.value).toBe('my-important-note.eth/deep/link');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe(
+        'my-important-note.eth/deep/link'
+      );
+      // The page's own display still lands in the snapshot, so Escape and a
+      // tab switch have the truthful URL to fall back to.
+      expect(ctx.activeRef.tab.navigationState.addressBarSnapshot).toBe('bzz://name.eth/');
+    });
+
+    test('a chrome-driven name resolution settling does not wipe a draft typed while it was in flight (#305)', async () => {
+      // Committing `name.eth` ends that edit at submit time. If the lookup
+      // takes a second and the user starts typing a new address meanwhile,
+      // the resolution hop must not end *that* edit — it is a new one the
+      // user has not committed.
+      const { ctx, settle } = await setupDeferredEns();
+
+      ctx.mod.loadTarget('name.eth');
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+
+      typeInAddressBar(ctx, 'somewhere-else.example');
+      await settle(IPFS_RESOLUTION);
+
+      expect(ctx.elements.addressInput.value).toBe('somewhere-else.example');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe(
+        'somewhere-else.example'
+      );
+      expect(ctx.activeRef.tab.navigationState.addressBarSnapshot).toBe('ipfs://name.eth');
+      // …and the navigation itself still happened.
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('ipfs://name.eth');
+    });
+
+    test("loadTarget's rad: error branches hold the edit like every other branch (#305)", async () => {
+      // Both of these used to write `addressInput.value` directly, so they
+      // painted over a held edit (and over the foreground tab when the
+      // navigation targeted a background one). They go through the same
+      // per-tab helper as their siblings now.
+      const disabledCtx = await loadNavigationModule({
+        registry: { ipfs: { mode: 'bundled' }, radicle: { mode: 'disabled' } },
+      });
+      await disabledCtx.mod.initNavigation();
+      typeInAddressBar(disabledCtx, 'half-typed');
+      disabledCtx.mod.loadTarget('rad://zrepo123', null, null, { pageInitiated: true });
+      await flushMicrotasks();
+      expect(disabledCtx.elements.addressInput.value).toBe('half-typed');
+      expect(disabledCtx.activeRef.tab.navigationState.addressBarSnapshot).toBe('rad://zrepo123');
+
+      const invalidCtx = await loadNavigationModule();
+      await invalidCtx.mod.initNavigation();
+      typeInAddressBar(invalidCtx, 'half-typed');
+      invalidCtx.mod.loadTarget('rad:notarid', null, null, { pageInitiated: true });
+      await flushMicrotasks();
+      expect(invalidCtx.elements.addressInput.value).toBe('half-typed');
+      expect(invalidCtx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain(
+        'error=invalid-rid'
+      );
+    });
+
+    test('the search fallback does not end an edit a page-driven navigation held (#305)', async () => {
+      // The tail of `loadTarget` re-enters itself with the built search URL.
+      // That inner call is the same navigation, not a second user action.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      typeInAddressBar(ctx, 'half-typed');
+      ctx.mod.loadTarget('some free text query', null, null, { pageInitiated: true });
+      await flushMicrotasks();
+
+      expect(ctx.elements.addressInput.value).toBe('half-typed');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed');
+    });
+
+    test('Escape reverts to the page URL keeping focus, and blurs only on the next press (#310)', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      typeInAddressBar(ctx, 'bzz');
+
+      const first = { key: 'Escape', preventDefault: jest.fn() };
+      ctx.elements.addressInput.dispatch('keydown', first);
+
+      expect(first.preventDefault).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.value).toBe('display:https://page-a.example/');
+      // Chrome keeps focus in the omnibox and selects the restored text.
+      expect(ctx.elements.addressInput.select).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.blur).not.toHaveBeenCalled();
+
+      const second = { key: 'Escape', preventDefault: jest.fn() };
+      ctx.elements.addressInput.dispatch('keydown', second);
+      expect(ctx.elements.addressInput.blur).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.value).toBe('display:https://page-a.example/');
+    });
+
+    test('Escape stands down while the dropdown previews a suggestion (#310)', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      typeInAddressBar(ctx, 'bzz');
+      // autocomplete.js previewed a row into the bar.
+      ctx.elements.addressInput.value = 'https://suggestion.example';
+      ctx.mod.setSuggestionPreviewProbe(() => true);
+
+      const escape = { key: 'Escape', preventDefault: jest.fn() };
+      ctx.elements.addressInput.dispatch('keydown', escape);
+
+      // autocomplete.js owns this press: no revert, no blur, no preventDefault
+      // from this handler.
+      expect(escape.preventDefault).not.toHaveBeenCalled();
+      expect(ctx.elements.addressInput.value).toBe('https://suggestion.example');
+      expect(ctx.elements.addressInput.blur).not.toHaveBeenCalled();
+
+      // With the dropdown closed again, this handler takes over.
+      ctx.mod.setSuggestionPreviewProbe(() => false);
+      ctx.elements.addressInput.dispatch('keydown', { key: 'Escape', preventDefault: jest.fn() });
+      expect(ctx.elements.addressInput.value).toBe('display:https://page-a.example/');
+    });
+
+    test('an unsubmitted edit survives switching tabs and back (#314)', async () => {
+      const tabB = createTab(2, 'https://second.example', {
+        title: 'Second Tab',
+        webview: createWebview('https://second.example', { webContentsId: 22 }),
+      });
+      const ctx = await loadNavigationModule();
+      const tabA = ctx.activeRef.tab;
+      ctx.tabsRef.list = [tabA, tabB];
+      await ctx.mod.initNavigation();
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+      typeInAddressBar(ctx, 'half-typed-url');
+
+      // Switch away: the draft goes onto the tab we left, and the page
+      // snapshot is *not* replaced by it.
+      ctx.activeRef.tab = tabB;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabB.id,
+        tab: tabB,
+        isNewTab: false,
+      });
+      expect(tabA.navigationState.addressBarPendingInput).toBe('half-typed-url');
+      expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
+      expect(ctx.elements.addressInput.value).toBe('switched:https://second.example');
+
+      // …and back: the draft is restored and the bar regains focus, the way
+      // Chrome restores per-tab omnibox state.
+      ctx.elements.addressInput.focus.mockClear();
+      ctx.activeRef.tab = tabA;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+
+      expect(ctx.elements.addressInput.value).toBe('half-typed-url');
+      expect(ctx.elements.addressInput.focus).toHaveBeenCalled();
+
+      // Escape ends the edit, so a later switch away restores the page URL.
+      ctx.elements.addressInput.dispatch('keydown', { key: 'Escape', preventDefault: jest.fn() });
+      expect(tabA.navigationState.addressBarPendingInput).toBeNull();
+      ctx.activeRef.tab = tabB;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabB.id,
+        tab: tabB,
+        isNewTab: false,
+      });
+      ctx.activeRef.tab = tabA;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+      // No draft left to restore: the display is derived from the tab's own
+      // committed URL again (`deriveSwitchedTabDisplay` is mocked here).
+      expect(ctx.elements.addressInput.value).not.toBe('half-typed-url');
+      expect(ctx.elements.addressInput.value).toBe('switched:https://active.example');
+    });
+
+    test('reloading an error/ENS page keeps the edit, like reloading a plain page does', async () => {
+      // Reload is not a commit of the address bar. On a plain page it is a
+      // bare `webview.reload()` and the draft survives by construction; the
+      // branches that have to route through `loadTarget` (error-page retry,
+      // ENS re-resolution, an unavailable dweb node) must behave the same.
+      const ctx = await loadNavigationModule();
+      ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) =>
+        /(^|\/\/)[^/]+\.eth/i.test(value) ? { name: 'vitalik.eth', suffix: '' } : null
+      );
+      await ctx.mod.initNavigation();
+
+      // 1. Error-page retry branch.
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'https://failed.example/';
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(
+        'file:///app/pages/error.html?url=https%3A%2F%2Ffailed.example%2F'
+      );
+      typeInAddressBar(ctx, 'half-typed-url');
+      ctx.elements.reloadBtn.dispatch('click', { shiftKey: false });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-url');
+      expect(ctx.elements.addressInput.value).toBe('half-typed-url');
+
+      // …and the page committing underneath it still doesn't repaint the bar.
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://failed.example/' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('half-typed-url');
+
+      // 2. ENS re-resolution branch.
+      ctx.electronAPI.resolveEns.mockReturnValue(new Promise(() => {}));
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'bzz://vitalik.eth/';
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`bzz://${'a'.repeat(64)}/`);
+      ctx.elements.reloadBtn.dispatch('click', { shiftKey: false });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('vitalik.eth');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-url');
+      expect(ctx.elements.addressInput.value).toBe('half-typed-url');
+
+      // The form submit is still what commits: it ends the edit.
+      ctx.elements.navForm.dispatch('submit', { preventDefault: jest.fn() });
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+    });
+
+    test('a settings refresh reloads the committed page, not a half-typed draft', async () => {
+      // A settings broadcast (e.g. a network config saved in another window)
+      // is not the user submitting the address bar: it must re-run the page
+      // the tab is on, and leave the draft alone.
+      const ctx = await loadNavigationModule();
+      ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) =>
+        /(^|\/\/)[^/]+\.eth/i.test(value) ? { name: 'vitalik.eth', suffix: '' } : null
+      );
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockReturnValue(new Promise(() => {}));
+
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'bzz://vitalik.eth/';
+      typeInAddressBar(ctx, 'half-typed.eth');
+
+      ctx.mod.onSettingsChanged({ networkConfigUpdated: true });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('vitalik.eth');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed.eth');
+      expect(ctx.elements.addressInput.value).toBe('half-typed.eth');
+    });
+
+    test('Escape reverts to an empty page display in a single press (#310)', async () => {
+      // A new-tab page's display *is* the empty string. Gating the revert on
+      // snapshot truthiness left the typed fragment in the bar with nothing
+      // tracking it — neither the page URL nor a live edit.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.activeRef.tab.navigationState.addressBarSnapshot = '';
+      ctx.activeRef.tab.navigationState.pendingTitleForUrl = '';
+      typeInAddressBar(ctx, 'half-typed');
+
+      ctx.elements.addressInput.dispatch('keydown', { key: 'Escape', preventDefault: jest.fn() });
+      expect(ctx.elements.addressInput.value).toBe('');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+      expect(ctx.elements.addressInput.select).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.blur).not.toHaveBeenCalled();
+
+      // Nothing left to revert: the second press moves focus to the page.
+      ctx.elements.addressInput.dispatch('keydown', { key: 'Escape', preventDefault: jest.fn() });
+      expect(ctx.elements.addressInput.blur).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.value).toBe('');
+    });
+
+    test('a switch-to-tab suggestion does not write its URL into the tab it leaves', async () => {
+      // autocomplete.js clears the edit and switches; the bar at that moment
+      // holds the *target* tab's URL (a previewed row) or the leftover query,
+      // so the tab being left must not adopt it as its page display.
+      const tabB = createTab(2, 'https://second.example', {
+        title: 'Second Tab',
+        webview: createWebview('https://second.example', { webContentsId: 22 }),
+      });
+      const ctx = await loadNavigationModule();
+      const tabA = ctx.activeRef.tab;
+      ctx.tabsRef.list = [tabA, tabB];
+      await ctx.mod.initNavigation();
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+      expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
+
+      // The dropdown previewed tab B's URL into the bar and committed it.
+      ctx.elements.addressInput.value = 'https://second.example';
+      ctx.activeRef.tab = tabB;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabB.id,
+        tab: tabB,
+        isNewTab: false,
+        fromAddressBarCommit: true,
+      });
+
+      expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
     });
   });
 });

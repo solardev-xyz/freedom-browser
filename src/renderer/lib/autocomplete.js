@@ -8,6 +8,12 @@ import {
   generateSuggestions as generateAutocompleteSuggestions,
   getPlaceholderLetter,
 } from './autocomplete-utils.js';
+import {
+  applyInputSelection,
+  captureInputSelection,
+  clearAddressBarEdit,
+  setAddressBarEdit,
+} from './address-bar-edit.js';
 
 const electronAPI = window.electronAPI;
 
@@ -24,7 +30,15 @@ let selectedIndex = -1;
 let currentSuggestions = [];
 let debounceTimer = null;
 let isOpen = false;
-let originalQuery = ''; // Store original query for restoring on Escape
+// The text the user typed, restored whenever the highlight comes back to
+// "row 0" — arrowing off either end of the list, or the first Escape.
+// `originalSelection` keeps the caret/selection that went with it.
+let originalQuery = '';
+let originalSelection = null;
+// True once a keyboard preview has written a suggestion's URL over the typed
+// text (mouse hover only moves the highlight). It's what makes the first
+// Escape this module's to own — there is something to restore. See #310/#313.
+let previewWroteInput = false;
 
 // Callbacks
 let onNavigate = null;
@@ -191,12 +205,27 @@ export const hide = () => {
   dropdown.classList.add('hidden');
   isOpen = false;
   selectedIndex = -1;
+  previewWroteInput = false;
   currentSuggestions = [];
   originalQuery = '';
+  originalSelection = null;
   if (wasOpen) {
     hideMenuBackdrop();
   }
 };
+
+/**
+ * True while the address bar shows a *previewed* suggestion rather than the
+ * user's own text. That is exactly the state in which this module owns the
+ * Escape press (it returns to the typed text); navigation.js reads it to
+ * stand down for that one press and take over from the next. See #310.
+ *
+ * Keyed on whether a preview actually rewrote the input, not on the highlight:
+ * mouse hover moves the highlight without touching the bar's text, so an
+ * Escape after a mere hover has nothing to restore and must not cost the user
+ * an extra press — Chrome closes the list and reverts in one.
+ */
+export const isSuggestionPreviewActive = () => isOpen && previewWroteInput;
 
 /**
  * Update selection highlight
@@ -212,6 +241,58 @@ const updateSelection = () => {
   if (selectedIndex >= 0 && items[selectedIndex]) {
     items[selectedIndex].scrollIntoView({ block: 'nearest' });
   }
+};
+
+/**
+ * Remember the text the user typed before the highlight left "row 0", so any
+ * path back to it (ArrowUp off the first suggestion, Escape) can restore both
+ * the string and the caret.
+ */
+const captureTypedText = () => {
+  originalQuery = addressInput.value;
+  originalSelection = captureInputSelection(addressInput);
+};
+
+/** Put the user's typed text (and caret) back, with nothing highlighted. */
+const restoreTypedText = () => {
+  selectedIndex = -1;
+  previewWroteInput = false;
+  updateSelection();
+  addressInput.value = originalQuery;
+  applyInputSelection(addressInput, originalSelection);
+  setAddressBarEdit(originalQuery, originalSelection);
+};
+
+/**
+ * Keyboard selection: highlight a row and preview its URL in the address bar.
+ * `index === -1` means the typed-text row, which is a real row here (Chrome's
+ * default match) rather than a wrap-around target. See #313.
+ */
+const previewRow = (index) => {
+  if (selectedIndex === -1) captureTypedText();
+  if (index < 0) {
+    restoreTypedText();
+    return;
+  }
+  selectedIndex = index;
+  updateSelection();
+  addressInput.value = currentSuggestions[selectedIndex]?.url || '';
+  previewWroteInput = true;
+  // A previewed suggestion is still an uncommitted edit of this tab's address
+  // bar: it survives page commits (#305) and tab switches (#314).
+  setAddressBarEdit(addressInput.value, null);
+};
+
+/**
+ * Mouse hover: move the highlight without rewriting the address bar (Chrome
+ * previews on keyboard selection only), so Enter commits the row under the
+ * cursor instead of the typed text. See #313.
+ */
+const highlightRow = (index) => {
+  if (index === selectedIndex || !currentSuggestions[index]) return;
+  if (selectedIndex === -1) captureTypedText();
+  selectedIndex = index;
+  updateSelection();
 };
 
 /**
@@ -261,22 +342,20 @@ const handleKeyDown = (e) => {
   switch (e.key) {
     case 'ArrowDown':
       e.preventDefault();
-      if (selectedIndex === -1) {
-        originalQuery = addressInput.value; // Save original query on first navigation
+      // The list stops at its last row — no wrap back to the top. #313.
+      if (selectedIndex < currentSuggestions.length - 1) {
+        previewRow(selectedIndex + 1);
       }
-      selectedIndex = (selectedIndex + 1) % currentSuggestions.length;
-      updateSelection();
-      addressInput.value = currentSuggestions[selectedIndex].url;
       break;
 
     case 'ArrowUp':
       e.preventDefault();
-      if (selectedIndex === -1) {
-        originalQuery = addressInput.value; // Save original query on first navigation
+      // Row -1 *is* the user's typed text (Chrome's default match), so
+      // ArrowUp off the first suggestion returns to it — and stops there
+      // rather than wrapping to the bottom of the list. #313.
+      if (selectedIndex >= 0) {
+        previewRow(selectedIndex - 1);
       }
-      selectedIndex = selectedIndex <= 0 ? currentSuggestions.length - 1 : selectedIndex - 1;
-      updateSelection();
-      addressInput.value = currentSuggestions[selectedIndex].url;
       break;
 
     case 'Enter':
@@ -287,7 +366,14 @@ const handleKeyDown = (e) => {
 
         // If it's an open tab, switch to it
         if (suggestion.type === 'tab' && suggestion.tabId) {
-          switchTab(suggestion.tabId);
+          // Picking a suggestion commits the omnibox: the tab we're leaving
+          // no longer has an edit in progress. `loadTarget` does this for the
+          // navigating branch below; the tab-switch branch has to do it here.
+          // `fromAddressBarCommit` tells the tab-switch handler not to adopt
+          // the bar's leftover text (the previewed target URL, or the query)
+          // as the leaving tab's page display.
+          clearAddressBarEdit();
+          switchTab(suggestion.tabId, { fromAddressBarCommit: true });
           addressInput.blur();
         } else if (onNavigate) {
           addressInput.value = suggestion.url;
@@ -301,10 +387,19 @@ const handleKeyDown = (e) => {
       break;
 
     case 'Escape':
+      // The dropdown owns the first Escape: come back to the text the user
+      // typed, keep focus in the bar, and close the list. navigation.js takes
+      // the next press (revert to the page URL, still focused) and the one
+      // after that (focus the page). #310.
       e.preventDefault();
-      if (originalQuery) {
-        addressInput.value = originalQuery;
-        originalQuery = '';
+      e.stopPropagation();
+      // Only a keyboard preview rewrote the bar; a hovered row left the typed
+      // text alone, so there is nothing to restore and navigation.js' handler
+      // (which ran first, having stood down only for a real preview) already
+      // reverted to the page URL. Writing `originalQuery` back here would undo
+      // that revert. #310.
+      if (previewWroteInput) {
+        restoreTypedText();
       }
       hide();
       break;
@@ -313,6 +408,8 @@ const handleKeyDown = (e) => {
       if (selectedIndex >= 0 && currentSuggestions[selectedIndex]) {
         e.preventDefault();
         addressInput.value = currentSuggestions[selectedIndex].url;
+        // Completed into the bar but not submitted: still an uncommitted edit.
+        setAddressBarEdit(addressInput.value, null);
         hide();
       }
       break;
@@ -333,13 +430,27 @@ const handleClick = (e) => {
 
   // If it's an open tab, switch to it
   if (tabId) {
-    switchTab(parseInt(tabId, 10));
+    // Committing by mouse ends the edit for the tab we're leaving, same as
+    // the keyboard path — including the "don't adopt the bar's text" flag.
+    clearAddressBarEdit();
+    switchTab(parseInt(tabId, 10), { fromAddressBarCommit: true });
     addressInput.blur();
   } else if (url && onNavigate) {
     addressInput.value = url;
     onNavigate(url);
     addressInput.blur();
   }
+};
+
+/**
+ * Handle mouse hover over a suggestion
+ */
+const handleMouseMove = (e) => {
+  const item = e.target?.closest?.('.autocomplete-item');
+  if (!item) return;
+  const index = Number.parseInt(item.dataset.index, 10);
+  if (Number.isNaN(index)) return;
+  highlightRow(index);
 };
 
 /**
@@ -359,6 +470,9 @@ export const initAutocomplete = () => {
   addressInput.addEventListener('input', handleInput);
   addressInput.addEventListener('keydown', handleKeyDown);
   dropdown.addEventListener('click', handleClick);
+  // Mouse hover moves the highlight, so Enter commits the row under the
+  // cursor rather than the typed text. #313.
+  dropdown.addEventListener('mousemove', handleMouseMove);
 
   // Close on webview interaction or window blur
   webviewElement?.addEventListener('focus', hide);

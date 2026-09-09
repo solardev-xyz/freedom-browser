@@ -14,7 +14,12 @@ import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
 import { setupSwarmProvider } from './swarm-provider.js';
 import { setupRadicleProvider } from './radicle-provider.js';
-import { closeFindBar, notifyFindBarNavigated } from './find-bar.js';
+import {
+  notifyFindBarNavigated,
+  notifyFindBarNavigationStarted,
+  notifyFindBarTabClosed,
+  notifyFindBarTabSwitched,
+} from './find-bar.js';
 import { matchesShortcut } from './shortcuts.js';
 import {
   clearLinkStatus,
@@ -268,6 +273,13 @@ const createNavigationState = () => ({
   // names). Reload and other commit-keyed decisions must NOT key on it; use
   // `committedDisplayUrl` instead.
   addressBarSnapshot: '',
+  // Chrome's per-tab "user input in progress": the uncommitted address-bar
+  // edit for this tab (a string, possibly empty) or `null` when the user has
+  // no edit in flight. Owned by `address-bar-edit.js`. While it is a string,
+  // navigation commits leave the address input alone (#305) and a switch back
+  // to this tab restores the draft and its selection (#314).
+  addressBarPendingInput: null,
+  addressBarPendingSelection: null,
   // `committedDisplayUrl` is the user-facing identity of the URL Chromium
   // committed for this tab's last navigation. For most schemes it equals
   // `webview.getURL()`; onchain apps reverse-map their synthetic Chromium
@@ -460,6 +472,16 @@ const createWebview = (tabId, initialUrl) => {
 
   // Create named event handlers so they can be removed later
   const handlers = {
+    // A main-frame, cross-document navigation started: record whether the
+    // find bar was open for this tab, which is what decides at commit
+    // whether the bar closes — Chrome's rule. Nothing visible happens here,
+    // because this navigation may never commit (a download link, Stop, an
+    // external protocol handler), and the user is then still on this page
+    // with a live search that must survive.
+    'did-start-navigation': (event) => {
+      if (event.isMainFrame === false || event.isInPlace) return;
+      notifyFindBarNavigationStarted(webview);
+    },
     'did-start-loading': () => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
@@ -638,12 +660,12 @@ const createWebview = (tabId, initialUrl) => {
           renderTabs();
         }
       }
-      // Navigation invalidates find-in-page results for the foreground
-      // tab; the bar stays open with its query so Enter re-searches on
-      // the new page.
-      if (tabId === tabState.activeTabId) {
-        notifyFindBarNavigated();
-      }
+      // A committed navigation ends this tab's find session (Chrome closes
+      // the bar unless the user opened it after the navigation started).
+      // Every tab reports it, not just the foreground one: find state is
+      // per tab, so a background tab that navigates must not keep a bar or
+      // a match count that no longer describes its page.
+      notifyFindBarNavigated(webview);
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate', { tabId, event });
       }
@@ -1341,6 +1363,10 @@ export const closeTab = (tabId) => {
     tab.audioStateTimer = null;
   }
 
+  // Drop this tab's find state (bar, query, count) with the tab itself,
+  // rather than leaving the detached webview keyed in the find module.
+  notifyFindBarTabClosed(tab.webview);
+
   // Remove event listeners before removing webview (prevents memory leak)
   cleanupWebview(tab.webview);
 
@@ -1585,11 +1611,12 @@ export const switchTab = (tabId, options = {}) => {
   setLinkStatusSide(tab.linkStatusInLeftZone ? 'right' : 'left');
   tabState.activeTabId = tabId;
 
-  // Find state follows the foreground page: close the bar and clear the
-  // outgoing tab's highlights. Called after the activeTabId flip so the
-  // close never returns focus to the (now background) searched webview —
-  // the find module captured that webview when its session started.
-  closeFindBar();
+  // Find state lives on the tab (Chrome's model): re-render the bar for the
+  // incoming tab — its own query, its own count, hidden if it never opened
+  // one — and leave the outgoing tab's session running so switching back
+  // shows it exactly as the user left it. Called after the activeTabId flip
+  // so the find module reads the incoming tab's state.
+  notifyFindBarTabSwitched();
 
   // Hide all webviews, show active one
   for (const t of tabState.tabs) {
@@ -1609,14 +1636,26 @@ export const switchTab = (tabId, options = {}) => {
   // the tab button, and it is never stranded on the now-hidden outgoing
   // webview (#304).
   //
-  // A brand-new tab is deliberately excluded and handed to the navigation
-  // module's `tab-switched` case instead, which knows whether the tab landed
-  // on this window's new-tab page (focus the address bar — #312) or on a real
-  // page opened from a link (focus the page). Focusing here as well is not
-  // harmless: `<webview>.focus()` hands focus to the guest asynchronously, so
-  // it lands *after* a synchronous `addressInput.focus()` and takes the
-  // address bar's focus away again.
-  if (!options.isNewTab) {
+  // Two cases are deliberately excluded and handed to the navigation module's
+  // `tab-switched` case instead, because both of them focus the *address bar*
+  // and only that module knows it:
+  //
+  // - A brand-new tab: only the address-bar derivation knows whether the tab
+  //   landed on this window's new-tab page (focus the address bar — #312) or
+  //   on a real page opened from a link (focus the page).
+  // - A tab left with an uncommitted address-bar edit: it comes back mid-edit
+  //   with the bar focused and its selection restored (#314), so the page must
+  //   not take the keyboard from under the draft. `addressBarPendingInput` is
+  //   a string only while such an edit is in flight — see `address-bar-edit.js`,
+  //   which owns the field this module declares in `createNavigationState`.
+  //   (Read directly rather than through that module's helper: it imports
+  //   `tabs.js`, so importing it back would close an import cycle.)
+  //
+  // Focusing here as well is not harmless in either case: `<webview>.focus()`
+  // hands focus to the guest asynchronously, so it lands *after* a synchronous
+  // `addressInput.focus()` and takes the address bar's focus away again.
+  const tabHasAddressBarEdit = typeof tab.navigationState?.addressBarPendingInput === 'string';
+  if (!options.isNewTab && !tabHasAddressBarEdit) {
     tab.webview?.focus?.();
   }
 
@@ -1625,9 +1664,17 @@ export const switchTab = (tabId, options = {}) => {
     electronAPI?.setWindowTitle?.(tab.title);
   }
 
-  // Notify navigation module
+  // Notify navigation module. `fromAddressBarCommit` marks a switch the
+  // address bar itself commanded (a picked "switch to tab" suggestion): the
+  // text in the bar at that moment is the *target* tab's URL or the leftover
+  // query, so the tab we're leaving must not adopt it as its display.
   if (onWebviewEvent) {
-    onWebviewEvent('tab-switched', { tabId, tab, isNewTab: options.isNewTab || false });
+    onWebviewEvent('tab-switched', {
+      tabId,
+      tab,
+      isNewTab: options.isNewTab || false,
+      fromAddressBarCommit: options.fromAddressBarCommit || false,
+    });
   }
 
   renderTabs();
@@ -1974,7 +2021,11 @@ export const initTabs = async () => {
           activeTab.suppressNextStopTimer = null;
         }, 200);
       }
-      onLoadTarget(url);
+      // The page navigated itself (a link click or a scripted `location`
+      // change to a custom scheme); the main process cancelled it and handed
+      // it back here. Flagged as page-initiated so it repaints the address
+      // bar only when the user isn't mid-edit. See #305.
+      onLoadTarget(url, null, null, { pageInitiated: true });
     }
   });
 

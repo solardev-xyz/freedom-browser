@@ -547,6 +547,7 @@ export const deriveSwitchedTabDisplay = ({
   url = '',
   isLoading = false,
   addressBarSnapshot = '',
+  addressBarPendingInput = null,
   isViewingSource = false,
   bzzRoutePrefix,
   homeUrlNormalized,
@@ -555,6 +556,16 @@ export const deriveSwitchedTabDisplay = ({
   radicleApiPrefix = null,
   knownEnsNames = new Map(),
 } = {}) => {
+  // An uncommitted address-bar edit is per-tab state in Chrome: a tab you left
+  // mid-edit is still mid-edit when you come back, whether or not it happens
+  // to be loading. `addressBarPendingInput` is a string only while the user
+  // has such an edit in flight (`address-bar-edit.js`), so the empty draft of
+  // a bar the user cleared restores as empty rather than falling through to
+  // the committed URL. See #314.
+  if (typeof addressBarPendingInput === 'string') {
+    return addressBarPendingInput;
+  }
+
   if (isLoading && addressBarSnapshot) {
     return addressBarSnapshot;
   }

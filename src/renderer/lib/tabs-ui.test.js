@@ -538,7 +538,11 @@ describe('tabs ui behavior', () => {
       const { webview } = activeTab;
 
       electronHandlers.navigateToUrl('bzz://meinhard.eth');
-      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth');
+      // Flagged page-initiated: a scripted/link navigation the main process
+      // bounced back here must not discard an address-bar edit (#305).
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth', null, null, {
+        pageInitiated: true,
+      });
       // Simulate the `loadTarget` dispatch flipping the spinner on (the
       // ENS branch in navigation.js does this synchronously).
       activeTab.isLoading = true;
@@ -735,7 +739,11 @@ describe('tabs ui behavior', () => {
       // suppressNextStop (in case the paired did-stop-loading is still
       // in flight, which is exactly what's about to happen here).
       electronHandlers.navigateToUrl('bzz://meinhard.eth');
-      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth');
+      // Flagged page-initiated: a scripted/link navigation the main process
+      // bounced back here must not discard an address-bar edit (#305).
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth', null, null, {
+        pageInitiated: true,
+      });
       expect(activeTab.suppressNextStop).toBe(true);
       expect(activeTab.suppressNextStopTimer).not.toBeNull();
 
@@ -991,7 +999,9 @@ describe('tabs ui behavior', () => {
 
     electronHandlers.navigateToUrl('https://navigate.example');
     electronHandlers.loadUrl('https://load.example');
-    expect(onLoadTarget).toHaveBeenCalledWith('https://navigate.example');
+    expect(onLoadTarget).toHaveBeenCalledWith('https://navigate.example', null, null, {
+      pageInitiated: true,
+    });
     expect(onLoadTarget).toHaveBeenCalledWith('https://load.example');
 
     electronHandlers.focusAddressBar();
@@ -1188,6 +1198,43 @@ describe('tabs ui behavior', () => {
     mod.switchToNextTab();
     expect(mod.getActiveTab().id).toBe(secondTab.id);
     expect(secondFocus).toHaveBeenCalledTimes(1);
+    expect(firstFocus).toHaveBeenCalledTimes(1);
+  });
+
+  // #304 × #314. The page-focus rule above and the "a tab left mid-edit comes
+  // back mid-edit, with the address bar focused" rule both fire on a tab
+  // switch, and they want the keyboard in different places. The address bar
+  // wins, because it is the surface the user was last typing into — and
+  // because it cannot win any other way: navigation.js' `addressInput.focus()`
+  // runs synchronously inside the `tab-switched` dispatch below, while
+  // `<webview>.focus()` hands focus to the guest asynchronously, so a webview
+  // focus issued first still lands last and takes the bar's focus away again.
+  test('switchTab leaves the page unfocused for a tab with an uncommitted address-bar edit', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    const firstFocus = jest.spyOn(firstTab.webview, 'focus');
+
+    // The user typed into the first tab's address bar and switched away
+    // without committing (`address-bar-edit.js` records the draft here).
+    firstTab.navigationState.addressBarPendingInput = 'half-typed';
+
+    mod.switchTab(firstTab.id);
+    expect(mod.getActiveTab().id).toBe(firstTab.id);
+    expect(firstFocus).not.toHaveBeenCalled();
+
+    // An empty draft is still a draft — the user cleared the bar deliberately.
+    mod.switchTab(secondTab.id);
+    firstTab.navigationState.addressBarPendingInput = '';
+    mod.switchTab(firstTab.id);
+    expect(firstFocus).not.toHaveBeenCalled();
+
+    // Once the edit is committed or reverted the page gets the keyboard again.
+    mod.switchTab(secondTab.id);
+    firstTab.navigationState.addressBarPendingInput = null;
+    mod.switchTab(firstTab.id);
     expect(firstFocus).toHaveBeenCalledTimes(1);
   });
 

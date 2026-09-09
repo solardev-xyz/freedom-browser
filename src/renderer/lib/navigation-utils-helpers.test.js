@@ -178,6 +178,49 @@ describe('navigation-utils extracted helpers', () => {
     expect(
       mod.deriveSwitchedTabDisplay({ url: 'file:///app/pages/settings.html', ...common })
     ).toBe('freedom://settings');
+
+    // An uncommitted edit still wins over the empty new-tab derivation: a
+    // private new tab the user has already typed into comes back with the
+    // draft, not blanked. #314 layered on #312.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'freedom://private',
+        ...common,
+        addressBarPendingInput: 'half-typed',
+      })
+    ).toBe('half-typed');
+  });
+
+  test('restores an uncommitted address-bar edit on tab switch (#314)', async () => {
+    const mod = await loadNavigationUtils({ history: 'history.html' });
+
+    const base = {
+      url: 'https://committed.example/page',
+      bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+      homeUrlNormalized: 'file:///app/pages/home.html',
+    };
+
+    // A draft wins over the committed URL whether or not the tab is loading —
+    // that gate is exactly what discarded the edit before.
+    expect(
+      mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: 'half-typed-url' })
+    ).toBe('half-typed-url');
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        ...base,
+        isLoading: true,
+        addressBarSnapshot: 'snapshot value',
+        addressBarPendingInput: 'half-typed-url',
+      })
+    ).toBe('half-typed-url');
+
+    // A bar the user emptied restores as empty, not as the committed URL.
+    expect(mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: '' })).toBe('');
+
+    // No draft (the normal case): unchanged behaviour.
+    expect(mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: null })).toBe(
+      'https://committed.example/page'
+    );
   });
 
   test('derives switched tab display values for loading, internal pages, and view-source', async () => {

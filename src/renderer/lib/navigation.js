@@ -33,6 +33,13 @@ import {
 } from './url-utils.js';
 import { buildSearchUrl } from './search-utils.js';
 import {
+  applyInputSelection,
+  captureInputSelection,
+  clearAddressBarEdit,
+  isAddressBarEditInProgress,
+  setAddressBarEdit,
+} from './address-bar-edit.js';
+import {
   getActiveWebview,
   getActiveTab,
   getActiveTabState,
@@ -86,6 +93,39 @@ import { matchesShortcut } from './shortcuts.js';
 
 // Helper to get active tab's navigation state (with fallback to empty object)
 const getNavState = () => getActiveTabState() || {};
+
+// True while the autocomplete dropdown is showing a previewed suggestion, in
+// which case that module owns the current Escape press (it returns to the
+// user's typed text) and this one stands down for it. index.js wires
+// autocomplete's `isSuggestionPreviewActive` in here at startup. The check
+// has to live on this side because `initNavigation()` registers its
+// address-input keydown listener *before* `initAutocomplete()` does, so a
+// `stopPropagation()` in the later listener cannot unwind one that has
+// already run. See #310.
+let isSuggestionPreviewActive = () => false;
+
+export const setSuggestionPreviewProbe = (probe) => {
+  isSuggestionPreviewActive = typeof probe === 'function' ? probe : () => false;
+};
+
+// Write a page-derived display value into the address bar, unless the user is
+// mid-edit. Chrome's omnibox keeps "user input in progress" text through any
+// navigation committing in the tab — a slow page finishing, a client-side
+// redirect, a meta refresh, a same-document navigation — and only replaces it
+// when the user commits, presses Escape, or the edit is otherwise ended.
+// `addressBarSnapshot` always gets the page's own display value so Escape and
+// tab switches still have the truthful page URL to fall back to. See #305.
+const commitAddressDisplay = (value, navState = getNavState()) => {
+  navState.addressBarSnapshot = value;
+  if (isAddressBarEditInProgress(navState)) {
+    pushDebug(`[AddressBar] Held (user edit in progress), page is: ${value}`);
+    return false;
+  }
+  if (addressInput.value !== value) {
+    addressInput.value = value;
+  }
+  return true;
+};
 
 // Maximum number of name-resolution hops a single navigation may take before
 // loadTarget gives up. One hop is the normal case (name → content URI); a
@@ -355,6 +395,15 @@ const setLoading = (isLoading, tabId = null) => {
 // invokes the trust-badge resolver on every call.
 const setAddressDisplayForTab = (displayValue, tabId, { isViewingSourceForTab = false } = {}) => {
   if (isActiveTab(tabId) || tabId === null) {
+    // Same rule as `commitAddressDisplay`: a resolution settling on the
+    // foreground tab (e.g. a slow ENS lookup) must not overwrite text the
+    // user is typing. See #305.
+    if (isAddressBarEditInProgress()) {
+      const navState = getNavState();
+      navState.addressBarSnapshot = displayValue;
+      pushDebug(`[AddressBar] Held (user edit in progress), page is: ${displayValue}`);
+      return;
+    }
     if (addressInput.value !== displayValue) {
       addressInput.value = displayValue;
       updateProtocolIcon();
@@ -1029,6 +1078,25 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // for this single call. Set by the ens-unverified page's "Continue once"
   // handler. Scope is this single loadTarget invocation.
   //
+  // `options.pageInitiated` — this navigation came from the page, not from
+  // the browser chrome (an intercepted in-page link or a scripted location
+  // change replayed through `navigate-to-url`). It leaves any uncommitted
+  // address-bar edit in place; see the `clearAddressBarEdit` call below.
+  //
+  // `options.continuesNavigation` — this call is the second leg of a
+  // navigation that already ran the entry bookkeeping below (a name
+  // resolution settling, the search-provider fallback at the tail). Same
+  // effect as `pageInitiated` for the edit state, and for the same reason:
+  // the user drove the chrome once, at the *first* leg. See the
+  // `clearAddressBarEdit` call below.
+  //
+  // `options.keepsAddressBarEdit` — this call re-runs a navigation the tab is
+  // already on (reload / retry of an error page, a settings-driven refresh)
+  // rather than committing something the user typed. Chrome keeps user input
+  // in progress across a reload, and the plain `webview.reload()` sibling
+  // does too by construction, so these callers hold the draft as well.
+  // See the `clearAddressBarEdit` call below.
+  //
   // `options.bzzLoadUrl` / `options.swarmHash` — set by the ENS resolution
   // path when an ENS name resolves to Swarm content: the recursive call
   // into the bzz branch carries the ENS-named load URL plus the resolved
@@ -1057,6 +1125,33 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // leaving Swarm entirely, in which case we don't want the old probe to
   // eventually navigate the webview to a now-stale bzz URL.
   cancelPendingSwarmProbe(navState);
+
+  // Every chrome-initiated navigation funnels through here (address-bar
+  // submit, a picked autocomplete suggestion, bookmarks, menu items), so this
+  // is the one place that reliably ends an uncommitted address-bar edit for
+  // the tab being navigated.
+  //
+  // `options.pageInitiated` marks the callers that are *not* the user driving
+  // the chrome: an in-page link click, and — the case #305 was reported
+  // against — a scripted `location.href` to a custom scheme, which the main
+  // process cancels and replays through here as `navigate-to-url`. Those must
+  // leave a half-typed address alone, exactly like the `did-navigate` path.
+  //
+  // `options.continuesNavigation` marks loadTarget's own recursive calls (a
+  // name resolution settling, the search fallback). Those are not a second
+  // user action: for a page-driven navigation there was never an edit to end,
+  // and for a chrome-driven one the commit already ended it at the first leg —
+  // possibly seconds ago, before a slow name lookup, so anything in the bar
+  // now is a *new* draft the user started while the resolution was in flight.
+  // Ending it here is the same clobber, one hop later (#305).
+  //
+  // `options.keepsAddressBarEdit` marks the re-runs of the navigation the tab
+  // is already on (reload, error-page retry, a settings-driven refresh). They
+  // aren't a commit of the bar's contents, and the `webview.reload()` branch
+  // of the very same affordance holds the draft, so these must too.
+  if (!options.pageInitiated && !options.continuesNavigation && !options.keepsAddressBarEdit) {
+    clearAddressBarEdit(navState);
+  }
 
   // Handle view-source: URLs - need to resolve dweb URLs before loading
   if (value.startsWith('view-source:')) {
@@ -1345,6 +1440,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           pushDebug(`${systemLabel} resolved: ${ens.name} -> ${targetUri}`);
           loadTarget(targetUri, displayOverride || targetUri, capturedWebview, {
             nameResolutionDepth: resolutionDepth + 1,
+            continuesNavigation: true,
           });
           return;
         }
@@ -1409,7 +1505,10 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         // rather than the resolved CID/hash. For Swarm the probe still
         // needs the actual hash to gate navigation on Bee warmth, so we
         // pass it separately as `swarmHash`.
-        const innerOptions = { nameResolutionDepth: resolutionDepth + 1 };
+        const innerOptions = {
+          nameResolutionDepth: resolutionDepth + 1,
+          continuesNavigation: true,
+        };
         if (result.protocol === 'bzz') {
           innerOptions.bzzLoadUrl = transportDisplay;
           innerOptions.swarmHash = result.decoded;
@@ -1447,7 +1546,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       // the panel that explains the profile setting instead.
       pushDebug(RADICLE_DISABLED_MESSAGE);
       const disabledUrl = buildRadicleDisabledUrl(window.location.href, value.trim());
-      addressInput.value = value.trim();
+      setAddressDisplayForTab(value.trim(), targetTabId);
       navState.pendingNavigationUrl = disabledUrl;
       navState.hasNavigatedDuringCurrentLoad = false;
       webview.loadURL(disabledUrl);
@@ -1484,7 +1583,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     const errorUrl = new URL('pages/rad-browser.html', window.location.href);
     errorUrl.searchParams.set('error', 'invalid-rid');
     errorUrl.searchParams.set('input', withoutScheme);
-    addressInput.value = value.trim();
+    setAddressDisplayForTab(value.trim(), targetTabId);
     navState.pendingNavigationUrl = errorUrl.toString();
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(errorUrl.toString());
@@ -1654,7 +1753,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   const searchUrl = buildSearchUrl(value, state.searchProvider, state.customSearchProviders);
   if (searchUrl) {
     pushDebug(`[AddressBar] Searching for input via ${searchUrl}`);
-    loadTarget(searchUrl, null, webview);
+    loadTarget(searchUrl, null, webview, { continuesNavigation: true });
     return;
   }
 
@@ -1684,7 +1783,11 @@ const stopLoadingAndRestore = () => {
       state.ipnsRoutePrefix,
       state.radicleApiPrefix
     );
-    addressInput.value = display;
+    // Stopping a load repaints the address bar with the page it settled on —
+    // unless the user is mid-edit, in which case only the snapshot moves
+    // (#305). The Escape handler clears the edit before calling this, so the
+    // Escape path still repaints.
+    commitAddressDisplay(display, navState);
     pushDebug(`[AddressBar] Restored to: ${display} (raw: ${targetUrl})`);
   }
   reloadBtn.dataset.state = 'reload';
@@ -1699,6 +1802,8 @@ export const loadHomePage = () => {
     return;
   }
   syncBzzBase(null);
+  // Going home is a commit: any uncommitted edit is over.
+  clearAddressBarEdit(navState);
   addressInput.value = '';
   updateProtocolIcon();
   navState.pendingNavigationUrl = homeUrlNormalized;
@@ -1733,7 +1838,9 @@ const retryErrorPageOrReload = (webview, hard) => {
       if (errorEns) invalidateContentName(errorEns);
     }
     pushDebug(`Retrying original URL from error page: ${originalUrl}`);
-    loadTarget(originalUrl);
+    // Reload is not a commit of the address bar: an uncommitted edit survives
+    // it, exactly as it does on the `webview.reload()` path at the tail.
+    loadTarget(originalUrl, null, null, { keepsAddressBarEdit: true });
     return;
   }
   if (isErrorPageUrl(current)) {
@@ -1768,7 +1875,7 @@ const retryErrorPageOrReload = (webview, hard) => {
     pushDebug(
       `${hard ? 'Hard reload' : 'Reload'} re-resolving ${nameSystemLabelForName(ensInput.name)}: ${committedDisplay}`
     );
-    loadTarget(committedDisplay);
+    loadTarget(committedDisplay, null, null, { keepsAddressBarEdit: true });
     return;
   }
 
@@ -1785,7 +1892,7 @@ const retryErrorPageOrReload = (webview, hard) => {
       pushDebug(
         `${hard ? 'Hard reload' : 'Reload'} dweb node unavailable — routing ${committedDisplay} to error page`
       );
-      loadTarget(committedDisplay);
+      loadTarget(committedDisplay, null, null, { keepsAddressBarEdit: true });
       return;
     }
   }
@@ -1856,7 +1963,7 @@ const handleNavigationEvent = (event) => {
       const displayUrl = isOnchainInterstitialPageUrl(event.url)
         ? ''
         : `view-source:${displayInner || event.url}`;
-      addressInput.value = displayUrl;
+      commitAddressDisplay(displayUrl, navState);
       pushDebug(`[AddressBar] View source: ${displayUrl || '(withheld)'}`);
       navState.currentPageUrl = webviewUrl;
       // Update tab title to "view-source:<address>"
@@ -1866,7 +1973,6 @@ const handleNavigationEvent = (event) => {
       updateBookmarkButtonVisibility();
       updateGithubBridgeIcon();
       updateProtocolIcon();
-      navState.addressBarSnapshot = addressInput.value;
       return;
     }
 
@@ -1876,7 +1982,7 @@ const handleNavigationEvent = (event) => {
     const onchainInterstitialTarget = getOnchainInterstitialTarget(event.url);
     if (onchainInterstitialTarget) {
       const displayUrl = formatOnchainAppDisplayUrl(onchainInterstitialTarget);
-      if (displayUrl) addressInput.value = displayUrl;
+      if (displayUrl) commitAddressDisplay(displayUrl, navState);
       navState.pendingTitleForUrl = event.url;
       navState.pendingNavigationUrl = event.url;
       navState.currentPageUrl = event.url;
@@ -1885,7 +1991,6 @@ const handleNavigationEvent = (event) => {
       updateBookmarkButtonVisibility();
       updateGithubBridgeIcon();
       updateProtocolIcon();
-      navState.addressBarSnapshot = addressInput.value;
       return;
     }
 
@@ -1895,7 +2000,7 @@ const handleNavigationEvent = (event) => {
     // shows an empty omnibox on both its NTP and its Incognito NTP. See #312.
     const internalPageName = getInternalPageName(event.url);
     if (internalPageName && !isNewTabPageUrl(event.url)) {
-      addressInput.value = `freedom://${internalPageName}`;
+      commitAddressDisplay(`freedom://${internalPageName}`, navState);
       pushDebug(`[AddressBar] Internal page: freedom://${internalPageName}`);
       electronAPI?.setWindowTitle?.(
         `${internalPageName.charAt(0).toUpperCase() + internalPageName.slice(1)}`
@@ -1911,14 +2016,13 @@ const handleNavigationEvent = (event) => {
       // freedom:// URL — without this, navigating to Settings (etc.)
       // from an ENS page leaves the prior page's trust shield stuck on.
       updateProtocolIcon();
-      navState.addressBarSnapshot = addressInput.value;
       return;
     }
 
     // Check for rad-browser.html URLs (Radicle protocol)
     const radicleDisplayUrl = getRadicleDisplayUrl(event.url);
     if (radicleDisplayUrl) {
-      addressInput.value = radicleDisplayUrl;
+      commitAddressDisplay(radicleDisplayUrl, navState);
       pushDebug(`[AddressBar] Radicle page: ${radicleDisplayUrl}`);
       navState.pendingTitleForUrl = event.url;
       navState.pendingNavigationUrl = event.url;
@@ -1928,7 +2032,6 @@ const handleNavigationEvent = (event) => {
       updateBookmarkButtonVisibility();
       updateGithubBridgeIcon();
       updateProtocolIcon();
-      navState.addressBarSnapshot = addressInput.value;
       return;
     }
 
@@ -1940,7 +2043,7 @@ const handleNavigationEvent = (event) => {
     // the fail-safe there, since the on-disk path must not be shown either.
     if (isInterstitialPageUrl(event.url)) {
       const blockedName = getInterstitialDisplayName(event.url) || '';
-      addressInput.value = blockedName;
+      commitAddressDisplay(blockedName, navState);
       pushDebug(`[AddressBar] Interstitial -> Blocked name: ${blockedName || '(none)'}`);
     } else if (isErrorPageUrl(event.url)) {
       try {
@@ -1955,14 +2058,14 @@ const handleNavigationEvent = (event) => {
             state.ipnsRoutePrefix,
             state.radicleApiPrefix
           );
-          addressInput.value = display;
+          commitAddressDisplay(display, navState);
           pushDebug(`[AddressBar] Error Page -> Original: ${display}`);
         } else {
-          addressInput.value = 'Error';
+          commitAddressDisplay('Error', navState);
         }
       } catch (err) {
         pushDebug(`[Nav] Could not parse error page URL: ${err.message}`);
-        addressInput.value = 'Error';
+        commitAddressDisplay('Error', navState);
       }
       electronAPI?.setWindowTitle?.('Error');
     } else {
@@ -1980,11 +2083,8 @@ const handleNavigationEvent = (event) => {
       // (happens during "open in new window" before loadTarget runs)
       if (event.url === 'about:blank' && addressInput.value) {
         pushDebug(`[AddressBar] Preserved (about:blank navigation)`);
-      } else if (addressInput.value !== derived) {
-        addressInput.value = derived;
+      } else if (commitAddressDisplay(derived, navState)) {
         pushDebug(`[AddressBar] Updated to: ${derived} (derived from ${event.url})`);
-      } else {
-        pushDebug(`[AddressBar] Skipped update (already ${derived})`);
       }
 
       // Sync the only protocol still using the HTTP request rewriter (bzz).
@@ -2013,7 +2113,15 @@ const handleNavigationEvent = (event) => {
   // is written by tabs.js' per-webview did-navigate handler — that's the
   // single source of truth for "what page are we actually on", and it
   // covers background tabs too.
-  navState.addressBarSnapshot = addressInput.value;
+  //
+  // The branches above already snapshotted the page's own display value
+  // through `commitAddressDisplay`; this tail covers the events that carry
+  // no URL. While the user is mid-edit the live input holds their draft, so
+  // it must not be written over the page snapshot (#305) — the draft has its
+  // own per-tab home in `addressBarPendingInput`.
+  if (!isAddressBarEditInProgress(navState)) {
+    navState.addressBarSnapshot = addressInput.value;
+  }
 };
 
 // Update bookmark bar visibility for a URL change
@@ -2056,17 +2164,26 @@ export const toggleBookmarkBar = async () => {
 // Called when settings change to refresh current page if needed
 export const onSettingsChanged = (settings = null) => {
   const navState = getNavState();
+  // Both refreshes below re-run the page the tab is *on*, so they key on
+  // `committedDisplayUrl` — written only by did-navigate — rather than the
+  // live input, which under the uncommitted-edit model can hold a half-typed
+  // draft the user never submitted (#305). Navigating to that draft (and
+  // ending the edit) because a settings broadcast happened to arrive is the
+  // clobber this PR exists to remove; they pass `keepsAddressBarEdit` for the
+  // same reason reload does.
+  const committedDisplay = (navState.committedDisplayUrl || '').trim();
   if (settings?.networkConfigUpdated === true) {
-    const currentAddress = (addressInput?.value || '').trim();
-    if (parseEnsInput(currentAddress)) {
-      loadTarget(currentAddress);
+    if (parseEnsInput(committedDisplay)) {
+      loadTarget(committedDisplay, null, null, { keepsAddressBarEdit: true });
       return;
     }
   }
 
   updateProtocolIcon();
   if (navState.currentPageUrl && navState.currentPageUrl.startsWith('bzz://')) {
-    loadTarget(addressInput.value);
+    loadTarget(committedDisplay || navState.currentPageUrl, null, null, {
+      keepsAddressBarEdit: true,
+    });
   }
 };
 
@@ -2141,31 +2258,68 @@ export const initNavigation = () => {
 
   addressInput.addEventListener('focusin', () => {
     const navState = getNavState();
-    navState.addressBarSnapshot = addressInput.value;
+    // Focusing a bar that already carries an uncommitted draft (restored on
+    // tab switch) must not promote that draft to the page snapshot — the
+    // snapshot is what Escape reverts to. See #305/#314.
+    if (!isAddressBarEditInProgress(navState)) {
+      navState.addressBarSnapshot = addressInput.value;
+    }
   });
 
-  // Update protocol icon as user types
+  // Update protocol icon as user types, and record the edit as
+  // "user input in progress" for this tab (Chrome's omnibox model): page
+  // commits stop overwriting it (#305) and a tab switch carries it along
+  // (#314). Only real user input fires `input` — programmatic writes from
+  // the navigation layer don't, which is what keeps derived values out.
   addressInput.addEventListener('input', () => {
+    setAddressBarEdit(addressInput.value, captureInputSelection(addressInput));
     updateProtocolIcon();
   });
 
   addressInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      const navState = getNavState();
-      if (!stopLoadingAndRestore() && navState.addressBarSnapshot) {
-        addressInput.value = navState.addressBarSnapshot;
-      } else if (navState.pendingTitleForUrl) {
-        addressInput.value = deriveDisplayValue(
-          navState.pendingTitleForUrl,
-          state.bzzRoutePrefix,
-          homeUrlNormalized,
-          state.ipfsRoutePrefix,
-          state.ipnsRoutePrefix,
-          state.radicleApiPrefix
-        );
-      }
-      updateProtocolIcon();
+    if (event.key !== 'Escape') return;
+    // While a suggestion is previewed in the dropdown, autocomplete.js owns
+    // this press: it returns to the typed text and closes the list. This
+    // handler takes over from the next press. #310.
+    if (isSuggestionPreviewActive()) return;
+    event.preventDefault();
+    const navState = getNavState();
+    // Chrome's Escape sequence in the omnibox: revert an uncommitted edit to
+    // the page's URL while *keeping* focus (text selected), and only move
+    // focus to the page once there is nothing left to revert. The bar never
+    // comes to rest showing text that is neither the page URL nor a live
+    // edit. See #310.
+    const hadUserEdit = isAddressBarEditInProgress(navState);
+    clearAddressBarEdit(navState);
+    let pageDisplay = null;
+    const stoppedLoad = stopLoadingAndRestore();
+    if (!stoppedLoad && navState.addressBarSnapshot) {
+      pageDisplay = navState.addressBarSnapshot;
+    } else if (navState.pendingTitleForUrl) {
+      pageDisplay = deriveDisplayValue(
+        navState.pendingTitleForUrl,
+        state.bzzRoutePrefix,
+        homeUrlNormalized,
+        state.ipfsRoutePrefix,
+        state.ipnsRoutePrefix,
+        state.radicleApiPrefix
+      );
+    } else if (!stoppedLoad && typeof navState.addressBarSnapshot === 'string') {
+      // A page whose display *is* empty — the new-tab/home page — still has a
+      // permanent text to revert to: the empty string. Gating on truthiness
+      // instead left the typed fragment sitting in the bar with no edit
+      // tracking it any more, i.e. exactly the "neither the page URL nor a
+      // live edit" resting state #310 exists to remove.
+      pageDisplay = '';
+    }
+    const reverted = pageDisplay !== null && addressInput.value !== pageDisplay;
+    if (pageDisplay !== null) {
+      addressInput.value = pageDisplay;
+    }
+    updateProtocolIcon();
+    if (hadUserEdit || reverted) {
+      addressInput.select();
+    } else {
       addressInput.blur();
     }
   });
@@ -2463,7 +2617,9 @@ export const initNavigation = () => {
                 background: disposition === 'newBackgroundTab',
               });
             } else {
-              loadTarget(url, null, webview);
+              // Same-tab link click: a page-driven commit, so it must not
+              // discard an address-bar edit the user has in flight (#305).
+              loadTarget(url, null, webview, { pageInitiated: true });
             }
           }
         }
@@ -2478,7 +2634,25 @@ export const initNavigation = () => {
         if (previousActiveTabId && previousActiveTabId !== data.tabId) {
           const prevTab = getTabs().find((t) => t.id === previousActiveTabId);
           if (prevTab && prevTab.navigationState) {
-            prevTab.navigationState.addressBarSnapshot = addressInput.value;
+            // An uncommitted edit belongs to the tab being left: refresh the
+            // draft (and its selection) rather than the page snapshot, so
+            // switching back restores what the user was typing. #314.
+            if (isAddressBarEditInProgress(prevTab.navigationState)) {
+              setAddressBarEdit(
+                addressInput.value,
+                captureInputSelection(addressInput),
+                prevTab.navigationState
+              );
+            } else if (!data.fromAddressBarCommit) {
+              // A switch commanded by the address bar itself (a picked
+              // "switch to tab" suggestion) leaves the *target* tab's URL —
+              // or the leftover query — in the input, with the edit already
+              // cleared by the commit. Adopting that as the leaving tab's
+              // page display would make it the value Escape reverts to and
+              // the one `deriveSwitchedTabDisplay` paints while that tab
+              // loads, i.e. another tab's URL shown as this one's.
+              prevTab.navigationState.addressBarSnapshot = addressInput.value;
+            }
           }
         }
         previousActiveTabId = data.tabId;
@@ -2502,6 +2676,7 @@ export const initNavigation = () => {
             url,
             isLoading,
             addressBarSnapshot: tabNavState.addressBarSnapshot,
+            addressBarPendingInput: tabNavState.addressBarPendingInput,
             isViewingSource,
             bzzRoutePrefix: state.bzzRoutePrefix,
             homeUrlNormalized,
@@ -2516,6 +2691,13 @@ export const initNavigation = () => {
             // Keep existing address bar value
           } else {
             addressInput.value = display;
+          }
+          // A tab left mid-edit comes back mid-edit: put the caret/selection
+          // back where it was and return focus to the bar, the way Chrome
+          // restores per-tab omnibox state. #314.
+          if (isAddressBarEditInProgress(tabNavState)) {
+            addressInput.focus();
+            applyInputSelection(addressInput, tabNavState.addressBarPendingSelection);
           }
           // Update bookmarks bar visibility based on current page
           updateBookmarkBarState(url);
