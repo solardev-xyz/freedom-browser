@@ -177,10 +177,58 @@ test('Settings > Site Permissions lists remembered decisions and revoke-all clea
     .toContain(`bzz://${SAMPLE_BZZ_HASH}`);
   expect(await readView()).toContain('Notifications');
 
-  // Since #272 the section-level action sits next to the `<h2>`, outside
-  // the rendered list.
+  // #284: one rule for which removals are destructive. "Remove site" discards
+  // every decision for an origin and cannot be undone here, so it is red;
+  // the per-permission "Remove" beneath it is one prompt away from coming
+  // back, so it is plain. Before this they were the other way round from
+  // "Remove all", inside the same card.
+  expect(
+    await evalInWebview(
+      window,
+      `[...document.querySelectorAll('#permissions-view button[data-action]')]
+        .map((btn) => ({ action: btn.dataset.action, cls: btn.className, label: btn.textContent.trim() }))`
+    )
+  ).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ action: 'revoke-origin', cls: 'btn danger', label: 'Remove site' }),
+      expect.objectContaining({ action: 'revoke', cls: 'btn', label: 'Remove' }),
+    ])
+  );
+
+  // #272: the section-level action sits next to the `<h2>`, outside the
+  // rendered list — so it is one button across every render, and it is the
+  // heading's own row that centres it.
+  expect(
+    await evalInWebview(
+      window,
+      `(() => {
+        const button = document.getElementById('permissions-revoke-all');
+        const header = button.closest('.section-header');
+        const title = header?.querySelector('h2.section-title');
+        return {
+          insideView: !!document.getElementById('permissions-view').contains(button),
+          beside: header?.contains(title) === true,
+          disabled: button.disabled,
+          centred:
+            Math.abs(
+              (button.getBoundingClientRect().top + button.getBoundingClientRect().bottom) / 2 -
+                (title.getBoundingClientRect().top + title.getBoundingClientRect().bottom) / 2
+            ) < 2,
+        };
+      })()`
+    )
+  ).toEqual({ insideView: false, beside: true, disabled: false, centred: true });
+
   await evalInWebview(window, "document.getElementById('permissions-revoke-all').click(); true");
   await expect.poll(readView, { timeout: 5_000 }).toContain('No saved permissions');
+  // The empty state is the only copy left, and the action it labels is off.
+  const emptyState = (await readView()).replace(/\s+/g, ' ').trim();
+  expect(emptyState).toBe(
+    'No saved permissions Sites you allow or block with “Remember for this site” appear here.'
+  );
+  await expect
+    .poll(() => evalInWebview(window, "document.getElementById('permissions-revoke-all').disabled"))
+    .toBe(true);
 });
 
 test('Escape dismisses the prompt as deny-once and the site can ask again', async ({

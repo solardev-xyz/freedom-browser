@@ -64,6 +64,56 @@ describe('shortcut registry', () => {
     expect(getDefaultAccelerator('history.showAll', 'linux')).toBe('Ctrl+H');
   });
 
+  // #277: Settings > Shortcuts was the one section on the page whose row
+  // labels were Title Case, because they are the registry's `description` —
+  // the same strings the application menu shows, where Title Case is the
+  // macOS convention. `settingsLabel` is the sentence-case label for the
+  // Settings row; `description` stays exactly as it was, so the menu,
+  // docs/features.md and the docs↔registry guard below are unaffected.
+  describe('settings labels are sentence case (#277)', () => {
+    // Title Case → sentence case: first word untouched, the rest lowercased.
+    const sentenceCased = (description) =>
+      description
+        .split(' ')
+        .map((word, index) => (index === 0 ? word : word.toLowerCase()))
+        .join(' ');
+
+    // Entries whose Settings label legitimately keeps an inner capital (a
+    // product or protocol name). Empty today — every label is plain prose —
+    // and an entry only belongs here with a proper noun to point at.
+    const PROPER_NOUNS = new Set();
+
+    const settingsLabelOf = (entry) => entry.settingsLabel || entry.description;
+
+    test('every row label is the sentence-case form of its menu label', () => {
+      const drift = SHORTCUTS.filter(
+        (entry) =>
+          !PROPER_NOUNS.has(entry.id) && settingsLabelOf(entry) !== sentenceCased(entry.description)
+      ).map((entry) => ({ id: entry.id, label: settingsLabelOf(entry) }));
+      expect(drift).toEqual([]);
+    });
+
+    test('a label only differs from the menu string by case', () => {
+      for (const entry of SHORTCUTS) {
+        expect(settingsLabelOf(entry).toLowerCase()).toBe(entry.description.toLowerCase());
+      }
+    });
+
+    test('an entry already in sentence case needs no second string', () => {
+      // `Downloads` is one word, so the fallback is the whole mechanism for it.
+      const bare = SHORTCUTS.filter((entry) => !entry.settingsLabel);
+      expect(bare.map((entry) => entry.id)).toEqual(['downloads.show']);
+      expect(settingsLabelOf(getShortcutById('downloads.show'))).toBe('Downloads');
+    });
+
+    test('the menu strings are untouched — they are what the docs guard tracks', () => {
+      expect(getShortcutById('tab.new').description).toBe('New Tab');
+      expect(getShortcutById('tab.new').settingsLabel).toBe('New tab');
+      expect(getShortcutById('page.zoomReset').description).toBe('Actual Size');
+      expect(getShortcutById('page.zoomReset').settingsLabel).toBe('Actual size');
+    });
+  });
+
   test('aliases filter by platform', () => {
     expect(getAliasAccelerators('tab.close', 'win32')).toEqual(['Ctrl+F4']);
     expect(getAliasAccelerators('tab.close', 'linux')).toEqual(['Ctrl+F4']);

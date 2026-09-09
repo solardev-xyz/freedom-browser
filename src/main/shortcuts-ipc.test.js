@@ -83,6 +83,27 @@ describe('shortcuts IPC', () => {
     expect(byId['tab.new'].reverted).toBeNull();
   });
 
+  // #277: the settings row label is sentence case while the menu label — the
+  // same entry's `description` — stays Title Case, so the state carries both.
+  test('get-state carries the sentence-case settings label beside the menu one', async () => {
+    ctx = loadShortcutsIpc();
+    const state = await ctx.ipcMain.invoke(IPC.SHORTCUTS_GET_STATE);
+    const byId = Object.fromEntries(state.entries.map((entry) => [entry.id, entry]));
+
+    expect(byId['tab.new']).toMatchObject({
+      description: 'New Tab',
+      settingsLabel: 'New tab',
+    });
+    expect(byId['devtools.toggleApp']).toMatchObject({
+      description: 'App Developer Tools',
+      settingsLabel: 'App developer tools',
+    });
+    // An entry that needs no second string falls back to its menu label
+    // rather than shipping an undefined one — the page renders this field.
+    expect(byId['downloads.show'].settingsLabel).toBe('Downloads');
+    expect(state.entries.every((entry) => typeof entry.settingsLabel === 'string')).toBe(true);
+  });
+
   test('get-state surfaces remaps the store reverted as conflicting', async () => {
     // The store drops a stored override whose chord a newer default has
     // taken (e.g. a pre-zoom Ctrl+0 remap) — the settings page has to say so
