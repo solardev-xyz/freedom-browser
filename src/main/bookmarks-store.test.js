@@ -132,4 +132,91 @@ describe('bookmarks-store', () => {
       JSON.parse(fs.readFileSync(getUserBookmarksPath(userDataDir), 'utf-8'))
     ).toEqual([{ label: 'Two', target: 'https://two.example' }]);
   });
+
+  // #307: the bar reorders by drag, and the store is the order it renders.
+  describe('reorder', () => {
+    const seed = (userDataDir, bookmarks) =>
+      fs.writeFileSync(
+        getUserBookmarksPath(userDataDir),
+        JSON.stringify(bookmarks, null, 2),
+        'utf-8'
+      );
+
+    const initialBookmarks = [
+      { label: 'One', target: 'https://one.example' },
+      { label: 'Two', target: 'https://two.example' },
+      { label: 'Three', target: 'https://three.example' },
+    ];
+
+    test('writes the bar order the renderer sends', async () => {
+      const ipcMain = createIpcMainMock();
+      seed(userDataDir, initialBookmarks);
+
+      const { mod } = loadBookmarksStore({ userDataDir, ipcMain });
+      mod.registerBookmarksIpc();
+
+      await expect(
+        ipcMain.invoke(IPC.BOOKMARKS_REORDER, [
+          'https://three.example',
+          'https://one.example',
+          'https://two.example',
+        ])
+      ).resolves.toBe(true);
+
+      expect(
+        JSON.parse(fs.readFileSync(getUserBookmarksPath(userDataDir), 'utf-8')).map(
+          (bookmark) => bookmark.target
+        )
+      ).toEqual(['https://three.example', 'https://one.example', 'https://two.example']);
+      // The entries themselves are untouched — only their order moved.
+      await expect(ipcMain.invoke(IPC.BOOKMARKS_GET)).resolves.toEqual([
+        { label: 'Three', target: 'https://three.example' },
+        { label: 'One', target: 'https://one.example' },
+        { label: 'Two', target: 'https://two.example' },
+      ]);
+    });
+
+    test('keeps an entry the renderer never saw rather than dropping it', async () => {
+      const ipcMain = createIpcMainMock();
+      seed(userDataDir, initialBookmarks);
+
+      const { mod } = loadBookmarksStore({ userDataDir, ipcMain });
+      mod.registerBookmarksIpc();
+
+      // The renderer's list predates "Three" (added from another window).
+      await expect(
+        ipcMain.invoke(IPC.BOOKMARKS_REORDER, ['https://two.example', 'https://one.example'])
+      ).resolves.toBe(true);
+
+      expect(
+        JSON.parse(fs.readFileSync(getUserBookmarksPath(userDataDir), 'utf-8')).map(
+          (bookmark) => bookmark.target
+        )
+      ).toEqual(['https://two.example', 'https://one.example', 'https://three.example']);
+    });
+
+    test('refuses a payload that is not a list of known targets', async () => {
+      const ipcMain = createIpcMainMock();
+      seed(userDataDir, initialBookmarks);
+
+      const { mod } = loadBookmarksStore({ userDataDir, ipcMain });
+      mod.registerBookmarksIpc();
+
+      await expect(ipcMain.invoke(IPC.BOOKMARKS_REORDER, 'not-a-list')).resolves.toBe(false);
+      // A duplicate cannot be used to push a bookmark out of the list.
+      await expect(
+        ipcMain.invoke(IPC.BOOKMARKS_REORDER, [
+          'https://one.example',
+          'https://one.example',
+          'https://two.example',
+        ])
+      ).resolves.toBe(true);
+
+      expect(
+        JSON.parse(fs.readFileSync(getUserBookmarksPath(userDataDir), 'utf-8')).map(
+          (bookmark) => bookmark.target
+        )
+      ).toEqual(['https://one.example', 'https://two.example', 'https://three.example']);
+    });
+  });
 });

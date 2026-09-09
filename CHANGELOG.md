@@ -11,7 +11,7 @@ All notable changes to Freedom will be documented in this file.
   - Blocked ads leave no empty gaps in the page
   - Cookie-banner and annoyance filtering, off by default
   - Filter lists refresh over Swarm without an app update
-- Find in page (`Cmd/Ctrl+F`, or Edit > Find in Page): overlay bar with a live match counter, `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
+- Find in page (`Cmd/Ctrl+F`, or Edit > Find in Page): per-tab overlay bar with a live match counter, `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
 - Download manager covering every download source, including `bzz://` and `ipfs://` content:
   - Shelf card with live progress and cancel; Open / Show in Folder on completion
   - `freedom://downloads` page (`Cmd/Ctrl+Shift+J`) with search, pause/resume, and Clear All
@@ -78,6 +78,18 @@ All notable changes to Freedom will be documented in this file.
 - Internal pages follow the theme picked under Settings > Appearance instead of the operating system's
 - Name-resolution warning pages show the typed name in the address bar instead of an on-disk file path, and stay out of history
 - A failed page load titles itself instead of leaving the previous page's title on the tab and in history
+- A half-typed address survives the page updating around it, and a switch away from the tab and back
+- Escape in the address bar goes back to the page's own URL instead of leaving a half-typed fragment
+- Arrow keys through the address-bar suggestions stop at the typed text instead of wrapping past it
+- Ctrl/Cmd-click and middle-click open a link in a background tab instead of switching to it
+- Shift+click opens a link in a new window
+- Switching tabs puts the keyboard in the page instead of leaving it on the tab strip
+- The tab strip scrolls once the tabs stop fitting instead of clipping the ones past the edge
+- The tab context menu closes when the foreground tab changes instead of staying open over another tab
+- The Profiles flyout closes when another row of the browser menu is hovered instead of covering it
+- Escape closes the browser menu and the Nodes menu, like every other menu in the chrome
+- Bookmarks-bar items open in a background tab on Ctrl/Cmd-click or middle-click, and can be reordered by dragging
+- The page context menu closes on navigation instead of acting on the previous page's link
 - The Publish and Payments pages and the sidebar's permission screens are readable on the light theme
 
 ### Security
@@ -88,7 +100,7 @@ All notable changes to Freedom will be documented in this file.
 - Updated bundled nodes:
   - [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44
 - Updated runtime dependencies:
-  - Electron 43.0.0 to 43.6.0 (Chromium 150.0.7871.46 to 150.0.7871.250, Node 24.17.0 to 24.20.0)
+  - Electron 43.0.0 to 44.3.0 (Chromium 150.0.7871.46 to 152.0.7977.78, Node 24.17.0 to 24.20.0)
   - `@corpus-core/colibri-stateless` 1.1.30 to 2.0.6 (thanks @simon-jentzsch!)
   - `@ethersphere/bee-js` 12.2.2 to 13.0.0
   - `better-sqlite3` 12.11.1 to 13.0.3
@@ -96,6 +108,8 @@ All notable changes to Freedom will be documented in this file.
   - `@x402/core` 2.17.0 to 2.25.0
   - `@x402/evm` 2.17.0 to 2.25.0
   - `@scure/bip39` 2.2.0 to 2.4.0
+  - `@openlv/core` 0.0.2 and `@openlv/session` 0.0.3 to 0.2.0
+  - `@ledgerhq/hw-app-eth` 7.8.8 to 7.8.17
 
 ## [0.8.0] - 2026-07-02
 

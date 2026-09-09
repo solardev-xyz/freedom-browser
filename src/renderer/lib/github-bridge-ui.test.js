@@ -327,10 +327,19 @@ describe('github-bridge-ui', () => {
     await flushMicrotasks();
     expect(ctx.electronAPI.copyText).toHaveBeenCalledWith('rad:zexisting');
 
-    ctx.documentHandlers.keydown({
-      key: 'Escape',
-    });
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    ctx.documentHandlers.keydown(escape);
     expect(ctx.elements.panel.classList.contains('hidden')).toBe(true);
+    // Closing the panel consumes the press — navigation.js's window-level
+    // Escape (stop loading) stands down on `defaultPrevented`, so dismissing
+    // this panel over a loading page doesn't also cancel the load (#306).
+    expect(escape.preventDefault).toHaveBeenCalled();
+
+    // With the panel already closed the press is left alone for the surfaces
+    // behind it.
+    const escapeAgain = { key: 'Escape', preventDefault: jest.fn() };
+    ctx.documentHandlers.keydown(escapeAgain);
+    expect(escapeAgain.preventDefault).not.toHaveBeenCalled();
 
     ctx.elements.bridgeBtn.classList.remove('hidden');
     ctx.elements.bridgeBtn.dispatch('click', {
@@ -341,5 +350,34 @@ describe('github-bridge-ui', () => {
       target: createElement('div'),
     });
     expect(ctx.elements.panel.classList.contains('hidden')).toBe(true);
+  });
+
+  // #306, dialog sibling: a modal <dialog> raised over the panel is the top
+  // layer, so the press is its own close request — and consuming it here would
+  // cancel that close outright, leaving the dialog open.
+  test('a modal dialog above the panel owns the Escape', async () => {
+    const ctx = await loadGithubBridgeModule();
+
+    ctx.mod.initGithubBridgeUi();
+    await ctx.mod.updateGithubBridgeIcon();
+
+    ctx.elements.bridgeBtn.dispatch('click', { stopPropagation: jest.fn() });
+    await flushMicrotasks();
+    expect(ctx.elements.panel.classList.contains('hidden')).toBe(false);
+
+    const dialog = createElement('dialog');
+    dialog.setAttribute('open', '');
+    global.document.body.appendChild(dialog);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    ctx.documentHandlers.keydown(escape);
+    expect(ctx.elements.panel.classList.contains('hidden')).toBe(false);
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    dialog.remove();
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    ctx.documentHandlers.keydown(next);
+    expect(ctx.elements.panel.classList.contains('hidden')).toBe(true);
+    expect(next.preventDefault).toHaveBeenCalled();
   });
 });

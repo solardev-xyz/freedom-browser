@@ -89,7 +89,15 @@ const createContextMenu = () => {
   };
 };
 
-const loadModule = async ({ input, contextMenu, electronAPI } = {}) => {
+const loadModule = async ({
+  input,
+  contextMenu,
+  electronAPI,
+  // Extra chrome inputs by id (the find bar, the bookmark dialog fields), so a
+  // test can drive the same menu from a second registered input.
+  extraInputs = {},
+  initOptions,
+} = {}) => {
   jest.resetModules();
 
   const addressInput = input ?? createInput();
@@ -100,6 +108,7 @@ const loadModule = async ({ input, contextMenu, electronAPI } = {}) => {
     getElementById: jest.fn((id) => {
       if (id === 'address-input') return addressInput;
       if (id === 'chrome-input-context-menu') return menu;
+      if (extraInputs[id]) return extraInputs[id];
       return null;
     }),
     addEventListener: jest.fn((event, handler) => {
@@ -142,7 +151,7 @@ const loadModule = async ({ input, contextMenu, electronAPI } = {}) => {
   }));
 
   const mod = await import('./chrome-input-context-menu.js');
-  mod.initChromeInputContextMenu();
+  mod.initChromeInputContextMenu(initOptions);
   return { mod, input: addressInput, menu, documentHandlers, windowHandlers };
 };
 
@@ -448,13 +457,87 @@ describe('chrome-input-context-menu', () => {
     expect(input.dispatchEvent).not.toHaveBeenCalled();
   });
 
-  test('Escape hides the menu', async () => {
+  test('Escape hides the menu, and only the menu', async () => {
     const { input, menu, documentHandlers } = await loadModule();
     openContextMenu(input);
     expect(menu.classList.contains('hidden')).toBe(false);
 
-    documentHandlers.keydown({ key: 'Escape' });
+    const event = { key: 'Escape', preventDefault: jest.fn(), stopPropagation: jest.fn() };
+    documentHandlers.keydown(event);
     expect(menu.classList.contains('hidden')).toBe(true);
+    // The menu is the innermost surface, so it consumes the key: the find bar
+    // underneath must not close too, and a modal <dialog> hosting the input
+    // must not cancel (#316).
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(event.stopPropagation).toHaveBeenCalled();
+  });
+
+  test('Escape is left alone when no menu is open', async () => {
+    const { documentHandlers } = await loadModule();
+
+    const event = { key: 'Escape', preventDefault: jest.fn(), stopPropagation: jest.fn() };
+    documentHandlers.keydown(event);
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  // #316: every editable chrome text field gets this menu, not just the
+  // address bar — the find bar and the bookmark-edit dialog had none at all.
+  describe('registered inputs', () => {
+    test('the default list covers every chrome text input', async () => {
+      const { mod } = await loadModule();
+      expect(mod.CHROME_INPUT_IDS).toEqual([
+        'address-input',
+        'find-bar-input',
+        'bookmark-label',
+        'bookmark-target',
+      ]);
+    });
+
+    test('the find-bar input opens the same menu as the address bar', async () => {
+      const findInput = createInput('needle');
+      const { menu } = await loadModule({ extraInputs: { 'find-bar-input': findInput } });
+
+      openContextMenu(findInput);
+
+      expect(menu.classList.contains('hidden')).toBe(false);
+      expect(menu.items.copy.disabled).toBe(false);
+    });
+
+    test('an explicit inputs list wins over the default', async () => {
+      const findInput = createInput('needle');
+      const { input, menu } = await loadModule({
+        extraInputs: { 'find-bar-input': findInput },
+        initOptions: { inputs: [findInput] },
+      });
+
+      expect(input.handlers.contextmenu).toBeUndefined();
+      openContextMenu(findInput);
+      expect(menu.classList.contains('hidden')).toBe(false);
+    });
+
+    test('a modal dialog borrows the menu so it is not left inert behind it', async () => {
+      const dialog = { appendChild: jest.fn() };
+      const home = { appendChild: jest.fn() };
+      const menu = createContextMenu();
+      menu.parentElement = home;
+      const labelInput = createInput('My bookmark');
+      labelInput.closest = jest.fn((selector) => (selector === 'dialog[open]' ? dialog : null));
+
+      const { mod } = await loadModule({
+        contextMenu: menu,
+        extraInputs: { 'bookmark-label': labelInput },
+      });
+
+      openContextMenu(labelInput);
+      expect(dialog.appendChild).toHaveBeenCalledWith(menu);
+
+      // ...and handed back when it closes, so the toolbar inputs keep it.
+      menu.parentElement = dialog;
+      mod.hideChromeInputContextMenu();
+      expect(home.appendChild).toHaveBeenCalledWith(menu);
+    });
   });
 
   test('Window blur hides the menu', async () => {

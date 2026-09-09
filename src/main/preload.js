@@ -67,6 +67,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateBookmark: (originalTarget, bookmark) =>
     ipcRenderer.invoke('bookmarks:update', { originalTarget, bookmark }),
   removeBookmark: (target) => ipcRenderer.invoke('bookmarks:remove', target),
+  // New bar order after a drag, as the full list of targets (#307).
+  reorderBookmarks: (targets) => ipcRenderer.invoke('bookmarks:reorder', targets),
   resolveEns: (name) => ipcRenderer.invoke('ens:resolve', { name }),
   resolveEnsAddress: (name) => ipcRenderer.invoke('ens:resolve-address', { name }),
   resolveEnsReverse: (address) => ipcRenderer.invoke('ens:resolve-reverse', { address }),
@@ -183,7 +185,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('tab:close', handler);
   },
   onNewTabWithUrl: (callback) => {
-    const handler = (_event, url, targetName) => callback(url, targetName);
+    // `options` carries the link disposition Chromium reported
+    // (`{ background, newWindow }`); senders that don't set one send nothing
+    // and get the default foreground tab. See #303.
+    const handler = (_event, url, targetName, options) => callback(url, targetName, options || {});
     ipcRenderer.on('tab:new-with-url', handler);
     return () => ipcRenderer.removeListener('tab:new-with-url', handler);
   },
