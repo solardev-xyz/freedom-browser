@@ -39,7 +39,7 @@ npm run myotis:download
 npm start
 ```
 
-Swarm and IPFS start automatically. Radicle and Myotis are opt-in under **Settings → Automatic Startup**. Run `npm run radicle:download` before enabling Radicle under **Settings → Nodes**; on macOS and Linux, run `npm run tor:download` before enabling Tor under **Settings → Experimental**. For prerequisites, platform notes, tests, debugging, and local builds, read the [development guide](docs/development.md).
+Swarm and IPFS start automatically. Radicle and Myotis are opt-in under **Settings → Startup**. Run `npm run radicle:download` before enabling Radicle under **Settings → Nodes**; on macOS and Linux, run `npm run tor:download` before enabling Tor under **Settings → Experimental**. For prerequisites, platform notes, tests, debugging, and local builds, read the [development guide](docs/development.md).
 
 ## Architecture
 

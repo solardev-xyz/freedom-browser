@@ -29,7 +29,7 @@ npm run myotis:download
 npm start
 ```
 
-Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Automatic Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. On macOS and Linux, install optional Tor support with `npm run tor:download`, then enable it under **Settings → Experimental**. Bundled Tor is unavailable on Windows.
+Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. On macOS and Linux, install optional Tor support with `npm run tor:download`, then enable it under **Settings → Experimental**. Bundled Tor is unavailable on Windows.
 
 ## Repository layout
 
