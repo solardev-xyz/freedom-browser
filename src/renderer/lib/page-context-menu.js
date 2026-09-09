@@ -5,6 +5,11 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { deriveDisplayValue, applyEnsNamePreservation } from './url-utils.js';
 import { isTrustInterstitialPageUrl } from './page-urls.js';
+import {
+  buildSearchUrl,
+  formatSearchMenuSelection,
+  getSearchProviderLabel,
+} from './search-utils.js';
 
 const electronAPI = window.electronAPI;
 
@@ -56,6 +61,26 @@ const toDwebUrl = (url) => {
   return display || url;
 };
 
+// Write `Search <Engine> for "<selection>"` onto the selection group's search
+// item, or hide it when there is nothing to search for. The engine name comes
+// from the same provider the address bar searches with (Settings > Search,
+// built-in or custom), so the two can never name different engines. #330.
+const updateSearchSelectionItem = (context) => {
+  const searchBtn = pageContextMenu?.querySelector('[data-action="search-selection"]');
+  if (!searchBtn) return;
+
+  // A password field's "selection" is the masking bullets (see
+  // webview-preload.js), never worth quoting on a menu or sending to an engine.
+  const selection = context?.isPasswordField
+    ? ''
+    : formatSearchMenuSelection(context?.selectedText);
+  searchBtn.classList.toggle('hidden', !selection);
+  if (!selection) return;
+
+  const engine = getSearchProviderLabel(state.searchProvider, state.customSearchProviders);
+  searchBtn.textContent = `Search ${engine} for "${selection}"`;
+};
+
 // Show context menu for the given context
 export const showPageContextMenu = (x, y, context) => {
   if (!pageContextMenu) return;
@@ -98,6 +123,8 @@ export const showPageContextMenu = (x, y, context) => {
   if (viewSourceBtn) {
     viewSourceBtn.classList.toggle('hidden', isTrustInterstitialPageUrl(context.pageUrl));
   }
+
+  updateSearchSelectionItem(context);
 
   // Update navigation button states
   const backBtn = pageContextMenu.querySelector('[data-action="back"]');
@@ -212,8 +239,12 @@ export const notifyPageContextMenuNavigated = (webview) => {
   hidePageContextMenu({ restoreFocus: false });
 };
 
-// Handle context menu action
-const handleAction = async (action) => {
+// Handle context menu action.
+//
+// `background` carries the Ctrl/Cmd the item was activated with: Chrome opens
+// a context-menu search in the foreground on a plain click and behind the
+// current tab when the click is modified.
+const handleAction = async (action, { background = false } = {}) => {
   // A context that went missing (a window blur nulls it while the menu can
   // still be on screen) means the action is a no-op — but the menu must come
   // down all the same. Returning early used to leave it up with every item
@@ -318,6 +349,33 @@ const handleAction = async (action) => {
       }
       break;
 
+    case 'search-selection': {
+      // The item is hidden over a password field (see showPageContextMenu);
+      // refuse here too, so a stale context or a scripted click can't send the
+      // masked value to a search engine.
+      if (currentContext.isPasswordField) {
+        pushDebug('Refusing to search the selection in a password field');
+        break;
+      }
+      // The full selection is the query — the elision in the label is only
+      // what the menu row shows. buildSearchUrl trims and encodes it, the same
+      // call the address bar makes for typed input that is not a URL. #330.
+      const searchUrl = buildSearchUrl(
+        currentContext.selectedText,
+        state.searchProvider,
+        state.customSearchProviders
+      );
+      if (searchUrl) {
+        pushDebug(`Searching for the selection${background ? ' in a background tab' : ''}`);
+        document.dispatchEvent(
+          new CustomEvent('open-url-new-tab', {
+            detail: { url: searchUrl, background },
+          })
+        );
+      }
+      break;
+    }
+
     case 'open-image-new-tab':
       if (currentContext.imageSrc) {
         // Use original URL for loading (webview can't handle dweb:// protocols directly)
@@ -379,7 +437,7 @@ export const initPageContextMenu = async () => {
 
       const action = item.dataset.action;
       if (action) {
-        handleAction(action);
+        handleAction(action, { background: e.ctrlKey === true || e.metaKey === true });
       }
     });
   }

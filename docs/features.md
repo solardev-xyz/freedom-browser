@@ -229,7 +229,7 @@ Right-click on pages for context-sensitive actions:
 
 - **Page Context**: Back, Forward, Reload (a hard reload — it bypasses the cache, unlike the toolbar Reload button), View Page Source, Inspect
 - **Link Context**: Open Link in New Tab, Open Link in New Window, Copy Link Address
-- **Selection Context**: Copy selected text
+- **Selection Context**: Copy selected text; **Search &lt;Engine&gt; for "&lt;selection&gt;"** — searches the selection with the engine configured under **Settings → Search** (built-in or custom), in a new tab, or behind the current one on a Ctrl/Cmd-click. Offered for selections in editable fields too, and withheld over password fields.
 - **Image Context**: Open Image in New Tab, Save Image As, Copy Image, Copy Image Address
 - **View Page Source**: Opens `view-source:` URL in a new tab
 

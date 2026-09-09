@@ -67,8 +67,26 @@ const resolveCustomProvider = (providerId, customProviders) => {
   const id = providerId.slice(CUSTOM_SEARCH_PROVIDER_PREFIX.length);
   const provider = customProviders.find((candidate) => candidate?.id === id);
   const searchUrlTemplate = normalizeSearchUrlTemplate(provider?.searchUrlTemplate);
-  return searchUrlTemplate ? { searchUrlTemplate } : null;
+  if (!searchUrlTemplate) return null;
+  const label = typeof provider?.name === 'string' ? provider.name.trim() : '';
+  // A stored custom provider always carries a name (settings-store rejects one
+  // without it), but a hand-edited settings.json need not — fall back to the
+  // default engine's label rather than putting an empty name on a menu item.
+  return { label: label || SEARCH_PROVIDERS[DEFAULT_SEARCH_PROVIDER].label, searchUrlTemplate };
 };
+
+// The provider `providerId` actually resolves to. Kept alongside buildSearchUrl
+// so the two can never disagree: whatever engine a search runs against is the
+// engine chrome names for it (the page context menu's `Search <Engine> for …`).
+const resolveProvider = (providerId, customProviders) =>
+  SEARCH_PROVIDERS[providerId] ||
+  resolveCustomProvider(providerId, customProviders) ||
+  SEARCH_PROVIDERS[DEFAULT_SEARCH_PROVIDER];
+
+// Display name of the configured engine — a built-in's label, a custom
+// provider's name, or the default's label for an unknown/stale id.
+export const getSearchProviderLabel = (providerId, customProviders = []) =>
+  resolveProvider(providerId, customProviders).label;
 
 // Returns the provider's results URL for `query`, or null for empty input.
 // Unknown provider ids fall back to the default so a stale persisted setting
@@ -76,9 +94,35 @@ const resolveCustomProvider = (providerId, customProviders) => {
 export const buildSearchUrl = (query, providerId, customProviders = []) => {
   const trimmed = typeof query === 'string' ? query.trim() : '';
   if (!trimmed) return null;
-  const provider =
-    SEARCH_PROVIDERS[providerId] ||
-    resolveCustomProvider(providerId, customProviders) ||
-    SEARCH_PROVIDERS[DEFAULT_SEARCH_PROVIDER];
+  const provider = resolveProvider(providerId, customProviders);
   return provider.searchUrlTemplate.replace(SEARCH_TERMS_PLACEHOLDER, encodeURIComponent(trimmed));
+};
+
+// How much of a selection the context-menu item shows before eliding — the
+// budget #330 asks for, wide enough for a phrase without stretching the menu
+// past the toolbar surfaces beside it.
+export const SEARCH_MENU_SELECTION_MAX = 32;
+
+// The quoted part of that item: whitespace collapsed to single spaces (a
+// selection spanning several lines must stay one menu row) and elided with a
+// single-character ellipsis once it runs past the budget. Returns '' for a
+// selection that is empty or only whitespace, which is what suppresses the
+// item entirely.
+export const formatSearchMenuSelection = (selection) => {
+  const collapsed = typeof selection === 'string' ? selection.replace(/\s+/gu, ' ').trim() : '';
+  if (!collapsed) return '';
+  // Count by code point, so a selection of emoji or other astral characters is
+  // never cut through the middle of a surrogate pair.
+  const characters = [...collapsed];
+  if (characters.length <= SEARCH_MENU_SELECTION_MAX) return collapsed;
+
+  let head = characters.slice(0, SEARCH_MENU_SELECTION_MAX).join('');
+  // Elide on a word boundary, unless the budget runs out inside the very first
+  // word (a long hash, a URL) — then cut it hard rather than show an ellipsis
+  // with nothing in front of it.
+  if (characters[SEARCH_MENU_SELECTION_MAX] !== ' ') {
+    const lastSpace = head.lastIndexOf(' ');
+    if (lastSpace > 0) head = head.slice(0, lastSpace);
+  }
+  return `${head.trimEnd()}…`;
 };

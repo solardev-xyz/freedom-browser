@@ -531,7 +531,9 @@ jobs:
   # first asserts Escape hands focus back to the button that opened a menu
   # (#306), the second drives modified/middle clicks and a real HTML5 drag on
   # the bookmarks bar (#307) — dispositions and drag gestures a synthetic DOM
-  # dispatch cannot exercise.
+  # dispatch cannot exercise. `page-context-menu.spec.js` joins them for the
+  # selection search item (#330), whose Ctrl/Cmd-click background disposition
+  # is likewise invisible to a synthetic click.
   e2e-tabs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -555,13 +557,14 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + bookmarks E2E
+      - name: Run tabs + onchain-apps + menus + bookmarks + page-context-menu E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
             test-e2e/onchain-apps.spec.js \
             test-e2e/menus.spec.js \
-            test-e2e/bookmarks.spec.js
+            test-e2e/bookmarks.spec.js \
+            test-e2e/page-context-menu.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

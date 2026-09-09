@@ -94,6 +94,7 @@ const loadPageContextMenuModule = async (options = {}) => {
   const backBtn = createElement();
   const forwardBtn = createElement();
   const viewSourceBtn = createElement();
+  const searchSelectionBtn = createElement();
   const pageContextMenu = createElement(['hidden']);
   const webviewContainer = {
     querySelector: jest.fn(() => activeWebview),
@@ -114,6 +115,7 @@ const loadPageContextMenuModule = async (options = {}) => {
     '[data-action="back"]': backBtn,
     '[data-action="forward"]': forwardBtn,
     '[data-action="view-source"]': viewSourceBtn,
+    '[data-action="search-selection"]': searchSelectionBtn,
   };
   const pushDebug = jest.fn();
   const backdrop = {
@@ -200,6 +202,7 @@ const loadPageContextMenuModule = async (options = {}) => {
     backBtn,
     forwardBtn,
     viewSourceBtn,
+    searchSelectionBtn,
     activeWebview,
     webviewContainer,
     documentHandlers,
@@ -211,7 +214,7 @@ const loadPageContextMenuModule = async (options = {}) => {
   };
 };
 
-const triggerMenuAction = async (pageContextMenu, action, itemOverrides = {}) => {
+const triggerMenuAction = async (pageContextMenu, action, itemOverrides = {}, event = {}) => {
   const item = {
     disabled: false,
     dataset: { action },
@@ -221,7 +224,7 @@ const triggerMenuAction = async (pageContextMenu, action, itemOverrides = {}) =>
     closest: jest.fn(() => item),
   };
 
-  pageContextMenu.handlers.click({ target });
+  pageContextMenu.handlers.click({ target, ...event });
   await Promise.resolve();
 
   return item;
@@ -749,6 +752,142 @@ describe('page-context-menu', () => {
       expect(document.dispatchEvent).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'open-url-new-tab', detail: { url: 'bzz://page-c/' } })
       );
+    });
+  });
+
+  // #330 — Chrome's "Search <Engine> for …" item, directly under Copy.
+  describe('search the selection', () => {
+    test('names the configured engine and elides a long selection', async () => {
+      const { mod, state, searchSelectionBtn } = await loadPageContextMenuModule();
+      await mod.initPageContextMenu();
+
+      // Default provider (nothing configured yet).
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/', selectedText: 'otters' });
+      expect(searchSelectionBtn.textContent).toBe('Search DuckDuckGo for "otters"');
+      expect(searchSelectionBtn.classList.contains('hidden')).toBe(false);
+
+      // A built-in provider chosen in Settings > Search.
+      state.searchProvider = 'google';
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/', selectedText: 'otters' });
+      expect(searchSelectionBtn.textContent).toBe('Search Google for "otters"');
+
+      // A custom engine (#146) is named by the name the user gave it.
+      state.searchProvider = 'custom:mine';
+      state.customSearchProviders = [
+        {
+          id: 'mine',
+          name: 'My Engine',
+          searchUrlTemplate: 'https://search.example/?q={searchTerms}',
+        },
+      ];
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/', selectedText: 'otters' });
+      expect(searchSelectionBtn.textContent).toBe('Search My Engine for "otters"');
+
+      // Long selections are elided, and a multi-line selection stays one row.
+      state.searchProvider = 'duckduckgo';
+      state.customSearchProviders = [];
+      mod.showPageContextMenu(20, 30, {
+        pageUrl: 'https://example.com/',
+        selectedText: 'the quick brown fox\njumps over the lazy dog and keeps going',
+      });
+      expect(searchSelectionBtn.textContent).toBe(
+        'Search DuckDuckGo for "the quick brown fox jumps over…"'
+      );
+    });
+
+    test('is withheld when the selection is empty or only whitespace', async () => {
+      const { mod, searchSelectionBtn } = await loadPageContextMenuModule();
+      await mod.initPageContextMenu();
+
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/', selectedText: 'otters' });
+      expect(searchSelectionBtn.classList.contains('hidden')).toBe(false);
+
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/', selectedText: '   \n ' });
+      expect(searchSelectionBtn.classList.contains('hidden')).toBe(true);
+
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/' });
+      expect(searchSelectionBtn.classList.contains('hidden')).toBe(true);
+    });
+
+    test('opens the provider search URL for the full selection in a new tab', async () => {
+      const { mod, state, pageContextMenu, pushDebug } = await loadPageContextMenuModule();
+      await mod.initPageContextMenu();
+
+      state.searchProvider = 'google';
+      mod.showPageContextMenu(20, 30, {
+        pageUrl: 'https://example.com/',
+        // Longer than the label budget: the query is the whole selection, the
+        // ellipsis is only in the menu row.
+        selectedText: '  freedom browser context menu search selection  ',
+      });
+      global.document.dispatchEvent.mockClear();
+
+      await triggerMenuAction(pageContextMenu, 'search-selection');
+
+      expect(global.document.dispatchEvent).toHaveBeenCalledWith({
+        type: 'open-url-new-tab',
+        detail: {
+          url: 'https://www.google.com/search?q=freedom%20browser%20context%20menu%20search%20selection',
+          background: false,
+        },
+      });
+      expect(pushDebug).toHaveBeenCalledWith('Searching for the selection');
+    });
+
+    test('a Ctrl/Cmd-clicked item opens the search behind the current tab', async () => {
+      const { mod, pageContextMenu } = await loadPageContextMenuModule();
+      await mod.initPageContextMenu();
+
+      for (const modifier of ['ctrlKey', 'metaKey']) {
+        mod.showPageContextMenu(20, 30, {
+          pageUrl: 'https://example.com/',
+          selectedText: 'otters',
+        });
+        global.document.dispatchEvent.mockClear();
+
+        await triggerMenuAction(pageContextMenu, 'search-selection', {}, { [modifier]: true });
+
+        expect(global.document.dispatchEvent).toHaveBeenCalledWith({
+          type: 'open-url-new-tab',
+          detail: { url: 'https://duckduckgo.com/?q=otters', background: true },
+        });
+      }
+    });
+
+    test('is withheld — and refuses — over a password field', async () => {
+      const { mod, pageContextMenu, searchSelectionBtn, pushDebug } =
+        await loadPageContextMenuModule();
+      await mod.initPageContextMenu();
+
+      // Chromium hands us the masking bullets as the "selection" there.
+      mod.showPageContextMenu(20, 30, {
+        pageUrl: 'https://example.com/login',
+        selectedText: '••••••••',
+        isEditable: true,
+        isPasswordField: true,
+      });
+      expect(searchSelectionBtn.classList.contains('hidden')).toBe(true);
+
+      global.document.dispatchEvent.mockClear();
+      await triggerMenuAction(pageContextMenu, 'search-selection');
+
+      expect(global.document.dispatchEvent).not.toHaveBeenCalled();
+      expect(pushDebug).toHaveBeenCalledWith(
+        'Refusing to search the selection in a password field'
+      );
+    });
+
+    test('does nothing when the context carries no selection', async () => {
+      const { mod, pageContextMenu } = await loadPageContextMenuModule();
+      await mod.initPageContextMenu();
+
+      mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/' });
+      global.document.dispatchEvent.mockClear();
+
+      await triggerMenuAction(pageContextMenu, 'search-selection');
+
+      expect(global.document.dispatchEvent).not.toHaveBeenCalled();
+      expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
     });
   });
 

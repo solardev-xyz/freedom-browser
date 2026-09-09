@@ -743,11 +743,14 @@ function initUpdateNotifications() {
   });
 }
 
-// Listen for open-url-new-tab custom event from context menu
+// Listen for open-url-new-tab custom event from context menu.
+// `detail.background` opens the tab behind the current one (a Ctrl/Cmd-clicked
+// "Search <Engine> for …", #330); every other emitter leaves it unset and gets
+// the foreground tab it always got.
 document.addEventListener('open-url-new-tab', (e) => {
   const url = e.detail?.url;
   if (url) {
-    createTab(url);
+    createTab(url, { background: e.detail?.background === true });
   }
 });
 

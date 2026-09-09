@@ -2,8 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import {
   SEARCH_PROVIDERS,
+  SEARCH_MENU_SELECTION_MAX,
   DEFAULT_SEARCH_PROVIDER,
   buildSearchUrl,
+  formatSearchMenuSelection,
+  getSearchProviderLabel,
   normalizeSearchUrlTemplate,
 } from './search-utils.js';
 
@@ -95,5 +98,85 @@ describe('search-utils', () => {
     expect(buildSearchUrl('a&b=c?d#e', 'google')).toBe(
       'https://www.google.com/search?q=a%26b%3Dc%3Fd%23e'
     );
+  });
+
+  // #330 — the page context menu names the engine it is about to search.
+  describe('getSearchProviderLabel', () => {
+    test('names built-in providers, and the default for unknown ids', () => {
+      expect(getSearchProviderLabel('google')).toBe('Google');
+      expect(getSearchProviderLabel('brave')).toBe('Brave Search');
+      expect(getSearchProviderLabel('not-a-provider')).toBe('DuckDuckGo');
+      expect(getSearchProviderLabel(null)).toBe('DuckDuckGo');
+      expect(getSearchProviderLabel(undefined)).toBe('DuckDuckGo');
+    });
+
+    test('names a custom provider by the name the user gave it', () => {
+      const customProviders = [
+        {
+          id: 'private-search',
+          name: 'Private Search',
+          searchUrlTemplate: 'https://search.example/results?q={searchTerms}',
+        },
+      ];
+      expect(getSearchProviderLabel('custom:private-search', customProviders)).toBe(
+        'Private Search'
+      );
+      // A label always agrees with the URL the same id builds — a custom entry
+      // that fails validation falls back on both counts, never one of the two.
+      expect(getSearchProviderLabel('custom:missing', customProviders)).toBe('DuckDuckGo');
+      expect(buildSearchUrl('cats', 'custom:missing', customProviders)).toBe(
+        'https://duckduckgo.com/?q=cats'
+      );
+      expect(
+        getSearchProviderLabel('custom:nameless', [
+          { id: 'nameless', searchUrlTemplate: 'https://search.example/?q={searchTerms}' },
+        ])
+      ).toBe('DuckDuckGo');
+    });
+  });
+
+  describe('formatSearchMenuSelection', () => {
+    test('returns the selection unchanged when it fits', () => {
+      expect(formatSearchMenuSelection('freedom browser')).toBe('freedom browser');
+      expect(formatSearchMenuSelection('  padded  ')).toBe('padded');
+      // Exactly the budget, so still no ellipsis.
+      expect(formatSearchMenuSelection('a'.repeat(SEARCH_MENU_SELECTION_MAX))).toBe(
+        'a'.repeat(SEARCH_MENU_SELECTION_MAX)
+      );
+    });
+
+    test('collapses whitespace so a multi-line selection stays one row', () => {
+      expect(formatSearchMenuSelection('two\nlines\there')).toBe('two lines here');
+    });
+
+    test('elides past the budget, on a word boundary where there is one', () => {
+      expect(formatSearchMenuSelection('the quick brown fox jumps over the lazy dog')).toBe(
+        'the quick brown fox jumps over…'
+      );
+      // A single unbroken token (a hash, a URL) is cut hard rather than
+      // collapsing to just an ellipsis.
+      expect(formatSearchMenuSelection('x'.repeat(80))).toBe(
+        `${'x'.repeat(SEARCH_MENU_SELECTION_MAX)}…`
+      );
+      // A break exactly at the budget keeps the whole last word.
+      expect(formatSearchMenuSelection('123456789 123456789 1234567890 tail')).toBe(
+        '123456789 123456789 1234567890…'
+      );
+    });
+
+    test('never cuts through a surrogate pair', () => {
+      const elided = formatSearchMenuSelection('🦦'.repeat(40));
+      expect([...elided]).toHaveLength(SEARCH_MENU_SELECTION_MAX + 1);
+      expect(elided.endsWith('…')).toBe(true);
+      expect(elided).not.toContain('�');
+      expect([...elided].every((ch) => ch === '🦦' || ch === '…')).toBe(true);
+    });
+
+    test('returns an empty string for nothing worth searching for', () => {
+      expect(formatSearchMenuSelection('')).toBe('');
+      expect(formatSearchMenuSelection('   \n\t ')).toBe('');
+      expect(formatSearchMenuSelection(null)).toBe('');
+      expect(formatSearchMenuSelection(undefined)).toBe('');
+    });
   });
 });

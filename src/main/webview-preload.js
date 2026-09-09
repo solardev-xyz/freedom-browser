@@ -689,6 +689,7 @@ window.addEventListener(
       imageSrc: null,
       imageAlt: null,
       isEditable: false,
+      isPasswordField: false,
       mediaType: null,
     };
 
@@ -741,6 +742,15 @@ window.addEventListener(
         element.isContentEditable
       ) {
         context.isEditable = true;
+        // Chromium reports a selection inside a password field as the masking
+        // bullets, not the password (probed in the shipping app on Electron
+        // 44, 2026-09), so `selectedText` above is already `••••••`. Mark the
+        // field so chrome can withhold actions that would publish that string
+        // — "Search <Engine> for "•••••"" is not an offer Chrome makes and not
+        // a query worth sending to a search engine. #330.
+        if (element.tagName === 'INPUT' && String(element.type).toLowerCase() === 'password') {
+          context.isPasswordField = true;
+        }
       }
 
       element = element.parentElement;

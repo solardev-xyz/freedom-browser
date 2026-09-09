@@ -469,8 +469,63 @@ describe('webview-preload', () => {
       imageSrc: 'https://linked.example/cover.png',
       imageAlt: 'Cover image',
       isEditable: true,
+      isPasswordField: false,
       mediaType: 'image',
     });
+  });
+
+  // #330 — Chromium reports a password field's selection as the masking
+  // bullets (probed in the shipping app), so the context flags the field and
+  // chrome withholds the "Search <Engine> for …" item over it.
+  test('flags a selection made inside a password field', async () => {
+    for (const [type, isPasswordField] of [
+      ['password', true],
+      ['text', false],
+      // A missing `type` is a text field.
+      [undefined, false],
+    ]) {
+      const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        selectionText: '••••••',
+        location: { href: 'https://example.com/form', protocol: 'https:', pathname: '/form' },
+      });
+
+      windowCaptureHandlers.contextmenu({
+        clientX: 4,
+        clientY: 5,
+        target: { tagName: 'INPUT', type, parentElement: { tagName: 'BODY' } },
+        defaultPrevented: false,
+      });
+      await flushTimers();
+
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+        'context-menu',
+        expect.objectContaining({ isEditable: true, isPasswordField })
+      );
+    }
+  });
+
+  test('forwards a selection made inside an ordinary text field', async () => {
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: 'typed query',
+      location: { href: 'https://example.com/form', protocol: 'https:', pathname: '/form' },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'TEXTAREA', parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({
+        selectedText: 'typed query',
+        isEditable: true,
+        isPasswordField: false,
+      })
+    );
   });
 
   test('skips the native context menu when the page calls preventDefault', async () => {
@@ -1045,9 +1100,7 @@ describe('webview-preload private windows', () => {
 
     // No <script> injection is even attempted (createElement is absent on
     // the doc mock and would have logged an injection failure).
-    expect(document.addEventListener.mock.calls.map(([e]) => e)).not.toContain(
-      'DOMContentLoaded'
-    );
+    expect(document.addEventListener.mock.calls.map(([e]) => e)).not.toContain('DOMContentLoaded');
 
     expect(consoleLogSpy).toHaveBeenCalledWith(
       '[webview-preload] Loaded (freedomAPI + context menu — private window, providers disabled)'
