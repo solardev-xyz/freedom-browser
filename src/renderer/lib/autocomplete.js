@@ -4,6 +4,8 @@ import { getOpenTabs, switchTab, hideTabContextMenu } from './tabs.js';
 import { closeMenus } from './menus.js';
 import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 import {
   generateSuggestions as generateAutocompleteSuggestions,
   getPlaceholderLetter,
@@ -193,6 +195,11 @@ const show = () => {
   hideBookmarkContextMenu();
   showMenuBackdrop();
   dropdown.classList.remove('hidden');
+  // The list has its own 360 px cap, but on a short window even that reaches
+  // past the bottom edge: bound it to the viewport like every other chrome
+  // popover (#324).
+  dropdown.scrollTop = 0;
+  boundPopoverToViewport(dropdown);
   isOpen = true;
 };
 
@@ -479,7 +486,9 @@ export const initAutocomplete = () => {
   // id-less, so that lookup was always null and the listeners never existed.
   // `#menu-backdrop` covers the window while the dropdown is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
-  window.addEventListener('blur', hide);
+  // Window deactivation only: a `<webview>` guest taking the keyboard raises
+  // the same event while the window is still active (#328).
+  onWindowDeactivated(hide);
 
   // Load initial cache
   refreshCache();
