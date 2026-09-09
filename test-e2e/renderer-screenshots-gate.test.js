@@ -64,6 +64,19 @@ const everyWorkflowStep = () =>
     .map((name) => workflowSteps(path.join('.github/workflows', name)))
     .join('\n');
 
+// Every spelling of "rewrite the baselines instead of comparing against them".
+// The long-form argument and the two npm/node entry points are plain
+// substrings; the short alias is not, because a bare `-u` is a legitimate token
+// in a shell step (`set -u`, `sort -u`, `curl -u`) — so it is banned only where
+// it is actually an argument to the screenshot run:
+//   npm run test:e2e:screenshots -- -u
+//   npx playwright test --project=harness -u
+// `(?:[^\n]|\\\n)*?` walks the rest of that command, following a backslash line
+// continuation inside a block scalar; `[ \t]-u(?![\w-])` requires `-u` to be
+// its own argument, so `--update-source-method` or a `-user` flag is not it.
+const ADOPTS_BASELINES =
+  /test:e2e:screenshots:update|--update-snapshots|apply-screenshot-baselines|(?:test:e2e:screenshots|playwright[^\n]*?\btest\b)(?:[^\n]|\\\n)*?[ \t]-u(?![\w-])/;
+
 describe('the invocations that are meant to enable it', () => {
   const scripts = JSON.parse(read('package.json')).scripts;
 
@@ -92,10 +105,45 @@ describe('the invocations that are meant to enable it', () => {
     // then `xvfb-run -a npm run test:e2e:screenshots:update`), which a
     // `/run:.*update/` pattern never reaches, and the compare-step assertion
     // above stays satisfied by the untouched step. `apply-screenshot-baselines`
-    // is the same sidestep by another route.
-    expect(everyWorkflowStep()).not.toMatch(
-      /test:e2e:screenshots:update|--update-snapshots|apply-screenshot-baselines/
-    );
+    // is the same sidestep by another route, and so is Playwright's short `-u`
+    // alias for `--update-snapshots` — see `ADOPTS_BASELINES`.
+    expect(everyWorkflowStep()).not.toMatch(ADOPTS_BASELINES);
+  });
+
+  // The assertion above only ever proves a *negative* about today's workflows:
+  // it stays green whether the pattern is right or empty. These pin what it
+  // actually recognises, so the evasions each round has closed cannot quietly
+  // reopen when the pattern is next edited.
+  it.each([
+    ['the update npm script', '      - run: xvfb-run -a npm run test:e2e:screenshots:update'],
+    ['the long-form argument', '      - run: npx playwright test --update-snapshots'],
+    ['the baseline-adoption script', '      - run: node scripts/apply-screenshot-baselines.js d'],
+    ['the short alias, after the npm script', '      - run: npm run test:e2e:screenshots -- -u'],
+    ['the short alias, on a bare playwright run', '      - run: npx playwright test -u'],
+    ['the short alias, after other arguments', '      - run: npx playwright test --retries=0 -u'],
+    [
+      'the short alias, past a line continuation',
+      '      - run: |\n          npm run test:e2e:screenshots -- \\\n            -u',
+    ],
+  ])('the adopt-step ban recognises %s', (_what, step) => {
+    expect(step).toMatch(ADOPTS_BASELINES);
+  });
+
+  // …and the shell idioms it must not fire on, or a legitimate future step
+  // fails this test with a message about screenshot baselines.
+  it.each([
+    ['a strict-mode bash step', '      - run: |\n          set -u\n          ./scripts/thing.sh'],
+    ['a deduplicating pipe', '      - run: git diff --name-only | sort -u'],
+    [
+      'a longer flag that starts with -u',
+      '      - run: npx playwright test --update-source-method',
+    ],
+    [
+      'a -u belonging to an unrelated later command',
+      '      - run: npx playwright test\n      - run: sort -u out.txt',
+    ],
+  ])('the adopt-step ban does not fire on %s', (_what, step) => {
+    expect(step).not.toMatch(ADOPTS_BASELINES);
   });
 
   it.each([

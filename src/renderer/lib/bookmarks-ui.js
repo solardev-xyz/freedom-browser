@@ -572,6 +572,10 @@ export const initBookmarks = () => {
   // id-less, so that lookup was always null and the listeners never existed.
   // `#menu-backdrop` covers the window while one of these menus is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
+  // A bare `blur`, not `window-blur.js`'s filtered one: these menus have no
+  // keyboard-ownership story yet, so surviving a guest-focus blur would leave
+  // one open with Escape (a `window` listener) unable to reach it. Same shape
+  // as the hamburger otherwise — tracked in #339.
   window.addEventListener('blur', hideAllBookmarkMenus);
 
   // Handle context menu actions

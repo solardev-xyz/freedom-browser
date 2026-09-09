@@ -1948,6 +1948,10 @@ export const initTabs = async () => {
     e.preventDefault();
     hideTabContextMenu();
   });
+  // A bare `blur`, not `window-blur.js`'s filtered one: this menu has no
+  // keyboard-ownership story yet, so surviving a guest-focus blur would leave
+  // it open with Escape (a `window` listener) unable to reach it. Same shape as
+  // the hamburger otherwise — tracked in #339.
   window.addEventListener('blur', hideTabContextMenu);
   // (The `focus`/`mousedown` dismissal that used to hang off
   // `document.getElementById('bzz-webview')` is gone: webviews are created

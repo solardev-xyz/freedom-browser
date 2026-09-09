@@ -33,8 +33,8 @@
 //   - the tab context menu and the bookmark menus are the same shape as the
 //     hamburger, but neither takes keyboard ownership the way `keepKeyboard`
 //     below gives the hamburger, so moving them here would trade a menu that
-//     vanishes for one Escape can no longer reach. That is a real follow-up,
-//     not an oversight.
+//     vanishes for one Escape can no longer reach. Tracked in #339 — which is
+//     the follow-up, rather than this paragraph.
 
 // One verdict per blur, shared by every handler registered here. `activeElement`
 // is read the first time a given event is seen and cached for the rest of that
