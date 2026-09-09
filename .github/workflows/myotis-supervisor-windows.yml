@@ -1,0 +1,105 @@
+name: Myotis Windows supervisor (Node only)
+
+on:
+  push:
+    branches: [feature/myotis-process-isolation]
+    paths:
+      - '.github/workflows/myotis-supervisor-windows.yml'
+      - 'scripts/qualify-myotis-supervisor*'
+      - 'scripts/fixtures/myotis-benign-addon*'
+      - 'scripts/build-myotis-supervisor.js'
+      - 'src/main/myotis/myotis-process.js'
+      - 'src/main/myotis/myotis-child.js'
+      - 'src/main/myotis/native/myotis-supervisor-win.c'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Do not supersede a running ownership campaign with a later push.
+concurrency:
+  group: myotis-windows-supervisor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  supervisor:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      EVIDENCE_ROOT: ${{ runner.temp }}/myotis-supervisor-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Create early-failure evidence root
+        run: |
+          New-Item -ItemType Directory -Path $env:EVIDENCE_ROOT -ErrorAction Stop | Out-Null
+          [ordered]@{
+            candidate = $env:GITHUB_SHA
+            run = $env:GITHUB_RUN_ID
+            attempt = $env:GITHUB_RUN_ATTEMPT
+            image = $env:ImageOS
+            imageVersion = $env:ImageVersion
+            osVersion = [Environment]::OSVersion.VersionString
+            scope = 'Node-only benign fixture; no Electron or real addon'
+          } | ConvertTo-Json | Set-Content "$env:EVIDENCE_ROOT/runner.json"
+
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: false
+
+      - name: Verify installed tools and compile checked-in supervisor
+        run: |
+          Start-Transcript -Path "$env:EVIDENCE_ROOT/build.log"
+          try {
+            $actual = git rev-parse HEAD
+            if ($LASTEXITCODE -ne 0 -or $actual -ne $env:GITHUB_SHA) { throw 'Candidate checkout mismatch' }
+            $node = (Get-Command node -ErrorAction Stop).Source
+            & $node -e "if(process.platform!=='win32'||process.arch!=='x64'||!['22','24'].includes(process.versions.node.split('.')[0]))throw Error('Preinstalled Windows x64 Node 22/24 required'); console.log(JSON.stringify({execPath:process.execPath,versions:process.versions}))"
+            if ($LASTEXITCODE -ne 0) { throw 'Installed Node prerequisite missing; no download allowed' }
+            Get-FileHash -Algorithm SHA256 $node | Format-List
+            Get-FileHash -Algorithm SHA256 package-lock.json | Format-List
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (!$vs) { throw 'Installed x64 MSVC tools required; no compiler will be downloaded' }
+            Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+            Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+            Get-Command cl.exe | Format-List Source,Version
+            "Windows SDK: $env:WindowsSDKVersion; MSVC: $env:VCToolsVersion"
+            & $node scripts/build-myotis-supervisor.js x64
+            if ($LASTEXITCODE -ne 0) { throw 'Supervisor compilation failed' }
+            Copy-Item myotis-bin/win-x64/myotis-supervisor.exe "$env:EVIDENCE_ROOT/myotis-supervisor.exe" -ErrorAction Stop
+            Get-FileHash -Algorithm SHA256 "$env:EVIDENCE_ROOT/myotis-supervisor.exe" | Format-List
+          } finally {
+            Stop-Transcript
+          }
+
+      - name: Run nine finite Node supervisor cases
+        env:
+          ELECTRON_RUN_AS_NODE: '1'
+          FREEDOM_MYOTIS_DISPOSABLE: '1'
+          FREEDOM_MYOTIS_NODE_QUALIFICATION: '1'
+        run: |
+          Start-Transcript -Path "$env:EVIDENCE_ROOT/campaign.log"
+          try {
+            node scripts/qualify-myotis-supervisor.js --disposable --evidence-dir "$env:EVIDENCE_ROOT/campaign"
+            if ($LASTEXITCODE -ne 0) { throw 'Finite supervisor campaign failed; evidence retained' }
+            $summary = Get-Content "$env:EVIDENCE_ROOT/campaign/summary.json" -Raw | ConvertFrom-Json
+            if (!$summary.passed -or $summary.results.Count -ne 9 -or $summary.transport -ne 'node-only') {
+              throw 'Missing nine-case Node-only pass'
+            }
+          } finally {
+            Stop-Transcript
+          }
+
+      - name: Upload evidence even on preflight, build or case failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: myotis-windows-node-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE_ROOT }}/
+          if-no-files-found: error
+          retention-days: 14

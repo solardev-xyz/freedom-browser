@@ -165,3 +165,64 @@ The harness does not qualify supervisor loss, arbitrary descendants, real
 Myotis libuv behavior, Windows, exact-lock dependencies, signed/notarized
 packaging, live chain fallback, or actual application Quit. See the separate
 [product contract and remaining matrix](myotis-process-isolation.md).
+
+## Windows Node-only campaign (source prepared; runtime pending)
+
+The dedicated `myotis-supervisor-windows.yml` workflow runs only on relevant
+pushes to `feature/myotis-process-isolation`, or a future manual dispatch. A
+reviewed push is necessary while this new workflow is absent from the default
+branch. It checks out the exact event SHA and uses runner-preinstalled Windows
+x64 Node 22 or 24 and installed MSVC/SDK. There is no `setup-node`, npm install,
+Electron/addon download, new action, or tool acquisition. Missing prerequisites
+fail the job and retain early evidence. Only existing checkout/upload actions
+access GitHub; fixture processes have no network or real-addon work.
+
+The source-built helper runs the real `MyotisProcess` and `myotis-child.js`
+against the task-owned benign JS fixture. Nine sequential cases cover fd3
+start/read/status and retired reuse; natural exit; blocked read, status and
+stop; control EOF; active-record rejection; parent-controller loss and guarded
+reuse; and a fixed ABI-handshake rejection before create/start, followed by
+verified retirement. Windows does not run the POSIX group-signal case. The
+ABI rejection fixture returns 0; successful fixtures return 22. Neither loads
+a native Myotis addon.
+
+Commands in an **existing x64 MSVC developer shell on the disposable runner**:
+
+```powershell
+node scripts/build-myotis-supervisor.js x64
+$env:ELECTRON_RUN_AS_NODE = '1'
+$env:FREEDOM_MYOTIS_DISPOSABLE = '1'
+$env:FREEDOM_MYOTIS_NODE_QUALIFICATION = '1'
+node scripts/qualify-myotis-supervisor.js --disposable --evidence-dir C:\task-owned\new-campaign
+```
+
+The evidence directory must be new and its parent must already exist. Each
+blocking fixture has a 15-second native timed wait followed by exit 78; idle
+fixtures expire after 18 seconds. Expiry is always failure. Case/controller/
+campaign deadlines remain 25/20/180 seconds, with bounded owned-control cleanup
+and no PID signals. Evidence is retained without deleting files. No fixture,
+helper or application is run on the primary Mac.
+
+Normal cases require a generation-matched native terminal receipt, stdout EOF
+and observed supervisor OS exit 0. Windows force evidence additionally requires
+`forced: true`, child exit code 1 and signal 0; a natural exit 1 cannot pass as
+forced cleanup. Controller loss records actual controller OS exit, snapshots
+the old generation's durable retired record before reuse, and proves guarded
+successor acquisition/exit. The old supervisor OS exit is **not observed** in
+that case. Active-record rejection remains quarantine, not proof of child exit.
+
+Successful Windows child startup exercises the mandatory suspended
+`CreateProcess` job-list assignment, CRT fd3 inheritance and retained-HANDLE
+wait/termination paths. This is not an independent supervisor-crash,
+kill-on-job-close or descendant-cleanup test. Job setup failure must fail the
+campaign; there is no fallback or automatic clearing of active records.
+
+Artifacts include the event/candidate SHA, runner image/OS, exact Node versions
+and executable hash, lockfile/source/fixture/helper hashes, compiler and SDK
+identities, native receipt bytes, actual supervisor exit events, durable-record
+snapshots and per-case results. Preflight/build/campaign transcripts are
+uploaded even on failure. The manifest labels the transport `node-only`;
+Electron 43, ASAR, RunAsNode fuses, real ABI22 native teardown, actual app Quit,
+and signing remain separate qualification gates. Historical `098149e7` and
+`c915e138` Mac results above retain their exact source/runtime attribution;
+changes to this harness do not extend those passes.

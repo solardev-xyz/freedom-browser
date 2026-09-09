@@ -23,8 +23,15 @@ function deadline(promise, milliseconds, label) {
 }
 function requireRuntime(runtime = process) {
   assert.equal(runtime.env.ELECTRON_RUN_AS_NODE, '1', 'Set ELECTRON_RUN_AS_NODE=1');
-  assert.equal(runtime.versions.electron?.split('.')[0], '43', 'Use installed Electron 43');
-  assert(['darwin', 'linux'].includes(runtime.platform), 'This harness currently qualifies POSIX only');
+  if (runtime.platform === 'win32') {
+    assert.equal(runtime.arch, 'x64', 'Windows x64 only');
+    assert.equal(runtime.env.FREEDOM_MYOTIS_NODE_QUALIFICATION, '1', 'Explicit Node-only qualification required');
+    assert.equal(runtime.versions.electron, undefined, 'Windows campaign qualifies Node, not Electron');
+    assert(['22', '24'].includes(runtime.versions.node?.split('.')[0]), 'Use preinstalled Node 22 or 24');
+  } else {
+    assert.equal(runtime.versions.electron?.split('.')[0], '43', 'Use installed Electron 43');
+    assert(['darwin', 'linux'].includes(runtime.platform), 'Supported POSIX hosts only');
+  }
   assert.equal(runtime.env.FREEDOM_MYOTIS_DISPOSABLE, '1', 'Explicit disposable-host opt-in required');
 }
 function parseArguments(args) {
@@ -39,14 +46,22 @@ function readRecord(dataDir) {
   assert(value.length <= 96, 'Oversized native record');
   return value;
 }
-function validateTerminal(client, forced) {
+function validateTerminal(client, forced, platform = process.platform) {
   assert.equal(client.exited, true, 'No native receipt + OS exit proof');
   assert.equal(client.supervisorExit?.code, 0);
   assert.equal(client.supervisorExit?.signal, null);
   assert.equal(client.terminalReceipt?.generation, client.generation);
   assert.equal(client.terminalReceipt?.forced, forced);
-  if (forced) assert.equal(client.terminalReceipt.signal, 9);
-  else assert.equal(client.terminalReceipt.exitCode, 0);
+  if (forced && platform === 'win32') {
+    assert.equal(client.terminalReceipt.signal, 0);
+    assert.equal(client.terminalReceipt.exitCode, 1);
+  } else if (forced) {
+    assert.equal(client.terminalReceipt.signal, 9);
+    assert.equal(client.terminalReceipt.exitCode, -1);
+  } else {
+    assert.equal(client.terminalReceipt.exitCode, 0);
+    assert.equal(client.terminalReceipt.signal, 0);
+  }
   assert.notEqual(client.terminalReceipt.exitCode, 78, 'Fixture expiry is not product cleanup');
 }
 function caseDirectory(root, name, mode) {
@@ -69,6 +84,7 @@ function attachClient(dir, label = 'first') {
     onStatus: (status) => record({ type: 'status', status }),
     onUnavailable: (message) => record({ type: 'unavailable', message }),
     onExit: () => record({ type: 'verified-exit' }),
+    onLifecycle: (event) => record({ type: 'lifecycle', event }),
   });
   record({ type: 'created', generation: client.generation });
   client.child.on('spawn', () => record({ type: 'supervisor-spawn', pid: client.child.pid }));
@@ -96,13 +112,15 @@ async function waitForRecord(dataDir, expected) {
 function controllerOptions(groupSignal) {
   return {
     execPath: process.execPath, execArgv: [],
-    env: { ...childEnvironment(), FREEDOM_MYOTIS_DISPOSABLE: '1' },
+    env: { ...childEnvironment(), FREEDOM_MYOTIS_DISPOSABLE: '1',
+      ...(process.platform === 'win32' ? { FREEDOM_MYOTIS_NODE_QUALIFICATION: '1' } : {}) },
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-    detached: groupSignal, // libuv must create a new POSIX session or fail spawn.
+    detached: groupSignal, // POSIX group fixture only; never used by the product.
   };
 }
 async function runParentController(dir, groupSignal = false) {
   requireRuntime();
+  assert(!groupSignal || process.platform !== 'win32', 'No Windows group-signal fixture');
   const root = path.dirname(dir);
   const marker = JSON.parse(fs.readFileSync(path.join(root, ROOT_MARKER), 'utf8'));
   assert.equal(marker.identity, IDENTITY);
@@ -164,12 +182,18 @@ async function runHarness(root) {
   fs.mkdirSync(root, { mode: 0o700 });
   root = fs.realpathSync(root);
   const sources = [__filename, FIXTURE, require.resolve('../src/main/myotis/myotis-process'),
-    require.resolve('../src/main/myotis/myotis-child'), supervisorPath()];
+    require.resolve('../src/main/myotis/myotis-child'), supervisorPath(),
+    path.join(__dirname, '../src/main/myotis/native', process.platform === 'win32'
+      ? 'myotis-supervisor-win.c' : 'myotis-supervisor.c'),
+    path.join(__dirname, '../package-lock.json'), process.execPath];
   const manifest = {
     identity: IDENTITY, runId: crypto.randomUUID(), startedAt: new Date().toISOString(),
     execPath: process.execPath, versions: process.versions, platform: process.platform, arch: process.arch,
     inputs: sources.map((file) => ({ file, sha256: hash(file) })),
-    noNetworkOrRealAddon: true, limits: { caseMs: CASE_MS, overallMs: OVERALL_MS, blockingFixtureMs: 15000 },
+    transport: process.platform === 'win32' ? 'node-only' : 'electron-runasnode',
+    candidateSha: process.env.GITHUB_SHA || null,
+    noNetworkOrRealAddon: true,
+    limits: { caseMs: CASE_MS, overallMs: OVERALL_MS, blockingFixtureMs: 15000, idleFixtureMs: 18000 },
   };
   writeJson(path.join(root, ROOT_MARKER), manifest);
   const results = [];
@@ -253,7 +277,21 @@ async function runHarness(root) {
       assert.equal(fs.existsSync(path.join(dir, 'fixture-events.jsonl')), false);
       assert.equal(readRecord(path.join(dir, 'data')), `v1 active ${activeGeneration}\n`);
     });
-    for (const [name, groupSignal] of [['parent-controller-loss', false], ['controller-group-sigterm', true]]) {
+    if (process.platform === 'win32') {
+      await runCase('startup-handshake-failure', 'startup-failure', async (dir) => {
+        const client = acquire(dir);
+        assert.equal(await deadline(client.startPromise, 18000, 'failed ABI handshake'), false);
+        await finish(client, false);
+        assert.equal(readRecord(path.join(dir, 'data')), `v1 retired ${client.generation}\n`);
+        const events = fs.readFileSync(path.join(dir, 'fixture-events.jsonl'), 'utf8')
+          .trim().split('\n').map((line) => JSON.parse(line).type);
+        assert.deepEqual(events, ['init'], 'Failed ABI must never create/start a handle');
+        return { failure: 'abi', nativeRetirement: true };
+      });
+    }
+    const lossCases = [['parent-controller-loss', false]];
+    if (process.platform !== 'win32') lossCases.push(['controller-group-sigterm', true]);
+    for (const [name, groupSignal] of lossCases) {
       await runCase(name, 'blocked-stop', async (dir) => {
         const evidence = await parentLoss(dir, groupSignal);
         const next = acquire(dir, 'after-parent-loss'); await ready(next);
@@ -269,7 +307,8 @@ async function runHarness(root) {
     writeJson(path.join(root, 'summary.json'), { results,
       passed: inputsUnchanged && results.length === 9 && results.every((result) => result.passed),
       inputsUnchanged,
-      supervisorLossQualified: false, realAddonQualified: false,
+      transport: manifest.transport,
+      supervisorLossQualified: false, descendantCleanupQualified: false, realAddonQualified: false,
     });
   }
 }

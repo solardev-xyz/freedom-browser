@@ -2,10 +2,13 @@
 const fs = require('fs');
 const path = require('path');
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixture.json'), 'utf8'));
-const MODES = new Set(['healthy', 'natural-exit', 'blocked-read', 'blocked-status', 'blocked-stop']);
+const MODES = new Set(['healthy', 'natural-exit', 'blocked-read', 'blocked-status', 'blocked-stop', 'startup-failure']);
 if (config.identity !== 'freedom-myotis-benign-v1' || !MODES.has(config.mode)) {
   throw new Error('Invalid qualification fixture');
 }
+// Idle child cleanup is independently finite if controller supervision fails.
+// Blocking fixtures use the native 15s wait below; neither expiry can pass.
+setTimeout(() => process.exit(78), 18000);
 const identityFile = path.join(__dirname, 'fixture-events.jsonl');
 function event(type) {
   fs.appendFileSync(identityFile, JSON.stringify({ type, mode: config.mode, time: Date.now(), pid: process.pid }) + '\n');
@@ -17,7 +20,7 @@ function block() {
   process.exit(78);
 }
 module.exports = {
-  init() { event('init'); return 22; },
+  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 22; },
   create(network, dataDir) {
     if (network !== 'mainnet' || fs.realpathSync(dataDir) !== fs.realpathSync(path.join(__dirname, 'data'))) {
       throw new Error('Fixture path mismatch');
