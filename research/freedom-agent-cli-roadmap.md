@@ -1759,13 +1759,15 @@ A subsequent Three.js trial requested npm alone and exposed the missing interpre
 
 This evidence establishes the user-tested creation workflow across dependency acquisition, preview, iteration, build, and publication. The separate tests' exact revisions and transcripts were not supplied, so this is recorded as user-reported manual acceptance rather than a new automated or exact-candidate platform qualification. Existing Linux and disposable-Mac qualification gates remain separate.
 
-Continue to prefer static preview whenever no server is needed, ordinary project-local package-manager commands with the existing executable/network approvals, and the managed-process/isolated-preview path for servers. Keep numeric ports internal; Portless is not part of this milestone. Successful Vite preview does not establish implementation or qualification of WebSocket/HMR proxying, automatic restart, or restart reattachment. These remain separate capabilities. External filesystem grants, unified authority profiles, install/version/rollback workflows, and Windows containment also remain separate packages. The next feature milestone has not yet been selected; the Myotis shutdown correction below remains the identified reliability follow-up.
+Continue to prefer static preview whenever no server is needed, ordinary project-local package-manager commands with the existing executable/network approvals, and the managed-process/isolated-preview path for servers. Keep numeric ports internal; Portless is not part of this milestone. Successful Vite preview does not establish implementation or qualification of WebSocket/HMR proxying, automatic restart, or restart reattachment. These remain separate capabilities. External filesystem grants, unified authority profiles, install/version/rollback workflows, and Windows containment also remain separate packages. The next feature milestone has not yet been selected; the Myotis reliability correction and its remaining release checks are tracked below.
 
-#### Next reliability correction — Myotis shutdown stall
+#### Implemented reliability correction — Myotis isolation and request lifecycle
 
 An ordinary launch followed by Cmd+Q, with no Agent interaction, reproduced a prolonged shutdown stall. Freedom's disposal and node-stop methods returned and Electron emitted its quit events, but a live native thread sample showed the main thread in Node environment cleanup while all four libuv workers were waiting in Myotis `BlockingJson` / `eth_call_json`. The process remained alive for roughly three minutes at the last successful check, then exited naturally; the developer confirmed it was not force-quit. This is a prolonged stall, not an established permanent deadlock or an Agent-shell leak.
 
-The installed addon checksum matched pinned Myotis `v0.1.7`. Source inspection found that pending calls retain `Arc<ElReader>` references while `stop()` only invokes reader shutdown if `Arc::try_unwrap` succeeds. This identifies a native pending-read shutdown gap consistent with the sample; the exact initiating application requests were not captured. The fix remains outstanding: make pending reads settle/cancel during native shutdown and verify actual process exit. A JavaScript promise timeout alone would leave native work outstanding. No dependency upgrade or native fix has been made as part of the diagnostics work.
+The installed addon checksum matched pinned Myotis `v0.1.7`. Source inspection found that pending calls retain `Arc<ElReader>` references while `stop()` only invokes reader shutdown if `Arc::try_unwrap` succeeds. This identifies a native pending-read shutdown gap consistent with the sample; the exact initiating application requests were not captured. At that diagnostic checkpoint, the fix remained outstanding: settle/cancel pending reads during native shutdown and verify actual process exit. A JavaScript promise timeout alone would leave native work outstanding. No dependency upgrade or native fix was made as part of those initial diagnostics.
+
+**2026-09-09 update:** [Myotis PR #420](https://github.com/biafra23/myotis/pull/420) implements bounded owned Node scheduling, cooperative request cancellation and cleanup; [Freedom PR #295](https://github.com/solardev-xyz/freedom-browser/pull/295) isolates each chain in a supervised process while retaining the existing ABI 22 addon. Both PRs are open and ready for review, but neither is merged as checked on 2026-09-09. Neither implementation is included on `feature/freedom-automation-kernel`; the combined code and test artifacts remain on the separate integration branch. Both fixes are implemented separately and the user has accepted the combined long-agent-session/clean-Quit smoke test. Targeted external-review evidence now includes eight disposable-Linux native A/B cases, nine Windows Node-only supervisor cases, and standalone macOS real-addon load/start/status/native-error-read followed by actual native Quit and independently observed browser/supervisor/child exit 0. This does not establish a successful verified blockchain read, active-reader cancellation, packaged/signing compatibility or release approval. Exact tested revisions and limits are recorded in the [qualification checkpoint](https://github.com/solardev-xyz/freedom-browser/blob/ab7dc9894e91aed5b22804d98159999bbb72f9d9/docs/myotis-integration.md#targeted-qualification-checkpoint--2026-09-09); PR review/merge and applicable release qualification remain separate steps.
 
 #### Qualification cadence and remaining gates
 
@@ -2809,6 +2811,117 @@ Verification after this checkpoint:
 - **2026-09-05 — Build one dependency-based app workflow next and batch remote qualifications.** Exercise dependency acquisition, development-server preview, iteration, explicit stop/relaunch, production build, and approved verified Swarm publication using ordinary tools and managed authority. Add only the missing capabilities demonstrated by that workload. Use local checks for small changes, full Linux runs at stable milestones, earlier targeted runs for platform/security-sensitive changes, and exact-candidate qualification before release.
 
 - **2026-09-05 — Close manual acceptance of the dependency-based app workflow.** The user confirms successful Three.js dependency installation and static preview, plus Vite development-server preview, editing across turns, production build, and Swarm publication in other hands-on tests. Record these as completed product acceptance rather than pending checks; exact-candidate platform qualification remains separate.
+
+## 2026-09-09 — Combined Agent/Myotis test integration checkpoint
+
+Only `test/agent-myotis-integration` combines Agent `ae668a24` and isolation
+`3ff2c3fc` through merge `99177c068f7a5d161187c4e183193d12b4de07f7`.
+The separate PR/Agent branches retain their independence. The initial integration pinned
+patched Myotis `02a183d86474a263cf8e85e5c2c2399672645535`, exact ABI 25 and its
+Cargo.lock hash; [activation/provenance and runtime gates](https://github.com/solardev-xyz/freedom-browser/blob/ab7dc9894e91aed5b22804d98159999bbb72f9d9/docs/myotis-integration.md)
+record the distinct Linux/Mac debug byte pins and coordinator-only local activation.
+No artifact activation/load, app run or runtime qualification occurred in this
+source adaptation. Caller expiry retains native admission; broadcasts remain
+uncertain without retries; stale-anchor consent is never automatic. Both native
+supervisors retain their own ownership, manifests and signing protections.
+Finite mock/lint evidence uses the disclosed donor-lock mismatch. The prior
+merge's 14 known workspace-suite failures remain outside this task; historical
+CI/fake-addon passes are not uplifted to this integration. Exact-lock runtime,
+patched-addon lifecycle, actual Quit, Windows and signed-package gates remain open.
+
+- **2026-09-09 — Local integration artifact activated.** At source candidate
+  `5483e051`, the coordinator copied the pinned macOS arm64 debug addon into
+  the separate test checkout and independently verified its complete manifest
+  and SHA-256. No addon or app was loaded. Both inventoried disposable hosts
+  still have Electron 43.0.0 rather than locked 43.6.0; exact runtime prerequisites
+  and combined runtime qualification remain open. The original Agent checkout
+  and both PR branches remain unchanged. See the integration document's local
+  activation checkpoint for exact evidence.
+
+- **2026-09-09 — Integration checkout prepared for manual smoke testing.** After
+  explicit source approval, the separate checkout now has independent locked npm
+  dependencies, Electron 43.6.0, pinned Ant/IPFS/Radicle artifacts, patched Myotis,
+  and both compiled supervisors. Exact-dependency focused checks passed 13 suites /
+  207 tests; lint and macOS binary preflight passed. The original checkout remains
+  unchanged. No app, node, or real-addon lifecycle was launched; user smoke and
+  disposable qualification are still pending. The integration guide records the
+  launch command, fresh profile, retained acquisition evidence and optional Tor gap.
+
+- **2026-09-09 — Correct stale checkpoints before continuing the smoke test.**
+  The user's initial launch showed both Myotis chains parked at Stale anchor;
+  the August 20 embedded roots were outside their age bounds. Test-only native
+  source `a416cb0ffe779cc85d6124883a809638f013163e` refreshes Ethereum/Gnosis
+  from independently agreeing finalized root responses (three/two operators),
+  with matching public bootstrap header hashes. Five finite native checks,
+  manual source review, 7 integration suites / 70 tests, lint and binary preflight
+  passed. The offline-built Mac addon was repinned and
+  activated; the old addon/manifest were preserved, both PR branches and profile
+  data left intact. ABI 25 and age protection remain unchanged. Linux's older
+  artifact is now unconfigured pending a matching-source rebuild. Gnosis's new
+  cold-start anchor ages out September 10 at 20:06:20 UTC without a newer
+  persisted snapshot. See the integration guide for exact source/artifact hashes,
+  expiry times and evidence limits; working p2p sync, model reads and Quit remain
+  to be demonstrated after relaunch.
+
+- **2026-09-09 — User accepts the combined reliability smoke test.** After the
+  checkpoint refresh, the user reports a long coding agent session with many
+  tool calls and no OpenAI connection disruptions, then Cmd+Q without a hang or
+  hiccup. Prepared integration source was `f1c10d8d`, with the pinned `a416cb0f`
+  Mac arm64 addon. This is user-reported acceptance; chain sync/peer state and
+  occupied native requests were not captured. Independent native scheduler,
+  standalone Freedom Quit and GitHub Windows supervisor qualifications were
+  subsequently completed with the limited scope recorded below; this smoke test
+  does not replace them. See the [smoke acceptance record](https://github.com/solardev-xyz/freedom-browser/blob/ab7dc9894e91aed5b22804d98159999bbb72f9d9/docs/myotis-integration.md#user-reported-combined-smoke-acceptance--2026-09-09).
+
+
+- **2026-09-09 — Complete targeted Myotis reliability qualification for external review.**
+  Linux passed eight native A/B cases against production `02a183d8` and the
+  explicitly separate `c8cc1554` scheduler fixture; the frozen report is published
+  at `86dd617b`. Windows passed nine Node-only supervisor cases at `fa14433f`
+  ([CI run 34339755062](https://github.com/solardev-xyz/freedom-browser/actions/runs/34339755062)).
+  Standalone Freedom `3ff2c3fc`, its existing ABI 22 addon and Electron 43.0.0
+  passed load/start/status/native-error-read/native Quit on the disposable Mac:
+  browser, controller, supervisor and addon child had original OS exit 0;
+  no harness emergency or unknown registered process remained. The read was
+  unverified while the chain was SYNCING, and the runtime differs from lock 43.6.0.
+  Three earlier harness failures remain recorded as failures. See the
+  [scope and evidence links](https://github.com/solardev-xyz/freedom-browser/blob/ab7dc9894e91aed5b22804d98159999bbb72f9d9/docs/myotis-integration.md#targeted-qualification-checkpoint--2026-09-09).
+  This completes the agreed targeted external-review checks; it neither merges
+  either PR nor closes live-reader, packaged/signing or broader-release gates.
+
+
+## 2026-09-09 — Return to the Agent branch after Myotis review preparation
+
+`feature/freedom-automation-kernel` now includes main
+`efb951d026bfeeb72147f7a76348ded3390474cb` through merge `ec65ba89`
+(first parent `ae668a24`). This brings in main's Electron 44.3.0 lock and
+navigation, find, tab, bookmark and download-menu improvements. Seven textual
+conflicts were resolved without changing package responsibilities: preserve
+isolated-preview window denial and provider exclusion, Agent tab projection
+and navigation controls, and upstream link dispositions and address-bar edits.
+Agent custody clears an obsolete manual draft; stopping a background load
+updates only its own snapshot. Regression tests cover both interactions and
+the active-tab stop/edit case.
+
+Validation on the primary Mac: `npm run lint` passed; the expanded
+`npm test -- -- --runInBand` selection (all renderer suites plus main preload,
+webcontents/webview, test-harness shutdown mocks, downloads manager, bookmarks,
+menu and IPC handlers) passed **81 suites / 1,496 tests**. This used existing
+Jest 30.4.2 / babel-jest 30.4.1 rather than locked 30.5.1. Installed Electron
+remains 43.0.0 and SQLite 12.11.1 rather than locked 44.3.0 / 13.0.3: no install,
+app launch, native fixture, full-suite or Electron 44 runtime qualification was
+performed. Historical platform results do not qualify this merged candidate.
+Retained local logs: `/private/tmp/freedom-main-sync-expanded.log` and
+`/private/tmp/freedom-main-sync-lint-final.log`.
+
+The Myotis progress entries above were copied as documentation from integration
+`ab7dc989`; their evidence links point to that frozen branch document. As checked
+on September 9, Freedom PR #295 (`d25bf49c`) and Myotis PR #420 (`02a183d8`) are
+both open and ready for review, neither merged. This Agent branch still uses its
+existing Myotis implementation; the test integration, patched native artifacts
+and ABI 25 adaptation remain separate. Selecting the next Agent roadmap task
+does not imply bringing those changes into this branch or accepting their
+remaining release gates.
 
 ## Final target statement
 
