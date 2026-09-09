@@ -433,7 +433,14 @@ describe('openOrFocusInternalPage', () => {
       expect(getTabs().length).toBe(before); // no new tab opened
 
       jest.runOnlyPendingTimers();
-      expect(onLoadTarget).toHaveBeenCalledWith('freedom://settings/profile'); // routed to section
+      // Routed to the section, in the reused tab's own webview — named
+      // explicitly so a background open (#303) can't land the navigation in
+      // whatever tab the user is still looking at.
+      expect(onLoadTarget).toHaveBeenCalledWith(
+        'freedom://settings/profile',
+        null,
+        existing.webview
+      );
     } finally {
       jest.useRealTimers();
     }

@@ -29,6 +29,12 @@
   display: none;
 }
 
+/* The page context menu takes focus so Escape works while the guest page had
+   the keyboard; that focus is plumbing, not a highlight the user should see. */
+.context-menu:focus {
+  outline: none;
+}
+
 .context-menu-item {
   display: block;
   width: 100%;

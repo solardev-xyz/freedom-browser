@@ -160,6 +160,10 @@ const loadTabsModule = async (options = {}) => {
       typeof url === 'string' && url.includes('/pages/history.html') ? 'history' : null,
     getOnchainInterstitialTarget: () => null,
     internalPages: {},
+    // Mirrors `page-urls.js#isNewTabPageUrl` for this window's new-tab page,
+    // which `switchTab` consults to decide whether the page or the address bar
+    // gets the keyboard (#304).
+    isNewTabPageUrl: (url) => url === (options.homeUrl || HOME_URL) || url === 'freedom://private',
   }));
 
   const mod = await import('./tabs.js');
