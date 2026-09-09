@@ -528,6 +528,49 @@ test('opening Settings from a page with content opens a new tab', async ({ windo
   ]);
 });
 
+// The new-tab pages are the documented exception to that rule: `freedom://home`
+// is Chrome's `chrome://newtab`, not a singleton. Typed in a tab with content
+// it navigates *that* tab home — it must neither strand the page in a leftover
+// tab and spawn a second New Tab, nor focus whichever New Tab already sits in
+// the strip. (links.html's `freedom://home` link takes the same `loadTarget`
+// path.)
+test('freedom://home navigates the current tab in place', async ({ window, harness }) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for Page A to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A']);
+
+  // A second, empty New Tab in the strip: the singleton rule would focus it.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expectActiveTab(window, 1);
+
+  await input.click();
+  await input.fill('freedom://home');
+  await input.press('Enter');
+
+  // Page A's own tab became the New Tab page, in place, and stayed active.
+  await expect
+    .poll(() => tabSnapshot(window), {
+      message: 'Waiting for freedom://home to navigate the current tab in place',
+      timeout: 15_000,
+    })
+    .toEqual([
+      { id: '1', title: 'New Tab', active: true },
+      { id: '2', title: 'New Tab', active: false },
+    ]);
+});
+
 // #303: a `freedom://` internal page is a singleton tab, but the singleton
 // rule must not outrank the disposition. Ctrl+click on a freedom:// link had
 // the tab-reuse branch run before `background` was consulted, so it switched

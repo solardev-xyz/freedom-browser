@@ -192,6 +192,9 @@ const loadTabsModule = async (options = {}) => {
       url === 'freedom://private' ||
       url === internalPages.home ||
       url === internalPages.private,
+    // Mirrors `page-urls.js#isNewTabPageName`, the name-keyed form the
+    // internal-page singleton rules consult.
+    isNewTabPageName: (pageName) => pageName === 'home' || pageName === 'private',
   }));
 
   const mod = await import('./tabs.js');
@@ -1541,6 +1544,46 @@ describe('tabs ui behavior', () => {
         false
       );
       expect(mod.getTabs()).toHaveLength(3);
+    });
+
+    // A new-tab page is not a singleton: `freedom://home` typed in the address
+    // bar (or clicked in links.html) navigates the tab you are on, as it did
+    // before the singleton rule reached `loadTarget` — it must not strand that
+    // page in a leftover tab and spawn a second New Tab next to it.
+    test('navigates a new-tab page in place from a tab with content', async () => {
+      const mod = await setup();
+      const pageTab = mod.createTab('https://example.com/');
+
+      expect(mod.routeInternalPageNavigation('home', null, pageTab.webview)).toBe(false);
+      expect(mod.getTabs()).toHaveLength(2); // the window's New Tab and this one
+      expect(mod.getActiveTab().id).toBe(pageTab.id);
+    });
+
+    // …and it must not focus some *other* New Tab already in the strip either.
+    test('does not focus another New Tab when navigating to the new-tab page', async () => {
+      const mod = await setup();
+      const firstNewTab = mod.getActiveTab();
+      const pageTab = mod.createTab('https://example.com/');
+
+      expect(mod.routeInternalPageNavigation('home', null, pageTab.webview)).toBe(false);
+      expect(mod.getActiveTab().id).toBe(pageTab.id);
+      expect(mod.getActiveTab().id).not.toBe(firstNewTab.id);
+      expect(mod.getTabs()).toHaveLength(2);
+    });
+
+    // The same rule on the link paths that never reach `loadTarget`: a
+    // Ctrl/Cmd+click on a `freedom://home` link opens another New Tab rather
+    // than silently routing the open into an existing one (where, with no
+    // sub-path to re-navigate, it did nothing at all).
+    test('a link to the new-tab page opens its own tab', async () => {
+      const mod = await setup();
+      const firstNewTab = mod.getActiveTab();
+
+      const opened = mod.openInNewTabWithTarget('freedom://home', null);
+
+      expect(opened.id).not.toBe(firstNewTab.id);
+      expect(mod.getTabs()).toHaveLength(2);
+      expect(opened.url).toBe('freedom://home');
     });
   });
 

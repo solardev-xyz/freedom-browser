@@ -9,6 +9,7 @@ import {
   getInternalPageName,
   getOnchainInterstitialTarget,
   internalPages,
+  isNewTabPageName,
   isNewTabPageUrl,
 } from './page-urls.js';
 import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
@@ -1770,6 +1771,8 @@ export const openInNewTabWithTarget = (url, targetName, options = {}) => {
   // longer open two history/settings tabs via a link or tab:new-with-url; use a
   // named target to keep the explicit reuse semantics below.) A sub-path
   // (settings/profile) reuses the base page's tab and routes it to that section.
+  // The new-tab pages are the exception `findInternalPageTab` encodes: a link
+  // to `freedom://home` opens another New Tab, it never steals an existing one.
   if (!targetName) {
     const internal = freedomInternalPageTarget(url);
     // `background` carries through: a Ctrl/Cmd+click or middle-click on a
@@ -1829,8 +1832,13 @@ export const openInNewTabWithTarget = (url, targetName, options = {}) => {
 //
 // `tab.url` holds the resolved `file://…/pages/<page>.html` form once loaded,
 // but the `freedom://<page>` form while the tab is still resolving — match both.
-const findInternalPageTab = (pageName) =>
-  tabState.tabs.find((tab) => {
+//
+// A new-tab page (`home`, `private`) is never matched: it is not a singleton
+// (see `routeInternalPageNavigation`), so an open to one must never be
+// answered with some other empty tab from elsewhere in the strip.
+const findInternalPageTab = (pageName) => {
+  if (isNewTabPageName(pageName)) return undefined;
+  return tabState.tabs.find((tab) => {
     if (!tab.url) return false;
     // Resolved file://…/pages/<page>.html form (page already loaded).
     if ((getInternalPageName(tab.url) || '').split('/')[0] === pageName) return true;
@@ -1841,6 +1849,7 @@ const findInternalPageTab = (pageName) =>
     // resolved file:// form, so this arm is what covers the resolving window.
     return freedomInternalPageTarget(tab.url)?.pageName === pageName;
   });
+};
 
 // A tab with nothing in it: this window's new-tab page (`home.html` /
 // `private.html`, in either the friendly or the resolved form) or the
@@ -1864,6 +1873,9 @@ const isEmptyTab = (tab) => {
  * same-tab link click, an interstitial's "open settings" button), which owns
  * the in-place navigation itself.
  *
+ * The new-tab pages (`freedom://home`, `freedom://private`) are the documented
+ * exception — see below.
+ *
  * @param {string} pageName - internal page name, e.g. 'settings'
  * @param {string|null} [subPath] - optional section within the page
  * @param {object|null} [currentWebview] - webview the navigation targets
@@ -1873,6 +1885,16 @@ const isEmptyTab = (tab) => {
  */
 export const routeInternalPageNavigation = (pageName, subPath = null, currentWebview = null) => {
   if (!pageName) return false;
+
+  // A new-tab page is not a singleton. Chrome keeps as many New Tab pages open
+  // as you like, and a committed `chrome://newtab` — typed, bookmarked, or a
+  // same-tab link (links.html has a `freedom://home` one) — navigates the tab
+  // you are on. Routing it through the singleton rule would instead strand the
+  // page you were reading in a leftover tab and spawn a second New Tab, or
+  // hijack whichever New Tab happens to sit first in the strip. Answer "this
+  // tab", which is what `main` did before the rule reached `loadTarget`.
+  if (isNewTabPageName(pageName)) return false;
+
   const currentTab = getTabById(getTabIdForWebview(currentWebview));
   const existingTab = findInternalPageTab(pageName);
 

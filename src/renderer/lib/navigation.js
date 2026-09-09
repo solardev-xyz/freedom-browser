@@ -1285,7 +1285,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       // same-tab link or an interstitial button — the paths that all funnel
       // through here. `routeInternalPageNavigation` owns that decision and
       // returns false only when *this* tab is the right place to land: it is
-      // already the page's tab, or it is an empty New Tab to overwrite. The
+      // already the page's tab, it is an empty New Tab to overwrite, or the
+      // page is a new-tab page (`freedom://home`, `freedom://private`), which
+      // is deliberately not a singleton and always navigates in place. The
       // link paths that never reach loadTarget (a new-tab/background link
       // activation, `tab:new-with-url`) keep their own singleton branch in
       // `openInNewTabWithTarget`. See #325.
