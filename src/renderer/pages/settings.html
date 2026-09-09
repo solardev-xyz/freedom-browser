@@ -136,7 +136,19 @@
          same heading for the Shortcuts list; that rule stays on its own
          selector because `settings-styles.test.js` pins it by prelude
          (#223). */
-      /* A section title that carries a section-level action (#272). */
+      .subsection-title {
+        margin: 20px 0 8px 0;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
+      /* A section title that carries a section-level action beside it (#272):
+         Site Permissions' "Remove all" sits next to the `<h2>`, where the
+         page's other section-level actions live, instead of inside the list
+         it acts on. */
       .section-header {
         display: flex;
         align-items: center;
@@ -145,17 +157,10 @@
         margin: 0 0 16px 0;
       }
 
+      /* The heading's own bottom margin now belongs to the flex row, which
+         also has to centre it against the button. */
       .section-header .section-title {
         margin: 0;
-      }
-
-      .subsection-title {
-        margin: 20px 0 8px 0;
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.4px;
-        text-transform: uppercase;
-        color: var(--text-muted);
       }
 
       .card {
