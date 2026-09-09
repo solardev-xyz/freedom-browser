@@ -2958,6 +2958,34 @@ integration checkout still owns the patched-addon smoke-test setup; no claim
 of upstream native cancellation fixes or renewed Electron 44 runtime acceptance
 is made by this merge.
 
+## 2026-09-09 — Installed-tool recovery and acquisition disclosure
+
+A user building a Three.js game reported that Node/npm failed in the workspace
+shell, after which Agent proposed downloading Three.js with curl. The user
+stopped that detour; a later executable-permission check let Node/npm run.
+This was a dependency download, not an attempted Node installer. The observed
+problem was recovery and disclosure, not evidence that Node was absent.
+
+Command-not-found feedback now directs the model to resolve installed executable
+access for the exact command/directory before retrying or changing acquisition
+methods. Tool results distinguish already-available tools, installed tools with
+access granted, names not found in the supported environment, and unsupported
+entry points. A failed discovery is no longer described as proof of absence
+from the computer. No new command discovery, grant or shell fallback happens
+automatically; existing approval/capability enforcement remains unchanged.
+
+The permission tool asks for dependency/artifact, version, source and destination
+in its bounded reason. The approval shows that Agent-stated purpose, installed
+tools needing access and network scope above More details, alongside the exact
+command. The reason remains untrusted model text, not a verified classification
+of shell effects or a new acquisition-policy enforcement mechanism.
+
+Lint and five affected suites / 210 tests passed with existing dependencies;
+static approval previews were checked in both themes using installed Chromium.
+No dependency acquisition, Freedom/native runtime or live-model replay was run.
+A new Three.js session remains the product check of whether the model follows
+the improved recovery feedback; deterministic tests do not establish that.
+
 ## Final target statement
 
 > Freedom becomes an agent-native, malleable browser: users delegate high-level work to an embedded Pi-powered agent that acts through Freedom's semantic automation kernel and enforceable approval boundary across the ordinary and decentralized web, and can eventually ask it to create site customizations, extensions, dApps, and supported changes to Freedom itself through inspectable, permissioned, reversible build and installation workflows. A CLI or MCP surface may later expose the same kernel if real external demand warrants productizing it.

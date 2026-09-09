@@ -617,6 +617,9 @@ function normalizeWorkspacePermissionApproval(value) {
     return Object.freeze({
       name: command.name,
       status: command.status,
+      ...(command.status === 'unavailable' &&
+        ['not_found', 'unsupported_entry_point'].includes(command.resolution) &&
+        { resolution: command.resolution }),
       ...(executablePath && { executablePath }),
       ...(rootPath && { rootPath }),
     });

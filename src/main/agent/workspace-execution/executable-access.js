@@ -222,7 +222,7 @@ async function resolveExecutableAccess(executables, options = {}) {
     // Merely living beneath a system root does not make a name shell-resolvable.
     // Preserve explicit host toolchain selection, with the sandbox baseline as fallback.
     if (!found) {
-      commands.push(Object.freeze({ name, status: 'unavailable' }));
+      commands.push(Object.freeze({ name, status: 'unavailable', resolution: 'not_found' }));
       continue;
     }
     if (isSystemExecutable(found.executablePath, platform)) {
@@ -230,6 +230,7 @@ async function resolveExecutableAccess(executables, options = {}) {
       commands.push(Object.freeze({
         name,
         status: baseline?.executablePath === found.executablePath ? 'available' : 'unavailable',
+        ...(baseline?.executablePath !== found.executablePath && { resolution: 'unsupported_entry_point' }),
       }));
       continue;
     }

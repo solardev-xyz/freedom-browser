@@ -2086,6 +2086,23 @@ function workspaceEnablementDetails(workspace) {
   return `Freedom stores one local workspace for this conversation and removes it when the conversation is deleted. Agent may write only inside that workspace; protected .git metadata remains read-only. Workspace commands may read and execute required system tools and separately approved executable packages, but cannot write to them. This approval does not grant internet, localhost, or LAN access; those require a separate capability.\n\n${lifecycle}`;
 }
 
+function workspaceCommandPermissionSummary(permission, reason) {
+  const lines = reason ? [`Agent request: ${reason}`] : [];
+  const installed = permission.commands
+    .filter(({ status }) => status === 'requires_permission').map(({ name }) => name);
+  if (installed.length) lines.push(`Installed tools needing workspace access: ${installed.join(', ')}.`);
+  const unavailable = permission.commands.filter(({ status }) => status === 'unavailable');
+  for (const command of unavailable) {
+    lines.push(command.resolution === 'not_found'
+      ? `${command.name}: not found in the supported command environment.`
+      : command.resolution === 'unsupported_entry_point'
+        ? `${command.name}: installed entry point cannot be exposed to the workspace.`
+        : `${command.name}: unavailable in the workspace; installation status unknown.`);
+  }
+  if (permission.network) lines.push('With access to the internet, localhost, and LAN.');
+  return lines.join('\n');
+}
+
 function workspaceCommandPermissionDetails(permission, reason) {
   const requestedExecutables = permission.commands
     .filter((command) => command.status === 'requires_permission')
@@ -2197,9 +2214,7 @@ function renderApproval(request) {
                               : interactionCopy[request.operation] ||
                                 `Let Agent interact with “${label}”?`;
   elements.approvalOrigin.textContent = workspacePermission
-    ? workspacePermission.network
-      ? 'With access to the internet, localhost, and LAN.'
-      : ''
+    ? workspaceCommandPermissionSummary(workspacePermission, request.label)
     : workspace
       ? 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
       : publication
@@ -2410,7 +2425,7 @@ function formatToolError(code, operation) {
     EXECUTABLE_INTERPRETER_UNAVAILABLE: 'A required script interpreter is unavailable',
     EXECUTABLE_INTERPRETER_UNSUPPORTED: 'The script launcher could not be resolved safely',
     WORKSPACE_COMMAND_FAILED: 'Workspace command exited unsuccessfully',
-    WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in the workspace shell',
+    WORKSPACE_COMMAND_NOT_FOUND: 'Command unavailable in this workspace; check installed-tool access before retrying',
     WORKSPACE_COMMAND_TIMED_OUT: 'Workspace command timed out',
     WORKSPACE_DIRECTORY_UNAVAILABLE: 'Workspace directory does not exist',
     WORKSPACE_EXECUTION_FAILED: 'Workspace command could not be executed',

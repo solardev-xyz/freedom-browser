@@ -68,7 +68,7 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
   UNTRUSTED_CAPABILITY_AUTHORITY: 'Freedom refused untrusted workspace authority',
   WORKSPACE_COMMAND_CANCELLED: 'The workspace command was stopped',
   WORKSPACE_COMMAND_FAILED: 'The workspace command exited unsuccessfully',
-  WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in the workspace shell',
+  WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in this workspace shell; it may be installed but not exposed here',
   WORKSPACE_COMMAND_TIMED_OUT: 'The workspace command timed out',
   WORKSPACE_PROCESS_INPUT_UNAVAILABLE: 'The workspace process is not accepting input',
   WORKSPACE_PROCESS_LIMIT_REACHED: 'Too many workspace commands are still running',
@@ -182,7 +182,10 @@ function safeWorkspaceError(error, options = {}) {
     ].includes(code)
       ? boundedBashOutput({ stdout: options.commandOutput || '' }).toString('utf8')
       : '';
-  const safe = new Error(`[${code}] ${message}${output ? `\n\n${output}` : ''}`);
+  const recovery = code === 'WORKSPACE_COMMAND_NOT_FOUND'
+    ? '\n\nNext: call request_permissions with the required executable names, the exact failed command, and the same workingDirectory. Freedom will check its supported installed command environment and request access where needed. Resolve this before retrying or switching to another download/install method. Exit 127 does not prove software is absent from this computer. Do not guess host paths or treat a stopped/declined permission request as permission to use an alternative.'
+    : '';
+  const safe = new Error(`[${code}] ${message}${recovery}${output ? `\n\n${output}` : ''}`);
   safe.code = code;
   return safe;
 }
@@ -970,7 +973,10 @@ function createRequestPermissionsTool(sdk, options) {
       maxItems: 16,
       items: { type: 'string', minLength: 1, maxLength: 128 },
     },
-    reason: { type: 'string', minLength: 1, maxLength: 240 },
+    reason: {
+      type: 'string', minLength: 1, maxLength: 240,
+      description: 'Explain the intended change. For downloads or dependency installation, name the package/artifact, chosen version and source, and project destination. This reason is shown in the approval.',
+    },
     command: { type: 'string', minLength: 1, maxLength: 4_096 },
     workingDirectory: { type: 'string', minLength: 1, maxLength: 1_024 },
     ...(networkPermissionsEnabled && {
@@ -986,14 +992,16 @@ function createRequestPermissionsTool(sdk, options) {
     name: 'request_permissions',
     label: 'Request command access',
     description: networkPermissionsEnabled
-      ? 'Request the exact executable and/or full direct-network access needed to run one intended workspace command. Full networking includes public internet, host localhost, and private/LAN addresses. Never guess host paths.'
+      ? 'Resolve installed executable access before retrying a command unavailable in the workspace shell or changing download methods. Request the exact executable and/or full direct-network access needed for one intended command. Full networking includes public internet, host localhost, and private/LAN addresses. Never guess host paths.'
       : 'Resolve named executables from the user’s installed command-line environment and request the exact access needed to run one intended workspace command. Use this before retrying an unavailable command, or when you know a required executable is outside the current workspace shell. Never guess host paths.',
     promptSnippet: 'Request access for an exact workspace command',
     promptGuidelines: [
       'When requesting executable access, include only the exact executable names needed for the task.',
       'Freedom inspects supported script launcher lines and includes required interpreters in the same permission request. Missing interpreters are reported before execution; permission does not install them.',
       'Provide the exact command and workspace-relative working directory you intend to use next. If the user allows it once, only that matching call can consume the permission.',
-      'If an executable is unavailable, explain that it is not installed; do not claim permission can install it.',
+      'A workspace command-not-found error does not establish that software is absent. Resolve installed-tool access before retrying or substituting curl, wget, an installer, or another dependency source.',
+      'Report discovery precisely: already available, installed with access granted, not found in the supported command environment, or found with an unsupported entry point. Not found is not proof of absence from the whole computer. Permission does not install software.',
+      'For software acquisition, the reason must identify the dependency/artifact, chosen version and source, and project destination. Keep the exact command reviewable. A stopped or declined request does not authorize an alternative acquisition route.',
       ...(networkPermissionsEnabled
         ? [
             'Request network: full only when the exact command needs direct networking. It is one combined public-internet, host-localhost, and private/LAN grant.',
@@ -1069,20 +1077,31 @@ function createRequestPermissionsTool(sdk, options) {
           status: 'succeeded',
           workspace: receipt,
         });
-        const executableSummary = resolved.available.length
-          ? `Available: ${resolved.available.join(', ')}.`
-          : resolved.unavailable.length
-            ? 'No requested executable is available.'
-            : '';
-        const unavailable = resolved.unavailable.length
-          ? `${executableSummary ? ' ' : ''}Unavailable on this computer: ${resolved.unavailable.join(', ')}.`
-          : '';
-        const network = resolved.publicRequest.network
-          ? `${executableSummary || unavailable ? ' ' : ''}Full direct networking is available for the approved scope.`
-          : '';
+        // Keep host paths out of model results; distinguish discovered tools
+        // from shell visibility without claiming an exhaustive host inventory.
+        const commands = resolved.publicRequest.commands.map(({ name, status, resolution }) => ({
+          name,
+          status: status === 'requires_permission' ? 'access_granted'
+            : status === 'available' ? 'already_available'
+              : ['not_found', 'unsupported_entry_point'].includes(resolution) ? resolution : 'unavailable',
+        }));
+        const descriptions = {
+          already_available: 'Already available in the workspace shell',
+          access_granted: `Installed; access granted ${scope === 'conversation' ? 'for this conversation' : 'for this exact command and directory'}`,
+          not_found: 'Not found in the supported installed command environment',
+          unsupported_entry_point: 'Found, but this command entry point cannot be exposed to the workspace',
+          unavailable: 'Unavailable in the workspace; installation status is unknown',
+        };
+        const summaries = Object.entries(descriptions).flatMap(([status, description]) => {
+          const names = commands.filter((command) => command.status === status).map(({ name }) => name);
+          return names.length ? [`${description}: ${names.join(', ')}.`] : [];
+        });
+        if (resolved.unavailable.length) summaries.push('No software was installed; do not infer computer-wide absence or bypass a declined request.');
+        if (resolved.publicRequest.network) summaries.push('Full direct networking is available for the approved scope.');
         return {
-          content: [{ type: 'text', text: `${executableSummary}${unavailable}${network}` }],
+          content: [{ type: 'text', text: summaries.join(' ') }],
           details: {
+            commands,
             available: resolved.available,
             unavailable: resolved.unavailable,
             scope,

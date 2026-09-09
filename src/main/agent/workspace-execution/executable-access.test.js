@@ -137,7 +137,7 @@ describe('approved executable access', () => {
       hostEnvironment: { PATH: '/nonexistent' },
     });
 
-    expect(request.commands).toEqual([{ name: 'definitely-not-installed', status: 'unavailable' }]);
+    expect(request.commands).toEqual([{ name: 'definitely-not-installed', status: 'unavailable', resolution: 'not_found' }]);
     expect(request.runtimeRoots).toEqual([]);
   });
 
@@ -206,7 +206,7 @@ describe('approved executable access', () => {
     const request = await resolveExecutableAccess(['freedom-shell-alias'], {
       hostEnvironment: { PATH: fixture },
     });
-    expect(request.commands).toEqual([{ name: 'freedom-shell-alias', status: 'unavailable' }]);
+    expect(request.commands).toEqual([{ name: 'freedom-shell-alias', status: 'unavailable', resolution: 'unsupported_entry_point' }]);
     expect(request.runtimeRoots).toEqual([]);
   });
 

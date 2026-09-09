@@ -3331,7 +3331,9 @@ describe('Agent UI', () => {
     });
 
     expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “node validate.js”?');
-    expect(ctx.elements['agent-approval-origin'].textContent).toBe('');
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'Agent request: Run the project validation script\nInstalled tools needing workspace access: node.'
+    );
     expect(ctx.elements['agent-workspace-permission-details'].hidden).toBe(false);
     expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
     expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
@@ -3377,7 +3379,7 @@ describe('Agent UI', () => {
       approvalId: 'approval_network',
       action: 'workspace_permission',
       operation: 'request_permissions',
-      label: 'Download project dependencies',
+      label: 'Install three@0.180.0 from the npm registry into aoe-demo',
       workspacePermission: {
         kind: 'command_access',
         command: 'npm install',
@@ -3395,7 +3397,7 @@ describe('Agent UI', () => {
 
     expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “npm install”?');
     expect(ctx.elements['agent-approval-origin'].textContent).toBe(
-      'With access to the internet, localhost, and LAN.'
+      'Agent request: Install three@0.180.0 from the npm registry into aoe-demo\nWith access to the internet, localhost, and LAN.'
     );
     expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
     expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
@@ -3411,7 +3413,7 @@ describe('Agent UI', () => {
       'package access'
     );
     expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
-      'Agent says: Download project dependencies'
+      'Agent says: Install three@0.180.0 from the npm registry into aoe-demo'
     );
   });
 
@@ -3498,7 +3500,7 @@ describe('Agent UI', () => {
   });
 
   test.each([
-    ['bash', 'WORKSPACE_COMMAND_NOT_FOUND', 'A required command is not available in the workspace shell'],
+    ['bash', 'WORKSPACE_COMMAND_NOT_FOUND', 'Command unavailable in this workspace; check installed-tool access before retrying'],
     ['request_permissions', 'WORKSPACE_OPERATION_CANCELLED', 'Project operation was stopped'],
     ['request_permissions', 'UNKNOWN_PERMISSION_ERROR', 'Workspace operation failed'],
     ['write_stdin', 'UNKNOWN_PROCESS_ERROR', 'Workspace operation failed'],

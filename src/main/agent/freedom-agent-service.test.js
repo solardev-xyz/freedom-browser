@@ -1664,6 +1664,37 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('projects only allowlisted executable discovery reasons', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'workspace_permission', operation: 'request_permissions', label: 'Check installed tools',
+      workspacePermission: {
+        kind: 'command_access', command: 'node validate.js', workingDirectory: '.',
+        commands: [
+          { name: 'node', status: 'requires_permission', executablePath: '/opt/node/bin/node', rootPath: '/opt/node' },
+          { name: 'missing', status: 'unavailable', resolution: 'not_found' },
+          { name: 'alias', status: 'unavailable', resolution: 'unsupported_entry_point' },
+          { name: 'unknown', status: 'unavailable', resolution: '/private/untrusted-detail' },
+        ],
+      },
+    });
+    const approval = events.at(-1);
+    expect(approval.workspacePermission.commands.slice(1)).toEqual([
+      { name: 'missing', status: 'unavailable', resolution: 'not_found' },
+      { name: 'alias', status: 'unavailable', resolution: 'unsupported_entry_point' },
+      { name: 'unknown', status: 'unavailable' },
+    ]);
+    await service.decideApproval('run_test', approval.approvalId, false);
+    await decision;
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
   test('projects the exact full-network bundle and rejects incomplete network claims', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);

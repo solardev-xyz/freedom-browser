@@ -403,7 +403,7 @@ describe('Pi managed workspace tools', () => {
         workingDirectory: '.',
       })
     ).resolves.toMatchObject({
-      content: [{ type: 'text', text: 'Available: node.' }],
+      content: [{ type: 'text', text: 'Installed; access granted for this conversation: node.' }],
       details: {
         available: ['node'],
         unavailable: [],
@@ -495,6 +495,7 @@ describe('Pi managed workspace tools', () => {
       details: {
         available: [],
         unavailable: [],
+        commands: [],
         scope: 'once',
         command: 'curl https://example.com',
         workingDirectory: '.',
@@ -988,6 +989,7 @@ describe('Pi managed workspace tools', () => {
       tools[0].execute('bash_missing', { command: 'missing-tool' })
     ).rejects.toMatchObject({
       code: 'WORKSPACE_COMMAND_NOT_FOUND',
+      message: expect.stringContaining('Next: call request_permissions'),
     });
     expect(onToolOutcome).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -1008,6 +1010,61 @@ describe('Pi managed workspace tools', () => {
         workspace: expect.objectContaining({ state: 'failed' }),
       })
     );
+  });
+
+  test.each([false, true])('command discovery guidance remains present with networking enabled: %s', async (networkEnabled) => {
+    const controller = createController();
+    controller.fullNetworkPermissionsEnabled = () => networkEnabled;
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(), controller, conversationId: 'conversation_one', requestApproval: jest.fn(),
+    });
+    const permission = tools.find(({ name }) => name === 'request_permissions');
+    expect(permission.description).toMatch(/(Resolve|resolve)/);
+    expect(permission.promptGuidelines.join(' ')).toContain('does not establish that software is absent');
+    expect(permission.parameters.properties.reason.description).toContain('version and source');
+    const failure = safeWorkspaceError(new Error('hidden infrastructure path /private/example'), {
+      operation: 'bash', receipt: { state: 'failed', exitCode: 127 },
+    });
+    expect(failure.message).toContain('before retrying or switching to another download/install method');
+    expect(failure.message).toContain('exact failed command');
+    expect(failure.message).toContain('same workingDirectory');
+    expect(failure.message).not.toContain('/private/example');
+  });
+
+  test('permission results distinguish installed access, missing names, and unsupported entry points', async () => {
+    const controller = createController();
+    const prepared = await controller.prepareCommandPermissions();
+    prepared.publicRequest.commands.push(
+      { name: 'sh', status: 'available' },
+      { name: 'missing', status: 'unavailable', resolution: 'not_found' },
+      { name: 'alias', status: 'unavailable', resolution: 'unsupported_entry_point' },
+      { name: 'legacy', status: 'unavailable' }
+    );
+    prepared.available = ['node', 'sh'];
+    prepared.unavailable = ['missing', 'alias', 'legacy'];
+    controller.prepareCommandPermissions.mockResolvedValue(prepared);
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(), controller, conversationId: 'conversation_one',
+      requestApproval: jest.fn(async () => 'approved'),
+    });
+    const result = await tools.find(({ name }) => name === 'request_permissions').execute('discovery', {
+      executables: ['node', 'sh', 'missing', 'alias', 'legacy'],
+      reason: 'Check installed project tools', command: 'node validate.js', workingDirectory: '.',
+    });
+    expect(result.details.commands).toEqual([
+      { name: 'node', status: 'access_granted' },
+      { name: 'sh', status: 'already_available' },
+      { name: 'missing', status: 'not_found' },
+      { name: 'alias', status: 'unsupported_entry_point' },
+      { name: 'legacy', status: 'unavailable' },
+    ]);
+    expect(result.content[0].text).toContain('Installed; access granted for this exact command and directory: node.');
+    expect(result.content[0].text).toContain('Not found in the supported installed command environment: missing.');
+    expect(result.content[0].text).toContain('entry point cannot be exposed');
+    expect(result.content[0].text).toContain('installation status is unknown: legacy.');
+    expect(JSON.stringify(result)).not.toContain('/opt/toolchain');
+    expect(controller.startProcess).not.toHaveBeenCalled();
+    expect(controller.grantCommandPermissions).toHaveBeenCalledWith('conversation_one', prepared.prepared, 'once');
   });
 
   test('keeps an executor launch failure distinct from a command exit or policy denial', async () => {
