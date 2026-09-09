@@ -109,6 +109,7 @@ const loadModules = async () => {
     // which `switchTab` consults to decide whether the page or the address bar
     // gets the keyboard (#304).
     isNewTabPageUrl: (url) => url === HOME_URL || url === 'freedom://private',
+    isNewTabPageName: (pageName) => pageName === 'home' || pageName === 'private',
   }));
 
   const tabs = await import('./tabs.js');

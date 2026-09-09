@@ -1,309 +1,166 @@
-const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const IPC = require('../../shared/ipc-channels');
 const { createIpcMainMock, loadMainModule } = require('../../../test/helpers/main-process-test-utils');
 
 describe('myotis-manager', () => {
-  let tempDir;
-  let originalNodePath;
-  let originalDataDir;
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); jest.restoreAllMocks(); });
 
-  beforeEach(() => {
-    jest.useFakeTimers();
-    originalNodePath = process.env.MYOTIS_NODE_PATH;
-    originalDataDir = process.env.MYOTIS_DATA_DIR;
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-myotis-manager-'));
-  });
-
-  afterEach(() => {
-    jest.clearAllTimers();
-    jest.useRealTimers();
-    if (originalNodePath === undefined) delete process.env.MYOTIS_NODE_PATH;
-    else process.env.MYOTIS_NODE_PATH = originalNodePath;
-    if (originalDataDir === undefined) delete process.env.MYOTIS_DATA_DIR;
-    else process.env.MYOTIS_DATA_DIR = originalDataDir;
-    fs.rmSync(tempDir, { recursive: true, force: true });
-    jest.restoreAllMocks();
-  });
-
-  function loadManager(options = {}) {
-    const addonPath = path.join(tempDir, 'myotis-addon.js');
-    fs.writeFileSync(addonPath, 'module.exports = {};');
-    process.env.MYOTIS_NODE_PATH = addonPath;
-
-    const status = options.status || {
-      beaconState: 'SYNCED',
-      elReaderAvailable: true,
-      elHunting: false,
-      snapPeers: 2,
-      peerCount: 5,
-      finalizedBlockNumber: '1234',
-    };
-    const addon = {
-      init: jest.fn(() => options.abi ?? 22),
-      create: jest.fn(() => options.handle ?? 7),
-      start: jest.fn(() => options.starts !== false),
-      stop: jest.fn(),
-      drainLogs: jest.fn(() => ''),
-      statusJson: jest.fn(() => JSON.stringify(status)),
-      ensRecordJson: jest.fn(),
-      resolveEnsJson: jest.fn(),
-      ethCallJson: jest.fn(),
-      requestAccountJson: jest.fn(),
-      estimateGasJson: jest.fn(),
-      feeEstimateJson: jest.fn(),
-      sendRawTransactionJson: jest.fn(),
-    };
-    const activeProfile = {
-      metadata: {
-        nodes: {
-          myotis: { mode: options.mode || 'managed', backend: 'myotis-native' },
-        },
-      },
-    };
-    const updateService = jest.fn();
+  function loadManager(mode = 'managed') {
+    const clients = [];
+    const status = { beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 2 };
+    class MockProcess {
+      constructor(options) {
+        this.options = options;
+        this.accepting = true;
+        this.exited = false;
+        this.startPromise = Promise.resolve(true);
+        this.request = jest.fn(async (op) => {
+          if (op === 'status') { options.onStatus(status); return status; }
+          return { result: op };
+        });
+        this.stop = jest.fn(async () => {
+          this.accepting = false;
+          this.exited = true;
+          options.onExit();
+          return true;
+        });
+        clients.push(this);
+      }
+    }
     const ipcMain = createIpcMainMock();
-    const window = { webContents: { send: jest.fn() } };
-    const dataDir = path.join(tempDir, 'profile', 'myotis');
-
+    const dataDir = path.join('/profile', 'myotis');
     const { mod } = loadMainModule(require.resolve('./myotis-manager'), {
       ipcMain,
-      windows: [window],
       extraMocks: {
-        [addonPath]: () => addon,
+        fs: () => ({ existsSync: () => true }),
+        [require.resolve('./myotis-process')]: () => ({ MyotisProcess: MockProcess }),
         [require.resolve('../logger')]: () => ({ info: jest.fn(), warn: jest.fn() }),
-        [require.resolve('../profile-paths')]: () => ({
-          getMyotisDataDir: jest.fn((network) =>
-            network === 'gnosis' ? path.join(dataDir, 'gnosis') : dataDir
-          ),
-        }),
+        [require.resolve('../profile-paths')]: () => ({ getMyotisDataDir: (network) => path.join(dataDir, network) }),
         [require.resolve('../profile-resolver')]: () => ({
-          getActiveProfile: jest.fn(() => activeProfile),
+          getActiveProfile: () => ({ metadata: { nodes: { myotis: { mode } } } }),
         }),
         [require.resolve('../service-registry')]: () => ({
-          MODE: { BUNDLED: 'bundled', DISABLED: 'disabled', NONE: 'none' },
-          updateService,
+          MODE: { BUNDLED: 'bundled', DISABLED: 'disabled', NONE: 'none' }, updateService: jest.fn(),
         }),
       },
     });
-
-    return { addon, dataDir, ipcMain, mod, updateService, window };
+    return { mod, clients, dataDir, ipcMain, status };
   }
 
-  test('starts an isolated native client in the active profile data directory', () => {
-    const ctx = loadManager();
+  test('keeps independent chain processes and profile directories', async () => {
+    const { mod, clients, dataDir } = loadManager();
+    await expect(mod.startMyotis()).resolves.toBe(true);
+    await expect(mod.startMyotis({ chainId: 100 })).resolves.toBe(true);
+    expect(clients.map((client) => client.options.dataDir)).toEqual([
+      path.join(dataDir, 'mainnet'), path.join(dataDir, 'gnosis'),
+    ]);
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.7' });
+    await mod.stopMyotis(100);
+    expect(mod.publicStatus(100).state).toBe('off');
+    expect(mod.isReady(1)).toBe(true);
+  });
 
-    expect(ctx.mod.startMyotis()).toBe(true);
-    expect(ctx.addon.create).toHaveBeenCalledWith('mainnet', ctx.dataDir);
-    expect(ctx.addon.start).toHaveBeenCalledWith(7);
-    expect(ctx.mod.publicStatus()).toMatchObject({
-      available: true,
-      running: true,
-      state: 'ready',
-      version: '0.1.7',
-      peerCount: 5,
-      finalizedBlockNumber: '1234',
+  test('status queries use cached snapshots and stale status removes readiness', async () => {
+    const { mod, clients } = loadManager();
+    await mod.startMyotis();
+    const calls = clients[0].request.mock.calls.length;
+    for (let i = 0; i < 100; i++) { mod.publicStatus(); mod.getStatus(); mod.isReady(); }
+    expect(clients[0].request).toHaveBeenCalledTimes(calls);
+    jest.setSystemTime(Date.now() + 6001);
+    expect(mod.getStatus()).toBeNull();
+    expect(mod.isReady()).toBe(false);
+  });
+
+  test('slow status keeps readiness until soft staleness, then recovers without replacing the pending request', async () => {
+    const { mod, clients, status } = loadManager();
+    await mod.startMyotis();
+    const client = clients[0];
+    let complete;
+    client.request.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    const epoch = mod.getAvailabilityEpoch();
+    await jest.advanceTimersByTimeAsync(3500); // poll starts at 1s; reply latency is 2.5s
+    expect(mod.isReady()).toBe(true);
+    expect(mod.getAvailabilityEpoch()).toBe(epoch);
+    expect(client.request).toHaveBeenLastCalledWith('status', [], 10000);
+    client.options.onStatus(status); complete(status);
+    await jest.advanceTimersByTimeAsync(1);
+
+    // The next poll occupies its one slot past freshness. Routing becomes
+    // unavailable honestly, while native admission and the generation survive.
+    await jest.advanceTimersByTimeAsync(6000);
+    expect(mod.isReady()).toBe(false);
+    const calls = client.request.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(client.request).toHaveBeenCalledTimes(calls);
+    expect(client.accepting).toBe(true);
+    expect(client.stop).not.toHaveBeenCalled();
+    client.options.onStatus(status); complete(status);
+    await Promise.resolve();
+    expect(mod.isReady()).toBe(true);
+    expect(clients).toHaveLength(1);
+  });
+
+  test('does not create any process when disabled', async () => {
+    const { mod, clients } = loadManager('disabled');
+    await expect(mod.startMyotis()).resolves.toBe(false);
+    expect(clients).toHaveLength(0);
+    expect(mod.publicStatus().state).toBe('disabled');
+  });
+
+  test('does not restart before exit, or admit work after shutdown starts', async () => {
+    const { mod, clients } = loadManager();
+    await mod.startMyotis();
+    clients[0].stop.mockImplementation(async () => { clients[0].accepting = false; return false; });
+    await expect(mod.stopMyotis()).resolves.toBe(false);
+    await expect(mod.startMyotis()).resolves.toBe(false);
+    expect(mod.publicStatus()).toMatchObject({
+      state: 'error', error: 'Myotis exit unconfirmed; restart blocked', running: false,
     });
-    expect(ctx.updateService).toHaveBeenCalledWith(
-      'myotis',
-      expect.objectContaining({ mode: 'bundled' })
-    );
-
-    ctx.mod.stopMyotis();
-    expect(ctx.addon.stop).toHaveBeenCalledWith(7);
+    expect(clients).toHaveLength(1);
+    const shutdown = mod.stopAllMyotis({ shutdown: true });
+    await expect(mod.startMyotis({ chainId: 100 })).resolves.toBe(false);
+    await expect(mod.ethCall({ to: '0xabc' })).rejects.toThrow('not running');
+    await shutdown;
   });
 
-  test('runs Ethereum and Gnosis as independent native handles and data directories', () => {
-    const ctx = loadManager();
-    ctx.addon.create.mockReturnValueOnce(7).mockReturnValueOnce(8);
-
-    expect(ctx.mod.startMyotis()).toBe(true);
-    expect(ctx.mod.startMyotis({ chainId: 100 })).toBe(true);
-    expect(ctx.addon.create).toHaveBeenNthCalledWith(1, 'mainnet', ctx.dataDir);
-    expect(ctx.addon.create).toHaveBeenNthCalledWith(2, 'gnosis', path.join(ctx.dataDir, 'gnosis'));
-    expect(ctx.mod.publicStatus(1)).toMatchObject({ chainId: 1, network: 'mainnet', running: true });
-    expect(ctx.mod.publicStatus(100)).toMatchObject({ chainId: 100, network: 'gnosis', running: true });
-
-    ctx.mod.stopMyotis(100);
-    expect(ctx.addon.stop).toHaveBeenCalledWith(8);
-    expect(ctx.mod.publicStatus(1).running).toBe(true);
-    expect(ctx.mod.publicStatus(100).running).toBe(false);
-  });
-
-  test('publishes warm-up, ready, peer-loss, and stopping availability transitions', () => {
-    const status = {
-      beaconState: 'SYNCING',
-      elReaderAvailable: false,
-      elHunting: true,
-      snapPeers: 0,
-      peerCount: 0,
-    };
-    const ctx = loadManager({ status });
+  test('invalidates availability before requesting stop and applies recovery cooldown', async () => {
+    const { mod, clients } = loadManager();
     const events = [];
-    ctx.mod.onAvailabilityTransition((event) => events.push({
-      ...event,
-      nativeStopCalled: ctx.addon.stop.mock.calls.length > 0,
-    }));
-
-    ctx.mod.startMyotis();
-    expect(events).toEqual([
-      expect.objectContaining({ ready: false, reason: 'starting', epoch: 1 }),
-    ]);
-
-    Object.assign(status, {
-      beaconState: 'SYNCED',
-      elReaderAvailable: true,
-      elHunting: false,
-      snapPeers: 1,
-      peerCount: 2,
-    });
-    jest.advanceTimersByTime(1000);
-    expect(events).toContainEqual(
-      expect.objectContaining({ ready: true, reason: 'ready', epoch: 2 })
-    );
-
-    status.snapPeers = 0;
-    jest.advanceTimersByTime(1000);
-    expect(events).toContainEqual(
-      expect.objectContaining({ ready: false, reason: 'not-ready', epoch: 3 })
-    );
-
-    status.snapPeers = 1;
-    jest.advanceTimersByTime(1000);
-    ctx.mod.stopMyotis();
-    expect(events.at(-1)).toMatchObject({
-      ready: false,
-      reason: 'stopping',
-      nativeStopCalled: false,
-    });
-    expect(ctx.mod.isReady()).toBe(false);
-    expect(ctx.mod.getAvailabilityEpoch()).toBe(events.at(-1).epoch);
+    mod.onAvailabilityTransition((event) => events.push(event));
+    await mod.startMyotis();
+    clients[0].options.onUnavailable('timed out');
+    clients[0].accepting = false;
+    clients[0].exited = true;
+    clients[0].options.onExit();
+    expect(events.at(-1).ready).toBe(false);
+    await expect(mod.startMyotis()).resolves.toBe(false);
+    jest.setSystemTime(Date.now() + 15001);
+    await expect(mod.startMyotis()).resolves.toBe(true);
+    expect(clients).toHaveLength(2);
   });
 
-  test('does not load or start the addon when the profile disables Myotis', () => {
-    const ctx = loadManager({ mode: 'disabled' });
-
-    expect(ctx.mod.isEnabled()).toBe(false);
-    expect(ctx.mod.startMyotis()).toBe(false);
-    expect(ctx.addon.init).not.toHaveBeenCalled();
-    expect(ctx.mod.publicStatus()).toMatchObject({ running: false, state: 'disabled' });
-    expect(ctx.updateService).toHaveBeenCalledWith(
-      'myotis',
-      expect.objectContaining({ mode: 'disabled' })
-    );
+  test('registers existing start, stop and cached status IPC', async () => {
+    const { mod, ipcMain } = loadManager();
+    mod.registerMyotisIpc();
+    await expect(ipcMain.invoke(IPC.MYOTIS_START)).resolves.toMatchObject({ running: true });
+    await expect(ipcMain.invoke(IPC.MYOTIS_STOP)).resolves.toMatchObject({ state: 'off' });
+    await expect(ipcMain.invoke(IPC.MYOTIS_GET_STATUS)).resolves.toMatchObject({ state: 'off' });
   });
 
-  test('registers start, stop, status, and status-update IPC', async () => {
-    const ctx = loadManager();
-    ctx.mod.registerMyotisIpc();
-
-    await expect(ctx.ipcMain.invoke(IPC.MYOTIS_START)).resolves.toMatchObject({
-      running: true,
-      state: 'ready',
-    });
-    await expect(ctx.ipcMain.invoke(IPC.MYOTIS_STOP)).resolves.toMatchObject({
-      running: false,
-      state: 'off',
-    });
-    await expect(ctx.ipcMain.invoke(IPC.MYOTIS_GET_STATUS)).resolves.toMatchObject({
-      running: false,
-      state: 'off',
-    });
-    expect(ctx.window.webContents.send).toHaveBeenCalledWith(
-      IPC.MYOTIS_STATUS_UPDATE,
-      expect.any(Object)
-    );
-  });
-
-  test('refuses an incompatible native ABI', () => {
-    const ctx = loadManager({ abi: 20 });
-
-    expect(ctx.mod.startMyotis()).toBe(false);
-    expect(ctx.addon.create).not.toHaveBeenCalled();
-    expect(ctx.mod.publicStatus()).toMatchObject({
-      running: false,
-      state: 'error',
-      error: 'ABI mismatch: engine 20, expected 22',
-    });
-  });
-
-  test('dispatches generic ENS records, convenience reads, and reverse lookups', async () => {
-    const ctx = loadManager();
-    ctx.mod.startMyotis();
-    ctx.addon.ensRecordJson
-      .mockResolvedValueOnce(JSON.stringify({ status: 'ok', value: 'https://example' }))
-      .mockResolvedValueOnce(JSON.stringify({ status: 'ok', dataHex: '0x1234' }))
-      .mockResolvedValueOnce(
-        JSON.stringify({
-          status: 'ok',
-          addressHex: '0x1111111111111111111111111111111111111111',
-        })
-      )
-      .mockResolvedValueOnce(JSON.stringify({ status: 'ok', name: 'alice.eth' }));
-
-    await expect(
-      ctx.mod.resolveEnsRecord({ method: 'text', name: 'alice.eth', key: 'url' })
-    ).resolves.toMatchObject({ status: 'ok', value: 'https://example' });
-    await expect(ctx.mod.resolveContenthash('alice.eth')).resolves.toMatchObject({
-      status: 'ok',
-      dataHex: '0x1234',
-    });
-    await expect(ctx.mod.resolveAddress('alice.eth')).resolves.toMatchObject({
-      status: 'ok',
-      addressHex: '0x1111111111111111111111111111111111111111',
-    });
-    await expect(
-      ctx.mod.resolveReverse('0x1111111111111111111111111111111111111111')
-    ).resolves.toMatchObject({ status: 'ok', name: 'alice.eth' });
-
-    expect(ctx.addon.ensRecordJson.mock.calls.map(([, json]) => JSON.parse(json))).toEqual([
-      { method: 'text', name: 'alice.eth', key: 'url' },
-      { method: 'contenthash', name: 'alice.eth' },
-      { method: 'addr', name: 'alice.eth' },
-      { method: 'reverse', addressHex: '0x1111111111111111111111111111111111111111' },
-    ]);
-    expect(ctx.addon.resolveEnsJson).not.toHaveBeenCalled();
-  });
-
-  test('dispatches verified generic contract calls through the native addon', async () => {
-    const ctx = loadManager();
-    ctx.mod.startMyotis();
-    ctx.addon.ethCallJson.mockResolvedValue(
-      JSON.stringify({ status: 'ok', resultHex: '0xdeadbeef' })
-    );
-
-    await expect(
-      ctx.mod.ethCall({
-        to: '0x1111111111111111111111111111111111111111',
-        data: '0x1234',
-        block: 'latest',
-      })
-    ).resolves.toEqual({ status: 'ok', resultHex: '0xdeadbeef' });
-    expect(ctx.addon.ethCallJson).toHaveBeenCalledWith(
-      7,
-      '',
-      '0x1111111111111111111111111111111111111111',
-      '0x1234',
-      '0',
-      'latest'
-    );
-  });
-
-  test('exposes Gnosis account, gas, fee, and P2P broadcast operations', async () => {
-    const ctx = loadManager();
-    ctx.mod.startMyotis({ chainId: 100 });
-    ctx.addon.requestAccountJson.mockResolvedValue(JSON.stringify({ balanceWei: '42', nonce: 2 }));
-    ctx.addon.estimateGasJson.mockResolvedValue(JSON.stringify({ gasLimit: 21000 }));
-    ctx.addon.feeEstimateJson.mockResolvedValue(JSON.stringify({ gasPriceWei: '3' }));
-    ctx.addon.sendRawTransactionJson.mockResolvedValue(JSON.stringify({ txHash: '0x1234' }));
-
-    await expect(ctx.mod.getAccount('0xabc', 100)).resolves.toMatchObject({ balanceWei: '42' });
-    await expect(ctx.mod.estimateGas({ chainId: 100, from: '0xabc', to: '0xdef' }))
-      .resolves.toMatchObject({ gasLimit: 21000 });
-    await expect(ctx.mod.feeEstimate(100)).resolves.toMatchObject({ gasPriceWei: '3' });
-    await expect(ctx.mod.sendRawTransaction('0xsigned', 100))
-      .resolves.toMatchObject({ txHash: '0x1234' });
-    expect(ctx.addon.sendRawTransactionJson).toHaveBeenCalledWith(7, '0xsigned');
+  test('sends only operation arguments, including already-signed broadcasts', async () => {
+    const { mod, clients } = loadManager();
+    await mod.startMyotis({ chainId: 100 });
+    await mod.getAccount('0xabc', 100);
+    await mod.ethCall({ to: '0xdef', chainId: 100 });
+    await mod.estimateGas({ to: '0xdef', chainId: 100 });
+    await mod.feeEstimate(100);
+    await mod.sendRawTransaction('0xsigned', 100);
+    await mod.resolveEnsRecord({ method: 'text', name: 'alice.eth', key: 'url' }, 100);
+    expect(clients[0].request.mock.calls).toEqual(expect.arrayContaining([
+      ['account', ['0xabc']], ['call', ['', '0xdef', '0x', '0', 'latest']],
+      ['gas', ['', '0xdef', '0x', '0']], ['fee'], ['broadcast', ['0xsigned']],
+      ['ens', [JSON.stringify({ method: 'text', name: 'alice.eth', key: 'url' })]],
+    ]));
   });
 });

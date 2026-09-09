@@ -36,6 +36,7 @@ npm ci
 npm run ant:download
 npm run ipfs:download
 npm run myotis:download
+npm run myotis:build-supervisor
 npm start
 ```
 

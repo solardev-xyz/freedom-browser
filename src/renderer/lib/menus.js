@@ -10,6 +10,8 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { formatAccelerator, matchesShortcut } from './shortcuts.js';
 import { SUBMENU_CLOSE_DELAY_MS } from './submenu-hover.js';
+import { boundPopoverToViewport, POPOVER_VIEWPORT_MARGIN } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -17,6 +19,7 @@ const electronAPI = window.electronAPI;
 let menuButton = null;
 let menuDropdown = null;
 let historyBtn = null;
+let downloadsBtn = null;
 let newTabMenuBtn = null;
 let newWindowMenuBtn = null;
 let newPrivateWindowMenuBtn = null;
@@ -33,6 +36,15 @@ let checkUpdatesBtn = null;
 let onOpenHistory = null;
 export const setOnOpenHistory = (callback) => {
   onOpenHistory = callback;
+};
+
+// Callback for opening the downloads page (set by external module). It routes
+// through the freedom:// internal-page singleton in index.js, the same path the
+// application menu's Downloads item and the shelf's Full Download History
+// action use — one downloads tab, focused rather than duplicated. #326
+let onOpenDownloads = null;
+export const setOnOpenDownloads = (callback) => {
+  onOpenDownloads = callback;
 };
 
 // Callback for creating a new tab (set by external module)
@@ -84,6 +96,36 @@ export const hideProfileFlyout = () => {
 
 const isProfileFlyoutOpen = () => document.getElementById('profile-menu')?.hidden === false;
 
+// Anchor the open flyout to the Profiles row and bound it to the viewport.
+//
+// The flyout is a `position: fixed` child of #menu-dropdown (see
+// styles/popovers.css): the hamburger is a scroll container now, and an
+// absolutely positioned child would be clipped by it. Fixed positioning escapes
+// that clip but not the anchoring, so the coordinates the CSS used to express
+// as `top: -4px; right: 100%` are computed here instead — at open time, on
+// every resize, and while the hamburger scrolls under it. #324.
+export const anchorProfileFlyout = () => {
+  const flyout = document.getElementById('profile-menu');
+  const wrap = profileMenuWrap || document.getElementById('profile-menu-wrap');
+  if (!flyout || !wrap || flyout.hidden) return;
+  const row = wrap.getBoundingClientRect();
+  flyout.style.left = 'auto';
+  flyout.style.right = `${Math.max(POPOVER_VIEWPORT_MARGIN, window.innerWidth - row.left)}px`;
+  flyout.style.top = `${Math.max(POPOVER_VIEWPORT_MARGIN, row.top - 4)}px`;
+  // Both edges, not just the right one. `mainWindow` sets no `minWidth`, and
+  // in a window narrow enough (innerWidth 460) the flyout anchored to the row
+  // starts at left -8: its first characters off screen, with a pinned document
+  // that cannot be scrolled to them. Measured rather than computed, because a
+  // right-anchored box is shrink-to-fit — its width depends on the very `right`
+  // a clamp would change. Pinning the left edge instead is stable: the sheet's
+  // `max-width` keeps the other edge inside. #328.
+  if (flyout.getBoundingClientRect().left < POPOVER_VIEWPORT_MARGIN) {
+    flyout.style.right = 'auto';
+    flyout.style.left = `${POPOVER_VIEWPORT_MARGIN}px`;
+  }
+  boundPopoverToViewport(flyout);
+};
+
 // A pointer or focus landing anywhere in the hamburger that is not the
 // Profiles row or its flyout dismisses the flyout. Pointer moves get the
 // intent delay (SUBMENU_CLOSE_DELAY_MS — the same grace period
@@ -126,6 +168,10 @@ export const setMenuOpen = (open) => {
     hideOverflowMenu();
     onMenuOpening?.();
     showMenuBackdrop();
+    // Chrome's model: the menu never grows past the window — it scrolls inside
+    // itself and the chrome stays put (#324).
+    if (menuDropdown) menuDropdown.scrollTop = 0;
+    boundPopoverToViewport(menuDropdown);
   } else {
     // Collapse the Profiles flyout when the hamburger closes (the flyout is a
     // child of #menu-dropdown, so its lifecycle is governed by the hamburger).
@@ -147,6 +193,11 @@ export const setAntMenuOpen = (open) => {
     hideOverflowMenu();
     onMenuOpening?.();
     showMenuBackdrop();
+    // With every node enabled this menu is ~650 px tall: taller than the
+    // window on a 1200x600 display, where it used to scroll the whole browser
+    // chrome and push its last section (Tor) off screen (#324).
+    if (beeMenuDropdown) beeMenuDropdown.scrollTop = 0;
+    boundPopoverToViewport(beeMenuDropdown);
     startAntInfoPolling();
     startIpfsInfoPolling();
     startMyotisInfoPolling();
@@ -244,6 +295,7 @@ export const initMenus = () => {
   menuButton = document.getElementById('menu-button');
   menuDropdown = document.getElementById('menu-dropdown');
   historyBtn = document.getElementById('history-btn');
+  downloadsBtn = document.getElementById('downloads-btn');
   newTabMenuBtn = document.getElementById('new-tab-menu-btn');
   newWindowMenuBtn = document.getElementById('new-window-menu-btn');
   newPrivateWindowMenuBtn = document.getElementById('new-private-window-menu-btn');
@@ -269,6 +321,12 @@ export const initMenus = () => {
   menuDropdown?.addEventListener('focusin', (event) => {
     handleProfileFlyoutSibling(event.target, { delay: false });
   });
+
+  // The flyout is anchored in viewport coordinates (see anchorProfileFlyout),
+  // so it has to follow the Profiles row when the hamburger scrolls under it
+  // or the window changes size.
+  menuDropdown?.addEventListener('scroll', anchorProfileFlyout);
+  window.addEventListener('resize', anchorProfileFlyout);
 
   menuButton?.addEventListener('click', () => {
     setMenuOpen(!state.menuOpen);
@@ -301,6 +359,12 @@ export const initMenus = () => {
   historyBtn?.addEventListener('click', () => {
     setMenuOpen(false);
     onOpenHistory?.();
+  });
+
+  // Downloads button
+  downloadsBtn?.addEventListener('click', () => {
+    setMenuOpen(false);
+    onOpenDownloads?.();
   });
 
   // Zoom controls
@@ -457,6 +521,10 @@ export const initMenus = () => {
   // `#menu-backdrop` covers the window while a menu is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
 
-  // Close menus when window loses focus (switching windows or backgrounding app)
-  window.addEventListener('blur', closeMenus);
+  // Close menus when the window loses focus (switching windows or
+  // backgrounding the app) — but not when a `<webview>` guest merely takes the
+  // keyboard, which fires the same event while the window is still the active
+  // one. A tab activation's guest focus lands asynchronously and can arrive
+  // after the user has opened this menu, which tore it down mid-click (#328).
+  onWindowDeactivated(closeMenus);
 };

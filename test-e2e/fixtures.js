@@ -182,6 +182,39 @@ const test = base.extend({
   },
 });
 
+// Wait until a chrome surface that has just appeared over the page can take a
+// synthetic click.
+//
+// A Playwright click is dispatched by the *browser* process, which picks the
+// widget it goes to by hit-testing the point against the compositor's own
+// hit-test data. That data only changes when the renderer produces a frame, so
+// in the window between "the menu is in the DOM" and "the menu is in a
+// submitted frame", the browser still believes the point belongs to the
+// `<webview>` guest behind it and routes the whole click there — the embedder
+// sees no mousemove, no mousedown, nothing, and Playwright's own actionability
+// checks cannot see it either (they run in the renderer, where the DOM is
+// already right). The guest takes focus from the click it was handed, which is
+// the only trace of it in the chrome.
+//
+// It is a `<webview>` property, not a bug in any one menu: the same probe
+// (click N ms after opening the hamburger) is swallowed at N=0 on `main` and on
+// this branch alike, and lands from ~8 ms on both. A real user cannot hit it —
+// the menu opens *on* their click and the pointer has to travel to a row — but
+// a synthetic click that arrives in the same frame does, and a loaded CI runner
+// stretches "the same frame" to tens of milliseconds.
+//
+// Two `requestAnimationFrame`s are the wait for exactly the missing thing: the
+// callback of the second runs at the start of the frame after the one that
+// carried the popover, so a frame provably went out. It is not a timeout —
+// where frames are slow the wait is long, which is the case that needs it.
+const waitForPopoverFrame = (window) =>
+  window.evaluate(
+    () =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      })
+  );
+
 // Convenience: an arbitrary 64-char Swarm hex hash for fixture-driven
 // `bzz://` navigation. Specs should treat this as opaque.
 const SAMPLE_BZZ_HASH = 'a'.repeat(64);
@@ -191,6 +224,7 @@ module.exports = {
   test,
   expect,
   browserWindow,
+  waitForPopoverFrame,
   SAMPLE_BZZ_HASH,
   SAMPLE_IPFS_CID,
 };

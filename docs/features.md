@@ -202,8 +202,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 ## Downloads
 
 - **Download Manager**: Every download — http(s), `bzz://`, `ipfs://`/`ipns://`, and data URIs — is tracked with progress, pause/resume, and cancel.
-- **Shelf**: A compact card in the bottom corner shows progress and offers Cancel; on completion it offers Open and Show in Folder, then dismisses itself. Files are never opened automatically.
-- **Downloads Page**: View and search download history at `freedom://downloads` (`Cmd+Shift+J` / `Ctrl+Shift+J`), with per-item open / show-in-folder / remove and Clear All.
+- **Shelf**: A compact card in the bottom corner shows progress and offers Cancel; on completion it offers Open and Show in Folder, then dismisses itself. Files are never opened automatically. While any card is up, a "Full Download History" action under them opens the downloads page.
+- **Downloads Page**: View and search download history at `freedom://downloads` (`Cmd+Shift+J` / `Ctrl+Shift+J`), with per-item open / show-in-folder / remove and Clear All. Reachable from the hamburger menu's Downloads entry (directly after History) and from the application menu — Window > Downloads on macOS, History > Downloads on Linux and Windows. Every entry point focuses the existing downloads tab instead of opening a second one.
 - **Save Location**: Files land in the OS Downloads folder by default; enable "Ask where to save each file" under Settings > Downloads for a save dialog per download.
 
 ## Ad Blocking

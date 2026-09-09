@@ -156,6 +156,24 @@ describe('myotis-ui', () => {
     expect(ctx.elements.gnosisVersion.textContent).toBe('Unknown');
   });
 
+  test('shows the restart-blocked reason on each chain control after refused Start', async () => {
+    const ctx = await loadMyotisUi();
+    ctx.mod.initMyotisUi();
+    await flushMicrotasks();
+    const errorStatus = {
+      supported: true, available: true, running: false, state: 'error',
+      error: 'Myotis exit unconfirmed; restart blocked',
+    };
+    ctx.api.start.mockImplementation(async (chainId = 1) => ({ ...errorStatus, chainId }));
+    for (const [button, toggle] of [[ctx.elements.button, ctx.elements.toggle],
+      [ctx.elements.gnosisButton, ctx.elements.gnosisToggle]]) {
+      button.dispatch('click');
+      await flushMicrotasks();
+      expect(button.title).toBe(errorStatus.error);
+      expect(toggle.classList.contains('running')).toBe(false);
+    }
+  });
+
   test('disables runtime controls when the profile disables Myotis', async () => {
     const ctx = await loadMyotisUi({
       initialStatus: {

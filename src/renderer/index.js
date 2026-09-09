@@ -16,8 +16,10 @@ import {
   setOnOpenHistory,
   setOnNewTab,
   setOnMenuOpening,
+  setOnOpenDownloads,
   closeMenus,
   hideProfileFlyout,
+  anchorProfileFlyout,
 } from './lib/menus.js';
 import { initSettingsEffects, initTheme } from './lib/settings-ui.js';
 import {
@@ -56,7 +58,7 @@ import {
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
 import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.js';
-import { initDownloadsUi } from './lib/downloads-ui.js';
+import { initDownloadsUi, setOnOpenDownloadsPage } from './lib/downloads-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
 import { initSitePermissionsUi } from './lib/site-permissions-ui.js';
@@ -78,6 +80,8 @@ import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
 import { initShortcuts } from './lib/shortcuts.js';
+import { initPopoverBounds } from './lib/popover-bounds.js';
+import { onWindowDeactivated } from './lib/window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -131,12 +135,21 @@ setOnLoadTarget(loadTarget);
 setLoadTargetHandler(loadTarget);
 setReloadHandler(reloadPage);
 setHardReloadHandler(hardReloadPage);
-setOnNavigate(loadTarget);
+// autocomplete passes `loadTarget`'s own options through (a picked suggestion
+// is a `commitsAddressBar` navigation), so this stays a plain adapter.
+setOnNavigate((url, options) => loadTarget(url, null, null, options));
 // Escape ownership between the two handlers bound to the address input:
 // while a suggestion is previewed, autocomplete.js takes the press. #310.
 setSuggestionPreviewProbe(isSuggestionPreviewActive);
 setOnHistoryRecorded(refreshAutocompleteCache);
 setOnOpenHistory(() => loadTarget('freedom://history'));
+// Both Downloads entry points — the hamburger row and the shelf's Full
+// Download History action — share the internal-page singleton the application
+// menu's Downloads item already reaches through `tab:new-with-url`: an
+// existing freedom://downloads tab is focused instead of duplicated. #326
+const openDownloadsPage = () => openOrFocusInternalPage('downloads');
+setOnOpenDownloads(openDownloadsPage);
+setOnOpenDownloadsPage(openDownloadsPage);
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
 // When any popover/menu opens, dismiss other transient surfaces so we
@@ -386,6 +399,10 @@ async function initProfileIndicator() {
     // hovered row is — otherwise nothing says which row owns the flyout.
     menuWrap?.classList.add('flyout-open');
     indicator.setAttribute('aria-expanded', 'true');
+    // Position it against the Profiles row and bound it to the viewport —
+    // it is `position: fixed` so the hamburger's own scrolling can't clip
+    // it (#324). Anchoring lives with hiding, in menus.js.
+    anchorProfileFlyout();
   };
 
   const setMenuStatus = (message, kind = '') => {
@@ -576,11 +593,12 @@ async function initProfileIndicator() {
     setMenuOpen(false);
   });
 
-  // Also dismiss when the window loses focus (e.g. alt-tab), matching the app's
-  // other transient menus (bookmarks, tab/context menus, autocomplete) and the
-  // old profile menu's behaviour — the flyout shouldn't linger over an inactive
-  // window.
-  window.addEventListener('blur', () => {
+  // Also dismiss when the window is deactivated (e.g. alt-tab), matching the
+  // app's other transient menus (bookmarks, tab/context menus, autocomplete)
+  // and the old profile menu's behaviour — the flyout shouldn't linger over an
+  // inactive window. A `<webview>` guest taking the keyboard is not that: it
+  // raises the same `blur` while the window is still active (#328).
+  onWindowDeactivated(() => {
     if (menu?.hidden !== false) return;
     closeProfileMenu();
   });
@@ -760,6 +778,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   initShortcuts(); // Live shortcut bindings — before any keydown consumers
+  // Every chrome popover bounds itself to the viewport and scrolls inside
+  // instead of growing past it (#324); this installs the window-level half.
+  initPopoverBounds();
   initMenuBackdrop(closeAllOverlays);
   initMenus();
   initAntUi();

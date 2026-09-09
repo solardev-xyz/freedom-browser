@@ -127,6 +127,10 @@ const loadNavigationModule = async (options = {}) => {
     webviewEventHandler: null,
     createTab: jest.fn(),
     openInNewTabWithTarget: jest.fn(),
+    // "This tab is the right place to land" is the default answer, i.e. the
+    // in-place navigation every pre-existing freedom:// test in this file
+    // assumes. The singleton routing itself is covered in tabs-ui.test.js.
+    routeInternalPageNavigation: jest.fn(() => false),
     getActiveWebview: jest.fn(() => activeRef.tab?.webview || null),
     getActiveTab: jest.fn(() => activeRef.tab || null),
     getActiveTabState: jest.fn(() => activeRef.tab?.navigationState || null),
@@ -991,6 +995,152 @@ describe('navigation', () => {
       ctx.mod.loadTarget('ipfs://bafybeigdyrzt');
 
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('ipfs://bafybeigdyrzt');
+    });
+  });
+
+  // #325: a chrome-driven `freedom://` navigation is routed by the tab layer
+  // first — an open Settings tab is focused instead of duplicated. Before the
+  // fix this branch went straight to `webview.loadURL`, so the hamburger menu
+  // and the address bar produced a second Settings tab next to the first.
+  describe('internal-page singleton routing', () => {
+    test('asks the tab layer where a freedom:// page should land', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.mod.loadTarget('freedom://settings/shortcuts');
+
+      expect(ctx.tabsMocks.routeInternalPageNavigation).toHaveBeenCalledWith(
+        'settings',
+        'shortcuts',
+        ctx.activeRef.tab.webview
+      );
+      // Answered "this tab": navigated in place, sub-path as the fragment.
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'file:///app/pages/settings.html#shortcuts'
+      );
+    });
+
+    test('leaves the current tab alone when the page was routed elsewhere', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+
+      ctx.mod.loadTarget('freedom://settings');
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    // "Leaves the tab alone" is the whole tab, not just its webview: the entry
+    // bookkeeping at the top of loadTarget acts on the tab being navigated, so
+    // it has to run *after* the routing decision, never before it.
+    test('a routed-away open keeps the current tab\'s uncommitted draft (#314)', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.elements.addressInput.value = 'half-typed-draft';
+      ctx.elements.addressInput.dispatch('input');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-draft');
+
+      // Settings opens from the hamburger menu and is routed to its own tab.
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-draft');
+      expect(ctx.elements.addressInput.value).toBe('half-typed-draft');
+
+      // The in-place answer still commits the bar, as every chrome-driven
+      // navigation does.
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+    });
+
+    // …with one exception: the draft the user *committed*. Typing
+    // `freedom://settings` and pressing Enter ends that edit wherever the open
+    // lands — holding it would leave the committed text as a phantom draft
+    // that repaints, focused, on every switch back to this tab.
+    test('a routed-away address-bar commit still ends the committed edit', async () => {
+      const tabB = createTab(2, 'https://second.example', {
+        title: 'Settings',
+        webview: createWebview('https://second.example', { webContentsId: 22 }),
+      });
+      const ctx = await loadNavigationModule();
+      const tabA = ctx.activeRef.tab;
+      ctx.tabsRef.list = [tabA, tabB];
+      await ctx.mod.initNavigation();
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+
+      // Routing to another tab switches to it synchronously, exactly as
+      // `openOrFocusInternalPage` does — which fires the `tab-switched`
+      // handler while the edit is still in progress and re-saves the bar as
+      // this tab's draft. The clear has to survive that, i.e. run after.
+      ctx.tabsMocks.routeInternalPageNavigation.mockImplementationOnce(() => {
+        ctx.activeRef.tab = tabB;
+        ctx.tabsMocks.webviewEventHandler('tab-switched', {
+          tabId: tabB.id,
+          tab: tabB,
+          isNewTab: false,
+        });
+        return true;
+      });
+
+      ctx.elements.addressInput.value = 'freedom://settings';
+      ctx.elements.addressInput.dispatch('input');
+      ctx.elements.navForm.dispatch('submit', { preventDefault: jest.fn() });
+      await flushMicrotasks();
+
+      expect(tabA.navigationState.addressBarPendingInput).toBeNull();
+      // …and the committed text is not adopted as the leaving tab's page
+      // display either, so switching back paints Page A's own URL.
+      expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
+
+      // Switching back leaves the bar on the page URL, unfocused — the page
+      // keeps the keyboard (#319) instead of an uncommitted-edit exception.
+      ctx.elements.addressInput.focus.mockClear();
+      ctx.activeRef.tab = tabA;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+      expect(ctx.elements.addressInput.value).toBe(`switched:${tabA.url}`);
+      expect(ctx.elements.addressInput.focus).not.toHaveBeenCalled();
+    });
+
+    test('a routed-away open leaves an in-flight Swarm probe running', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${'a'.repeat(64)}`);
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+
+      // Settings opens in its own tab while the probe is still in flight: the
+      // bzz navigation on this tab was never interrupted, so it must settle.
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+
+      expect(ctx.swarmProbeState.cancelCalls).toEqual([]);
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+
+      // An open that *does* land here is a real navigation away, and cancels it.
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+      expect(ctx.swarmProbeState.cancelCalls).toEqual(['probe-1']);
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
     });
   });
 

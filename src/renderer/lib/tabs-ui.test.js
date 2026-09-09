@@ -192,6 +192,9 @@ const loadTabsModule = async (options = {}) => {
       url === 'freedom://private' ||
       url === internalPages.home ||
       url === internalPages.private,
+    // Mirrors `page-urls.js#isNewTabPageName`, the name-keyed form the
+    // internal-page singleton rules consult.
+    isNewTabPageName: (pageName) => pageName === 'home' || pageName === 'private',
   }));
 
   const mod = await import('./tabs.js');
@@ -935,7 +938,9 @@ describe('tabs ui behavior', () => {
     expect(elements.closeRightBtn.disabled).toBe(false);
     expect(elements.closeOthersBtn.disabled).toBe(false);
     expect(elements.tabContextMenu.style.left).toBe('672px');
-    expect(elements.tabContextMenu.style.top).toBe('552px');
+    // Flipped up from the pointer rather than shoved against the window's
+    // bottom edge — the shared context-menu placement rule (#324).
+    expect(elements.tabContextMenu.style.top).toBe('550px');
 
     elements.tabContextMenu.dispatch('click', { target: elements.pinBtn });
     expect(mod.getTabs().find((tab) => tab.id === secondTab.id).pinned).toBe(true);
@@ -1455,6 +1460,152 @@ describe('tabs ui behavior', () => {
     const focused = mod.openInNewTabWithTarget('freedom://settings', null);
     expect(focused.id).toBe(opened.id);
     expect(mod.getActiveTab().id).toBe(opened.id);
+  });
+
+  // #325: the chrome paths (hamburger menu, address bar, bookmark, same-tab
+  // link) reach the internal pages through `loadTarget`, which asks
+  // `routeInternalPageNavigation` where the open belongs. Chrome's model:
+  // focus the page's tab if it exists, overwrite an empty New Tab if not, and
+  // otherwise open a new tab rather than navigating the current page away.
+  describe('routeInternalPageNavigation', () => {
+    const SETTINGS_URL = 'file:///app/pages/settings.html';
+
+    const setup = async () => {
+      const { mod } = await loadTabsModule({
+        internalPages: { settings: SETTINGS_URL, home: HOME_URL },
+      });
+      mod.setLoadTargetHandler(jest.fn());
+      await mod.initTabs();
+      return mod;
+    };
+
+    test('overwrites an empty New Tab when the page has no tab yet', async () => {
+      const mod = await setup();
+      const newTabPage = mod.getActiveTab();
+
+      // False = "navigate this tab in place", which is what loadTarget then
+      // does. No tab is created and none is switched to.
+      expect(mod.routeInternalPageNavigation('settings', null, newTabPage.webview)).toBe(false);
+      expect(mod.getTabs()).toHaveLength(1);
+      expect(mod.getActiveTab().id).toBe(newTabPage.id);
+    });
+
+    // The overwrite above is not committed until `did-navigate` fires (~100 ms
+    // later), so the tab has to claim the page up front: a second open arriving
+    // inside that window otherwise finds no Settings tab and duplicates it —
+    // the race `findInternalPageTab`'s freedom:// arm exists to close.
+    test('claims the overwritten tab for the page while it is still resolving', async () => {
+      const mod = await setup();
+      const newTabPage = mod.getActiveTab();
+
+      expect(mod.routeInternalPageNavigation('settings', 'rpc', newTabPage.webview)).toBe(false);
+      expect(newTabPage.url).toBe('freedom://settings/rpc');
+
+      // A second open from another tab, before the first has committed, is
+      // answered by that same tab rather than by a new one.
+      const otherTab = mod.createTab('https://example.com/');
+      expect(mod.routeInternalPageNavigation('settings', null, otherTab.webview)).toBe(true);
+      expect(mod.getTabs()).toHaveLength(2);
+      expect(mod.getActiveTab().id).toBe(newTabPage.id);
+    });
+
+    test('opens a new tab from a page with content', async () => {
+      const mod = await setup();
+      const pageTab = mod.createTab('https://example.com/');
+
+      expect(mod.routeInternalPageNavigation('settings', null, pageTab.webview)).toBe(true);
+      expect(mod.getTabs()).toHaveLength(3); // new-tab page, example.com, settings
+      const settingsTab = mod.getTabs().at(-1);
+      expect(settingsTab.url).toBe('freedom://settings');
+      expect(mod.getActiveTab().id).toBe(settingsTab.id);
+      // The page the user was reading is still that page — `true` tells
+      // loadTarget not to navigate it.
+      expect(pageTab.url).toBe('https://example.com/');
+    });
+
+    test('focuses the existing Settings tab instead of duplicating it', async () => {
+      const mod = await setup();
+      const pageTab = mod.createTab('https://example.com/');
+      mod.routeInternalPageNavigation('settings', null, pageTab.webview);
+      const settingsTab = mod.getActiveTab();
+      settingsTab.url = SETTINGS_URL; // as the resolved page commits it
+
+      // Back on a fresh New Tab, the regression from #325: this opened a
+      // second Settings tab (in place) rather than focusing the first.
+      const newTab = mod.createTab();
+      expect(mod.routeInternalPageNavigation('settings', null, newTab.webview)).toBe(true);
+      expect(mod.getTabs()).toHaveLength(4); // no fifth tab
+      expect(mod.getActiveTab().id).toBe(settingsTab.id);
+    });
+
+    test('routes a sub-path into the reused tab and terminates on its own tab', async () => {
+      jest.useFakeTimers();
+      const mod = await setup();
+      const onLoadTarget = jest.fn();
+      mod.setLoadTargetHandler(onLoadTarget);
+      const pageTab = mod.createTab('https://example.com/');
+      mod.routeInternalPageNavigation('settings', null, pageTab.webview);
+      const settingsTab = mod.getActiveTab();
+      settingsTab.url = SETTINGS_URL;
+
+      // A deep link from another tab reuses this one and re-navigates it to
+      // the section, through that tab's own webview.
+      expect(mod.routeInternalPageNavigation('settings', 'shortcuts', pageTab.webview)).toBe(true);
+      expect(mod.getTabs()).toHaveLength(3);
+      jest.runOnlyPendingTimers();
+      expect(onLoadTarget).toHaveBeenCalledWith(
+        'freedom://settings/shortcuts',
+        null,
+        settingsTab.webview
+      );
+
+      // That re-navigation re-enters loadTarget with the focused tab's own
+      // webview: answering "this tab" is what stops it looping.
+      expect(mod.routeInternalPageNavigation('settings', 'shortcuts', settingsTab.webview)).toBe(
+        false
+      );
+      expect(mod.getTabs()).toHaveLength(3);
+    });
+
+    // A new-tab page is not a singleton: `freedom://home` typed in the address
+    // bar (or clicked in links.html) navigates the tab you are on, as it did
+    // before the singleton rule reached `loadTarget` — it must not strand that
+    // page in a leftover tab and spawn a second New Tab next to it.
+    test('navigates a new-tab page in place from a tab with content', async () => {
+      const mod = await setup();
+      const pageTab = mod.createTab('https://example.com/');
+
+      expect(mod.routeInternalPageNavigation('home', null, pageTab.webview)).toBe(false);
+      expect(mod.getTabs()).toHaveLength(2); // the window's New Tab and this one
+      expect(mod.getActiveTab().id).toBe(pageTab.id);
+    });
+
+    // …and it must not focus some *other* New Tab already in the strip either.
+    test('does not focus another New Tab when navigating to the new-tab page', async () => {
+      const mod = await setup();
+      const firstNewTab = mod.getActiveTab();
+      const pageTab = mod.createTab('https://example.com/');
+
+      expect(mod.routeInternalPageNavigation('home', null, pageTab.webview)).toBe(false);
+      expect(mod.getActiveTab().id).toBe(pageTab.id);
+      expect(mod.getActiveTab().id).not.toBe(firstNewTab.id);
+      expect(mod.getTabs()).toHaveLength(2);
+    });
+
+    // The same rule on the link paths that never reach `loadTarget`: a
+    // Ctrl/Cmd+click on a `freedom://home` link opens another New Tab rather
+    // than silently routing the open into an existing one (where, with no
+    // sub-path to re-navigate, it did nothing at all).
+    test('a link to the new-tab page opens its own tab', async () => {
+      const mod = await setup();
+      const firstNewTab = mod.getActiveTab();
+
+      const opened = mod.openInNewTabWithTarget('freedom://home', null);
+
+      expect(opened.id).not.toBe(firstNewTab.id);
+      expect(mod.getTabs()).toHaveLength(2);
+      expect(opened.url).toBe('freedom://home');
+    });
   });
 
   // #303: Chrome resolves the modifier before the `target` attribute — a
