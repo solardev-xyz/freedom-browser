@@ -684,9 +684,7 @@ jobs:
 
   windows-x64:
     runs-on: windows-latest
-    # 120 rather than the 90 the other non-mac jobs use: compiling Arti from
-    # crates.io adds the better part of half an hour on this runner.
-    timeout-minutes: 120
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
