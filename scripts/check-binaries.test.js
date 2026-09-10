@@ -4,6 +4,7 @@ jest.mock('fs', () => ({
 }));
 
 const fs = require('fs');
+const path = require('path');
 const packageJson = require('../package.json');
 const { checkBinaries, ensureOptionalArti } = require('./check-binaries');
 const { platformKey } = require('./fetch-radicle-addon');
@@ -113,7 +114,12 @@ describe('Arti (Tor) build inputs', () => {
 
     expect(fs.existsSync).toHaveBeenCalledWith(expect.stringContaining(`${os}-${arch}`));
     const probed = fs.existsSync.mock.calls.flat();
-    expect(probed.some((target) => target.endsWith(`${os}-${arch}/${binName}`))).toBe(true);
+    // ensureOptionalArti builds the probe with path.join, so the separator is
+    // the *host's* — `\` on a Windows contributor's machine. Join the expected
+    // tail the same way rather than hard-coding `/`, the way
+    // tor-manager.test.js already does with path.sep.
+    const expectedTail = path.join(`${os}-${arch}`, binName);
+    expect(probed.some((target) => target.endsWith(expectedTail))).toBe(true);
     expect(fs.mkdirSync).toHaveBeenCalledWith(expect.stringContaining(`${os}-${arch}`), {
       recursive: true,
     });

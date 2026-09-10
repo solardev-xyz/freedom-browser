@@ -224,9 +224,14 @@ test.describe('packaged bundled nodes', () => {
       // `bundle_tor=false` dispatch run and a cross-built package do not. Ask
       // the app, which resolves the path through tor-manager's own
       // getArtiBinaryPath() — resources/arti-bin/arti(.exe) in a package —
-      // rather than guessing a layout from the outside. The release
-      // workflow's Windows smoke job asserts that file separately, so this
-      // skip cannot hide a dropped `win.extraResources` entry there.
+      // rather than guessing a layout from the outside. Every smoke job in the
+      // release workflow asserts that file separately, in both of the
+      // artifacts its platform ships — all six legs: the `.deb` and the
+      // extracted AppImage (x64 and arm64), the app out of the `.dmg` and the
+      // one out of the `-mac.zip`, the installed NSIS package and the portable
+      // zip — each gated on the same `BUNDLE_TOR` expression as the build
+      // jobs. So this skip cannot hide a dropped `extraResources` entry on any
+      // platform, and no artifact relies on this leg for that guarantee.
       const { available } = await window.evaluate(() => window.tor.checkBinary());
       test.skip(
         !available,
