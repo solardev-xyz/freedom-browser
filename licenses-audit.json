@@ -39,13 +39,14 @@
       "bundled_with_app": true,
       "linking_or_integration": "framework",
       "risk": "yellow",
-      "issues": [
-        {
-          "kind": "notice",
-          "details": "Electron bundles Chromium which contains numerous third-party components with various licenses. Electron provides a LICENSES.chromium.html file that must be distributed.",
-          "recommended_fix": "Include Electron's LICENSES.chromium.html in distribution or link to it in your notice file"
-        }
-      ]
+      "issues": [],
+      "chromium_notices": {
+        "file": "LICENSES.chromium.html",
+        "status": "shipped in every artifact",
+        "linux": "beside the freedom executable (/opt/Freedom/, AppImage mount root), from the Electron dist",
+        "win": "beside Freedom.exe in the installation directory, from the Electron dist",
+        "mac": "Freedom.app/Contents/Resources/LICENSES.chromium.html, copied by package.json build.mac.extraResources because electron-builder unlinks the dist copy on the macOS path (app-builder-lib/out/electron/electronMac.js) and the .dmg/.zip carry only the .app"
+      }
     },
     {
       "name": "ant (Swarm)",
@@ -853,9 +854,9 @@
       "details": "src/renderer/vendor/openlv.esm.js must stay a single generated file containing only upstream LGPL code. Inlining it into an app bundle, or mixing Freedom code into it, would turn LGPL section 4 into an obligation Freedom cannot meet."
     },
     {
-      "priority": "recommended",
-      "action": "Ship Electron's LICENSES.chromium.html",
-      "details": "Include or reference Electron's bundled third-party license notices."
+      "priority": "required",
+      "action": "Keep shipping Electron's LICENSES.chromium.html on macOS",
+      "details": "Linux and Windows packages inherit it from the Electron dist. macOS does not: electron-builder unlinks it, and the .dmg/-mac.zip carry only Freedom.app, so build.mac.extraResources copies it into Contents/Resources. Dropping that entry silently removes Chromium's third-party attribution from every macOS artifact; licenses-audit.test.js fails if it goes."
     },
     {
       "priority": "recommended",

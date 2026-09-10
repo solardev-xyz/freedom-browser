@@ -33,6 +33,10 @@
 
 It has been deleted, along with two other unreferenced vendor files that came in with the same commit: `qrcode.esm.js`, and `qrcode.min.js` — the latter a 64-byte jsDelivr _"Couldn't find the requested file"_ error body saved as JavaScript. The app's QR rendering has always used the npm `qrcode` package (MIT) from the main process (`src/main/wallet/wallet-ipc.js`).
 
+### Resolved during this audit: macOS shipped no Chromium notices
+
+`NOTICES` told every user to "see LICENSES.chromium.html in app bundle". No macOS artifact contained one: electron-builder deletes the file Electron ships beside the executable when it builds a `.app`, and the `.dmg` and `-mac.zip` carry only `Freedom.app`, so the reference resolved nowhere on the one platform where it needed an explicit copy. Freedom now ships that file in every artifact — see [_Electron Framework_](#electron-framework) for the per-platform path and the guards that keep it there.
+
 ---
 
 ## Distribution Model
@@ -151,12 +155,19 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 - **Risk:** Yellow (requires notice)
 - **Notes:** Electron bundles Chromium, which contains hundreds of third-party components under various permissive licenses.
 
-### Action Required
+### Chromium's third-party notices
 
-Electron generates a `LICENSES.chromium.html` file containing all Chromium third-party notices. This should be:
+Electron generates every Chromium third-party notice into a single `LICENSES.chromium.html` and ships it in its dist directory, beside the executable. Freedom distributes that file with every package, and `NOTICES` names its per-platform location:
 
-1. Shipped with the application, OR
-2. Referenced in the third-party notices file with a link to Electron's upstream notices
+| Platform | Location in the shipped artifact                        | How it gets there                                          |
+| -------- | ------------------------------------------------------- | ---------------------------------------------------------- |
+| Linux    | beside `freedom` (`/opt/Freedom/`, AppImage mount root) | copied verbatim from the Electron dist by electron-builder |
+| Windows  | beside `Freedom.exe` in the installation directory      | same                                                       |
+| macOS    | `Freedom.app/Contents/Resources/LICENSES.chromium.html` | `package.json` `build.mac.extraResources`                  |
+
+The macOS row is an explicit copy because electron-builder **deletes** the file on the macOS path — `unlinkIfExists(path.join(appOutDir, "LICENSES.chromium.html"))` in `app-builder-lib/out/electron/electronMac.js` — and, even unremoved, it would sit beside `Freedom.app` rather than inside it, so neither the `.dmg` nor the `-mac.zip` (both of which carry only the `.app`) would have contained it. Until this revision `NOTICES` pointed macOS users at a file no macOS artifact shipped.
+
+`scripts/build.js` fails the build if `node_modules/electron/dist/LICENSES.chromium.html` is absent (an install that skipped Electron's binary download), and `licenses-audit.test.js` fails if the macOS `extraResources` entry is dropped.
 
 ---
 
@@ -226,7 +237,7 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 
 `NOTICES` must carry attribution for:
 
-1. **Electron** — MIT, and a reference to Chromium's `LICENSES.chromium.html`
+1. **Electron** — MIT, and the shipped-file location of Chromium's `LICENSES.chromium.html` on each platform
 2. **Ant (Swarm)** — MIT OR Apache-2.0
 3. **freedom-ipfs** — MIT OR Apache-2.0
 4. **libradicle** — MIT OR Apache-2.0
@@ -242,13 +253,13 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 
 `licenses-audit.test.js` checks 2–10 against what `package.json` and `src/renderer/vendor/` actually ship, and fails on anything new that has not been classified.
 
-## Ship License Files (Recommended)
+## License files shipped in the app
 
-Consider bundling license files in the distributed app:
+`build.extraResources` puts the licence texts themselves inside every artifact, so a user who has only the installed application can read them:
 
-- `resources/licenses/LICENSE` (MPL-2.0 for Freedom Browser)
-- `resources/licenses/NOTICES`
-- Reference to Electron's `LICENSES.chromium.html`
+- `resources/LICENSE` — MPL-2.0, Freedom Browser's own licence
+- `resources/NOTICES` — this attribution set
+- `LICENSES.chromium.html` — Chromium's third-party notices (see _Electron Framework_ above for the per-platform path)
 
 ---
 
@@ -318,7 +329,7 @@ Freedom Browser can be released under MPL-2.0, with these conditions:
 - [x] LGPL relinking instructions present in `NOTICES`
 - [x] No GPL/AGPL code in the packaged artifact
 - [ ] Add MPL-2.0 header comments to source files (optional but recommended)
-- [ ] Include or reference Electron's Chromium license notices
+- [x] Electron's `LICENSES.chromium.html` ships in every artifact, macOS included
 
 ---
 

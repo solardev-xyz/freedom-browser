@@ -120,6 +120,10 @@
           "filter": [
             "**/*"
           ]
+        },
+        {
+          "from": "node_modules/electron/dist/LICENSES.chromium.html",
+          "to": "LICENSES.chromium.html"
         }
       ]
     },
@@ -231,6 +235,14 @@
       {
         "from": "config/default-bookmarks.json",
         "to": "default-bookmarks.json"
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "NOTICES",
+        "to": "NOTICES"
       }
     ]
   },

@@ -89,7 +89,18 @@ Electron
   License: MIT
   Copyright (c) Electron contributors
   https://github.com/electron/electron
-  Chromium licenses: see LICENSES.chromium.html in app bundle
+  Electron embeds Chromium, whose several hundred third-party components
+  carry their own notices. Electron generates them all into a single
+  `LICENSES.chromium.html`, and Freedom ships that file with every package:
+    macOS    inside the bundle, `Freedom.app/Contents/Resources/`
+    Linux    beside the `freedom` executable (`/opt/Freedom/` for the .deb,
+             the mount root inside the AppImage)
+    Windows  beside `Freedom.exe` in the installation directory
+  The macOS copy is placed there deliberately, by
+  `package.json` `build.mac.extraResources`: on that platform
+  electron-builder deletes the copy Electron ships beside the executable,
+  and the `.dmg`/`.zip` carry only `Freedom.app`, so without it the file
+  would reach no macOS user at all.
 
 == Ad blocking ==
 
