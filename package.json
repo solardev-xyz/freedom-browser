@@ -185,6 +185,13 @@
           "filter": [
             "libradicle.node"
           ]
+        },
+        {
+          "from": "arti-bin/${os}-${arch}/",
+          "to": "arti-bin",
+          "filter": [
+            "**/*"
+          ]
         }
       ]
     },

@@ -93,9 +93,27 @@ test('Radicle is first-class, profile-visible, and opt-in at startup', async ({
   const radicleNodeRow = settingsPage.locator('.profile-node[data-protocol="radicle"]');
   await expect(radicleNodeRow).toHaveCount(1);
   await expect(radicleNodeRow).toBeVisible();
-  const platform = await settingsPage.evaluate(() => window.freedomAPI.getPlatform());
-  if (platform === 'win32') {
-    await expect(settingsPage.locator('.profile-node[data-protocol="tor"]')).toHaveCount(0);
+  // The Tor rows follow the bundled Arti binary, not the platform (#337):
+  // the Experimental rows are up on any build that bundles one, and the Nodes
+  // row appears once the integration is enabled — on every platform.
+  const [torBundled, torEnabled] = await settingsPage.evaluate(async () => {
+    const [binary, settings] = await Promise.all([
+      window.freedomAPI.checkTorBinary(),
+      window.freedomAPI.getSettings(),
+    ]);
+    return [binary?.available === true, settings?.enableTorIntegration === true];
+  });
+  await expect(settingsPage.locator('.profile-node[data-protocol="tor"]')).toHaveCount(
+    torEnabled ? 1 : 0
+  );
+  await settingsPage.evaluate(() => {
+    location.hash = '#experimental';
+  });
+  const torExperimentalRow = settingsPage.locator('[data-tor]').first();
+  if (torBundled) {
+    await expect(torExperimentalRow).toBeVisible();
+  } else {
+    await expect(torExperimentalRow).toBeHidden();
   }
 
   // Leave the shared fixture in its default state for later specs.

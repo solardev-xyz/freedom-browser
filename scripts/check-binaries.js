@@ -147,9 +147,9 @@ function checkBinaries(platforms) {
  */
 function ensureOptionalArti(platforms) {
   for (const { os, arch } of platforms) {
-    if (os === 'win') continue; // Arti is bundled for macOS/Linux only
     const platformDir = `${os}-${arch}`;
-    const artiPath = path.join(ARTI_BIN_DIR, platformDir, 'arti');
+    // Same name `scripts/fetch-arti.js` writes and `tor-manager.js` looks for.
+    const artiPath = path.join(ARTI_BIN_DIR, platformDir, os === 'win' ? 'arti.exe' : 'arti');
     if (!fs.existsSync(artiPath)) {
       fs.mkdirSync(path.join(ARTI_BIN_DIR, platformDir), { recursive: true });
       console.warn(
