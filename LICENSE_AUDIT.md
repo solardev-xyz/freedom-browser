@@ -19,7 +19,7 @@
 
 | Category                                                  | Count       | Status                                      |
 | --------------------------------------------------------- | ----------- | ------------------------------------------- |
-| Production npm packages (unique name@version)             | 265         | See distribution below                      |
+| Production npm packages (unique name@version)             | 273         | See distribution below                      |
 | Dev npm dependencies                                      | not bundled | Do not affect the distributed product       |
 | External binaries / native addons shipped in `resources/` | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti |
 | Vendored renderer bundles in `src/renderer/vendor/`       | 4           | OpenLV, highlight.js, marked, DOMPurify     |
@@ -191,17 +191,17 @@ The macOS row is an explicit copy because electron-builder **deletes** the file 
 
 ## Production Dependency License Distribution
 
-Walk of `package.json` `dependencies` plus their transitive `dependencies` in the installed tree, deduplicated by `name@version`.
+Walk of `package.json` `dependencies` and `optionalDependencies` plus their transitive `dependencies`, `optionalDependencies` and `peerDependencies` in the installed tree, deduplicated by `name@version`. The optional and peer arms matter: npm installs both on a production install, and eight packages (`@peculiar/*`, `asn1js`, `pvtsutils`, `pvutils`, `webcrypto-core`, reached through `gun`'s optional `@peculiar/webcrypto`) ship in `app.asar` without appearing in any `dependencies` chain.
 
 | License                           | Count   |
 | --------------------------------- | ------- |
-| MIT                               | 191     |
+| MIT                               | 198     |
 | Apache-2.0                        | 21      |
 | ISC                               | 20      |
 | MPL-2.0                           | 13      |
+| BSD-3-Clause                      | 4       |
 | LGPL-3.0-only                     | 4       |
 | Apache-2.0 OR MIT                 | 3       |
-| BSD-3-Clause                      | 3       |
 | 0BSD                              | 3       |
 | LGPL-3.0                          | 1       |
 | MIT OR X11                        | 1       |
@@ -210,18 +210,28 @@ Walk of `package.json` `dependencies` plus their transitive `dependencies` in th
 | Zlib OR MIT OR Apache-2.0         | 1       |
 | Python-2.0                        | 1       |
 | BlueOak-1.0.0                     | 1       |
-| **Total**                         | **265** |
+| **Total**                         | **273** |
 
 ---
 
 ## Assets
 
-| Asset                                   | Type             | License                                                        |
-| --------------------------------------- | ---------------- | -------------------------------------------------------------- |
-| `assets/icon.png`, `assets/icons/*.png` | Icons            | Proprietary (Freedom Team)                                     |
-| `assets/adblock/*`                      | Filter-list data | GPLv3+ or CC BY-SA 3.0+ — redistributed under the CC BY-SA arm |
+Two paths put non-code files in the artifacts, and both are inventoried here. `build.extraResources` copies `assets/` whole — icons plus the CC BY-SA filter-list data in `assets/adblock/`. `build.files`' `src/**/*` pattern commits everything under `src/` into `app.asar`, media included; `licenses-audit.test.js` fails on any file there this table does not account for.
+
+| Asset                                                                            | Ships via        | Type                               | License                                                        |
+| -------------------------------------------------------------------------------- | ---------------- | ---------------------------------- | -------------------------------------------------------------- |
+| `assets/icon.png`, `assets/icons/*.png`                                          | `extraResources` | Icons                              | Proprietary (Freedom Team)                                     |
+| `assets/adblock/*`                                                               | `extraResources` | Filter-list data                   | GPLv3+ or CC BY-SA 3.0+ — redistributed under the CC BY-SA arm |
+| `src/renderer/pages/images/home.png` (2.65 MB), `freedom-logo-{black,white}.svg` | `app.asar`       | Internal-page artwork and wordmark | Proprietary (Freedom Team)                                     |
+| `src/renderer/assets/chains/*.png` (3)                                           | `app.asar`       | Chain marks                        | Third-party marks — see below                                  |
+| `src/renderer/assets/tokens/*.png` (8)                                           | `app.asar`       | Token marks                        | Third-party marks — see below                                  |
+| `src/main/myotis/native/*.c`                                                     | `app.asar`       | Myotis supervisor sources          | MPL-2.0, Freedom's own                                         |
 
 The filter lists (EasyList, EasyPrivacy, Fanboy Cookiemonster, Fanboy Annoyances) are dual-licensed **data, not code**. Freedom takes the CC BY-SA arm, which needs attribution only; the GPL arm is not exercised. Attributed in `NOTICES`.
+
+`src/renderer/pages/images/` is Freedom's own internal-page artwork and wordmark, and `src/main/myotis/native/` is Freedom's own Myotis supervisor sources — original works under the same MPL-2.0 as the rest of the tree, needing no third-party notice. They are listed because the audit claims to describe what the artifact contains, and until this revision it named only `assets/`: a third-party file committed under `src/` outside `vendor/` was exactly how `qrious.min.js` shipped unnoticed.
+
+**Open item — the chain and token marks.** The chain marks in `src/renderer/assets/chains/` and the token marks in `src/renderer/assets/tokens/` are third-party logos (Ethereum, Gnosis, Base, Swarm, MakerDAO, Circle, Tether, Monerium). Freedom ships them to identify the chain or token each labels, which is nominative use, and `NOTICES` says so and claims no ownership. Per-mark redistribution terms have **not** been confirmed against each project's brand guidelines; several publish permissive brand kits and none is known to object, so this is recorded as a yellow open item for the maintainer rather than a blocker. Confirm before a final tag, or replace the marks with generic glyphs.
 
 ---
 
@@ -249,9 +259,10 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 10. **DOMPurify** — MPL-2.0 OR Apache-2.0
 11. **@ghostery/adblocker** — MPL-2.0
 12. **Ad-blocking filter lists** — CC BY-SA
-13. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
+13. **Chain and token marks** committed under `src/renderer/assets/` — third-party marks, terms unconfirmed (see _Assets_)
+14. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
 
-`licenses-audit.test.js` checks 2–10 against what `package.json` and `src/renderer/vendor/` actually ship, and fails on anything new that has not been classified.
+`licenses-audit.test.js` checks 2–13 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
 
 ## License files shipped in the app
 
@@ -318,7 +329,7 @@ Freedom Browser can be released under MPL-2.0, with these conditions:
 - **Weak copyleft (MPL-2.0, LGPL-3.0) is present and handled**, not absent
 - **All runtime binaries and native addons are permissively licensed**
 - **Myotis requires its upstream `NOTICE` reproduced**, per Apache-2.0 §4(d)
-- **Assets are original works**, except the CC BY-SA filter-list data
+- **Assets are original works**, except the CC BY-SA filter-list data and the third-party chain/token marks
 
 ### Checklist Before Release
 

@@ -10,19 +10,26 @@
  * v0.5.21, libradicle 0.3.0, "downloaded binaries: 2"). The same blind spot
  * hid a GPL-3.0 QR library (`qrious.min.js`) shipping inside `app.asar`.
  *
- * So the inventory is not written down twice. It is derived from the two
+ * So the inventory is not written down twice. It is derived from the three
  * places that decide what ships —
  *
- *   1. `package.json` `build.extraResources` (+ the mac/linux/win scopes),
- *      which is what puts binaries and native addons under `resources/`;
+ *   1. `package.json` `build.extraResources` (every scope, not just the
+ *      mac/linux/win ones that exist today), which is what puts binaries and
+ *      native addons under `resources/`;
  *   2. `src/renderer/vendor/`, whose committed files ship inside `app.asar`
  *      via the `src/**` files pattern;
+ *   3. the rest of what that same `src/**` pattern ships — every committed
+ *      non-source file under `src/`, because `vendor/` is a convention, not a
+ *      boundary: qrious would have shipped exactly the same way from
+ *      `src/renderer/lib/`, and the committed page media is third-party-
+ *      looking content nothing else in the audit names;
  *
  * — and every entry must be classified below. Adding a bundled component
  * without classifying it fails this suite, which is the property that was
  * missing. Versions are read from their single source of truth (the fetch
  * scripts' pins, the lockfile) and compared with what the audit records, so a
- * bump cannot leave the audit stale either.
+ * bump cannot leave the audit stale either, and the audit's own baseline is
+ * pinned to `package.json`'s version so a release cannot carry a stale one.
  */
 
 const fs = require('fs');
@@ -36,7 +43,14 @@ const audit = JSON.parse(read('licenses-audit.json'));
 const notices = read('NOTICES');
 const auditDoc = read('LICENSE_AUDIT.md');
 
+const SRC_DIR = 'src';
 const VENDOR_DIR = 'src/renderer/vendor';
+
+/** Extensions `src/` holds that are Freedom's own source rather than an asset. */
+const SOURCE_EXTENSIONS = new Set(['.js', '.css', '.html', '.json', '.md']);
+
+/** Extensions worth reading as text when sweeping `src/` for licence headers. */
+const TEXT_EXTENSIONS = new Set([...SOURCE_EXTENSIONS, '.svg', '.c', '.h', '.mjs', '.cjs', '.ts']);
 
 /**
  * Every `from` path `build.extraResources` may name, and what it ships.
@@ -93,9 +107,15 @@ const EXTRA_RESOURCES = {
     auditName: 'electron',
     noticeMatch: /^Electron$/m,
   },
+  // Freedom's own icons, but `assets/adblock/` packages EasyList and friends,
+  // whose CC BY-SA arm needs attribution. Classifying the whole path as
+  // first-party exempted that obligation from every check below, so the
+  // filter-list block could be deleted from NOTICES with the suite green.
   'assets/': {
-    thirdParty: false,
-    label: 'icons plus the CC BY-SA filter-list data in assets/adblock/',
+    thirdParty: true,
+    label: 'icons plus the CC BY-SA filter-list data in `assets/adblock/`',
+    auditName: 'ad-blocking filter lists',
+    noticeMatch: /^Ad-blocking filter lists \(bundled data, not code\)$/m,
   },
   'config/ant.yaml': { thirdParty: false, label: "Freedom's own Ant config" },
   'config/default-bookmarks.json': { thirdParty: false, label: "Freedom's own bookmark seed" },
@@ -137,19 +157,91 @@ const VENDOR_FILES = {
   },
 };
 
-/** Every `from` path in every scope of `build.extraResources`. */
+/**
+ * Every non-source file the `src/**` files pattern ships, by the directory it
+ * lives in. `src/renderer/vendor/` is enumerated file-by-file above; this
+ * covers the rest, which the audit never named — `home.png` alone is 2.65 MB
+ * inside every artifact.
+ *
+ * `thirdParty` entries must be attributed; `firstParty` ones are Freedom's own
+ * work and must not be. Every `label` must appear in LICENSE_AUDIT.md, and
+ * every `auditName` in licenses-audit.json.
+ */
+const SRC_ASSETS = {
+  'src/main/myotis/native/': {
+    thirdParty: false,
+    label: "Freedom's own Myotis supervisor sources",
+  },
+  'src/renderer/pages/images/': {
+    thirdParty: false,
+    label: "Freedom's own internal-page artwork and wordmark",
+    auditName: 'internal-page artwork',
+  },
+  'src/renderer/assets/chains/': {
+    thirdParty: true,
+    label: 'chain marks',
+    auditName: 'chain and token marks',
+    noticeMatch: /^Chain and token marks \(sidebar and wallet icons\)$/m,
+  },
+  'src/renderer/assets/tokens/': {
+    thirdParty: true,
+    label: 'token marks',
+    auditName: 'chain and token marks',
+    noticeMatch: /^Chain and token marks \(sidebar and wallet icons\)$/m,
+  },
+};
+
+/**
+ * Every `from` path in every scope of `build.extraResources`.
+ *
+ * Walked rather than read from a fixed [build, mac, linux, win] list: an entry
+ * added under `mas`, or under a target-level scope, ships exactly the same and
+ * would otherwise never reach the classification check below.
+ */
 function declaredExtraResources() {
-  const scopes = [pkg.build, pkg.build.mac, pkg.build.linux, pkg.build.win];
   const froms = [];
-  for (const scope of scopes) {
-    for (const entry of scope?.extraResources ?? []) {
+  const collect = (scope) => {
+    if (!scope || typeof scope !== 'object') return;
+    for (const entry of scope.extraResources ?? []) {
       froms.push(typeof entry === 'string' ? entry : entry.from);
     }
-  }
+    for (const [key, value] of Object.entries(scope)) {
+      if (key !== 'extraResources') collect(value);
+    }
+  };
+  collect(pkg.build);
   return [...new Set(froms)];
 }
 
-const auditByName = new Map(audit.dependencies.map((d) => [d.name, d]));
+/**
+ * Every file `build.files`' `src/**\/*` pattern puts in `app.asar`, minus the
+ * `**\/*.test.js` and `**\/coverage/**` it excludes. Read from disk, not from
+ * git: electron-builder packs the working tree, so an uncommitted file ships
+ * too.
+ */
+function shippedSrcFiles() {
+  const files = [];
+  const walk = (rel) => {
+    for (const entry of fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true })) {
+      const child = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name !== 'coverage') walk(child);
+      } else if (!child.endsWith('.test.js')) {
+        files.push(child);
+      }
+    }
+  };
+  walk(SRC_DIR);
+  return files.sort();
+}
+
+/** The non-source files among them — what SRC_ASSETS has to account for. */
+const shippedSrcAssets = () =>
+  shippedSrcFiles().filter((file) => !SOURCE_EXTENSIONS.has(path.extname(file)));
+
+const auditByName = new Map(
+  [...audit.dependencies, ...(audit.assets ?? [])].map((entry) => [entry.name, entry])
+);
 
 describe('bundled-component inventory', () => {
   it('classifies every path build.extraResources ships', () => {
@@ -164,6 +256,28 @@ describe('bundled-component inventory', () => {
     }
   });
 
+  it('classifies every non-source file the src/**/* pattern ships', () => {
+    for (const file of shippedSrcAssets()) {
+      const dir = `${path.dirname(file)}/`;
+      expect({ file, classified: dir in SRC_ASSETS }).toEqual({ file, classified: true });
+    }
+  });
+
+  it('keeps third-party bundles in src/renderer/vendor, where they get read', () => {
+    // The vendor sweeps below are what catch a copyleft bundle, and they only
+    // look in one directory. A pre-built library dropped anywhere else under
+    // `src/` ships identically and is invisible to them — which is the qrious
+    // bug with the directory changed.
+    const bundled = /\.(min|bundle|umd|esm|dist)\.(js|mjs|cjs|css)$/;
+    for (const file of shippedSrcFiles()) {
+      if (!bundled.test(path.basename(file))) continue;
+      expect({ file, inVendorDir: file.startsWith(`${VENDOR_DIR}/`) }).toEqual({
+        file,
+        inVendorDir: true,
+      });
+    }
+  });
+
   it('does not classify a component that no longer ships', () => {
     const shipped = new Set(declaredExtraResources());
     for (const from of Object.keys(EXTRA_RESOURCES)) {
@@ -173,13 +287,19 @@ describe('bundled-component inventory', () => {
     for (const file of Object.keys(VENDOR_FILES)) {
       expect({ file, present: vendor.has(file) }).toEqual({ file, present: true });
     }
+    const assetDirs = new Set(shippedSrcAssets().map((file) => `${path.dirname(file)}/`));
+    for (const dir of Object.keys(SRC_ASSETS)) {
+      expect({ dir, present: assetDirs.has(dir) }).toEqual({ dir, present: true });
+    }
   });
 });
 
 describe('NOTICES attributes every third-party component that ships', () => {
-  const attributable = [...Object.entries(EXTRA_RESOURCES), ...Object.entries(VENDOR_FILES)].filter(
-    ([, meta]) => meta.thirdParty && !meta.coveredBy
-  );
+  const attributable = [
+    ...Object.entries(EXTRA_RESOURCES),
+    ...Object.entries(VENDOR_FILES),
+    ...Object.entries(SRC_ASSETS),
+  ].filter(([, meta]) => meta.thirdParty && !meta.coveredBy);
 
   it.each(attributable)('%s', (id, meta) => {
     expect({ id, attributed: meta.noticeMatch.test(notices) }).toEqual({ id, attributed: true });
@@ -274,7 +394,17 @@ describe('copyleft', () => {
   // read the header of. Strip LGPL first — the OpenLV bundle is legitimately
   // LGPL and says so — then anything left saying GPL is a hard stop.
   const stripLgpl = (text) => text.replace(/lgpl|lesser general public license/gi, '');
-  const GPL = /a?gpl[-\s]*v?[0-9]|general public license/i;
+  // A bare `GPL` counts. The version-or-full-phrase form this replaces read
+  // `Released under the GPL`, `GNU GPL, version 3` (the comma defeated
+  // `[-\s]*`) and a plain `@license GPL` as clean.
+  const GPL = /\ba?gpl\b|general public license/i;
+
+  // A minified bundle very often carries no licence header at all, which no
+  // regex over its contents can catch. So every attributable vendor file has
+  // to *say* what it is: banners are conventionally the first thing in the
+  // file, so only the head is trusted.
+  const LICENCE_HEADER =
+    /\b(mit|bsd|apache|mpl|mozilla public license|isc|lgpl|gpl|unlicense|cc0|zlib|wtfpl|public domain)\b/i;
 
   it.each(fs.readdirSync(path.join(repoRoot, VENDOR_DIR)).sort())(
     '%s declares no GPL/AGPL licence',
@@ -283,6 +413,26 @@ describe('copyleft', () => {
       expect({ file, gpl: GPL.test(stripLgpl(text)) }).toEqual({ file, gpl: false });
     }
   );
+
+  it.each(Object.entries(VENDOR_FILES).filter(([, meta]) => meta.thirdParty && !meta.coveredBy))(
+    '%s carries a licence header of its own',
+    (file) => {
+      const head = fs.readFileSync(path.join(repoRoot, VENDOR_DIR, file), 'utf8').slice(0, 4096);
+      expect({ file, declares: LICENCE_HEADER.test(head) }).toEqual({ file, declares: true });
+    }
+  );
+
+  it('finds no GPL/AGPL licence anywhere else under src/', () => {
+    // `src/renderer/vendor/` is where a third-party bundle is *supposed* to
+    // go, not where it has to go: the `src/**\/*` files pattern ships all of
+    // `src/`, so the same file in `src/renderer/lib/` is the same bug.
+    for (const file of shippedSrcFiles()) {
+      if (file.startsWith(`${VENDOR_DIR}/`)) continue; // swept per-file above
+      if (!TEXT_EXTENSIONS.has(path.extname(file))) continue;
+      const text = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+      expect({ file, gpl: GPL.test(stripLgpl(text)) }).toEqual({ file, gpl: false });
+    }
+  });
 
   it('every LGPL vendor bundle keeps its relinking instructions in NOTICES', () => {
     const lgpl = Object.entries(VENDOR_FILES).filter(([, meta]) => meta.copyleft?.includes('LGPL'));
@@ -298,10 +448,30 @@ describe('copyleft', () => {
     }
   });
 
-  it('finds no GPL/AGPL package in the production dependency tree', () => {
-    const nodeModules = path.join(repoRoot, 'node_modules');
-    if (!fs.existsSync(nodeModules)) return; // bare checkout; CI installs first
+  // npm records a package's licence three ways: the current `license` string,
+  // the object form `{"type": "...", "url": "..."}`, and the deprecated
+  // `licenses` array. Reading only the string form stringifies the object to
+  // `[object Object]` and leaves the array as `UNKNOWN` — neither matches a
+  // GPL pattern, so a GPL package declaring either would have swept clean.
+  const declaredLicense = (meta) => {
+    if (typeof meta.license === 'string') return meta.license;
+    if (meta.license && typeof meta.license.type === 'string') return meta.license.type;
+    const legacy = (Array.isArray(meta.licenses) ? meta.licenses : [meta.licenses])
+      .map((entry) => (typeof entry === 'string' ? entry : entry?.type))
+      .filter(Boolean);
+    if (legacy.length) return legacy.join(' OR ');
+    return 'UNKNOWN';
+  };
 
+  /**
+   * Every package a production install puts in `app.asar`.
+   *
+   * `dependencies` alone is not that set: npm installs `optionalDependencies`
+   * by default (`gun`'s `@peculiar/webcrypto` is a live example, eight
+   * packages deep) and auto-installs missing `peerDependencies`. Both ship,
+   * so both are walked.
+   */
+  const productionTree = () => {
     const resolveDir = (name, fromDir) => {
       let dir = fromDir;
       for (;;) {
@@ -317,15 +487,35 @@ describe('copyleft', () => {
       const dir = resolveDir(name, fromDir);
       if (!dir || seen.has(dir)) return;
       const meta = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-      seen.set(dir, { name: meta.name, version: meta.version, license: meta.license || 'UNKNOWN' });
-      for (const dep of Object.keys(meta.dependencies || {})) walk(dep, dir);
+      seen.set(dir, { name: meta.name, version: meta.version, license: declaredLicense(meta) });
+      for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+        for (const dep of Object.keys(meta[field] || {})) walk(dep, dir);
+      }
     };
-    for (const dep of Object.keys(pkg.dependencies)) walk(dep, repoRoot);
+    for (const field of ['dependencies', 'optionalDependencies']) {
+      for (const dep of Object.keys(pkg[field] || {})) walk(dep, repoRoot);
+    }
+    return [...seen.values()];
+  };
 
-    const offenders = [...seen.values()]
+  it('finds no GPL/AGPL package in the production dependency tree', () => {
+    if (!fs.existsSync(path.join(repoRoot, 'node_modules'))) return; // bare checkout
+
+    const offenders = productionTree()
       .filter((p) => GPL.test(stripLgpl(String(p.license))))
       .map((p) => `${p.name}@${p.version} (${p.license})`);
     expect(offenders).toEqual([]);
+  });
+
+  it('leaves no production package with an unread licence', () => {
+    // An UNKNOWN matches no licence pattern, so it is indistinguishable from a
+    // clean sweep. Nothing was asserting the set was empty.
+    if (!fs.existsSync(path.join(repoRoot, 'node_modules'))) return; // bare checkout
+
+    const unknown = productionTree()
+      .filter((p) => p.license === 'UNKNOWN')
+      .map((p) => `${p.name}@${p.version}`);
+    expect(unknown).toEqual([]);
   });
 });
 
@@ -344,6 +534,39 @@ describe('audit files agree with each other', () => {
     expect(auditDoc).toMatch(/LGPL-3\.0/);
     expect(JSON.stringify(audit)).toMatch(/LGPL-3\.0/);
     expect(auditDoc).not.toMatch(/Zero GPL\/AGPL\/LGPL dependencies/);
+  });
+
+  it('is baselined against the version being released', () => {
+    // Nothing tied the audit's baseline to `package.json`, so the 0.8.5 cut
+    // would have carried an rc-stamped audit with the whole suite green —
+    // exactly the undetected staleness (`generated_at: 2026-08-19` against a
+    // moved tree) this file exists to stop, one release later.
+    expect({ field: 'audit_baseline', version: audit.audit_baseline }).toEqual({
+      field: 'audit_baseline',
+      version: pkg.version,
+    });
+    const documented = auditDoc.match(/^\*\*Baseline:\*\* `([^`]+)`$/m);
+    expect({ field: 'LICENSE_AUDIT.md Baseline', found: Boolean(documented) }).toEqual({
+      field: 'LICENSE_AUDIT.md Baseline',
+      found: true,
+    });
+    expect({ field: 'LICENSE_AUDIT.md Baseline', version: documented[1] }).toEqual({
+      field: 'LICENSE_AUDIT.md Baseline',
+      version: pkg.version,
+    });
+    const footer = auditDoc.match(/Re-derived from the installed tree on [\d-]+ against `([^`]+)`/);
+    expect({ field: 'LICENSE_AUDIT.md footer', version: footer?.[1] }).toEqual({
+      field: 'LICENSE_AUDIT.md footer',
+      version: pkg.version,
+    });
+  });
+
+  it('describes every classified src asset in both audit files', () => {
+    for (const [dir, meta] of Object.entries(SRC_ASSETS)) {
+      expect({ dir, described: auditDoc.includes(meta.label) }).toEqual({ dir, described: true });
+      if (!meta.auditName) continue;
+      expect({ dir, recorded: auditByName.has(meta.auditName) }).toEqual({ dir, recorded: true });
+    }
   });
 
   it('names the pinned version of every bundled binary in LICENSE_AUDIT.md', () => {

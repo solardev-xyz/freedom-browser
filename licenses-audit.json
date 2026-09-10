@@ -21,7 +21,7 @@
       "src/renderer/vendor/marked.min.js",
       "src/renderer/vendor/purify.min.js"
     ],
-    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS and Linux only, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern."
+    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS and Linux only, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
   },
   "dependencies": [
     {
@@ -767,16 +767,16 @@
     }
   ],
   "production_license_distribution": {
-    "unique_packages": 265,
+    "unique_packages": 273,
     "counts": {
-      "MIT": 191,
+      "MIT": 198,
       "Apache-2.0": 21,
       "ISC": 20,
       "MPL-2.0": 13,
       "LGPL-3.0-only": 4,
       "LGPL-3.0": 1,
       "Apache-2.0 OR MIT": 3,
-      "BSD-3-Clause": 3,
+      "BSD-3-Clause": 4,
       "0BSD": 3,
       "(MIT OR X11)": 1,
       "(MIT OR WTFPL)": 1,
@@ -785,7 +785,7 @@
       "Python-2.0": 1,
       "BlueOak-1.0.0": 1
     },
-    "method": "walk of package.json `dependencies` and their transitive `dependencies` in the installed tree, deduplicated by name@version"
+    "method": "walk of package.json `dependencies` and `optionalDependencies` plus their transitive `dependencies`, `optionalDependencies` and `peerDependencies` in the installed tree, deduplicated by name@version. npm installs optional and auto-installed peer dependencies on a production install, so they ship in app.asar too: eight packages (@peculiar/*, asn1js, pvtsutils, pvutils, webcrypto-core, reached through gun's optional @peculiar/webcrypto) appear in no `dependencies` chain at all"
   },
   "dev_dependencies_summary": {
     "risk_assessment": "Dev dependencies are not shipped with the application and do not affect the license of the distributed product. Notable: caniuse-lite is CC-BY-4.0 but is never distributed.",
@@ -821,9 +821,52 @@
           "recommended_fix": "Attributed in NOTICES."
         }
       ]
+    },
+    {
+      "name": "internal-page artwork",
+      "path": "src/renderer/pages/images/",
+      "type": "asset",
+      "license": {
+        "spdx": ["proprietary"],
+        "raw": "Original work by Freedom Team",
+        "notice_required": false
+      },
+      "risk": "green",
+      "issues": [],
+      "notes": "home.png (2.65 MB) and freedom-logo-{black,white}.svg. Committed under src/, so they ship inside app.asar via the src/**/* files pattern rather than through build.extraResources; no earlier revision of this audit named them."
+    },
+    {
+      "name": "chain and token marks",
+      "path": "src/renderer/assets/",
+      "type": "asset",
+      "license": {
+        "spdx": ["UNKNOWN"],
+        "raw": "Third-party marks of the projects they name; nominative use, no ownership claimed",
+        "notice_required": true
+      },
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "trademark",
+          "details": "3 chain marks (Ethereum, Gnosis, Base) and 8 token marks (BZZ, DAI, ETH, EURC, EURe, USDC, USDT, xDAI) ship in app.asar. They label the chain or token they identify, which is nominative use, but per-mark redistribution terms have not been confirmed against each project's brand guidelines.",
+          "recommended_fix": "Attributed in NOTICES with no ownership claimed. Confirm the brand terms before a final tag, or replace the marks with generic glyphs."
+        }
+      ]
+    },
+    {
+      "name": "myotis supervisor sources",
+      "path": "src/main/myotis/native/",
+      "type": "source",
+      "license": {
+        "spdx": ["MPL-2.0"],
+        "raw": "Freedom's own sources, same license as the rest of the tree",
+        "notice_required": false
+      },
+      "risk": "green",
+      "issues": []
     }
   ],
-  "summary": { "green": 258, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
+  "summary": { "green": 266, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
   "blockers": [],
   "resolved_since_last_audit": [
     {
@@ -841,7 +884,7 @@
     {
       "priority": "required",
       "action": "Keep third-party notices current",
-      "details": "NOTICES must name every component under package.json build.extraResources and every file in src/renderer/vendor/. licenses-audit.test.js enforces this and fails on any unclassified addition."
+      "details": "NOTICES must name every component under package.json build.extraResources and every non-source file the build.files src/**/* pattern ships, src/renderer/vendor/ included. licenses-audit.test.js enforces this and fails on any unclassified addition. It runs in the unit suite (npm test), not at packaging time."
     },
     {
       "priority": "required",
