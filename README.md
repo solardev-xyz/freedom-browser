@@ -10,7 +10,7 @@ Freedom is a browser for the decentralized web, with Swarm, IPFS, onchain applic
 
 Download the latest build for macOS, Linux, or Windows from the official download page at [freedom.baby](https://freedom.baby).
 
-Radicle is available on macOS, Linux, and Windows (x64 and ARM64). Tor is available on every build published on the download page — macOS arm64, Linux x64/arm64 and Windows x64 all bundle the Tor (Arti) client. No Windows ARM64 build is published, so `.onion` access is unavailable on that architecture.
+Radicle is available on macOS, Linux, and Windows (x64 and ARM64). The release workflow bundles the Tor (Arti) client for macOS arm64, Linux x64/arm64 and Windows x64. Windows x64 bundling landed in September 2026, so only releases cut after that carry Arti on Windows — an earlier Windows install has none, and updating to the latest build is the fix. No Windows ARM64 build is published at all, so `.onion` access is unavailable on that architecture.
 
 ## What Freedom supports
 

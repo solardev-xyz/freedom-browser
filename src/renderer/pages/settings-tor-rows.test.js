@@ -58,8 +58,9 @@ describe('applyTorRowVisibility', () => {
     expect(displays(dom)).toEqual(['', '']);
   });
 
-  // The only case that hides them now: a source build made without
-  // `npm run tor:download`. Every shipped artifact bundles Arti.
+  // What hides them now: a source build made without `npm run tor:download`,
+  // or a Windows release cut before Windows Arti bundling landed. Every
+  // artifact the release workflow builds from here on bundles Arti.
   test('hides the rows on a build that bundles none', () => {
     const dom = fakeRows();
     loadApply({ torBundled: false, cachedSettings: { enableTorIntegration: false }, ...dom })();
