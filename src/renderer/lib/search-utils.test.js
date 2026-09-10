@@ -112,6 +112,19 @@ describe('search-utils', () => {
       expect(getSearchProviderLabel(undefined)).toBe('DuckDuckGo');
     });
 
+    // settings-store validates customSearchProviders but never `searchProvider`
+    // itself, so a hand-edited settings.json can carry an Object.prototype key.
+    // A bare index would hand back the prototype's value: the menu row renders
+    // `Search undefined for "…"` and buildSearchUrl throws on the missing
+    // template, which leaves the context menu on screen because the click
+    // handler never reaches hidePageContextMenu().
+    test('falls back to the default for a prototype-key provider id', () => {
+      for (const id of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+        expect(getSearchProviderLabel(id)).toBe('DuckDuckGo');
+        expect(buildSearchUrl('otters', id)).toBe('https://duckduckgo.com/?q=otters');
+      }
+    });
+
     test('names a custom provider by the name the user gave it', () => {
       const customProviders = [
         {
@@ -169,6 +182,68 @@ describe('search-utils', () => {
       expect(formatSearchMenuSelection('123456789 123456789 1234567890 tail')).toBe(
         '123456789 123456789 1234567890…'
       );
+    });
+
+    // The same refusal clampSearchSelection makes for the query: a boundary
+    // this early tells the user nothing about what will be searched, and
+    // label-then-blob ('id 0x<hash>', 'key: <base64>') is exactly the shape it
+    // shows up in.
+    test('cuts hard rather than eliding to a scrap in front of the ellipsis', () => {
+      expect(formatSearchMenuSelection(`id 0x${'a'.repeat(60)}`)).toBe(
+        `id 0x${'a'.repeat(SEARCH_MENU_SELECTION_MAX - 5)}…`
+      );
+      // A boundary at or past half the budget is still worth cutting back to.
+      expect(formatSearchMenuSelection(`${'a'.repeat(16)} ${'b'.repeat(40)}`)).toBe(
+        `${'a'.repeat(16)}…`
+      );
+    });
+
+    // The selection is page-controlled text painted into a chrome menu row: an
+    // RTL override reorders everything after it, swallowing the closing quote
+    // and spilling attacker-chosen prose outside the quotes the label draws.
+    // Written with \u escapes throughout — these characters are invisible in an
+    // editor, so a literal here could be silently edited away to nothing and
+    // the test would still pass.
+    test('strips every bidi control out of the label', () => {
+      // The reported repro: an RLO (U+202E) ahead of reversed text.
+      expect(formatSearchMenuSelection('\u202Esafe elbatsurt si etis siht')).toBe(
+        'safe elbatsurt si etis siht'
+      );
+      // Unicode's Bidi_Control set in full: ALM, LRM/RLM, the LRE…RLO
+      // embeddings/overrides, and the LRI…PDI isolates.
+      const bidiControls = [
+        '\u061C',
+        '\u200E',
+        '\u200F',
+        '\u202A',
+        '\u202B',
+        '\u202C',
+        '\u202D',
+        '\u202E',
+        '\u2066',
+        '\u2067',
+        '\u2068',
+        '\u2069',
+      ];
+      for (const control of bidiControls) {
+        expect(formatSearchMenuSelection(`ot${control}ters`)).toBe('otters');
+        expect(formatSearchMenuSelection(`${control}otters${control}`)).toBe('otters');
+      }
+      // A selection of nothing but controls suppresses the item, like an empty
+      // one — there is nothing left to quote.
+      expect(formatSearchMenuSelection('\u202E\u202C \u200F')).toBe('');
+    });
+
+    test('keeps the joiners, which carry meaning and reorder nothing', () => {
+      // ZWJ (U+200D) and ZWNJ (U+200C) are \p{Cf} too, so a blanket Cf strip
+      // would break emoji sequences and Persian/Indic text.
+      const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
+      expect(formatSearchMenuSelection(family)).toBe(family);
+      expect(formatSearchMenuSelection(family)).toContain('\u200D');
+
+      const persian = 'می\u200Cخواهم';
+      expect(formatSearchMenuSelection(persian)).toBe(persian);
+      expect(formatSearchMenuSelection(persian)).toContain('\u200C');
     });
 
     test('never cuts through a surrogate pair', () => {

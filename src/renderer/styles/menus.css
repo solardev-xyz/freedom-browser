@@ -23,6 +23,15 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   padding: 4px;
   min-width: 180px;
+  /* The selection group's `Search <Engine> for "…"` row is the one menu label
+     built from page- and settings-controlled text, so it is the only one that
+     can grow without bound: a long custom engine name plus a CJK selection
+     measures 709px in a 1200px window unclamped. Cap the menu and ellipsise
+     the row (below) rather than let one item stretch the menu across the
+     window or wrap it to two lines against Copy's one. 420px still fits the
+     widest ordinary label — the longest built-in engine name with a full
+     32-character selection — without eliding it. */
+  max-width: 420px;
 }
 
 .context-menu.hidden {
@@ -47,6 +56,11 @@
   cursor: default;
   border-radius: 4px;
   font-family: inherit;
+  /* Every row stays exactly one line high and clips to "…" at the menu's
+     max-width above — same treatment .menu-item-label already gets. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .context-menu-item:hover {

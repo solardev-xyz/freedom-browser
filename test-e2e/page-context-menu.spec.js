@@ -9,6 +9,12 @@
 
 const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
 
+// Both themes, as a `src/renderer/` change owes: these tests run dark (an
+// unseeded app takes theme 'system', which is light under xvfb, so the dark
+// capture below needs the theme pinned), and the custom-engine block at the
+// bottom re-seeds 'light' for the light capture.
+test.use({ seedSettings: { theme: 'dark' } });
+
 const PAGE = `bzz://${SAMPLE_BZZ_HASH}/`;
 
 const LONG_TEXT = 'Freedom is a browser for the decentralized web with search from the address bar';
@@ -164,7 +170,7 @@ test('offers "Search <Engine> for …" under Copy and opens the search in a new 
     'Search DuckDuckGo for "otters"',
     'Inspect',
   ]);
-  await window.screenshot({ path: '/tmp/page-context-menu-search-dark.png' });
+  await window.screenshot({ path: 'test-results/page-context-menu-search-dark.png' });
 
   expect(await tabCount(window)).toBe(1);
   await searchItem(window).click();
@@ -295,7 +301,7 @@ test('withholds the item for a password selection raised from another element', 
   });
 
   await expect(menu(window)).toBeVisible();
-  await window.screenshot({ path: '/tmp/page-context-menu-password-synthetic.png' });
+  await window.screenshot({ path: 'test-results/page-context-menu-password-synthetic.png' });
   // The selection group is up — so the masking bullets really did reach
   // chrome as a selection, and the guard is what withholds the item.
   await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();
@@ -426,7 +432,7 @@ test.describe('with a custom search engine configured', () => {
     await selectAndOpenMenu(window, 'short');
 
     await expect(searchItem(window)).toHaveText('Search Private Search for "otters"');
-    await window.screenshot({ path: '/tmp/page-context-menu-search-light.png' });
+    await window.screenshot({ path: 'test-results/page-context-menu-search-light.png' });
 
     await searchItem(window).click();
     await expect(window.locator('[data-test="address-input"]')).toHaveValue(
