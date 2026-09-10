@@ -4,6 +4,8 @@ import { getOpenTabs, switchTab, hideTabContextMenu } from './tabs.js';
 import { closeMenus } from './menus.js';
 import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 import {
   generateSuggestions as generateAutocompleteSuggestions,
   getPlaceholderLetter,
@@ -43,8 +45,17 @@ let previewWroteInput = false;
 // Callbacks
 let onNavigate = null;
 
+// Picking a suggestion *is* the user committing the omnibox, exactly like a
+// form submit — not a menu item or a bookmark that navigates for an unrelated
+// reason. `loadTarget` needs the distinction for a `freedom://` page answered
+// by another tab: the committed text must stop being the leaving tab's draft,
+// while an unrelated one is held. See `loadTarget`'s `commitsAddressBar`.
+const COMMIT_OPTIONS = { commitsAddressBar: true };
+
 /**
- * Set the navigation callback
+ * Set the navigation callback. Called as `(url, options)`; the options are
+ * `loadTarget`'s, so the navigate branches below can say what kind of
+ * navigation a picked suggestion is (see `COMMIT_OPTIONS`).
  */
 export const setOnNavigate = (callback) => {
   onNavigate = callback;
@@ -193,6 +204,11 @@ const show = () => {
   hideBookmarkContextMenu();
   showMenuBackdrop();
   dropdown.classList.remove('hidden');
+  // The list has its own 360 px cap, but on a short window even that reaches
+  // past the bottom edge: bound it to the viewport like every other chrome
+  // popover (#324).
+  dropdown.scrollTop = 0;
+  boundPopoverToViewport(dropdown);
   isOpen = true;
 };
 
@@ -368,7 +384,9 @@ const handleKeyDown = (e) => {
         if (suggestion.type === 'tab' && suggestion.tabId) {
           // Picking a suggestion commits the omnibox: the tab we're leaving
           // no longer has an edit in progress. `loadTarget` does this for the
-          // navigating branch below; the tab-switch branch has to do it here.
+          // navigating branch below (`COMMIT_OPTIONS` makes that hold even
+          // when the target routes into another tab); the tab-switch branch
+          // has to do it here.
           // `fromAddressBarCommit` tells the tab-switch handler not to adopt
           // the bar's leftover text (the previewed target URL, or the query)
           // as the leaving tab's page display.
@@ -377,7 +395,7 @@ const handleKeyDown = (e) => {
           addressInput.blur();
         } else if (onNavigate) {
           addressInput.value = suggestion.url;
-          onNavigate(suggestion.url);
+          onNavigate(suggestion.url, COMMIT_OPTIONS);
           addressInput.blur();
         }
       } else {
@@ -437,7 +455,7 @@ const handleClick = (e) => {
     addressInput.blur();
   } else if (url && onNavigate) {
     addressInput.value = url;
-    onNavigate(url);
+    onNavigate(url, COMMIT_OPTIONS);
     addressInput.blur();
   }
 };
@@ -479,7 +497,9 @@ export const initAutocomplete = () => {
   // id-less, so that lookup was always null and the listeners never existed.
   // `#menu-backdrop` covers the window while the dropdown is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
-  window.addEventListener('blur', hide);
+  // Window deactivation only: a `<webview>` guest taking the keyboard raises
+  // the same event while the window is still active (#328).
+  onWindowDeactivated(hide);
 
   // Load initial cache
   refreshCache();

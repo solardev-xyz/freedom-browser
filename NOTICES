@@ -1,6 +1,19 @@
 Third-Party Notices
 
-This software includes the following third-party components:
+This software includes the following third-party components.
+
+Every component listed here ships inside the packaged application. The
+inventory is derived from `package.json`'s `build.extraResources` (the
+external binaries and native addons under `resources/`) and from what
+`build.files`' `src/**/*` pattern commits into `app.asar` — the pre-built
+bundles in `src/renderer/vendor/` and the assets beside them.
+`licenses-audit.test.js` fails, in the unit suite `npm test` runs, if any
+of those grows a component that is not named below. That is a test, not a
+packaging step: run `npm test` before you build, because packaging itself
+refuses only one thing, a missing `LICENSES.chromium.html`
+(`scripts/build.js`).
+
+== External binaries and native addons (resources/) ==
 
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0
@@ -16,12 +29,84 @@ libradicle
   License: MIT OR Apache-2.0
   Copyright (c) solardev-xyz contributors
   https://github.com/solardev-xyz/libradicle
+  Statically links Radicle Heartwood (MIT OR Apache-2.0),
+  https://github.com/solardev-xyz/heartwood
+
+Myotis (trustless Ethereum wallet engine)
+  License: Apache-2.0
+  https://github.com/biafra23/myotis
+  Upstream NOTICE, reproduced per Apache License 2.0 section 4(d):
+
+    Myotis
+    Copyright 2026 Dirk Jäckel
+
+    This product includes software developed by Dirk Jäckel.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+Arti (Tor client, macOS and Linux builds only)
+  License: MIT OR Apache-2.0
+  Copyright 2019-2025, The Tor Project, Inc.
+  https://gitlab.torproject.org/tpo/core/arti
+  Built from the `arti` crate on crates.io; the shipped binary statically
+  links the crate's dependency tree, which upstream distributes under
+  permissive licenses.
+
+== Bundled renderer libraries (src/renderer/vendor/) ==
+
+OpenLV (@openlv/core, @openlv/session, @openlv/signaling, @openlv/transport)
+  License: LGPL-3.0-only
+  Copyright (c) Open-Lavatory contributors
+  https://github.com/open-lavatory/open-lavatory
+  The same bundle embeds websocket-mqtt (LGPL-3.0), the one signaling
+  backend Freedom ships, https://github.com/v3xlabs/websocket-mqtt
+  Shipped as `src/renderer/vendor/openlv.esm.js`, a single generated file
+  built by `scripts/bundle-openlv.js` and containing no Freedom code. To
+  exercise your LGPL section 4 right to relink Freedom against a modified
+  version of this library, edit or replace that one file inside the
+  application's `app.asar`, or re-run `npm run vendor:openlv` against your
+  own build of the upstream packages. Keeping the LGPL code isolated in
+  one regenerable file is deliberate.
+
+highlight.js (syntax highlighting, including the bundled GitHub themes)
+  License: BSD-3-Clause
+  Copyright (c) 2006-2024 Josh Goebel and other contributors
+  https://github.com/highlightjs/highlight.js
+
+marked (Markdown parser)
+  License: MIT
+  Copyright (c) 2011-2025 Christopher Jeffrey and contributors
+  https://github.com/markedjs/marked
+
+DOMPurify (HTML sanitizer)
+  License: MPL-2.0 OR Apache-2.0
+  Copyright (c) Cure53 and other contributors
+  https://github.com/cure53/DOMPurify
+
+== Framework ==
 
 Electron
   License: MIT
   Copyright (c) Electron contributors
   https://github.com/electron/electron
-  Chromium licenses: see LICENSES.chromium.html in app bundle
+  Electron embeds Chromium, whose several hundred third-party components
+  carry their own notices. Electron generates them all into a single
+  `LICENSES.chromium.html`, and Freedom ships that file with every package:
+    macOS    inside the bundle, `Freedom.app/Contents/Resources/`
+    Linux    beside the `freedom` executable (`/opt/Freedom/` for the .deb,
+             the mount root inside the AppImage)
+    Windows  beside `Freedom.exe` in the installation directory
+  The macOS copy is placed there deliberately, by
+  `package.json` `build.mac.extraResources`: on that platform
+  electron-builder deletes the copy Electron ships beside the executable,
+  and the `.dmg`/`.zip` carry only `Freedom.app`, so without it the file
+  would reach no macOS user at all.
+
+== Ad blocking ==
 
 @ghostery/adblocker (ad-blocking filter engine)
   License: MPL-2.0
@@ -36,6 +121,31 @@ Ad-blocking filter lists (bundled data, not code)
     License: GPLv3+ or CC BY-SA 3.0+ (redistributed under CC BY-SA)
     Copyright (c) The EasyList authors (https://easylist.to/)
 
+== Committed assets ==
+
+Chain and token marks (sidebar and wallet icons)
+  The network and token logos under `src/renderer/assets/chains/` and
+  `src/renderer/assets/tokens/` are the marks of the projects they name
+  (Ethereum, Gnosis, Base, Swarm, MakerDAO, Circle, Tether, Monerium).
+  Freedom ships them only to identify the chain or token each labels, and
+  claims no ownership of them. No per-mark redistribution terms have been
+  confirmed; see LICENSE_AUDIT.md.
+
+Everything else committed under `src/` — the internal-page artwork and
+wordmark in `src/renderer/pages/images/`, and the Myotis supervisor
+sources in `src/main/myotis/native/` — is Freedom's own work under the
+MPL-2.0 in `LICENSE`.
+
+== npm dependencies ==
+
 npm dependencies
-  See package.json for full list.
-  All use permissive licenses (MIT, ISC, BSD, Apache-2.0, MPL-2.0).
+  See package.json for the full list.
+  Most use permissive licenses (MIT, ISC, BSD, Apache-2.0, 0BSD,
+  BlueOak-1.0.0, Python-2.0). The weak-copyleft ones are:
+    MPL-2.0        @ghostery/adblocker and its @remusao/* helpers,
+                   @ethereumjs/{rlp,tx,util}
+    LGPL-3.0-only  @openlv/*, websocket-mqtt (both entries above)
+  Neither MPL-2.0 nor LGPL-3.0 is combined into Freedom's own sources: the
+  MPL packages are consumed unmodified from npm, and the LGPL ones ship as
+  the separate, replaceable `openlv.esm.js` bundle described above.
+  better-sqlite3 (MIT) embeds SQLite, which is in the public domain.

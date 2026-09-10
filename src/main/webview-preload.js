@@ -666,6 +666,56 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 // Context Menu Handler (works on all pages)
 // ============================================
 
+// The elements a `contextmenu` really passed through, innermost first, up to
+// (but not including) `document.body` — the same bound the plain ancestor walk
+// this replaces stopped at. Falls back to the ancestor chain if the event
+// carries no `composedPath` (a hand-rolled object in a unit test).
+const composedElementPath = (event) => {
+  const path = [];
+  const composed = typeof event.composedPath === 'function' ? event.composedPath() : null;
+  if (composed && composed.length) {
+    for (const node of composed) {
+      if (node === document.body) break;
+      // Elements only: the path also carries shadow roots, the document and
+      // the window, none of which have tagName/parentElement.
+      if (node && node.nodeType === 1) path.push(node);
+    }
+    return path;
+  }
+  let element = event.target;
+  while (element && element !== document.body) {
+    path.push(element);
+    element = element.parentElement;
+  }
+  return path;
+};
+
+// The element that really holds focus. `document.activeElement` retargets to
+// the shadow host for a node inside an open shadow root, so a password field a
+// site renders in a shadow tree would read as an ordinary `<div>`/custom
+// element here; each root's own `activeElement` walks the rest of the way down.
+//
+// A *closed* root has no `shadowRoot` to walk, so the descent stops at the host
+// and the real field stays unidentifiable — which is why the caller withholds
+// the selection instead of reading a type off whatever it landed on.
+const deepActiveElement = () => {
+  let element = document.activeElement;
+  while (element?.shadowRoot?.activeElement) {
+    element = element.shadowRoot.activeElement;
+  }
+  return element;
+};
+
+// Whether `element` is a form control whose own selection this preload can
+// actually read and classify. A shadow host is not: for a closed root there is
+// nothing behind `element.shadowRoot` to look at.
+const isReadableFormField = (element) =>
+  element?.tagName === 'INPUT' || element?.tagName === 'TEXTAREA';
+
+// ...and whether that control is a password field.
+const isPasswordInput = (element) =>
+  element?.tagName === 'INPUT' && String(element.type).toLowerCase() === 'password';
+
 // Get context information when right-clicking.
 //
 // Registered on window in the capture phase: window is the first node in the
@@ -689,6 +739,9 @@ window.addEventListener(
       imageSrc: null,
       imageAlt: null,
       isEditable: false,
+      // Set once chrome must not publish `selectedText` — see the withholding
+      // rule at the end of this handler. #330.
+      withholdSelection: false,
       mediaType: null,
     };
 
@@ -698,9 +751,16 @@ window.addEventListener(
       context.selectedText = selection.toString();
     }
 
-    // Walk up the DOM tree to find links, images, etc.
-    let element = event.target;
-    while (element && element !== document.body) {
+    // Walk from the real target outwards to find links, images, etc.
+    //
+    // `event.target` is retargeted to the shadow *host* for anything inside an
+    // open shadow root, and `element.parentElement` is null at a shadow
+    // boundary anyway, so an ancestor walk alone never sees the element a site
+    // actually rendered inside a shadow tree (LWC/Stencil components, embedded
+    // auth widgets). `composedPath()` is the event's real capture path — the
+    // inner nodes first, then each host, in the same inner-to-outer order the
+    // walk used — so it covers the light DOM and every open root above it. #330.
+    for (const element of composedElementPath(event)) {
       // Check for links
       if (element.tagName === 'A' && element.href) {
         context.linkUrl = getRawDwebHref(element) || element.href;
@@ -741,9 +801,52 @@ window.addEventListener(
         element.isContentEditable
       ) {
         context.isEditable = true;
+        // Chromium reports a selection inside a password field as the masking
+        // bullets, not the password (probed in the shipping app on Electron
+        // 44, 2026-09), so `selectedText` above is already `••••••`. Withhold
+        // it from anything that would publish that string — "Search <Engine>
+        // for "•••••"" is not an offer Chrome makes and not a query worth
+        // sending to a search engine. #330.
+        if (isPasswordInput(element)) {
+          context.withholdSelection = true;
+        }
       }
+    }
 
-      element = element.parentElement;
+    // The walk above only sees the field the menu was raised over, but the
+    // selection Chromium reports comes from the focused field wherever that
+    // is: a page can select a password field's contents and then dispatch a
+    // synthetic `contextmenu` at some unrelated element, and the bullets would
+    // reach chrome unflagged.
+    //
+    // Which source a selection has is readable off the *document's* own range.
+    // A selection reported while that range is collapsed did not come from the
+    // document at all — it is the internal selection of the focused form
+    // control, which the document range never covers. Probed in the shipping
+    // app on Electron 44 (2026-09): a password field in the light DOM, in an
+    // open shadow root and in a closed shadow root all report
+    // `isCollapsed: true` with `anchorNode` on `<body>` while `toString()`
+    // returns the masking bullets, for a real mouse drag as much as for
+    // `setSelectionRange`; a genuine page selection (including one inside a
+    // contenteditable) reports `isCollapsed: false` with `anchorNode` in the
+    // selected content.
+    //
+    // So a collapsed range means the focused control is the only source of the
+    // text, and the selection may only be published once that control has been
+    // identified as an ordinary, non-password field. That identification can
+    // fail outright: `deepActiveElement()` descends open roots, but a closed
+    // one exposes no `shadowRoot` to descend and `composedPath()` stops at the
+    // host, so a login form inside `attachShadow({ mode: 'closed' })` is
+    // unreachable from every angle. Text whose source cannot be attributed is
+    // withheld rather than published — losing the item over a closed
+    // component's field is a far smaller cost than handing a password's exact
+    // length to the configured search engine and to the local history and
+    // autocomplete index. #330.
+    if (context.selectedText && selection?.isCollapsed !== false) {
+      const focused = deepActiveElement();
+      if (!isReadableFormField(focused) || isPasswordInput(focused)) {
+        context.withholdSelection = true;
+      }
     }
 
     // Decide after page handlers have run (setTimeout fires after the

@@ -66,6 +66,8 @@ const updateControls = (status) => {
       toggleButton.title = 'Disabled for this profile in Settings';
     } else if (!available) {
       toggleButton.title = 'Myotis native addon not found';
+    } else if (status?.error) {
+      toggleButton.title = status.error;
     } else {
       toggleButton.removeAttribute('title');
     }
@@ -107,6 +109,7 @@ const updateGnosisControls = (status) => {
     gnosis.button.classList.toggle('disabled', !controllable);
     if (disabled) gnosis.button.title = 'Disabled for this profile in Settings';
     else if (!available) gnosis.button.title = 'Myotis native addon not found';
+    else if (status?.error) gnosis.button.title = status.error;
     else gnosis.button.removeAttribute('title');
   }
   gnosis.toggle?.classList.toggle('running', running);
