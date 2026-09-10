@@ -98,7 +98,7 @@ const EXTRA_RESOURCES = {
     thirdParty: true,
     label: 'Arti',
     auditName: 'arti',
-    noticeMatch: /^Arti \(Tor client, macOS and Linux builds only\)$/m,
+    noticeMatch: /^Arti \(Tor client, macOS, Linux and Windows x64 builds\)$/m,
     pin: { file: 'scripts/fetch-arti.js', re: /PINNED_ARTI_VERSION = '([^']+)'/ },
   },
   'node_modules/electron/dist/LICENSES.chromium.html': {
