@@ -25,6 +25,41 @@ function expectArgumentSequence(args, sequence) {
   expect(args.join('\0')).toContain(sequence.join('\0'));
 }
 
+function expectNamedReadOnlyGate(args, writableMounts) {
+  const end = args.indexOf('--');
+  const setup = args.slice(0, end);
+  const gate = '/run/freedom-workspace-owner';
+  expectArgumentSequence(setup, ['--dir', '/run', '--perms', '0555', '--file', '8', gate]);
+  expect(setup.filter((arg) => arg === '--file')).toHaveLength(1);
+  expect(setup).not.toContain('--ro-bind-data');
+  const copy = setup.indexOf('--file');
+  const sealed = setup.findIndex((arg, index) => arg === '--remount-ro' && setup[index + 1] === '/');
+  expect(sealed).toBeGreaterThan(copy + 2);
+  const mounts = [];
+  const writable = [];
+  for (let index = 0; index < setup.length; index++) {
+    const option = setup[index];
+    if (['--bind', '--ro-bind', '--ro-bind-try', '--symlink'].includes(option)) {
+      mounts.push({ index, destination: setup[index + 2] });
+      if (option === '--bind') writable.push(setup[index + 2]);
+    } else if (['--tmpfs', '--proc', '--dev'].includes(option)) {
+      mounts.push({ index, destination: setup[index + 1] });
+      if (option === '--tmpfs') writable.push(setup[index + 1]);
+    }
+  }
+  expect(writable.sort()).toEqual([...writableMounts].sort());
+  for (const mount of mounts) {
+    // No mount/symlink can alias or shadow the named gate's root/parent/file.
+    expect(mount.destination === '/' || mount.destination === '/run' ||
+      mount.destination.startsWith('/run/')).toBe(false);
+    expect(mount.index).toBeLessThan(copy);
+  }
+  expect(setup.slice(sealed + 2).every((arg) =>
+    !['--file', '--dir', '--bind', '--ro-bind', '--ro-bind-try', '--symlink',
+      '--tmpfs', '--proc', '--dev', '--remount-ro'].includes(arg))).toBe(true);
+  expect(args.slice(end, end + 3)).toEqual(['--', gate, '--gate']);
+}
+
 function completedOwner({ stdout = '', stderr = '', code = 0, final = {} } = {}) {
   return { stdout, stderr, code, transportComplete: true, ownerExit: { code: 0, signal: null },
     final: { created: true, armed: true, released: true, observed: true, retired: true,
@@ -85,7 +120,7 @@ describe('Bubblewrap backend contract', () => {
     expect(joined).toContain(`${path.join(fixture.workspaceRoot, '.git')}\n/workspace/.git`);
     expect(joined).not.toContain(`${os.homedir()}\n${os.homedir()}`);
     expect(joined).not.toContain('--ro-bind\n/run\n/run');
-    expectArgumentSequence(launch.args, ['--perms', '0555', '--ro-bind-data', '8', '/run/freedom-workspace-owner']);
+    expectNamedReadOnlyGate(launch.args, ['/workspace', '/tmp', '/dev/shm']);
     expect(launch.args).not.toContain('--json-status-fd');
     expect(joined).not.toContain(`${os.tmpdir()}\n${os.tmpdir()}`);
     expect(joined).toContain('/tmp/data');
@@ -156,6 +191,7 @@ describe('Bubblewrap backend contract', () => {
     const launch = await buildBubblewrapArguments(policy, { command: '/bin/sh' });
     fixtureRoots.push(launch.stagingDirectory);
     const root = access.runtimeRoots[0];
+    expectNamedReadOnlyGate(launch.args, ['/workspace', '/tmp', '/dev/shm']);
     expectArgumentSequence(launch.args, ['--ro-bind', root.sourcePath, root.mountPath]);
     const pathIndex = launch.args.findIndex(
       (value, index) => value === '--setenv' && launch.args[index + 1] === 'PATH'
@@ -181,6 +217,7 @@ describe('Bubblewrap backend contract', () => {
     fixtureRoots.push(launch.stagingDirectory);
 
     expectArgumentSequence(launch.args, ['--unshare-all', '--share-net', '--unshare-user']);
+    expectNamedReadOnlyGate(launch.args, ['/workspace', '/tmp', '/dev/shm']);
     if (fs.existsSync('/etc/resolv.conf')) {
       expectArgumentSequence(launch.args, [
         '--ro-bind',
@@ -222,7 +259,7 @@ describe('Bubblewrap backend contract', () => {
     const args = capabilityProbeArguments();
     expectArgumentSequence(args, ['--', '/run/freedom-workspace-owner', '--gate',
       DESCRIPTOR_CLOSURE_PROBE_MARKER, BUBBLEWRAP_SUPERVISOR_SHELL, '-c']);
-    expectArgumentSequence(args, ['--perms', '0555', '--ro-bind-data', '8', '/run/freedom-workspace-owner']);
+    expectNamedReadOnlyGate(args, ['/tmp', '/dev/shm']);
     expect(args[args.length - 1]).toContain('"$descriptor" -gt 2');
     expect(args).toContain(DESCRIPTOR_CLOSURE_PROBE_MARKER);
     expectArgumentSequence(args, [

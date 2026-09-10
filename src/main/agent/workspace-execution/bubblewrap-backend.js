@@ -167,7 +167,7 @@ function baseCapabilityProbeArguments(gate = false) {
     '/tmp',
     '--remount-ro',
     '/proc',
-    ...(gate ? ['--dir', '/run', '--perms', '0555', '--ro-bind-data', '8', '/run/freedom-workspace-owner'] : []),
+    ...(gate ? ['--dir', '/run', '--perms', '0555', '--file', '8', '/run/freedom-workspace-owner'] : []),
     '--remount-ro',
     '/',
     '--clearenv',
@@ -534,9 +534,11 @@ async function buildBubblewrapArguments(policy, request) {
     args.push('--bind', workspace.sourcePath, workspace.mountPath);
     await addProtectedMounts(args, policy, stagingDirectory);
     // fd8 is the pinned running native owner's inode, inherited only by bwrap.
-    // ro-bind realpaths /proc/self/fd and would reopen a pathname. ro-bind-data
-    // instead copies the pinned inode's bytes, then closes fd8 (bwrap v0.9.0).
-    args.push('--dir', '/run', '--perms', '0555', '--ro-bind-data', '8', '/run/freedom-workspace-owner');
+    // --file copies from that descriptor without reopening a host pathname or
+    // unlinking the backing inode (which AppArmor can refuse to execute).
+    // Validated mounts cannot cover /run; the final root remount seals this
+    // named 0555 copy and its parent before the gate or command can execute.
+    args.push('--dir', '/run', '--perms', '0555', '--file', '8', '/run/freedom-workspace-owner');
     args.push('--remount-ro', '/proc', '--remount-ro', '/');
 
     const fixedEnvironment = {
