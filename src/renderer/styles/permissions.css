@@ -15,6 +15,7 @@
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   z-index: 10000;
   padding: 14px 16px;
@@ -91,6 +92,7 @@
 }
 
 .permission-btn:hover {
+  /* theme-literal: neutral hover tint; the light override is the rule below */
   background: rgba(255, 255, 255, 0.08);
 }
 
@@ -108,12 +110,14 @@
 
 /* Light theme: neutral button hover needs a dark tint, not a light one. */
 [data-theme='light'] .permission-btn:hover {
+  /* theme-literal: the light half of the pair above */
   background: rgba(0, 0, 0, 0.06);
 }
 
 [data-theme='light'] .permission-btn.primary,
 [data-theme='light'] .permission-btn.primary:hover {
   background: var(--accent);
+  /* theme-literal: fixed contrast pair with the filled accent below it, in both themes */
   color: #ffffff;
 }
 
@@ -140,6 +144,7 @@
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   z-index: 10000;
   padding: 14px 16px;
@@ -210,9 +215,11 @@
 
 .permission-popover-revoke:hover {
   color: var(--text);
+  /* theme-literal: neutral hover tint; the light override is the rule below */
   background: rgba(255, 255, 255, 0.08);
 }
 
 [data-theme='light'] .permission-popover-revoke:hover {
+  /* theme-literal: the light half of the pair above */
   background: rgba(0, 0, 0, 0.06);
 }

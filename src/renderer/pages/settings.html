@@ -1709,7 +1709,10 @@
       // to (Esc, an empty/unchanged value, or a failed save).
       let savedProfileName = '';
 
-      let isWindows = false;
+      // Whether this build ships an Arti (Tor) binary. Assumed present until
+      // the check answers, so the markup's own state is what a normal build
+      // shows and only a build without one repaints.
+      let torBundled = true;
       let profileRefreshTimer = null;
       let setProfileRefreshActive = () => {};
 
@@ -2004,6 +2007,20 @@
       }
       showSection(initialSection);
 
+      // The Tor rows follow the bundled Arti binary, not the platform: every
+      // platform the release workflow builds compiles Arti (Windows x64
+      // included since #337), and a source build that skipped
+      // `npm run tor:download` bundles none. A profile that already has the
+      // integration enabled keeps the rows either way — an external Tor SOCKS
+      // proxy needs no bundled binary, and a setting nothing can switch off
+      // again would be worse than a row that explains nothing.
+      const applyTorRowVisibility = (settings = cachedSettings) => {
+        const visible = torBundled || settings?.enableTorIntegration === true;
+        document
+          .querySelectorAll('[data-tor]')
+          .forEach((el) => (el.style.display = visible ? '' : 'none'));
+      };
+
       const setFieldEnabled = (checkbox, container, ...inputs) => {
         const enabled = checkbox?.checked === true;
         container?.classList.toggle('disabled', !enabled);
@@ -2056,7 +2073,6 @@
           label: 'Tor',
           modes: ['managed', 'external', 'disabled'],
           settingKey: 'enableTorIntegration',
-          hideOnWindows: true,
           externalFields: [
             { key: 'externalSocks', label: 'SOCKS5', placeholder: '127.0.0.1:9150' },
           ],
@@ -2080,7 +2096,6 @@
         PROFILE_NODE_SERVICES.map((definition) => [definition.protocol, definition.label])
       );
       const isProfileServiceVisible = (definition, settings) => {
-        if (definition.hideOnWindows && isWindows) return false;
         if (definition.settingKey && settings?.[definition.settingKey] !== true) return false;
         return true;
       };
@@ -2345,8 +2360,8 @@
         startMyotisGnosisAtLaunch: fields.startMyotisGnosis.checked,
         askWhereToSave: fields.askWhereToSave.checked,
         startRadicleAtLaunch: fields.startRadicle.checked,
-        enableTorIntegration: isWindows ? false : fields.enableTor.checked,
-        startTorAtLaunch: isWindows ? false : fields.startTor.checked,
+        enableTorIntegration: fields.enableTor.checked,
+        startTorAtLaunch: fields.startTor.checked,
         enableIdentityWallet: fields.enableIdentity.checked,
         showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
         autoUpdate: fields.autoUpdate.checked,
@@ -2382,6 +2397,16 @@
         fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
         fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
         setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+        // Re-evaluated whenever the form is repainted from a payload — first
+        // load, and a broadcast that differs from what's on screen. Enabling
+        // the integration is what keeps the rows on a build that bundles no
+        // Arti binary. Note the broadcast that follows this page's *own* save
+        // matches the form, so `onSettingsUpdated` skips applyFormState and
+        // this call with it: switching the integration back off on such a
+        // build leaves the rows up until the page is reloaded, which is the
+        // intended escape hatch rather than an oversight — the user can still
+        // see and re-enable what they just turned off.
+        applyTorRowVisibility(settings);
         applyAdblockGating();
       };
 
@@ -2624,15 +2649,6 @@
       (async () => {
         try {
           const platform = await freedomAPI.getPlatform();
-          isWindows = platform === 'win32';
-          if (isWindows) {
-            // Arti is bundled for macOS/Linux only (built host-only from
-            // crates.io). Radicle has native Windows x64 and ARM64 addons.
-            document.querySelectorAll('[data-tor]').forEach((el) => (el.style.display = 'none'));
-            if (isProfileOrNodesSection()) {
-              refreshProfileSection(true);
-            }
-          }
           if (platform !== 'linux') {
             // Frameless titlebar is a Linux-only option.
             document
@@ -2640,8 +2656,18 @@
               .forEach((el) => (el.style.display = 'none'));
           }
         } catch {
-          // Non-fatal — assume non-Windows.
+          // Non-fatal — assume Linux and leave the row visible.
         }
+
+        try {
+          const binary = await freedomAPI.checkTorBinary?.();
+          torBundled = binary?.available !== false;
+        } catch {
+          // Non-fatal — assume the build bundles Arti and leave the rows up,
+          // the same way the Radicle launch row stays live when its status
+          // read fails.
+        }
+        applyTorRowVisibility();
 
         try {
           const [settings, registry] = await Promise.all([

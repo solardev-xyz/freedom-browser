@@ -814,3 +814,142 @@ jobs:
             playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+
+  # --- Renderer visual guards (#261 item 1) ---------------------------------
+  #
+  # Both jobs below are gated on this one: they only have anything to say about
+  # a change that touches the renderer, its harness, or the specs themselves,
+  # and a screenshot job that runs on every backend-only PR is a job people
+  # learn to ignore. On a push (not a PR) they always run, so `main` keeps the
+  # baselines honest even when nobody opened a PR.
+  renderer-changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      renderer: ${{ steps.filter.outputs.renderer }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the renderer changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "not a pull request — running the visual jobs"
+            echo "renderer=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE"
+          changed=$(git diff --name-only "origin/$BASE...HEAD")
+          echo "$changed"
+          # Everything the two visual jobs read, not just the renderer: the
+          # specs, the fixtures, the gate that can turn them into no-ops, the
+          # list of surfaces the screenshot spec declares (which decides which
+          # baselines are taken and which count as stranded), *and the
+          # baselines they compare against* — a baseline-adoption PR
+          # (`node scripts/apply-screenshot-baselines.js <artifact>`) touches
+          # only `__screenshots__/` or the contrast baseline, and skipping both
+          # jobs on it would land the new pixels unchecked. `package.json` is in
+          # the list because the npm scripts are how the jobs launch the specs.
+          if echo "$changed" | grep -Eq '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate|screenshot-baselines)\.js|test-e2e/theme-contrast-baseline\.json|test-e2e/__screenshots__/|package\.json|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)'; then
+            echo "renderer=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "renderer=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Both themes, every surface the tour reaches: the declared theme plus WCAG
+  # contrast on headings, body copy, buttons and inputs. This is the check that
+  # fails on a reintroduced #224 (dark resolver rows under the light theme) or
+  # #249 (white-on-white permission origin).
+  e2e-theme-parity:
+    needs: renderer-changed
+    if: needs.renderer-changed.outputs.renderer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run theme parity E2E
+        run: xvfb-run -a npm run test:e2e -- test-e2e/theme-parity.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-theme-parity-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Committed pixel baselines for the tour's surfaces, both themes. Ubuntu only:
+  # font rasterisation differs enough between platforms that a macOS or Windows
+  # leg would disagree with every baseline (the spec skips itself off Linux).
+  #
+  # When this fails, download the `renderer-screenshots-diff` artifact — it
+  # carries `<name>-actual.png` and `<name>-diff.png` per surface — and either
+  # fix the regression or adopt the new pixels with
+  # `node scripts/apply-screenshot-baselines.js <unzipped-artifact>`.
+  # Locally: `xvfb-run -a npm run test:e2e:screenshots:update`.
+  e2e-renderer-screenshots:
+    needs: renderer-changed
+    if: needs.renderer-changed.outputs.renderer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Compare renderer screenshots
+        run: xvfb-run -a npm run test:e2e:screenshots
+
+      - name: Upload screenshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-screenshots-diff
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14

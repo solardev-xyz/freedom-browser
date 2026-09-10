@@ -43,10 +43,12 @@
 }
 
 .bee-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
 .bee-toggle-switch.starting {
+  /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
@@ -134,10 +136,12 @@
 }
 
 .ipfs-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
 .ipfs-toggle-switch.starting {
+  /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
@@ -185,10 +189,12 @@
 }
 
 .radicle-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
 .radicle-toggle-switch.starting {
+  /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
@@ -250,6 +256,7 @@
 
 .bee-toggle.external .bee-toggle-switch.running,
 .ipfs-toggle.external .ipfs-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
@@ -284,11 +291,14 @@
 }
 
 .status-indicator.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
+  /* theme-literal: glow of the running-green dot above */
   box-shadow: 0 0 4px #4caf50;
 }
 
 .status-indicator.starting {
+  /* theme-literal: node status colour: orange means starting up */
   background: #ff9800;
   animation: pulse 1s infinite;
 }
@@ -345,10 +355,12 @@
 }
 
 .tor-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
 .tor-toggle-switch.starting {
+  /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
