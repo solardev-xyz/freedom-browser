@@ -190,6 +190,18 @@ disagrees with a local one, take CI's: download the `renderer-screenshots-diff`
 artifact from the failed job and run
 `node scripts/apply-screenshot-baselines.js <unzipped-artifact>`.
 
+To adopt a change made somewhere else — a merge from `main` — that update
+command is not enough on its own: it only rewrites the baselines the comparison
+rejected, and the comparison's per-pixel threshold is far more forgiving of the
+dark theme's grey-on-grey copy than of the light theme's black-on-white, so the
+same edit can fail one twin and pass the other. Re-render every surface
+(`FREEDOM_E2E_STABLE_TEXT=1 xvfb-run -a npx playwright test --project=harness
+test-e2e/renderer-screenshots.spec.js --update-snapshots=all`), compare each
+re-rendered file with its committed self, and adopt the ones that moved
+visibly; a repeat sweep rewrites ~14 files by 1–2/255 of gradient dithering, so
+byte equality is not the bar. See the header of
+`test-e2e/renderer-screenshots.spec.js`.
+
 ## Checks before opening or approving a PR that touches the renderer
 
 1. Run the tour from `.claude/skills/run-freedom/` in both themes, or at

@@ -20,6 +20,23 @@
 // way you would review any other change: a baseline that moved without an
 // intended visual change is the finding, not the noise.
 //
+// That command only rewrites the baselines the *comparison* rejects, and the
+// comparison is tolerant on purpose (see `COMPARE`) — so a surface can repaint
+// for real and still pass, leaving its baseline depicting UI that no longer
+// exists. Adopting a change made somewhere else (a merge from `main`) is the
+// case where that matters: re-render every surface instead, and read what
+// moved.
+//
+//     FREEDOM_E2E_STABLE_TEXT=1 xvfb-run -a npx playwright test \
+//       --project=harness test-e2e/renderer-screenshots.spec.js \
+//       --update-snapshots=all
+//
+// Byte equality is *not* the bar for that sweep: a repeat run of it rewrites
+// ~14 of the 98 files with per-channel deltas of 1–2/255 (gradient dithering,
+// invisible, measured over two consecutive runs). Compare the re-rendered file
+// with its committed self and adopt the ones that differ by more than that —
+// `git checkout` the rest rather than committing dithering.
+//
 // The baselines are rendered on Linux. Font rasterisation differs enough
 // between platforms that a macOS or Windows run would rewrite every file, so
 // the spec only runs there when explicitly asked (`FREEDOM_SCREENSHOTS=1`), and
@@ -71,9 +88,18 @@ const { THEMES, baselineFiles } = require('./screenshot-baselines');
 // why a run that meets neither has nothing to say.
 const { enabled: ENABLED, reason: SKIP_REASON } = screenshotGate();
 
-// Small enough that a one-pixel shift fails, loose enough that antialiasing on
-// a differently-loaded runner does not. `threshold` is per-pixel colour
-// distance; `maxDiffPixelRatio` is how much of the frame may differ at all.
+// Loose enough that antialiasing on a differently-loaded runner does not fail
+// a run. `threshold` is per-pixel colour distance; `maxDiffPixelRatio` is how
+// much of the frame may differ at all.
+//
+// It is not a one-pixel tripwire, and the slack is not spread evenly over the
+// two themes: `threshold` is measured in YIQ, so the same copy change that
+// fails on the light theme's near-black-on-white body text (30 000 pixels
+// counted) can go uncounted on the dark theme's grey-on-grey. #334's settings
+// rewrite landed exactly that way — the light baselines failed and were
+// adopted, their dark twins passed and stayed behind showing the old copy for
+// two rounds. Hence the full re-render sweep documented at the top of this
+// file whenever a round adopts a UI change it did not write.
 const COMPARE = {
   threshold: 0.15,
   maxDiffPixelRatio: 0.002,
