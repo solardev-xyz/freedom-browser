@@ -1,7 +1,7 @@
 {
   "project_license": "MPL-2.0",
   "generated_at": "2026-09-10T00:00:00.000Z",
-  "audit_baseline": "0.8.5-rc.8",
+  "audit_baseline": "0.8.5",
   "notes": "Regenerated for the 0.8.5 release. The 2026-08-19 revision of this file described a pre-0.8.5 tree (electron 39.2.7, ant v0.5.21, libradicle 0.3.0, no Myotis, no Arti) and reported zero copyleft dependencies, which was already untrue. Bundled-component inventory is derived from package.json build.extraResources and src/renderer/vendor/; licenses-audit.test.js fails if this file drifts from either.",
   "distribution_model": {
     "packaging": "electron-builder",
