@@ -82,7 +82,7 @@ const { pageFor, closeMenus, closeSidebar, dismissOnboarding, go } = require(
   path.join(__dirname, '..', '.claude', 'skills', 'run-freedom', 'lib.js')
 );
 const { screenshotGate } = require('./screenshot-gate');
-const { THEMES, baselineFiles } = require('./screenshot-baselines');
+const { THEMES, baselineFiles, groupFiles } = require('./screenshot-baselines');
 
 // Linux, and LCD text off. See `screenshot-gate.js` for both conditions and
 // why a run that meets neither has nothing to say.
@@ -142,7 +142,19 @@ const maskFor = (page, extra = []) =>
 // window itself.
 const GUEST_SCROLLBAR_MASK = 'screenshot-guest-scrollbar-mask';
 // Wide enough for Chromium's 9px Linux scrollbar plus the guest's own border.
-const GUEST_SCROLLBAR_WIDTH = 14;
+//
+// 15, not the 14 this started at: the repaint reaches one pixel further left
+// than the strip did. Measured rather than guessed — a fresh render of
+// `light-40-settings-adblock` compared with its committed self differs by 430
+// pixels over 8/255, every one of them in the single column x=1185 the 14px
+// strip left uncovered (y 318–799), and none at x=1184. That is 22% of the
+// whole `maxDiffPixelRatio` budget spent on the same bistable scroll chrome the
+// mask exists to drop, stacking with any real diff on these surfaces.
+//
+// Widening it repaints one column of every baseline this mask is used on, since
+// `mask` is painted into the capture (`#FF00FF`) rather than skipped during
+// comparison. The 44 files are regenerated in the same commit.
+const GUEST_SCROLLBAR_WIDTH = 15;
 
 async function guestScrollbarMask(win) {
   const boxes = await Promise.all(
@@ -186,23 +198,51 @@ async function guestScrollbarMask(win) {
 const BASELINE_FILES = baselineFiles();
 
 /**
- * The file a surface compares against, having checked the surface is one
- * `screenshot-baselines.js` knows about.
+ * The surfaces one test is on the hook for, and both directions of the check
+ * against `screenshot-baselines.js`.
  *
- * That file is what the stranded-baseline check in
- * `renderer-screenshots-gate.test.js` measures the committed PNGs against, so
- * a name spelled only here would make the two files it does commit look
- * stranded — and, the way that matters, a name only spelled *there* means a
- * surface this spec stopped taking still has committed pixels reading as
- * coverage. Soft, like the comparison itself: one run reports every surface
- * that drifted, whichever way it drifted.
+ * `declared()` gives back the file a surface compares against, having checked
+ * the surface is one that file knows about (taken → declared). That is what the
+ * stranded-baseline check in `renderer-screenshots-gate.test.js` measures the
+ * committed PNGs against, so a name spelled only here would make the two files
+ * it does commit look stranded.
+ *
+ * `tookEverySurface()` is the other direction, and the one that matters for a
+ * surface going missing: a name spelled only in `screenshot-baselines.js` means
+ * this spec stopped taking it, while its two committed PNGs stay in the tree
+ * reading as regression coverage nothing compares against — and neither the
+ * gate test (committed PNGs = declared list) nor `declared()` (taken ⊆
+ * declared) has anything to say about that. Deleting or commenting out a
+ * `shot()` call now fails the test that owned it.
+ *
+ * Scoped to one test's group rather than the whole file because Playwright may
+ * shard these tests across workers, and `--grep` may run one of them — a
+ * file-wide tally would fail every partial run instead of catching anything.
+ *
+ * Soft, like the comparison itself: one run reports every surface that drifted,
+ * whichever way it drifted.
  */
-function declared(name) {
-  const file = `${name}.png`;
-  expect
-    .soft(BASELINE_FILES, `${file} is not declared in test-e2e/screenshot-baselines.js`)
-    .toContain(file);
-  return file;
+function surfaceGroup(theme, group) {
+  const expected = groupFiles(theme, group);
+  const taken = new Set();
+  return {
+    declared(name) {
+      const file = `${name}.png`;
+      expect
+        .soft(BASELINE_FILES, `${file} is not declared in test-e2e/screenshot-baselines.js`)
+        .toContain(file);
+      taken.add(file);
+      return file;
+    },
+    tookEverySurface() {
+      expect
+        .soft(
+          expected.filter((file) => !taken.has(file)),
+          `declared under "${group}" in test-e2e/screenshot-baselines.js but never taken — restore the shot, or delete the surface and its committed baselines`
+        )
+        .toEqual([]);
+    },
+  };
 }
 
 /**
@@ -210,10 +250,13 @@ function declared(name) {
  * surface that moved, not stop at the first one, so a single CI run produces
  * the whole diff artifact.
  */
-async function snap(page, name, { mask = [], extra = [] } = {}) {
+async function snap(surfaces, page, name, { mask = [], extra = [] } = {}) {
   await expect
     .soft(page)
-    .toHaveScreenshot(declared(name), { ...COMPARE, mask: [...maskFor(page, extra), ...mask] });
+    .toHaveScreenshot(surfaces.declared(name), {
+      ...COMPARE,
+      mask: [...maskFor(page, extra), ...mask],
+    });
 }
 
 test.describe('renderer screenshots', () => {
@@ -229,8 +272,9 @@ test.describe('renderer screenshots', () => {
         // The guest is not the subject of a chrome baseline, and the new-tab
         // artwork behind it costs ~1 MB per file.
         const guest = [window.locator('webview')];
+        const surfaces = surfaceGroup(theme, 'chrome surfaces');
         const shot = (name, opts = {}) =>
-          snap(window, `${theme}-${name}`, { mask: guest, ...opts });
+          snap(surfaces, window, `${theme}-${name}`, { mask: guest, ...opts });
 
         await shot('01-landing');
 
@@ -281,13 +325,15 @@ test.describe('renderer screenshots', () => {
         await recipes.trustPopover(ctx);
         await shot('24-onchain-trust-popover');
         await closeMenus(window);
+        surfaces.tookEverySurface();
       });
 
       test(`wallet screens (${theme})`, async ({ electronApp, window }) => {
         test.setTimeout(300_000);
         const ctx = { app: electronApp, win: window };
         const guest = [window.locator('webview')];
-        const shot = (name) => snap(window, `${theme}-${name}`, { mask: guest });
+        const surfaces = surfaceGroup(theme, 'wallet screens');
+        const shot = (name) => snap(surfaces, window, `${theme}-${name}`, { mask: guest });
 
         const resolve = await recipes.stubWalletIpc(ctx);
         await recipes.sendForm(ctx);
@@ -315,6 +361,7 @@ test.describe('renderer screenshots', () => {
         }
         await recipes.dappPermissions(ctx);
         await shot('23-dapp-permissions');
+        surfaces.tookEverySurface();
       });
 
       test(`internal pages and interstitials (${theme})`, async ({ electronApp, window }) => {
@@ -324,8 +371,9 @@ test.describe('renderer screenshots', () => {
         // strip its scrollbar paints in. See `guestScrollbarMask`.
         await recipes.tezInterstitial(ctx, 'unverified');
         const scrollbar = await guestScrollbarMask(window);
+        const surfaces = surfaceGroup(theme, 'internal pages and interstitials');
         const shot = (name, opts = {}) =>
-          snap(window, `${theme}-${name}`, { mask: scrollbar, ...opts });
+          snap(surfaces, window, `${theme}-${name}`, { mask: scrollbar, ...opts });
 
         await shot('25-tez-unverified');
         await recipes.tezInterstitial(ctx, 'conflict');
@@ -337,6 +385,7 @@ test.describe('renderer screenshots', () => {
           await go(window, `freedom://${page}`, 1_800);
           await shot(`${50 + i}-page-${page}`);
         }
+        surfaces.tookEverySurface();
       });
 
       test(`settings sections (${theme})`, async ({ electronApp, window }) => {
@@ -366,7 +415,8 @@ test.describe('renderer screenshots', () => {
         const page = await recipes.settings(ctx, SECTIONS[0]);
         // Every section in this walk scrolls. See `guestScrollbarMask`.
         const scrollbar = await guestScrollbarMask(window);
-        const shot = (name) => snap(window, `${theme}-${name}`, { mask: scrollbar });
+        const surfaces = surfaceGroup(theme, 'settings sections');
+        const shot = (name) => snap(surfaces, window, `${theme}-${name}`, { mask: scrollbar });
 
         await shot(`30-settings-${SECTIONS[0]}`);
         for (const [i, section] of SECTIONS.entries()) {
@@ -379,21 +429,29 @@ test.describe('renderer screenshots', () => {
         }
         await recipes.shortcutConflict(ctx);
         await shot('45-settings-shortcut-conflict');
+        surfaces.tookEverySurface();
       });
 
       test(`private window (${theme})`, async ({ electronApp, window }) => {
         test.setTimeout(240_000);
         const ctx = { app: electronApp, win: window };
+        const surfaces = surfaceGroup(theme, 'private window');
         const priv = await recipes.privateWindow(ctx);
-        await snap(priv, `${theme}-60-private-window`, { mask: [priv.locator('webview')] });
+        await snap(surfaces, priv, `${theme}-60-private-window`, {
+          mask: [priv.locator('webview')],
+        });
         await priv.click('#wallet-toggle-btn');
         await priv.waitForSelector('#sidebar:not(.collapsed)');
         await priv.waitForTimeout(500);
-        await snap(priv, `${theme}-61-private-sidebar`, { mask: [priv.locator('webview')] });
+        await snap(surfaces, priv, `${theme}-61-private-sidebar`, {
+          mask: [priv.locator('webview')],
+        });
+        surfaces.tookEverySurface();
       });
 
       test(`internal page: home (${theme})`, async ({ electronApp, window }) => {
         test.setTimeout(120_000);
+        const surfaces = surfaceGroup(theme, 'internal page: home');
         await go(window, 'freedom://home', 1_800);
         const page = await pageFor(electronApp, '/pages/home.html');
         expect(page, 'home page not found').toBeTruthy();
@@ -405,10 +463,11 @@ test.describe('renderer screenshots', () => {
         // Not through `snap()` — the clip replaces the masks — but through the
         // same declaration, or this surface would be the one baseline the
         // stranded check could not account for.
-        await expect.soft(page).toHaveScreenshot(declared(`${theme}-49-page-home`), {
+        await expect.soft(page).toHaveScreenshot(surfaces.declared(`${theme}-49-page-home`), {
           ...COMPARE,
           clip: { x: 0, y: 0, width: 640, height: 260 },
         });
+        surfaces.tookEverySurface();
       });
     });
   }

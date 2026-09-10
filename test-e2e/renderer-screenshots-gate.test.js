@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { screenshotGate, STABLE_TEXT_VAR } = require('./screenshot-gate');
-const { SCREENSHOT_DIR, baselineFiles } = require('./screenshot-baselines');
+const { SCREENSHOT_DIR, SURFACES, baselineFiles } = require('./screenshot-baselines');
 
 const repoRoot = path.join(__dirname, '..');
 const read = (relative) => fs.readFileSync(path.join(repoRoot, relative), 'utf8');
@@ -85,7 +85,15 @@ const everyWorkflowStep = () =>
 // of the line: under `- run: >` the sequence dash is part of the indentation,
 // so a sibling key on the *next* line (`  run:` beneath `- name: >`) sits at
 // the same level and ends the block rather than folding into it.
-const FOLDED_SCALAR_HEADER = /:[ \t]*>[-+]?\d*[-+]?[ \t]*$/;
+//
+// YAML allows a comment after the block scalar's indicators (`run: > # why`),
+// and the block still folds — so the header is *not* anchored straight to the
+// end of the line. `workflowSteps` only strips whole-line comments, so an
+// end-of-line one survives to here, and requiring the indicators to be last
+// would let `run: >  # regenerate` fold nothing and walk the `-u` on its own
+// line past `ADOPTS_BASELINES`. The comment needs a space in front of it, the
+// way YAML requires, so this cannot start matching some other `>`-bearing line.
+const FOLDED_SCALAR_HEADER = /:[ \t]*>[-+]?\d*[-+]?(?:[ \t]+#[^\n]*)?[ \t]*$/;
 
 const foldBlockScalars = (yaml) => {
   const lines = yaml.split('\n');
@@ -184,6 +192,16 @@ describe('the invocations that are meant to enable it', () => {
       'the short alias, folded across a chomped block scalar',
       '      - run: >-\n          npx playwright test --project=harness\n          -u',
     ],
+    [
+      // YAML lets a comment follow the fold indicator, and folds the block all
+      // the same — so the header cannot be anchored to the end of the line.
+      'the short alias, folded across a block scalar with a trailing comment',
+      '      - run: >  # regenerate\n          npm run test:e2e:screenshots --\n          -u',
+    ],
+    [
+      'the short alias, folded across a chomped block scalar with a comment',
+      '      - run: >- # regenerate\n          npx playwright test --project=harness\n          -u',
+    ],
   ])('the adopt-step ban recognises %s', (_what, step) => {
     expect(foldBlockScalars(step)).toMatch(ADOPTS_BASELINES);
   });
@@ -214,12 +232,20 @@ describe('the invocations that are meant to enable it', () => {
       'a folded step name above an unrelated -u',
       '      - name: >\n          Run npm run test:e2e:screenshots\n        run: git diff --name-only | sort -u',
     ],
+    [
+      'a folded step name with a comment above an unrelated -u',
+      '      - name: >  # wraps\n          Run npm run test:e2e:screenshots\n        run: git diff --name-only | sort -u',
+    ],
   ])('the adopt-step ban does not fire on %s', (_what, step) => {
     expect(foldBlockScalars(step)).not.toMatch(ADOPTS_BASELINES);
   });
 
   it.each([
     ['the gate itself', 'screenshot-gate'],
+    // Spelled with its neighbour in the filter's own alternation, so the
+    // unrelated `apply-screenshot-baselines.js` mentioned elsewhere in the
+    // workflow cannot satisfy this on a substring.
+    ['the declared surface list', 'screenshot-gate|screenshot-baselines'],
     ['the screenshot baselines', 'test-e2e/__screenshots__/'],
     ['the contrast baseline', 'test-e2e/theme-contrast-baseline'],
     ['the npm scripts that launch them', 'package\\.json'],
@@ -248,6 +274,25 @@ describe('the invocations that are meant to enable it', () => {
 // it here — in a jest test rather than in the spec, so it runs on every `npm
 // test` instead of only on the Linux-and-stable-text runs the spec gates
 // itself to.
+// The declared→taken check lives inside the spec, one test at a time, so it can
+// only fire on a test that still runs. Deleting a whole `test(...)` block would
+// take its check with it and strand every baseline in its group silently —
+// which is the same failure one deleted `shot()` call would have been. So the
+// group titles are pinned here too, in jest, where they are checked on every
+// `npm test` rather than only on the Linux-and-stable-text runs.
+describe('the surface groups', () => {
+  const spec = read('test-e2e/renderer-screenshots.spec.js');
+
+  it.each(Object.keys(SURFACES))('%s is a test the spec still declares', (group) => {
+    expect(spec).toContain(`test(\`${group} (\${theme})\``);
+  });
+
+  it('and every test in the spec answers to a group', () => {
+    const titles = [...spec.matchAll(/\n\s*test\(`(.+?) \(\$\{theme\}\)`/g)].map((m) => m[1]);
+    expect(titles.filter((title) => !SURFACES[title])).toEqual([]);
+  });
+});
+
 describe('the committed baselines', () => {
   const committed = () =>
     fs
