@@ -26,6 +26,17 @@ const cards = new Map();
 const dismissed = new Set();
 
 let shelfEl = null;
+// Footer row under the cards: "Full Download History" (Chrome's download
+// bubble has the same action in the same spot). Built lazily on the first
+// card and hidden again once the shelf empties. #326
+let historyRowEl = null;
+
+// Callback that opens freedom://downloads (set by index.js, which routes it
+// through the internal-page singleton — the tab is focused, never duplicated).
+let onOpenDownloadsPage = null;
+export const setOnOpenDownloadsPage = (callback) => {
+  onOpenDownloadsPage = callback;
+};
 
 // Human-readable byte count: 999 B, 1.2 KB, 34.5 MB, ...
 export const formatBytes = (bytes) => {
@@ -90,6 +101,7 @@ const dismissCard = (id, { byUser = false } = {}) => {
   if (card.dismissTimer) clearTimeout(card.dismissTimer);
   card.el.remove();
   cards.delete(id);
+  syncHistoryRow();
 };
 
 const makeButton = (label, className, testId, onClick) => {
@@ -100,6 +112,33 @@ const makeButton = (label, className, testId, onClick) => {
   if (testId) btn.dataset.test = testId;
   btn.addEventListener('click', onClick);
   return btn;
+};
+
+// The shelf's one secondary action, under the cards: it is only meaningful
+// while the shelf is on screen, so it appears with the first card and goes
+// with the last one. Cards are appended as they arrive, so the row is
+// re-appended each time to stay at the bottom.
+const syncHistoryRow = () => {
+  if (!shelfEl) return;
+  if (cards.size === 0) {
+    historyRowEl?.remove();
+    return;
+  }
+  if (!historyRowEl) {
+    historyRowEl = document.createElement('div');
+    historyRowEl.className = 'download-shelf-footer';
+    historyRowEl.appendChild(
+      makeButton(
+        'Full Download History',
+        'download-shelf-link',
+        'download-shelf-history',
+        // Opens or focuses freedom://downloads through the internal-page
+        // singleton, the same path the menus use.
+        () => onOpenDownloadsPage?.()
+      )
+    );
+  }
+  shelfEl.appendChild(historyRowEl);
 };
 
 const buildCard = (id) => {
@@ -150,6 +189,7 @@ const buildCard = (id) => {
   };
   cards.set(id, card);
   shelfEl.appendChild(el);
+  syncHistoryRow();
   return card;
 };
 
@@ -274,5 +314,8 @@ export const initDownloadsUi = () => {
 export const _resetForTest = () => {
   for (const id of [...cards.keys()]) dismissCard(id);
   dismissed.clear();
+  historyRowEl?.remove();
+  historyRowEl = null;
+  onOpenDownloadsPage = null;
   shelfEl = null;
 };

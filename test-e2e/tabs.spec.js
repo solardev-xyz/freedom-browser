@@ -395,6 +395,287 @@ const ctrlClick = async (window, point) => {
   await window.keyboard.up('Control');
 };
 
+const tabSnapshot = (window) =>
+  window.evaluate(() =>
+    [...document.querySelectorAll('[data-test="tab"]')].map((tab) => ({
+      id: tab.dataset.tabId,
+      title: tab.querySelector('.tab-title')?.textContent,
+      active: tab.classList.contains('active'),
+    }))
+  );
+
+// Open Settings the way a user does — hamburger menu → Settings — and retry the
+// whole gesture until `expected` (a tab snapshot) holds.
+//
+// The gesture can be lost before it reaches the item: a webview guest that
+// attaches while the menu is up takes the keyboard, which blurs the chrome
+// window, and menus.js closes every menu on `window.blur`. The item click then
+// lands on nothing and the menu simply re-opens on the next attempt, exactly as
+// a user would re-open it. That is pre-existing app behaviour, unrelated to the
+// singleton rule under test — and re-opening Settings is idempotent *because*
+// of that rule, so retrying cannot manufacture a pass: a build that duplicates
+// the tab fails the snapshot on the first attempt and on every later one.
+const openSettingsFromMenu = (window, expected) =>
+  expect(async () => {
+    await window.locator('#menu-button').click();
+    await expect(window.locator('#settings-btn')).toBeVisible({ timeout: 2_000 });
+    await window.locator('#settings-btn').click({ timeout: 2_000 });
+    await expect(window.locator('#menu-backdrop')).toBeHidden({ timeout: 2_000 });
+    expect(await tabSnapshot(window)).toEqual(expected);
+  }).toPass({ timeout: 30_000, intervals: [500, 1_000, 2_000] });
+
+// The `location.hash` of the Settings guest — the page's own source of truth
+// for which section is shown (`resolveSection`/`showSection` in settings.html).
+const settingsHash = (window) =>
+  window.evaluate(async () => {
+    const webview = [...document.querySelectorAll('webview')].find((candidate) => {
+      try {
+        return /settings\.html/.test(candidate.getURL() || '');
+      } catch {
+        return false;
+      }
+    });
+    if (!webview || typeof webview.executeJavaScript !== 'function') return null;
+    try {
+      return await webview.executeJavaScript('location.hash');
+    } catch {
+      return null;
+    }
+  });
+
+// #325: every `freedom://` internal page is a singleton tab. The regression
+// this covers was in the *chrome* paths — the hamburger menu's Settings item
+// and an address-bar commit both went straight to `loadTarget`, which
+// navigated whatever tab was in front, so a second open next to an existing
+// Settings tab produced a duplicate rather than focusing it.
+test('opening Settings from the hamburger menu and the address bar reuses one tab', async ({
+  window,
+}) => {
+  const tabs = window.locator('[data-test="tab"]');
+  const SETTINGS_TAB = { id: '1', title: 'Settings', active: true };
+  const NEW_TAB = { id: '2', title: 'New Tab', active: false };
+
+  // 1. From the empty New Tab the window starts on, Settings takes that tab
+  //    over rather than leaving an unused NTP behind (Chrome's
+  //    ShowSingletonTabOverwritingNTP).
+  await openSettingsFromMenu(window, [SETTINGS_TAB]);
+
+  // 2. Re-opening Settings from the Settings tab is a no-op, not a second tab.
+  await openSettingsFromMenu(window, [SETTINGS_TAB]);
+
+  // 3. From a *new* empty tab, the menu focuses the existing Settings tab —
+  //    the duplicate in the bug report ("Settings", "Settings").
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(tabs).toHaveCount(2);
+  await expectActiveTab(window, 2);
+  await openSettingsFromMenu(window, [SETTINGS_TAB, NEW_TAB]);
+
+  // 4. Typing the URL in the second tab's address bar does the same.
+  await window.locator('[data-test="tab"][data-tab-id="2"]').click();
+  await expectActiveTab(window, 2);
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings');
+  await input.press('Enter');
+  await expect
+    .poll(() => tabSnapshot(window), {
+      message: 'Waiting for the address-bar commit to focus the existing Settings tab',
+      timeout: 15_000,
+    })
+    .toEqual([SETTINGS_TAB, NEW_TAB]);
+
+  // 5. A sub-path deep link reuses that same tab and routes it to the section.
+  await window.locator('[data-test="tab"][data-tab-id="2"]').click();
+  await expectActiveTab(window, 2);
+  await input.click();
+  await input.fill('freedom://settings/shortcuts');
+  await input.press('Enter');
+  await expect
+    .poll(() => tabSnapshot(window), {
+      message: 'Waiting for the deep link to focus the existing Settings tab',
+      timeout: 15_000,
+    })
+    .toEqual([SETTINGS_TAB, NEW_TAB]);
+  await expect
+    .poll(() => settingsHash(window), {
+      message: 'Waiting for the reused Settings tab to route to the Shortcuts section',
+      timeout: 15_000,
+    })
+    .toBe('#shortcuts');
+});
+
+// A tab the open was routed *away* from is left entirely alone — not just its
+// webview. `loadTarget`'s entry bookkeeping (ending an uncommitted address-bar
+// edit, cancelling an in-flight Swarm probe) acts on the tab being navigated,
+// so it has to run after the routing decision, never before it: Chrome keeps
+// per-tab omnibox drafts across an open that lands somewhere else, and #314's
+// focus/selection restore depends on the draft still being there. See #325.
+test("opening Settings elsewhere keeps this tab's uncommitted draft (#314)", async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for Page A to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A']);
+
+  // Half-type an address in tab 1 without committing it.
+  await input.click();
+  await input.fill('');
+  await window.keyboard.type('half-typed-draft');
+
+  // Settings opens from the menu and is correctly routed to its own tab.
+  await openSettingsFromMenu(window, [
+    { id: '1', title: 'Page A', active: false },
+    { id: '2', title: 'Settings', active: true },
+  ]);
+
+  // Back on tab 1 the draft is still there, focused with its caret restored —
+  // pre-fix the bar showed the page URL and the draft was gone.
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expectActiveTab(window, 1);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const el = document.getElementById('address-input');
+          return { value: el.value, focused: document.activeElement === el };
+        }),
+      { message: 'Waiting for the draft to be restored', timeout: 15_000 }
+    )
+    .toEqual({ value: 'half-typed-draft', focused: true });
+});
+
+// The exception to the rule above: an edit the user *committed*. Typing
+// `freedom://settings` and pressing Enter ends that edit wherever the open
+// lands — holding it leaves the committed text behind as a phantom draft that
+// repaints, focused, on every switch back to the tab (and hands the keyboard to
+// the bar instead of the page, defeating #319) until the user Escapes.
+test('a routed-away address-bar commit leaves no phantom draft behind', async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for Page A to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A']);
+
+  // Commit `freedom://settings` from Page A's own address bar: Settings is
+  // routed into its own tab, Page A is left behind.
+  await input.click();
+  await input.fill('freedom://settings');
+  await input.press('Enter');
+  await expect
+    .poll(() => tabSnapshot(window), {
+      message: 'Waiting for the committed Settings open to land in its own tab',
+      timeout: 15_000,
+    })
+    .toEqual([
+      { id: '1', title: 'Page A', active: false },
+      { id: '2', title: 'Settings', active: true },
+    ]);
+
+  // Back on tab 1 the bar shows Page A's own URL, unfocused — not the
+  // `freedom://settings` the user already committed and left.
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expectActiveTab(window, 1);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const el = document.getElementById('address-input');
+          return { value: el.value, focused: document.activeElement === el };
+        }),
+      { message: "Waiting for tab 1's own URL to be restored", timeout: 15_000 }
+    )
+    .toEqual({ value: PAGE_A, focused: false });
+});
+
+// #325, the other half of the Chrome model: with no Settings tab to focus and
+// a *non-empty* tab in front, Settings opens in a new tab instead of
+// navigating the page the user is reading out from under them.
+test('opening Settings from a page with content opens a new tab', async ({ window, harness }) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for Page A to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A']);
+
+  await openSettingsFromMenu(window, [
+    { id: '1', title: 'Page A', active: false },
+    { id: '2', title: 'Settings', active: true },
+  ]);
+});
+
+// The new-tab pages are the documented exception to that rule: `freedom://home`
+// is Chrome's `chrome://newtab`, not a singleton. Typed in a tab with content
+// it navigates *that* tab home — it must neither strand the page in a leftover
+// tab and spawn a second New Tab, nor focus whichever New Tab already sits in
+// the strip. (links.html's `freedom://home` link takes the same `loadTarget`
+// path.)
+test('freedom://home navigates the current tab in place', async ({ window, harness }) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for Page A to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A']);
+
+  // A second, empty New Tab in the strip: the singleton rule would focus it.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expectActiveTab(window, 1);
+
+  await input.click();
+  await input.fill('freedom://home');
+  await input.press('Enter');
+
+  // Page A's own tab became the New Tab page, in place, and stayed active.
+  await expect
+    .poll(() => tabSnapshot(window), {
+      message: 'Waiting for freedom://home to navigate the current tab in place',
+      timeout: 15_000,
+    })
+    .toEqual([
+      { id: '1', title: 'New Tab', active: true },
+      { id: '2', title: 'New Tab', active: false },
+    ]);
+});
+
 // #303: a `freedom://` internal page is a singleton tab, but the singleton
 // rule must not outrank the disposition. Ctrl+click on a freedom:// link had
 // the tab-reuse branch run before `background` was consulted, so it switched

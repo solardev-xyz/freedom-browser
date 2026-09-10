@@ -124,6 +124,11 @@ function checkBinaries(platforms) {
       if (!fs.existsSync(myotisAddonPath)) {
         missing.push(`myotis-node addon for ${platformDir}: ${myotisAddonPath}`);
       }
+      const supervisorPath = path.join(MYOTIS_BIN_DIR, platformDir,
+        `myotis-supervisor${os === 'win' ? '.exe' : ''}`);
+      if (!fs.existsSync(supervisorPath)) {
+        missing.push(`myotis supervisor for ${platformDir}: ${supervisorPath}`);
+      }
     } else {
       console.log(`  (myotis-node: no addon published for ${platformDir} — skipping)`);
     }

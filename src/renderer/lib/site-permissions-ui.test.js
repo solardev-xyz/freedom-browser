@@ -179,6 +179,22 @@ describe('site-permissions-ui prompt tab-scoping', () => {
     expect(els['permission-prompt-origin'].textContent).toBe('https://a.example');
   });
 
+  // #328: the prompt was the one address-bar popover outside the shared bound.
+  // With the chrome document pinned (`html, body { overflow: hidden }`) an
+  // unbounded prompt is clipped rather than scrollable: in a 220 px-tall window
+  // its bottom landed at 235 and the last rows — the Allow button among them —
+  // could not be reached at all.
+  test('is bounded to the window when it is shown, like its sibling popover', () => {
+    global.window.innerHeight = 220;
+    els['permission-prompt'].setRect({ top: 88, bottom: 235, height: 147 });
+
+    sendRequest({ id: 12, origin: 'https://a.example', keys: ['notifications'], guestId: 1 });
+
+    expect(promptVisible()).toBe(true);
+    // The room actually under it, measured from where it really is.
+    expect(els['permission-prompt'].style.maxHeight).toBe(`${220 - 88 - 8}px`);
+  });
+
   test("a background tab's request is held, not shown under the active tab", () => {
     sendRequest({ id: 11, origin: 'https://bg.example', keys: ['camera'], guestId: 2 });
 

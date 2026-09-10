@@ -206,22 +206,25 @@ test('conflicting combos warn with a swap offer instead of silently rebinding', 
      })()`
   );
 
-  // The conflict prompt names Close Tab and offers a swap.
-  await expect
-    .poll(() =>
-      inSettingsPage(
-        window,
-        `(() => {
-           const conflict = document.querySelector('.shortcut-conflict');
-           if (!conflict) return null;
-           return {
-             text: conflict.textContent,
-             hasSwap: !!conflict.querySelector('[data-action="swap"]'),
-           };
-         })()`
-      )
-    )
-    .toMatchObject({ hasSwap: true });
+  // The conflict prompt names Close Tab and offers a swap. It names it the
+  // way the row right below it does — sentence case (#277), not the Title
+  // Case menu label — since banner and row sit inside one card.
+  const conflictBanner = () =>
+    inSettingsPage(
+      window,
+      `(() => {
+         const conflict = document.querySelector('.shortcut-conflict');
+         if (!conflict) return null;
+         return {
+           text: conflict.textContent.replace(/\\s+/g, ' ').trim(),
+           hasSwap: !!conflict.querySelector('[data-action="swap"]'),
+         };
+       })()`
+    );
+  await expect.poll(conflictBanner).toMatchObject({ hasSwap: true });
+  const banner = await conflictBanner();
+  expect(banner.text).toContain('Close tab');
+  expect(banner.text).not.toContain('Close Tab');
 
   // Cancel keeps both bindings unchanged.
   await inSettingsPage(
@@ -292,8 +295,10 @@ test.describe('a remap the store reverted on load', () => {
 
     await expect
       .poll(rowNote, { message: 'Waiting for the reverted notice' })
-      .toContain('Actual Size');
+      .toContain('Actual size');
     expect(await rowNote()).toContain('was reset');
+    // Named the way the Actual size row itself is labelled (#277).
+    expect(await rowNote()).not.toContain('Actual Size');
     // The binding itself is back on its default, not the stale chord.
     expect(await effectiveAccelerator(window, 'view.focusAddressBar')).toBe('CmdOrCtrl+L');
   });
@@ -392,9 +397,70 @@ test.describe('a Reset that claims its default back from a sibling remap', () =>
 
     await expect
       .poll(rowNote, { message: 'Waiting for the notice on the New Tab row' })
-      .toContain('Reload This Page');
+      .toContain('Reload this page');
     expect(await rowNote()).toContain('was reset');
+    // Named the way the Reload this page row itself is labelled (#277).
+    expect(await rowNote()).not.toContain('Reload This Page');
     expect(await effectiveAccelerator(window, 'page.reload')).toBe('CmdOrCtrl+R');
     expect(await effectiveAccelerator(window, 'tab.new')).toBe('CmdOrCtrl+T');
   });
+});
+
+// #326: Downloads is an application-menu item wherever Chrome puts it (macOS
+// Window menu, next to History on Linux/Windows) and its accelerator comes
+// from the registry — so a remap under Settings > Shortcuts re-labels the
+// native item too, without a restart.
+const downloadsMenuEntry = (electronApp) =>
+  electronApp.evaluate(({ Menu }) => {
+    const menu = Menu.getApplicationMenu();
+    for (const top of menu?.items || []) {
+      const hit = (top.submenu?.items || []).find((item) => item.id === 'downloads');
+      if (hit) return { parent: top.label, label: hit.label, accelerator: hit.accelerator };
+    }
+    return null;
+  });
+
+test("Downloads sits in the application menu at Chrome's position and follows the registry", async ({
+  electronApp,
+  window,
+}) => {
+  const platform = await electronApp.evaluate(() => process.platform);
+  const entry = await downloadsMenuEntry(electronApp);
+
+  expect(entry).toMatchObject({
+    label: 'Downloads',
+    // Chrome: Window > Downloads on macOS, alongside History elsewhere.
+    parent: platform === 'darwin' ? 'Window' : 'History',
+  });
+  expect(entry.accelerator).toBe('CmdOrCtrl+Shift+J');
+
+  await openShortcutsSettings(window);
+  expect(await effectiveAccelerator(window, 'downloads.show')).toBe('CmdOrCtrl+Shift+J');
+
+  // Remap it: the native item picks up the new accelerator (the menu rebuilds
+  // on the settings change).
+  await recordBinding(window, 'downloads.show', 'U', 'KeyU');
+  await expect
+    .poll(() => effectiveAccelerator(window, 'downloads.show'), {
+      message: 'Waiting for the override to persist',
+    })
+    .toMatch(/U$/);
+  const remapped = await effectiveAccelerator(window, 'downloads.show');
+  await expect
+    .poll(async () => (await downloadsMenuEntry(electronApp))?.accelerator, {
+      message: 'Waiting for the application menu to rebuild with the remapped accelerator',
+    })
+    .toBe(remapped);
+
+  // Restore defaults re-arms Cmd/Ctrl+Shift+J on the menu item.
+  const restored = await inSettingsPage(
+    window,
+    `(() => { document.getElementById('shortcuts-restore-defaults').click(); return true; })()`
+  );
+  expect(restored).toBe(true);
+  await expect
+    .poll(async () => (await downloadsMenuEntry(electronApp))?.accelerator, {
+      message: 'Waiting for the default accelerator to come back',
+    })
+    .toBe('CmdOrCtrl+Shift+J');
 });

@@ -93,13 +93,13 @@ function registerWalletIpc() {
     }
   });
 
-  // Get balances with cache-first strategy
+  // Startup display reads cached data only; visible wallet refresh owns fetching.
   ipcMain.handle('wallet:get-balances-cached', async (_event, address) => {
     try {
       if (!address) {
         return { success: false, error: 'Address is required' };
       }
-      const { balances, fromCache } = await getBalancesWithCache(address, true);
+      const { balances, fromCache } = await getBalancesWithCache(address, false);
       return { success: true, balances, fromCache };
     } catch (err) {
       console.error('[WalletIPC] Failed to get cached balances:', err);

@@ -200,11 +200,39 @@ describe('menu', () => {
     }
   });
 
-  test('File menu offers Downloads with the Chromium-standard accelerator', () => {
-    for (const platform of ['darwin', 'win32', 'linux']) {
+  // Chrome's placement (#326): Window > Downloads on macOS, next to History on
+  // Linux/Windows. It used to sit in the File menu on every platform.
+  test('Downloads sits in the macOS Window menu with the Chromium-standard accelerator', () => {
+    const { capturedTemplate } = loadMenuModule('darwin');
+    const windowMenu = capturedTemplate.find((item) => item.role === 'windowMenu');
+    const downloads = windowMenu?.submenu?.find((item) => item.id === 'downloads');
+
+    expect(downloads).toEqual(
+      expect.objectContaining({
+        label: 'Downloads',
+        accelerator: 'CmdOrCtrl+Shift+J',
+      })
+    );
+    expect(typeof downloads.click).toBe('function');
+
+    // The role's own rows survive alongside it.
+    const roles = windowMenu.submenu.map((item) => item.role).filter(Boolean);
+    expect(roles).toEqual(expect.arrayContaining(['minimize', 'zoom', 'front']));
+
+    // ...and it is not repeated in File or History.
+    expect(
+      findTopLabel(capturedTemplate, 'File').submenu.some((item) => item.id === 'downloads')
+    ).toBe(false);
+    expect(
+      findTopLabel(capturedTemplate, 'History').submenu.some((item) => item.id === 'downloads')
+    ).toBe(false);
+  });
+
+  test('Downloads sits next to History on Linux/Windows, not in File', () => {
+    for (const platform of ['win32', 'linux']) {
       const { capturedTemplate } = loadMenuModule(platform);
-      const file = findTopLabel(capturedTemplate, 'File');
-      const downloads = file?.submenu?.find((item) => item.id === 'downloads');
+      const history = findTopLabel(capturedTemplate, 'History');
+      const downloads = history?.submenu?.find((item) => item.id === 'downloads');
 
       expect(downloads).toEqual(
         expect.objectContaining({
@@ -212,6 +240,27 @@ describe('menu', () => {
           accelerator: 'CmdOrCtrl+Shift+J',
         })
       );
+      expect(typeof downloads.click).toBe('function');
+      expect(history.submenu[0].label).toBe('Show All History');
+
+      const file = findTopLabel(capturedTemplate, 'File');
+      expect(file.submenu.some((item) => item.id === 'downloads')).toBe(false);
+    }
+  });
+
+  test('Downloads routes through the freedom://downloads singleton on every platform', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const send = jest.fn();
+      const { capturedTemplate } = loadMenuModule(platform, {
+        targetWindow: { webContents: { send } },
+      });
+      const owner =
+        platform === 'darwin'
+          ? capturedTemplate.find((item) => item.role === 'windowMenu')
+          : findTopLabel(capturedTemplate, 'History');
+
+      owner.submenu.find((item) => item.id === 'downloads').click();
+      expect(send).toHaveBeenCalledWith('tab:new-with-url', 'freedom://downloads');
     }
   });
 

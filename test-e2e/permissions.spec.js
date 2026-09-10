@@ -177,13 +177,116 @@ test('Settings > Site Permissions lists remembered decisions and revoke-all clea
     .toContain(`bzz://${SAMPLE_BZZ_HASH}`);
   expect(await readView()).toContain('Notifications');
 
-  await evalInWebview(
-    window,
-    "document.querySelector('#permissions-view button[data-action=\"revoke-all\"]').click(); true"
+  // #284: one rule for which removals are destructive. "Remove site" discards
+  // every decision for an origin and cannot be undone here, so it is red;
+  // the per-permission "Remove" beneath it is one prompt away from coming
+  // back, so it is plain. Before this they were the other way round from
+  // "Remove all", inside the same card.
+  expect(
+    await evalInWebview(
+      window,
+      `[...document.querySelectorAll('#permissions-view button[data-action]')]
+        .map((btn) => ({ action: btn.dataset.action, cls: btn.className, label: btn.textContent.trim() }))`
+    )
+  ).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ action: 'revoke-origin', cls: 'btn danger', label: 'Remove site' }),
+      expect.objectContaining({ action: 'revoke', cls: 'btn', label: 'Remove' }),
+    ])
+  );
+
+  // #272: the section-level action sits next to the `<h2>`, outside the
+  // rendered list — so it is one button across every render, and it is the
+  // heading's own row that centres it.
+  expect(
+    await evalInWebview(
+      window,
+      `(() => {
+        const button = document.getElementById('permissions-revoke-all');
+        const header = button.closest('.section-header');
+        const title = header?.querySelector('h2.section-title');
+        return {
+          insideView: !!document.getElementById('permissions-view').contains(button),
+          beside: header?.contains(title) === true,
+          disabled: button.disabled,
+          centred:
+            Math.abs(
+              (button.getBoundingClientRect().top + button.getBoundingClientRect().bottom) / 2 -
+                (title.getBoundingClientRect().top + title.getBoundingClientRect().bottom) / 2
+            ) < 2,
+        };
+      })()`
+    )
+  ).toEqual({ insideView: false, beside: true, disabled: false, centred: true });
+
+  await evalInWebview(window, "document.getElementById('permissions-revoke-all').click(); true");
+  await expect.poll(readView, { timeout: 5_000 }).toContain('No saved permissions');
+  // The empty state is the only copy left, and the action it labels is off.
+  const emptyState = (await readView()).replace(/\s+/g, ' ').trim();
+  expect(emptyState).toBe(
+    'No saved permissions Sites you allow or block with “Remember for this site” appear here.'
   );
   await expect
-    .poll(readView, { timeout: 5_000 })
-    .toContain('No stored site permissions');
+    .poll(() => evalInWebview(window, "document.getElementById('permissions-revoke-all').disabled"))
+    .toBe(true);
+});
+
+// #272 sibling: the button moved out of `#permissions-view`, so a render it
+// no longer contains cannot take it away. A read that fails after a
+// successful one used to leave a live red "Remove all" beside the error
+// card — offering to wipe state the page just said it cannot read.
+test('a failed permissions re-read disables Remove all beside the error', async ({
+  window,
+  electronApp,
+}) => {
+  // One saved decision, then a read that throws — no fixture page needed.
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__permReadFails = false;
+    ipcMain.removeHandler('permissions:get-all');
+    ipcMain.handle('permissions:get-all', () => {
+      if (globalThis.__permReadFails) throw new Error('permissions.json is unreadable');
+      return { 'https://example.test': { notifications: 'allow' } };
+    });
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings/permissions');
+  await input.press('Enter');
+
+  const revokeAllState = () =>
+    evalInWebview(
+      window,
+      `(() => {
+         const button = document.getElementById('permissions-revoke-all');
+         if (!button) return null;
+         return {
+           disabled: button.disabled,
+           view: document.getElementById('permissions-view').textContent.replace(/\\s+/g, ' ').trim(),
+         };
+       })()`
+    );
+
+  await expect
+    .poll(revokeAllState, {
+      message: 'Waiting for the saved decision to render',
+      timeout: 10_000,
+    })
+    .toMatchObject({ disabled: false });
+
+  // A re-sync into the section — the same path a hashchange takes.
+  await electronApp.evaluate(() => {
+    globalThis.__permReadFails = true;
+  });
+  await evalInWebview(
+    window,
+    "location.hash = '#appearance'; location.hash = '#permissions'; true"
+  );
+
+  await expect
+    .poll(revokeAllState, { message: 'Waiting for the load-error card', timeout: 10_000 })
+    .toMatchObject({ disabled: true });
+  expect((await revokeAllState()).view).toContain('Could not load site permissions');
 });
 
 test('Escape dismisses the prompt as deny-once and the site can ask again', async ({

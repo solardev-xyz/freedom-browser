@@ -7,6 +7,7 @@ const mockRegistry = {
 const mockMyotis = {
   NETWORKS: new Map([[1, {}], [100, {}]]),
   isReady: jest.fn(),
+  markUnhealthy: jest.fn(),
   getStatus: jest.fn(),
   getAccount: jest.fn(),
   ethCall: jest.fn(),
@@ -227,6 +228,15 @@ describe('chain-data-router', () => {
       '0xabc',
       'latest',
     ]);
+  });
+
+  test('does not fall through to another broadcaster after an uncertain Myotis outcome', async () => {
+    global.fetch = jest.fn();
+    mockMyotis.isReady.mockReturnValue(true);
+    const error = Object.assign(new Error('broadcast outcome uncertain'), { code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+    mockMyotis.sendRawTransaction.mockRejectedValueOnce(error);
+    await expect(broadcastRawTransaction(100, '0xsigned')).rejects.toBe(error);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   test('uses Myotis P2P transaction broadcast before RPC', async () => {
@@ -580,7 +590,40 @@ describe('chain-data-router', () => {
     // still pass.
     const settled = await Promise.all(requests);
     expect(settled.map((entry) => entry.source)).toEqual(Array(6).fill('direct'));
+    expect(mockMyotis.markUnhealthy).not.toHaveBeenCalled();
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+  });
+
+  test('falls back at the caller deadline while a healthy Myotis read completes late', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const slowRead = deferred();
+    mockMyotis.ethCall.mockReturnValueOnce(slowRead.promise)
+      .mockResolvedValue({ resultHex: '0xverified' });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, json: async () => ({ result: '0xrpc' }),
+    });
+    const options = { routingContext: { origin: 'https://swap.example' } };
+    const read = (to) => request(1, 'eth_call', [{ to, data: '0x1234' }, 'latest'], options);
+    const first = read('0x1111111111111111111111111111111111111111');
+    await jest.advanceTimersByTimeAsync(2000);
+    await expect(first).resolves.toMatchObject({ source: 'direct', result: '0xrpc' });
+    expect(mockMyotis.markUnhealthy).not.toHaveBeenCalled();
+
+    // Different route, same chain: native admission stays occupied until the
+    // first request actually settles, although its caller already has an answer.
+    const second = read('0x2222222222222222222222222222222222222222');
+    await jest.advanceTimersByTimeAsync(100);
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    slowRead.resolve({ resultHex: '0xlate' });
+    await jest.advanceTimersByTimeAsync(0);
+    await expect(second).resolves.toMatchObject({ source: 'myotis', result: '0xverified' });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(2);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mockMyotis.markUnhealthy).not.toHaveBeenCalled();
   });
 
   test('serializes concurrent Myotis reads instead of downgrading the second one', async () => {

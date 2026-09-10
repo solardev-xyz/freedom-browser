@@ -194,6 +194,22 @@ describe('page-urls', () => {
     expect(mod.isNewTabPageUrl('https://evil.test/pages/private.html')).toBe(false);
   });
 
+  // The name-keyed form the internal-page singleton rules in `tabs.js` use:
+  // a new-tab page is deliberately *not* a singleton tab.
+  test('recognises the new-tab pages by name, sub-path and all', async () => {
+    const mod = await loadModule({ home: 'home.html', private: 'private.html' });
+
+    expect(mod.isNewTabPageName('home')).toBe(true);
+    expect(mod.isNewTabPageName('private')).toBe(true);
+    expect(mod.isNewTabPageName('HOME')).toBe(true);
+    expect(mod.isNewTabPageName('home/anything')).toBe(true);
+
+    expect(mod.isNewTabPageName('settings')).toBe(false);
+    expect(mod.isNewTabPageName('')).toBe(false);
+    expect(mod.isNewTabPageName(null)).toBe(false);
+    expect(mod.isNewTabPageName(undefined)).toBe(false);
+  });
+
   test('extracts the web3 target only from the bundled onchain interstitial', async () => {
     const mod = await loadModule();
     const target = 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/swap';
