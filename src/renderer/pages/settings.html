@@ -145,6 +145,24 @@
         color: var(--text-muted);
       }
 
+      /* A section title that carries a section-level action beside it (#272):
+         Site Permissions' "Remove all" sits next to the `<h2>`, where the
+         page's other section-level actions live, instead of inside the list
+         it acts on. */
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 0 16px 0;
+      }
+
+      /* The heading's own bottom margin now belongs to the flex row, which
+         also has to centre it against the button. */
+      .section-header .section-title {
+        margin: 0;
+      }
+
       .card {
         background: var(--bg-card);
         border: 1px solid var(--border);
@@ -1103,7 +1121,10 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Search engine</p>
-                <p class="row-help">Used when the address bar input is not a URL, hash, or name.</p>
+                <p class="row-help">
+                  Used when the address bar input is not a URL, hash, or name, and by the
+                  &ldquo;Search &hellip; for&rdquo; item on a page&rsquo;s right-click menu.
+                </p>
               </div>
               <div class="row-control">
                 <!-- Values mirror SEARCH_PROVIDERS in renderer/lib/search-utils.js -->
@@ -1129,7 +1150,7 @@
             <div id="custom-search-provider-list"></div>
             <div class="rpc-block" style="border-top: none">
               <button type="button" class="btn" id="add-search-provider">
-                + Add a search engine
+                Add search engine
               </button>
             </div>
             <div class="rpc-block search-provider-form" id="search-provider-form" hidden>
@@ -1171,7 +1192,6 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Name</p>
-                <p class="row-help">The display name for the current profile.</p>
               </div>
               <div class="row-control profile-name-control">
                 <input
@@ -1187,7 +1207,7 @@
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
               <button type="button" class="btn" id="manage-profiles-link">
-                Manage all profiles →
+                Manage profiles
               </button>
             </div>
           </div>
@@ -1205,11 +1225,12 @@
 
         <!-- Startup -->
         <section class="section" id="startup">
-          <h2 class="section-title">Automatic Startup</h2>
+          <h2 class="section-title">Startup</h2>
           <div class="card">
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Start Swarm node</p>
+                <p class="row-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1221,6 +1242,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Start IPFS node</p>
+                <p class="row-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1232,9 +1254,7 @@
             <div class="row" id="radicle-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Radicle node</p>
-                <p class="row-help" id="radicle-launch-help">
-                  Starts this profile's embedded Radicle node when Freedom opens.
-                </p>
+                <p class="row-help" id="radicle-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1245,11 +1265,11 @@
             </div>
             <div class="row" id="myotis-launch-row">
               <div class="row-body">
-                <p class="row-label">Start Ethereum light client (Myotis)</p>
-                <p class="row-help" id="myotis-launch-help">
-                  Experimental: a fully peer-to-peer Ethereum node — name resolution verified
-                  against the chain itself, no RPC provider involved. Takes effect on next launch.
+                <p class="row-label">
+                  Start Ethereum node
+                  <span class="resolver-badge">Beta</span>
                 </p>
+                <p class="row-help" id="myotis-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1260,11 +1280,11 @@
             </div>
             <div class="row" id="myotis-gnosis-launch-row">
               <div class="row-body">
-                <p class="row-label">Start Gnosis light client (Myotis)</p>
-                <p class="row-help" id="myotis-gnosis-launch-help">
-                  Starts the independent Gnosis P2P client for verified wallet, transaction, and
-                  dapp reads. Takes effect on next launch.
+                <p class="row-label">
+                  Start Gnosis node
+                  <span class="resolver-badge">Beta</span>
                 </p>
+                <p class="row-help" id="myotis-gnosis-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1283,9 +1303,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Ask where to save each file</p>
-                <p class="row-help">
-                  When off, files are saved to your Downloads folder automatically.
-                </p>
+                <p class="row-help">Otherwise: ~/Downloads</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1334,13 +1352,13 @@
 
         <!-- Ethereum Name Resolution — a focused lens on the Ethereum network -->
         <section class="section" id="ens">
-          <h2 class="section-title">Ethereum Name Resolution</h2>
+          <h2 class="section-title">Name Resolution</h2>
           <p class="row-help" style="margin-bottom: 16px">
             How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
             <code>.gwei</code> names. These records live on Ethereum — manage RPC endpoints under
             <a href="#chains">Chains settings</a>.
           </p>
-          <h3 class="row-label" style="margin: 0 0 8px 0">Resolution order</h3>
+          <h3 class="subsection-title">Resolution order</h3>
           <p class="row-help" style="margin: 0 0 12px 0">
             Freedom tries enabled methods from top to bottom. Drag the handle to change priority;
             with the handle focused, the arrow keys work too.
@@ -1365,7 +1383,7 @@
             </div>
           </div>
 
-          <h3 class="row-label" style="margin: 22px 0 8px 0">Safety</h3>
+          <h3 class="subsection-title">Safety</h3>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -1384,7 +1402,12 @@
 
         <!-- Site Permissions -->
         <section class="section" id="permissions">
-          <h2 class="section-title">Site Permissions</h2>
+          <div class="section-header">
+            <h2 class="section-title">Site Permissions</h2>
+            <button type="button" class="btn danger" id="permissions-revoke-all" disabled>
+              Remove all
+            </button>
+          </div>
           <div id="permissions-view"></div>
         </section>
 
@@ -1470,10 +1493,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Allowlisted sites</p>
-                <p class="row-help">
-                  Ad blocking is turned off on these sites, including their subdomains. Changes
-                  apply to pages loaded afterwards — reload open tabs.
-                </p>
+                <p class="row-help">Ad blocking is off on these sites and their subdomains.</p>
               </div>
               <div class="row-control">
                 <input
@@ -2451,7 +2471,7 @@
           control.className = 'row-control';
           const removeBtn = document.createElement('button');
           removeBtn.type = 'button';
-          removeBtn.className = 'btn danger';
+          removeBtn.className = 'btn';
           removeBtn.textContent = 'Remove';
           removeBtn.addEventListener('click', async () => {
             await freedomAPI.adblockRemoveAllowlistHost(host).catch(() => {});
@@ -2546,7 +2566,7 @@
 
         swarmModeHelp.textContent =
           'Ultra-light — read-only. Set up publishing to switch to light mode.';
-        showAction('Set up publishing →', () => {
+        showAction('Set up publishing', () => {
           freedomAPI.openPublishSetup().catch(() => {});
         });
       };
@@ -2707,7 +2727,12 @@
         const matchesQuery = (entry) => {
           const q = query.trim().toLowerCase();
           if (!q) return true;
-          return [entry.description, entry.category, entry.formatted, entry.accelerator]
+          return [
+            entry.settingsLabel || entry.description,
+            entry.category,
+            entry.formatted,
+            entry.accelerator,
+          ]
             .concat(entry.aliases)
             .join(' ')
             .toLowerCase()
@@ -2716,11 +2741,13 @@
 
         const kbd = (text) => `<kbd class="shortcut-kbd">${esc(text)}</kbd>`;
 
+        // The banner names the colliding shortcut the way its own row does
+        // (sentence case, #277) — the two sit inside one card.
         const renderConflict = (state) => {
           const { conflict } = state;
           const message = conflict.fixed
-            ? `${esc(state.formatted)} is already used by “${esc(conflict.description)}” and cannot be reassigned. Pick a different combination.`
-            : `${esc(state.formatted)} is already used by “${esc(conflict.description)}”. Swap the bindings so “${esc(conflict.description)}” becomes ${kbd(conflict.swapFormatted)}?`;
+            ? `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
+            : `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
           return `
             <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
               <div class="row-body"><p class="row-label">${message}</p></div>
@@ -2762,7 +2789,7 @@
           return `
             <div class="row" data-shortcut-id="${esc(entry.id)}">
               <div class="row-body">
-                <p class="row-label">${esc(entry.description)}</p>
+                <p class="row-label">${esc(entry.settingsLabel || entry.description)}</p>
                 ${aliasLine}
                 ${revertedLine}
                 ${warnLine}
@@ -3003,14 +3030,14 @@
               <span class="net-row-name">${name}</span>
               <span class="net-row-sub">${sub}</span>
             </span>
-            <span class="net-chevron">›</span>
+            <span class="net-chevron" aria-hidden="true">›</span>
           </button>`;
 
         // A standalone action button in its own card (12px top margin).
-        const cardButton = (label, action) => `
+        const cardButton = (label, action, variant = '') => `
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" data-action="${action}">${label}</button>
+              <button type="button" class="btn${variant ? ' ' + variant : ''}" data-action="${action}">${label}</button>
             </div>
           </div>`;
 
@@ -3033,7 +3060,7 @@
               chain to manage its RPC and prover endpoints.
             </p>
             <div class="card">${rows}</div>
-            ${cardButton('+ Add a chain', 'add-chain')}`;
+            ${cardButton('Add chain', 'add-chain')}`;
         };
 
         // --- add-chain flow ------------------------------------------
@@ -3175,7 +3202,7 @@
                 <span class="slider"></span></label>`;
           } else {
             controls = `<button type="button" class="btn" data-action="edit-source" data-id="${esc(src.id)}">Edit</button>
-               <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}" title="Remove" aria-label="Remove">✕</button>`;
+               <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}">Remove</button>`;
           }
 
           return `
@@ -3348,7 +3375,7 @@
             <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
             ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
-            ${cardButton('+ Add a custom RPC', 'add-endpoint')}
+            ${cardButton('Add RPC', 'add-endpoint')}
             ${endpointForm ? endpointFormHtml() : ''}
 
             ${
@@ -3373,7 +3400,7 @@
                 : ''
             }
 
-            ${isCustom ? cardButton('Remove this chain', 'remove-chain') : ''}`;
+            ${isCustom ? cardButton('Remove this chain', 'remove-chain', 'danger') : ''}`;
         };
 
         const render = () => {
@@ -3826,7 +3853,7 @@
             label: 'Myotis light client',
             help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
             link: '#nodes',
-            linkLabel: 'Node settings →',
+            linkLabel: 'Node settings',
           },
           {
             id: 'colibri',
@@ -3838,14 +3865,14 @@
             label: 'RPC quorum',
             help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
             link: '#chains/1',
-            linkLabel: 'Manage endpoints →',
+            linkLabel: 'Manage endpoints',
           },
           {
             id: 'direct',
             label: 'Direct RPC',
             help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
             link: '#chains/1',
-            linkLabel: 'Configure →',
+            linkLabel: 'Configure',
           },
         ];
         const METHOD_IDS = new Set(METHODS.map((method) => method.id));
@@ -4390,7 +4417,7 @@
           }
           const controls = p.hasKey
             ? `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Replace key</button>
-               <button type="button" class="btn" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`
+               <button type="button" class="btn danger" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`
             : `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Add key</button>`;
           return `
             <div class="row">
@@ -4518,6 +4545,7 @@
       // listed here — they expire with the app anyway.
       (() => {
         const view = $('permissions-view');
+        const revokeAll = $('permissions-revoke-all');
         if (!view) return;
 
         const PERMISSION_LABELS = {
@@ -4533,35 +4561,13 @@
         const render = (all) => {
           const origins = Object.keys(all || {}).sort();
 
-          const intro = `
-            <div class="card" style="margin-bottom: 16px">
-              <div class="row">
-                <div class="row-body">
-                  <p class="row-label">Decisions you asked Freedom to remember</p>
-                  <p class="row-help">
-                    When a site asks to use your camera, microphone, notifications,
-                    clipboard, location, or MIDI devices, Freedom prompts you.
-                    Remembered answers are listed here. Everything else is denied
-                    by default.
-                  </p>
-                </div>
-                <div class="row-control">
-                  <button class="btn danger" data-action="revoke-all" ${
-                    origins.length === 0 ? 'disabled' : ''
-                  }>
-                    Remove all
-                  </button>
-                </div>
-              </div>
-            </div>`;
+          if (revokeAll) revokeAll.disabled = origins.length === 0;
 
           if (origins.length === 0) {
-            view.innerHTML =
-              intro +
-              `<div class="card"><div class="row"><div class="row-body">
-                 <p class="row-label">No stored site permissions</p>
-                 <p class="row-help">Allow or Block a site's request with
-                 “Remember for this site” checked and the decision appears here.</p>
+            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+                 <p class="row-label">No saved permissions</p>
+                 <p class="row-help">Sites you allow or block with
+                 “Remember for this site” appear here.</p>
                </div></div></div>`;
             return;
           }
@@ -4594,7 +4600,7 @@
                       <p class="row-label" style="word-break: break-all">${esc(origin)}</p>
                     </div>
                     <div class="row-control">
-                      <button class="btn" data-action="revoke-origin"
+                      <button class="btn danger" data-action="revoke-origin"
                         data-origin="${esc(origin)}">Remove site</button>
                     </div>
                   </div>
@@ -4603,19 +4609,32 @@
             })
             .join('');
 
-          view.innerHTML = intro + cards;
+          view.innerHTML = cards;
         };
 
         const reload = async () => {
           try {
             render(await freedomAPI.getSitePermissions());
           } catch (err) {
+            // The button lives in the section header now, outside the view
+            // this replaces, so the error render has to disable it itself —
+            // offering to wipe state the page just said it cannot read.
+            if (revokeAll) revokeAll.disabled = true;
             view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
               <p class="row-label">Could not load site permissions</p>
               <p class="row-help">${esc(err?.message || String(err))}</p>
             </div></div></div>`;
           }
         };
+
+        revokeAll?.addEventListener('click', async () => {
+          try {
+            await freedomAPI.revokeAllSitePermissions();
+          } catch (err) {
+            console.error('[settings] site-permission revoke failed:', err);
+          }
+          reload();
+        });
 
         view.addEventListener('click', async (e) => {
           const btn = e.target.closest('button[data-action]');
@@ -4626,8 +4645,6 @@
               await freedomAPI.revokeSitePermission(origin, permission);
             } else if (action === 'revoke-origin') {
               await freedomAPI.revokeSitePermissionOrigin(origin);
-            } else if (action === 'revoke-all') {
-              await freedomAPI.revokeAllSitePermissions();
             }
           } catch (err) {
             console.error('[settings] site-permission revoke failed:', err);

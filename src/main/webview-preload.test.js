@@ -91,9 +91,19 @@ function loadWebviewPreloadModule(options = {}) {
     pathname: '/app/pages/history.html',
   };
   const selectionText = options.selectionText || '';
+  // `isCollapsed` says where the text came from, which is what the context-menu
+  // handler's withholding rule reads: `false` (the default here) is a genuine
+  // document range — a page or contenteditable selection — while `true` is the
+  // shape Chromium reports for the internal selection of a focused form
+  // control, whose text the document range never covers. See the rule in
+  // webview-preload.js for the probe this models.
   const selection = {
     toString: jest.fn(() => selectionText),
+    isCollapsed: options.selectionCollapsed === true,
   };
+  // 'unknown' models a Selection with no `isCollapsed` at all — the shape the
+  // rule has to fail closed on rather than treat as a document range.
+  if (options.selectionCollapsed === 'unknown') delete selection.isCollapsed;
   const clipboard = {
     writeText: jest.fn().mockResolvedValue(undefined),
   };
@@ -474,8 +484,354 @@ describe('webview-preload', () => {
       imageSrc: 'https://linked.example/cover.png',
       imageAlt: 'Cover image',
       isEditable: true,
+      withholdSelection: false,
       mediaType: 'image',
     });
+  });
+
+  // #330 — Chromium reports a password field's selection as the masking
+  // bullets (probed in the shipping app), so the context withholds the
+  // selection and chrome drops the "Search <Engine> for …" item over it.
+  test('withholds a selection made inside a password field', async () => {
+    for (const [type, withholdSelection] of [
+      ['password', true],
+      ['text', false],
+      // A missing `type` is a text field.
+      [undefined, false],
+    ]) {
+      const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        selectionText: '••••••',
+        // A field's own selection, which the document range never covers.
+        selectionCollapsed: true,
+        location: { href: 'https://example.com/form', protocol: 'https:', pathname: '/form' },
+        documentOverrides: {
+          activeElement: { tagName: 'INPUT', type, selectionStart: 0, selectionEnd: 6 },
+        },
+      });
+
+      windowCaptureHandlers.contextmenu({
+        clientX: 4,
+        clientY: 5,
+        target: { tagName: 'INPUT', type, parentElement: { tagName: 'BODY' } },
+        defaultPrevented: false,
+      });
+      await flushTimers();
+
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+        'context-menu',
+        expect.objectContaining({ isEditable: true, withholdSelection })
+      );
+    }
+  });
+
+  // The masking bullets travel with the *selection*, not with the element the
+  // menu was raised over: a page can select a password field's contents and
+  // dispatch a synthetic `contextmenu` somewhere else entirely, and the walk
+  // up the target's ancestors never sees the field.
+  test('withholds a password-field selection raised from an unrelated element', async () => {
+    const passwordField = {
+      tagName: 'INPUT',
+      type: 'password',
+      selectionStart: 0,
+      selectionEnd: 6,
+    };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: '••••••',
+      selectionCollapsed: true,
+      location: { href: 'https://example.com/form', protocol: 'https:', pathname: '/form' },
+      documentOverrides: { activeElement: passwordField },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'DIV', parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: '••••••', withholdSelection: true })
+    );
+  });
+
+  // The case the open-shadow-root fix above did not reach: a login form in
+  // `attachShadow({ mode: 'closed' })`. `composedPath()` stops at the host and
+  // `host.shadowRoot` is null, so neither guard can ever see the field — the
+  // handler has nothing left to identify the selection's source with and must
+  // withhold it rather than offer the bullets as a query. #330.
+  test.each([
+    ['raised at the closed host', { tagName: 'DIV', nodeType: 1, parentElement: null }],
+    ['raised at an unrelated element', { tagName: 'P', nodeType: 1, parentElement: null }],
+  ])('withholds a password selection inside a closed shadow root, %s', async (_label, target) => {
+    // What a closed root leaves visible: a plain host element, no `shadowRoot`.
+    const closedHost = { tagName: 'DIV', nodeType: 1, parentElement: { tagName: 'BODY' } };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: '•••••••••••••',
+      selectionCollapsed: true,
+      location: { href: 'https://example.com/login', protocol: 'https:', pathname: '/login' },
+      documentOverrides: { activeElement: closedHost },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target,
+      // The path a closed root exposes: everything from the host outwards.
+      composedPath: () => [closedHost],
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: '•••••••••••••', withholdSelection: true })
+    );
+  });
+
+  // A site that renders its login form inside an open shadow root (LWC,
+  // Stencil, embedded auth widgets) defeats both guards on its own:
+  // `event.target` retargets to the shadow host, and `parentElement` is null
+  // at the shadow boundary, so an ancestor walk from the retargeted target
+  // never reaches the field. `composedPath()` is the path the event really
+  // took, hosts included.
+  test('withholds a password field inside an open shadow root via the composed path', async () => {
+    const host = { tagName: 'LOGIN-FORM', nodeType: 1, parentElement: { tagName: 'BODY' } };
+    const shadowField = { tagName: 'INPUT', type: 'password', nodeType: 1, parentElement: null };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: '•••••••••••••',
+      selectionCollapsed: true,
+      location: { href: 'https://example.com/login', protocol: 'https:', pathname: '/login' },
+      documentOverrides: {
+        activeElement: { tagName: 'LOGIN-FORM', shadowRoot: { activeElement: shadowField } },
+      },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      // What a listener outside the shadow tree sees.
+      target: host,
+      // What actually happened.
+      composedPath: () => [shadowField, { nodeType: 11 }, host],
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({
+        selectedText: '•••••••••••••',
+        isEditable: true,
+        withholdSelection: true,
+      })
+    );
+  });
+
+  // The same field, but the menu is raised at an unrelated element, so the
+  // composed path never touches it either — this is the activeElement guard,
+  // which retargets to the host just as `event.target` does and has to descend
+  // through the root's own `activeElement` to find the field.
+  test('withholds a shadow-root password selection raised from an unrelated element', async () => {
+    const shadowField = {
+      tagName: 'INPUT',
+      type: 'password',
+      selectionStart: 0,
+      selectionEnd: 13,
+    };
+    const host = { tagName: 'LOGIN-FORM', shadowRoot: { activeElement: shadowField } };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: '•••••••••••••',
+      selectionCollapsed: true,
+      location: { href: 'https://example.com/login', protocol: 'https:', pathname: '/login' },
+      documentOverrides: { activeElement: host },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'P', nodeType: 1, parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: '•••••••••••••', withholdSelection: true })
+    );
+  });
+
+  // Where the source cannot be read *at all*: with no `isCollapsed` to consult,
+  // the rule cannot tell a document range from a field's own selection, so it
+  // falls closed. Losing the item everywhere is loud and safe; publishing a
+  // password everywhere is neither.
+  test('withholds every selection when the Selection carries no isCollapsed', async () => {
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: 'otters',
+      selectionCollapsed: 'unknown',
+      location: { href: 'https://example.com/', protocol: 'https:', pathname: '/' },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'P', nodeType: 1, parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: 'otters', withholdSelection: true })
+    );
+  });
+
+  // The composed path also carries the ordinary link/image context a shadow
+  // root used to hide entirely — the walk that missed the password field
+  // missed everything else inside a web component too.
+  test('reads a link inside an open shadow root from the composed path', async () => {
+    const host = { tagName: 'ARTICLE-CARD', nodeType: 1, parentElement: { tagName: 'BODY' } };
+    const link = {
+      tagName: 'A',
+      nodeType: 1,
+      href: 'https://linked.example/story',
+      textContent: 'Read more',
+      getAttribute: () => null,
+      parentElement: null,
+    };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'https://example.com/feed', protocol: 'https:', pathname: '/feed' },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: host,
+      composedPath: () => [link, { nodeType: 11 }, host],
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ linkUrl: 'https://linked.example/story', linkText: 'Read more' })
+    );
+  });
+
+  // The complement: a focused password field with no selection of its own
+  // means the document's own range is not collapsed, so the reported selection
+  // is the page's and the item is offered.
+  test('offers a page selection while a password field is merely focused', async () => {
+    const passwordField = {
+      tagName: 'INPUT',
+      type: 'password',
+      selectionStart: 3,
+      selectionEnd: 3,
+    };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: 'otters',
+      location: { href: 'https://example.com/form', protocol: 'https:', pathname: '/form' },
+      documentOverrides: { activeElement: passwordField },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'P', parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: 'otters', withholdSelection: false })
+    );
+  });
+
+  // The acceptance side of the withholding rule: a field's own selection is
+  // reported with a collapsed document range too, so the rule has to identify
+  // an ordinary field and let it through rather than withholding everything a
+  // collapsed range carries.
+  test('forwards a selection made inside an ordinary text field', async () => {
+    const textarea = { tagName: 'TEXTAREA', selectionStart: 0, selectionEnd: 11 };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: 'typed query',
+      selectionCollapsed: true,
+      location: { href: 'https://example.com/form', protocol: 'https:', pathname: '/form' },
+      documentOverrides: { activeElement: textarea },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'TEXTAREA', parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({
+        selectedText: 'typed query',
+        isEditable: true,
+        withholdSelection: false,
+      })
+    );
+  });
+
+  // ...and the same field one open root down is still identifiable, so it is
+  // still offered — the closed-root withholding above is not a blanket ban on
+  // shadow DOM.
+  test('forwards a selection made inside a text field in an open shadow root', async () => {
+    const shadowField = { tagName: 'INPUT', type: 'search', selectionStart: 0, selectionEnd: 6 };
+    const host = { tagName: 'SITE-SEARCH', shadowRoot: { activeElement: shadowField } };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: 'otters',
+      selectionCollapsed: true,
+      location: { href: 'https://example.com/', protocol: 'https:', pathname: '/' },
+      documentOverrides: { activeElement: host },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'P', nodeType: 1, parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: 'otters', withholdSelection: false })
+    );
+  });
+
+  // The documented cost of failing closed: an ordinary field inside a closed
+  // root is withheld too, because nothing distinguishes it from the password
+  // field one — the host looks identical from outside either way.
+  test('withholds an ordinary text selection inside a closed shadow root', async () => {
+    const closedHost = { tagName: 'SITE-SEARCH', nodeType: 1, parentElement: { tagName: 'BODY' } };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: 'otters',
+      selectionCollapsed: true,
+      location: { href: 'https://example.com/', protocol: 'https:', pathname: '/' },
+      documentOverrides: { activeElement: closedHost },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: closedHost,
+      composedPath: () => [closedHost],
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: 'otters', withholdSelection: true })
+    );
   });
 
   test('skips the native context menu when the page calls preventDefault', async () => {
@@ -499,10 +855,7 @@ describe('webview-preload', () => {
     event.defaultPrevented = true;
     await flushTimers();
 
-    expect(ipcRenderer.sendToHost).not.toHaveBeenCalledWith(
-      'context-menu',
-      expect.anything()
-    );
+    expect(ipcRenderer.sendToHost).not.toHaveBeenCalledWith('context-menu', expect.anything());
   });
 
   test('registers the contextmenu interceptor on window in the capture phase', () => {
@@ -1050,9 +1403,7 @@ describe('webview-preload private windows', () => {
 
     // No <script> injection is even attempted (createElement is absent on
     // the doc mock and would have logged an injection failure).
-    expect(document.addEventListener.mock.calls.map(([e]) => e)).not.toContain(
-      'DOMContentLoaded'
-    );
+    expect(document.addEventListener.mock.calls.map(([e]) => e)).not.toContain('DOMContentLoaded');
 
     expect(consoleLogSpy).toHaveBeenCalledWith(
       '[webview-preload] Loaded (freedomAPI + context menu — private window, providers disabled)'

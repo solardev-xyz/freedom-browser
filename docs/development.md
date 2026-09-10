@@ -30,7 +30,7 @@ npm run myotis:build-supervisor
 npm start
 ```
 
-Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Automatic Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. Install optional Tor support with `npm run tor:download` (macOS, Linux, and Windows x64 — it compiles Arti for the host), then enable it under **Settings → Experimental**; the Tor rows stay hidden until that binary exists.
+Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. Install optional Tor support with `npm run tor:download` (macOS, Linux, and Windows x64 — it compiles Arti for the host), then enable it under **Settings → Experimental**; the Tor rows stay hidden until that binary exists.
 
 Myotis also requires its small supervisor built from checked-in source with an
 already installed C compiler: Apple clang/CLT on macOS, a native C compiler on

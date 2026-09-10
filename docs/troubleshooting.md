@@ -26,7 +26,7 @@
 ## Myotis fails to start or synchronize
 
 - Confirm `npm run myotis:download` installed the native addon for the current OS and architecture.
-- Check the separate Ethereum and Gnosis controls under **Settings → Automatic Startup** and the Nodes panel.
+- Check the separate Ethereum and Gnosis controls under **Settings → Startup** and the Nodes panel.
 - Review the application log for native-addon load, peer, or synchronization errors.
 
 ## Tor or `.onion` access fails

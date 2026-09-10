@@ -40,7 +40,7 @@ npm run myotis:build-supervisor
 npm start
 ```
 
-Swarm and IPFS start automatically. Radicle and Myotis are opt-in under **Settings → Automatic Startup**. Run `npm run radicle:download` before enabling Radicle under **Settings → Nodes**; run `npm run tor:download` (macOS, Linux, and Windows) before enabling Tor under **Settings → Experimental** — the Tor rows only appear once that build exists. For prerequisites, platform notes, tests, debugging, and local builds, read the [development guide](docs/development.md).
+Swarm and IPFS start automatically. Radicle and Myotis are opt-in under **Settings → Startup**. Run `npm run radicle:download` before enabling Radicle under **Settings → Nodes**; run `npm run tor:download` (macOS, Linux, and Windows) before enabling Tor under **Settings → Experimental** — the Tor rows only appear once that build exists. For prerequisites, platform notes, tests, debugging, and local builds, read the [development guide](docs/development.md).
 
 ## Architecture
 

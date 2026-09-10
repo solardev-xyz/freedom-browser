@@ -1,0 +1,637 @@
+// Chrome popovers scroll internally; the browser chrome never scrolls (#324).
+//
+// With every node enabled the Nodes menu is ~650 px tall. In a 1200x600 window
+// its bottom landed at 734 px: the chrome document itself grew a scrollbar, the
+// toolbar could be scrolled away and the last section (Tor) was cut off, because
+// no dropdown had a height bound and the chrome had no `overflow` rule. Chrome's
+// model is the opposite, and it is one rule for every popover in the frame —
+// hence the hamburger menu and its Profiles flyout here too, not just the menu
+// the bug was reported against.
+//
+// The Tor section's label is asserted here as well: it reads "Tor", like every
+// other bare product name in that menu (#323).
+
+const { test, expect } = require('./fixtures');
+
+// All six nodes on, so the Nodes menu renders every section — the state the
+// overflow was reported in.
+test.use({
+  seedSettings: {
+    startAntAtLaunch: true,
+    startIpfsAtLaunch: true,
+    startMyotisAtLaunch: true,
+    startMyotisGnosisAtLaunch: true,
+    startRadicleAtLaunch: true,
+    enableTorIntegration: true,
+  },
+});
+
+// Resize the real BrowserWindow and wait until the renderer sees it. Content
+// size, not window size, so `innerHeight` is exactly what we asked for.
+const setWindowSize = async (electronApp, window, width, height) => {
+  await electronApp.evaluate(
+    ({ BrowserWindow }, size) => {
+      BrowserWindow.getAllWindows()[0].setContentSize(size.width, size.height);
+    },
+    { width, height }
+  );
+  // BOTH dimensions: a resize that only changes the width would otherwise not
+  // be waited for at all, and the renderer's `resize` handlers (the re-bind,
+  // the flyout's re-anchor) run after the renderer sees the new size.
+  await expect
+    .poll(() => window.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })), {
+      message: `Waiting for the window to be ${width}x${height}`,
+    })
+    .toEqual({ width, height });
+};
+
+// Everything the two halves of the fix are about, read off one popover.
+const popoverState = (window, selector) =>
+  window.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    const rect = el.getBoundingClientRect();
+    return {
+      top: Math.round(rect.top),
+      bottom: Math.round(rect.bottom),
+      innerHeight: window.innerHeight,
+      insideViewport: rect.bottom <= window.innerHeight,
+      overflowY: getComputedStyle(el).overflowY,
+      scrollable: el.scrollHeight - el.clientHeight > 1,
+      // The chrome document must be exactly as tall as the window: no
+      // overflowing element may ever scroll the toolbar away.
+      docScrollHeight: document.documentElement.scrollHeight,
+    };
+  }, selector);
+
+// Scroll `selector` to its end and report whether `itemSelector`'s row is then
+// fully inside both the popover's box and the window — "the last item is
+// reachable by scrolling the menu".
+const scrollToItem = (window, selector, itemSelector) =>
+  window.evaluate(
+    ({ sel, item }) => {
+      const el = document.querySelector(sel);
+      el.scrollTop = el.scrollHeight;
+      const target = document.querySelector(item);
+      const menu = el.getBoundingClientRect();
+      const row = target.getBoundingClientRect();
+      return {
+        label: target.textContent.trim().split('\n')[0].trim(),
+        insideMenu: row.top >= menu.top - 1 && row.bottom <= menu.bottom + 1,
+        insideViewport: row.bottom <= window.innerHeight && row.top >= 0,
+        scrolledBy: Math.round(el.scrollTop),
+      };
+    },
+    { sel: selector, item: itemSelector }
+  );
+
+test('the Nodes menu scrolls inside itself instead of scrolling the chrome', async ({
+  window,
+  electronApp,
+}) => {
+  await setWindowSize(electronApp, window, 1200, 600);
+
+  await window.locator('#bee-menu-button').click();
+  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/open/);
+
+  const state = await popoverState(window, '#bee-menu-dropdown');
+  expect(state.insideViewport).toBe(true);
+  expect(state.docScrollHeight).toBe(state.innerHeight);
+  // Taller than the window, so it is genuinely the bounded case: the menu is
+  // its own scroller.
+  expect(state.overflowY).toBe('auto');
+  expect(state.scrollable).toBe(true);
+
+  // The section that used to be cut off, reachable by scrolling the menu —
+  // labelled "Tor", not "Tor (.onion)" (#323).
+  const tor = await scrollToItem(window, '#bee-menu-dropdown', '#tor-toggle-btn');
+  expect(tor.label).toBe('Tor');
+  expect(tor.insideMenu).toBe(true);
+  expect(tor.insideViewport).toBe(true);
+  expect(tor.scrolledBy).toBeGreaterThan(0);
+
+  // Scrolling the menu to its end still has not moved the chrome.
+  await expect.poll(() => window.evaluate(() => document.documentElement.scrollTop)).toBe(0);
+});
+
+test('the hamburger menu and its Profiles flyout stay inside the window', async ({
+  window,
+  electronApp,
+}) => {
+  await setWindowSize(electronApp, window, 1200, 600);
+
+  await window.locator('#menu-button').click();
+  await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+
+  const at600 = await popoverState(window, '#menu-dropdown');
+  expect(at600.insideViewport).toBe(true);
+  expect(at600.docScrollHeight).toBe(at600.innerHeight);
+  expect(at600.overflowY).toBe('auto');
+
+  const last600 = await scrollToItem(window, '#menu-dropdown', '#check-updates-btn');
+  expect(last600.insideMenu).toBe(true);
+  expect(last600.insideViewport).toBe(true);
+
+  // The Profiles flyout hangs off the left of a menu that is now a scroll
+  // container: it must still render outside that box, not be clipped by it.
+  await window.locator('#profile-menu-btn').click();
+  await expect(window.locator('#profile-menu')).toBeVisible();
+  const flyout = await window.evaluate(() => {
+    const el = document.getElementById('profile-menu');
+    const row = document.getElementById('profile-menu-wrap').getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    return {
+      width: Math.round(rect.width),
+      // Anchored to the Profiles row, as `right: 100%` used to express.
+      anchoredToRow: Math.abs(rect.right - row.left) <= 1,
+      insideViewport: rect.bottom <= window.innerHeight && rect.left >= 0,
+      overflowY: getComputedStyle(el).overflowY,
+    };
+  });
+  expect(flyout.width).toBeGreaterThan(200);
+  expect(flyout.anchoredToRow).toBe(true);
+  expect(flyout.insideViewport).toBe(true);
+  expect(flyout.overflowY).toBe('auto');
+
+  // #328: the anchor clamped the flyout's right edge to the window but never
+  // its left, so in a narrow window (mainWindow sets no minWidth) it started
+  // at left -8 — its first characters off screen, with a pinned document that
+  // cannot be scrolled to them.
+  await setWindowSize(electronApp, window, 460, 600);
+  const flyoutEdges = () =>
+    window.evaluate(() => {
+      const rect = document.getElementById('profile-menu').getBoundingClientRect();
+      return { left: Math.round(rect.left), right: Math.round(rect.right) };
+    });
+  // The re-anchor runs off the window's `resize` event, so poll rather than
+  // read once — same reason the re-bind above is polled.
+  await expect
+    .poll(() => flyoutEdges().then((e) => e.left >= 0), {
+      message: 'Waiting for the flyout to be re-anchored inside the narrow window',
+    })
+    .toBe(true);
+  expect((await flyoutEdges()).right).toBeLessThanOrEqual(460);
+  await setWindowSize(electronApp, window, 1200, 600);
+
+  // Shrink the window until the hamburger genuinely overflows: same rule, the
+  // menu scrolls and the chrome does not.
+  await window.keyboard.press('Escape'); // flyout
+  await window.keyboard.press('Escape'); // menu
+  await setWindowSize(electronApp, window, 1200, 420);
+  await window.locator('#menu-button').click();
+  await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+
+  const at420 = await popoverState(window, '#menu-dropdown');
+  expect(at420.insideViewport).toBe(true);
+  expect(at420.scrollable).toBe(true);
+  expect(at420.docScrollHeight).toBe(at420.innerHeight);
+
+  const last420 = await scrollToItem(window, '#menu-dropdown', '#check-updates-btn');
+  expect(last420.insideMenu).toBe(true);
+  expect(last420.insideViewport).toBe(true);
+  expect(last420.scrolledBy).toBeGreaterThan(0);
+});
+
+test('a menu left open while the window shrinks re-bounds itself', async ({
+  window,
+  electronApp,
+}) => {
+  await setWindowSize(electronApp, window, 1200, 800);
+
+  await window.locator('#bee-menu-button').click();
+  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/open/);
+  expect((await popoverState(window, '#bee-menu-dropdown')).insideViewport).toBe(true);
+
+  await setWindowSize(electronApp, window, 1200, 500);
+  await expect
+    .poll(() => popoverState(window, '#bee-menu-dropdown').then((s) => s.insideViewport), {
+      message: 'Waiting for the open menu to re-bound to the smaller window',
+    })
+    .toBe(true);
+
+  const shrunk = await popoverState(window, '#bee-menu-dropdown');
+  expect(shrunk.docScrollHeight).toBe(shrunk.innerHeight);
+  expect(shrunk.scrollable).toBe(true);
+});
+
+test('a window too short for the minimum height still shows the whole box (#328)', async ({
+  window,
+  electronApp,
+}) => {
+  // The bound has a 96 px floor, so a scroll of two or three rows beats a
+  // sliver. In a window with less room than that under the menu's anchor the
+  // floor has to yield: scrolling moves the content *inside* the box, so a box
+  // whose own bottom edge is off-screen has a tail nothing can reach.
+  await setWindowSize(electronApp, window, 1000, 140);
+
+  await window.locator('#bee-menu-button').click();
+  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/open/);
+
+  const state = await popoverState(window, '#bee-menu-dropdown');
+  expect(state.insideViewport).toBe(true);
+  expect(state.docScrollHeight).toBe(state.innerHeight);
+  // Genuinely the case the floor used to win: the menu is anchored at ~87 px,
+  // leaving well under 96 px of room below it.
+  expect(state.bottom - state.top).toBeLessThan(96);
+  expect(state.scrollable).toBe(true);
+});
+
+// #328: the bookmarks overflow menu was measured while it was still
+// `display: none`. A hidden element's `getBoundingClientRect().top` is 0, so
+// the bound came out `top` px too generous and the menu's own bottom edge
+// landed past the window — a tail nothing could scroll to, since scrolling
+// moves the content inside the box, not the box.
+test.describe('bookmarks overflow menu', () => {
+  // The bar is only drawn on the home page unless it is pinned; pin it, and
+  // leave the nodes alone — this menu has nothing to do with them.
+  test.use({ seedSettings: { showBookmarkBar: true } });
+
+  test('the bookmarks overflow menu is bounded from where it actually opens', async ({
+    window,
+    electronApp,
+  }) => {
+    // Enough bookmarks that the bar overflows in any window, and the menu is
+    // far taller than the room under the bookmarks bar.
+    await window.evaluate(async () => {
+      for (const existing of await window.electronAPI.getBookmarks()) {
+        await window.electronAPI.removeBookmark(existing.target);
+      }
+      for (let i = 0; i < 30; i++) {
+        await window.electronAPI.addBookmark({
+          label: `Bookmark number ${i}`,
+          target: `https://example.com/freedom-e2e/${i}`,
+        });
+      }
+    });
+    await window.reload();
+    await window.waitForSelector('[data-test="address-input"]');
+    await setWindowSize(electronApp, window, 760, 340);
+
+    const overflowBtn = window.locator('.bookmarks-overflow-btn');
+    await expect(overflowBtn).toBeVisible();
+    await overflowBtn.click();
+    await expect(window.locator('.bookmarks-overflow-menu')).toBeVisible();
+
+    const state = await popoverState(window, '.bookmarks-overflow-menu');
+    // Anchored under the bookmarks bar, not at the top of the window: the bound
+    // is only right if it was measured from there.
+    expect(state.top).toBeGreaterThan(50);
+    expect(state.insideViewport).toBe(true);
+    expect(state.docScrollHeight).toBe(state.innerHeight);
+    expect(state.scrollable).toBe(true);
+
+    // The last entry is reachable by scrolling the menu — the half that the
+    // off-screen tail broke.
+    const last = await scrollToItem(
+      window,
+      '.bookmarks-overflow-menu',
+      '.bookmarks-overflow-menu [data-test="bookmark-overflow-item"]:last-child'
+    );
+    expect(last.insideMenu).toBe(true);
+    expect(last.insideViewport).toBe(true);
+    expect(last.scrolledBy).toBeGreaterThan(0);
+
+    // Re-opening starts at the top again, like every other chrome popover.
+    await window.keyboard.press('Escape');
+    await expect(window.locator('.bookmarks-overflow-menu')).not.toBeVisible();
+    await overflowBtn.click();
+    await expect(window.locator('.bookmarks-overflow-menu')).toBeVisible();
+    expect(
+      await window.evaluate(() => document.querySelector('.bookmarks-overflow-menu').scrollTop)
+    ).toBe(0);
+  });
+});
+
+// #328: `.permission-prompt` was the one address-bar popover that never joined
+// the mechanism — no `.chrome-popover`, no bound — and the pinned document
+// turned its overflow from scrollable into clipped: in a 1000x220 window the
+// prompt's bottom landed at 235 against an `innerHeight` of 220, with a
+// `scrollHeight` of 220 and no way to reach the last 15 px.
+test('the permission prompt is bounded like its sibling popover', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  const PAGE = 'bzz://' + 'd'.repeat(64) + '/';
+  await harness.setContentFixture(PAGE, {
+    body: [
+      '<!doctype html><title>permission fixture</title>',
+      '<button id="ask">ask</button><div id="out">none</div>',
+      '<script>',
+      "  document.getElementById('ask').addEventListener('click', () => {",
+      '    Notification.requestPermission().then((r) => {',
+      "      document.getElementById('out').textContent = r;",
+      '    });',
+      '  });',
+      '</script>',
+    ].join('\n'),
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE);
+  await input.press('Enter');
+  await expect(input).toHaveValue(PAGE);
+
+  // Run a script in the guest, tolerating the window before it has attached.
+  const inGuest = (script) =>
+    window.evaluate(async (code) => {
+      const wv = document.querySelector('webview:not(.hidden)');
+      if (!wv || typeof wv.executeJavaScript !== 'function') return null;
+      try {
+        return await wv.executeJavaScript(code);
+      } catch {
+        return null;
+      }
+    }, script);
+
+  await expect
+    .poll(() => inGuest("document.getElementById('out')?.textContent || null"), {
+      message: 'Waiting for the permission fixture page to load',
+      timeout: 10_000,
+    })
+    .toBe('none');
+
+  // The window the prompt did not fit in.
+  await setWindowSize(electronApp, window, 1000, 220);
+
+  await inGuest("document.getElementById('ask').click(); true");
+
+  const prompt = window.locator('[data-test="permission-prompt"]');
+  await expect(prompt).toBeVisible();
+
+  const state = await popoverState(window, '#permission-prompt');
+  expect(state.insideViewport).toBe(true);
+  expect(state.docScrollHeight).toBe(state.innerHeight);
+
+  // Its Allow button is what the clipped tail took with it: it is now reachable
+  // by scrolling inside the prompt, and it takes a pointer where it is drawn.
+  const allow = await scrollToItem(window, '#permission-prompt', '[data-test="permission-allow"]');
+  expect(allow.insideMenu).toBe(true);
+  expect(allow.insideViewport).toBe(true);
+
+  const hits = await window.evaluate(() => {
+    const btn = document.querySelector('[data-test="permission-allow"]');
+    const rect = btn.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return btn === hit || btn.contains(hit);
+  });
+  expect(hits).toBe(true);
+});
+
+test('a context menu raised at the bottom edge opens upwards', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  const PAGE = 'bzz://' + 'c'.repeat(64) + '/';
+  await harness.setContentFixture(PAGE, {
+    body: '<!doctype html><title>Context</title><p>right-click me</p>',
+  });
+  await setWindowSize(electronApp, window, 1200, 600);
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE);
+  await input.press('Enter');
+  await expect(input).toHaveValue(PAGE);
+
+  // A guest that has been clicked once routes right-clicks through the real
+  // hit-test path (see tabs.spec.js's wakeGuest).
+  const spot = await window.evaluate(() => {
+    const rect = document.querySelector('webview:not(.hidden)').getBoundingClientRect();
+    // 40 px above the viewport's bottom edge: too little room for the ~200 px
+    // menu below the pointer, and far enough from the edge that the old
+    // "clamp to the bottom" behaviour is distinguishable from a real flip.
+    return { x: Math.round(rect.x + 40), y: Math.round(rect.bottom - 40) };
+  });
+  await window.mouse.click(spot.x, spot.y);
+  await window.waitForTimeout(150);
+  await window.mouse.click(spot.x, spot.y, { button: 'right' });
+
+  const menu = window.locator('#page-context-menu');
+  await expect(menu).toBeVisible();
+
+  // The menu is laid out `visibility: hidden` and revealed only once it has
+  // been placed, so "visible" already means "placed" — there is no frame in
+  // which it paints at the raw pointer hanging off the window (#328).
+  const placement = () =>
+    window.evaluate((y) => {
+      const el = document.getElementById('page-context-menu');
+      const rect = el.getBoundingClientRect();
+      return {
+        insideViewport: rect.bottom <= window.innerHeight && rect.top >= 0,
+        // Chrome flips the menu up when there is no room below the pointer.
+        flippedAboveThePointer: rect.bottom <= y + 1,
+        docScrollHeight: document.documentElement.scrollHeight,
+        innerHeight: window.innerHeight,
+      };
+    }, spot.y);
+
+  const placed = await placement();
+  expect(placed.insideViewport).toBe(true);
+  expect(placed.flippedAboveThePointer).toBe(true);
+  expect(placed.docScrollHeight).toBe(placed.innerHeight);
+
+  // #328: left open while the window shrinks past the menu's own top, the
+  // re-bind handed it `max-height: 0px` — invisible, but still open, with
+  // `#menu-backdrop` swallowing every click and the keyboard on a menu the
+  // user cannot see. A pointer-placed menu is re-placed from the point it was
+  // opened at instead, so it stays on screen and stays usable.
+  await setWindowSize(electronApp, window, 1200, 200);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const el = document.getElementById('page-context-menu');
+          const rect = el.getBoundingClientRect();
+          return {
+            onScreen: rect.height > 0 && rect.top >= 0 && rect.bottom <= window.innerHeight,
+            height: Math.round(rect.height),
+          };
+        }),
+      { message: 'Waiting for the open context menu to be re-placed in the smaller window' }
+    )
+    .toMatchObject({ onScreen: true });
+
+  // Still a working menu, not a sliver: its first row takes the pointer.
+  const reachable = await window.evaluate(() => {
+    const row = document.querySelector('#page-context-menu button:not(.hidden)');
+    const rect = row.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return row === hit || row.contains(hit);
+  });
+  expect(reachable).toBe(true);
+});
+
+// Every row of a bounded, scrolling popover is still a working menu item:
+// nothing (the backdrop, the scrollbar, the Profiles flyout, the clipped box
+// itself) sits between the pointer and the row, and the keyboard reaches it.
+//
+// `rows` walks the menu row by row, scrolling each one into view inside the
+// menu first — the point of the bound is that an item off the bottom is
+// reachable by scrolling, so "reachable" has to be measured after that scroll,
+// not from the initial screenful.
+const sweepRows = (window, menuSelector) =>
+  window.evaluate((sel) => {
+    const menu = document.querySelector(sel);
+    const rows = [...menu.querySelectorAll('button')].filter(
+      (el) => el.getBoundingClientRect().height > 0
+    );
+    const out = [];
+    for (const row of rows) {
+      // Centre the row in the menu's box by hand rather than with
+      // `scrollIntoView`, so the scroll has definitely landed before the
+      // hit-test reads back.
+      const box = menu.getBoundingClientRect();
+      let rect = row.getBoundingClientRect();
+      menu.scrollTop += rect.top - box.top - (menu.clientHeight - rect.height) / 2;
+      rect = row.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      // A node whose binary is missing is deliberately inert
+      // (`.bee-toggle.disabled` etc. in services.css) — it has nothing to
+      // swallow. Recorded rather than silently dropped.
+      const inert =
+        row.disabled === true || window.getComputedStyle(row).pointerEvents === 'none';
+      out.push({
+        id: row.id || row.className,
+        inert,
+        insideViewport: rect.top >= 0 && rect.bottom <= window.innerHeight,
+        // The row's centre belongs to the row: `elementFromPoint` respects
+        // stacking and clipping, so this is the same test the click will make.
+        reachable: inert || row === hit || row.contains(hit),
+        hit: hit ? `${hit.tagName}#${hit.id}.${hit.className}` : 'null',
+      });
+    }
+    menu.scrollTop = 0;
+    return out;
+  }, menuSelector);
+
+// Focus a row and press Enter, with the menu's own handlers held off: what is
+// under test is that the keypress reaches the row as a click, not what each of
+// a dozen rows then does (toggling a node, opening a window, printing).
+const activatesOnEnter = async (window, menuSelector, rowId) => {
+  await window.evaluate(
+    ({ sel, id }) => {
+      const menu = document.querySelector(sel);
+      window.__enterTarget = null;
+      window.__enterTrap = (event) => {
+        window.__enterTarget = event.target?.closest?.('button')?.id || event.target?.id || '';
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      menu.addEventListener('click', window.__enterTrap, true);
+      document.getElementById(id).focus();
+    },
+    { sel: menuSelector, id: rowId }
+  );
+  await window.keyboard.press('Enter');
+  const target = await window.evaluate((sel) => {
+    document.querySelector(sel).removeEventListener('click', window.__enterTrap, true);
+    return window.__enterTarget;
+  }, menuSelector);
+  return target;
+};
+
+test('every row of the bounded hamburger and Nodes menus still takes a click and Enter', async ({
+  window,
+  electronApp,
+}) => {
+  // Short enough that both menus are genuinely bounded and scrolling — the
+  // state where a swallowed click would actually be the bound's fault.
+  await setWindowSize(electronApp, window, 1200, 420);
+
+  await window.locator('#menu-button').click();
+  await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+  expect((await popoverState(window, '#menu-dropdown')).scrollable).toBe(true);
+  const hamburger = await sweepRows(window, '#menu-dropdown');
+  expect(hamburger.filter((row) => !row.inert).length).toBeGreaterThan(8);
+  expect(hamburger.filter((row) => !row.reachable || !row.insideViewport)).toEqual([]);
+  expect(await activatesOnEnter(window, '#menu-dropdown', 'downloads-btn')).toBe('downloads-btn');
+  await window.keyboard.press('Escape');
+
+  await window.locator('#bee-menu-button').click();
+  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/open/);
+  expect((await popoverState(window, '#bee-menu-dropdown')).scrollable).toBe(true);
+  const nodes = await sweepRows(window, '#bee-menu-dropdown');
+  expect(nodes.length).toBeGreaterThan(5);
+  expect(nodes.filter((row) => !row.reachable || !row.insideViewport)).toEqual([]);
+  // Enter on the first row this build actually leaves interactive — which
+  // node that is depends on the binaries present, so it is read off the sweep
+  // rather than named.
+  const liveNodeRow = nodes.find((row) => !row.inert && row.id);
+  expect(liveNodeRow).toBeDefined();
+  expect(await activatesOnEnter(window, '#bee-menu-dropdown', liveNodeRow.id)).toBe(
+    liveNodeRow.id
+  );
+});
+
+// #328: an Electron `<webview>` guest taking the keyboard fires a window
+// `blur` in the embedder even though the window is still the active one, and
+// every tab activation hands the page focus (#304). The guest's ack lands
+// asynchronously — tens of milliseconds later, i.e. after the user has already
+// opened a menu — and closing on that blur tore the menu down under the
+// pointer, so the click that was on its way landed on the page instead.
+test('a webview guest taking focus does not close the menu under the pointer', async ({
+  window,
+}) => {
+  await window.locator('#menu-button').click();
+  await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+
+  // Exactly what a late tab-activation focus does, from the chrome's side. The
+  // backdrop takes the keyboard straight back (see the sibling test below), so
+  // what is asserted here is the surface, not who ends up holding it.
+  await window.evaluate(() => document.querySelector('webview:not(.hidden)')?.focus());
+  await window.waitForTimeout(200);
+
+  // The window never went anywhere, so the menu is still up...
+  await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+  await expect(window.locator('#menu-backdrop')).not.toHaveClass(/hidden/);
+
+  // ...and its rows still do their job.
+  const tabs = window.locator('[data-test="tab"]');
+  const before = await tabs.count();
+  await window.locator('#downloads-btn').click();
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const wv = document.querySelector('webview.active, webview:not(.hidden)');
+          return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
+        }),
+      { timeout: 10_000 }
+    )
+    .toMatch(/pages\/downloads\.html/);
+  await expect(tabs).toHaveCount(before + 1);
+});
+
+// #328, the other half of the same ack: the guest does not just fire a `blur`,
+// it takes the *keyboard*. A menu is modal over the page — it raises
+// `#menu-backdrop` — so leaving the guest with the keyboard would leave a menu
+// that Escape (#306) and Enter on a row can no longer reach, dismissible only
+// with the mouse. `menu-backdrop.js` takes it straight back, to the element
+// that had it, the way `page-context-menu.js` has since #319.
+for (const menu of [
+  { name: 'hamburger', button: '#menu-button', dropdown: '#menu-dropdown' },
+  { name: 'Nodes', button: '#bee-menu-button', dropdown: '#bee-menu-dropdown' },
+]) {
+  test(`the ${menu.name} menu keeps the keyboard when a guest grabs it`, async ({ window }) => {
+    await window.locator(menu.button).click();
+    await expect(window.locator(menu.dropdown)).toHaveClass(/open/);
+
+    // Exactly what a late tab-activation focus does, from the chrome's side.
+    await window.evaluate(() => document.querySelector('webview:not(.hidden)')?.focus());
+
+    // The keyboard comes back to the button that opened the menu, and the
+    // window never went anywhere...
+    await expect
+      .poll(() => window.evaluate(() => document.activeElement?.id || ''), { timeout: 5_000 })
+      .toBe(menu.button.slice(1));
+    await expect(window.locator(menu.dropdown)).toHaveClass(/open/);
+
+    // ...so the keyboard still dismisses the menu. Without the reclaim the
+    // keypress goes to the page and the menu stays up forever.
+    await window.keyboard.press('Escape');
+    await expect(window.locator(menu.dropdown)).not.toHaveClass(/open/);
+    await expect(window.locator('#menu-backdrop')).toHaveClass(/hidden/);
+  });
+}

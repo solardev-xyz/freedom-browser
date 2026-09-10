@@ -5,6 +5,14 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { deriveDisplayValue, applyEnsNamePreservation } from './url-utils.js';
 import { isTrustInterstitialPageUrl } from './page-urls.js';
+import {
+  buildSearchUrl,
+  clampSearchSelection,
+  formatSearchMenuSelection,
+  getSearchProviderLabel,
+} from './search-utils.js';
+import { placePopoverAtPoint } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -56,6 +64,29 @@ const toDwebUrl = (url) => {
   return display || url;
 };
 
+// Write `Search <Engine> for "<selection>"` onto the selection group's search
+// item, or hide it when there is nothing to search for. The engine name comes
+// from the same provider the address bar searches with (Settings > Search,
+// built-in or custom), so the two can never name different engines. #330.
+const updateSearchSelectionItem = (context) => {
+  const searchBtn = pageContextMenu?.querySelector('[data-action="search-selection"]');
+  if (!searchBtn) return;
+
+  // The preload withholds a selection it cannot publish safely: a password
+  // field's "selection" is the masking bullets, and a selection it cannot
+  // attribute to a readable field at all (a form control inside a closed
+  // shadow root) may be those same bullets. See webview-preload.js — neither
+  // is worth quoting on a menu or sending to an engine.
+  const selection = context?.withholdSelection
+    ? ''
+    : formatSearchMenuSelection(context?.selectedText);
+  searchBtn.classList.toggle('hidden', !selection);
+  if (!selection) return;
+
+  const engine = getSearchProviderLabel(state.searchProvider, state.customSearchProviders);
+  searchBtn.textContent = `Search ${engine} for "${selection}"`;
+};
+
 // Show context menu for the given context
 export const showPageContextMenu = (x, y, context) => {
   if (!pageContextMenu) return;
@@ -99,6 +130,8 @@ export const showPageContextMenu = (x, y, context) => {
     viewSourceBtn.classList.toggle('hidden', isTrustInterstitialPageUrl(context.pageUrl));
   }
 
+  updateSearchSelectionItem(context);
+
   // Update navigation button states
   const backBtn = pageContextMenu.querySelector('[data-action="back"]');
   const forwardBtn = pageContextMenu.querySelector('[data-action="forward"]');
@@ -126,37 +159,40 @@ export const showPageContextMenu = (x, y, context) => {
 
   showMenuBackdrop();
 
-  // Position the menu
+  // Lay the menu out without painting it. `placePopoverAtPoint` has to measure
+  // it to decide the clamp and the flip, and the measurement is deferred a
+  // frame because the visible groups were only just switched, so the height is
+  // not final yet — but the menu must not be *seen* at the raw pointer for
+  // that frame: near an edge it renders once hanging off the window, which the
+  // pinned document now clips rather than scrolls (#328). `visibility: hidden`
+  // still generates boxes, so the measurement is the real one; the `hidden`
+  // class (`display: none`) would not.
+  pageContextMenu.style.visibility = 'hidden';
   pageContextMenu.style.left = `${x}px`;
   pageContextMenu.style.top = `${y}px`;
   pageContextMenu.classList.remove('hidden');
 
-  // An open menu owns the keyboard. This is the one chrome surface raised from
-  // *inside* the guest page, so it is the only one that can be up while the
-  // `<webview>` still holds focus — and a keypress that lands in the guest
-  // never reaches the shell's own `keydown` handler, so Escape would not
-  // dismiss it. (Focusing the guest on every tab activation, #304, turned that
-  // from a rare state into the normal one.) Take focus here and hand it back
-  // to the page in `hidePageContextMenu`, the way a native menu does.
-  pageContextMenu.focus?.();
-
-  // Adjust position if menu goes off screen
   requestAnimationFrame(() => {
-    const rect = pageContextMenu.getBoundingClientRect();
-    let newX = x;
-    let newY = y;
+    // Dismissed inside the frame we waited for (a navigation, Escape, a click
+    // on the backdrop): nothing to place, and `visibility` must not be cleared
+    // on a menu that is hidden again.
+    if (pageContextMenu.classList.contains('hidden')) return;
+    // Clamp into the viewport, flipping up when the space below the pointer is
+    // too small and scrolling inside when neither side fits — the shared rule
+    // every chrome popover follows (#324).
+    placePopoverAtPoint(pageContextMenu, x, y);
+    pageContextMenu.style.visibility = '';
 
-    if (rect.right > window.innerWidth) {
-      newX = window.innerWidth - rect.width - 8;
-    }
-    if (rect.bottom > window.innerHeight) {
-      newY = window.innerHeight - rect.height - 8;
-    }
-    if (newX < 8) newX = 8;
-    if (newY < 8) newY = 8;
-
-    pageContextMenu.style.left = `${newX}px`;
-    pageContextMenu.style.top = `${newY}px`;
+    // An open menu owns the keyboard. This is the one chrome surface raised
+    // from *inside* the guest page, so it is the only one that can be up while
+    // the `<webview>` still holds focus — and a keypress that lands in the
+    // guest never reaches the shell's own `keydown` handler, so Escape would
+    // not dismiss it. (Focusing the guest on every tab activation, #304,
+    // turned that from a rare state into the normal one.) Take focus here and
+    // hand it back to the page in `hidePageContextMenu`, the way a native menu
+    // does — after the reveal, since a `visibility: hidden` element cannot
+    // take focus at all.
+    pageContextMenu.focus?.();
   });
 };
 
@@ -212,8 +248,12 @@ export const notifyPageContextMenuNavigated = (webview) => {
   hidePageContextMenu({ restoreFocus: false });
 };
 
-// Handle context menu action
-const handleAction = async (action) => {
+// Handle context menu action.
+//
+// `background` carries the Ctrl/Cmd the item was activated with: Chrome opens
+// a context-menu search in the foreground on a plain click and behind the
+// current tab when the click is modified.
+const handleAction = async (action, { background = false } = {}) => {
   // A context that went missing (a window blur nulls it while the menu can
   // still be on screen) means the action is a no-op — but the menu must come
   // down all the same. Returning early used to leave it up with every item
@@ -318,6 +358,38 @@ const handleAction = async (action) => {
       }
       break;
 
+    case 'search-selection': {
+      // The item is hidden for a withheld selection (see showPageContextMenu);
+      // refuse here too, so a stale context or a scripted click can't send the
+      // masked value to a search engine.
+      if (currentContext.withholdSelection) {
+        pushDebug('Refusing to search a withheld selection');
+        break;
+      }
+      // The selection is the query, clamped to SEARCH_SELECTION_MAX the way
+      // Chrome clamps its own context-menu selection text — a select-all on a
+      // long page must not build a query the size of the document, which would
+      // be navigated to and stored in history verbatim (and silently dropped
+      // once it runs past Chromium's maximum URL length). The elision in the
+      // label is separate, and only what the menu row shows. buildSearchUrl
+      // then trims and encodes it, the same call the address bar makes for
+      // typed input that is not a URL. #330.
+      const searchUrl = buildSearchUrl(
+        clampSearchSelection(currentContext.selectedText),
+        state.searchProvider,
+        state.customSearchProviders
+      );
+      if (searchUrl) {
+        pushDebug(`Searching for the selection${background ? ' in a background tab' : ''}`);
+        document.dispatchEvent(
+          new CustomEvent('open-url-new-tab', {
+            detail: { url: searchUrl, background },
+          })
+        );
+      }
+      break;
+    }
+
     case 'open-image-new-tab':
       if (currentContext.imageSrc) {
         // Use original URL for loading (webview can't handle dweb:// protocols directly)
@@ -379,7 +451,7 @@ export const initPageContextMenu = async () => {
 
       const action = item.dataset.action;
       if (action) {
-        handleAction(action);
+        handleAction(action, { background: e.ctrlKey === true || e.metaKey === true });
       }
     });
   }
@@ -405,9 +477,11 @@ export const initPageContextMenu = async () => {
     hidePageContextMenu();
   });
 
-  // Hide when window loses focus — without the focus hand-back, which would
-  // pull the keyboard back into a window that is on its way out.
-  window.addEventListener('blur', () => hidePageContextMenu({ restoreFocus: false }));
+  // Hide when the window is deactivated — without the focus hand-back, which
+  // would pull the keyboard back into a window that is on its way out. A
+  // `<webview>` guest taking the keyboard raises the same `blur` while the
+  // window is still active and must not close the menu (#328).
+  onWindowDeactivated(() => hidePageContextMenu({ restoreFocus: false }));
 
   pushDebug('[PageContextMenu] Initialized');
 };
