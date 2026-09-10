@@ -18,7 +18,7 @@ All notable changes to Freedom will be documented in this file.
 - Download manager:
   - Covers every download source, including `bzz://` and `ipfs://` content
   - Shelf card with live progress and cancel; Open / Show in Folder on completion
-  - `freedom://downloads` page (`Cmd/Ctrl+Shift+J`) with search, pause/resume, and Clear All
+  - `freedom://downloads` page from the browser menu or `Cmd/Ctrl+Shift+J`, with search, pause/resume, and Clear All
   - "Ask where to save each file" toggle under Settings > Downloads
 - Per-site permission prompts:
   - For camera, microphone, notifications, clipboard reading, location, and MIDI, replacing the previous silent denial
@@ -38,7 +38,10 @@ All notable changes to Freedom will be documented in this file.
   - Conflict warning with a one-click swap when a combination is already taken
   - Per-shortcut reset and a Restore defaults button; changes apply without a restart
 - Page zoom on `Cmd/Ctrl` with `=`, `-` and `0`, remappable like every other binding (thanks @alexwbend!)
-- Address-bar search for typed input that isn't a URL, with DuckDuckGo, Google, Bing, Brave Search, Ecosia, Startpage or a custom engine under Settings > Search
+- Web search:
+  - Typed input that isn't a URL becomes a search
+  - Search a text selection from the page context menu
+  - DuckDuckGo, Google, Bing, Brave Search, Ecosia, Startpage or a custom engine under Settings > Search
 - Audio indicator on tabs playing sound; click it or use "Mute Tab" in the tab context menu to mute/unmute (mute survives navigation)
 - Contract-hosted onchain apps:
   - On `web3://<address>[:<chainId>]/` — the app itself lives in the contract, not on a web server
@@ -73,6 +76,10 @@ All notable changes to Freedom will be documented in this file.
 
 - Radicle runs as an embedded [libradicle](https://github.com/solardev-xyz/libradicle) 0.7.1 addon instead of separate daemon, HTTP and CLI processes, and takes no local port
 - Swarm peers count up from launch instead of sitting at 0 during startup
+- Settings copy and controls:
+  - Automatic Startup and Ethereum Name Resolution are now Startup and Name Resolution
+  - Button labels drop the plus and arrow glyphs: Add chain, Add RPC, Manage profiles
+  - Helper lines that restated their own row label are gone
 - Installers are about 15 MB smaller: each build now ships only the `better-sqlite3` native addon for its own platform and architecture instead of all eight upstream prebuilds
 - The Windows installer is named `Freedom-Setup-<version>.exe`, previously `Freedom Setup <version>.exe`
 
@@ -99,9 +106,12 @@ All notable changes to Freedom will be documented in this file.
 - Shift+click opens a link in a new window
 - Switching tabs puts the keyboard in the page instead of leaving it on the tab strip
 - The tab strip scrolls once the tabs stop fitting instead of clipping the ones past the edge
+- Settings opens its existing tab instead of a second copy when reached from the browser menu or the address bar
 - The tab context menu closes when the foreground tab changes instead of staying open over another tab
 - The Profiles flyout closes when another row of the browser menu is hovered instead of covering it
 - Escape closes the browser menu and the Nodes menu, like every other menu in the chrome
+- A menu taller than the window scrolls inside itself instead of pushing the toolbar off screen
+- A context menu near the window's edge opens back into view instead of covering the pointer
 - Bookmarks-bar items open in a background tab on Ctrl/Cmd-click or middle-click, and can be reordered by dragging
 - The page context menu closes on navigation instead of acting on the previous page's link
 - The Publish and Payments pages and the sidebar's permission screens are readable on the light theme
