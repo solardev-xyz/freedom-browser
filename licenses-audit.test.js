@@ -98,8 +98,23 @@ const EXTRA_RESOURCES = {
     thirdParty: true,
     label: 'Arti',
     auditName: 'arti',
-    noticeMatch: /^Arti \(Tor client, macOS, Linux and Windows x64 builds\)$/m,
+    // Deliberately not pinning the platform wording here: it is a claim about
+    // the artifacts, checked against `package.json` by `platformClaims` below
+    // rather than against a literal that has to be hand-edited to match.
+    noticeMatch: /^Arti \(Tor client, .+ builds\)$/m,
     pin: { file: 'scripts/fetch-arti.js', re: /PINNED_ARTI_VERSION = '([^']+)'/ },
+    // Arti is the one component that does not ship to every platform, so every
+    // sentence stating which platforms it reaches has to move with
+    // `build.<scope>.extraResources`. See `platform claims` below.
+    platformClaims: [
+      { file: 'NOTICES', line: /^Arti \(Tor client, .+ builds\)$/m },
+      { file: 'LICENSE_AUDIT.md', line: /^ *- Arti \(Tor client\) — .*$/m },
+      {
+        file: 'LICENSE_AUDIT.md',
+        block: /^### Arti \(Tor Client\)/m,
+        line: /^- \*\*Platforms:\*\* .*$/m,
+      },
+    ],
   },
   'node_modules/electron/dist/LICENSES.chromium.html': {
     thirdParty: true,
@@ -191,27 +206,89 @@ const SRC_ASSETS = {
   },
 };
 
+const ALL_PLATFORMS = ['linux', 'mac', 'win'];
+
 /**
- * Every `from` path in every scope of `build.extraResources`.
+ * Every electron-builder scope an `extraResources` entry may sit under, and
+ * the platforms an entry there ships to. Enumerated rather than defaulted:
+ * a scope this map does not name fails the sweep below, because guessing
+ * "every platform" for an unrecognised one would silently over-claim the
+ * artifact set — which is the bug this whole derivation exists to catch.
+ */
+const SCOPE_PLATFORMS = {
+  mac: ['mac'],
+  mas: ['mac'],
+  dmg: ['mac'],
+  pkg: ['mac'],
+  linux: ['linux'],
+  deb: ['linux'],
+  appImage: ['linux'],
+  rpm: ['linux'],
+  snap: ['linux'],
+  pacman: ['linux'],
+  freebsd: ['linux'],
+  win: ['win'],
+  nsis: ['win'],
+  nsisWeb: ['win'],
+  portable: ['win'],
+  appx: ['win'],
+  msi: ['win'],
+  squirrelWindows: ['win'],
+};
+
+/**
+ * Every `from` path in every scope of `build.extraResources`, with the
+ * platforms whose artifacts carry it.
  *
  * Walked rather than read from a fixed [build, mac, linux, win] list: an entry
  * added under `mas`, or under a target-level scope, ships exactly the same and
- * would otherwise never reach the classification check below.
+ * would otherwise never reach the classification check below. The platform set
+ * is what makes a per-platform claim ("Arti ships on macOS and Linux only")
+ * checkable against the tree instead of being written down twice and trusted.
  */
-function declaredExtraResources() {
-  const froms = [];
-  const collect = (scope) => {
+function walkExtraResources() {
+  const platforms = new Map();
+  const unknownScopes = [];
+  const collect = (scope, key, inherited) => {
     if (!scope || typeof scope !== 'object') return;
+    const ships = key === null ? ALL_PLATFORMS : (SCOPE_PLATFORMS[key] ?? inherited);
     for (const entry of scope.extraResources ?? []) {
-      froms.push(typeof entry === 'string' ? entry : entry.from);
+      const from = typeof entry === 'string' ? entry : entry.from;
+      if (!SCOPE_PLATFORMS[key] && key !== null) unknownScopes.push(`${key}: ${from}`);
+      if (!platforms.has(from)) platforms.set(from, new Set());
+      for (const platform of ships ?? []) platforms.get(from).add(platform);
     }
-    for (const [key, value] of Object.entries(scope)) {
-      if (key !== 'extraResources') collect(value);
+    for (const [child, value] of Object.entries(scope)) {
+      if (child !== 'extraResources') collect(value, child, ships);
     }
   };
-  collect(pkg.build);
-  return [...new Set(froms)];
+  collect(pkg.build, null, null);
+  return { platforms, unknownScopes };
 }
+
+function declaredExtraResources() {
+  return [...walkExtraResources().platforms.keys()];
+}
+
+/** The platforms whose artifacts carry `from`, sorted. */
+function shippedPlatforms(from) {
+  return [...(walkExtraResources().platforms.get(from) ?? [])].sort();
+}
+
+/**
+ * How a derived platform set is written in prose. NOTICES and
+ * LICENSE_AUDIT.md have to name the set the tree actually ships, so the
+ * wording is derived from it rather than pinned as a literal string.
+ */
+const PLATFORM_WORDING = {
+  'linux,mac,win': 'macOS, Linux and Windows',
+  'linux,mac': 'macOS and Linux',
+  'mac,win': 'macOS and Windows',
+  'linux,win': 'Linux and Windows',
+  mac: 'macOS',
+  linux: 'Linux',
+  win: 'Windows',
+};
 
 /**
  * Every file `build.files`' `src/**\/*` pattern puts in `app.asar`, minus the
@@ -311,6 +388,94 @@ describe('NOTICES attributes every third-party component that ships', () => {
 
   it.each(attributable)('%s is described in LICENSE_AUDIT.md', (id, meta) => {
     expect({ id, described: auditDoc.includes(meta.label) }).toEqual({ id, described: true });
+  });
+});
+
+describe('platform claims match the artifacts that carry the component', () => {
+  // Every other bundled component ships everywhere, so its platform set is not
+  // written down and cannot go stale. Arti's is, in three sentences and one
+  // JSON field, and nothing tied any of them to `package.json`: reverting
+  // `platforms` to ["mac","linux"] and the prose to "macOS and Linux only"
+  // left this suite green, so the audit could describe an artifact set that no
+  // longer exists. The set is now derived from the `extraResources` scopes
+  // that put the binary in an artifact, and every statement of it is compared
+  // with that.
+
+  /** The file a claim lives in, and where a block inside it ends. */
+  const CLAIM_FILES = {
+    NOTICES: { text: notices, blockEnd: /\n(?=\S)/ },
+    'LICENSE_AUDIT.md': { text: auditDoc, blockEnd: /\n(?=### |---)/ },
+  };
+
+  /**
+   * The line stating a platform set, scoped to its block when the claim names
+   * one — `- **Platforms:**` is a shape any component's section can carry, so
+   * a whole-file sweep would read the wrong one as soon as a second component
+   * states a platform set.
+   */
+  const claimLine = (claim) => {
+    const { text, blockEnd } = CLAIM_FILES[claim.file];
+    let scope = text;
+    if (claim.block) {
+      const start = scope.search(claim.block);
+      if (start < 0) return null;
+      scope = scope.slice(start);
+      const end = scope.slice(1).search(blockEnd);
+      if (end >= 0) scope = scope.slice(0, end + 1);
+    }
+    return scope.match(claim.line)?.[0] ?? null;
+  };
+
+  const claimed = Object.entries(EXTRA_RESOURCES).filter(([, meta]) => meta.platformClaims);
+
+  it('resolves every extraResources scope to a platform set', () => {
+    expect(walkExtraResources().unknownScopes).toEqual([]);
+  });
+
+  it('guards every audit entry that records a platform set', () => {
+    // A second component gaining a `platforms` field without a claim list here
+    // would be exactly as unguarded as Arti was.
+    const guarded = new Set(claimed.map(([, meta]) => meta.auditName));
+    for (const entry of [...audit.dependencies, ...(audit.assets ?? [])]) {
+      if (!entry.platforms) continue;
+      expect({ name: entry.name, guarded: guarded.has(entry.name) }).toEqual({
+        name: entry.name,
+        guarded: true,
+      });
+    }
+  });
+
+  it.each(claimed)('%s records the platforms package.json ships it to', (id, meta) => {
+    expect({
+      id,
+      platforms: [...(auditByName.get(meta.auditName).platforms ?? [])].sort(),
+    }).toEqual({ id, platforms: shippedPlatforms(id) });
+  });
+
+  it.each(claimed)('%s states that set everywhere it is written down', (id, meta) => {
+    const wording = PLATFORM_WORDING[shippedPlatforms(id).join(',')];
+    expect({ id, platforms: shippedPlatforms(id), wording }).toEqual({
+      id,
+      platforms: shippedPlatforms(id),
+      wording: expect.any(String),
+    });
+    for (const claim of meta.platformClaims) {
+      const line = claimLine(claim);
+      expect({ id, claim: String(claim.line), found: line !== null }).toEqual({
+        id,
+        claim: String(claim.line),
+        found: true,
+      });
+      expect({ id, line, states: line.includes(wording) }).toEqual({ id, line, states: true });
+      // A narrower wording left behind by a platform gain reads as a true
+      // sentence on its own, which is how "macOS and Linux only" survived
+      // Windows picking up Arti. Anything not implied by the right wording is
+      // a contradiction.
+      const contradicts = Object.values(PLATFORM_WORDING).filter(
+        (other) => other !== wording && !wording.includes(other) && line.includes(other)
+      );
+      expect({ id, line, contradicts }).toEqual({ id, line, contradicts: [] });
+    }
   });
 });
 

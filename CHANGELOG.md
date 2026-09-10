@@ -81,9 +81,10 @@ All notable changes to Freedom will be documented in this file.
   - Safe multi-owner accounts on Gnosis, with a signing board owners sign in any order
 - Tor for `.onion` addresses, through a bundled [Arti](https://gitlab.torproject.org/tpo/core/arti) 2.6.0 client:
   - Off by default under Settings > Experimental
-  - Bundled on macOS, Linux and Windows x64, not on Windows ARM64
+  - Bundled in every macOS, Linux and Windows build
   - Clearnet traffic keeps connecting directly
   - Prompt to use a system Tor client, such as Tor Browser, instead of Arti
+- Licence texts and third-party notices in every installed copy of Freedom
 
 ### Changed
 
