@@ -175,11 +175,13 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
   await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
   await expect(tabs).toHaveCount(initialTabs + 1);
 
-  // Focusing that tab hands the keyboard to its <webview>, and the transfer is
-  // asynchronous: it fires a window `blur`, which menus.js closes every menu
-  // on. Wait for it to land before driving the hamburger again — a late blur
-  // otherwise closes the menu between opening it and clicking the row, and the
-  // second open never happens at all.
+  // Focusing that tab hands the keyboard to its <webview>. Settle on that
+  // before driving the hamburger again, so the second open starts from a known
+  // state rather than mid-transfer. (The transfer's window `blur` used to close
+  // the menu that came next, which is what made this test flake in CI;
+  // `onWindowDeactivated` now ignores an in-window guest blur — see the
+  // dedicated test below — so this wait is a settle point, not the thing
+  // carrying the test.)
   await expect
     .poll(() => window.evaluate(() => document.activeElement?.tagName), { timeout: 10_000 })
     .toBe('WEBVIEW');
@@ -202,4 +204,67 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
   // The menu is gone and the keyboard is back in the chrome, not stranded in
   // the guest that the second activation just handed the page focus to.
   await expect.poll(() => menuState(window)).toMatchObject({ hamburger: false });
+});
+
+// A `<webview>` guest of this window taking focus fires the renderer's own
+// `window` `blur` — but the window never lost focus, so it must not dismiss
+// chrome. `<webview>.focus()` resolves asynchronously (the #304/#319
+// asynchrony), so every tab activation that hands the page the keyboard emits
+// that blur at a moment nothing in the chrome controls: on a loaded machine it
+// lands *after* the user has opened the next menu and takes it away under the
+// pointer. That is what made the second Downloads open above fail in CI — the
+// menu closed between opening it and clicking the row, so the click reached
+// the page and the row never ran.
+//
+// Real window-level blur (alt-tab, another app) still dismisses. The two are
+// told apart by `document.hasFocus()` in `lib/window-deactivation.js` (#328):
+// it stays true while focus is anywhere inside this window — a guest included
+// — and goes false only when the OS hands another window the keyboard.
+// `menu-backdrop.js` handles the other half of that same event, reclaiming the
+// keyboard for the chrome element the guest cut in front of, which is what the
+// `focused:` assertions below pin.
+test('a guest taking focus does not dismiss the open chrome menus', async ({ window }) => {
+  // Exactly what a tab activation does, just issued explicitly so the transfer
+  // provably lands while the menu is up.
+  const stealFocusForTheGuest = () =>
+    window.evaluate(
+      () =>
+        new Promise((resolve) => {
+          window.addEventListener('blur', () => setTimeout(resolve, 0), { once: true });
+          document.querySelector('webview:not(.hidden)')?.focus();
+        })
+    );
+
+  await window.locator('#menu-button').click();
+  await expect.poll(() => menuState(window)).toMatchObject({ hamburger: true, backdrop: true });
+
+  await stealFocusForTheGuest();
+  // Still open — and the keyboard is back in the chrome, so Escape (a listener
+  // on this window) still reaches the menu instead of dying in the guest.
+  await expect
+    .poll(() => menuState(window))
+    .toMatchObject({ hamburger: true, backdrop: true, focused: 'menu-button' });
+
+  // Its Profiles flyout hangs off the same backdrop: closing only the flyout
+  // would leave the two out of step.
+  await window.locator('#profile-menu-btn').click();
+  await expect.poll(() => menuState(window)).toMatchObject({ hamburger: true, flyout: true });
+  await stealFocusForTheGuest();
+  await expect.poll(() => menuState(window)).toMatchObject({ hamburger: true, flyout: true });
+
+  await window.keyboard.press('Escape');
+  await window.keyboard.press('Escape');
+  await expect
+    .poll(() => menuState(window))
+    .toMatchObject({ hamburger: false, flyout: false, backdrop: false });
+
+  // Same for the Nodes menu, the other half of `closeMenus`.
+  await window.locator('#bee-menu-button').click();
+  await expect.poll(() => menuState(window)).toMatchObject({ nodes: true, backdrop: true });
+  await stealFocusForTheGuest();
+  await expect
+    .poll(() => menuState(window))
+    .toMatchObject({ nodes: true, backdrop: true, focused: 'bee-menu-button' });
+  await window.keyboard.press('Escape');
+  await expect.poll(() => menuState(window)).toMatchObject({ nodes: false, backdrop: false });
 });

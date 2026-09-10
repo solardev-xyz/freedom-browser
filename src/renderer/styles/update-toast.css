@@ -18,6 +18,7 @@
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
   color: var(--text);
   font-size: 13px;
@@ -25,6 +26,7 @@
 
 .update-toast-btn {
   background: var(--accent);
+  /* theme-literal: fixed contrast pair with the filled accent below it, in both themes */
   color: #000;
   border: none;
   padding: 6px 12px;
