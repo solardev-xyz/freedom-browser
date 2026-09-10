@@ -1,24 +1,35 @@
 {
   "project_license": "MPL-2.0",
-  "generated_at": "2026-08-19T00:00:00.000Z",
+  "generated_at": "2026-09-10T00:00:00.000Z",
+  "audit_baseline": "0.8.5-rc.6",
+  "notes": "Regenerated for the 0.8.5 release. The 2026-08-19 revision of this file described a pre-0.8.5 tree (electron 39.2.7, ant v0.5.21, libradicle 0.3.0, no Myotis, no Arti) and reported zero copyleft dependencies, which was already untrue. Bundled-component inventory is derived from package.json build.extraResources and src/renderer/vendor/; licenses-audit.test.js fails if this file drifts from either.",
   "distribution_model": {
     "packaging": "electron-builder",
     "bundles_node_modules": true,
     "bundles_in_asar": true,
     "ships_external_binaries": true,
-    "native_addons": ["better-sqlite3", "freedom_ipfs_native.node", "libradicle.node"],
-    "notes": "Electron desktop app bundled as DMG/DEB/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, and libradicle.node ship with the app. Ant ships as an external binary in resources/."
+    "native_addons": [
+      "better-sqlite3",
+      "freedom_ipfs_native.node",
+      "libradicle.node",
+      "myotis-node.node"
+    ],
+    "external_binaries": ["antd", "arti", "myotis-supervisor"],
+    "vendored_renderer_bundles": [
+      "src/renderer/vendor/openlv.esm.js",
+      "src/renderer/vendor/highlight.min.js",
+      "src/renderer/vendor/marked.min.js",
+      "src/renderer/vendor/purify.min.js"
+    ],
+    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS and Linux only, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern."
   },
   "dependencies": [
     {
       "name": "electron",
-      "version": "39.2.7",
+      "version": "44.3.0",
       "type": "direct",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/electron/electron"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/electron/electron" },
       "license": {
         "spdx": ["MIT"],
         "raw": "MIT",
@@ -37,14 +48,305 @@
       ]
     },
     {
-      "name": "ethers",
-      "version": "6.16.0",
-      "type": "direct",
+      "name": "ant (Swarm)",
+      "version": "v0.5.44",
+      "type": "binary",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/freedom-hq/ant" },
+      "license": {
+        "spdx": ["MIT", "Apache-2.0"],
+        "raw": "MIT OR Apache-2.0",
+        "license_files": ["LICENSE-MIT", "LICENSE-APACHE"],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-ant.js PINNED_RELEASE_TAG",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "freedom-ipfs",
+      "version": "v0.4.3",
+      "type": "native-addon",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/solardev-xyz/freedom-ipfs" },
+      "license": {
+        "spdx": ["MIT", "Apache-2.0"],
+        "raw": "MIT OR Apache-2.0",
+        "license_files": ["LICENSE-MIT", "LICENSE-APACHE"],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-freedom-ipfs-native.js releaseTag",
+      "bundled_with_app": true,
+      "linking_or_integration": "native-addon",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "libradicle",
+      "version": "0.7.1",
+      "type": "native-addon",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/solardev-xyz/libradicle" },
+      "license": {
+        "spdx": ["MIT", "Apache-2.0"],
+        "raw": "MIT OR Apache-2.0",
+        "license_files": [],
+        "notice_required": true
+      },
+      "version_pin": "src/shared/radicle-addon-version.js RADICLE_ADDON_VERSION",
+      "bundled_with_app": true,
+      "linking_or_integration": "native-addon",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "notice",
+          "details": "The upstream repository publishes no LICENSE file; the MIT OR Apache-2.0 claim rests on the license field in its Cargo.toml, verified at tag v0.7.1. It statically links Radicle Heartwood (solardev-xyz/heartwood), also MIT OR Apache-2.0 per its workspace Cargo.toml.",
+          "recommended_fix": "Ask upstream to commit LICENSE-MIT and LICENSE-APACHE so the claim has a file to point at."
+        }
+      ]
+    },
+    {
+      "name": "myotis",
+      "version": "v0.1.7",
+      "type": "native-addon",
+      "scope": "runtime",
+      "source": { "ecosystem": "github", "url": "https://github.com/biafra23/myotis" },
+      "license": {
+        "spdx": ["Apache-2.0"],
+        "raw": "Apache-2.0",
+        "license_files": ["LICENSE", "NOTICE"],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-myotis.js PINNED_RELEASE_TAG",
+      "bundled_with_app": true,
+      "linking_or_integration": "native-addon",
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "notice",
+          "details": "Apache-2.0 section 4(d): upstream ships a NOTICE file, so its attribution text must be reproduced in any redistribution. Copyright 2026 Dirk Jäckel.",
+          "recommended_fix": "Reproduced verbatim in NOTICES; re-check the upstream NOTICE on every version bump."
+        }
+      ]
+    },
+    {
+      "name": "arti",
+      "version": "2.6.0",
+      "type": "binary",
+      "scope": "runtime",
+      "source": { "ecosystem": "crates.io", "url": "https://gitlab.torproject.org/tpo/core/arti" },
+      "license": {
+        "spdx": ["MIT", "Apache-2.0"],
+        "raw": "MIT OR Apache-2.0",
+        "license_files": ["LICENSE-MIT", "LICENSE-APACHE"],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-arti.js PINNED_ARTI_VERSION",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "platforms": ["mac", "linux"],
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "notice",
+          "details": "Built from crates.io with `cargo install arti --locked`, so the shipped binary statically links the crate's whole dependency tree. Copyright 2019-2025, The Tor Project, Inc.",
+          "recommended_fix": "Re-check the Cargo.lock license set on every ARTI_VERSION bump; upstream distributes the tree under permissive licenses."
+        }
+      ]
+    },
+    {
+      "name": "openlv (@openlv/core, @openlv/session, @openlv/signaling, @openlv/transport)",
+      "version": "0.2.0",
+      "type": "vendored-bundle",
       "scope": "runtime",
       "source": {
         "ecosystem": "npm",
-        "url": "https://github.com/ethers-io/ethers.js"
+        "url": "https://github.com/open-lavatory/open-lavatory"
       },
+      "license": {
+        "spdx": ["LGPL-3.0-only"],
+        "raw": "LGPL-3.0-only",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "vendored_path": "src/renderer/vendor/openlv.esm.js",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-bundle",
+      "risk": "orange",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "LGPL-3.0-only. Freedom does not modify these packages and does not mix them into its own bundles: scripts/bundle-openlv.js emits one standalone ES module (src/renderer/vendor/openlv.esm.js) containing only upstream code, which the renderer loads by dynamic import. That satisfies LGPL-3.0 section 4's requirement that a user be able to relink the application against a modified version of the library. The same bundle embeds websocket-mqtt 0.0.7 (LGPL-3.0), the only signaling backend shipped; the gundb and ntfy backends are stubbed out.",
+          "recommended_fix": "Keep the bundle a single regenerable file containing no Freedom code, keep NOTICES's relinking instructions accurate, and never inline it into an app bundle."
+        }
+      ]
+    },
+    {
+      "name": "highlight.js",
+      "version": "11.11.1",
+      "type": "vendored-bundle",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/highlightjs/highlight.js" },
+      "license": {
+        "spdx": ["BSD-3-Clause"],
+        "raw": "BSD-3-Clause",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "vendored_path": "src/renderer/vendor/highlight.min.js",
+      "bundled_with_app": true,
+      "linking_or_integration": "script-tag",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "notice",
+          "details": "BSD-3-Clause requires the copyright notice in redistributions. The bundled GitHub dark/light themes (hljs-github-*.css) come from the same project and are covered by the same entry.",
+          "recommended_fix": "Attributed in NOTICES."
+        }
+      ]
+    },
+    {
+      "name": "marked",
+      "version": "15.0.7",
+      "type": "vendored-bundle",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/markedjs/marked" },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE.md"],
+        "notice_required": true
+      },
+      "vendored_path": "src/renderer/vendor/marked.min.js",
+      "bundled_with_app": true,
+      "linking_or_integration": "script-tag",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "dompurify",
+      "version": "3.2.5",
+      "type": "vendored-bundle",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/cure53/DOMPurify" },
+      "license": {
+        "spdx": ["MPL-2.0", "Apache-2.0"],
+        "raw": "(MPL-2.0 OR Apache-2.0)",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "vendored_path": "src/renderer/vendor/purify.min.js",
+      "bundled_with_app": true,
+      "linking_or_integration": "script-tag",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "notice",
+          "details": "Dual-licensed; Freedom takes it unmodified, so either arm is satisfied by attribution alone.",
+          "recommended_fix": "Attributed in NOTICES."
+        }
+      ]
+    },
+    {
+      "name": "better-sqlite3",
+      "version": "13.0.3",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/WiseLibs/better-sqlite3" },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "native-addon",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "note",
+          "details": "Embeds SQLite, which is in the public domain and creates no licensing obligations.",
+          "recommended_fix": null
+        }
+      ]
+    },
+    {
+      "name": "@ghostery/adblocker",
+      "version": "2.18.2",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/ghostery/adblocker" },
+      "license": {
+        "spdx": ["MPL-2.0"],
+        "raw": "MPL-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "MPL-2.0 is file-level weak copyleft and is the project's own license, so combination is unproblematic. Freedom consumes it unmodified from npm. Its @remusao/* helpers and @ghostery/url-parser carry the same license.",
+          "recommended_fix": "Attributed in NOTICES; disclose sources only if a bundled MPL file is ever modified."
+        }
+      ]
+    },
+    {
+      "name": "@openlv/core",
+      "version": "0.2.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/open-lavatory/open-lavatory" },
+      "license": {
+        "spdx": ["LGPL-3.0-only"],
+        "raw": "LGPL-3.0-only",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "build-input",
+      "risk": "orange",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "See the `openlv` vendored-bundle entry; this is the npm package the bundle is built from.",
+          "recommended_fix": "Covered by the vendored-bundle entry's handling."
+        }
+      ]
+    },
+    {
+      "name": "@openlv/session",
+      "version": "0.2.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/open-lavatory/open-lavatory" },
+      "license": {
+        "spdx": ["LGPL-3.0-only"],
+        "raw": "LGPL-3.0-only",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "build-input",
+      "risk": "orange",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "See the `openlv` vendored-bundle entry; pulls in @openlv/signaling and @openlv/transport (same license) and websocket-mqtt 0.0.7 (LGPL-3.0).",
+          "recommended_fix": "Covered by the vendored-bundle entry's handling."
+        }
+      ]
+    },
+    {
+      "name": "ethers",
+      "version": "6.17.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/ethers-io/ethers.js" },
       "license": {
         "spdx": ["MIT"],
         "raw": "MIT",
@@ -57,40 +359,11 @@
       "issues": []
     },
     {
-      "name": "better-sqlite3",
-      "version": "12.5.0",
-      "type": "direct",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/WiseLibs/better-sqlite3"
-      },
-      "license": {
-        "spdx": ["MIT"],
-        "raw": "MIT",
-        "license_files": ["LICENSE"],
-        "notice_required": false
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "native-addon",
-      "risk": "green",
-      "issues": [
-        {
-          "kind": "other",
-          "details": "Bundles SQLite which is public domain. No license obligations.",
-          "recommended_fix": null
-        }
-      ]
-    },
-    {
       "name": "electron-log",
-      "version": "5.4.3",
+      "version": "5.4.4",
       "type": "direct",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/megahertz/electron-log"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/megahertz/electron-log" },
       "license": {
         "spdx": ["MIT"],
         "raw": "MIT",
@@ -104,7 +377,7 @@
     },
     {
       "name": "electron-updater",
-      "version": "6.6.2",
+      "version": "6.8.9",
       "type": "direct",
       "scope": "runtime",
       "source": {
@@ -123,14 +396,28 @@
       "issues": []
     },
     {
-      "name": "@ensdomains/content-hash",
-      "version": "3.0.0",
+      "name": "@corpus-core/colibri-stateless",
+      "version": "2.0.6",
       "type": "direct",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/ensdomains/content-hash"
+      "source": { "ecosystem": "npm", "url": "https://github.com/corpus-core/c4" },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
       },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@ensdomains/content-hash",
+      "version": "3.1.1",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/ensdomains/content-hash" },
       "license": {
         "spdx": ["MIT"],
         "raw": "MIT",
@@ -144,13 +431,10 @@
     },
     {
       "name": "@adraffy/ens-normalize",
-      "version": "1.10.1",
-      "type": "transitive",
+      "version": "1.11.1",
+      "type": "direct",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/adraffy/ens-normalize.js"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/adraffy/ens-normalize.js" },
       "license": {
         "spdx": ["MIT"],
         "raw": "MIT",
@@ -163,18 +447,66 @@
       "issues": []
     },
     {
-      "name": "@multiformats/sha3",
-      "version": "2.0.17",
-      "type": "transitive",
+      "name": "@ethersphere/bee-js",
+      "version": "13.0.0",
+      "type": "direct",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/multiformats/js-sha3"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/ethersphere/bee-js" },
       "license": {
-        "spdx": ["Apache-2.0", "MIT"],
-        "raw": "(Apache-2.0 AND MIT)",
-        "license_files": ["README.md"],
+        "spdx": ["BSD-3-Clause"],
+        "raw": "BSD-3-Clause",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@ledgerhq/hw-app-eth",
+      "version": "7.8.17",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/LedgerHQ/ledger-live" },
+      "license": {
+        "spdx": ["Apache-2.0"],
+        "raw": "Apache-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@ledgerhq/hw-transport-node-hid",
+      "version": "6.33.5",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/LedgerHQ/ledger-live" },
+      "license": {
+        "spdx": ["Apache-2.0"],
+        "raw": "Apache-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@metamask/browser-passworder",
+      "version": "6.0.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/MetaMask/browser-passworder" },
+      "license": {
+        "spdx": ["ISC"],
+        "raw": "ISC",
+        "license_files": ["LICENSE"],
         "notice_required": false
       },
       "bundled_with_app": true,
@@ -183,14 +515,28 @@
       "issues": []
     },
     {
-      "name": "@noble/curves",
-      "version": "1.2.0",
-      "type": "transitive",
+      "name": "@safe-global/protocol-kit",
+      "version": "8.0.6",
+      "type": "direct",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/paulmillr/noble-curves"
+      "source": { "ecosystem": "npm", "url": "https://github.com/safe-global/safe-core-sdk" },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE.md"],
+        "notice_required": false
       },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@scure/bip39",
+      "version": "2.4.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/paulmillr/scure-bip39" },
       "license": {
         "spdx": ["MIT"],
         "raw": "MIT",
@@ -203,14 +549,45 @@
       "issues": []
     },
     {
-      "name": "@noble/hashes",
-      "version": "1.3.2",
-      "type": "transitive",
+      "name": "@x402/core",
+      "version": "2.25.0",
+      "type": "direct",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/paulmillr/noble-hashes"
+      "source": { "ecosystem": "npm", "url": "https://github.com/x402-foundation/x402" },
+      "license": {
+        "spdx": ["Apache-2.0"],
+        "raw": "Apache-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": true
       },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@x402/evm",
+      "version": "2.25.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/x402-foundation/x402" },
+      "license": {
+        "spdx": ["Apache-2.0"],
+        "raw": "Apache-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "micro-key-producer",
+      "version": "0.10.2",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/paulmillr/micro-key-producer" },
       "license": {
         "spdx": ["MIT"],
         "raw": "MIT",
@@ -223,18 +600,15 @@
       "issues": []
     },
     {
-      "name": "aes-js",
-      "version": "4.0.0-beta.5",
-      "type": "transitive",
+      "name": "proper-lockfile",
+      "version": "4.1.2",
+      "type": "direct",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/ricmoo/aes-js"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/moxystudio/node-proper-lockfile" },
       "license": {
         "spdx": ["MIT"],
         "raw": "MIT",
-        "license_files": ["LICENSE.txt"],
+        "license_files": ["LICENSE"],
         "notice_required": false
       },
       "bundled_with_app": true,
@@ -243,40 +617,91 @@
       "issues": []
     },
     {
-      "name": "argparse",
-      "version": "2.0.1",
+      "name": "qrcode",
+      "version": "1.5.4",
+      "type": "direct",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/soldair/node-qrcode" },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["license"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "websocket-mqtt",
+      "version": "0.0.7",
       "type": "transitive",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/nodeca/argparse"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/v3xlabs/websocket-mqtt" },
       "license": {
-        "spdx": ["Python-2.0"],
-        "raw": "Python-2.0",
+        "spdx": ["LGPL-3.0"],
+        "raw": "LGPL-3.0",
+        "license_files": [],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-bundle",
+      "risk": "orange",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "Reached through @openlv/signaling and bundled, unmodified, into src/renderer/vendor/openlv.esm.js. Covered by the same LGPL relinking story as the openlv entry.",
+          "recommended_fix": "Covered by the vendored-bundle entry's handling."
+        }
+      ]
+    },
+    {
+      "name": "@ethereumjs/rlp, @ethereumjs/tx, @ethereumjs/util",
+      "version": "4.0.1, 4.2.0, 8.1.0",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/ethereumjs/ethereumjs-monorepo" },
+      "license": {
+        "spdx": ["MPL-2.0"],
+        "raw": "MPL-2.0",
         "license_files": ["LICENSE"],
-        "notice_required": false
+        "notice_required": true
       },
       "bundled_with_app": true,
       "linking_or_integration": "js-import",
       "risk": "green",
       "issues": [
         {
-          "kind": "other",
-          "details": "Python-2.0 (PSF License) is a permissive license compatible with MPL-2.0",
-          "recommended_fix": null
+          "kind": "copyleft",
+          "details": "MPL-2.0, same as the project's own license; consumed unmodified.",
+          "recommended_fix": "Covered by the NOTICES npm-dependencies section."
         }
       ]
     },
     {
-      "name": "sax",
-      "version": "1.4.3",
+      "name": "argparse",
+      "version": "2.0.1",
       "type": "transitive",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/isaacs/sax-js"
+      "source": { "ecosystem": "npm", "url": "https://github.com/nodeca/argparse" },
+      "license": {
+        "spdx": ["Python-2.0"],
+        "raw": "Python-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": true
       },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "sax",
+      "version": "1.6.1",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": { "ecosystem": "npm", "url": "https://github.com/isaacs/sax-js" },
       "license": {
         "spdx": ["BlueOak-1.0.0"],
         "raw": "BlueOak-1.0.0",
@@ -286,23 +711,14 @@
       "bundled_with_app": true,
       "linking_or_integration": "js-import",
       "risk": "green",
-      "issues": [
-        {
-          "kind": "other",
-          "details": "BlueOak-1.0.0 is a modern permissive license equivalent to MIT, compatible with MPL-2.0",
-          "recommended_fix": null
-        }
-      ]
+      "issues": []
     },
     {
       "name": "tslib",
-      "version": "2.7.0",
+      "version": "2.7.0, 2.8.1",
       "type": "transitive",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/Microsoft/tslib"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/Microsoft/tslib" },
       "license": {
         "spdx": ["0BSD"],
         "raw": "0BSD",
@@ -316,17 +732,14 @@
     },
     {
       "name": "multiformats",
-      "version": "12.1.3",
+      "version": "13.4.2, 14.0.5",
       "type": "transitive",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/multiformats/js-multiformats"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/multiformats/js-multiformats" },
       "license": {
         "spdx": ["Apache-2.0", "MIT"],
         "raw": "Apache-2.0 OR MIT",
-        "license_files": ["LICENSE"],
+        "license_files": ["LICENSE-MIT", "LICENSE-APACHE"],
         "notice_required": false
       },
       "bundled_with_app": true,
@@ -335,201 +748,47 @@
       "issues": []
     },
     {
-      "name": "ant (Swarm)",
-      "version": "v0.5.21",
-      "type": "binary",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "github",
-        "url": "https://github.com/freedom-hq/ant"
-      },
-      "license": {
-        "spdx": ["MIT", "Apache-2.0"],
-        "raw": "MIT OR Apache-2.0",
-        "license_files": ["LICENSE-MIT", "LICENSE-APACHE"],
-        "notice_required": true
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "separate-process",
-      "risk": "green",
-      "issues": [
-        {
-          "kind": "notice",
-          "details": "MIT and Apache-2.0 both require attribution and inclusion of the license text",
-          "recommended_fix": "Include Ant's MIT/Apache notice in THIRD_PARTY_NOTICES"
-        }
-      ]
-    },
-    {
-      "name": "freedom-ipfs",
-      "version": "0.4.1",
-      "type": "native-addon",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "github",
-        "url": "https://github.com/solardev-xyz/freedom-ipfs"
-      },
-      "license": {
-        "spdx": ["MIT", "Apache-2.0"],
-        "raw": "MIT OR Apache-2.0",
-        "license_files": ["LICENSE-MIT", "LICENSE-APACHE"],
-        "notice_required": true
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "native-addon",
-      "risk": "green",
-      "issues": [
-        {
-          "kind": "notice",
-          "details": "freedom-ipfs is bundled as a native addon; keep its MIT/Apache notice with the distributed third-party notices",
-          "recommended_fix": "Include freedom-ipfs in NOTICES"
-        }
-      ]
-    },
-    {
-      "name": "libradicle",
-      "version": "0.3.0",
-      "type": "native-addon",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "other",
-        "url": "https://github.com/solardev-xyz/libradicle"
-      },
-      "license": {
-        "spdx": ["MIT", "Apache-2.0"],
-        "raw": "MIT OR Apache-2.0",
-        "license_files": ["LICENSE-MIT", "LICENSE-APACHE"],
-        "notice_required": true
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "native-addon",
-      "risk": "green",
-      "issues": [
-        {
-          "kind": "notice",
-          "details": "libradicle is bundled as a native addon; keep its MIT/Apache notice with the distributed third-party notices",
-          "recommended_fix": "Include libradicle in NOTICES"
-        }
-      ]
-    },
-    {
-      "name": "detect-libc",
+      "name": "node-hid",
       "version": "2.1.2",
       "type": "transitive",
       "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/lovell/detect-libc"
-      },
+      "source": { "ecosystem": "npm", "url": "https://github.com/node-hid/node-hid" },
       "license": {
-        "spdx": ["Apache-2.0"],
-        "raw": "Apache-2.0",
-        "license_files": ["LICENSE"],
+        "spdx": ["MIT", "X11"],
+        "raw": "(MIT OR X11)",
+        "license_files": ["LICENSE.md"],
         "notice_required": false
       },
       "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": []
-    },
-    {
-      "name": "tunnel-agent",
-      "version": "0.6.0",
-      "type": "transitive",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/mikeal/tunnel-agent"
-      },
-      "license": {
-        "spdx": ["Apache-2.0"],
-        "raw": "Apache-2.0",
-        "license_files": ["LICENSE"],
-        "notice_required": false
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": []
-    },
-    {
-      "name": "ieee754",
-      "version": "1.2.1",
-      "type": "transitive",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/feross/ieee754"
-      },
-      "license": {
-        "spdx": ["BSD-3-Clause"],
-        "raw": "BSD-3-Clause",
-        "license_files": ["LICENSE"],
-        "notice_required": false
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": []
-    },
-    {
-      "name": "expand-template",
-      "version": "2.0.3",
-      "type": "transitive",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/ralphtheninja/expand-template"
-      },
-      "license": {
-        "spdx": ["MIT", "WTFPL"],
-        "raw": "(MIT OR WTFPL)",
-        "license_files": ["LICENSE"],
-        "notice_required": false
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
-      "risk": "green",
-      "issues": []
-    },
-    {
-      "name": "rc",
-      "version": "1.2.8",
-      "type": "transitive",
-      "scope": "runtime",
-      "source": {
-        "ecosystem": "npm",
-        "url": "https://github.com/dominictarr/rc"
-      },
-      "license": {
-        "spdx": ["BSD-2-Clause", "MIT", "Apache-2.0"],
-        "raw": "(BSD-2-Clause OR MIT OR Apache-2.0)",
-        "license_files": ["LICENSE.APACHE2", "LICENSE.BSD", "LICENSE.MIT"],
-        "notice_required": false
-      },
-      "bundled_with_app": true,
-      "linking_or_integration": "js-import",
+      "linking_or_integration": "native-addon",
       "risk": "green",
       "issues": []
     }
   ],
-  "dev_dependencies_summary": {
-    "total": 650,
-    "licenses_found": {
-      "MIT": 580,
-      "ISC": 45,
-      "BSD-2-Clause": 10,
-      "BSD-3-Clause": 8,
-      "Apache-2.0": 15,
-      "0BSD": 2,
-      "BlueOak-1.0.0": 4,
+  "production_license_distribution": {
+    "unique_packages": 265,
+    "counts": {
+      "MIT": 191,
+      "Apache-2.0": 21,
+      "ISC": 20,
+      "MPL-2.0": 13,
+      "LGPL-3.0-only": 4,
+      "LGPL-3.0": 1,
+      "Apache-2.0 OR MIT": 3,
+      "BSD-3-Clause": 3,
+      "0BSD": 3,
+      "(MIT OR X11)": 1,
+      "(MIT OR WTFPL)": 1,
+      "(BSD-2-Clause OR MIT OR Apache-2.0)": 1,
+      "(Zlib OR MIT OR Apache-2.0)": 1,
       "Python-2.0": 1,
-      "CC-BY-4.0": 1,
-      "CC0-1.0": 2,
-      "WTFPL": 2
+      "BlueOak-1.0.0": 1
     },
-    "risk_assessment": "All dev dependencies use permissive licenses. CC-BY-4.0 (caniuse-lite) is not bundled with the app.",
-    "copyleft_found": false
+    "method": "walk of package.json `dependencies` and their transitive `dependencies` in the installed tree, deduplicated by name@version"
+  },
+  "dev_dependencies_summary": {
+    "risk_assessment": "Dev dependencies are not shipped with the application and do not affect the license of the distributed product. Notable: caniuse-lite is CC-BY-4.0 but is never distributed.",
+    "copyleft_bundled": false
   },
   "assets": [
     {
@@ -543,30 +802,65 @@
       },
       "risk": "green",
       "issues": []
+    },
+    {
+      "name": "ad-blocking filter lists",
+      "path": "assets/adblock/",
+      "type": "data",
+      "license": {
+        "spdx": ["CC-BY-SA-3.0"],
+        "raw": "GPLv3+ or CC BY-SA 3.0+ (redistributed under CC BY-SA)",
+        "notice_required": true
+      },
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "notice",
+          "details": "EasyList, EasyPrivacy, Fanboy Cookiemonster and Fanboy Annoyances are dual-licensed data, not code. Freedom redistributes them under the CC BY-SA arm, which needs attribution only.",
+          "recommended_fix": "Attributed in NOTICES."
+        }
+      ]
     }
   ],
-  "summary": {
-    "green": 70,
-    "yellow": 1,
-    "orange": 0,
-    "red": 0,
-    "unknown": 0
-  },
+  "summary": { "green": 258, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
   "blockers": [],
+  "resolved_since_last_audit": [
+    {
+      "kind": "copyleft",
+      "component": "qrious 4.0.2 (src/renderer/vendor/qrious.min.js)",
+      "details": "A GPL-3.0 QR-code library was committed under src/renderer/vendor/ and shipped inside app.asar via the src/**/* files pattern, unreferenced by any source file. GPL-3.0 is strong copyleft and is not compatible with distributing Freedom under MPL-2.0. The 2026-08-19 audit's `Copyleft: 0` line missed it.",
+      "resolution": "Deleted, together with two other unreferenced vendor files (qrcode.esm.js, and qrcode.min.js which was a 64-byte jsDelivr 404 body). The app's QR rendering uses the npm `qrcode` package (MIT) from the main process."
+    }
+  ],
   "verdict": {
     "status": "OK_TO_SHIP",
-    "message": "All dependencies are compatible with MPL-2.0 licensing. No GPL/AGPL/LGPL copyleft licenses found. The project can be released under MPL-2.0 with proper attribution."
+    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code remains after removing the unreferenced qrious bundle. The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
   },
   "required_actions": [
     {
       "priority": "required",
       "action": "Keep third-party notices current",
-      "details": "Include attribution for Electron/Chromium, Ant, freedom-ipfs, libradicle, and bundled npm dependencies with their license texts"
+      "details": "NOTICES must name every component under package.json build.extraResources and every file in src/renderer/vendor/. licenses-audit.test.js enforces this and fails on any unclassified addition."
+    },
+    {
+      "priority": "required",
+      "action": "Reproduce Myotis's upstream NOTICE",
+      "details": "Apache-2.0 section 4(d). Re-read https://github.com/biafra23/myotis/blob/<tag>/NOTICE on every version bump and copy any change into NOTICES."
+    },
+    {
+      "priority": "required",
+      "action": "Keep the OpenLV bundle relinkable",
+      "details": "src/renderer/vendor/openlv.esm.js must stay a single generated file containing only upstream LGPL code. Inlining it into an app bundle, or mixing Freedom code into it, would turn LGPL section 4 into an obligation Freedom cannot meet."
     },
     {
       "priority": "recommended",
       "action": "Ship Electron's LICENSES.chromium.html",
-      "details": "Include or reference Electron's bundled third-party license notices"
+      "details": "Include or reference Electron's bundled third-party license notices."
+    },
+    {
+      "priority": "recommended",
+      "action": "Ask libradicle upstream for LICENSE files",
+      "details": "solardev-xyz/libradicle declares MIT OR Apache-2.0 in Cargo.toml but commits no license text."
     }
   ]
 }
