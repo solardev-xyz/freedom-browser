@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.5-dev",
+  "version": "0.8.5",
   "license": "MPL-2.0",
   "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
@@ -125,6 +125,10 @@
           "filter": [
             "**/*"
           ]
+        },
+        {
+          "from": "node_modules/electron/dist/LICENSES.chromium.html",
+          "to": "LICENSES.chromium.html"
         }
       ]
     },
@@ -243,6 +247,14 @@
       {
         "from": "config/default-bookmarks.json",
         "to": "default-bookmarks.json"
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "NOTICES",
+        "to": "NOTICES"
       }
     ]
   },
