@@ -4117,8 +4117,12 @@
         <button class="context-menu-item" data-action="inspect">Inspect</button>
       </div>
       <!-- Selection actions -->
+      <!-- The search item's label is written in page-context-menu.js from the
+           configured engine and the selection, and it sits directly under Copy
+           the way Chrome places it. -->
       <div class="context-menu-group" data-group="selection">
         <button class="context-menu-item" data-action="copy">Copy</button>
+        <button class="context-menu-item" data-action="search-selection"></button>
         <div class="context-menu-separator"></div>
         <button class="context-menu-item" data-action="inspect">Inspect</button>
       </div>
