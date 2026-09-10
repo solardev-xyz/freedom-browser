@@ -102,3 +102,17 @@ hashes and sizes and inspected both raw native results. Nonactivation input
 bytes, modes and ownership were unchanged. Previous failures and consumed run
 markers remain preserved; recorded commands and identifiers are historical
 evidence, not authorization to replay them.
+
+## Follow-up — gate-copy compatibility correction
+
+A bounded diagnostic confirmed the gate bytes and interpreter paths exist.
+Retained audit evidence supports an AppArmor deleted-entry exec denial, consistent
+with [Linux 6.8 path handling](https://raw.githubusercontent.com/torvalds/linux/v6.8/security/apparmor/path.c)
+and Bubblewrap unlinking the backing file of its data bind. The raw audit records
+remain in the task evidence, outside this repository update.
+
+The isolated correction being prepared uses `--file` for a named gate copy,
+retaining the pinned descriptor, mode 0555 and read-only root before execution.
+Both capability and full backend paths must be updated, without changing host
+aliases, policy or ownership. Runtime confirmation is still required; all earlier
+failures and unrun cases remain unchanged.
