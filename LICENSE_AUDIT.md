@@ -2,7 +2,7 @@
 
 **Intended License:** MPL-2.0 (Mozilla Public License 2.0)
 **Audit Date:** 2026-09-10
-**Baseline:** `0.8.5-rc.6`
+**Baseline:** `0.8.5-rc.8`
 **Auditor:** Automated analysis, re-derived from the installed tree
 
 > **DISCLAIMER:** This is a practical engineering audit, not legal advice. For final licensing decisions, consult a qualified attorney.
@@ -53,7 +53,7 @@ Freedom Browser is distributed as:
   - `myotis-node.node` (`resources/myotis-node/`)
 - **External binaries** shipped in `resources/`:
   - Ant (`antd`, Swarm node)
-  - Arti (Tor client) — **macOS and Linux only**; Windows packages ship no Arti
+  - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 
 ---
@@ -116,7 +116,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 - **Version:** `2.6.0` (pin: `scripts/fetch-arti.js` `PINNED_ARTI_VERSION`)
 - **License:** MIT OR Apache-2.0 (crate `license` field; `LICENSE-MIT` reads _Copyright 2019-2025, The Tor Project, Inc._)
 - **Risk:** Green
-- **Platforms:** macOS and Linux only
+- **Platforms:** macOS, Linux and Windows x64 (no Windows ARM64 package is built)
 - **Integration:** Separate process, reached over SOCKS
 - **Notes:** Built with `cargo install arti --locked`, so the shipped binary **statically links the crate's entire dependency tree**. Upstream distributes that tree under permissive licenses; re-check the `Cargo.lock` license set on any `ARTI_VERSION` bump.
 - **Action Required:** MIT/Apache notice in `NOTICES` ✔
@@ -344,4 +344,4 @@ Freedom Browser can be released under MPL-2.0, with these conditions:
 
 ---
 
-_Re-derived from the installed tree on 2026-09-10 against `0.8.5-rc.6`. Kept honest by `licenses-audit.test.js`._
+_Re-derived from the installed tree on 2026-09-10 against `0.8.5-rc.8`. Kept honest by `licenses-audit.test.js`._

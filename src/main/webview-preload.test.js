@@ -285,6 +285,7 @@ describe('webview-preload', () => {
         [{ protocol: 'bee', config: { mode: 'disabled' } }],
       ],
       ['checkRadicleBinary', [], IPC.RADICLE_CHECK_BINARY, []],
+      ['checkTorBinary', [], IPC.TOR_CHECK_BINARY, []],
     ];
 
     for (const [method, args, channel, expectedArgs] of mutationCases) {
@@ -314,7 +315,11 @@ describe('webview-preload', () => {
         mode: 'disabled',
       })
     ).rejects.toThrow('freedomAPI profile changes are only available on settings');
+    await expect(exposures.freedomAPI.checkTorBinary()).rejects.toThrow(
+      'freedomAPI profile changes are only available on settings'
+    );
 
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.TOR_CHECK_BINARY);
     expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.PROFILE_CREATE, expect.anything());
     expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(
       IPC.PROFILE_UPDATE_NODE_CONFIG,

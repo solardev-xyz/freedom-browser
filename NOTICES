@@ -48,7 +48,7 @@ Myotis (trustless Ethereum wallet engine)
 
         http://www.apache.org/licenses/LICENSE-2.0
 
-Arti (Tor client, macOS and Linux builds only)
+Arti (Tor client, macOS, Linux and Windows x64 builds)
   License: MIT OR Apache-2.0
   Copyright 2019-2025, The Tor Project, Inc.
   https://gitlab.torproject.org/tpo/core/arti

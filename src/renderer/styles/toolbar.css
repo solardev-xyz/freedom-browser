@@ -82,6 +82,7 @@
 }
 
 .icon-btn:hover {
+  /* theme-literal: neutral hover tint; light-theme.css overrides .icon-btn:hover */
   background: rgba(255, 255, 255, 0.1);
 }
 
@@ -113,6 +114,7 @@
   padding: 0;
   margin: 0;
   border: none;
+  /* theme-literal: neutral shield tint; light-theme.css overrides .trust-shield */
   background: rgba(255, 255, 255, 0.08);
   color: var(--muted);
   display: none;
@@ -143,6 +145,7 @@
 
 .trust-shield:hover {
   color: var(--text);
+  /* theme-literal: neutral hover tint; light-theme.css overrides .trust-shield:hover */
   background: rgba(255, 255, 255, 0.18);
 }
 
@@ -173,6 +176,7 @@
   color: var(--warning-fg);
 }
 .trust-shield[data-trust='conflict'] .icon-conflict {
+  /* theme-literal: the conflict red shared with .ghb-error-icon; a trust state, not a surface */
   color: #cf222e;
 }
 
@@ -191,6 +195,7 @@
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   z-index: 10000;
   padding: 14px 16px;
@@ -364,7 +369,8 @@
   z-index: 2;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.2s ease,
+  transition:
+    opacity 0.2s ease,
     left 0.2s ease;
 }
 
@@ -381,6 +387,7 @@
 /* Swarm - orange */
 .protocol-icon[data-protocol='swarm'] .icon-swarm {
   display: block;
+  /* theme-literal: Swarm's brand orange, the protocol glyph's identity, not a theme surface */
   fill: #f7931a;
 }
 
@@ -393,12 +400,14 @@
 /* Contract-hosted ERC-8244 application */
 .protocol-icon[data-protocol='onchain'] .icon-onchain {
   display: block;
+  /* theme-literal: the onchain-app glyph violet, a protocol identity, not a theme surface */
   fill: #8c8cff;
 }
 
 /* Radicle - purple/violet (matches Radicle branding) */
 .protocol-icon[data-protocol='radicle'] .icon-radicle {
   display: block;
+  /* theme-literal: Radicle's brand violet, the protocol glyph's identity, not a theme surface */
   stroke: #9b59b6;
 }
 
@@ -419,6 +428,7 @@
   height: 36px;
   border-radius: 18px;
   border: 1px solid transparent;
+  /* theme-literal: dark-theme input fill; light-theme.css overrides .address-input to #f1f3f4 */
   background: #282828;
   color: var(--text);
   padding: 6px 38px 6px 16px;
@@ -454,6 +464,7 @@
 
 .input-action-btn:hover {
   color: var(--text);
+  /* theme-literal: neutral hover tint; light-theme.css overrides .input-action-btn:hover */
   background: rgba(255, 255, 255, 0.1);
 }
 

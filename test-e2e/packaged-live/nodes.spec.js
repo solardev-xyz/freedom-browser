@@ -219,15 +219,23 @@ test.describe('packaged bundled nodes', () => {
     });
 
     test('the bundled Arti binary starts, when the build bundles one', async ({ window }) => {
-      // Arti is only bundled when the build ran `npm run tor:download`: never
-      // on Windows (no arti in the win extraResources), and not on a
-      // `bundle_tor=false` dispatch run. Ask the app, which resolves the path
-      // through tor-manager's own getArtiBinaryPath() — resources/arti-bin/arti
-      // in a package — rather than guessing a layout from the outside.
+      // Arti is only bundled when the build ran `npm run tor:download` — every
+      // release platform does (Windows x64 included since #337), but a
+      // `bundle_tor=false` dispatch run and a cross-built package do not. Ask
+      // the app, which resolves the path through tor-manager's own
+      // getArtiBinaryPath() — resources/arti-bin/arti(.exe) in a package —
+      // rather than guessing a layout from the outside. Every smoke job in the
+      // release workflow asserts that file separately, in both of the
+      // artifacts its platform ships — all six legs: the `.deb` and the
+      // extracted AppImage (x64 and arm64), the app out of the `.dmg` and the
+      // one out of the `-mac.zip`, the installed NSIS package and the portable
+      // zip — each gated on the same `BUNDLE_TOR` expression as the build
+      // jobs. So this skip cannot hide a dropped `extraResources` entry on any
+      // platform, and no artifact relies on this leg for that guarantee.
       const { available } = await window.evaluate(() => window.tor.checkBinary());
       test.skip(
         !available,
-        'This build bundles no Arti binary (expected on Windows and on builds made without `npm run tor:download`)'
+        'This build bundles no Arti binary (expected on builds made without `npm run tor:download`)'
       );
 
       // Executes resources/arti-bin/arti --version through the manager's own

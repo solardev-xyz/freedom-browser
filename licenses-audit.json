@@ -1,7 +1,7 @@
 {
   "project_license": "MPL-2.0",
   "generated_at": "2026-09-10T00:00:00.000Z",
-  "audit_baseline": "0.8.5-rc.6",
+  "audit_baseline": "0.8.5-rc.8",
   "notes": "Regenerated for the 0.8.5 release. The 2026-08-19 revision of this file described a pre-0.8.5 tree (electron 39.2.7, ant v0.5.21, libradicle 0.3.0, no Myotis, no Arti) and reported zero copyleft dependencies, which was already untrue. Bundled-component inventory is derived from package.json build.extraResources and src/renderer/vendor/; licenses-audit.test.js fails if this file drifts from either.",
   "distribution_model": {
     "packaging": "electron-builder",
@@ -21,7 +21,7 @@
       "src/renderer/vendor/marked.min.js",
       "src/renderer/vendor/purify.min.js"
     ],
-    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS and Linux only, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
+    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
   },
   "dependencies": [
     {
@@ -147,7 +147,7 @@
       "version_pin": "scripts/fetch-arti.js PINNED_ARTI_VERSION",
       "bundled_with_app": true,
       "linking_or_integration": "separate-process",
-      "platforms": ["mac", "linux"],
+      "platforms": ["mac", "linux", "win"],
       "risk": "green",
       "issues": [
         {
