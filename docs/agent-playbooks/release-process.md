@@ -185,7 +185,7 @@ What the guard cannot check, and you must do by hand before tagging:
 
 - **Upstream licenses are unchanged at the pinned versions.** The guard knows a component is attributed; it cannot know whether upstream relicensed. Re-read the license for anything whose pin moved this cycle: Ant (`MIT OR Apache-2.0`, `LICENSE-MIT` / `LICENSE-APACHE`), freedom-ipfs and Arti (same), libradicle (`license` field in its `Cargo.toml` — it publishes no license file), Myotis (`Apache-2.0`).
 - **Myotis's upstream `NOTICE`.** Apache-2.0 §4(d) obliges us to reproduce it verbatim, and `NOTICES` does. Re-read `https://github.com/biafra23/myotis/blob/<pinned tag>/NOTICE` on every bump and copy across any change — the guard checks that Myotis is attributed, not that the notice text still matches.
-- **Re-stamp the audit at the final cut.** `licenses-audit.json`'s `audit_baseline` and `LICENSE_AUDIT.md`'s `**Baseline:**` and footer must name `package.json`'s version, so `npm version 0.8.5` turns the suite red until you update all three and refresh `Audit Date`. That is the reminder; it is not evidence the audit was re-derived, so re-read what changed since the last candidate before re-stamping.
+- **Re-stamp the audit at the final cut.** `licenses-audit.json`'s `audit_baseline` and `LICENSE_AUDIT.md`'s `**Baseline:**` and footer must name `package.json`'s version, so `npm version 0.8.5` turns the suite red until you update all three and refresh `Audit Date`. That is the reminder; it is not evidence the audit was re-derived, so re-read what changed since the last candidate before re-stamping. The one exception is the `<next>-dev` bump of §9, which ships nothing: there the guard accepts the audit still naming the release just shipped (a bare version below the dev number), so do not re-stamp it to `0.8.6-dev`.
 - **The OpenLV bundle is still relinkable.** `src/renderer/vendor/openlv.esm.js` is LGPL-3.0 and ships only because it is one standalone generated file containing no Freedom code, which is what makes LGPL §4 relinking possible. If a change inlines it into an app bundle or mixes Freedom code into it, that stops being true.
 
 The 0.8.5 cycle is why this is written down: Myotis and Arti reached the artifacts with no attribution at all, the audit files still described a pre-0.8.5 inventory, and a GPL-3.0 QR library (`qrious.min.js`) had been shipping unreferenced inside `app.asar` — all while this step was passing.
@@ -351,6 +351,8 @@ Update the same two files as §1:
 
 - `package.json` — top-level `"version"`.
 - `package-lock.json` — both top-level `"version"` entries.
+
+Leave `licenses-audit.json` and `LICENSE_AUDIT.md` alone: `licenses-audit.test.js` accepts a `-dev` version whose audit baseline still names the release just shipped, because the tree is what that release was audited against. Re-stamping to `<next>-dev` would claim a re-derivation that did not happen. The next candidate cut (§4) is where the audit gets re-derived and re-stamped.
 
 Commit on `main` (not on the release branch):
 
