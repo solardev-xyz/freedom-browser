@@ -706,9 +706,48 @@ describe('audit files agree with each other', () => {
     // would have carried an rc-stamped audit with the whole suite green —
     // exactly the undetected staleness (`generated_at: 2026-08-19` against a
     // moved tree) this file exists to stop, one release later.
+    //
+    // A `-dev` cycle is the one version bump that ships nothing: §9 of the
+    // playbook opens it by moving `package.json` alone, on the tree the
+    // previous release was audited against. Re-stamping the audit to
+    // `0.8.6-dev` would record a re-derivation that never happened, so on a
+    // dev version the baseline must instead still name a shipped release —
+    // a bare version strictly below the cycle's number. Every candidate and
+    // final cut must match `package.json` exactly, as before.
+    const triple = (v) =>
+      String(v)
+        .match(/^(\d+)\.(\d+)\.(\d+)$/)
+        ?.slice(1)
+        .map(Number);
+    const devCycle = pkg.version.match(/^(\d+\.\d+\.\d+)-dev$/);
+    let expectedBaseline = pkg.version;
+    if (devCycle) {
+      const shipped = triple(audit.audit_baseline);
+      expect({
+        field: 'audit_baseline',
+        version: audit.audit_baseline,
+        bareRelease: Boolean(shipped),
+      }).toEqual({
+        field: 'audit_baseline',
+        version: audit.audit_baseline,
+        bareRelease: true,
+      });
+      const cycle = triple(devCycle[1]);
+      const order = shipped.map((n, i) => Math.sign(n - cycle[i])).find(Boolean) ?? 0;
+      expect({
+        field: 'audit_baseline',
+        version: audit.audit_baseline,
+        belowDevCycle: order < 0,
+      }).toEqual({
+        field: 'audit_baseline',
+        version: audit.audit_baseline,
+        belowDevCycle: true,
+      });
+      expectedBaseline = audit.audit_baseline;
+    }
     expect({ field: 'audit_baseline', version: audit.audit_baseline }).toEqual({
       field: 'audit_baseline',
-      version: pkg.version,
+      version: expectedBaseline,
     });
     const documented = auditDoc.match(/^\*\*Baseline:\*\* `([^`]+)`$/m);
     expect({ field: 'LICENSE_AUDIT.md Baseline', found: Boolean(documented) }).toEqual({
@@ -717,12 +756,12 @@ describe('audit files agree with each other', () => {
     });
     expect({ field: 'LICENSE_AUDIT.md Baseline', version: documented[1] }).toEqual({
       field: 'LICENSE_AUDIT.md Baseline',
-      version: pkg.version,
+      version: expectedBaseline,
     });
     const footer = auditDoc.match(/Re-derived from the installed tree on [\d-]+ against `([^`]+)`/);
     expect({ field: 'LICENSE_AUDIT.md footer', version: footer?.[1] }).toEqual({
       field: 'LICENSE_AUDIT.md footer',
-      version: pkg.version,
+      version: expectedBaseline,
     });
   });
 
