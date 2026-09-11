@@ -85,6 +85,7 @@ function loadIpfsManagerModule(options = {}) {
       [require.resolve('./service-registry')]: () => ({
         MODE: {
           BUNDLED: 'bundled',
+          EXTERNAL: 'external',
           DISABLED: 'disabled',
           NONE: 'none',
         },
@@ -378,5 +379,223 @@ describe('ipfs-manager', () => {
         headers: new Headers(),
       })
     ).resolves.toMatchObject({ status: 503 });
+  });
+
+  test('starts in external mode and proxies gateway requests even when the native addon is absent', async () => {
+    const window = createWindowMock();
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async () => new Response('external-body', { status: 200 }));
+    try {
+      const ctx = loadIpfsManagerModule({
+        windows: [window],
+        // The native addon cannot load external mode must work regardless.
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+
+      await ctx.mod.startIpfs();
+
+      expect(ctx.nativeInstances).toHaveLength(0);
+      expect(ctx.updateService).toHaveBeenCalledWith('ipfs', {
+        api: null,
+        gateway: 'http://127.0.0.1:8080',
+        mode: 'external',
+        backend: 'external-gateway',
+      });
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node: 127.0.0.1:8080');
+      expect(window.webContents.send).toHaveBeenLastCalledWith(IPC.IPFS_STATUS_UPDATE, {
+        status: 'running',
+        error: null,
+      });
+
+      const response = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('external-body');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:8080/ipfs/bafy',
+        expect.objectContaining({ method: 'GET', redirect: 'follow' })
+      );
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('external mode reports the gateway unreachable when the probe fails', async () => {
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async () => new Response('bad gateway', { status: 502 }));
+    try {
+      const ctx = loadIpfsManagerModule({
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+      ctx.mod.registerIpfsIpc();
+
+      await ctx.mod.startIpfs();
+
+      expect(ctx.nativeInstances).toHaveLength(0);
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node unreachable');
+      await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+        status: 'error',
+      });
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('stopping an external node keeps external mode in the registry so it can be re-enabled', async () => {
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async () => new Response('external-body', { status: 200 }));
+    try {
+      const ctx = loadIpfsManagerModule({
+        // Native addon absent: the only way back on is that the registry still
+        // advertises external mode after a stop.
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+
+      await ctx.mod.startIpfs();
+      ctx.updateService.mockClear();
+      ctx.clearService.mockClear();
+      await ctx.mod.stopIpfs();
+
+      // On stop the registry is NOT cleared to 'none'. It keeps external mode +
+      // endpoint so the renderer can offer to switch it back on.
+      expect(ctx.clearService).not.toHaveBeenCalled();
+      expect(ctx.updateService).toHaveBeenLastCalledWith('ipfs', {
+        api: null,
+        gateway: 'http://127.0.0.1:8080',
+        mode: 'external',
+        backend: 'external-gateway',
+      });
+      expect(ctx.setStatusMessage).toHaveBeenLastCalledWith('ipfs', 'External node stopped');
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('external mode without a gateway URL is reported as not configured', async () => {
+    const ctx = loadIpfsManagerModule({
+      activeProfile: {
+        metadata: {
+          nodes: {
+            ipfs: { mode: 'external' },
+          },
+        },
+      },
+    });
+
+    await ctx.mod.startIpfs();
+
+    expect(ctx.nativeInstances).toHaveLength(0);
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'External node not configured');
+  });
+
+  test('external mode reports gateway telemetry (bytes streamed + active handles) via diagnostics', async () => {
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async () => new Response('external-body', { status: 200 }));
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+      await ctx.mod.startIpfs();
+
+      // External-shaped stats, zeroed before any request is served.
+      expect(JSON.parse(ctx.mod.getNativeDiagnostics().nativeGatewayStats)).toEqual({
+        active_native_handles: 0,
+        bytes_read: 0,
+      });
+
+      const res = await ctx.mod.serveNativeGatewayRequest({
+        path: '/ipfs/bafy',
+        method: 'GET',
+        headers: new Headers(),
+      });
+      // Draining the response is what advances the byte tally (counted as bytes
+      // stream through, like the native drain loop) and releases the handle.
+      expect(await res.text()).toBe('external-body');
+
+      const stats = JSON.parse(ctx.mod.getNativeDiagnostics().nativeGatewayStats);
+      expect(stats.bytes_read).toBe(Buffer.byteLength('external-body'));
+      expect(stats.active_native_handles).toBe(0);
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('external mode detects the Kubo version from the RPC API and reports it as identity', async () => {
+    const realFetch = global.fetch;
+    global.fetch = jest.fn(async (url) => {
+      if (String(url).includes('/api/v0/version')) {
+        return new Response(JSON.stringify({ Version: '0.30.0' }), { status: 200 });
+      }
+      return new Response('external-body', { status: 200 });
+    });
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: {
+              ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+            },
+          },
+        },
+      });
+      await ctx.mod.startIpfs();
+      // The version detection is fire-and-forget; let its microtasks settle.
+      for (let i = 0; i < 5; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+
+      const diag = ctx.mod.getNativeDiagnostics();
+      expect(diag.externalGateway).toBe('http://127.0.0.1:8080');
+      expect(diag.externalVersion).toBe('Kubo 0.30.0');
+      // The version probe targets the RPC API port (:5001)
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:5001/api/v0/version',
+        expect.objectContaining({ method: 'POST' })
+      );
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  test('normalizeExternalGatewayUrl canonicalizes hosts and rejects unusable values', () => {
+    const ctx = loadIpfsManagerModule();
+    expect(ctx.mod.normalizeExternalGatewayUrl('127.0.0.1:8080')).toBe('http://127.0.0.1:8080');
+    expect(ctx.mod.normalizeExternalGatewayUrl('http://localhost:8080/')).toBe(
+      'http://localhost:8080'
+    );
+    expect(ctx.mod.normalizeExternalGatewayUrl('   ')).toBeNull();
+    expect(ctx.mod.normalizeExternalGatewayUrl('ftp://example.test')).toBeNull();
+    expect(ctx.mod.normalizeExternalGatewayUrl(null)).toBeNull();
   });
 });

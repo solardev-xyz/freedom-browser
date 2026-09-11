@@ -40,6 +40,7 @@ describe('profile external candidates', () => {
     const candidates = await detectDefaultExternalCandidates(profile, {
       enabledProtocols: {
         bee: true,
+        ipfs: false,
         radicle: true,
       },
       probeEndpoint,
@@ -59,6 +60,7 @@ describe('profile external candidates', () => {
     const candidates = await detectDefaultExternalCandidates(profile, {
       enabledProtocols: {
         bee: false,
+        ipfs: false,
         radicle: false,
       },
       probeEndpoint,
@@ -79,6 +81,7 @@ describe('profile external candidates', () => {
       dialog,
       enabledProtocols: {
         bee: true,
+        ipfs: false,
         radicle: false,
       },
       logger: { info: jest.fn() },
@@ -111,6 +114,7 @@ describe('profile external candidates', () => {
     const decisions = await promptForDefaultExternalCandidates(profile, {
       enabledProtocols: {
         bee: true,
+        ipfs: false,
         radicle: true,
       },
       logger: { info: jest.fn() },
@@ -148,6 +152,7 @@ describe('profile external candidates', () => {
     const decisions = await promptForDefaultExternalCandidates(profile, {
       enabledProtocols: {
         bee: false,
+        ipfs: false,
         radicle: false,
         tor: true,
       },
@@ -220,6 +225,7 @@ describe('profile external candidates', () => {
       dialog,
       enabledProtocols: {
         bee: true,
+        ipfs: false,
         radicle: false,
       },
       logger: { info: jest.fn() },
