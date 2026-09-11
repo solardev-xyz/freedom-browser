@@ -67,6 +67,15 @@ const readNativeVersion = (diagnostics = {}) => {
 // no diagnostics) shows the menu's shared 'Unknown' placeholder (#253) but does
 // NOT mark the version fetched, so later polls keep upgrading it instead of
 // locking in the placeholder forever.
+// Identity label for an external gateway: the detected node version when the
+// RPC answered, otherwise the gateway endpoint. Falls back to the registry gateway
+// when no diagnostics are at hand (immediate UI updates that don't carry a stats poll).
+const externalIdentityLabel = (diagnostics) => {
+  if (diagnostics?.externalVersion) return diagnostics.externalVersion;
+  const gateway = diagnostics?.externalGateway || state.registry?.ipfs?.gateway || '';
+  return gateway ? `External · ${gateway.replace(/^https?:\/\//, '')}` : 'External gateway';
+};
+
 const updateVersionFromDiagnostics = (diagnostics) => {
   if (state.ipfsVersionFetched) return;
   const version = readNativeVersion(diagnostics);
@@ -106,7 +115,13 @@ const fetchNativeStats = async () => {
     if (ipfsDataRead) {
       ipfsDataRead.textContent = formatBytes(stats.bytes_read || 0);
     }
-    updateVersionFromDiagnostics(status?.diagnostics);
+    if (state.registry?.ipfs?.mode === 'external') {
+      if (ipfsVersionText) {
+        ipfsVersionText.textContent = externalIdentityLabel(status?.diagnostics);
+      }
+    } else {
+      updateVersionFromDiagnostics(status?.diagnostics);
+    }
   } catch {
     if (ipfsActiveRequestsCount) ipfsActiveRequestsCount.textContent = '0';
     if (ipfsDataRead) ipfsDataRead.textContent = '';
@@ -137,6 +152,10 @@ export const updateIpfsUi = (status, error) => {
   updateIpfsStatusLine();
   updateIpfsToggleState();
 
+  // NOTE: the external-mode identity/version line is owned solely by the stats
+  // poll (fetchNativeStats), which has the diagnostics to show the detected node
+  // version. Setting it here too made the label flicker between identity/version
+  // and the endpoint.
   if (!ipfsToggleBtn || !ipfsToggleSwitch) return;
 
   // While a toggle is pending (ipfsDesiredRunning !== null) the switch follows
@@ -208,10 +227,19 @@ export const updateIpfsToggleState = () => {
 
   const mode = state.registry?.ipfs?.mode;
   const isReused = mode === 'reused';
+  const isExternal = mode === 'external';
 
   if (isReused) {
     ipfsToggleBtn.classList.add('external');
     ipfsToggleBtn.setAttribute('title', 'Using existing node — cannot be controlled from Freedom');
+  } else if (isExternal) {
+    // A user-configured external gateway is controllable and works even when the
+    // native addon is unavailable, so keep the switch enabled and drop the "binary not found"
+    // hint that setToggleDisabled would otherwise leave in place.
+    ipfsToggleBtn.classList.remove('external');
+    ipfsToggleBtn.classList.remove('disabled');
+    ipfsToggleBtn.removeAttribute('disabled');
+    ipfsToggleBtn.setAttribute('title', 'Using an external IPFS gateway');
   } else if (ipfsBinaryAvailable) {
     ipfsToggleBtn.classList.remove('external');
     ipfsToggleBtn.removeAttribute('title');
@@ -294,11 +322,13 @@ export const initIpfsUi = () => {
 
   // Toggle button listener
   ipfsToggleBtn?.addEventListener('click', () => {
-    if (!ipfsBinaryAvailable) return;
-
-    // Don't allow toggling when using an external node
+    // Don't allow toggling when reusing an auto-detected node it can't control.
     const mode = state.registry?.ipfs?.mode;
     if (mode === 'reused') return;
+
+    // A user-configured external gateway is controllable and does not need the
+    // native addon.
+    if (!ipfsBinaryAvailable && mode !== 'external') return;
 
     // Flip to the opposite of whatever the switch currently shows (the pending
     // target if one is set, otherwise live status), so each click reverses the

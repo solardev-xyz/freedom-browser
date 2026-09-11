@@ -2053,8 +2053,14 @@
         {
           protocol: 'ipfs',
           label: 'IPFS',
-          modes: ['managed', 'disabled'],
-          endpointLines: () => ['Embedded freedom-ipfs native node'],
+          modes: ['managed', 'external', 'disabled'],
+          externalFields: [
+            { key: 'externalGateway', label: 'Gateway', placeholder: 'http://127.0.0.1:8080' },
+          ],
+          endpointLines: (config) =>
+            config?.externalGateway
+              ? [config.externalGateway]
+              : ['Embedded freedom-ipfs native node'],
         },
         {
           protocol: 'myotis',

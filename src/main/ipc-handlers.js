@@ -218,24 +218,26 @@ function serializeProfileMutationResult(result) {
 
 const PROFILE_NODE_MODES = {
   bee: new Set(['managed', 'external', 'disabled']),
-  ipfs: new Set(['managed', 'disabled']),
+  ipfs: new Set(['managed', 'external', 'disabled']),
   myotis: new Set(['managed', 'disabled']),
   radicle: new Set(['managed', 'disabled']),
   tor: new Set(['managed', 'external', 'disabled']),
 };
 const PROFILE_NODE_FIELDS = {
   bee: ['mode', 'externalApi'],
-  ipfs: ['mode'],
+  ipfs: ['mode', 'externalGateway'],
   myotis: ['mode'],
   radicle: ['mode'],
   tor: ['mode', 'externalSocks'],
 };
 const EXTERNAL_FIELDS = {
   bee: ['externalApi'],
+  ipfs: ['externalGateway'],
   tor: ['externalSocks'],
 };
 const PROFILE_NODE_ENDPOINT_NORMALIZERS = {
   externalApi: normalizeProfileNodeEndpoint,
+  externalGateway: normalizeProfileNodeEndpoint,
   externalSocks: normalizeSocksEndpoint,
 };
 

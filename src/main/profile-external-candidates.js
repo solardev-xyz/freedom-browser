@@ -24,6 +24,22 @@ const DEFAULT_EXTERNAL_NODE_CANDIDATES = {
       },
     ],
   },
+  ipfs: {
+    label: 'IPFS',
+    endpoints: ['http://127.0.0.1:8080'],
+    externalConfig: {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+    },
+    probes: [
+      {
+        // The empty-file CID resolves locally on any gateway
+        url: 'http://127.0.0.1:8080/ipfs/bafkqaaa',
+        method: 'GET',
+        expectJson: false,
+      },
+    ],
+  },
   tor: {
     label: 'Tor',
     endpoints: ['SOCKS5 127.0.0.1:9150'],
