@@ -8,6 +8,15 @@ const PREVIEW_SOCKET_CLIENT = String.raw`
   const limit = 1048576;
   const encoder = new TextEncoder();
   const sockets = new Set();
+  function nextSocketTask() {
+    return new Promise(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close(); channel.port2.close(); resolve();
+      };
+      channel.port2.postMessage(null);
+    });
+  }
   async function request(action, data = {}, keepalive = false) {
     for (let attempt = 0; attempt < 4; attempt++) {
       const response = await nativeFetch('/.freedom-preview/socket', {
@@ -65,6 +74,10 @@ const PREVIEW_SOCKET_CLIENT = String.raw`
         while (this.#state !== 3) {
           const { events } = await request('poll', { id: this.#id });
           for (const event of events) {
+            // Native WebSocket events use separate tasks, including microtasks
+            // queued by an open/message listener before the following event.
+            await nextSocketTask();
+            if (this.#state === 3) break;
             if (event.type === 'open' && this.#state === 0) {
               this.#protocol = event.protocol; this.#state = 1; this.#emit(new Event('open'));
             } else if (event.type === 'message' && this.#state === 1) {

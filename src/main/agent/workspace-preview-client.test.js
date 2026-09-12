@@ -5,13 +5,24 @@ const { TextEncoder } = require('util');
 const { previewSocketScript } = require('./workspace-preview-client');
 
 describe('preview browser WebSocket adapter', () => {
-  let window, calls, poll;
-  const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+  let window, calls, poll, socketTasks;
+  const microtasks = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+  const flush = async () => {
+    for (let i = 0; i < 12; i++) { await microtasks(); socketTasks.shift()?.(); }
+    await microtasks();
+  };
   beforeEach(() => {
     calls = [];
+    socketTasks = [];
     window = {
       URL, TextEncoder, EventTarget, Event, MessageEvent, DOMException, Blob, ArrayBuffer, Uint8Array, AbortSignal,
       reportError: jest.fn(), setTimeout: (callback) => { callback(); },
+      MessageChannel: class {
+        constructor() {
+          this.port1 = { close: jest.fn(), onmessage: null };
+          this.port2 = { close: jest.fn(), postMessage: () => socketTasks.push(() => this.port1.onmessage()) };
+        }
+      },
       CloseEvent: class extends Event { constructor(type, values) { super(type); Object.assign(this, values); } },
       location: new URL('https://preview.test/'), setInterval: jest.fn(), clearInterval: jest.fn(),
       addEventListener: jest.fn(), atob, btoa,
@@ -25,6 +36,51 @@ describe('preview browser WebSocket adapter', () => {
       return { ok: true, json: async () => input.action === 'open' ? { id: 'socket' } : { ok: true } };
     });
     vm.runInNewContext(previewSocketScript('key', 5173, 'process-one'), window);
+  });
+
+  test('allows awaited open and message listeners to finish before the next event in one poll batch', async () => {
+    const socket = new window.WebSocket('ws://preview.test/', 'vite-hmr');
+    const received = [];
+    const listening = (async () => {
+      await new Promise(resolve => socket.addEventListener('open', resolve, { once: true }));
+      await Promise.resolve();
+      socket.addEventListener('message', async event => {
+        received.push(event.data);
+        await Promise.resolve();
+        await Promise.resolve();
+        received.push('handled:' + event.data);
+      });
+    })();
+    await flush();
+    poll([
+      { type: 'open', protocol: 'vite-hmr' },
+      { type: 'message', binary: false, data: 'connected' },
+      { type: 'message', binary: false, data: 'update' },
+    ]);
+    await microtasks();
+    expect(socket.readyState).toBe(window.WebSocket.CONNECTING);
+    expect(socketTasks).toHaveLength(1);
+    await flush(); await listening;
+    expect(received).toEqual(['connected', 'handled:connected', 'update', 'handled:update']);
+  });
+
+  test('does not deliver a queued message after a listener closes the socket', async () => {
+    const socket = new window.WebSocket('ws://preview.test/');
+    const message = jest.fn(), closed = jest.fn();
+    socket.onopen = async () => { await Promise.resolve(); socket.close(); };
+    socket.onmessage = message; socket.onclose = closed;
+    await flush();
+    poll([
+      { type: 'open', protocol: '' },
+      { type: 'message', binary: false, data: 'late' },
+      { type: 'close', code: 1000, reason: '', wasClean: true },
+      { type: 'error' },
+    ]);
+    await flush();
+    expect(message).not.toHaveBeenCalled();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(socket.readyState).toBe(window.WebSocket.CLOSED);
+    expect(socketTasks).toHaveLength(0);
   });
 
   test('supports the HMR connection/event/send/close lifecycle without direct localhost access', async () => {
