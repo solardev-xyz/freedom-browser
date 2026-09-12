@@ -70,6 +70,18 @@ describe('send wallet review', () => {
     delete global.window;
   });
 
+  test('accepts DNS, subdomain and Unicode ENS candidates', async () => {
+    installDocument();
+    global.window = { location: { href: 'file:///app/index.html' }, internalPages: { routable: {} } };
+    const { isEnsLikeName } = await loadSendTestApi();
+    for (const name of ['ur.integration-tests.eth', 'test.offchaindemo.eth', 'gregskril.com', '🦇🔊.eth', 'RaFFY.eth']) {
+      expect(isEnsLikeName(name)).toBe(true);
+    }
+    for (const name of ['name', '.eth', 'foo..eth', 'name.eth/path', 'https://a.com', 'a@b.com', 'a b.eth', 'a\u0000.eth']) {
+      expect(isEnsLikeName(name)).toBe(false);
+    }
+  });
+
   test('maps unverified reverse lookup results to the warning render path', async () => {
     installDocument();
     global.window = {

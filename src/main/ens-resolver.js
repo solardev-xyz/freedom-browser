@@ -75,14 +75,7 @@ function nameSystemForName(name) {
 const CONTENTHASH_SELECTOR = '0xbc1c58d1';
 // bytes4(keccak256("addr(bytes32)"))
 const ADDR_SELECTOR = '0x3b3b57de';
-
-// Myotis's native ENS API returns ERC-3668 OffchainLookup envelopes to the
-// host. Freedom drives one bounded gateway round and re-enters the engine so
-// the callback executes against the same beacon-anchored state root.
-const MYOTIS_CCIP_MAX_ROUNDS = 1;
-const MYOTIS_CCIP_TIMEOUT_MS = 15000;
-const MYOTIS_CCIP_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-const CCIP_HTTP_ERROR_SELECTOR = 'ca7a4e75';
+const MULTICOIN_ADDR_SELECTOR = '0xf1cb7e06';
 
 // SLIP-0044 coin type for Ethereum mainnet, used by UR.reverse.
 const ETH_COIN_TYPE = 60n;
@@ -651,13 +644,47 @@ function decodeReverseMismatchClaimedName(err) {
 // `overrides` are merged into the call's overrides object (e.g. blockTag
 // for block-pinned consensus legs). Callers that pass nothing get the
 // default { enableCcipRead: true } shape.
-async function universalResolverCall(provider, name, callData, overrides = {}) {
+// ethers only follows CCIP automatically at "latest". Quorum legs are
+// deliberately block-pinned; keep every callback at that same block rather
+// than falling back to an unpinned read or treating OffchainLookup as absence.
+async function callUniversalResolver(provider, method, args, overrides) {
   const ur = new ethers.Contract(UNIVERSAL_RESOLVER_ADDRESS, UR_ABI, provider);
+  try {
+    return await ur[method](...args, { enableCcipRead: true, ...overrides });
+  } catch (initialError) {
+    if (overrides.blockTag == null || overrides.blockTag === 'latest') throw initialError;
+    const abi = ethers.AbiCoder.defaultAbiCoder();
+    let error = initialError;
+    for (let round = 0; round < 10; round++) {
+      const data = getRevertData(error);
+      if (!data || data.slice(0, 10).toLowerCase() !== '0x556f1830') throw error;
+      const [sender, urls, callData, callback, extraData] = abi.decode(
+        ['address', 'string[]', 'bytes', 'bytes4', 'bytes'], '0x' + data.slice(10)
+      );
+      if (sender.toLowerCase() !== UNIVERSAL_RESOLVER_ADDRESS.toLowerCase()) {
+        throw new Error('CCIP sender does not match the Universal Resolver', { cause: initialError });
+      }
+      const response = await provider.ccipReadFetch({ to: sender }, callData, urls);
+      if (response == null) throw new Error('CCIP gateway returned no response', { cause: initialError });
+      try {
+        const raw = await provider.call({
+          to: sender,
+          data: callback + abi.encode(['bytes', 'bytes'], [response, extraData]).slice(2),
+          blockTag: overrides.blockTag,
+          enableCcipRead: false,
+        });
+        return new ethers.Interface(UR_ABI).decodeFunctionResult(method, raw);
+      } catch (nextError) { error = nextError; }
+    }
+    throw new Error('CCIP recursion limit exceeded', { cause: initialError });
+  }
+}
+
+async function universalResolverCall(provider, name, callData, overrides = {}) {
   const encodedName = ethers.dnsEncode(name, 255);
-  const [resolvedData, resolverAddress] = await ur.resolve(encodedName, callData, {
-    enableCcipRead: true,
-    ...overrides,
-  });
+  const [resolvedData, resolverAddress] = await callUniversalResolver(
+    provider, 'resolve', [encodedName, callData], overrides
+  );
   return { resolvedData, resolverAddress };
 }
 
@@ -717,12 +744,10 @@ async function nameNftResolverCall(provider, name, callData, overrides = {}) {
 // trust-checked at the contract level. A spoofed reverse record surfaces
 // as `ReverseAddressMismatch` (selector 0xef9c03ce) on the err.data.
 // `addressBytes` is the 20-byte representation produced by `ethers.getBytes`.
-async function universalResolverReverse(provider, addressBytes, overrides = {}) {
-  const ur = new ethers.Contract(UNIVERSAL_RESOLVER_ADDRESS, UR_ABI, provider);
-  const [name] = await ur.reverse(addressBytes, ETH_COIN_TYPE, {
-    enableCcipRead: true,
-    ...overrides,
-  });
+async function universalResolverReverse(provider, addressBytes, overrides = {}, coinType = ETH_COIN_TYPE) {
+  const [name] = await callUniversalResolver(
+    provider, 'reverse', [addressBytes, coinType], overrides
+  );
   return { name };
 }
 
@@ -750,12 +775,13 @@ function decodeReverseOutcome(resolvedData) {
   return { status: Number(status), detail: String(detail || '') };
 }
 
-async function universalResolverReverseCall(provider, normalizedAddress, _callData, overrides = {}) {
+async function universalResolverReverseCall(provider, normalizedAddress, _callData, overrides = {}, coinType = ETH_COIN_TYPE) {
   try {
     const { name } = await universalResolverReverse(
       provider,
       ethers.getBytes(normalizedAddress),
-      overrides
+      overrides,
+      coinType
     );
     return {
       resolvedData: encodeReverseOutcome(
@@ -1037,142 +1063,28 @@ function classifyNoAgreement({ results }) {
   return { kind: 'conflict' };
 }
 
-async function readMyotisCcipBody(response) {
-  const declared = Number(response.headers?.get?.('content-length'));
-  if (Number.isFinite(declared) && declared > MYOTIS_CCIP_MAX_RESPONSE_BYTES) {
-    throw new Error(`response exceeds ${MYOTIS_CCIP_MAX_RESPONSE_BYTES} bytes`);
-  }
-
-  if (!response.body?.getReader) {
-    const body = await response.text();
-    if (Buffer.byteLength(body) > MYOTIS_CCIP_MAX_RESPONSE_BYTES) {
-      throw new Error(`response exceeds ${MYOTIS_CCIP_MAX_RESPONSE_BYTES} bytes`);
-    }
-    return body;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let bytes = 0;
-  let body = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    bytes += value.byteLength;
-    if (bytes > MYOTIS_CCIP_MAX_RESPONSE_BYTES) {
-      try { await reader.cancel(); } catch { /* best-effort response teardown */ }
-      throw new Error(`response exceeds ${MYOTIS_CCIP_MAX_RESPONSE_BYTES} bytes`);
-    }
-    body += decoder.decode(value, { stream: true });
-  }
-  return body + decoder.decode();
-}
-
-function containsCcipHttpError(dataHex) {
-  const bare = String(dataHex).replace(/^0x/i, '').toLowerCase();
-  for (let i = 0; i + CCIP_HTTP_ERROR_SELECTOR.length <= bare.length; i += 2) {
-    if (bare.slice(i, i + CCIP_HTTP_ERROR_SELECTOR.length) === CCIP_HTTP_ERROR_SELECTOR) {
-      return true;
-    }
-  }
-  return false;
-}
-
-async function fetchMyotisCcipResponse(rec) {
-  const senderHex = rec.senderHex;
-  const callDataHex = rec.callDataHex;
-  const urls = Array.isArray(rec.urls) ? rec.urls.filter((url) => typeof url === 'string') : [];
-  if (!senderHex || !callDataHex || urls.length === 0) {
-    throw new Error('CCIP-Read OffchainLookup did not include an actionable gateway tuple');
-  }
-
-  const reasons = [];
-  for (const template of urls) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), MYOTIS_CCIP_TIMEOUT_MS);
-    try {
-      const useGet = template.includes('{data}');
-      const url = template.replaceAll('{sender}', senderHex).replaceAll('{data}', callDataHex);
-      const parsed = new URL(url);
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-        throw new Error(`unsupported gateway protocol ${parsed.protocol}`);
-      }
-      const response = await fetch(url, {
-        method: useGet ? 'GET' : 'POST',
-        headers: useGet
-          ? { Accept: 'application/json' }
-          : { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: useGet ? undefined : JSON.stringify({ sender: senderHex, data: callDataHex }),
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const body = await readMyotisCcipBody(response);
-      let payload;
-      try {
-        payload = JSON.parse(body);
-      } catch {
-        throw new Error('response is not valid JSON');
-      }
-      const dataHex = typeof payload?.data === 'string' && /^0x[0-9a-fA-F]*$/.test(payload.data)
-        ? payload.data
-        : null;
-      if (!dataHex) throw new Error('response has no hex data field');
-      if ((dataHex.length - 2) % 2 !== 0) throw new Error('response data has odd-length hex');
-      if (containsCcipHttpError(dataHex)) throw new Error('gateway returned HttpError');
-      return dataHex;
-    } catch (err) {
-      reasons.push(`${template.slice(0, 200)}: ${err.message}`);
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-  throw new Error(`CCIP-Read gateway failed: ${reasons.join('; ')}`);
-}
-
-// Drive the host half of ERC-3668 for the native engine. Myotis performs the
-// resolver walk and verified callback execution; Freedom only fetches the
-// gateway payload carried by the on-chain OffchainLookup tuple. One round is
-// allowed, matching the upstream host driver and preventing recursive fetches.
+// The native ENS API walks the v1 registry. Use the canonical Universal
+// Resolver through Myotis's verified EVM instead (including CCIP callbacks).
 async function resolveMyotisEnsRecord(params) {
-  const original = { ...params, root: params.root || 'auto' };
-  let rec = await myotisManager.resolveEnsRecord(original);
-  if (rec.error) throw new Error(rec.error);
-
-  for (let round = 0; rec.status === 'offchain'; round++) {
-    if (round >= MYOTIS_CCIP_MAX_ROUNDS) {
-      throw new Error(`CCIP-Read recursion exceeds ${MYOTIS_CCIP_MAX_ROUNDS} round`);
-    }
-    const responseHex = await fetchMyotisCcipResponse(rec);
-    rec = await myotisManager.resolveEnsRecord({
-      ...original,
-      method: 'ccipCallback',
-      queryMethod: original.method,
-      senderHex: rec.senderHex,
-      callbackFunctionHex: rec.callbackFunctionHex,
-      responseHex,
-      extraDataHex: rec.extraDataHex,
-      wrapped: rec.wrapped === true,
-      finalized: rec.verified === true,
-    });
-    if (rec.error) throw new Error(rec.error);
-  }
-  return rec;
+  const { resolveRecord } = require('./ens/myotis-resolver');
+  return resolveRecord(params);
 }
 
-// The specialized ENS record API can pin to finalized state and reports that
-// fact explicitly. Re-encode its decoded values to the raw ABI return shape
+// Re-encode the adapter's decoded values to the raw ABI return shape
 // shared by Colibri and RPC quorum so downstream decoders remain unchanged.
 async function tryMyotisEnsPath(name, callData, nameSystem) {
   const selector = String(callData).slice(0, 10).toLowerCase();
   const method =
     selector === CONTENTHASH_SELECTOR
       ? 'contenthash'
-      : selector === ADDR_SELECTOR
+      : selector === ADDR_SELECTOR || selector === MULTICOIN_ADDR_SELECTOR
         ? 'addr'
         : null;
   if (!method) return null;
 
-  const rec = await resolveMyotisEnsRecord({ method, name });
+  const coinType = selector === MULTICOIN_ADDR_SELECTOR
+    ? BigInt('0x' + callData.slice(74)) : ETH_COIN_TYPE;
+  const rec = await resolveMyotisEnsRecord({ method, name, coinType });
   const trust = buildMyotisTrust(rec, nameSystem);
   if (rec.status === 'noRecord') {
     return {
@@ -1180,7 +1092,7 @@ async function tryMyotisEnsPath(name, callData, nameSystem) {
       resolvedData:
         method === 'contenthash'
           ? ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], ['0x'])
-          : ethers.AbiCoder.defaultAbiCoder().encode(['address'], [ethers.ZeroAddress]),
+          : ethers.AbiCoder.defaultAbiCoder().encode([selector === MULTICOIN_ADDR_SELECTOR ? 'bytes' : 'address'], [selector === MULTICOIN_ADDR_SELECTOR ? '0x' : ethers.ZeroAddress]),
       resolverAddress: null,
       trust,
       block: rec.blockNumber ?? null,
@@ -1196,7 +1108,7 @@ async function tryMyotisEnsPath(name, callData, nameSystem) {
   return {
     outcome: 'data',
     resolvedData: ethers.AbiCoder.defaultAbiCoder().encode(
-      [method === 'contenthash' ? 'bytes' : 'address'],
+      [method === 'contenthash' || selector === MULTICOIN_ADDR_SELECTOR ? 'bytes' : 'address'],
       [value]
     ),
     resolverAddress: null,
@@ -1307,18 +1219,8 @@ async function tryColibriPath(
         block: null,
       };
     }
-    if (err.code === 'CALL_EXCEPTION' && getRevertData(err)) {
-      // Verified revert with an unknown selector — same semantics as the
-      // quorum path's NO_CONTENTHASH bucket. Upstream maps that to
-      // RESOLUTION_ERROR for addr lookups and "no contenthash" for content.
-      return {
-        outcome: 'not_found',
-        reason: 'NO_CONTENTHASH',
-        error: err.message,
-        trust: buildColibriTrust(proverHost, nameSystem),
-        block: null,
-      };
-    }
+    // A proved resolver failure (for example DNSSEC SignatureNotValidYet)
+    // is not proof of an absent record. Let the configured next method try.
     throw err;
   }
 
@@ -2089,11 +1991,24 @@ function cacheContentResult(normalized, result) {
   return cacheAndLog(ensResultCache, normalized, result, result.uri);
 }
 
-// Resolve an ENS name's primary ETH address (the `addr` record).
+// Resolve an ENS name's address for the destination chain.
 // Single UR call (vs ethers' registry → addr 2-step flow); CCIP-Read
 // handled transparently via OffchainLookup.
-async function resolveEnsAddress(name) {
-  return resolveWithCache(name, ensAddressCache, doResolveEnsAddress, 'addr');
+function ensCoinType(chainId) {
+  if (!Number.isSafeInteger(chainId) || chainId < 1 || chainId >= 0x80000000) {
+    throw new Error('Invalid ENS destination chain ID');
+  }
+  return chainId === 1 ? ETH_COIN_TYPE : BigInt(chainId) + 0x80000000n;
+}
+
+function chainCacheKey(name, chainId) {
+  return chainId === 1 ? name : `${chainId}:${name}`;
+}
+
+async function resolveEnsAddress(name, chainId = 1) {
+  ensCoinType(chainId);
+  return resolveWithCache(name, ensAddressCache,
+    (normalized) => doResolveEnsAddress(normalized, chainId), 'addr', chainId);
 }
 
 // Concurrent resolves of the same `${label}:${normalized}` share one
@@ -2128,20 +2043,21 @@ function fastNormalize(trimmed) {
   return ens_normalize(trimmed);
 }
 
-async function resolveWithCache(name, cache, doResolve, label) {
+async function resolveWithCache(name, cache, doResolve, label, chainId = 1) {
   const trimmed = (name || '').trim();
   if (!trimmed) {
     throw new Error('ENS name is empty');
   }
   const normalized = fastNormalize(trimmed);
 
-  const cached = cache.get(normalized);
+  const key = chainCacheKey(normalized, chainId);
+  const cached = cache.get(key);
   if (cached && Date.now() < cached.expiresAt) {
     log.debug(`[ens] ${label} cache hit for ${nameForLog(normalized)}`);
     return cached.result;
   }
 
-  const dedupKey = `${label}:${normalized}`;
+  const dedupKey = `${label}:${key}`;
   const existing = inFlightResolves.get(dedupKey);
   if (existing) {
     log.info(`[ens] ${label} joining in-flight resolution for ${nameForLog(normalized)}`);
@@ -2149,7 +2065,7 @@ async function resolveWithCache(name, cache, doResolve, label) {
   }
 
   let promise;
-  promise = resolveAcrossStableLifecycle(normalized, cache, doResolve, label).finally(() => {
+  promise = resolveAcrossStableLifecycle(normalized, cache, doResolve, label, key).finally(() => {
     // A Myotis transition clears the map so a fresh request can begin. Do not
     // let the older promise's finally handler delete that replacement entry.
     if (inFlightResolves.get(dedupKey) === promise) {
@@ -2161,7 +2077,7 @@ async function resolveWithCache(name, cache, doResolve, label) {
   return promise;
 }
 
-async function resolveAcrossStableLifecycle(normalized, cache, doResolve, label) {
+async function resolveAcrossStableLifecycle(normalized, cache, doResolve, label, key) {
   for (let attempt = 1; attempt <= MAX_LIFECYCLE_RESTARTS; attempt++) {
     const epoch = resolutionLifecycleEpoch;
     let result;
@@ -2180,8 +2096,8 @@ async function resolveAcrossStableLifecycle(normalized, cache, doResolve, label)
 
     // doResolve helpers cache before returning. Remove only this stale result;
     // a newer concurrent request may already have populated the same key.
-    const cached = cache.get(normalized);
-    if (cached?.result === result) cache.delete(normalized);
+    const cached = cache.get(key);
+    if (cached?.result === result) cache.delete(key);
     log.info(
       `[ens] ${label} lifecycle changed during resolution for ${nameForLog(normalized)}; ` +
       `discarding stale result and restarting (${attempt}/${MAX_LIFECYCLE_RESTARTS})`
@@ -2190,10 +2106,18 @@ async function resolveAcrossStableLifecycle(normalized, cache, doResolve, label)
   throw new Error(`Myotis availability changed repeatedly while resolving ${normalized}`);
 }
 
-async function doResolveEnsAddress(normalized) {
+async function doResolveEnsAddress(normalized, chainId = 1) {
+  const cacheAddressResult = (name, result) => cacheAndLog(
+    ensAddressCache, chainCacheKey(name, chainId), result, result.address
+  );
   const node = ethers.namehash(normalized);
-  const callData = ADDR_SELECTOR + node.slice(2);
   const nameSystem = nameSystemForName(normalized);
+  const multicoin = chainId !== 1 && !nameSystem.contractAddress;
+  const callData = multicoin
+    ? MULTICOIN_ADDR_SELECTOR + ethers.AbiCoder.defaultAbiCoder().encode(
+      ['bytes32', 'uint256'], [node, ensCoinType(chainId)]
+    ).slice(2)
+    : ADDR_SELECTOR + node.slice(2);
 
   const consensus = await consensusResolve(normalized, callData, 'addr', {
     callResolver: nameSystem.contractAddress ? nameNftResolverCall : universalResolverCall,
@@ -2247,7 +2171,10 @@ async function doResolveEnsAddress(normalized) {
 
   let address;
   try {
-    [address] = ethers.AbiCoder.defaultAbiCoder().decode(['address'], consensus.resolvedData);
+    [address] = ethers.AbiCoder.defaultAbiCoder().decode([multicoin ? 'bytes' : 'address'], consensus.resolvedData);
+    if (multicoin && address === '0x') address = ethers.ZeroAddress;
+    if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error('Invalid EVM address record');
+    address = ethers.getAddress(address);
   } catch (err) {
     log.warn(`[ens] Failed to decode addr bytes for ${nameForLog(normalized)}: ${err.message}`);
     return cacheAddressResult(normalized, {
@@ -2286,10 +2213,6 @@ function noAddressResult(normalized) {
   };
 }
 
-function cacheAddressResult(normalized, result) {
-  return cacheAndLog(ensAddressCache, normalized, result, result.address);
-}
-
 // Shared cache-set + log-and-return for both lookup paths. `okValue` is
 // the success-case display (uri for content, address for addr); passing
 // a truthy value logs "Resolved → <value>", otherwise logs the reason.
@@ -2312,7 +2235,7 @@ function cacheAndLog(cache, normalized, result, okValue) {
 // record forward-resolves back to the input address internally and reverts
 // with ReverseAddressMismatch if not — so a successful return is already
 // a trusted name. Spoofed/stale reverses surface as UNVERIFIED.
-async function resolveEnsReverse(address) {
+async function resolveEnsReverse(address, chainId = 1) {
   if (typeof address !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
     return {
       success: false,
@@ -2321,7 +2244,9 @@ async function resolveEnsReverse(address) {
       error: `Invalid address: ${address}`,
     };
   }
-  return resolveWithCache(address, ensReverseCache, doResolveEnsReverse, 'reverse');
+  ensCoinType(chainId);
+  return resolveWithCache(address, ensReverseCache,
+    (normalized) => doResolveEnsReverse(normalized, chainId), 'reverse', chainId);
 }
 
 // Colibri reverse path: cryptographically-verified `ur.reverse`. Returns
@@ -2329,14 +2254,14 @@ async function resolveEnsReverse(address) {
 // renderer can surface a "verified" indicator. ReverseAddressMismatch
 // surfaces as UNVERIFIED — the proof was valid but the contract reverted,
 // which is the spoofed-reverse-record signal.
-async function tryColibriReverse(normalizedAddress) {
+async function tryColibriReverse(normalizedAddress, coinType = ETH_COIN_TYPE) {
   const { resolveReverseViaColibri } = require('./ens/colibri-resolver');
   const trust = buildColibriTrust(colibriProverHost());
   const addrBytes = ethers.getBytes(normalizedAddress);
 
   let name;
   try {
-    ({ name } = await resolveReverseViaColibri(addrBytes));
+    ({ name } = await resolveReverseViaColibri(addrBytes, coinType));
   } catch (err) {
     if (isResolverNotFoundError(err)) {
       return { ...noReverseResult(normalizedAddress), trust };
@@ -2373,11 +2298,18 @@ function unverifiedReverseResult(normalizedAddress, nameSystem, claimedName, det
   };
 }
 
-async function readMyotisReverse(normalizedAddress) {
-  const ensRec = await resolveMyotisEnsRecord({
-    method: 'reverse',
-    addressHex: normalizedAddress,
-  });
+async function readMyotisReverse(normalizedAddress, coinType = ETH_COIN_TYPE) {
+  let ensRec;
+  try {
+    ensRec = await resolveMyotisEnsRecord({
+      method: 'reverse', addressHex: normalizedAddress, coinType,
+    });
+  } catch (err) {
+    if (!isReverseAddressMismatchError(err)) throw err;
+    return unverifiedReverseResult(normalizedAddress, NAME_SYSTEMS.ens,
+      decodeReverseMismatchClaimedName(err), undefined,
+      buildMyotisTrust({ verified: false }, NAME_SYSTEMS.ens));
+  }
   const ensTrust = buildMyotisTrust(ensRec, NAME_SYSTEMS.ens);
   if (ensRec.status === 'ok' && ensRec.name) {
     return {
@@ -2391,6 +2323,8 @@ async function readMyotisReverse(normalizedAddress) {
   if (ensRec.status !== 'noRecord') {
     throw new Error(`unexpected reverse record shape: ${JSON.stringify(ensRec).slice(0, 200)}`);
   }
+
+  if (coinType !== ETH_COIN_TYPE) return { ...noReverseResult(normalizedAddress), trust: ensTrust };
 
   // WNS/GNS reverse records live on their NameNFT contracts. Query each over
   // Myotis and forward-check any claim through the same local verified-call
@@ -2470,10 +2404,10 @@ async function readMyotisReverse(normalizedAddress) {
   };
 }
 
-async function tryMyotisReverse(normalizedAddress) {
+async function tryMyotisReverse(normalizedAddress, coinType = ETH_COIN_TYPE) {
   if (!myotisManager.isReady()) return null;
   const epoch = myotisManager.getAvailabilityEpoch();
-  const result = await readMyotisReverse(normalizedAddress);
+  const result = await readMyotisReverse(normalizedAddress, coinType);
   if (epoch !== myotisManager.getAvailabilityEpoch() || !myotisManager.isReady()) {
     const err = new Error('Myotis availability changed during verified reverse read');
     err.code = 'MYOTIS_LIFECYCLE_CHANGED';
@@ -2494,11 +2428,12 @@ function reverseConflictResult(normalizedAddress, nameSystem, outcome) {
   };
 }
 
-async function resolveEnsReverseWithMethod(method, normalizedAddress) {
-  if (method === 'colibri') return tryColibriReverse(normalizedAddress);
+async function resolveEnsReverseWithMethod(method, normalizedAddress, coinType = ETH_COIN_TYPE) {
+  if (method === 'colibri') return tryColibriReverse(normalizedAddress, coinType);
 
   const outcome = await resolveWithMethod(method, normalizedAddress, '0x', 'reverse-ens', {
-    callResolver: universalResolverReverseCall,
+    callResolver: (provider, name, data, overrides) =>
+      universalResolverReverseCall(provider, name, data, overrides, coinType),
     nameSystem: NAME_SYSTEMS.ens,
   });
   if (!outcome) return null;
@@ -2654,7 +2589,11 @@ function logReverseMethodOutcome(method, normalizedAddress, result, action, reas
   );
 }
 
-async function doResolveEnsReverse(normalizedAddress) {
+async function doResolveEnsReverse(normalizedAddress, chainId = 1) {
+  const coinType = ensCoinType(chainId);
+  const cacheReverseResult = (name, result) => cacheAndLog(
+    ensReverseCache, chainCacheKey(name, chainId), result, result.name
+  );
   const network = registry.getNetwork(1);
   const { order, preferVerified } = resolutionPolicy(network);
   let provisional = null;
@@ -2672,14 +2611,14 @@ async function doResolveEnsReverse(normalizedAddress) {
     try {
       if (method === 'myotis') {
         if (myotisManager.isEnabled()) {
-          result = await tryMyotisReverse(normalizedAddress);
+          result = await tryMyotisReverse(normalizedAddress, coinType);
           if (!result) unavailableReason = 'not-ready';
         } else {
           unavailableReason = 'disabled';
         }
       } else {
-        const ensResult = await resolveEnsReverseWithMethod(method, normalizedAddress);
-        result = await resolveContractBackedReverseWithMethod(
+        const ensResult = await resolveEnsReverseWithMethod(method, normalizedAddress, coinType);
+        result = chainId !== 1 ? ensResult : await resolveContractBackedReverseWithMethod(
           method,
           normalizedAddress,
           ensResult
@@ -2734,9 +2673,7 @@ function noReverseResult(normalizedAddress) {
   };
 }
 
-function cacheReverseResult(normalizedAddress, result) {
-  return cacheAndLog(ensReverseCache, normalizedAddress, result, result.name);
-}
+
 
 // PRIVATE MODE GUARD (name logging): a name typed in a private window's
 // address bar reaches the resolver through these handlers, so they are the
@@ -2770,10 +2707,10 @@ function registerEnsIpc() {
   });
 
   ipcMain.handle(IPC.ENS_RESOLVE_ADDRESS, async (event, payload = {}) => {
-    const { name } = payload;
+    const { name, chainId = 1 } = payload;
     return runWithPrivateLogContext(privateResolveContext(event), async () => {
       try {
-        return await resolveEnsAddress(name);
+        return await resolveEnsAddress(name, chainId);
       } catch (err) {
         log.error('[ens] address resolution error', redactForLog(err));
         return {
@@ -2787,10 +2724,10 @@ function registerEnsIpc() {
   });
 
   ipcMain.handle(IPC.ENS_RESOLVE_REVERSE, async (event, payload = {}) => {
-    const { address } = payload;
+    const { address, chainId = 1 } = payload;
     return runWithPrivateLogContext(privateResolveContext(event), async () => {
       try {
-        return await resolveEnsReverse(address);
+        return await resolveEnsReverse(address, chainId);
       } catch (err) {
         log.error('[ens] reverse resolution error', redactForLog(err));
         return {

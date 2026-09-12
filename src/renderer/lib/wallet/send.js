@@ -18,7 +18,7 @@ import {
   describeUnverifiedForward,
   describeUnverifiedReverse,
 } from '../navigation-utils.js';
-import { isEnsHost } from '../origin-utils.js';
+import { isPotentialEnsName } from '../origin-utils.js';
 import { createTab } from '../tabs.js';
 
 // DOM references
@@ -830,7 +830,7 @@ function classifyRecipient() {
   }
 
   if (isEnsLikeName(recipient)) {
-    return { ok: true, type: 'ens', value: recipient.toLowerCase() };
+    return { ok: true, type: 'ens', value: recipient };
   }
 
   showSendError('recipient', 'Invalid Ethereum address or supported Ethereum name');
@@ -842,8 +842,7 @@ function isValidEthereumAddress(address) {
 }
 
 function isEnsLikeName(value) {
-  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z0-9-]+$/i.test(value)) return false;
-  return isEnsHost(value);
+  return isPotentialEnsName(value);
 }
 
 function validateAmount() {
@@ -933,11 +932,16 @@ async function handleSendContinue() {
     sendContinueBtn.textContent = 'Loading…';
   }
 
+  const resolutionChainId = sendTxState.chainId;
   try {
     let reverseLookup = Promise.resolve(null);
     if (recipientClass.type === 'ens') {
       if (sendContinueBtn) sendContinueBtn.textContent = 'Resolving name…';
       const resolved = await resolveRecipientEns(recipientClass.value);
+      if (resolutionChainId !== sendTxState.chainId) {
+        showSendError('recipient', 'Network changed. Resolve the recipient again.');
+        return;
+      }
       if (!resolved) return; // error already surfaced on the recipient field
       sendTxState.recipient = resolved.address;
       sendTxState.recipientResolution = { name: resolved.name, trust: resolved.trust };
@@ -978,11 +982,11 @@ async function handleSendContinue() {
 //   { warning: 'unverified', claimedName }   primary claim doesn't forward-verify
 //   null                                     no reverse record / hard error
 // Never throws — the review flow isn't blocked by a reverse-lookup failure.
-async function lookupPrimaryNameForAddress(address) {
+async function lookupPrimaryNameForAddress(address, chainId = sendTxState.chainId || 1) {
   const api = window.electronAPI;
   if (!api?.resolveEnsReverse) return null;
   try {
-    const result = await api.resolveEnsReverse(address);
+    const result = await api.resolveEnsReverse(address, chainId);
     if (result?.success && result.name) {
       return { name: result.name, trust: result.trust || null };
     }
@@ -1004,7 +1008,7 @@ async function resolveRecipientEns(name) {
 
   let result;
   try {
-    result = await api.resolveEnsAddress(name);
+    result = await api.resolveEnsAddress(name, sendTxState.chainId || 1);
   } catch (err) {
     showSendError('recipient', err.message || 'Name resolution failed');
     return null;
@@ -1411,4 +1415,5 @@ async function handleSendConfirm() {
 export const __test__ = {
   lookupPrimaryNameForAddress,
   renderRecipientReview,
+  isEnsLikeName,
 };

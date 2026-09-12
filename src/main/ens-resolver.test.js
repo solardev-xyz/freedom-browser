@@ -160,6 +160,8 @@ jest.mock('./myotis/myotis-manager', () => ({
   onAvailabilityTransition: (cb) => mockMyotisAvailabilityListeners.push(cb),
 }));
 
+jest.mock('./ens/myotis-resolver', () => ({ resolveRecord: (...args) => mockMyotisResolveEnsRecord(...args) }));
+
 // Mock ethers with controllable provider and resolver behavior.
 // `mockUrResolve` is shared across all Contract instances — this is fine
 // for tests that use `mockResolvedValue(X)` (every quorum leg returns X
@@ -272,6 +274,7 @@ jest.mock('ethers', () => {
       encodeBase58: actual.encodeBase58,
       decodeBase58: actual.decodeBase58,
       getBytes: actual.getBytes,
+      getAddress: actual.getAddress,
       ZeroAddress: actual.ZeroAddress,
       Interface: actual.Interface,
     },
@@ -750,6 +753,45 @@ describe('ens-resolver', () => {
       expect(result.trust.level).toBe('verified');
     });
 
+    test('keeps address caches and concurrent queries separate for each chain', async () => {
+      const l1 = '0x1111111111111111111111111111111111111111';
+      const base = '0x2222222222222222222222222222222222222222';
+      mockUrResolve.mockImplementation((_name, data) => data.startsWith('0xf1cb7e06')
+        ? [ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], [base]), FAKE_RESOLVER]
+        : urReturnsAddress(l1));
+      const [a, b] = await Promise.all([resolveEnsAddress('test.ses.eth'), resolveEnsAddress('test.ses.eth', 8453)]);
+      expect(a.address).toBe(l1);
+      expect(b.address).toBe(base);
+      const data = mockUrResolve.mock.calls.find((args) => args[1].startsWith('0xf1cb7e06'))[1];
+      expect(BigInt('0x' + data.slice(74))).toBe(2147492101n);
+      mockUrResolve.mockClear();
+      expect((await resolveEnsAddress('test.ses.eth')).address).toBe(l1);
+      expect((await resolveEnsAddress('test.ses.eth', 8453)).address).toBe(base);
+      expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    test('never falls back to an Ethereum address when the chain record is absent', async () => {
+      mockUrResolve.mockResolvedValue([ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], ['0x']), FAKE_RESOLVER]);
+      expect(await resolveEnsAddress('missing-base.eth', 8453)).toMatchObject({ success: false, reason: 'NO_ADDRESS' });
+      expect(mockUrResolve.mock.calls.every((args) => args[1].startsWith('0xf1cb7e06'))).toBe(true);
+    });
+
+    test.each([0, -1, 1.5, '8453', 2147483648])('rejects invalid destination chain %s before RPC', async (chain) => {
+      await expect(resolveEnsAddress('test.eth', chain)).rejects.toThrow('Invalid ENS destination');
+      expect(mockUrResolve).not.toHaveBeenCalled();
+    });
+
+    test('requests and caches primary names for the selected chain', async () => {
+      const address = '0x1111111111111111111111111111111111111111';
+      mockUrReverse.mockImplementation((_address, coinType) => [coinType === 60n ? 'l1.eth' : 'base.eth', FAKE_RESOLVER, FAKE_RESOLVER]);
+      expect((await resolveEnsReverse(address)).name).toBe('l1.eth');
+      expect((await resolveEnsReverse(address, 8453)).name).toBe('base.eth');
+      mockUrReverse.mockClear();
+      expect((await resolveEnsReverse(address)).name).toBe('l1.eth');
+      expect((await resolveEnsReverse(address, 8453)).name).toBe('base.eth');
+      expect(mockUrReverse).not.toHaveBeenCalled();
+    });
+
     test('resolves .wei name to its WNS addr record', async () => {
       mockWnsAddr.mockResolvedValue('0x1111111111111111111111111111111111111111');
 
@@ -1213,6 +1255,38 @@ describe('ens-resolver', () => {
     });
   });
 
+  describe('CCIP at a pinned quorum block', () => {
+    const urAddress = '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe';
+    const abi = ethers.AbiCoder.defaultAbiCoder();
+    const offchain = (sender = urAddress) => ({ data: '0x556f1830' + abi.encode(
+      ['address', 'string[]', 'bytes', 'bytes4', 'bytes'],
+      [sender, ['https://gateway.example/{data}'], '0xbeef', '0x12345678', '0xdead']
+    ).slice(2) });
+    test('verifies every callback at the original block and unwraps the UR response', async () => {
+      mockUrResolve.mockRejectedValue(offchain());
+      const provider = {
+        ccipReadFetch: jest.fn().mockResolvedValue('0xcafe'),
+        call: jest.fn().mockRejectedValueOnce(offchain()).mockResolvedValue(
+          abi.encode(['bytes', 'address'], [abi.encode(['address'], [urAddress]), urAddress])
+        ),
+      };
+      const result = await universalResolverCall(provider, 'test.offchaindemo.eth', '0x1234', { blockTag: 12345 });
+      expect(result.resolverAddress).toBe(urAddress);
+      expect(provider.ccipReadFetch).toHaveBeenCalledTimes(2);
+      expect(provider.call.mock.calls.every(([tx]) => tx.blockTag === 12345 && tx.enableCcipRead === false)).toBe(true);
+      expect(provider.call.mock.calls[0][0].data).toBe('0x12345678' + abi.encode(['bytes', 'bytes'], ['0xcafe', '0xdead']).slice(2));
+    });
+    test('rejects forged senders and bounds repeated lookups', async () => {
+      const provider = { ccipReadFetch: jest.fn().mockResolvedValue('0xcafe'), call: jest.fn().mockRejectedValue(offchain()) };
+      mockUrResolve.mockRejectedValue(offchain(ethers.ZeroAddress));
+      await expect(universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })).rejects.toThrow('sender');
+      expect(provider.ccipReadFetch).not.toHaveBeenCalled();
+      mockUrResolve.mockRejectedValue(offchain());
+      await expect(universalResolverCall(provider, 'test.eth', '0x', { blockTag: 123 })).rejects.toThrow('recursion');
+      expect(provider.call).toHaveBeenCalledTimes(10);
+    });
+  });
+
   describe('isResolverNotFoundError', () => {
     test('matches ResolverNotFound in error message', () => {
       expect(
@@ -1314,7 +1388,7 @@ describe('ens-resolver', () => {
       expect(mockMyotisResolveEnsRecord).toHaveBeenCalledWith({
         method: 'contenthash',
         name: 'myotis-ok.eth',
-        root: 'auto',
+        coinType: 60n,
       });
       expect(mockUrResolve).not.toHaveBeenCalled();
       expect(mockResolveViaColibri).not.toHaveBeenCalled();
@@ -1341,7 +1415,7 @@ describe('ens-resolver', () => {
       expect(mockMyotisResolveEnsRecord).toHaveBeenCalledWith({
         method: 'addr',
         name: 'myotis-addr.eth',
-        root: 'auto',
+        coinType: 60n,
       });
       expect(mockUrResolve).not.toHaveBeenCalled();
     });
@@ -1368,7 +1442,7 @@ describe('ens-resolver', () => {
       expect(mockMyotisResolveEnsRecord).toHaveBeenCalledWith({
         method: 'reverse',
         addressHex: address,
-        root: 'auto',
+        coinType: 60n,
       });
       expect(mockUrReverse).not.toHaveBeenCalled();
     });
@@ -1670,213 +1744,6 @@ describe('ens-resolver', () => {
       expect(result.type).toBe('ok');
       expect(result.trust.method).not.toBe('myotis');
       expect(mockUrResolve).toHaveBeenCalled();
-    });
-
-    test('malformed CCIP offchain envelopes fall back to the configured resolver', async () => {
-      myotisUp();
-      mockMyotisResolveEnsRecord.mockResolvedValue({
-        status: 'offchain',
-        verified: true,
-        blockNumber: 23456792,
-      });
-      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
-
-      const result = await resolveEnsContent('myotis-offchain.eth');
-
-      expect(result.type).toBe('ok');
-      expect(result.trust.method).not.toBe('myotis');
-      expect(mockUrResolve).toHaveBeenCalled();
-    });
-
-    test('completes a CCIP-Read gateway round and verifies the callback in Myotis', async () => {
-      myotisUp();
-      const originalFetch = global.fetch;
-      const gatewayData = '0xabcdef';
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        headers: { get: jest.fn(() => null) },
-        text: jest.fn().mockResolvedValue(JSON.stringify({ data: gatewayData })),
-      });
-      mockMyotisResolveEnsRecord
-        .mockResolvedValueOnce({
-          status: 'offchain',
-          verified: true,
-          blockNumber: 23456792,
-          senderHex: '0x1111111111111111111111111111111111111111',
-          urls: ['https://ccip.example/{sender}/{data}.json'],
-          callDataHex: '0x1234',
-          callbackFunctionHex: '0xaabbccdd',
-          extraDataHex: '0x5678',
-          wrapped: true,
-        })
-        .mockResolvedValueOnce({
-          status: 'ok',
-          verified: true,
-          blockNumber: 23456792,
-          dataHex: ipfsContenthashFor(IPFS_V0),
-        });
-
-      try {
-        const result = await resolveEnsContent('myotis-ccip.box');
-
-        expect(result).toMatchObject({
-          type: 'ok',
-          uri: `ipfs://${IPFS_V0}`,
-          trust: { level: 'verified', method: 'myotis' },
-        });
-        expect(global.fetch).toHaveBeenCalledWith(
-          'https://ccip.example/0x1111111111111111111111111111111111111111/0x1234.json',
-          expect.objectContaining({ method: 'GET' })
-        );
-        expect(mockMyotisResolveEnsRecord).toHaveBeenNthCalledWith(2, {
-          method: 'ccipCallback',
-          name: 'myotis-ccip.box',
-          root: 'auto',
-          queryMethod: 'contenthash',
-          senderHex: '0x1111111111111111111111111111111111111111',
-          callbackFunctionHex: '0xaabbccdd',
-          responseHex: gatewayData,
-          extraDataHex: '0x5678',
-          wrapped: true,
-          finalized: true,
-        });
-        expect(mockUrResolve).not.toHaveBeenCalled();
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    test('uses POST CCIP gateways and tries the next URL after a bad response', async () => {
-      myotisUp();
-      const originalFetch = global.fetch;
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          headers: { get: jest.fn(() => null) },
-          text: jest.fn().mockResolvedValue('{"notData":"0x"}'),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          headers: { get: jest.fn(() => null) },
-          text: jest.fn().mockResolvedValue('{"data":"0xcafe"}'),
-        });
-      mockMyotisResolveEnsRecord
-        .mockResolvedValueOnce({
-          status: 'offchain',
-          verified: false,
-          blockNumber: 23456793,
-          senderHex: '0x2222222222222222222222222222222222222222',
-          urls: ['https://bad.example/query', 'https://good.example/query'],
-          callDataHex: '0xbeef',
-          callbackFunctionHex: '0x01020304',
-          extraDataHex: '0x',
-          wrapped: false,
-        })
-        .mockResolvedValueOnce({
-          status: 'noRecord',
-          verified: false,
-          blockNumber: 23456793,
-        });
-
-      try {
-        const result = await resolveEnsContent('myotis-ccip-post.box');
-
-        expect(result).toMatchObject({
-          type: 'not_found',
-          reason: 'EMPTY_CONTENTHASH',
-          trust: { level: 'verified', method: 'myotis', finality: 'optimistic' },
-        });
-        expect(global.fetch).toHaveBeenCalledTimes(2);
-        expect(global.fetch.mock.calls[1][1]).toMatchObject({
-          method: 'POST',
-          body: JSON.stringify({
-            sender: '0x2222222222222222222222222222222222222222',
-            data: '0xbeef',
-          }),
-        });
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    test('reads the top-level CCIP data field instead of matching JSON string contents', async () => {
-      myotisUp();
-      const originalFetch = global.fetch;
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        headers: { get: jest.fn(() => null) },
-        text: jest.fn().mockResolvedValue(
-          JSON.stringify({ message: 'ignore "data": "0x00"', data: '0xcafe' })
-        ),
-      });
-      mockMyotisResolveEnsRecord
-        .mockResolvedValueOnce({
-          status: 'offchain',
-          verified: true,
-          blockNumber: 23456793,
-          senderHex: '0x2222222222222222222222222222222222222222',
-          urls: ['https://ccip.example/query'],
-          callDataHex: '0xbeef',
-          callbackFunctionHex: '0x01020304',
-          extraDataHex: '0x',
-          wrapped: false,
-        })
-        .mockResolvedValueOnce({
-          status: 'noRecord',
-          verified: true,
-          blockNumber: 23456793,
-        });
-
-      try {
-        await resolveEnsContent('myotis-ccip-json.box');
-        expect(mockMyotisResolveEnsRecord).toHaveBeenNthCalledWith(
-          2,
-          expect.objectContaining({ responseHex: '0xcafe' })
-        );
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    test('caps recursive CCIP-Read at one gateway round and falls back safely', async () => {
-      myotisUp();
-      const originalFetch = global.fetch;
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        headers: { get: jest.fn(() => null) },
-        text: jest.fn().mockResolvedValue('{"data":"0xcafe"}'),
-      });
-      const offchain = {
-        status: 'offchain',
-        verified: true,
-        blockNumber: 23456793,
-        senderHex: '0x2222222222222222222222222222222222222222',
-        urls: ['https://recursive.example/{data}'],
-        callDataHex: '0xbeef',
-        callbackFunctionHex: '0x01020304',
-        extraDataHex: '0x',
-        wrapped: false,
-      };
-      mockMyotisResolveEnsRecord.mockResolvedValue(offchain);
-      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
-
-      try {
-        const result = await resolveEnsContent('myotis-recursive.box');
-
-        expect(result.type).toBe('ok');
-        expect(result.trust.method).not.toBe('myotis');
-        expect(global.fetch).toHaveBeenCalledTimes(1);
-        expect(mockMyotisResolveEnsRecord).toHaveBeenCalledTimes(2);
-        expect(mockUrResolve).toHaveBeenCalled();
-      } finally {
-        global.fetch = originalFetch;
-      }
     });
 
     test('ready transition sweeps cached content, address, and reverse fallback answers', async () => {
@@ -3069,7 +2936,7 @@ describe('ens-resolver', () => {
       expect(mockUrResolve).not.toHaveBeenCalled();
     });
 
-    test('CALL_EXCEPTION (verified revert, unknown selector) buckets as NO_CONTENTHASH', async () => {
+    test('proved resolver errors fall through instead of becoming absent records', async () => {
       withColibri();
       const err = Object.assign(new Error('reverted: custom resolver error'), {
         code: 'CALL_EXCEPTION',
@@ -3077,10 +2944,12 @@ describe('ens-resolver', () => {
       });
       mockResolveViaColibri.mockRejectedValue(err);
 
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
       const result = await resolveEnsContent('empty-record.eth');
 
-      expect(result.type).toBe('not_found');
-      expect(result.trust.method).toBe('colibri');
+      expect(result.type).toBe('ok');
+      expect(result.trust.method).not.toBe('colibri');
+      expect(mockUrResolve).toHaveBeenCalled();
     });
 
     test('CALL_EXCEPTION without revert data falls through to public RPC quorum', async () => {

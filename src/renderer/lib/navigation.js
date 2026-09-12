@@ -1597,7 +1597,11 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           innerOptions.bzzLoadUrl = transportDisplay;
           innerOptions.swarmHash = result.decoded;
         } else if (result.protocol === 'ipfs' || result.protocol === 'ipns') {
-          innerOptions.ipfsLoadUrl = transportDisplay;
+          // DNS ENS names cannot occupy an IPNS hostname (that means
+          // DNSLink). Load their resolved key while retaining ens:// display.
+          innerOptions.ipfsLoadUrl = transportDisplay.startsWith('ens://')
+            ? targetUri
+            : transportDisplay;
         }
 
         // Pass captured webview to ensure we load in the correct tab
