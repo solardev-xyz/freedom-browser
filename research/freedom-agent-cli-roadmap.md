@@ -3056,7 +3056,7 @@ DOM hot update without navigation, and generation reload/reconnection on the
 same origin. Browser and four registered helpers exited with observed status
 zero, with no intervention or unknown exits. The fixture used Electron 43.0.0 /
 ws 8.21.0 (lock 44.3.0 / 8.21.3), a simulated HMR protocol and fake process/recipe
-registry. A [September 12 real-Vite campaign](evidence/vite-workspace-continuity-2026-09-12.md) has since reached actual sandboxed Vite startup, the preview/HMR subprotocol and a production file edit, but the DOM-update condition failed. Bounded diagnostics are pending; this is not a successful continuity run. Real Vite HMR, sandboxed restart and live-model acceptance remain open.
+registry. A [September 12 real-Vite campaign](evidence/vite-workspace-continuity-2026-09-12.md) has since demonstrated real same-document HMR with explicit polling, production Stop, old socket-key refusal and SQLite close/reopen. The whole run failed on an observer ambiguity before restart; a later attempt stopped on a shell-image observation mismatch. The committed product polling default and event-ordering correction await a plugin-free run without a fixture override. Its prepared source transfer to the existing disposable Mac agent is awaiting explicit approval after automatic review blocked that transfer. Full sandboxed restart/reattachment and live-model acceptance remain open.
 An earlier restricted-context AppKit startup abort remains a separate failure;
 the unchanged host-permission comparison passed. See the linked contract for
 retained evidence and scope.

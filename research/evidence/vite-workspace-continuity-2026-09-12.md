@@ -58,6 +58,7 @@ on the primary development Mac.
 | `run-xqual8xm` | Observer rejected a short-lived `otool` probe after its parent request completed | Workspace/grant only; Vite and watcher plugin never launched |
 | `run-a0la0gqf` | FSEvents watcher ready and target registered, but no target notification after edit | Instrumented Vite/preview/edit; HMR deadline failed |
 | `run-d8cr16br` | Repeated same-target probe requests made observer class matching ambiguous before second launch | Polling-control HMR, Stop, old key refusal and SQLite reopen passed |
+| `run-gs186938` | Observer did not recognize the pinned `/bin/bash` image retaining the exact `/bin/sh` launch arguments | Workspace and native launch; no watcher or HMR observation |
 
 The first three are harness failures, not product defects. Each correction was
 source-reviewed and tested with pure mocked checks before a fresh bounded run.
@@ -163,6 +164,27 @@ no additional filesystem/network/Mach-service access. Polling's filesystem/CPU
 cost and non-Chokidar tools remain separate; the product path without a fixture
 override still needs runtime evidence.
 
+The next attempt, `run-gs186938`, exercised the reviewed probe-class correction
+but failed during the command's pre-exec transition. The original command was
+registered before observation and stayed token-free. Its image changed from the
+helper gate to `/bin/bash`, retaining the exact `/bin/sh` launch arguments; the
+observer refused that unlisted intermediate image. All eight enrolled original
+exits were known, including supervisor exit 0 and command SIGTERM matching the
+native receipt. The observer sent no process signals; its owned stdin EOF was a
+failure-control intervention. No watcher, edit, Stop/restart or second generation
+was reached. All 1,668 file records and five links matched before/after. This
+failure does not overturn the preceding polling-positive HMR evidence.
+
+A locally prepared final source package combines the two committed Mac product
+changes from `1b7bab2b91f7401194240923b2ab723b45f74398`, their mocked tests, a
+narrow pinned shell-transition observation correction, and the original
+plugin-free Vite fixture without a watch override. It is a derivative of the
+remote `c586ab2b` base, not a full-head checkout or a runtime result. Its gzip
+SHA-256 is `b20e4f76df6457ceb16e663f9ced8f6936e839d4826bc93bca3328793c266709`.
+Automatic approval review blocked its transfer pending explicit authorization
+for the source payload and existing Mac destination. No transfer or subsequent
+runtime is claimed.
+
 ## Evidence
 
 Retained remote root: `/private/tmp/freedom-vite-production-d4uf2yyg`.
@@ -178,6 +200,7 @@ Local verified exports: `/private/tmp/freedom-agent-resume-20260912`.
 | `run-xqual8xm` | `cf41857c2811652001a6314dc8641eb0883aec64b4faaa58a13668909159aef9` | 54 |
 | `run-a0la0gqf` | `30230a0f1a2e2ce0d082ea9cc5645d5deef7ecc1a40e0046bb058c90cc405ded` | 62 |
 | `run-d8cr16br` | `c5b493adb1c4f9fcd4e3c7e49bcc499f00be98e018b10d057b48309d328a0297` | 87 |
+| `run-gs186938` | `26108ccaa11746ed416fad218f06300b39bb2afefd6a4af5c0e48d28a1de61cd` | 71 |
 
 The fourth run's 1,664 pre/post input records and five symlinks matched. The
 operational source manifest was
