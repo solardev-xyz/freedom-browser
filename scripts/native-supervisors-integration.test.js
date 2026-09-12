@@ -3,6 +3,9 @@ jest.mock('electron-builder', () => ({ Arch: { 1: 'x64', 3: 'arm64' } }));
 jest.mock('./build-macos-workspace-supervisor', () => ({
   default: jest.fn(), buildMacosWorkspaceSupervisor: jest.fn(),
 }));
+jest.mock('./build-linux-workspace-supervisor', () => ({
+  default: jest.fn(), buildLinuxWorkspaceSupervisor: jest.fn(),
+}));
 jest.mock('./build-myotis-supervisor', () => ({ buildSupervisor: jest.fn(), buildForTargets: jest.fn() }));
 jest.mock('./sign-macos-workspace-supervisor', () => ({ createSupervisorSigner: jest.fn(({ sign }) => sign) }));
 jest.mock('./sign-myotis-helper', () => jest.fn());
@@ -43,8 +46,21 @@ test('macOS development preserves workspace preparation alongside Myotis', () =>
 });
 
 
-test.each(['linux', 'win32'])('%s prestart invokes neither native compiler', (platform) => {
+test.each(['linux', 'win32'])('%s prestart invokes neither macOS nor Myotis compiler', (platform) => {
   prepare.prepareDevelopment(platform);
   expect(workspace.buildMacosWorkspaceSupervisor).not.toHaveBeenCalled();
   expect(myotis.buildSupervisor).not.toHaveBeenCalled();
+});
+
+test('Linux preparation builds only its workspace owner; package manifest is explicit', async () => {
+  const linux = require('./build-linux-workspace-supervisor');
+  prepare.prepareDevelopment('linux');
+  expect(linux.buildLinuxWorkspaceSupervisor).toHaveBeenCalledTimes(1);
+  const context = { electronPlatformName: 'linux', arch: 'x64' };
+  await prepare.default(context);
+  expect(linux.default).toHaveBeenCalledWith(context);
+  expect(require('../package.json').build.linux.extraResources).toContainEqual({
+    from: 'out/linux-workspace-owner/${arch}/', to: 'linux-workspace-owner',
+    filter: ['freedom-linux-workspace-owner', 'manifest.json'],
+  });
 });

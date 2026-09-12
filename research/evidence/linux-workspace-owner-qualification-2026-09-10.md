@@ -292,3 +292,22 @@ containment policy remained unchanged. Actual Node creator-thread-only loss,
 full application Quit, general descendant discovery, aggregate resource limits
 and packaged/stock-host deployment remain unqualified. The completed backend
 cases and earlier derivative boundaries must retain their separate attribution.
+
+
+## Experimental feature integration
+
+Source review found no concrete blocker to integrating `336c183f` with the
+completed evidence and stated limits. The merge preserves the current
+`ManagedWorkspaceController` and saved-server implementation byte-for-byte;
+all 14 incoming product/build/test files match the qualified candidate. The
+only textual conflict was the roadmap's historical implementation checkpoint.
+
+Merged-tree local checks passed **89 selected tests**: mocked owner/runtime,
+process-manager, server-restart, preview and packaging orchestration tests,
+seven targeted pending-disposal/error controller tests, and three pure backend
+argument/stream tests. Four Linux-only build tests skipped on macOS; 41 other
+controller/backend tests were deliberately not selected. Lint and diff checks
+passed. No compiler, native sandbox, app or remote qualification was run on the
+primary Mac. Existing dependency versions remain donor evidence rather than a
+fresh exact-lock installation. This merge does not reattribute remote runtime
+results to the entire combined feature tree or close the remaining release gates.
