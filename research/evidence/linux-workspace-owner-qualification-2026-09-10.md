@@ -1,11 +1,13 @@
 # Linux workspace owner — partial qualification, 2026-09-10
 
-The correction remains on `fix/linux-workspace-process-ownership`, at
-`8e803e0097a28bf6aef2fc41222811d825fd3967` (tree
-`58fcee37c07146af4f6864bdb4b010be0afce898`). It is **not merged or runtime-qualified**.
-Parent-only source review accepted the correction, including conditional cleanup
-receipts. The fixed runtime campaign has reached the facilities probe but cannot
-yet launch the command gate inside Bubblewrap.
+The correction remains separate from the feature branch. Its named gate-copy
+follow-up is `336c183fcb2b0fd5d5634e9b40d7d3a638e1d9e8`, parent
+`8e803e0097a28bf6aef2fc41222811d825fd3967`. The fixed natural-exit,
+missing-command, Stop and control-EOF cases now pass on the disposable host.
+Startup/creator-loss and full-backend qualification remain open; this is not a
+complete Linux ownership qualification or permission to merge on steady-state
+evidence alone. The initial failed campaigns below are historical and unchanged;
+the passing follow-up is recorded at the end.
 
 ## Candidate and scope
 
@@ -111,8 +113,62 @@ with [Linux 6.8 path handling](https://raw.githubusercontent.com/torvalds/linux/
 and Bubblewrap unlinking the backing file of its data bind. The raw audit records
 remain in the task evidence, outside this repository update.
 
-The isolated correction being prepared uses `--file` for a named gate copy,
-retaining the pinned descriptor, mode 0555 and read-only root before execution.
-Both capability and full backend paths must be updated, without changing host
-aliases, policy or ownership. Runtime confirmation is still required; all earlier
-failures and unrun cases remain unchanged.
+At that preparation checkpoint, the proposed correction used `--file` for a
+named gate copy, retaining the pinned descriptor, mode 0555 and read-only root
+before execution. Both capability and full backend paths needed the same change,
+without changing host aliases, policy or ownership. The later results below
+qualify the fixed cases; they do not change the earlier failed outcomes.
+
+## Named-copy cases passed — reconciled 2026-09-12
+
+Candidate `336c183f` changes both capability and backend construction to copy the
+pinned descriptor with `--perms 0555 --file 8`, then seal the root read-only before
+gate execution. Native C and ELF hashes above are unchanged; no host aliases,
+AppArmor policy, dependencies or native ownership protocol changed.
+
+The September 10 runs used the existing disposable host/profile, Node 24.15.0
+and Bubblewrap 0.9.0. They comprise a separate exit-zero run and a subsequent
+four-case campaign, each case executed once. The earlier facilities pass remains
+at its original revision; this is not a new six-case campaign or full-backend run.
+
+| Case | Native terminal reason | Command exit evidence | Outer elapsed |
+| --- | --- | --- | --- |
+| Exit zero | `completed` | Monitor 0, init 0 | 0.629 s |
+| Exit seven | `completed` | Monitor 7, init 0 | 0.604 s |
+| Missing executable | `exec_failed` | Monitor 127, init 0 | 0.633 s |
+| Stop after payload marker | `cancelled` | Monitor unknown; init signal 9 | 0.627 s |
+| Control EOF after payload marker | `control_eof` | Monitor unknown; init signal 9 | 0.638 s |
+
+Each case has a complete native FINAL with the original lifetime observed,
+retired and reaped, `uncertain:false`, supervisor exit 0 and complete transport.
+Stop/EOF correctly return null command code/signal: the command monitor was not
+observed, and the init's signal 9 must not be relabeled as the command's status.
+Only Stop records an AbortSignal request; EOF records control-channel loss.
+
+Independent outer records show original B/N/R terminal exit 0, authority
+retirement before sole reap, no containment intervention and no unknown original
+owner exit. Generic outer `product_pass:false` remains unchanged: case success
+also requires the separate native receipt and fixed-case assertions. No process
+census is used as an original-exit proof.
+
+The exit-zero export has 29 payload files plus its manifest, archive SHA-256
+`fa44b0b58ba9005afc39c64eafd9cb52b7c0ec24df0a600dc17f9c1e717f6a32`.
+The subsequent four-case export has 105 payload files plus its manifest, SHA-256
+`4bc58b5d7487db6919571aa719a7795db18a07b918d167560dfa3502ea7d9184`.
+Coordinator reconciliation verified the four-case archive hash, every payload's
+size/original/export hashes, raw case receipts, B/N/R retirement/reap ordering,
+absence of outer intervention, and unchanged nonactivation inputs. Only the
+expected case/request binding and root binding hash changed between activations.
+Exit-zero raw receipt and original exit ordering were separately inspected.
+
+Evidence is retained locally in `/private/tmp/freedom-linux-named-gate-pass-20260910`
+and `/private/tmp/freedom-agent-resume-20260912/linux-four`; the latter verification
+summary is `../linux-evidence-verification.json`. Remote originals remain under
+`/tmp/freedom-owner-named-harness-9853e7fc.B3Ly38/runs`, with the four-case capture
+in `/tmp/freedom-owner-four-9d884e01.DFoCkQ`. Historical identifiers are not replay
+instructions. This reconciliation performed no runtime rerun.
+
+Still unqualified: pre-create/pre-arm cancellation and creator loss, supervisor
+loss during handoff, output-holding descendants, pending controller disposal,
+application Quit, full backend/workspace mount policy, and stock deployment.
+Those require directed boundary witnesses, not repetition of these passing cases.
