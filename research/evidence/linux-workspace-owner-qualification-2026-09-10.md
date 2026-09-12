@@ -237,3 +237,58 @@ the full backend/workspace integration, application Quit, general descendant
 discovery, resource limits or stock-host/AppArmor deployment. Full backend
 qualification is the next task; this campaign alone does not justify merging
 the Linux correction.
+
+## Actual backend and pending disposal — 2026-09-12
+
+Six fixed cases subsequently passed against **unchanged production `336c183f`**,
+using the real Bubblewrap backend, execution policy, helper resolution, three
+capability probes and native transport. All 19 native launches produced matching
+raw READY/FINAL records, original supervisor libuv exit 0 and complete stream
+EOF. Native lifetime observation, retirement and reap were complete and
+non-uncertain. The two cancellation cases acted only after READY, entry-gate and
+payload markers.
+
+| Case | Actual outcome |
+| --- | --- |
+| Exit zero | Completed, monitor/init 0, expected payload |
+| Missing executable | `COMMAND_FAILED`, native `exec_failed`, monitor 127/init 0 |
+| Pre-aborted request | Three capability probes, no request spawn/FINAL; cancelled with no side effects |
+| Stop while live | Cancelled, init SIGKILL proved; monitor/public command status unknown |
+| Control EOF while live | `control_eof`, same lifetime proof; no fabricated cancellation request or monitor status |
+| Pending controller disposal | One entered pending setup; abort and drain to zero pending/active/leases; no runtime call |
+
+The controller case used the candidate's real controller with a held minimal
+store seam. It is not SQLite, active native execution or application Quit
+qualification. The latest feature's saved-server additions were absent from
+that controller; their integration needs separate source/test reconciliation.
+
+Each outer command exited 0 in 0.610–0.732 seconds. For each original B/N/R,
+retained kernel records independently show terminal exit 0, authority retirement
+and one matching destructive wait. No owner intervention, expiry or unknown
+original exit occurred. The outer's generic `product_pass:false` remains intact;
+case-specific backend assertions supply the narrower product evidence. The
+existing private namespace/AppArmor environment does not qualify stock hosts.
+
+An earlier attempt remains a **failure**: the fixture omitted the mandatory
+protected `.git` directory, so policy creation refused before request launch.
+Its three capability probes passed, but no command case was credited. The
+correction creates an empty task-owned `.git` directory (0700), without invoking
+Git or weakening protection. Staging-removal seams retain all test files, even
+on builder errors; execution and receipt paths are unchanged.
+
+The failed archive is
+`bd4dfaba707a05b4241f44d6c78bbe14ae73c2fa14b4bf4d3e9b35d01ad0ef29`
+(62 payloads). The six-case archive is
+`94b767d517427ead01a7bb7abf1e222d218ce46d971242a39c74b6d076679e54`
+(170 payloads). All payload sizes/hashes were independently checked; the
+coordinator also checked raw native/receipt correspondence, action ordering and
+original B/N/R retirement/reap ordering. Local verification:
+`/private/tmp/freedom-agent-resume-20260912/linux-backend-independent-verification.json`.
+Remote originals: `/tmp/freedom-backend-campaign-b3c4367b.xKHCoP` and the
+case-specific runs under `/tmp/freedom-backend-source-92d836f1.T0tOaS/runs`.
+
+Production C, helper, Node, Bubblewrap, copied Git sources and existing
+containment policy remained unchanged. Actual Node creator-thread-only loss,
+full application Quit, general descendant discovery, aggregate resource limits
+and packaged/stock-host deployment remain unqualified. The completed backend
+cases and earlier derivative boundaries must retain their separate attribution.
