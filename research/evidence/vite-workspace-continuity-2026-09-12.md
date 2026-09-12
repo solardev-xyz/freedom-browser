@@ -53,6 +53,7 @@ on the primary development Mac.
 | `run-8n8mb5es` | Observer did not recognize the installed CLT `otool` → `llvm-otool` image/argv mapping | Grant and tool probe; no Vite launch |
 | `run-gkyp1tr2` | Six-second DOM-update condition expired after successful production file edit | Real Vite, preview, HMR subprotocol and file edit |
 | `run-e27nmkug` | Same DOM deadline; connected frame delivered to browser, no upstream update observed | Real Vite connection, unchanged document and successful edit |
+| `run-xqual8xm` | Observer rejected a short-lived `otool` probe after its parent request completed | Workspace/grant only; Vite and watcher plugin never launched |
 
 The first three are harness failures, not product defects. Each correction was
 source-reviewed and tested with pure mocked checks before a fresh bounded run.
@@ -114,6 +115,16 @@ Two mocked preview suites (12 tests) and lint passed. This does not explain the
 run above, where the connected frame arrived and no update was emitted upstream;
 the new client has not yet been qualified in the real Vite campaign.
 
+The next attempt, `run-xqual8xm`, staged an observational watcher plugin but
+failed before Vite launched. Its original `otool` image/arguments and kernel
+exit were observed; a source-bound active-request check raced the parent's
+synchronous completion. The parent completion is not a PID association or
+substitute for the original kernel exit. This remains a harness failure, with
+no watcher-selection or HMR evidence. All five enrolled original exits were
+known; no observer signal was sent. Its 1,668 input records and five links were
+unchanged. The plugin adds observation only and does not qualify the original
+plugin-free fixture.
+
 ## Evidence
 
 Retained remote root: `/private/tmp/freedom-vite-production-d4uf2yyg`.
@@ -126,6 +137,7 @@ Local verified exports: `/private/tmp/freedom-agent-resume-20260912`.
 | `run-8n8mb5es` | `3cd5968990caca050711c35c191ae55d74ba21804b943746ebbc4d486eff9b06` | 43 |
 | `run-gkyp1tr2` | `b84306f40ee323fe73e3d0ebca0d51fad951107aee05de22f898c231592a547e` | 55 |
 | `run-e27nmkug` | `e66b9a679c617ee2a0361ea1a4f203b1eadaa473b97ef470ae0fe142cc29bf33` | 40 |
+| `run-xqual8xm` | `cf41857c2811652001a6314dc8641eb0883aec64b4faaa58a13668909159aef9` | 54 |
 
 The fourth run's 1,664 pre/post input records and five symlinks matched. The
 operational source manifest was
