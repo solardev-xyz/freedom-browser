@@ -4,10 +4,12 @@ The correction remains separate from the feature branch. Its named gate-copy
 follow-up is `336c183fcb2b0fd5d5634e9b40d7d3a638e1d9e8`, parent
 `8e803e0097a28bf6aef2fc41222811d825fd3967`. The fixed natural-exit,
 missing-command, Stop and control-EOF cases now pass on the disposable host.
-Startup/creator-loss and full-backend qualification remain open; this is not a
-complete Linux ownership qualification or permission to merge on steady-state
+Seven fixed native startup/creator-loss boundaries now also pass in a test-only
+derivative, as recorded below. Actual Node creator-thread loss and full-backend
+qualification remain open; this is not a complete Linux ownership qualification
+or permission to merge on steady-state
 evidence alone. The initial failed campaigns below are historical and unchanged;
-the passing follow-up is recorded at the end.
+the passing follow-ups are recorded below.
 
 ## Candidate and scope
 
@@ -168,7 +170,70 @@ summary is `../linux-evidence-verification.json`. Remote originals remain under
 in `/tmp/freedom-owner-four-9d884e01.DFoCkQ`. Historical identifiers are not replay
 instructions. This reconciliation performed no runtime rerun.
 
-Still unqualified: pre-create/pre-arm cancellation and creator loss, supervisor
+At that checkpoint, still unqualified: pre-create/pre-arm cancellation and creator loss, supervisor
 loss during handoff, output-holding descendants, pending controller disposal,
 application Quit, full backend/workspace mount policy, and stock deployment.
 Those require directed boundary witnesses, not repetition of these passing cases.
+
+## Fixed native startup boundaries — 2026-09-12
+
+Seven cases passed once each under the same private Linux owner. These used a
+**test-only derivative** with deterministic holds around the existing
+parent-death handoffs, plus a single-threaded native creator. Mechanical source
+verification reverses the seven instrumentation edits to the production C.
+The production worktree and helper remain unchanged at `336c183f`.
+
+| Boundary | Observed outcome |
+| --- | --- |
+| Cancel before namespace-init creation | Supervisor exits 0; cancelled receipt says no init was created |
+| Cancel at READY, before command release | Supervisor exits 0; receipt proves init SIGKILL, observation, retirement and reap; monitor status remains unknown |
+| Creator loss before supervisor arms parent-death signaling | Creator SIGKILL; continued supervisor detects lost parent/control, exits 0 and is adopted/reaped |
+| Creator loss after supervisor arms parent-death signaling | Creator and held supervisor SIGKILL; supervisor is adopted/reaped; no terminal receipt |
+| Supervisor loss before init arms parent-death signaling | Supervisor SIGKILL; continued init detects parent loss and exits 125, then is adopted/reaped |
+| Supervisor loss after init arms parent-death signaling | Supervisor and held init SIGKILL; init is adopted/reaped; no terminal receipt |
+| Supervisor loss at accepted-start handoff, before monitor creation | Supervisor and held init SIGKILL; init is adopted/reaped; no terminal receipt |
+
+Each original creator/supervisor/init outcome has its own wait evidence. Imported
+pidfds provide observation only: the namespace owner signals only its original
+creator, and that creator signals only its original supervisor. Adopted exit
+credit requires successful `P_PIDFD`/`WNOWAIT`, followed by authority retirement
+and one matching destructive wait. READY cancellation instead uses the native
+supervisor's init wait receipt; it is not an adoption observation. Missing
+supervisor receipts remain **unknown product outcomes**, despite independently
+observed kernel exits. Every exported result explicitly retains
+`productPass:false`.
+
+All seven outer commands exited 0 in 0.535–0.575 seconds, without expiry,
+emergency intervention or unknown original terminal/reap outcomes. Intentional
+SIGKILL stimuli are not counted as emergency cleanup. Raw native/creator output
+and stderr were empty; status streams were retained separately. Root wrapper
+and namespace-owner exits, retirement and sole reaps were recorded. The root's
+wrapper status does not itself prove an intermediate owner's exit. UID census
+is corroboration only. No host policy, dependency, production source or native
+artifact changed during this campaign.
+
+Evidence archive SHA-256:
+`3595430522dbb0ab4bb1ad0093877b3d41e2f12b63b2aac4ef94c5daa60ce1c9`.
+The coordinator verified all **187 payload hashes/sizes**, inspected raw hold,
+stimulus, terminal, retirement and reap records, and checked every case's
+unchanged activated/post-run inputs. Retained remote evidence:
+`/tmp/freedom-boundary-campaign-23366367.yzelYW`; local verification:
+`/private/tmp/freedom-agent-resume-20260912/linux-seven-independent-verification.json`.
+Historical one-use run identifiers are evidence, not replay authorization.
+
+Source bundle SHA-256:
+`2400fad77c68f7ecddc91dbec0f2e98c100b5b82586332b9452ac382274bbbcf`.
+Derivative ELF SHA-256:
+`781f4ac029b1f14bc40673d5829aca66ff414b45829861474509202f27363974`.
+Creator ELF SHA-256:
+`16f975bf690b7539dd916b533f80266f453a383a13cdce7ed3af808eb710e7d3`.
+The derivative build required `-Wno-error=unused-result` for a test-hook
+diagnostic write; its original strict-build failure and warning remain retained.
+The production helper is not replaced by this derivative.
+
+This closes these fixed **single-threaded native boundary** checks. It does not
+qualify actual Node/libuv creator-thread-only loss, pending controller disposal,
+the full backend/workspace integration, application Quit, general descendant
+discovery, resource limits or stock-host/AppArmor deployment. Full backend
+qualification is the next task; this campaign alone does not justify merging
+the Linux correction.
