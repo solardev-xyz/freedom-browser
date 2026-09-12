@@ -277,9 +277,9 @@ async function resolveViaColibri(name, callData) {
 // address. Returns { name } on a successful (forward-verified) lookup.
 // Throws on revert (UR's ResolverNotFound / ReverseAddressMismatch) or
 // network/verification failure — the orchestrator classifies.
-async function resolveReverseViaColibri(addressBytes) {
+async function resolveReverseViaColibri(addressBytes, coinType = 60n) {
   return withColibriClientRetry(1, ({ provider }) =>
-    universalResolverReverse(provider, addressBytes)
+    universalResolverReverse(provider, addressBytes, {}, coinType)
   );
 }
 

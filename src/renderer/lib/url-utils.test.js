@@ -1129,6 +1129,14 @@ describe('url-utils', () => {
   });
 
   describe('buildEnsDisplayUri', () => {
+    test('keeps DNS ENS names distinct from DNSLink across reloads and bookmarks', () => {
+      expect(buildEnsDisplayUri('ipns', 'example.com', '/docs')).toBe('ens://example.com/docs');
+      expect(normalizeLegacyEnsBookmarkUrl('ens://example.com/docs')).toBe('ens://example.com/docs');
+      expect(isEnsBackedDisplay('ens://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('ipfs://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('bzz://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('ipns://example.com/docs')).toBe(false);
+    });
     test('builds bzz transport display for Swarm-backed ENS', () => {
       expect(buildEnsDisplayUri('bzz', 'meinhard.eth')).toBe('bzz://meinhard.eth');
       expect(buildEnsDisplayUri('bzz', 'meinhard.eth', '/docs?q=1')).toBe(

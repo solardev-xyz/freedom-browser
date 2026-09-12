@@ -2041,6 +2041,17 @@ describe('navigation', () => {
       expect(loadCalls.find(([u]) => u.includes('ens-unverified.html'))).toBeUndefined();
     });
 
+    test('DNS ENS pointing to IPNS loads its key instead of resolving the ENS name as DNSLink', async () => {
+      const ctx = await setupEnsDispatch();
+      ctx.pageUrlsMocks.parseEnsInput.mockReturnValueOnce({ name: 'example.com', suffix: '/docs', assertedTransport: null });
+      ctx.urlUtilsMocks.buildEnsDisplayUri.mockReturnValueOnce('ens://example.com/docs');
+      const loadCalls = await dispatchEns(ctx, 'ens://example.com/docs', {
+        type: 'ok', name: 'example.com', protocol: 'ipns', uri: 'ipns://k51qtest',
+        trust: { level: 'verified', agreed: ['a', 'b'] },
+      });
+      expect(loadCalls).toContainEqual(['ipns://k51qtest/docs']);
+    });
+
     test('native .tez resolution keeps the name origin for IPFS content', async () => {
       const ctx = await setupEnsDispatch();
       ctx.electronAPI.resolveTezosDomain.mockResolvedValue({

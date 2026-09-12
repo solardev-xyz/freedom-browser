@@ -274,6 +274,7 @@ describe('buildGatewayUrl', () => {
     // are also still valid. The pre-filter must only reject truly empty
     // labels, not short ones.
     test.each([
+      ['gregskril.com', 'bzz://gregskril.com/'],
       ['a.foo.eth', 'bzz://a.foo.eth/'],
       ['x.app.eth', 'bzz://x.app.eth/'],
       ['me.brantly.eth', 'bzz://me.brantly.eth/'],

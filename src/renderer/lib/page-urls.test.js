@@ -282,6 +282,15 @@ describe('page-urls', () => {
       assertedTransport: null,
     });
     expect(mod.parseEnsInput('example.com')).toBeNull();
+    for (const scheme of ['ens', 'ipfs', 'bzz']) {
+      expect(mod.parseEnsInput(`${scheme}://gregskril.com/docs`)).toEqual({
+        name: 'gregskril.com', suffix: '/docs', assertedTransport: scheme === 'ens' ? null : scheme,
+      });
+    }
+    expect(mod.parseEnsInput('ens://bücher.eth')).toEqual({
+      name: 'bücher.eth', suffix: '', assertedTransport: null,
+    });
+    expect(mod.parseEnsInput('ipns://example.com')).toBeNull();
     expect(mod.parseEnsInput('')).toBeNull();
   });
 

@@ -316,6 +316,8 @@ describe('resolveReverseViaColibri', () => {
     expect(mockUniversalResolverReverse).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'browser-provider' }),
       ADDR_BYTES,
+      {},
+      60n,
     );
     expect(result).toEqual({ name: 'vitalik.eth' });
   });

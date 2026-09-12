@@ -1,4 +1,4 @@
-import { isDwebNameHost, isEnsHost } from './origin-utils.js';
+import { isDwebNameHost, isEnsHost, isPotentialEnsName } from './origin-utils.js';
 import { cidV0ToV1Base32, cidV1B58btcToBase32, ipnsMhToCidV1Base36 } from './cid-utils.js';
 
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
@@ -321,9 +321,8 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
  *   - View-source on name-backed content reuses the same shape with a
  *     `view-source:` prefix added by the caller.
  *
- * The legacy `ens://<name>` form is intentionally NOT produced here — it
- * stays parseable for compatibility with existing bookmarks, but is no
- * longer the canonical display.
+ * DNS names pointing to IPNS retain `ens://`: `ipns://example.com` already
+ * means DNSLink, so using that form would change the meaning on reload.
  *
  * @param {'bzz'|'ipfs'|'ipns'} protocol - resolved contenthash transport
  * @param {string} name - name (already normalized/lowercased upstream)
@@ -333,6 +332,7 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
 export const buildEnsDisplayUri = (protocol, name, suffix = '') => {
   if (!name) return null;
   if (!isSupportedEnsTransport(protocol)) return null;
+  if (protocol === 'ipns' && !isDwebNameHost(name)) return `ens://${name}${suffix || ''}`;
   return `${protocol}://${name}${suffix || ''}`;
 };
 
@@ -362,7 +362,8 @@ export const isEnsBackedDisplay = (displayUrl) => {
   if (lower.startsWith('ens://')) return true;
   const transportMatch = lower.match(/^(?:bzz|ipfs|ipns):\/\/([^/?#]+)/);
   if (transportMatch) {
-    return isDwebNameHost(transportMatch[1]);
+    return isDwebNameHost(transportMatch[1]) ||
+      (!lower.startsWith('ipns://') && isPotentialEnsName(transportMatch[1]));
   }
   return isDwebNameHost(trimmed.split(/[/?#]/)[0]);
 };

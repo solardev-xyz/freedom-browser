@@ -46,7 +46,7 @@ const {
   nameSystemLabelForResult,
   resolveContentName,
 } = require('../content-name-resolver');
-const { isDwebNameHost } = require('../../shared/origin-utils');
+const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const {
   runWithPrivateLogContext,
   redactForLog,
@@ -156,7 +156,7 @@ async function buildGatewayUrl(bzzUrl) {
     };
   }
 
-  if (isDwebNameHost(host) && !hasEmptyLabel(host)) {
+  if ((isDwebNameHost(host) || isPotentialEnsName(host)) && !hasEmptyLabel(host)) {
     const antApiUrl = getAntApiUrl();
     if (!antApiUrl) {
       return redactedFailure(503, () => 'Swarm node is not ready');

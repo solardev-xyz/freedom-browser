@@ -70,8 +70,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // New bar order after a drag, as the full list of targets (#307).
   reorderBookmarks: (targets) => ipcRenderer.invoke('bookmarks:reorder', targets),
   resolveEns: (name) => ipcRenderer.invoke('ens:resolve', { name }),
-  resolveEnsAddress: (name) => ipcRenderer.invoke('ens:resolve-address', { name }),
-  resolveEnsReverse: (address) => ipcRenderer.invoke('ens:resolve-reverse', { address }),
+  resolveEnsAddress: (name, chainId = 1) => ipcRenderer.invoke('ens:resolve-address', { name, chainId }),
+  resolveEnsReverse: (address, chainId = 1) => ipcRenderer.invoke('ens:resolve-reverse', { address, chainId }),
   invalidateEnsContent: (name) => ipcRenderer.invoke('ens:invalidate-content', { name }),
   getOnchainAppProvenance: (webContentsId, url) =>
     ipcRenderer.invoke('onchain-app:get-provenance', { webContentsId, url }),

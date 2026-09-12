@@ -41,6 +41,19 @@ export function isEnsHost(host) {
   );
 }
 
+// Candidate detection only: the main process applies ENSIP-15 normalization.
+// Keep this separate from automatic browser navigation, where ordinary DNS
+// names must continue to open over HTTPS.
+export function isPotentialEnsName(value) {
+  return (
+    typeof value === 'string' &&
+    value.includes('.') &&
+    !/[\s/:@?#%\\]/u.test(value) &&
+    !Array.from(value).some((c) => c.codePointAt(0) < 32 || c.codePointAt(0) === 127) &&
+    value.split('.').every((label) => label.length > 0)
+  );
+}
+
 export function isTezosDomainHost(host) {
   if (!host || typeof host !== 'string') return false;
   const lower = host.toLowerCase();
