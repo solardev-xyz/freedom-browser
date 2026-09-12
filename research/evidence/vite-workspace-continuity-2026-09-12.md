@@ -4,7 +4,7 @@ The production workflow has reached sandboxed Vite startup, a saved process,
 a preview page, the upstream `vite-hmr` subprotocol and a successful production
 file edit. **HMR, explicit Stop, saved-server restart and reattachment are not
 yet qualified together:** the first run that reached the edit timed out waiting
-for the changed DOM. Further diagnostics are in preparation.
+for the changed DOM. The next trace confirms delivery of Vite's connected frame but no upstream update after the edit; watcher/emitter diagnostics are in preparation.
 
 ## Candidate and environment
 
@@ -52,6 +52,7 @@ on the primary development Mac.
 | `run-g95jyfra` | Observer confused native policy ceiling (1,800,000 ms) with the separate requested command timeout (40,000 ms) | Grant and supervisor launch; command not released |
 | `run-8n8mb5es` | Observer did not recognize the installed CLT `otool` → `llvm-otool` image/argv mapping | Grant and tool probe; no Vite launch |
 | `run-gkyp1tr2` | Six-second DOM-update condition expired after successful production file edit | Real Vite, preview, HMR subprotocol and file edit |
+| `run-e27nmkug` | Same DOM deadline; connected frame delivered to browser, no upstream update observed | Real Vite connection, unchanged document and successful edit |
 
 The first three are harness failures, not product defects. Each correction was
 source-reviewed and tested with pure mocked checks before a fresh bounded run.
@@ -86,6 +87,33 @@ A child ESRCH/recheck race after the HMR failure was separately retained; it did
 not cause the preceding HMR timeout. This is neither a successful explicit
 scenario Stop nor a guarantee about unobserved descendants.
 
+## Narrowed diagnostic result and separate client correction
+
+`run-e27nmkug` retained the unchanged six-second condition. The upstream socket
+opened and delivered a 20-byte `connected` frame; the browser logged Vite's
+connected event. After the production edit, the page still showed revision 1
+with zero updates and the same document identity. No update frame reached this
+upstream socket during the interval. Socket, projected console and snapshot
+capture reported zero drops. A CSP error occurred only after the failed
+condition and socket close, in Vite's reconnect path; it does not explain the
+preceding absence of updates. This narrows the investigation to watcher/server
+emission without proving a selected watcher or policy cause.
+
+All 11 registered original processes had known terminal events. Failure cleanup
+used the production path, retaining root-reap evidence and group-KILL EPERM
+uncertainty. No emergency signal was sent. The scenario's explicit Stop/restart
+and reattachment remain unreached. The 1,666 input records and five links matched
+before/after; operational manifest was
+`0f8da52334cd49aa6bf67b2f4c4bc81b1627f8742ce18b086a93d5a1136ca42d`.
+
+Separately, a pure VM/mock reproduction found that synchronously dispatching an
+open event and a message from one poll batch can lose the message when the
+application awaits open before attaching its listener. `fd5d9e76` schedules each
+incoming event in a separate browser task, allowing intervening microtasks.
+Two mocked preview suites (12 tests) and lint passed. This does not explain the
+run above, where the connected frame arrived and no update was emitted upstream;
+the new client has not yet been qualified in the real Vite campaign.
+
 ## Evidence
 
 Retained remote root: `/private/tmp/freedom-vite-production-d4uf2yyg`.
@@ -97,6 +125,7 @@ Local verified exports: `/private/tmp/freedom-agent-resume-20260912`.
 | `run-g95jyfra` | `1d338d26e7dd832c3bda2ca425754ef5e6dccf88d7898947186fa27f0e527c9b` | 55 |
 | `run-8n8mb5es` | `3cd5968990caca050711c35c191ae55d74ba21804b943746ebbc4d486eff9b06` | 43 |
 | `run-gkyp1tr2` | `b84306f40ee323fe73e3d0ebca0d51fad951107aee05de22f898c231592a547e` | 55 |
+| `run-e27nmkug` | `e66b9a679c617ee2a0361ea1a4f203b1eadaa473b97ef470ae0fe142cc29bf33` | 40 |
 
 The fourth run's 1,664 pre/post input records and five symlinks matched. The
 operational source manifest was
