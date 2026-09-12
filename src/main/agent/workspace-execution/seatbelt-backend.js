@@ -645,6 +645,10 @@ class SeatbeltExecutor {
       )
     );
     const environment = {
+      // Native file notifications can stall under Seatbelt. Poll within the
+      // existing filesystem boundary; explicit command policy may override it.
+      CHOKIDAR_USEPOLLING: 'true',
+      CHOKIDAR_INTERVAL: '250',
       ...policy.environment.values,
       GIT_OPTIONAL_LOCKS: '0',
       HOME: path.join(privateDirectory, 'home'),

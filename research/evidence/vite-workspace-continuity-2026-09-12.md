@@ -1,10 +1,12 @@
 # Real Vite workspace continuity — qualification in progress
 
-The production workflow has reached sandboxed Vite startup, a saved process,
-a preview page, the upstream `vite-hmr` subprotocol and a successful production
-file edit. **HMR, explicit Stop, saved-server restart and reattachment are not
-yet qualified together:** the first run that reached the edit timed out waiting
-for the changed DOM. The next trace confirms delivery of Vite's connected frame but no upstream update after the edit; watcher/emitter diagnostics are in preparation.
+The production workflow has reached sandboxed Vite startup, real same-document
+HMR in a polling-control fixture, explicit Stop, old socket-key refusal and
+SQLite close/reopen. **The complete restart/reattachment flow is not yet
+qualified:** the polling run stopped on an auxiliary-probe observer ambiguity
+before its second launch. Earlier default-FSEvents runs missed the file edit.
+Product polling defaults and the independent client event-ordering fix now await
+qualification without a fixture polling override.
 
 ## Candidate and environment
 
@@ -54,6 +56,8 @@ on the primary development Mac.
 | `run-gkyp1tr2` | Six-second DOM-update condition expired after successful production file edit | Real Vite, preview, HMR subprotocol and file edit |
 | `run-e27nmkug` | Same DOM deadline; connected frame delivered to browser, no upstream update observed | Real Vite connection, unchanged document and successful edit |
 | `run-xqual8xm` | Observer rejected a short-lived `otool` probe after its parent request completed | Workspace/grant only; Vite and watcher plugin never launched |
+| `run-a0la0gqf` | FSEvents watcher ready and target registered, but no target notification after edit | Instrumented Vite/preview/edit; HMR deadline failed |
+| `run-d8cr16br` | Repeated same-target probe requests made observer class matching ambiguous before second launch | Polling-control HMR, Stop, old key refusal and SQLite reopen passed |
 
 The first three are harness failures, not product defects. Each correction was
 source-reviewed and tested with pure mocked checks before a fresh bounded run.
@@ -125,6 +129,40 @@ known; no observer signal was sent. Its 1,668 input records and five links were
 unchanged. The plugin adds observation only and does not qualify the original
 plugin-free fixture.
 
+After the observation-only probe classification correction, `run-a0la0gqf`
+reached Vite. The plugin recorded `useFsEvents:true`, interval 100, watcher ready
+and revision.js membership before the edit. `usePolling` was absent from the
+boolean projection, so its exact value was not observed. The production write
+again produced the exact revision-2 bytes, but no target raw/change/add/unlink,
+hot-update hook or send event appeared before the six-second deadline. Counters
+for other paths, errors, projection errors and backpressure stayed zero. This
+localizes the captured failure before HMR emission, without proving a Seatbelt
+cause or permanent watcher failure. A separately attributed polling control is
+in progress; no policy expansion was made. All nine enrolled original exits
+were known; native group-KILL EPERM uncertainty remains.
+
+The explicit polling control, `run-d8cr16br`, changed only Vite's fixed fixture
+config to `watch: { usePolling: true, interval: 250 }`. Actual watcher options
+showed polling true/FSEvents false. A target change reached the hot-update hook
+(one JS module), update send, upstream update frame and browser hot-update log.
+The DOM changed to revision 2 with the same document identity and one update.
+The native Stop receipt and original exits were checked, the old socket key was
+refused, and SQLite reopened the saved recipe without a persisted process ID.
+All nine preliminary assertions passed, but the run remains **FAIL**: two
+legitimate sync probe records for the same target made the observer's uniqueness
+check reject the restart probe. No second-generation launch was credited.
+All ten enrolled original exits were known; no observer process signal was sent.
+An EOF failure-control intervention and native group cleanup uncertainty remain
+recorded. This is a polling control, not proof of the FSEvents failure's OS cause.
+
+The macOS backend now supplies polling/250 ms defaults through the supervised
+command environment, preserving explicit policy overrides and existing private
+HOME/PATH settings. Two mock-only environment-handoff tests and the existing
+pure capability-profile test pass, as does lint. The environment change grants
+no additional filesystem/network/Mach-service access. Polling's filesystem/CPU
+cost and non-Chokidar tools remain separate; the product path without a fixture
+override still needs runtime evidence.
+
 ## Evidence
 
 Retained remote root: `/private/tmp/freedom-vite-production-d4uf2yyg`.
@@ -138,6 +176,8 @@ Local verified exports: `/private/tmp/freedom-agent-resume-20260912`.
 | `run-gkyp1tr2` | `b84306f40ee323fe73e3d0ebca0d51fad951107aee05de22f898c231592a547e` | 55 |
 | `run-e27nmkug` | `e66b9a679c617ee2a0361ea1a4f203b1eadaa473b97ef470ae0fe142cc29bf33` | 40 |
 | `run-xqual8xm` | `cf41857c2811652001a6314dc8641eb0883aec64b4faaa58a13668909159aef9` | 54 |
+| `run-a0la0gqf` | `30230a0f1a2e2ce0d082ea9cc5645d5deef7ecc1a40e0046bb058c90cc405ded` | 62 |
+| `run-d8cr16br` | `c5b493adb1c4f9fcd4e3c7e49bcc499f00be98e018b10d057b48309d328a0297` | 87 |
 
 The fourth run's 1,664 pre/post input records and five symlinks matched. The
 operational source manifest was

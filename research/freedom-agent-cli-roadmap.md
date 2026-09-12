@@ -3024,6 +3024,16 @@ browser session, including after the terminal handle expires. Permissions and
 the current generation are rechecked before Stop. This does not add a macOS
 descendant guarantee or persist a cleanup claim across browser restarts.
 
+On macOS, supervised workspace commands now default Chokidar to polling every
+250 ms (`CHOKIDAR_USEPOLLING=true`, `CHOKIDAR_INTERVAL=250`). A disposable Vite
+control showed a ready FSEvents watcher missing the edit while polling delivered
+a real same-document HMR update under the same sandbox. This compatibility
+choice expands no filesystem or Mach-service permission. Explicit command-policy
+values can override the defaults; tools may also set their own watcher options.
+Polling adds filesystem checks and may cost more CPU in large watched trees;
+performance and non-Chokidar watchers are not qualified by this result.
+The product defaults still require a run without a fixture polling override.
+
 Server HTML receives a WebSocket adapter whose bounded same-origin requests go
 through main to only the declared loopback port. Text/binary messages and HMR
 subprotocols are supported; external destinations, credentials, redirects,
