@@ -181,9 +181,14 @@ narrow pinned shell-transition observation correction, and the original
 plugin-free Vite fixture without a watch override. It is a derivative of the
 remote `c586ab2b` base, not a full-head checkout or a runtime result. Its gzip
 SHA-256 is `b20e4f76df6457ceb16e663f9ced8f6936e839d4826bc93bca3328793c266709`.
-Automatic approval review blocked its transfer pending explicit authorization
-for the source payload and existing Mac destination. No transfer or subsequent
-runtime is claimed.
+Automatic approval review initially blocked its transfer. On September 13 the
+user explicitly authorized the source payload and existing Mac destination, and
+request `req-b1b9445acb99b50721bcfd835d515b00` delivered it. The agent's visible
+progress reported matching inputs, 14 mocked product tests, source/observer
+checks and lint passing, with activation disabled. It then hit a model-capacity
+error before submitting its explicit reply. These are progress reports, not an
+independently reviewed completion package; no subsequent runtime is claimed.
+The existing request remains reserved, and its files are preserved.
 
 ## Evidence
 
