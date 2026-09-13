@@ -1,14 +1,17 @@
-# Real Vite workspace continuity — qualification in progress
+# Real Vite workspace continuity — scoped pass
 
-The production workflow has reached sandboxed Vite startup, real same-document
-HMR in a polling-control fixture, explicit Stop, old socket-key refusal and
-SQLite close/reopen. **The complete restart/reattachment flow is not yet
-qualified:** the polling run stopped on an auxiliary-probe observer ambiguity
-before its second launch. Earlier default-FSEvents runs missed the file edit.
-A later run with the product environment defaults and independent client
-event-ordering fix still missed the edit. Explicit project polling configuration
-is required for the next plugin-free qualification; environment hints alone are
-not a demonstrated fix.
+**Qualified on the disposable Mac on September 13:** real Vite HMR without
+navigation, planned Stop, old socket-key refusal, SQLite close/reopen, saved-server
+restart with fresh permission, stable-origin reattachment, old socket-ID refusal,
+and a second planned Stop. `run-o5ky_qr2` passed all 14 browser assertions in
+6.237199 seconds with 12 independently observed original process exits.
+
+This is the **explicitly configured project** contract: Vite uses
+`server.watch: { usePolling: true, interval: 250 }`, with no diagnostic plugin.
+Environment polling defaults alone failed in the preceding run. Agent guidance
+now includes the project setting. Live-model adherence, app restart/full Quit,
+exact-lock packaging and general descendant/resource containment remain outside
+this pass. All ten earlier failed campaigns remain failures below.
 
 ## Candidate and environment
 
@@ -219,6 +222,59 @@ than relying on environment flags. The guidance preserves other config settings
 and the sandbox boundary. Its 68-test mocked service suite and lint pass;
 live-model adherence is not established.
 
+## Passing configured-project run — September 13
+
+`run-o5ky_qr2` used the same c586 base plus the four exact 1b7 product/test files
+as the failed environment-only attempt. Only the fixed fixture configuration and
+its corresponding assertions changed: explicit polling at 250 ms, `plugins: []`,
+no watcher instrumentation, no additional readiness wait or longer deadline.
+The scenario hash was
+`425e6f52886957cd78fbbb2f0cfb9d9d519d4330d40def1143f6822621ec0757`;
+source proof `8754fe5e920e68a7082362df92375e4b973e623b619f28e523d35439545dae1f`;
+operational manifest
+`6e4aac689e6982b65a83055135757e76df8e2ad81bcfffdebb17cc7d4c799682`.
+Legacy descriptive fixture labels inside the proof were retained; the exact
+configuration bytes and scenario result identify the active project-polling mode.
+They must not be read as an environment-only/default-fixture pass.
+
+The original document changed from revision 1/zero updates to revision 2/one
+update with the same document identity and URL. The typed capture contains the
+actual Vite update frame and both generations' `vite-hmr` connections; all capture
+drop counters are zero. The first planned Stop completed, the old key returned
+403, and a real SQLite connection reopened the saved recipe without a persisted
+PID. A fresh once-grant launched the saved command with a distinct process ID.
+The existing preview reloaded on the same origin with a new socket key, and the
+old socket ID was refused with that new key. The second planned Stop completed.
+
+Both native command finals recorded root observed/reaped and exit code 143
+(not a synthesized signal); both supervisor transports ended with status EOF
+and exit 0. Their original kernel events agree. The browser had its own exit 0,
+retirement before sole reap and no signals. All 12 enrolled original processes
+had known terminal events; one Chromium helper ended by signal 15. There were
+no observer emergencies or final unknown original exits. All three native finals,
+including the file helper, still report group-KILL EPERM and cleanup uncertainty.
+This pass does not upgrade best-effort macOS cleanup into descendant containment.
+
+All pinned inputs and the staged Vite files matched before/after. The coordinator
+independently verified all 103 exported members, the four product/test files
+against local commit 1b7, all browser assertions, both generation/native/original
+terminal agreements, and browser retirement/reap ordering. The three transformed
+shareable records retain original hashes; comparisons refer to those explicit
+redacted representations. The independent check is retained at
+`/private/tmp/freedom-agent-resume-20260912/mac-project-polling-independent-verification.json`.
+
+The installed Vite 8.3.0 bundle identifies a patched Chokidar 3.6.0 region.
+`dist/node/chunks/node.js` is 1,369,132 bytes, SHA-256
+`2d7a6a7a48f06baada8f6ceec415505c2426aa308fd23b8ace5da443bc7a9673`.
+Retained excerpts at lines 11678–11690 select `useFsEvents` before parsing
+`CHOKIDAR_USEPOLLING`; lines 11715 and 11745–11754 select and dispatch that handler.
+An exact-fragment pure reproduction with FSEvents available leaves both flags
+true for an environment-only request, but sets FSEvents false for explicit
+`usePolling: true`. This establishes the inspected source behavior and a plausible
+failure path, not the prior run's unobserved effective handler or exact OS cause.
+The passing run qualifies the supported explicit project configuration without
+patching Vite, adding dependencies or expanding sandbox permissions.
+
 ## Evidence
 
 Retained remote root: `/private/tmp/freedom-vite-production-d4uf2yyg`.
@@ -236,9 +292,10 @@ Local verified exports: `/private/tmp/freedom-agent-resume-20260912`.
 | `run-d8cr16br` | `c5b493adb1c4f9fcd4e3c7e49bcc499f00be98e018b10d057b48309d328a0297` | 87 |
 | `run-gs186938` | `26108ccaa11746ed416fad218f06300b39bb2afefd6a4af5c0e48d28a1de61cd` | 71 |
 | `run-xzxhm2so` | `250db34e821e8b00a42729536f02e2b7da93d61cc4e87ec1cf57e83b486615ee` | 92 |
+| `run-o5ky_qr2` — pass | `f31c7cdbd40d3bdd262f493ad55c009bdd51d7ea2976402753af419623f22474` | 103 |
 
-The tenth export redacts its saved preview-origin token in three shareable text
-members. Those members carry original hashes and transformation metadata; the
+The tenth and passing exports each redact their saved preview-origin token in
+three shareable text members. Those members carry original hashes and transformation metadata; the
 export hashes verify the shared representations, not byte identity with the
 retained unredacted originals. Original evidence remains unchanged on the Mac.
 

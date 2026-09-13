@@ -148,6 +148,22 @@ reviewed source-bundle SHA-256:
 Local copies are retained in `/private/tmp/freedom-preview-mac-pass-20260909`
 and `/private/tmp/freedom-preview-mac-failure-20260909`.
 
-Existing Linux/macOS substrate results do not qualify these new paths. Separate
+A later **September 13 real-Vite check passed 14 browser assertions** with the
+explicit macOS polling configuration above. It exercised the actual sandboxed
+workspace controller, SQLite store and preview transport: same-document HMR,
+planned Stop, old socket-key refusal, SQLite close/reopen in the same app process,
+a fresh-grant saved-server restart, stable-origin reattachment, old socket-ID
+refusal and a second planned Stop. Both command exits matched native reaping and
+independent original-process observations. The browser exited 0 after authority
+retirement and sole reap, without observer intervention. Existing macOS cleanup
+uncertainty remains explicit.
+
+That run used the c586 source base with four exact product/test files from 1b7,
+Vite 8.3.0 and the recorded donor runtime. It does not establish full app restart,
+full Quit, packaged-release compatibility or live-model adherence to the new
+watcher guidance. See [the real-Vite evidence record](../research/evidence/vite-workspace-continuity-2026-09-12.md)
+for exact hashes, the ten retained failures, source diagnosis and scope.
+
+Earlier Linux/macOS substrate results alone did not qualify these new paths. Separate
 HMR ports, SSE, workers/service workers, automatic crash restarts, saved-server
 editing/removal UI and live model behavior are not established by this change.
