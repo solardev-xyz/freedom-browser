@@ -5,15 +5,19 @@ HMR in a polling-control fixture, explicit Stop, old socket-key refusal and
 SQLite close/reopen. **The complete restart/reattachment flow is not yet
 qualified:** the polling run stopped on an auxiliary-probe observer ambiguity
 before its second launch. Earlier default-FSEvents runs missed the file edit.
-Product polling defaults and the independent client event-ordering fix now await
-qualification without a fixture polling override.
+A later run with the product environment defaults and independent client
+event-ordering fix still missed the edit. Explicit project polling configuration
+is required for the next plugin-free qualification; environment hints alone are
+not a demonstrated fix.
 
 ## Candidate and environment
 
-The disposable Mac uses public feature commit
+The first nine runs used public feature commit
 `c586ab2bcbff4207e8a2e7e08b703fa96d9d66f4`, tree
 `84d6a347e5feb33d0dbf2fef7347319339fc7353`, with separately pinned test harness
-files. Production sources and the Freedom dependency lock remain unchanged.
+files. The tenth adds the two production files and their two tests from
+`1b7bab2b91f7401194240923b2ab723b45f74398`, described below. This derivative is
+not a full-head checkout. The Freedom dependency lock remains unchanged.
 
 The user approved Vite **8.3.0** and its dependencies in a new task-only
 directory, with install scripts disabled. Its lock SHA-256 is
@@ -59,6 +63,7 @@ on the primary development Mac.
 | `run-a0la0gqf` | FSEvents watcher ready and target registered, but no target notification after edit | Instrumented Vite/preview/edit; HMR deadline failed |
 | `run-d8cr16br` | Repeated same-target probe requests made observer class matching ambiguous before second launch | Polling-control HMR, Stop, old key refusal and SQLite reopen passed |
 | `run-gs186938` | Observer did not recognize the pinned `/bin/bash` image retaining the exact `/bin/sh` launch arguments | Workspace and native launch; no watcher or HMR observation |
+| `run-xzxhm2so` | HMR condition expired despite the product polling environment defaults | Real Vite, connected frame, revision-1 page and completed edit; no update frame |
 
 The first three are harness failures, not product defects. Each correction was
 source-reviewed and tested with pure mocked checks before a fresh bounded run.
@@ -161,8 +166,8 @@ command environment, preserving explicit policy overrides and existing private
 HOME/PATH settings. Two mock-only environment-handoff tests and the existing
 pure capability-profile test pass, as does lint. The environment change grants
 no additional filesystem/network/Mach-service access. Polling's filesystem/CPU
-cost and non-Chokidar tools remain separate; the product path without a fixture
-override still needs runtime evidence.
+cost and non-Chokidar tools remain separate; the subsequent environment-only attempt below did not deliver HMR. Agent guidance
+now requires explicit project watcher configuration for macOS Vite.
 
 The next attempt, `run-gs186938`, exercised the reviewed probe-class correction
 but failed during the command's pre-exec transition. The original command was
@@ -188,7 +193,31 @@ progress reported matching inputs, 14 mocked product tests, source/observer
 checks and lint passing, with activation disabled. It then hit a model-capacity
 error before submitting its explicit reply. These are progress reports, not an
 independently reviewed completion package; no subsequent runtime is claimed.
-The existing request remains reserved, and its files are preserved.
+The user then restarted the agent. Recovery request `req-f674ada2f570e8fecf1fc65c156bb57a`
+returned the preserved package; the coordinator independently verified all 69
+members, the four exact product/test files, unchanged records and plugin-free
+configuration. The source export SHA-256 is
+`cd9f3b64a1438bd3c5a8a0a04d265f6d1bfc23afe588e70c84bb2a47f071866f`.
+
+`run-xzxhm2so` then used that source plus the exact two-stage shell observer
+correction, owner SHA-256
+`41e2c3305af8612ad5cafbd1d7b4747c5cab5967ea6867a0730b28955b1e3b5f`.
+It failed the unchanged six-second HMR condition, with an outer duration of
+7.350884 seconds. The connected frame arrived and the production edit completed,
+but the DOM stayed at revision 1 with zero updates and no upstream update frame.
+No watcher plugin was installed, so effective runtime watcher selection was not
+observed. No planned Stop/restart stage was reached. Failure cleanup retained
+native root observed/reaped, supervisor exit 0 and command exit 143, matching
+its original kernel terminal. All ten enrolled original exits were known;
+B retired before sole reap with exit 1, without observer signals or emergencies.
+Native group-KILL EPERM uncertainty remains. The source/runtime/fixture pins
+matched before and after. This is an environment-only failure, not a successful
+qualification of those defaults.
+
+The Agent now receives explicit macOS Vite project-configuration guidance rather
+than relying on environment flags. The guidance preserves other config settings
+and the sandbox boundary. Its 68-test mocked service suite and lint pass;
+live-model adherence is not established.
 
 ## Evidence
 
@@ -206,6 +235,12 @@ Local verified exports: `/private/tmp/freedom-agent-resume-20260912`.
 | `run-a0la0gqf` | `30230a0f1a2e2ce0d082ea9cc5645d5deef7ecc1a40e0046bb058c90cc405ded` | 62 |
 | `run-d8cr16br` | `c5b493adb1c4f9fcd4e3c7e49bcc499f00be98e018b10d057b48309d328a0297` | 87 |
 | `run-gs186938` | `26108ccaa11746ed416fad218f06300b39bb2afefd6a4af5c0e48d28a1de61cd` | 71 |
+| `run-xzxhm2so` | `250db34e821e8b00a42729536f02e2b7da93d61cc4e87ec1cf57e83b486615ee` | 92 |
+
+The tenth export redacts its saved preview-origin token in three shareable text
+members. Those members carry original hashes and transformation metadata; the
+export hashes verify the shared representations, not byte identity with the
+retained unredacted originals. Original evidence remains unchanged on the Mac.
 
 The fourth run's 1,664 pre/post input records and five symlinks matched. The
 operational source manifest was

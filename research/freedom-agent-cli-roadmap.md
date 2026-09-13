@@ -3032,7 +3032,7 @@ choice expands no filesystem or Mach-service permission. Explicit command-policy
 values can override the defaults; tools may also set their own watcher options.
 Polling adds filesystem checks and may cost more CPU in large watched trees;
 performance and non-Chokidar watchers are not qualified by this result.
-The product defaults still require a run without a fixture polling override.
+An environment-only run subsequently failed to deliver HMR. Agent guidance now requires explicit project watcher configuration on macOS (for Vite, merge `server.watch: { usePolling: true, interval: 250 }` without replacing other settings); the environment defaults are hints, not a universal override. The service suite passes 68 mocked tests and lint. The plugin-free, explicitly configured project is being used for the remaining restart/reattachment check.
 
 Server HTML receives a WebSocket adapter whose bounded same-origin requests go
 through main to only the declared loopback port. Text/binary messages and HMR
@@ -3056,7 +3056,7 @@ DOM hot update without navigation, and generation reload/reconnection on the
 same origin. Browser and four registered helpers exited with observed status
 zero, with no intervention or unknown exits. The fixture used Electron 43.0.0 /
 ws 8.21.0 (lock 44.3.0 / 8.21.3), a simulated HMR protocol and fake process/recipe
-registry. A [September 12 real-Vite campaign](evidence/vite-workspace-continuity-2026-09-12.md) has since demonstrated real same-document HMR with explicit polling, production Stop, old socket-key refusal and SQLite close/reopen. The whole run failed on an observer ambiguity before restart; a later attempt stopped on a shell-image observation mismatch. The committed product polling default and event-ordering correction await a plugin-free run without a fixture override. The user authorized the source transfer on September 13; it succeeded. Source/mock checks were reported passing, but the remote agent hit model capacity before its explicit reply, so review of that package and the final runtime run remain pending. Full sandboxed restart/reattachment and live-model acceptance remain open.
+registry. A [September 12 real-Vite campaign](evidence/vite-workspace-continuity-2026-09-12.md) has since demonstrated real same-document HMR with explicit polling, production Stop, old socket-key refusal and SQLite close/reopen. The whole run failed on an observer ambiguity before restart; a later attempt stopped on a shell-image observation mismatch. The committed product polling default and event-ordering correction await a plugin-free run without a fixture override. The user restarted the capacity-blocked Mac agent on September 13; its source package was recovered and independently verified. The following environment-only run reached the edit but failed HMR. Its failure is retained; an explicit project-polling run is the remaining check. Full sandboxed restart/reattachment and live-model acceptance remain open.
 An earlier restricted-context AppKit startup abort remains a separate failure;
 the unchanged host-permission comparison passed. See the linked contract for
 retained evidence and scope.

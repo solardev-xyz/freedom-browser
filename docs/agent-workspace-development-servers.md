@@ -53,6 +53,25 @@ not recreate authority or a live preview mapping. A stopped/unavailable HTML
 page offers **Try again** and thirty bounded retries; these only observe the
 preview and never launch commands. There is no automatic crash-restart loop.
 
+## macOS file watching
+
+Configure polling explicitly in the project's development-server configuration
+on macOS. For Vite, merge the following into the existing `server` configuration
+without replacing its other settings:
+
+```js
+watch: { usePolling: true, interval: 250 }
+```
+
+The backend also supplies Chokidar polling environment defaults, but those hints
+are insufficient for some FSEvents-based watchers. The disposable Vite check
+missed an edit with environment defaults alone; an explicit polling control
+produced a real hot update. Polling uses the existing filesystem boundary and
+needs no additional sandbox permission. It can add filesystem/CPU work in large
+projects. Other watcher libraries require their own supported configuration.
+The Agent's development-server guidance includes this setting; live-model
+adherence is separate from deterministic transport testing.
+
 ## WebSocket transport and limits
 
 `protocol.handle` serves Fetch responses rather than browser WebSocket upgrades.

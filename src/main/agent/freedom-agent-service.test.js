@@ -784,6 +784,15 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'pass that processId to workspace_preview'
     );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'On macOS, configure polling explicitly in the project development server'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'server.watch: { usePolling: true, interval: 250 }'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'without replacing unrelated settings'
+    );
 
     fake.prompt.resolve();
     await service.waitForIdle();
