@@ -1,4 +1,4 @@
-import { startBalanceRefresh, loadCachedBalances } from './balance-display.js';
+import { startBalanceRefresh, loadCachedBalances, refreshBalances, initBalanceDisplay } from './balance-display.js';
 import { walletState } from './wallet-state.js';
 
 beforeEach(() => jest.useFakeTimers());
@@ -37,4 +37,35 @@ test.each([
   walletState.fullAddresses = { wallet: '0xabc', swarm: null };
   await loadCachedBalances();
   expect(window.wallet.getBalances).toHaveBeenCalledTimes(calls);
+});
+
+
+test('late refresh after an account switch cannot overwrite the current wallet', async () => {
+  let finish;
+  global.document = { getElementById: () => null };
+  global.window = { wallet: { getBalances: () => new Promise((resolve) => { finish = resolve; }) } };
+  walletState.fullAddresses = { wallet: '0xaaa', swarm: null };
+  walletState.currentBalances = { current: true };
+  const work = refreshBalances();
+  walletState.fullAddresses.wallet = '0xbbb';
+  finish({ success: true, balances: { wrongAccount: true } });
+  await work;
+  expect(walletState.currentBalances).toEqual({ current: true });
+});
+
+test('experimental stale status stays visible and a later unavailable refresh clears displayed values', async () => {
+  const status = { classList: { add: jest.fn(), remove: jest.fn() }, textContent: '' };
+  global.document = { getElementById: (id) => id === 'balance-error' ? status : null };
+  global.window = { addEventListener: jest.fn(), wallet: { getBalances: jest.fn() } };
+  initBalanceDisplay();
+  walletState.fullAddresses = { wallet: '0xaaa', swarm: null };
+  window.wallet.getBalances.mockResolvedValue({ success: true, balances: {
+    privacyMode: 'tor-experimental', status: 'stale', '11155111:native': { raw: '1' },
+  } });
+  await refreshBalances();
+  expect(status.textContent).toContain('stale');
+  expect(status.classList.remove).toHaveBeenCalledWith('hidden');
+  window.wallet.getBalances.mockResolvedValue({ success: true, balances: { privacyMode: 'tor-experimental', status: 'unavailable' } });
+  await refreshBalances();
+  expect(walletState.currentBalances['11155111:native']).toBeUndefined();
 });

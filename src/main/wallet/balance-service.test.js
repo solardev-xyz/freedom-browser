@@ -1,3 +1,4 @@
+jest.mock('../settings-store', () => ({ loadSettings: () => ({}) }));
 jest.mock('../networks/chain-data-router', () => ({ request: jest.fn() }));
 jest.mock('../token-registry', () => ({ getTokens: () => ({ '1:native': { chainId: 1, address: null, symbol: 'ETH', decimals: 18 } }) }));
 jest.mock('../networks/network-registry', () => ({ isChainAvailable: () => true }));

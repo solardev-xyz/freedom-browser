@@ -12,12 +12,22 @@ let assetListEl;
 let balanceErrorEl;
 let swarmBalanceXdaiEl;
 let swarmBalanceXbzzEl;
+let balanceGeneration = 0;
+let torBalanceMode = false;
 
 export function initBalanceDisplay() {
   assetListEl = document.getElementById('asset-list');
   balanceErrorEl = document.getElementById('balance-error');
   swarmBalanceXdaiEl = document.getElementById('swarm-balance-xdai');
   swarmBalanceXbzzEl = document.getElementById('swarm-balance-xbzz');
+  window.addEventListener('settings:updated', (event) => {
+    const next = event.detail?.walletTorBalanceReads === true;
+    if (next === torBalanceMode) return;
+    torBalanceMode = next;
+    balanceGeneration += 1;
+    walletState.currentBalances = {};
+    if (walletIsVisible()) refreshBalances();
+  });
 }
 
 /**
@@ -25,6 +35,8 @@ export function initBalanceDisplay() {
  * Runs silently in background - no loading indicators shown to user
  */
 export async function refreshBalances(forceRefresh = false) {
+  const generation = ++balanceGeneration;
+  const identity = walletState.identityData;
   const userAddress = walletState.fullAddresses.wallet;
   const swarmAddress = walletState.fullAddresses.swarm;
 
@@ -44,6 +56,10 @@ export async function refreshBalances(forceRefresh = false) {
       userAddress ? window.wallet.getBalances(userAddress) : Promise.resolve(null),
       swarmAddress ? window.wallet.getBalances(swarmAddress) : Promise.resolve(null),
     ]);
+
+    if (generation !== balanceGeneration || identity !== walletState.identityData ||
+        userAddress !== walletState.fullAddresses.wallet || swarmAddress !== walletState.fullAddresses.swarm) return;
+    showPrivacyStatus(userResult?.balances);
 
     // Display user wallet balances
     if (userResult?.success) {
@@ -266,6 +282,8 @@ function displaySwarmBalances(balances) {
  * Load cached balances for instant display on startup
  */
 export async function loadCachedBalances() {
+  const generation = ++balanceGeneration;
+  const identity = walletState.identityData;
   const userAddress = walletState.fullAddresses.wallet;
   const swarmAddress = walletState.fullAddresses.swarm;
 
@@ -277,6 +295,9 @@ export async function loadCachedBalances() {
       swarmAddress ? window.wallet.getBalancesCached(swarmAddress) : Promise.resolve(null),
     ]);
 
+    if (generation !== balanceGeneration || identity !== walletState.identityData ||
+        userAddress !== walletState.fullAddresses.wallet || swarmAddress !== walletState.fullAddresses.swarm) return;
+    showPrivacyStatus(userResult?.balances);
     if (userResult?.success && userResult.balances) {
       displayUserBalances(userResult.balances);
     }
@@ -324,4 +345,18 @@ function hideBalanceError() {
   if (balanceErrorEl) {
     balanceErrorEl.classList.add('hidden');
   }
+}
+
+function showPrivacyStatus(balances) {
+  if (balances?.privacyMode !== 'tor-experimental') return;
+  torBalanceMode = true;
+  if (!balanceErrorEl) return;
+  balanceErrorEl.textContent = balances.status === 'fresh'
+    ? 'Experimental Tor reads · Sepolia balances only · sending uses existing routes'
+    : balances.status === 'stale'
+      ? 'Sepolia balances are stale · refresh required'
+      : balances.refreshError === 'PRIVACY_EXPERIMENT_UNQUALIFIED'
+        ? 'Tor balance experiment unavailable pending qualification'
+        : 'Sepolia balances unavailable · unlock the wallet and start bundled Tor';
+  balanceErrorEl.classList.remove('hidden');
 }

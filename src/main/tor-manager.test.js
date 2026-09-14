@@ -263,6 +263,7 @@ describe('tor-manager IPC', () => {
     );
     expect(defaultSession.setProxy).toHaveBeenCalled();
     expect(mod.getActivePort()).toBe(9150);
+    expect(mod.getWalletSocksEndpoint()).toBeNull();
     await mod.stopTor();
     await flushMicrotasks();
   });
@@ -529,6 +530,7 @@ describe('tor-manager .onion routing across sessions', () => {
       });
 
       await mod.startTor({ targetSession });
+      expect(mod.getWalletSocksEndpoint()).toBeNull();
       mod.registerOnionRoutingSession('private-crash', privateSession);
 
       // Arti announces bootstrap, the 1s poller then applies the PAC.
@@ -538,10 +540,15 @@ describe('tor-manager .onion routing across sessions', () => {
 
       expect(pacCalls(targetSession)).toHaveLength(1);
       expect(pacCalls(privateSession)).toHaveLength(1);
+      const walletEndpoint = mod.getWalletSocksEndpoint();
+      expect(walletEndpoint).toMatchObject({ host: '127.0.0.1', port: 19150 });
+      expect(walletEndpoint.signal.aborted).toBe(false);
 
       // Arti crashes. Clearing the PAC here would turn .onion into a DIRECT
       // (DNS-leaking) lookup with no user action — fail open.
       artiProcess.emit('close', 1);
+      expect(walletEndpoint.signal.aborted).toBe(true);
+      expect(mod.getWalletSocksEndpoint()).toBeNull();
       await flushMicrotasks();
 
       expect(directCalls(targetSession)).toHaveLength(0);

@@ -578,6 +578,7 @@ app.on('before-quit', async (event) => {
 
   event.preventDefault();
   isQuitting = true;
+  require('./wallet/privacy-session').shutdownPrivacySessions();
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
 
   // Close all DevTools first to prevent crashes during cleanup

@@ -16,6 +16,15 @@ const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 // Vault state
 let unlockedMnemonic = null;
 let autoLockTimer = null;
+let lockGeneration = 0;
+let sessionController = new AbortController();
+sessionController.abort();
+
+// Main-only lifetime capability. Every lock path revokes the old signal;
+// unlocking never makes an old signal live again.
+function getSessionSignal() {
+  return sessionController.signal;
+}
 
 // Default auto-lock timeout (15 minutes)
 const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
@@ -111,6 +120,7 @@ async function saveVault(dataDir, password, mnemonic) {
  * @returns {Promise<void>}
  */
 async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS) {
+  const startedGeneration = lockGeneration;
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found. Create one first.');
   }
@@ -124,18 +134,22 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
 
   try {
     const decrypted = await decrypt(password, vaultData.encrypted);
-    unlockedMnemonic = decrypted.mnemonic;
+    if (startedGeneration !== lockGeneration) {
+      throw new Error('Vault unlock cancelled by a newer session');
+    }
 
     // Validate decrypted mnemonic
-    if (!isValidMnemonic(unlockedMnemonic)) {
-      unlockedMnemonic = null;
+    if (!isValidMnemonic(decrypted.mnemonic)) {
+      lockVault();
       throw new Error('Decrypted data is not a valid mnemonic');
     }
 
-    // Set up auto-lock timer
-    if (autoLockMs > 0) {
-      resetAutoLockTimer(autoLockMs);
-    }
+    // Replacement unlocks revoke existing work too. Advancing the generation
+    // prevents an older concurrent decrypt from reviving/replacing this session.
+    lockVault();
+    unlockedMnemonic = decrypted.mnemonic;
+    sessionController = new AbortController();
+    resetAutoLockTimer(autoLockMs);
   } catch (err) {
     if (err.message.includes('Incorrect password')) {
       throw new Error('Incorrect password', { cause: err });
@@ -148,11 +162,13 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
  * Lock the vault (clear mnemonic from memory)
  */
 function lockVault() {
+  lockGeneration += 1;
   unlockedMnemonic = null;
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
     autoLockTimer = null;
   }
+  sessionController.abort();
 }
 
 /**
@@ -285,6 +301,7 @@ module.exports = {
   unlockVault,
   lockVault,
   isUnlocked,
+  getSessionSignal,
   getMnemonic,
   resetAutoLockTimer,
   changePassword,

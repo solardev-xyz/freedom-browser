@@ -579,3 +579,27 @@ describe('normalizeSearchUrlTemplate parity (main vs renderer)', () => {
     }
   });
 });
+
+
+test('wallet Tor qualification gate is main-owned and cannot enable packaged builds', async () => {
+  const userDataDir = createTempUserDataDir();
+  const original = process.env.FREEDOM_WALLET_TOR_EXPERIMENT;
+  try {
+    process.env.FREEDOM_WALLET_TOR_EXPERIMENT = '1';
+    const { mod, app, ipcMain } = loadSettingsStore({ userDataDir });
+    mod.registerSettingsIpc();
+    expect(mod.isWalletTorExperimentAvailable()).toBe(true);
+    app.isPackaged = true;
+    expect(mod.isWalletTorExperimentAvailable()).toBe(false);
+    expect(mod.loadSettings().walletTorBalanceReads).toBe(false);
+    mod.saveSettings({ walletTorExperimentAvailable: true });
+    expect((await ipcMain.invoke(IPC.SETTINGS_GET)).walletTorExperimentAvailable).toBe(false);
+    app.isPackaged = false;
+    delete process.env.FREEDOM_WALLET_TOR_EXPERIMENT;
+    expect(mod.isWalletTorExperimentAvailable()).toBe(false);
+  } finally {
+    if (original === undefined) delete process.env.FREEDOM_WALLET_TOR_EXPERIMENT;
+    else process.env.FREEDOM_WALLET_TOR_EXPERIMENT = original;
+    removeTempUserDataDir(userDataDir);
+  }
+});

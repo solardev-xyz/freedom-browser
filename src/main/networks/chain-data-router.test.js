@@ -1,3 +1,4 @@
+jest.mock('../settings-store', () => ({ loadSettings: () => ({}), isWalletTorExperimentAvailable: () => false }));
 const mockRegistry = {
   getNetwork: jest.fn(),
   getEndpoints: jest.fn(),
@@ -46,6 +47,7 @@ const {
   clearAdaptiveRoutingForTest,
 } = require('./chain-data-router');
 const originalFetch = global.fetch;
+const { createPrivacyScope } = require('./privacy-context');
 
 describe('chain-data-router', () => {
   beforeEach(() => {
@@ -68,6 +70,30 @@ describe('chain-data-router', () => {
   afterEach(() => {
     jest.useRealTimers();
     global.fetch = originalFetch;
+  });
+
+  test('context-bound reads fail closed before any source or registry lookup', async () => {
+    const lifetime = new AbortController();
+    const scope = createPrivacyScope({ profileId: 'wallet', signal: lifetime.signal });
+    const privacyContext = scope.getContext({
+      kind: 'public-address', principal: `0x${'1'.repeat(40)}`, chainId: 1, role: 'rpc',
+    });
+    global.fetch = jest.fn();
+    const options = { privacyContext, routingContext: { origin: 'https://app.example' } };
+    await expect(request(1, 'eth_getBalance', ['0xabc', 'latest'], options))
+      .rejects.toMatchObject({ code: 'PRIVACY_TRANSPORT_UNAVAILABLE' });
+    await expect(request(100, 'eth_getBalance', [], options))
+      .rejects.toMatchObject({ code: 'PRIVACY_CHAIN_MISMATCH' });
+    lifetime.abort();
+    await expect(request(1, 'eth_getBalance', [], options))
+      .rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
+    await expect(request(1, 'eth_getBalance', [], { privacyContext: {} }))
+      .rejects.toMatchObject({ code: 'INVALID_PRIVACY_CONTEXT' });
+    expect(mockRegistry.getNetwork).not.toHaveBeenCalled();
+    expect(mockMyotis.getAccount).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    scope.close();
   });
 
   test('serves account balances from the matching Myotis chain', async () => {

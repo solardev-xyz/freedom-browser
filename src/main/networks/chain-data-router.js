@@ -1,6 +1,7 @@
 const log = require('../logger');
 const registry = require('./network-registry');
 const myotis = require('../myotis/myotis-manager');
+const { getPrivacyContext } = require('./privacy-context');
 
 const READ_METHODS = new Set([
   'eth_blockNumber',
@@ -950,8 +951,14 @@ async function request(
   chainId,
   method,
   rawParams = [],
-  { includeTrust = false, routingContext = null } = {}
+  { includeTrust = false, routingContext = null, privacyContext = null, signal } = {}
 ) {
+  if (privacyContext !== null) {
+    getPrivacyContext(privacyContext, chainId);
+    return require('./private-balance-router').requestPrivateBalance(chainId, method, rawParams, {
+      privacyContext, includeTrust, signal,
+    });
+  }
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);

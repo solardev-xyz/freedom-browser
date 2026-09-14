@@ -10,6 +10,34 @@ const { parseUnits, formatUnits, Interface, Transaction } = require('ethers');
 const chainData = require('../networks/chain-data-router');
 const { getTxExplorerUrl } = require('./chains');
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
+const { privacyError } = require('../networks/privacy-context');
+
+function transactionNetwork(options) {
+  return options?.privacyContext != null ? require('./private-transaction-network').getPrivateTransactionNetwork(options.privacyContext) : chainData;
+}
+
+// Main-owned review/signing callbacks may outlive a lock (e.g. a hardware
+// prompt). Observe their completion but never let it revive the operation.
+function privateStep(callback, network, signal = network.signal) {
+  network.assertActive();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const abort = () => finish(privacyError('PRIVACY_REQUEST_ABORTED', 'Private transaction operation cancelled'));
+    function finish(error, value) {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', abort);
+      if (error) reject(error); else resolve(value);
+    }
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) { abort(); return; }
+    Promise.resolve().then(() => {
+      network.assertActive();
+      if (signal.aborted) throw privacyError('PRIVACY_REQUEST_ABORTED', 'Private transaction operation cancelled');
+      return callback();
+    }).then((value) => { network.assertActive(); finish(null, value); }).catch((error) => finish(error || new Error('Private operation failed')));
+  });
+}
 
 // ERC-20 transfer function interface
 const ERC20_INTERFACE = new Interface([
@@ -26,19 +54,20 @@ const ERC20_INTERFACE = new Interface([
  * @param {number} params.chainId - Chain ID
  * @returns {Promise<{gasLimit: string, error?: string}>}
  */
-async function estimateGas({ from, to, value, data, chainId }) {
+async function estimateGas({ from, to, value, data, chainId }, options = {}) {
+  const network = transactionNetwork(options);
   try {
     const tx = {
       from,
       to,
-      value: value || '0',
+      value: options.privacyContext ? `0x${BigInt(value || '0').toString(16)}` : value || '0',
     };
 
     if (data) {
       tx.data = data;
     }
 
-    const { result } = await chainData.request(chainId, 'eth_estimateGas', [tx]);
+    const { result } = await network.request(chainId, 'eth_estimateGas', [tx]);
     const gasLimit = BigInt(result);
 
     // Add 20% buffer for safety
@@ -48,6 +77,7 @@ async function estimateGas({ from, to, value, data, chainId }) {
       gasLimit: bufferedGas.toString(),
     };
   } catch (err) {
+    if (options.privacyContext) throw err;
     console.error('[TransactionService] Gas estimation failed:', err);
     throw new Error(`Gas estimation failed: ${err.message}`, { cause: err });
   }
@@ -59,10 +89,11 @@ async function estimateGas({ from, to, value, data, chainId }) {
  * @param {number} chainId - Chain ID
  * @returns {Promise<Object>} Gas price data
  */
-async function getGasPrices(chainId) {
+async function getGasPrices(chainId, options = {}) {
+  const network = transactionNetwork(options);
   try {
-    const quote = await chainData.getFeeQuote(chainId);
-    console.log('[TransactionService] Fee quote:', {
+    const quote = await network.getFeeQuote(chainId);
+    if (!options.privacyContext) console.log('[TransactionService] Fee quote:', {
       chainId,
       type: quote.type,
       source: quote.source,
@@ -72,6 +103,7 @@ async function getGasPrices(chainId) {
     });
     return quote;
   } catch (err) {
+    if (options.privacyContext) throw err;
     console.error('[TransactionService] Failed to get gas prices:', err);
     throw new Error(`Failed to get gas prices: ${err.message}`, { cause: err });
   }
@@ -206,12 +238,12 @@ async function verifyDeviceBroadcastFrom(hash, expectedFrom, chainId) {
  * @param {Object} params
  * @returns {Promise<{maxFeePerGas?: string, maxPriorityFeePerGas?: string, gasPrice?: string}>}
  */
-async function resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId }) {
+async function resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId }, options) {
   if ((maxFeePerGas && maxPriorityFeePerGas) || gasPrice) {
     return { maxFeePerGas, maxPriorityFeePerGas, gasPrice };
   }
 
-  const fees = await getGasPrices(chainId);
+  const fees = await getGasPrices(chainId, options);
 
   if (fees.type === 'eip1559' && isPositiveFee(fees.maxFeePerGas) && isPositiveFee(fees.maxPriorityFeePerGas)) {
     return { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas };
@@ -254,17 +286,32 @@ function isPositiveFee(value) {
  * @param {import('./signers').Signer} signer - Signer for the sending account
  * @returns {Promise<Object>} Transaction result
  */
-async function signAndSendTransaction(params, signer) {
+async function signAndSendTransaction(params, signer, options = {}) {
+  const network = transactionNetwork(options);
+  // Snapshot intent before any await. UI approval will later bind this exact
+  // populated transaction; no renderer entry point enables this experiment.
+  params = { ...params };
+  if (options.privacyContext) {
+    if (typeof signer.sendTransaction === 'function') {
+      throw privacyError('PRIVATE_REMOTE_BROADCAST_UNSUPPORTED', 'This signer controls its own network transport');
+    }
+    if (typeof options.review !== 'function') {
+      throw privacyError('PRIVATE_REVIEW_REQUIRED', 'A main-owned transaction review is required');
+    }
+    network.assertSigner(await privateStep(() => signer.getAddress(), network));
+  }
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params;
 
   // Phone wallets populate fees and broadcast through their own RPC. All
   // raw-signing backends need complete fee data before device approval.
   const fees = typeof signer.sendTransaction === 'function'
     ? null
-    : await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId });
+    : await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId }, options);
 
   try {
-    const from = await signer.getAddress();
+    const from = options.privacyContext
+      ? await privateStep(() => signer.getAddress(), network)
+      : await signer.getAddress();
 
     // Backends that can only sign-and-broadcast through their own channel
     // (phone wallets) expose the optional sendTransaction capability: the
@@ -286,7 +333,7 @@ async function signAndSendTransaction(params, signer) {
     }
 
     // Get nonce
-    const nonceResponse = await chainData.request(chainId, 'eth_getTransactionCount', [
+    const nonceResponse = await network.request(chainId, 'eth_getTransactionCount', [
       from,
       'pending',
     ]);
@@ -305,7 +352,7 @@ async function signAndSendTransaction(params, signer) {
       chainId,
     });
 
-    console.log('[TransactionService] Signing transaction:', {
+    if (!options.privacyContext) console.log('[TransactionService] Signing transaction:', {
       to: tx.to,
       value: tx.value,
       gasLimit: tx.gasLimit,
@@ -314,9 +361,35 @@ async function signAndSendTransaction(params, signer) {
       nonceSource: nonceResponse.source,
     });
 
-    const signedTransaction = await signer.signTransaction(tx);
+    let signedTransaction;
+    if (options.privacyContext) {
+      network.assertActive(chainId);
+      Object.freeze(tx);
+      const reviewMs = options.reviewTimeoutMs ?? 120000;
+      if (!Number.isInteger(reviewMs) || reviewMs < 1 || reviewMs > 120000) {
+        throw privacyError('PRIVATE_REVIEW_INVALID', 'Invalid review lifetime');
+      }
+      const expiresAt = Date.now() + reviewMs;
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), reviewMs);
+      timer.unref();
+      const signal = AbortSignal.any([network.signal, deadline.signal]);
+      try {
+        const review = Object.freeze({ transaction: tx, from, expiresAt,
+          unsignedSerialized: Transaction.from(tx).unsignedSerialized });
+        if (await privateStep(() => options.review(review), network, signal) !== true) {
+          throw privacyError('PRIVATE_REVIEW_REJECTED', 'Transaction review was not approved');
+        }
+        signedTransaction = await privateStep(() => signer.signTransaction(tx), network, signal);
+        if (Date.now() >= expiresAt || signal.aborted) {
+          throw privacyError('PRIVATE_REVIEW_EXPIRED', 'Transaction review expired');
+        }
+        network.assertActive(chainId);
+        require('./private-transaction-network').assertSignedIntent(signedTransaction, tx);
+      } finally { clearTimeout(timer); }
+    } else signedTransaction = await signer.signTransaction(tx);
     const parsedTransaction = Transaction.from(signedTransaction);
-    const broadcast = await chainData.broadcastRawTransaction(chainId, signedTransaction);
+    const broadcast = await network.broadcastRawTransaction(chainId, signedTransaction);
     if (
       parsedTransaction.hash &&
       String(broadcast.result).toLowerCase() !== parsedTransaction.hash.toLowerCase()
@@ -327,7 +400,7 @@ async function signAndSendTransaction(params, signer) {
       );
     }
 
-    console.log('[TransactionService] Transaction sent:', broadcast.result);
+    if (!options.privacyContext) console.log('[TransactionService] Transaction sent:', broadcast.result);
 
     return {
       hash: broadcast.result,
@@ -340,6 +413,10 @@ async function signAndSendTransaction(params, signer) {
       explorerUrl: getTxExplorerUrl(chainId, broadcast.result),
     };
   } catch (err) {
+    if (options.privacyContext) {
+      if (typeof err?.code === 'string' && /^(PRIVATE_|PRIVACY_|TOR_)/.test(err.code)) throw err;
+      throw privacyError('PRIVATE_TRANSACTION_FAILED', 'Private transaction preparation or signing failed');
+    }
     console.error('[TransactionService] Transaction failed:', err);
 
     // Device-backend errors (LEDGER_*/REMOTE_*) carry a stable code and a
@@ -402,9 +479,10 @@ async function signAndSendTransaction(params, signer) {
  * @param {number} chainId - Chain ID
  * @returns {Promise<Object>} Transaction status
  */
-async function getTransactionStatus(txHash, chainId) {
+async function getTransactionStatus(txHash, chainId, options = {}) {
+  const network = transactionNetwork(options);
   try {
-    const { result: receipt } = await chainData.request(chainId, 'eth_getTransactionReceipt', [txHash]);
+    const { result: receipt } = await network.request(chainId, 'eth_getTransactionReceipt', [txHash]);
 
     if (!receipt) {
       return {
@@ -424,6 +502,7 @@ async function getTransactionStatus(txHash, chainId) {
       explorerUrl: getTxExplorerUrl(chainId, txHash),
     };
   } catch (err) {
+    if (options.privacyContext) throw err;
     console.error('[TransactionService] Failed to get transaction status:', err);
     return {
       status: 'unknown',
@@ -440,28 +519,37 @@ async function getTransactionStatus(txHash, chainId) {
  * @param {number} confirmations - Number of confirmations to wait for
  * @returns {Promise<Object>} Transaction receipt
  */
-async function waitForTransaction(txHash, chainId, confirmations = 1) {
+async function waitForTransaction(txHash, chainId, confirmations = 1, options = {}) {
+  const network = transactionNetwork(options);
   try {
     const deadline = Date.now() + 60000;
     while (Date.now() < deadline) {
-      const status = await getTransactionStatus(txHash, chainId);
+      const status = await getTransactionStatus(txHash, chainId, options);
       if (status.status === 'failed') return status;
       if (status.status === 'confirmed') {
         if (confirmations <= 1) return status;
         try {
-          const { result: head } = await chainData.request(chainId, 'eth_blockNumber');
+          const { result: head } = await network.request(chainId, 'eth_blockNumber');
           if (Number(BigInt(head)) - status.blockNumber + 1 >= confirmations) return status;
         } catch (err) {
           // Receipt confirmation is already known. A transient head lookup
           // must not turn that into a false timeout; keep polling until the
           // requested confirmation depth can be established.
+          if (options.privacyContext) throw err;
           console.warn('[TransactionService] Confirmation head lookup failed:', err.message);
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve, reject) => {
+        const signal = options.privacyContext ? network.signal : null;
+        const abort = () => { clearTimeout(timer); reject(privacyError('PRIVACY_REQUEST_ABORTED', 'Receipt polling cancelled')); };
+        const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, 2000);
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
+      });
     }
     throw new Error('Timed out waiting for transaction confirmation');
   } catch (err) {
+    if (options.privacyContext) throw err;
     console.error('[TransactionService] Wait for transaction failed:', err);
     throw new Error(`Transaction confirmation timeout: ${err.message}`, { cause: err });
   }

@@ -1542,6 +1542,18 @@
                 </label>
               </div>
             </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Tor balance reads (experimental)</p>
+                <p class="row-help" id="wallet-tor-help">Unavailable pending circuit and platform qualification.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="wallet-tor-balance-reads" disabled />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
             <div class="row" id="swarm-mode-row">
               <div class="row-body">
                 <p class="row-label">Swarm node mode</p>
@@ -1623,6 +1635,7 @@
         startTor: $('start-tor-at-launch'),
         enableIdentity: $('enable-identity-wallet'),
         showIpfsProgressStatus: $('show-ipfs-progress-status'),
+        walletTorBalanceReads: $('wallet-tor-balance-reads'),
         autoUpdate: $('auto-update'),
         adblockEnabled: $('adblock-enabled'),
         adblockAds: $('adblock-ads'),
@@ -2364,6 +2377,7 @@
         startTorAtLaunch: fields.startTor.checked,
         enableIdentityWallet: fields.enableIdentity.checked,
         showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
+        walletTorBalanceReads: fields.walletTorBalanceReads.checked,
         autoUpdate: fields.autoUpdate.checked,
         blockUnverifiedEns: fields.unverifiedEnsAction.value !== 'open',
         adblockEnabled: fields.adblockEnabled.checked,
@@ -2388,6 +2402,11 @@
         fields.startTor.checked = settings.startTorAtLaunch === true;
         fields.enableIdentity.checked = settings.enableIdentityWallet === true;
         fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
+        fields.walletTorBalanceReads.checked = settings.walletTorBalanceReads === true;
+        fields.walletTorBalanceReads.disabled = settings.walletTorExperimentAvailable !== true && !fields.walletTorBalanceReads.checked;
+        $('wallet-tor-help').textContent = settings.walletTorExperimentAvailable === true
+          ? 'Sepolia balances only. Start bundled Tor first. Other balances are unavailable; sending and other wallet traffic keep their existing routes. Circuit isolation is still under test.'
+          : 'Unavailable pending circuit and platform qualification. You can turn off a previously enabled experiment.';
         fields.autoUpdate.checked = settings.autoUpdate !== false;
         fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';
         fields.adblockEnabled.checked = settings.adblockEnabled !== false;
@@ -2607,6 +2626,7 @@
       fields.startTor.addEventListener('change', save);
       fields.enableIdentity.addEventListener('change', save);
       fields.showIpfsProgressStatus.addEventListener('change', save);
+      fields.walletTorBalanceReads.addEventListener('change', save);
       fields.autoUpdate.addEventListener('change', save);
       fields.unverifiedEnsAction.addEventListener('change', save);
       fields.adblockEnabled.addEventListener('change', () => {

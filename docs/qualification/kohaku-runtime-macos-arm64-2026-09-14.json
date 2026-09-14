@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "plugins": {
+      "version": "0.0.1-alpha.13",
+      "license": null
+    },
+    "provider": {
+      "version": "0.1.0-alpha.9",
+      "license": "MIT"
+    },
+    "railgun": {
+      "version": "0.0.1-alpha.30",
+      "license": "MIT"
+    }
+  },
+  "directImports": {
+    "plugins": "ERR_MODULE_NOT_FOUND",
+    "provider": "loaded",
+    "railgun": "ERR_UNSUPPORTED_DIR_IMPORT"
+  },
+  "explicitBundlerDependency": {
+    "viem": "2.56.3"
+  },
+  "asarSha256": "0d25f506d64872f5a0bede63a546a6390a881ef62416c20a8710590edbb48d2d",
+  "nodeReport": {
+    "initialized": true,
+    "address": "0zk1qyk9nn28x0u3rwn5pknglda68wrn7gw6anjw8gg94mcj6eq5u48t7unpd9kx0h6c5ama02nutwtcqc979wnce0qwly4y7w4rls5cq040g7z8eagshxrw5m5vcdk",
+    "restoredAddressMatches": true,
+    "spendingPath": "m/44'/1984'/0'/0'/0'",
+    "viewingPath": "m/420'/1984'/0'/0'/0'",
+    "ambientFetchCalls": 0,
+    "node": "24.18.1",
+    "electron": null
+  },
+  "scope": "Loading, WASM initialization and synthetic address reconstruction only; no sync, proving or broadcast"
+}

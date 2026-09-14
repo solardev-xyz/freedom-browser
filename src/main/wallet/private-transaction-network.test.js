@@ -1,0 +1,113 @@
+jest.mock('../settings-store', () => ({ isWalletTorExperimentAvailable: () => true }));
+jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mockEndpoint }));
+jest.mock('../networks/network-registry', () => ({ getNetwork: () => ({}), getEndpoints: () => ['https://rpc.example'], getEndpointSources: () => [{ keyed: false, coverage: { '11155111': 'https://rpc.example' } }] }));
+jest.mock('../networks/wallet-tor-transport', () => ({ createWalletTorTransport: () => ({ request: mockRequest }) }));
+jest.mock('../networks/chain-data-router', () => ({ request: jest.fn(), broadcastRawTransaction: jest.fn(), getFeeQuote: jest.fn() }));
+const mockRequest = jest.fn();
+let mockEndpoint;
+const { Wallet, Transaction } = require('ethers');
+const { createPrivacyScope } = require('../networks/privacy-context');
+const { getPrivateTransactionNetwork } = require('./private-transaction-network');
+const service = require('./transaction-service');
+const chainData = require('../networks/chain-data-router');
+const wallet = new Wallet(`0x${'1'.repeat(64)}`); // Public synthetic fixture only.
+const params = { chainId: 11155111, to: `0x${'2'.repeat(40)}`, value: '1', gasLimit: '21000' };
+let scope, handle, network, tor;
+let requests;
+let receipt;
+let responseHook;
+let signer;
+beforeEach(() => {
+  jest.clearAllMocks();
+  tor = new AbortController(); mockEndpoint = { signal: tor.signal };
+  scope = createPrivacyScope({ profileId: 'test', signal: new AbortController().signal });
+  handle = scope.getContext({ kind: 'public-address', principal: wallet.address, chainId: 11155111, role: 'transaction-rpc' });
+  network = getPrivateTransactionNetwork(handle);
+  requests = []; receipt = null; responseHook = null;
+  signer = { getAddress: async () => wallet.address, signTransaction: jest.fn((tx) => wallet.signTransaction(tx)) };
+  mockRequest.mockImplementation(async (context, _url, options) => {
+    expect(context).toBe(handle);
+    const call = JSON.parse(options.body); requests.push(call);
+    if (responseHook) await responseHook(call);
+    const result = { eth_chainId: '0xaa36a7', eth_gasPrice: '0x64', eth_getTransactionCount: '0x0',
+      eth_estimateGas: '0x5208', eth_call: '0x', eth_getTransactionReceipt: receipt, eth_blockNumber: '0x11' }[call.method];
+    return { status: 200, body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id,
+      result: call.method === 'eth_sendRawTransaction' ? Transaction.from(call.params[0]).hash : result })) };
+  });
+});
+afterEach(() => { scope.close(); tor.abort(); });
+
+test('fees, gas, simulation, nonce, signing, submission and receipts use only the context route', async () => {
+  const options = { privacyContext: handle, review: async () => true };
+  expect(await service.estimateGas({ ...params, from: wallet.address }, options)).toEqual({ gasLimit: '25200' });
+  await network.request(11155111, 'eth_call', [{ from: wallet.address, to: params.to, value: '0x1' }, 'latest']);
+  const sent = await service.signAndSendTransaction(params, signer, options);
+  receipt = { transactionHash: sent.hash, status: '0x1', blockNumber: '0x10', gasUsed: '0x5208', effectiveGasPrice: '0x64' };
+  expect(await service.waitForTransaction(sent.hash, 11155111, 2, options)).toMatchObject({ status: 'confirmed', blockNumber: 16 });
+  expect(requests.map((r) => r.method)).toEqual(['eth_chainId', 'eth_estimateGas', 'eth_call', 'eth_gasPrice', 'eth_getTransactionCount', 'eth_sendRawTransaction', 'eth_getTransactionReceipt', 'eth_blockNumber']);
+  expect(chainData.request).not.toHaveBeenCalled();
+  expect(chainData.broadcastRawTransaction).not.toHaveBeenCalled();
+});
+
+test('signers that broadcast through their own RPC are rejected before network or device interaction', async () => {
+  signer.sendTransaction = jest.fn();
+  await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true })).rejects.toMatchObject({ code: 'PRIVATE_REMOTE_BROADCAST_UNSUPPORTED' });
+  expect(mockRequest).not.toHaveBeenCalled(); expect(signer.sendTransaction).not.toHaveBeenCalled();
+});
+
+test('changed signer output and lock during signing never reach broadcast', async () => {
+  signer.signTransaction.mockImplementation((tx) => wallet.signTransaction({ ...tx, value: '2' }));
+  await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true })).rejects.toMatchObject({ code: 'PRIVATE_SIGNED_INTENT_MISMATCH' });
+  signer.signTransaction.mockImplementation(async (tx) => { scope.close(); return wallet.signTransaction(tx); });
+  await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true })).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  expect(requests.some((r) => r.method === 'eth_sendRawTransaction')).toBe(false);
+});
+
+test('a lost broadcast response preserves deterministic hash and refuses a duplicate attempt', async () => {
+  let signed;
+  responseHook = async (call) => { if (call.method === 'eth_sendRawTransaction') { signed = call.params[0]; throw new Error('response lost'); } };
+  const error = await service.signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true }).catch((error) => error);
+  expect(error).toMatchObject({ code: 'PRIVATE_BROADCAST_UNCERTAIN', submissionStatus: 'unknown', transactionHash: Transaction.from(signed).hash });
+  await expect(network.broadcastRawTransaction(11155111, signed)).rejects.toMatchObject({ code: 'PRIVATE_BROADCAST_ALREADY_ATTEMPTED' });
+  responseHook = null;
+  expect(await service.getTransactionStatus(error.transactionHash, 11155111, { privacyContext: handle, review: async () => true })).toMatchObject({ status: 'pending' });
+  expect(requests.filter((r) => r.method === 'eth_sendRawTransaction')).toHaveLength(1);
+});
+
+test('other-account nonces, arbitrary hashes and Tor replacement cannot cross the context', async () => {
+  await expect(network.request(11155111, 'eth_getTransactionCount', [params.to, 'pending'])).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+  await expect(network.request(11155111, 'eth_getTransactionReceipt', [`0x${'f'.repeat(64)}`])).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+  mockEndpoint = { signal: new AbortController().signal };
+  await expect(network.getFeeQuote(11155111)).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('lock cancels receipt polling without waiting for its timer', async () => {
+  const sent = await service.signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true });
+  const waiting = service.waitForTransaction(sent.hash, 11155111, 1, { privacyContext: handle, review: async () => true });
+  await new Promise(setImmediate);
+  scope.close();
+  await expect(waiting).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+});
+
+
+test('review sees complete frozen intent; rejection, expiry and lock prevent signing', async () => {
+  const review = jest.fn(async (value) => {
+    expect(value.transaction).toMatchObject({ nonce: 0, gasPrice: '100', chainId: 11155111 });
+    expect(Object.isFrozen(value.transaction)).toBe(true);
+    expect(value.unsignedSerialized).toMatch(/^0x/);
+    return false;
+  });
+  await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle, review })).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_REJECTED' });
+  await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle, review: () => new Promise(() => {}), reviewTimeoutMs: 5 })).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  expect(signer.signTransaction).not.toHaveBeenCalled();
+});
+
+test('explicit invalid contexts and absent review never reach ordinary networking', async () => {
+  for (const context of [false, 0, '', {}]) {
+    await expect(service.getGasPrices(11155111, { privacyContext: context })).rejects.toMatchObject({ code: 'INVALID_PRIVACY_CONTEXT' });
+  }
+  await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle })).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_REQUIRED' });
+  expect(chainData.getFeeQuote).not.toHaveBeenCalled();
+  expect(mockRequest).not.toHaveBeenCalled();
+});
