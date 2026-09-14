@@ -3057,6 +3057,27 @@ same origin. Browser and four registered helpers exited with observed status
 zero, with no intervention or unknown exits. The fixture used Electron 43.0.0 /
 ws 8.21.0 (lock 44.3.0 / 8.21.3), a simulated HMR protocol and fake process/recipe
 registry. The [September 12–13 real-Vite campaign](evidence/vite-workspace-continuity-2026-09-12.md) is now a scoped pass: `run-o5ky_qr2` passed **14 browser assertions** in 6.237199 seconds, including real same-document HMR, both planned Stops, old key/socket refusal, same-app SQLite close/reopen, fresh-grant saved-server restart and stable-origin reattachment. All 12 enrolled original exits were known; browser retirement preceded sole reap, with no observer intervention. Explicit Vite project polling is required; environment-only polling failed. The runtime used c586 plus four exact 1b7 product/test files and the recorded donor versions, not the whole current branch or a packaged release. The new Agent guidance is committed at `ed9e061c`; live-model adherence was not part of the scripted run. Ten earlier failures remain preserved. Native group-KILL EPERM/descendant uncertainty, full app restart/Quit, release packaging and live-model acceptance remain separate; deterministic HMR and saved-server restart/reattachment are complete for this configuration.
+**2026-09-13 — Manual Agent smoke accepted.** After the feature branch was pushed
+at `5026b1ce`, the user ran the proposed manual smoke workflow and reported
+“tested, workes perfectly.” The core workflow covers Agent-created Vite preview,
+CSS hot reload without a manual reload/server restart, Stop, saved-server
+restart/reattachment, and another edit after restart. This records user acceptance
+of the Agent-driven development-server workflow in addition to the deterministic
+checks above; it closes the pending core live-Agent smoke milestone. No transcript,
+runtime inventory or per-step trace was collected, so this is user-reported product
+acceptance rather than additional instrumented evidence. The optional full-app
+restart step was not separately confirmed. Packaged-release, broader watcher and
+platform coverage, and native descendant/resource limits remain unchanged.
+
+The core HMR/server-continuity milestone is complete for the accepted macOS
+workflow. Further preview features (separate HMR ports, SSE, automatic crash
+restart, saved-server editing/removal) remain demand-driven follow-ons. The
+recommended next product milestone is external filesystem grants through the
+existing permit contract, with unified read/write, scope and revocation disclosure;
+selection and implementation are still to be discussed with the user. Widget
+platform work stays on its separate project track, and bundled developer-tool
+distribution remains explicitly deferred.
+
 An earlier restricted-context AppKit startup abort remains a separate failure;
 the unchanged host-permission comparison passed. See the linked contract for
 retained evidence and scope.
@@ -3087,6 +3108,50 @@ Linux realpath/symlink fixture behavior and coverage instrumentation of serializ
 helper functions were corrected. Full CI run **34391129598 succeeded** on that
 commit. This confirms that correction, not this later preview implementation;
 the separately skipped native Myotis e2e job is not a runtime pass.
+
+## 2026-09-13 — Dense Workspace overview and read-only viewer tabs
+
+The Workspace overview has two rows: **Changes** with a file count and
+**Checkpoints** with a count. It has no file browser, internal tab switches,
+checkpoint previews or redundant clean-state subtitle. Checkpoints open an
+anchored popover. Naming the latest reviewed state and exclusion settings live
+behind the overflow button, also without a modal. Naming still saves a named
+copy of the latest reviewed state, not an arbitrary historical rename.
+
+Changes open a shared read-only viewer with a changed-file list and diffs against
+the latest checkpoint. Selecting a checkpoint opens its saved files in another
+viewer tab. These are renderer-owned content surfaces in the canonical tab
+system: in Agent-first mode they appear in the existing right-hand pane; in
+browser-first mode they appear in the normal tab strip and content area. Mode
+switches preserve the same tabs and selected content. Narrow viewers stack the
+file list above the content. This establishes the shared viewer foundation;
+rendered Markdown and additional content types remain future work. Code editing
+is explicitly outside scope.
+
+Viewer tabs have no URL, webContents, page providers or automation binding and
+are omitted from browser autocomplete and closed-page history. Content is
+bounded plain text, never interpreted HTML. Viewers close on conversation
+changes and discard late responses. Restore review and explicit confirmation
+stay within the viewer; the existing main-owned permission, reviewed-content,
+backup and restore-token checks remain authoritative. A failed restore is not
+retried automatically. No new IPC or filesystem authority was added.
+
+Saved servers show lifecycle state separately from running command counts, with
+directory and port details disclosed on demand. Compact-panel clicks use the
+original event path so replacing a clicked row cannot close the panel as an
+outside click. Checkpoint popovers support Escape, outside dismissal and focus
+return. Closing a viewer restores normal browser navigation; address-bar focus
+from a viewer opens a browser tab.
+
+Validation: **13 suites / 367 tests** and lint pass, including renderer copy,
+theme/focus rules, conversation ownership, late responses, tab projection,
+navigation restoration and restore confirmation. Installed headless Chromium
+checked the actual tabs, inspector and viewer modules in light/dark themes and
+wide/narrow layouts, with mocked page dependencies and IPC. Screenshots and
+results are retained under `/private/tmp/workspace-viewer-*`; earlier overview
+checks remain under `/private/tmp/workspace-polish-*`. No Freedom app, native
+workspace command, provider or live model was launched for this UI check. Full
+app smoke testing and user visual acceptance remain pending.
 
 ## Final target statement
 

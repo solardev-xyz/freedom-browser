@@ -44,6 +44,10 @@ function createAgentElements() {
     'agent-workspace-inspector-compact',
     'agent-process-panel',
     'agent-process-panel-count',
+    'agent-process-panel-heading',
+    'agent-process-panel-label',
+    'agent-process-compact-heading',
+    'agent-process-compact-heading-label',
     'agent-process-panel-list',
     'agent-process-compact',
     'agent-process-compact-toggle',
@@ -353,6 +357,7 @@ async function loadAgentUi(options = {}) {
   };
   global.document = document;
   global.window = {
+    addEventListener: jest.fn(),
     electronAPI,
     identity: {
       getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }),
@@ -1998,6 +2003,11 @@ describe('Agent UI', () => {
 
     ctx.elements['agent-process-compact-toggle'].dispatch('click');
     expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(false);
+    const removedTarget = createElement('button');
+    ctx.document.handlers.click({ target: removedTarget, composedPath: () => [removedTarget, ctx.elements['agent-process-compact-popover']] });
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(false);
+    ctx.document.handlers.click({ target: removedTarget, composedPath: () => [removedTarget] });
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(true);
 
     const actions = ctx.elements['agent-process-panel-list'].children[0].children[2];
     actions.children[0].dispatch('click');
@@ -2022,7 +2032,10 @@ describe('Agent UI', () => {
     } });
     const panel = ctx.elements['agent-process-panel-list'];
     expect(panel.children).toHaveLength(1);
-    expect(panel.children[0].children[1].textContent).toContain('Stopped');
+    expect(ctx.elements['agent-process-panel-label'].textContent).toBe('Development servers');
+    expect(ctx.elements['agent-process-panel-count'].hidden).toBe(true);
+    expect(panel.children[0].children[1].textContent).toBe('Stopped');
+    expect(panel.children[0].querySelector('.agent-process-details').children[1].textContent).toContain('Port 5173');
     const button = panel.children[0].children[2].children[0];
     expect(button.textContent).toBe('Start with Agent');
     button.dispatch('click'); await flush();
@@ -2210,7 +2223,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.deleteAgentSession).toHaveBeenCalledWith('conversation_saved');
   });
 
-  test('uses a collapsible three-pane shell and inspects owned pages without leaving Agent-first', async () => {
+  test('projects owned pages and conversation viewers without leaving Agent-first', async () => {
     const getOpenTabs = () => [
       {
         id: 7,
@@ -2228,6 +2241,8 @@ describe('Agent UI', () => {
         isLoading: false,
         isActive: false,
       },
+      { id: 9, kind: 'workspace-viewer', conversationId: 'conversation_restored', title: 'Changes', url: '' },
+      { id: 10, kind: 'workspace-viewer', conversationId: 'conversation_other', title: 'Other changes', url: '' },
     ];
     const ctx = await loadAgentUi({
       getOpenTabs,
@@ -2279,10 +2294,10 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-session-list'].children[0].classList.contains('active')).toBe(true);
     expect(ctx.elements['agent-first-title'].textContent).toBe('Compare agent definitions');
     expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
-    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('2');
     expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
       container: ctx.elements['agent-task-page-list'],
-      tabIds: [8],
+      tabIds: [8, 9],
     });
     expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith(
       ctx.elements['agent-workspace-address-host']

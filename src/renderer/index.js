@@ -39,7 +39,6 @@ import {
   openOrFocusInternalPage,
   getActiveWebview,
   getActiveTab,
-  getOpenTabs,
   getTabById,
   closeTab,
   switchTab,
@@ -49,6 +48,8 @@ import {
   isTabAgentOwned,
   setTabStripProjection,
   subscribeTabPresentation,
+  getTabPresentation,
+  createWorkspaceViewerTab,
 } from './lib/tabs.js';
 import {
   initNavigation,
@@ -824,7 +825,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   initTabs(); // Creates first tab and starts loading home page
   initAgentUi({
     getActiveTab,
-    getOpenTabs,
+    getOpenTabs: getTabPresentation,
+    createWorkspaceViewerTab,
+    closeViewerTab: closeTab,
     isTabAgentOwned,
     setAgentControlledTab,
     setAgentTabCustody,

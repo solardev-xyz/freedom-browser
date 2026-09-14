@@ -233,6 +233,58 @@ const findTabElement = (tabBar, tabId) =>
   tabBar.children.find((child) => child.dataset.tabId === tabId) || null;
 
 describe('tabs ui behavior', () => {
+  test('viewer tabs create no guest or automation binding and survive tab-strip projection', async () => {
+    const ctx = await loadTabsModule();
+    await ctx.mod.initTabs();
+    const page = ctx.mod.getActiveTab();
+    const count = ctx.createdWebviews.length;
+    const content = createElement('section');
+    const onClose = jest.fn();
+    const viewer = ctx.mod.createWorkspaceViewerTab({ key: 'changes', conversationId: 'one', title: 'Changes', content, onClose });
+    expect(viewer.webview).toBeNull();
+    expect(ctx.mod.getActiveWebview()).toBeNull();
+    expect(ctx.createdWebviews).toHaveLength(count);
+    expect(ctx.electronAPI.bindAutomationTab).not.toHaveBeenCalled();
+    expect(ctx.mod.getOpenTabs().some((tab) => tab.id === viewer.id)).toBe(false);
+    expect(ctx.mod.getTabPresentation().find((tab) => tab.id === viewer.id)).toMatchObject({ kind: 'workspace-viewer', conversationId: 'one', isActive: true, url: '' });
+    const right = createElement('div');
+    ctx.mod.setTabStripProjection({ container: right, tabIds: [page.id, viewer.id] });
+    expect(ctx.mod.getActiveTab().id).toBe(viewer.id);
+    expect(content.parentNode).toBe(ctx.elements.webviewContainer);
+    ctx.mod.setTabStripProjection();
+    expect(ctx.mod.getActiveTab().id).toBe(viewer.id);
+    ctx.mod.switchTab(page.id);
+    expect(content.classList.contains('hidden')).toBe(true);
+    ctx.mod.switchTab(viewer.id);
+    expect(content.classList.contains('hidden')).toBe(false);
+    expect(page.webview.classList.contains('hidden')).toBe(true);
+    ctx.mod.closeTab(viewer.id);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(content.parentNode).toBeNull();
+    expect(ctx.mod.getActiveTab().id).toBe(page.id);
+    ctx.mod.reopenLastClosedTab();
+    expect(ctx.mod.getTabs()).toHaveLength(1);
+  });
+
+  test('viewer identity is conversation-specific and address-bar focus creates a page', async () => {
+    const ctx = await loadTabsModule();
+    await ctx.mod.initTabs();
+    const args = { key: 'changes', conversationId: 'one', title: 'Changes', content: createElement('section') };
+    const first = ctx.mod.createWorkspaceViewerTab(args);
+    expect(ctx.mod.createWorkspaceViewerTab(args)).toBe(first);
+    const second = ctx.mod.createWorkspaceViewerTab({ ...args, conversationId: 'two', content: createElement('section') });
+    expect(second.id).not.toBe(first.id);
+    ctx.electronHandlers.focusAddressBar();
+    expect(ctx.mod.getActiveWebview()).not.toBeNull();
+    expect(ctx.mod.getTabs()).toHaveLength(4);
+    ctx.mod.switchTab(first.id);
+    const shortcuts = await import('./shortcuts.js');
+    shortcuts.configureShortcuts({ platform: 'linux', overrides: {} });
+    ctx.windowHandlers.keydown({ ctrlKey: true, metaKey: false, key: 'l', preventDefault: jest.fn() });
+    expect(ctx.mod.getActiveWebview()).not.toBeNull();
+    expect(ctx.mod.getTabs()).toHaveLength(5);
+  });
+
   afterEach(() => {
     global.window = originalWindow;
     global.document = originalDocument;

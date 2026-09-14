@@ -538,6 +538,7 @@ function configuredModels() {
 }
 
 function closeComposerPopovers() {
+  workspaceInspector?.dismissPopover();
   elements.modelMenu.hidden = true;
   elements.approvalModePopover.hidden = true;
   elements.attachmentMenu.hidden = true;
@@ -739,7 +740,8 @@ function workspacePages() {
     .map((entry) => ({ ...entry, tab: tabById.get(entry.rendererTabId) }))
     .filter((entry) => entry.tab);
   const activeTab = openTabs.find((tab) => tab.isActive);
-  if (currentConversationId) return projected;
+  if (currentConversationId) return [...projected, ...openTabs.filter((tab) => tab.kind === 'workspace-viewer' && tab.conversationId === currentConversationId)
+    .map((tab) => ({ rendererTabId: tab.id, agentActive: false, tab }))];
   return activeTab
     ? [{ rendererTabId: activeTab.id, agentActive: false, tab: activeTab, startsHere: true }]
     : [];
@@ -766,7 +768,7 @@ function renderTaskPages() {
   elements.taskPagesEmpty.hidden = pages.length > 0;
   document.body.classList.toggle('agent-workspace-page-empty', pages.length === 0);
   elements.taskPagesNote.textContent = currentConversationId
-    ? 'Only pages belonging to this conversation are shown.'
+    ? 'Pages and read-only viewers belonging to this conversation are shown.'
     : 'Agent will start from the page you are currently viewing.';
 }
 
@@ -945,7 +947,17 @@ function createWorkspaceServerItem(server) {
   });
   item.dataset.serverId = server.serverId;
   item.querySelector('.agent-process-meta').textContent =
-    `${running ? 'Running' : server.state === 'exit_unconfirmed' ? 'Exit unconfirmed' : server.state === 'needs_restart' ? 'Needs restart' : server.state === 'restarting' ? 'Restarting' : 'Stopped'} · ${server.workingDirectory} · Port ${server.previewPort}`;
+    running ? 'Running' : server.state === 'exit_unconfirmed' ? 'Exit unconfirmed' : server.state === 'needs_restart' ? 'Needs restart' : server.state === 'restarting' ? 'Restarting' : 'Stopped';
+  item.title = `${server.command} · ${server.workingDirectory === '.' ? 'Project workspace' : server.workingDirectory} · Port ${server.previewPort}`;
+  const details = document.createElement('details');
+  details.className = 'agent-process-details';
+  const detailsToggle = document.createElement('summary');
+  detailsToggle.textContent = 'Details';
+  details.appendChild(detailsToggle);
+  const description = document.createElement('p');
+  description.textContent = item.title;
+  details.appendChild(description);
+  item.appendChild(details);
   if (!running) {
     item.querySelector('.agent-process-live-dot').remove();
     item.querySelector('.agent-process-actions').replaceChildren();
@@ -979,23 +991,34 @@ function renderWorkspaceProcesses(processes, servers = []) {
   elements.workspaceBody.classList.toggle('has-workspace-panel', hasWorkspacePanel);
   elements.processPanel.hidden = !hasWorkspacePanel;
   elements.processCompact.hidden = !hasWorkspacePanel;
-  elements.processPanelCount.textContent = String(count);
-  elements.processCompactCount.textContent = String(count);
+  const serverCount = saved.filter((server) => server.state === 'running').length;
+  for (const badge of [elements.processPanelCount, elements.processCompactCount]) {
+    badge.textContent = `${saved.length ? serverCount : count} running`;
+    badge.hidden = (saved.length ? serverCount : count) === 0;
+  }
+  for (const heading of [elements.processPanelHeading, elements.processCompactHeading]) heading.hidden = saved.length === 0 && count === 0;
+  for (const label of [elements.processPanelLabel, elements.processCompactHeadingLabel]) label.textContent = saved.length ? 'Development servers' : 'Running commands';
   elements.processCompactLabel.textContent =
     workspaceInspectionConversationId ? `Workspace${count ? ` · ${count} running` : ''}` :
       count === 1 ? workspaceProcesses[0].command : `${count} processes running`;
   elements.processCompact.classList.toggle('has-running-processes', count > 0);
   const unsaved = workspaceProcesses.filter(process => !saved.some(server => server.processId === process.processId));
   for (const list of [elements.processPanelList, elements.processCompactList]) {
-    list.replaceChildren(...unsaved.map(createWorkspaceProcessItem), ...saved.map(createWorkspaceServerItem));
-  }
-  if (count === 0 && saved.length === 0 && hasWorkspacePanel) {
-    for (const list of [elements.processPanelList, elements.processCompactList]) {
-      const empty = document.createElement('p');
-      empty.className = 'agent-workspace-note';
-      empty.textContent = 'No running processes';
-      list.appendChild(empty);
+    const expandedServers = new Set([...list.querySelectorAll('.agent-process-item')]
+      .filter((row) => row.querySelector('.agent-process-details')?.open)
+      .map((row) => row.dataset.serverId));
+    list.replaceChildren(...saved.map((server) => {
+      const row = createWorkspaceServerItem(server);
+      row.querySelector('.agent-process-details').open = expandedServers.has(server.serverId);
+      return row;
+    }));
+    if (saved.length && unsaved.length) {
+      const heading = document.createElement('h3');
+      heading.className = 'agent-process-panel-heading';
+      heading.textContent = 'Running commands';
+      list.appendChild(heading);
     }
+    for (const process of unsaved) list.appendChild(createWorkspaceProcessItem(process));
   }
   if (!hasWorkspacePanel) closeComposerPopovers();
 }
@@ -3535,6 +3558,10 @@ export function initAgentUi(options = {}) {
     workspaceInspectorCompact: byId('agent-workspace-inspector-compact'),
     processPanel: byId('agent-process-panel'),
     processPanelCount: byId('agent-process-panel-count'),
+    processPanelHeading: byId('agent-process-panel-heading'),
+    processPanelLabel: byId('agent-process-panel-label'),
+    processCompactHeading: byId('agent-process-compact-heading'),
+    processCompactHeadingLabel: byId('agent-process-compact-heading-label'),
     processPanelList: byId('agent-process-panel-list'),
     processCompact: byId('agent-process-compact'),
     processCompactToggle: byId('agent-process-compact-toggle'),
@@ -3645,7 +3672,11 @@ export function initAgentUi(options = {}) {
     return;
   }
 
-  workspaceInspector = createWorkspaceInspector([elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]);
+  workspaceInspector = createWorkspaceInspector([elements.workspaceInspectorPanel, elements.workspaceInspectorCompact], {
+    openTab: options.createWorkspaceViewerTab,
+    closeTab: options.closeViewerTab,
+    onOpenViewer: () => { if (agentFirstMode) setWorkspaceSidebarOpen(true); },
+  });
   setAgentTabClaimHandler(claimAgentOwnedTab);
 
   elements.toggle.addEventListener('click', togglePanel);
@@ -3759,6 +3790,10 @@ export function initAgentUi(options = {}) {
   );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
+    for (const host of [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]) {
+      const options = host.querySelector('.agent-workspace-options');
+      if (options?.open && !(event.composedPath?.() || []).includes(options) && !options.contains(event.target)) options.open = false;
+    }
     if (
       !elements.modelMenu.hidden &&
       !elements.modelMenu.contains(event.target) &&
@@ -3782,6 +3817,7 @@ export function initAgentUi(options = {}) {
     }
     if (
       !elements.processCompactPopover.hidden &&
+      !(event.composedPath?.() || []).includes(elements.processCompactPopover) &&
       !elements.processCompactPopover.contains(event.target) &&
       !elements.processCompactToggle.contains(event.target)
     ) {
@@ -3790,6 +3826,13 @@ export function initAgentUi(options = {}) {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    const openOptions = [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]
+      .map((host) => host.querySelector('.agent-workspace-options')).find((options) => options?.open);
+    if (openOptions) {
+      openOptions.open = false;
+      openOptions.querySelector('summary').focus();
+      return;
+    }
     const popoverWasOpen =
       !elements.modelMenu.hidden ||
       !elements.approvalModePopover.hidden ||

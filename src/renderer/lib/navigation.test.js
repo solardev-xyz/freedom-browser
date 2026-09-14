@@ -588,6 +588,33 @@ const loadNavigationModule = async (options = {}) => {
 };
 
 describe('navigation', () => {
+  test('keeps viewer navigation read-only and ignores delayed page continuations', async () => {
+    const page = createTab(1, 'https://example.com/');
+    const viewer = createTab(2, '');
+    viewer.kind = 'workspace-viewer';
+    viewer.webview = null;
+    const ctx = await loadNavigationModule({ tabs: [page, viewer], activeTab: page });
+    await ctx.mod.initNavigation();
+    ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: page.id, tab: page });
+    ctx.activeRef.tab = viewer;
+    ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: viewer.id, tab: viewer });
+    expect(ctx.elements.addressInput.readOnly).toBe(true);
+    expect(ctx.elements.addressInput.value).toBe('');
+    expect(ctx.elements.reloadBtn.disabled).toBe(true);
+    ctx.tabsMocks.createTab.mockClear();
+    for (const options of [{ pageInitiated: true }, { continuesNavigation: true }, { keepsAddressBarEdit: true }]) {
+      ctx.mod.loadTarget('https://delayed.example/', null, null, options);
+    }
+    expect(ctx.tabsMocks.createTab).not.toHaveBeenCalled();
+    ctx.mod.loadTarget('https://requested.example/');
+    expect(ctx.tabsMocks.createTab).toHaveBeenCalledWith('https://requested.example/');
+    // Closing the viewer removes it before the next tab-switched event.
+    ctx.tabsRef.list = [page];
+    ctx.activeRef.tab = page;
+    ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: page.id, tab: page });
+    expect(ctx.elements.addressInput.readOnly).toBe(false);
+  });
+
   afterEach(() => {
     global.window = originalWindow;
     global.document = originalDocument;

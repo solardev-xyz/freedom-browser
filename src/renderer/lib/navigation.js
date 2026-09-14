@@ -42,6 +42,7 @@ import {
 } from './address-bar-edit.js';
 import {
   getActiveWebview,
+  createTab,
   getActiveTab,
   getActiveTabState,
   openInNewTabWithTarget,
@@ -806,6 +807,8 @@ const updateNavigationState = () => {
   if (!webview) {
     if (backBtn) backBtn.disabled = true;
     if (forwardBtn) forwardBtn.disabled = true;
+    if (reloadBtn) reloadBtn.disabled = true;
+    if (homeBtn) homeBtn.disabled = true;
     if (agentBackBtn) agentBackBtn.disabled = true;
     if (agentForwardBtn) agentForwardBtn.disabled = true;
     if (agentReloadBtn) agentReloadBtn.disabled = true;
@@ -840,7 +843,7 @@ export const setAgentWorkspaceNavigationEditable = (editable) => {
   agentWorkspaceNavigationEditable = editable === true;
   if (!addressInput) return;
   const agentOwned = isTabAgentOwned(getActiveTab()?.id);
-  const readOnly = agentOwned || (agentWorkspaceNavigationMounted && !agentWorkspaceNavigationEditable);
+  const readOnly = getActiveTab()?.kind === 'workspace-viewer' || agentOwned || (agentWorkspaceNavigationMounted && !agentWorkspaceNavigationEditable);
   addressInput.readOnly = readOnly;
   addressInput.setAttribute('aria-readonly', String(readOnly));
   addressInput.title = agentOwned
@@ -1149,6 +1152,11 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 };
 
 export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
+  if (!targetWebview && getActiveTab()?.kind === 'workspace-viewer') {
+    if (!options.pageInitiated && !options.continuesNavigation && !options.keepsAddressBarEdit
+      && typeof value === 'string' && value.trim()) return createTab(value);
+    return;
+  }
   // `options.allowUnverifiedOnce` — skip the unverified-ENS interstitial
   // for this single call. Set by the ens-unverified page's "Continue once"
   // handler. Scope is this single loadTarget invocation.
@@ -2757,7 +2765,7 @@ export const initNavigation = () => {
         break;
       }
 
-      case 'tab-switched':
+      case 'tab-switched': {
         // Save address bar state to previous tab before switching. The
         // per-tab view-source record (`prev.isViewingSource`) is owned by
         // tabs.js' did-navigate handler and is already up to date — we
@@ -2787,6 +2795,18 @@ export const initNavigation = () => {
           }
         }
         previousActiveTabId = data.tabId;
+        if (data.tab?.kind === 'workspace-viewer') {
+          addressInput.value = '';
+          setTrustPopoverOpen(false);
+          stopIpfsProgressStatus({ immediate: true });
+          setLoading(false);
+          setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
+          updateNavigationState();
+          isViewingSource = false;
+          document.dispatchEvent(new CustomEvent('active-tab-changed'));
+          break;
+        }
+        setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
 
         // Update UI state when switching tabs - restore from tab's navigation state
         if (data.tab) {
@@ -2902,6 +2922,7 @@ export const initNavigation = () => {
         // prompt dismissal + address-bar permission indicator refresh).
         document.dispatchEvent(new CustomEvent('active-tab-changed'));
         break;
+      }
     }
   });
 

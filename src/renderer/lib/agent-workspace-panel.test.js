@@ -1,169 +1,91 @@
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom');
+const mockViewers = { open: jest.fn(), setConversation: jest.fn() };
+jest.mock('./workspace-viewers', () => ({ createWorkspaceViewers: () => mockViewers }));
 const { createWorkspaceInspector } = require('./agent-workspace-panel');
+const flush = async () => { for (let n = 0; n < 16; n += 1) await Promise.resolve(); };
+const find = (root, text) => root.querySelectorAll('.agent-text-button, .agent-workspace-item').find((node) => node.textContent === text);
+const popup = () => document.querySelector('.agent-workspace-popover');
+const checkpoint = { id: 'a'.repeat(40), label: 'Working game', createdAt: 1000, reviewed: true };
 
-const flush = async () => {
-  for (let index = 0; index < 10; index += 1) await Promise.resolve();
-};
-
-// The fake DOM intentionally implements only class selectors.
-const rows = (root) => root.querySelectorAll('.agent-workspace-item');
-
-describe('workspace inspector', () => {
-  let panel;
-  let compact;
-  let inspector;
-  let api;
+describe('workspace summary and popovers', () => {
+  let panel, compact, inspector, api, historyApi;
+  const start = async () => { inspector.setWorkspace('one'); jest.advanceTimersByTime(250); await flush(); };
   beforeEach(() => {
-    jest.useFakeTimers();
-    panel = createElement('div');
-    compact = createElement('div');
+    jest.useFakeTimers(); jest.clearAllMocks();
+    panel = createElement('div'); compact = createElement('div');
     global.document = createDocument({ elementsById: { panel, compact } });
-    api = jest.fn(async (conversationId, kind) => ({
-      ok: true,
-      conversationId,
-      result:
-        kind === 'tree'
-          ? { entries: [{ name: 'game.js', type: 'file' }] }
-          : kind === 'changes'
-            ? { available: true, branch: 'main', changes: [{ path: 'game.js', status: 'added' }] }
-            : { text: '<script>window.compromised = true</script>' },
-    }));
-    global.window = { electronAPI: { inspectAgentWorkspace: api } };
+    api = jest.fn(async (conversationId) => ({ ok: true, conversationId, result: { available: true, changes: [] } }));
+    historyApi = jest.fn(async (conversationId) => ({ ok: true, conversationId, result: { versions: [checkpoint] } }));
+    global.window = { addEventListener: jest.fn(), innerWidth: 1000, innerHeight: 700, electronAPI: { inspectAgentWorkspace: api, agentWorkspaceHistory: historyApi } };
     inspector = createWorkspaceInspector([panel, compact]);
   });
-  afterEach(() => {
-    inspector.setWorkspace(null);
-    jest.useRealTimers();
-    delete global.document;
-    delete global.window;
+  afterEach(() => { inspector.setWorkspace(null); jest.useRealTimers(); delete global.document; delete global.window; });
+
+  test('shows only two summary rows with no file tree, checkpoint list or redundant subtitle', async () => {
+    await start();
+    for (const host of [panel, compact]) {
+      expect(host.querySelectorAll('.agent-workspace-summary')).toHaveLength(2);
+      expect(host.querySelector('.agent-workspace-checkpoint')).toBeNull();
+      expect(host.querySelector('.agent-workspace-baseline')).toBeNull();
+      expect(host.querySelector('.agent-workspace-inspector-tab')).toBeNull();
+      expect(host.querySelectorAll('.agent-workspace-summary')[0].children[1].textContent).toBe('0 files');
+      expect(host.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe('1');
+    }
+    expect(api).toHaveBeenCalledWith('one', 'changes', '.', false);
+    expect(api).toHaveBeenCalledTimes(1);
   });
 
-  test('shows files in both layouts and renders file bodies as text', async () => {
-    inspector.setWorkspace('conversation_one');
-    jest.advanceTimersByTime(250);
-    await flush();
-    expect(rows(panel)).toHaveLength(1);
-    expect(rows(compact)).toHaveLength(1);
-    expect(rows(panel)[0].children[1].textContent).toBe('game.js');
-    rows(compact)[0].dispatch('click');
-    await flush();
-    expect(document.querySelector('.agent-workspace-file-content').textContent).toContain(
-      '<script>'
-    );
-    expect(window.compromised).toBeUndefined();
-    expect(api).toHaveBeenLastCalledWith('conversation_one', 'file', 'game.js', false);
+  test('opens changes as a viewer and checkpoints as a non-modal anchored list', async () => {
+    await start();
+    panel.querySelectorAll('.agent-workspace-summary')[0].dispatch('click');
+    expect(mockViewers.open).toHaveBeenCalledWith('one', null, expect.any(Function));
+    compact.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    expect(popup().attributes['aria-modal']).toBeUndefined();
+    expect(popup().attributes['aria-label']).toBe('Checkpoints');
+    expect(popup().querySelectorAll('.agent-workspace-checkpoint')).toHaveLength(1);
+    popup().querySelector('.agent-workspace-checkpoint').dispatch('click');
+    expect(mockViewers.open).toHaveBeenLastCalledWith('one', checkpoint, expect.any(Function));
+    expect(popup()).toBeNull();
   });
 
-  test('drops stale files and viewers when changing conversations', async () => {
-    let resolve;
-    api.mockImplementationOnce(
-      () =>
-        new Promise((done) => {
-          resolve = done;
-        })
-    );
-    inspector.setWorkspace('conversation_one');
-    jest.advanceTimersByTime(250);
-    await flush();
-    inspector.setWorkspace('conversation_two');
-    resolve({
-      ok: true,
-      conversationId: 'conversation_one',
-      result: { entries: [{ name: 'secret-old', type: 'file' }] },
-    });
-    await flush();
-    expect(rows(panel)).toHaveLength(0);
-    jest.advanceTimersByTime(250);
-    await flush();
-    rows(panel)[0].dispatch('click');
-    await flush();
-    expect(document.querySelector('.agent-workspace-viewer')).not.toBeNull();
-    inspector.setWorkspace(null);
-    expect(panel.hidden).toBe(true);
-    expect(document.querySelector('.agent-workspace-viewer')).toBeNull();
+  test('names latest reviewed state within the popover without implicitly including edits', async () => {
+    await start();
+    panel.querySelector('.agent-workspace-options-toggle').dispatch('click');
+    find(popup(), 'Name latest checkpoint…').dispatch('click');
+    const form = popup().querySelector('.agent-workspace-version-save');
+    form.children[0].value = 'Before enemies'; form.children[1].dispatch('click'); await flush();
+    expect(historyApi).toHaveBeenCalledWith('one', 'save', { label: 'Before enemies' });
+    expect(popup().attributes['aria-label']).toBe('Checkpoints');
   });
 
-  test('requires a reviewed restore token and exposes named versions without invoking the model', async () => {
-    const version = {
-      id: 'a'.repeat(40),
-      label: 'Working game',
-      kind: 'manual',
-      fileCount: 1,
-      createdAt: 1000,
-    };
-    const historyApi = jest.fn(async (conversationId, action) => ({
-      ok: true,
-      conversationId,
-      result:
-        action === 'list'
-          ? { versions: [version] }
-          : action === 'prepare_restore'
-            ? {
-                token: 'restore_' + 'b'.repeat(32),
-                changes: [{ path: 'game.js', action: 'write' }],
-              }
-            : { saved: true },
-    }));
-    window.electronAPI.agentWorkspaceHistory = historyApi;
-    inspector.setWorkspace('conversation_one');
-    jest.advanceTimersByTime(250);
-    await flush();
-    panel.querySelectorAll('.agent-workspace-inspector-tab')[2].dispatch('click');
-    await flush();
-    const form = panel.querySelector('.agent-workspace-version-save');
-    form.children[0].value = 'Before adding enemies';
-    form.children[1].dispatch('click');
-    await flush();
-    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'save', {
-      label: 'Before adding enemies',
-    });
-    panel.querySelector('.agent-workspace-version').children[2].dispatch('click');
-    await flush();
-    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'prepare_restore', {
-      versionId: version.id,
-    });
-    expect(historyApi.mock.calls.some((call) => call[1] === 'restore')).toBe(false);
-    document.querySelector('.agent-workspace-restore-confirm').dispatch('click');
-    await flush();
-    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'restore', {
-      token: 'restore_' + 'b'.repeat(32),
-    });
-  });
-
-  test('lets the user add and remove contextual exclusions without approving file contents', async () => {
+  test('preserves contextual exclusions behind settings', async () => {
     let exclusions = [];
-    const historyApi = jest.fn(async (conversationId, action, options = {}) => {
-      if (action === 'exclude') exclusions = [{ path: options.path, reason: options.reason }];
+    historyApi.mockImplementation(async (conversationId, action, options = {}) => {
+      if (action === 'exclude') exclusions = [options];
       if (action === 'include') exclusions = [];
-      return { ok: true, conversationId, result: { versions: [], exclusions } };
+      return { ok: true, conversationId, result: { versions: [checkpoint], exclusions } };
     });
-    window.electronAPI.agentWorkspaceHistory = historyApi;
-    inspector.setWorkspace('conversation_one');
-    jest.advanceTimersByTime(250); await flush();
-    panel.querySelectorAll('.agent-workspace-inspector-tab')[2].dispatch('click'); await flush();
-    const form = panel.querySelector('.agent-workspace-exclusion-editor').querySelector('.agent-workspace-version-save');
-    form.children[0].value = 'customer-export.csv'; form.children[1].value = 'Private customer data';
-    form.children[2].dispatch('click'); await flush();
-    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'exclude', { path: 'customer-export.csv', reason: 'Private customer data' });
-    panel.querySelector('.agent-workspace-version').children[1].dispatch('click'); await flush();
-    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'include', expect.objectContaining({ path: 'customer-export.csv' }));
-    expect(historyApi.mock.calls.some((call) => ['save', 'restore', 'checkpoint'].includes(call[1]))).toBe(false);
+    await start(); panel.querySelector('.agent-workspace-options-toggle').dispatch('click');
+    find(popup(), 'Checkpoint settings').dispatch('click');
+    const form = popup().querySelector('.agent-workspace-version-save');
+    form.children[0].value = 'private.csv'; form.children[1].value = 'Private data'; form.children[2].dispatch('click'); await flush();
+    expect(historyApi).toHaveBeenCalledWith('one', 'exclude', { path: 'private.csv', reason: 'Private data' });
+    find(popup(), 'Allow review').dispatch('click'); await flush();
+    expect(historyApi).toHaveBeenCalledWith('one', 'include', expect.objectContaining({ path: 'private.csv' }));
+    expect(historyApi.mock.calls.some((args) => args[1] === 'save')).toBe(false);
   });
 
-  test('keeps files visible and reports unavailable change inspection', async () => {
-    api.mockImplementation(async (conversationId, kind) => ({
-      ok: true,
-      conversationId,
-      result:
-        kind === 'tree'
-          ? { entries: [{ name: 'game.js', type: 'file' }] }
-          : { available: false, message: 'Git unavailable' },
-    }));
-    inspector.setWorkspace('conversation_one');
-    jest.advanceTimersByTime(250);
-    await flush();
-    expect(rows(panel)).toHaveLength(1);
-    panel.querySelectorAll('.agent-workspace-inspector-tab')[1].dispatch('click');
-    expect(panel.querySelector('.agent-workspace-note').textContent).toBe('Git unavailable');
+  test('dismisses popovers on Escape and clears conversation-owned viewers on switch', async () => {
+    await start(); panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    const event = { key: 'Escape', preventDefault: jest.fn(), stopImmediatePropagation: jest.fn() };
+    document.handlers.keydown(event);
+    expect(popup()).toBeNull(); expect(event.stopImmediatePropagation).toHaveBeenCalled();
+    inspector.setWorkspace('two');
+    expect(mockViewers.setConversation).toHaveBeenLastCalledWith('two');
+  });
+
+  test('does not turn failed inspection into a clean zero', async () => {
+    api.mockResolvedValue({ ok: false }); await start();
+    expect(panel.querySelectorAll('.agent-workspace-summary')[0].children[1].textContent).toBe('Unavailable');
   });
 });

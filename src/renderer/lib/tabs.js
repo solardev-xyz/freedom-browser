@@ -203,7 +203,7 @@ export const getActiveTab = () => {
 
 // Get all open tabs (for autocomplete)
 export const getOpenTabs = () => {
-  return tabState.tabs.map((tab) => ({
+  return tabState.tabs.filter((tab) => tab.kind !== 'workspace-viewer').map((tab) => ({
     id: tab.id,
     url: tab.url,
     title: tab.title,
@@ -213,10 +213,17 @@ export const getOpenTabs = () => {
   }));
 };
 
+// Presentation includes non-page viewers; browser/autocomplete projections above do not.
+export const getTabPresentation = () => tabState.tabs.map((tab) => ({
+  id: tab.id, url: tab.url, title: tab.title, favicon: tab.favicon || '',
+  isLoading: tab.isLoading === true, isActive: tab.id === tabState.activeTabId,
+  ...(tab.kind === 'workspace-viewer' ? { kind: tab.kind, conversationId: tab.conversationId } : {}),
+}));
+
 export const subscribeTabPresentation = (listener) => {
   if (typeof listener !== 'function') return () => {};
   tabPresentationListeners.add(listener);
-  listener(getOpenTabs());
+  listener(getTabPresentation());
   return () => tabPresentationListeners.delete(listener);
 };
 
@@ -930,6 +937,8 @@ const GLOBE_ICON_SVG = `<svg class="tab-icon-default" viewBox="0 0 24 24" fill="
 const isInternalPageUrl = (url) =>
   typeof url === 'string' && (url.startsWith('freedom://') || url.includes('/pages/'));
 
+const DOCUMENT_ICON_SVG = '<svg class="tab-icon-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h6"/></svg>';
+
 // Loading spinner (same style as address bar)
 const SPINNER_HTML = `<span class="tab-icon-spinner"></span>`;
 
@@ -959,7 +968,7 @@ const createTabElement = (tab) => {
   iconContainer.className = 'tab-icon-container';
 
   // Add default globe icon and spinner first (via innerHTML)
-  iconContainer.innerHTML = GLOBE_ICON_SVG + SPINNER_HTML;
+  iconContainer.innerHTML = (tab.kind === 'workspace-viewer' ? DOCUMENT_ICON_SVG : GLOBE_ICON_SVG) + SPINNER_HTML;
 
   // Favicon image (hidden by default) - append after innerHTML to preserve element
   const faviconEl = document.createElement('img');
@@ -1143,6 +1152,8 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
   tabEl.classList.toggle('active', isActive);
   tabEl.classList.toggle('before-active', isBeforeActive);
   tabEl.classList.toggle('pinned', !!tab.pinned);
+  tabEl.classList.toggle('workspace-viewer-tab', tab.kind === 'workspace-viewer');
+  tabEl.title = tab.kind === 'workspace-viewer' ? `${tab.title} — read-only workspace viewer` : tab.title || 'New Tab';
   tabEl.classList.toggle('agent-owned', agentCustodyByTabId.has(tab.id));
   tabEl.classList.toggle('agent-controlled', tab.id === agentControlledTabId);
 
@@ -1299,7 +1310,7 @@ const renderTabs = () => {
 
     previousSibling = tabEl;
   });
-  const presentation = getOpenTabs();
+  const presentation = getTabPresentation();
   for (const listener of tabPresentationListeners) {
     try {
       listener(presentation);
@@ -1330,6 +1341,8 @@ const renderTabs = () => {
 export const setTabStripProjection = ({ container = null, tabIds = null } = {}) => {
   if (!tabBar) return;
   if (container) {
+    const nextIds = new Set(Array.isArray(tabIds) ? tabIds.filter(Number.isSafeInteger) : []);
+    if (tabBar.parentNode === container && projectedTabIds?.size === nextIds.size && [...nextIds].every((id) => projectedTabIds.has(id))) return;
     container.appendChild(tabBar);
     projectedActiveTabId = null;
     projectedTabIds = new Set(
@@ -1456,6 +1469,24 @@ export const createTab = (url = null, options = {}) => {
   return tab;
 };
 
+// Trusted renderer-only surface. No URL, webContents, preload/provider setup,
+// automation binding, or persisted page/closed-tab history is created here.
+export const createWorkspaceViewerTab = ({ key, conversationId, title, content, onClose }) => {
+  if (typeof conversationId !== 'string' || !conversationId || typeof key !== 'string' ||
+      typeof title !== 'string' || !content || content.tagName !== 'SECTION') throw new Error('Invalid workspace viewer');
+  const existing = tabState.tabs.find((tab) => tab.kind === 'workspace-viewer' && tab.viewerKey === key && tab.conversationId === conversationId);
+  if (existing) { switchTab(existing.id); return existing; }
+  if (tabState.tabs.filter((tab) => tab.kind === 'workspace-viewer').length >= 12) throw new Error('Close a workspace viewer before opening another.');
+  const tab = { id: tabState.nextTabId++, kind: 'workspace-viewer', viewerKey: key, conversationId,
+    title, url: '', webview: null, content, onClose, navigationState: createNavigationState() };
+  content.classList.add('workspace-viewer-surface');
+  content.tabIndex = -1;
+  tabState.tabs.push(tab);
+  webviewContainer?.appendChild(content);
+  switchTab(tab.id);
+  return tab;
+};
+
 // Remove webview event listeners to prevent memory leaks
 const cleanupWebview = (webview) => {
   if (!webview) return;
@@ -1523,7 +1554,9 @@ export const closeTab = (tabId) => {
   // Remove event listeners before removing webview (prevents memory leak)
   cleanupWebview(tab.webview);
 
-  // Remove webview from DOM
+  // Remove the owned surface and invalidate any pending viewer read.
+  tab.onClose?.();
+  tab.content?.remove();
   tab.webview?.remove();
 
   // Remove tab element from DOM and map
@@ -1553,7 +1586,8 @@ export const closeTab = (tabId) => {
     } else {
       // No more tabs - close window via IPC
       tabState.activeTabId = null;
-      electronAPI?.closeWindow?.();
+      if (tab.kind === 'workspace-viewer') createTab(defaultNewTabUrl());
+      else electronAPI?.closeWindow?.();
     }
   }
 
@@ -1682,6 +1716,7 @@ const showContextMenu = (x, y, tabId) => {
   const muteBtn = tabContextMenu.querySelector('[data-action="mute"]');
   if (muteBtn) {
     muteBtn.textContent = tab.isMuted ? 'Unmute Tab' : 'Mute Tab';
+    muteBtn.hidden = tab.kind === 'workspace-viewer';
   }
   const claimBtn = tabContextMenu.querySelector('[data-action="claim-agent-tab"]');
   if (claimBtn) claimBtn.hidden = !agentCustodyByTabId.has(tab.id);
@@ -1784,10 +1819,11 @@ export const switchTab = (tabId, options = {}) => {
     }
   }
 
-  // Update active webview for dApp provider
-  if (tab.webview) {
-    setActiveWebview(tab.webview);
-  }
+  for (const t of tabState.tabs) t.content?.classList.toggle('hidden', t.id !== tabId);
+  document.body.classList.toggle('workspace-viewer-active', tab.kind === 'workspace-viewer');
+  // Clear the prior guest context when displaying renderer-owned content.
+  setActiveWebview(tab.webview || null);
+  tab.content?.focus?.();
 
   // Give the page keyboard focus, the way Chrome does on every tab
   // activation (click, Ctrl+Tab, Ctrl+1..8, the tab promoted when another
@@ -2235,6 +2271,7 @@ export const initTabs = async () => {
   });
 
   electronAPI?.onFocusAddressBar?.(() => {
+    if (getActiveTab()?.kind === 'workspace-viewer') { createTab(); return; }
     const addressInput = document.getElementById('address-input');
     if (addressInput) {
       addressInput.focus();
@@ -2308,6 +2345,7 @@ export const initTabs = async () => {
     // Focus address bar
     if (matchesShortcut(event, 'view.focusAddressBar')) {
       event.preventDefault();
+      if (getActiveTab()?.kind === 'workspace-viewer') { createTab(); return; }
       const addressInput = document.getElementById('address-input');
       if (addressInput) {
         addressInput.focus();
