@@ -43,7 +43,7 @@ It has been deleted, along with two other unreferenced vendor files that came in
 
 Freedom Browser is distributed as:
 
-- **Electron desktop application** (DMG for macOS, DEB and AppImage for Linux, NSIS installer and portable zip for Windows)
+- **Electron desktop application** (DMG for macOS, DEB, AppImage and pacman for Linux, NSIS installer and portable zip for Windows)
 - **Bundled node_modules** in `app.asar`
 - **Committed vendor bundles** under `src/renderer/vendor/`, shipped inside `app.asar` by the `src/**/*` files pattern
 - **Native addons** unpacked from asar, shipped under `resources/`:

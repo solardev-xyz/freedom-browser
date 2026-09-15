@@ -137,7 +137,8 @@
     "linux": {
       "target": [
         "deb",
-        "AppImage"
+        "AppImage",
+        "pacman"
       ],
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
@@ -170,6 +171,18 @@
             "**/*"
           ]
         }
+      ]
+    },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libxss",
+        "libxtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "alsa-lib"
       ]
     },
     "nsis": {

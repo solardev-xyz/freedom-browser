@@ -18,6 +18,8 @@ All notable changes to Freedom will be documented in this file.
   - Pressing Esc or clicking away still denies just that one request and records nothing, so the site can ask again
   - After three dismissals in a row it is blocked for the rest of the session instead, so a page can no longer put the prompt back up every time you close it
   - The block shows in the address-bar indicator as "Blocked after repeated dismissals"; Remove there lets the site ask again. It is never saved to disk, and a private window's dismissals stay in that window
+- Linux pacman distribution target for Arch Linux and Omarchy users, next to the existing AppImage and deb, for x64 and arm64
+  - Install it with `sudo pacman -U <file>`; Arch users update by installing the next release's package, since electron-updater has no pacman path
 
 ### Fixed
 
