@@ -82,6 +82,28 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
+  test.each(['eth_call', 'eth_estimateGas'])('preserves verified %s revert data without another source', async (method) => {
+    const native = method === 'eth_call' ? mockMyotis.ethCall : mockMyotis.estimateGas;
+    native.mockResolvedValue({ status: 'revert', dataHex: '0x08c379a0abcd' });
+    global.fetch = jest.fn();
+    await expect(request(1, method, [{ to: '0xabc' }])).rejects.toMatchObject({ code: 3, data: '0x08c379a0abcd' });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test.each([{ status: 'unavailable', reason: 'cancelled' }, { error: 'deadline exceeded' }])('falls through unavailable read shapes: %s', async (payload) => {
+    mockMyotis.ethCall.mockResolvedValue(payload);
+    mockRequestViaColibri.mockResolvedValue('0xfallback');
+    await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toMatchObject({ source: 'colibri', result: '0xfallback' });
+  });
+
+  test('does not retry an in-band failed broadcast at another broadcaster', async () => {
+    mockMyotis.sendRawTransaction.mockResolvedValue({ error: 'connection lost' });
+    global.fetch = jest.fn();
+    await expect(broadcastRawTransaction(1, '0xsigned')).rejects.toMatchObject({ code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test('sends pending nonce reads to a source that honours the block tag', async () => {
     mockMyotis.getAccount.mockResolvedValue({ status: 'ok', nonce: 3 });
     mockRequestViaColibri.mockResolvedValue('0x5');
@@ -112,7 +134,7 @@ describe('chain-data-router', () => {
   });
 
   test('sends non-latest gas estimates to a source that honours the block tag', async () => {
-    mockMyotis.estimateGas.mockResolvedValue({ gasLimit: '21000' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
     mockRequestViaColibri.mockResolvedValue('0x5208');
 
     await expect(
@@ -147,7 +169,7 @@ describe('chain-data-router', () => {
 
   test('sends calls carrying gas/fee/nonce fields to a source that honours them', async () => {
     mockMyotis.ethCall.mockResolvedValue({ resultHex: '0xhead' });
-    mockMyotis.estimateGas.mockResolvedValue({ gasLimit: '21000' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
     mockRequestViaColibri.mockResolvedValue('0xcapped');
 
     await expect(
@@ -383,7 +405,7 @@ describe('chain-data-router', () => {
   });
 
   test('keeps normalized call quantities usable by the Myotis estimator', async () => {
-    mockMyotis.estimateGas.mockResolvedValue({ gasLimit: '21000' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
 
     await expect(
       request(100, 'eth_estimateGas', [{ to: '0xabc', value: '1000000000000000000' }])
@@ -405,7 +427,7 @@ describe('chain-data-router', () => {
   });
 
   test('estimates gas against the "input" calldata alias rather than an empty call', async () => {
-    mockMyotis.estimateGas.mockResolvedValue({ gasLimit: '54000' });
+    mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 54000 });
 
     await expect(
       request(1, 'eth_estimateGas', [{ to: '0xabc', input: '0xa9059cbb' }])

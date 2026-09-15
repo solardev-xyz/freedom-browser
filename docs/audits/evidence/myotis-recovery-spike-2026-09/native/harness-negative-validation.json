@@ -1,0 +1,20 @@
+[
+  {
+    "case": "fresh-refuses-existing",
+    "exitCode": 2,
+    "stdout": "",
+    "stderr": "checkpoint spike: fresh data directory required: File exists (os error 17)\n"
+  },
+  {
+    "case": "resume-refuses-wrong-chain",
+    "exitCode": 2,
+    "stdout": "",
+    "stderr": "checkpoint spike: resume marker chain/root/slot mismatch\n"
+  },
+  {
+    "case": "resume-refuses-wrong-root",
+    "exitCode": 2,
+    "stdout": "",
+    "stderr": "checkpoint spike: resume marker chain/root/slot mismatch\n"
+  }
+]

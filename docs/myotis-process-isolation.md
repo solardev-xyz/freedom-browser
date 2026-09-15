@@ -1,6 +1,7 @@
 # Myotis process isolation
 
-Myotis v0.1.7 / ABI 22 remains pinned. Every addon call, including init,
+Myotis v0.1.9 / ABI 25 plus Freedom checkpoint-import extension version 1 is
+pinned. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -10,15 +11,18 @@ sandbox** or an aggregate CPU/memory limit.
 
 ## Request and lifecycle contract
 
-- Per chain: two native read/broadcast operations, sixteen queued requests,
+- Per chain: one native read/broadcast operation, sixteen queued requests,
   and one independent status request. Requests have a ten-second total budget,
   including queue time. Router reads retain their configured/interactive budget;
   expiration permits configured fallback without stopping the chain. The route
   slot remains held until the underlying manager request settles.
 - The process manager's own deadlines govern native health. Expiring an unsent
-  queued request removes only that request. Expiring active work makes the child unavailable, rejects pending callers, stops admission,
-  and starts shutdown. Native permits remain held until the matching reply or
-  verified process exit. Status has a separate ten-second hard request deadline
+  queued request removes only that request. An active caller expires after ten
+  seconds without releasing its native slot or stopping the chain. Its late reply
+  releases only that slot and cannot complete a newer caller. A separate fixed
+  100-second native watchdog stops an unresponsive generation; this is a host
+  availability policy, not a guarantee that native cancellation finishes on time.
+  Native permits remain held until the matching reply or verified process exit. Status has a separate ten-second hard request deadline
   and a six-second cache freshness limit. Staleness disables routing without
   stopping the generation or releasing its single pending status permit; a
   late status reply can restore readiness. Main's synchronous queries read only
@@ -36,8 +40,11 @@ sandbox** or an aggregate CPU/memory limit.
   control is revoked in that start window, so a terminal receipt is always
   attributable to a reported owner and a cleanly retired child is never
   quarantined for a stop that raced the child's creation.
-- A failed generation has a fifteen-second restart cooldown. Recovery is manual
-  through the existing Start control; there is no automatic restart loop.
+- A failed native generation has a fifteen-second restart cooldown. Ordinary
+  startup/process-failure recovery exposes **Retry sync**, which restarts using
+  the same owned state directory and saved checkpoint. It does not fetch a new
+  checkpoint merely because startup failed. Stale-checkpoint recovery has a
+  separate bounded automatic flow described below.
   If exit is unconfirmed, Start remains blocked for that browser session and
   status and the chain control's tooltip report
   `Myotis exit unconfirmed; restart blocked`. Restarting the browser does not
@@ -61,6 +68,102 @@ Main records bounded lifecycle facts once per event per generation: startup
 attempt/result (configuration, load, ABI, create or start failure), unavailability,
 stop request and supervisor exit classification/code/signal/receipt/forced status.
 Raw addon logs, exception text, request arguments and profile paths are excluded.
+
+## Automatic stale-checkpoint recovery
+
+ABI 25 parks in `STALE_ANCHOR` when neither the embedded checkpoint nor saved
+state is recent enough. Freedom then obtains an authenticated recent checkpoint
+and restarts the affected chain from it. No consent dialog or risk bypass is
+exposed, and the host does not call `acceptStaleAnchor`. Verified routing stays
+unavailable until normal sync and execution-reader readiness return.
+
+Each attempt runs Colibri's WASM verifier in a disposable worker with its own
+empty store, separate from ENS verification. It verifies a recent block proof,
+extracts the authenticated committee checkpoint header, recomputes its root,
+and requires the configured checkpoint quorum to endorse that same slot/root
+as finalized. The checkpoint must be at most one hour old and consistent with the
+computer's clock. Worker results are validated again before lifecycle or storage
+use. The whole verification attempt has a 90-second deadline; individual network
+requests have 20-second deadlines and bounded response sizes.
+
+Ethereum requires 2 of at most 3 participating checkpoint authorities, drawn
+from seven configured candidates: Sigma Prime, EthStaker, ChainSafe, Attestant,
+beaconcha.in, PietjePuk, and Stakely. The worker starts with the first three and
+replaces unavailable candidates in a stable order, without revisiting a candidate
+within the same lookup. Valid dissent and contradictory evidence retain their
+seats; three conflicting responses cannot cause a search for agreeable reserves.
+HTTP failures, malformed bodies and missing/lagging finality may be replaced.
+Clock-invalid or contradictory evidence is not treated as mere unavailability.
+The existing overall worker deadline bounds all replacement rounds. Gnosis requires
+both `checkpoint.gnosischain.com` and `checkpoint-sync-gnosis.dappnode.net`.
+Proofs still come from `mainnet1.colibri-proof.tech` and
+`gnosis.colibri-proof.tech`, respectively, and Colibri proof verification is
+mandatory. There is no reduced-threshold fallback to any prover or RPC server.
+
+Each provider gets one vote for the exact requested slot/root only after an
+explicit finality endorsement. If its latest checkpoint has advanced, the
+Checkpointz finalized-history API can endorse the same older block. Mere block
+existence is insufficient. Publication lag or missing history is retryable;
+conflicting evidence that prevents quorum pauses recovery with an explanation
+and Retry. Ethereum can tolerate a dissenting or unavailable third source;
+Gnosis cannot recover while either source is unavailable.
+
+This is an external checkpoint trust policy. Security depends on sufficiently
+many independent operators being honest; domain names alone do not establish
+independence. Public operator/upstream provenance and limits are documented in
+[the quorum review](audits/myotis-checkpoint-quorum-2026-09.md). Colibri adds its
+committee-history proof check, but does not independently establish canonical
+finality or remove weak subjectivity.
+
+A successful attempt waits for verified exit of the old native generation,
+then creates a new per-profile, per-chain state directory and imports the
+verified root and slot through `createWithCheckpoint`. It never copies,
+rewrites or deletes the old snapshot. The immutable `anchor.json` and
+`verified-sync.json` pointer bind the saved checkpoint to its native state
+under `verified-sync/<generation>/`. On restart, only a generation with a valid
+record is resumed; existing legacy state from builds that allowed risk consent
+is preserved but not silently adopted. Saved checkpoints can be older than one
+hour on restart because Myotis still evaluates its saved verified state against
+the native weak-subjectivity bound; renewed staleness triggers another recovery.
+New schema-v2 checkpoint records retain the distinct quorum voter origins;
+worker and new-generation validation require the configured threshold. Existing
+schema-v1 generations retain their original single-authority provenance and can
+resume under the previous trust policy. They cannot authorize a new recovery or
+be relabeled as quorum-verified. Renewed staleness requires v2 acquisition.
+Malformed records or unsafe state paths fail closed as storage failures.
+Native ownership quarantine is independent and is never cleared by this flow.
+Every load or replacement also checks the legacy base-directory ownership
+record: an active, malformed or unknown record blocks migration to a fresh
+state directory. Only an absent record or a validated native-retired record
+permits migration. A new directory is not a way around an unconfirmed old exit.
+
+Service unavailability, a checkpoint changing during verification, and an
+outdated checkpoint receive at most three automatic attempts, with 15-second
+and 60-second delays. Verification mismatch, clock disagreement, storage errors,
+unconfirmed ownership, missing checkpoint-import capability, or restart failures
+stop automatic retries.
+Five minutes without read readiness shows **Syncing slowly** and explains that
+the native node keeps trying. Its notice clears when full read readiness returns;
+**Retry sync** remains available while waiting and restarts using the same
+owned state directory. Retry after startup, storage or ownership failure also
+rechecks that state and its guards rather than acquiring a new checkpoint.
+Only native `STALE_ANCHOR` detection triggers fresh checkpoint verification.
+Stopping the node, switching profile or shutting down cancels pending work and
+invalidates late results. Ethereum and Gnosis recover independently.
+
+While checking or restarting, the Nodes menu shows **Updating sync checkpoint…**
+or **Checkpoint verified. Restarting sync…**. An ordinary restart instead shows
+**Restarting node…**, without implying any new checkpoint was verified.
+A pending retry shows its reason
+and the remaining delay. Ordinary successful recovery raises no prompt. A final
+failure leaves a persistent explanation and **Retry sync** action; the switch
+stays on and can turn the node off even while no native child exists. A
+dismissible notice with **Open Nodes** makes failures visible when the menu is
+closed; identical status updates do not repeat it. Clock, storage, update-required,
+ownership and stale-response failures have specific guidance. Settings also points paused
+nodes to the toolbar's Nodes menu. Retry requests are accepted only from the
+browser chrome, not web pages or subframes. No user confirmation bypasses proof
+verification. See the [both-theme UI evidence](audits/images/myotis-recovery/README.md).
 
 ## Native ownership and durable recovery
 
@@ -122,7 +225,12 @@ can quarantine the chain across browser
 restarts. No age, PID absence, or process-name scan clears quarantine. Native
 parent-loss cleanup may persist a valid retired record even if main is gone.
 
-There is currently no automated quarantine-recovery UI. An operator must first
+The ownership **Retry sync** action rechecks the native ownership guard; it
+cannot establish a missing exit proof or clear permanent unknown quarantine.
+Closing another Freedom instance may allow that live owner to retire normally,
+but closing instances does not repair an active or corrupt record left after
+supervisor loss. There is currently no automated quarantine-clearing UI.
+An operator must first
 establish that the old child cannot still run, for example by a complete host
 reboot, then preserve the quarantined chain cache/record for investigation and
 explicitly provision a fresh chain cache. Merely restarting Freedom is not
@@ -132,8 +240,15 @@ requirement is a release limitation.
 
 ## Build and signing
 
-No addon upgrade, npm dependency, download, install or rebuild is required by
-this change. Build the small helper from the checked-in C source with an already
+The upstream v0.1.9 addon does not expose checkpoint import.
+`npm run myotis:download` therefore builds the pinned release source with Freedom's
+additive checkpoint-import patch for the current host, using Rust 1.94 and the
+unchanged upstream Cargo lock. Source archive, patch and installed addon hashes
+are recorded in `myotis-build.json`; packaging rejects incompatible or missing
+provenance. ABI remains 25 and the extra capability is versioned separately.
+See [native extension build instructions](../scripts/myotis-native/README.md)
+for prerequisites and target-host builds. No npm dependency changes are required.
+Build the small supervisor from the checked-in C source with an already
 installed compiler:
 
 ```sh
@@ -147,8 +262,9 @@ MSVC; the live Myotis CI job also builds the helper before launching its tests.
 The existing binary preflight requires
 both addon and helper for supported Myotis targets. Cross-platform packagers
 must supply helpers built on the corresponding host; the build never downloads
-a compiler. Existing fetch scripts still fetch only the pinned addon.
-`extraResources` includes the helper. macOS explicitly signs only the added
+a compiler. The addon build uses its pinned source and patch rather than
+substituting an upstream binary without checkpoint support. `extraResources`
+includes the helper. macOS explicitly signs only the added
 `Contents/Resources/myotis-node/myotis-supervisor` through `mac.binaries`;
 `scripts/sign-myotis-helper.js` overrides only that exact file's signing options
 with hardened runtime and the empty `config/entitlements.myotis-supervisor.plist`.
@@ -157,7 +273,45 @@ RunAsNode fuse compatibility, ASAR script loading, native addon ABI/loading,
 helper signing, and notarized
 package behavior require qualification of the actual shipped artifact.
 
+Current product-path evidence is recorded in the [final-source live campaign](audits/evidence/myotis-recovery-integration-2026-09/review-fixed/README.md): both chains recovered, served verified account reads, stopped and restarted, with four ownership rejection controls. Restarts rebootstrap from the authenticated checkpoint; no persisted committee snapshot was produced. The [ASAR worker campaign](audits/evidence/myotis-recovery-integration-2026-09/asar/review-fixed/README.md) passed separately. Full signed packages, other platforms and long-duration behavior remain separate checks.
+
+## v0.1.9 qualification
+
+The release upgrade starts from main `b5fd764c`, retaining the Windows controller
+exit fix and POSIX ownership-receipt race fix. ABI 25 scheduling, readiness and
+result handling were ported selectively from the earlier Agent/Myotis test
+branch; its Agent code and temporary debug-artifact activation are not included.
+The earlier evidence below remains attributed to its original revisions.
+
+The live ENS/read suite no longer skips the old v0.1.7 catch-up stall. Run the
+CI workflow manually with `myotis_live: true` for the three-platform live matrix.
+The direct-addon `myotis:smoke` harness still fails explicitly on a stale
+embedded anchor; it does not drive the manager's automatic recovery. Qualifying
+this product path requires a manager/app run that observes stale detection,
+checkpoint verification, native generation replacement, verified reads and
+restart persistence on both chains. The live matrix is manual because
+third-party proof/checkpoint services and peers are external to a PR; normal CI
+still checks addon capability and supervisor behavior. Release qualification
+also includes actual Quit and packaged signing/loading checks. A successful ABI
+handshake or mocked unit suite is not evidence of verified blockchain reads.
+
+The initial v0.1.9 upgrade checks on 2026-09-14, before automatic recovery was
+implemented, used main's unchanged lock: all five release addons
+passed the pinned checksum manifest; the macOS arm64 addon loaded with ABI 25
+and every required export under Electron 44.3.0, then exited normally. The Mac
+supervisor compiled. Focused unit/style/license checks and lint passed; the
+Nodes menu was inspected in both themes using mocked statuses and fresh test
+profiles. Full unit execution reported 4,314 passing tests and three failures
+(two settings shortcut tests and one Safe fork test), each reproduced separately
+on unchanged main with the same dependencies. No real blockchain sync/read,
+blocked-native lifecycle campaign or signed/package qualification is claimed.
+
 ## Source basis and remaining qualification
+
+The evidence below describes earlier process-isolation revisions, with their
+original runtime and campaign limits. It does not qualify the current automatic
+checkpoint-recovery integration; see the current matrix in
+[supervisor qualification](myotis-supervisor-qualification.md#current-checkpoint-recovery-integration).
 
 Electron 43.0.0's [DEPS](https://github.com/electron/electron/blob/v43.0.0/DEPS)
 pins Node 24.17.0. Node's

@@ -1,0 +1,13 @@
+# Qualification after adversarial review fixes
+
+These fresh runs exercise the reviewed manager, process, store and verifier after the final retry/late-exit/service-error fixes. Previous campaigns remain unchanged. Actual Electron 44.3.0 / Node 24.20.0, macOS arm64, pinned extended Myotis 0.1.9, native supervisor, real production manager and isolated Colibri 2.0.6 WASM workers were used. No module replacement, network mock, stale-consent bypass, or production configuration edit was used.
+
+Both chains passed the complete stale-anchor→live checkpoint verification→fresh generation→SYNCED/readiness→verified account read→confirmed stop→same authenticated generation restart→verified account read→confirmed stop lifecycle. Ethereum completed in 79.8s; Gnosis in 12.9s. Ethereum had 4 ordinary bounded caller timeouts; Gnosis had 0. All transient outcomes remain in logs. All four successful public zero-address account proofs had peerProofValid, blsVerified and beaconChainVerified true, and failReason null.
+
+Active and unknown legacy owner records were also exercised through the real manager before each campaign. All four controls blocked startup with recovery.reason=ownership, readiness=false, unchanged owner bytes, no new generation or native launch, and successful stop. Each later live campaign produced three native child generations with verified reaped supervisor receipts. Both Electron processes exited 0 and no campaign child or supervisor remained.
+
+The authentic historic v0.1.7 stale roots have synthetic historical persisted verification metadata solely for fixture construction. The replacement checkpoints and account proofs are live verified outputs. Both restarts reused the same fresh authenticated generation. No snapshot file was produced; this qualifies checkpoint rebootstrap, not restoring a persisted sync-committee snapshot. Long-duration availability, renderer actions, other platforms and signed packages are not qualified by this entrypoint.
+
+Source hashes were captured before either launch and match the files at publication. The actual addon and supervisor are hashed in summary.json. That summary independently checks successful proof flags, both stopped results, stale detection and all ownership controls. Full structured results and sanitized lifecycle logs are retained; prior evidence is untouched.
+
+To reproduce, follow the parent README using this directory's electron-main.js with an absolute checkout path, fresh temporary run directory, chain ID 1 or 100 and 600-second total budget. The harness reads no user profile and retains isolated native state for inspection.

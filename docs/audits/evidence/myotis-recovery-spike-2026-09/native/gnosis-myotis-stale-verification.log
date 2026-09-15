@@ -1,0 +1,1 @@
+2026-09-14T19:37:55.881263Z  WARN myotis_net::sync: STALE ANCHOR: best trust anchor is past the weak-subjectivity bound — refusing to sync (a forged chain signed by since-exited committee members would be indistinguishable) until the bound is raised or the risk is explicitly accepted anchor_period=3596 wall_period=3672 bound=3 age=76

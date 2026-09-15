@@ -1,0 +1,10 @@
+{
+  "releaseTag": "v0.1.9",
+  "sourceCommit": "b3c1fd0ff2ebd6c1df593fca40a46c22fa506f4e",
+  "sourceUrl": "https://api.github.com/repos/biafra23/myotis/tarball/v0.1.9",
+  "sourceSha256": "f6b5d643392e6c1af9d2e8eb53ce57778d879ac7f3c03563716fc498c3e0902a",
+  "patchSha256": "69a577096f444493b45ffd87f69411b50148b5bd1d179db8e4960f188d4577fc",
+  "extensionVersion": 1,
+  "abi": 25,
+  "rustToolchain": "1.94"
+}

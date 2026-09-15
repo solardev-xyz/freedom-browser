@@ -160,6 +160,7 @@ describe('preload', () => {
       [exposures.ant, 'stop', [], IPC.ANT_STOP, []],
       [exposures.ant, 'getStatus', [], IPC.ANT_GET_STATUS, []],
       [exposures.ant, 'checkBinary', [], IPC.ANT_CHECK_BINARY, []],
+      [exposures.myotis, 'retryCheckpoint', [100], IPC.MYOTIS_RETRY_CHECKPOINT, [100]],
       [exposures.myotis, 'start', [], IPC.MYOTIS_START, []],
       [exposures.myotis, 'stop', [], IPC.MYOTIS_STOP, []],
       [exposures.myotis, 'getStatus', [], IPC.MYOTIS_GET_STATUS, []],

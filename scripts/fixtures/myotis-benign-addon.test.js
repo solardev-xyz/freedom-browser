@@ -25,7 +25,7 @@ test('fixed handshake failure returns wrong ABI and idle expiry remains a distin
   expect(delay).toBeLessThanOrEqual(20000);
   expire();
   expect(host.process.exit).toHaveBeenCalledWith(78);
-  expect(fixture('healthy').module.exports.init()).toBe(22);
+  expect(fixture('healthy').module.exports.init()).toBe(25);
 });
 
 test('blocking fixture has a bounded native wait independent of JS timer delivery', () => {

@@ -1,0 +1,30 @@
+{
+  "mainnet": {
+    "importedCheckpointSlot": 15215808,
+    "firstSyncedSlot": 15215808,
+    "lastSyncedSlot": 15215840,
+    "distinctFinalizedSlots": [15215808, 15215840],
+    "observedNativeAdvancement": true,
+    "timeToFirstSyncedSeconds": 6,
+    "durationSeconds": 601,
+    "gracefulStop": true,
+    "snapshotPresent": false,
+    "originalHarnessReportedSuccess": false,
+    "originalHarnessBug": "Completion condition incorrectly required catch-up-specific sync_start_period>=0; current-period bootstrap can leave it at -1. Corrected restart run follows."
+  },
+  "gnosis": {
+    "importedCheckpointSlot": 30084208,
+    "firstSyncedSlot": 30084224,
+    "lastSyncedSlot": 30084336,
+    "distinctFinalizedSlots": [
+      30084224, 30084240, 30084256, 30084271, 30084288, 30084304, 30084320, 30084336
+    ],
+    "observedNativeAdvancement": true,
+    "timeToFirstSyncedSeconds": 6,
+    "durationSeconds": 601,
+    "gracefulStop": true,
+    "snapshotPresent": false,
+    "originalHarnessReportedSuccess": false,
+    "originalHarnessBug": "Completion condition incorrectly required catch-up-specific sync_start_period>=0; current-period bootstrap can leave it at -1. Corrected restart run follows."
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "chainId": 100,
+  "mode": "missing-witness",
+  "date": "2026-09-14T18:23:30.331Z",
+  "requests": [],
+  "results": [
+    {
+      "label": "cold",
+      "ok": false,
+      "error": "checkpoint_witness_keys configured but prover did not deliver witness signatures"
+    }
+  ],
+  "simulatedColdTime": "2026-09-14T18:18:00.114Z",
+  "storageKeys": []
+}

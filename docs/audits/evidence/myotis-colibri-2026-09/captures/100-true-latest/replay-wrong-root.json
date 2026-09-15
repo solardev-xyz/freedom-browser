@@ -1,0 +1,14 @@
+{
+  "chainId": 100,
+  "mode": "wrong-root",
+  "date": "2026-09-14T18:20:24.122Z",
+  "requests": ["https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30083264/root"],
+  "results": [
+    {
+      "label": "cold",
+      "ok": false,
+      "error": "Weak subjectivity check failed: checkpoint mismatch\ncheckpoint_proof: checkpointz anchor mismatch"
+    }
+  ],
+  "storageKeys": []
+}

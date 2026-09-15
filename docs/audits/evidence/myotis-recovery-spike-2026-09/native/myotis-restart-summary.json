@@ -1,0 +1,98 @@
+{
+  "mainnet": {
+    "storage": {
+      "event": "storage",
+      "resumeRequested": true,
+      "snapshotPresentAtStart": false,
+      "snapshotPeriod": null,
+      "checkpointPeriod": 1857,
+      "snapshotEligibleByPeriod": false,
+      "expectedBootstrapPath": "checkpoint-rebootstrap"
+    },
+    "firstSyncedSlot": 15215872,
+    "lastSyncedSlot": 15215904,
+    "qualifiedAdvancement": {
+      "event": "qualified-live-advancement",
+      "firstSyncedSlot": 15215872,
+      "checkpointSlot": 15215808,
+      "finalizedSlot": 15215904
+    },
+    "finish": {
+      "event": "finish",
+      "unixTime": 1789415665,
+      "chainId": 1,
+      "synced": true,
+      "gracefulStop": true,
+      "snapshotPresent": false
+    },
+    "elapsedSeconds": 396,
+    "timeToFirstSyncedSeconds": 9,
+    "complete": true,
+    "exitCode": 0,
+    "lastNativeObservation": {
+      "event": "status",
+      "unixTime": 1789415665,
+      "chainId": 1,
+      "state": "SYNCED",
+      "period": 1857,
+      "finalizedSlot": 15215904,
+      "finalizedRoot": "0xf25ef4ad52e593a0eb33343169741e92778a7b90cd1f71cc8c13f8d4d1ed5f35",
+      "optimisticSlot": 15215969,
+      "peerCount": 10,
+      "hunting": false,
+      "execution": {
+        "number": 25977849,
+        "hash": "0xe6e3030426e084f4bddf3af6978dc69d008f040c7c547192f9c86feb1ce72967",
+        "stateRoot": "0xe893619c2ae8d119b318f1a8fa06fee138085bbb8e1a000e4bfe9ecfde92e2d6"
+      }
+    }
+  },
+  "gnosis": {
+    "storage": {
+      "event": "storage",
+      "resumeRequested": true,
+      "snapshotPresentAtStart": false,
+      "snapshotPeriod": null,
+      "checkpointPeriod": 3672,
+      "snapshotEligibleByPeriod": false,
+      "expectedBootstrapPath": "checkpoint-rebootstrap"
+    },
+    "firstSyncedSlot": 30084352,
+    "lastSyncedSlot": 30084368,
+    "qualifiedAdvancement": {
+      "event": "qualified-live-advancement",
+      "firstSyncedSlot": 30084352,
+      "checkpointSlot": 30084208,
+      "finalizedSlot": 30084368
+    },
+    "finish": {
+      "event": "finish",
+      "unixTime": 1789415350,
+      "chainId": 100,
+      "synced": true,
+      "gracefulStop": true,
+      "snapshotPresent": false
+    },
+    "elapsedSeconds": 81,
+    "timeToFirstSyncedSeconds": 6,
+    "complete": true,
+    "exitCode": 0,
+    "lastNativeObservation": {
+      "event": "status",
+      "unixTime": 1789415350,
+      "chainId": 100,
+      "state": "SYNCED",
+      "period": 3672,
+      "finalizedSlot": 30084368,
+      "finalizedRoot": "0x7d3290a2e3411b12fa646a1f6e0ebe351fd0432ca1cd856bb26a1361f5d6bdd2",
+      "optimisticSlot": 30084401,
+      "peerCount": 8,
+      "hunting": false,
+      "execution": {
+        "number": 48251526,
+        "hash": "0x0fae7cd202ad967ced52d884e6d95ae4a175e7389bf1fec508cc2bd9fc66995a",
+        "stateRoot": "0xa25665cd8883891f67d68a1970124a49c04b66beaf1d8b48df8fc26a004c0751"
+      }
+    }
+  }
+}

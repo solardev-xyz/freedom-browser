@@ -1,0 +1,24 @@
+{
+  "chainId": 100,
+  "network": "gnosis",
+  "root": "0xb9151b58924e92b89dbbd64a29bd9b0e65b32cbf8f46770eda726b2b4de376d3",
+  "slot": 30084336,
+  "ageSeconds": 219,
+  "verifiedAt": "2026-09-14T19:47:19.895Z",
+  "trustSource": "https://checkpoint.gnosischain.com",
+  "finalitySource": "https://checkpoint.gnosischain.com/eth/v1/beacon/states/head/finality_checkpoints",
+  "finalizedEpoch": "1880271",
+  "proofSha256": "6336d4635d5e04d6d51e7028abf7cd9565ca673c07330a66421188992b23d268",
+  "committeeKeyCount": 512,
+  "proofRequestLatestBlock": {
+    "number": "0x2e0428f",
+    "hash": "0x04b72bcb20daa3eac2a5d9b446fac8146b626fac2464a799d0fe15213f447be4"
+  },
+  "beaconHeader": {
+    "slot": "0x1cb0cf0",
+    "proposerIndex": "0x84459",
+    "parentRoot": "0x3ef910da575bb938f6b390fd7dde67971580192ea94ff21454bee82835a8a2d2",
+    "stateRoot": "0x93352c45be99e9be9583bf73fddc3dc0cd2ecb7ebda5fdac77d84dc0eae649b7",
+    "bodyRoot": "0x0fa1a032da11b0175effe1fb237a106692db8aab55c917de4cf3fa61b483f3b5"
+  }
+}

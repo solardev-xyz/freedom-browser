@@ -5,13 +5,8 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      myotis_force_live:
-        description: >-
-          Run the myotis-native-e2e live spec even though issue #200 keeps it
-          skipped (sets MYOTIS_E2E_IGNORE_KNOWN_STALL=1). This is how we check
-          whether a newer addon clears the upstream beacon wedge; a still-wedged
-          addon now aborts on the spec's stall guard in a few minutes rather
-          than burning the readiness budget.
+      myotis_live:
+        description: 'Run real Myotis reads on all platforms (requires fresh checkpoints; never accepts stale-anchor risk)'
         type: boolean
         default: false
 
@@ -222,7 +217,7 @@ jobs:
             target: win32-x64
             addon: myotis-bin/win-x64/myotis-node.node
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -237,14 +232,17 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Download this runner's Myotis addon
+      - name: Install pinned Myotis Rust toolchain
+        run: rustup toolchain install 1.94 --profile minimal
+
+      - name: Build this runner's pinned Myotis checkpoint addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
 
       - name: Load addon and verify ABI
-        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==22) throw new Error('Expected ABI 22, got '+abi); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
+        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==25) throw new Error('Expected ABI 25, got '+abi); if(addon.checkpointImportVersion?.()!==1||typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import extension'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
         env:
           MYOTIS_ADDON: ${{ matrix.addon }}
 
@@ -260,21 +258,13 @@ jobs:
   # out first attempt still preserves its cleanly-stopped partial sync; a
   # re-run continues from that snapshot instead of starting from zero.
   #
-  # CURRENTLY SKIPPED at the spec level, see issue #200: myotis v0.1.7 (the
-  # newest published release) bootstraps every cold start from a checkpoint
-  # embedded in the binary and then wedges — the catch-up applies beacon
-  # periods 1825 -> 1840 and can never obtain the update for period 1840, so
-  # readiness is unreachable. The job stayed green only while the cache chain
-  # carried a pre-stall warm snapshot forward; GitHub evicted it after 7 idle
-  # days and a cold start can no longer re-warm it. The remaining steps still
-  # cost a few minutes each, so the budgets below are sized for a real run
-  # (MYOTIS_E2E_IGNORE_KNOWN_STALL=1) rather than the 190-minute worst case
-  # that burned ~4 h of CI per push.
+  # v0.1.9 fixes the historical catch-up stall. Run the live spec normally;
+  # stale anchors fail explicitly and never receive automatic risk consent.
   myotis-native-e2e:
-    # A feature branch with an open PR otherwise launches this 30-40 minute
-    # live-network matrix twice (push + pull_request), doubling cost and exposure
-    # to transient peer selection. Keep PR/manual gates and post-merge coverage on main.
-    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    # Live peers and expiring trust anchors need an explicit qualification run.
+    # Unit and native-load checks still run on ordinary PRs; the separate
+    # Windows supervisor workflow retains its existing push/manual triggers.
+    if: github.event_name == 'workflow_dispatch' && inputs.myotis_live
     strategy:
       fail-fast: false
       matrix:
@@ -314,7 +304,10 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Download Myotis release addons
+      - name: Install pinned Myotis Rust toolchain
+        run: rustup toolchain install 1.94 --profile minimal
+
+      - name: Build pinned Myotis checkpoint addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -346,9 +339,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/myotis-data
-          key: myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: myotis-${{ hashFiles('scripts/build-myotis-addon.js', 'scripts/myotis-native/*') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-
+            myotis-${{ hashFiles('scripts/build-myotis-addon.js', 'scripts/myotis-native/*') }}-${{ matrix.target }}-
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
@@ -369,9 +362,7 @@ jobs:
           # The stall window keeps its 3-minute default, which must stay below
           # the readiness budget above for the guard to be reachable at all
           # (test-e2e/live/myotis-sync-guard.js owns and unit-tests that
-          # invariant). Empty unless a maintainer forces the run from the
-          # workflow_dispatch input.
-          MYOTIS_E2E_IGNORE_KNOWN_STALL: ${{ inputs.myotis_force_live && '1' || '' }}
+          # invariant).
           FREEDOM_TEST_HIDE_WINDOW: '1'
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -388,7 +379,7 @@ jobs:
       # Evidence for each branch, so a future reader knows what is proven:
       #   present=true  — ubuntu-latest and macos-14 (run 33450528176, cache
       #                   restore hit), and windows-latest via a forced
-      #                   `myotis_force_live` dispatch, which populates the data
+      #                   manual dispatch, which populates the data
       #                   dir before the stall guard aborts.
       #   present=false — windows-latest (run 33450528176: cache miss + skip,
       #                   the case that would have failed the job outright under
@@ -419,7 +410,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/myotis-data
-          key: myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: myotis-${{ hashFiles('scripts/build-myotis-addon.js', 'scripts/myotis-native/*') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Playwright traces and screenshots
         if: failure()

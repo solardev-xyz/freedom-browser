@@ -20,7 +20,7 @@ function block() {
   process.exit(78);
 }
 module.exports = {
-  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 22; },
+  init() { event('init'); return config.mode === 'startup-failure' ? 0 : 25; },
   create(network, dataDir) {
     if (network !== 'mainnet' || fs.realpathSync(dataDir) !== fs.realpathSync(path.join(__dirname, 'data'))) {
       throw new Error('Fixture path mismatch');
@@ -35,13 +35,19 @@ module.exports = {
   statusJson() {
     event('status');
     if (config.mode === 'blocked-status') block();
-    return JSON.stringify({ beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 1 });
+    return JSON.stringify({ running: true, paused: false, beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 1 });
   },
   ethCallJson() {
     event('call');
     if (config.mode === 'blocked-read') block();
     return Promise.resolve(JSON.stringify({ resultHex: '0x1234' }));
   },
+  acceptStaleAnchor() { return false; },
+  ensRecordJson() { return Promise.resolve('{}'); },
+  requestAccountJson() { return Promise.resolve('{}'); },
+  estimateGasJson() { return Promise.resolve('{}'); },
+  feeEstimateJson() { return Promise.resolve('{}'); },
+  sendRawTransactionJson() { return Promise.resolve('{}'); },
   drainLogs() { return ''; },
   stop() { event('stop'); if (config.mode === 'blocked-stop') block(); },
 };

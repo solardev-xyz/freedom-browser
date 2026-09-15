@@ -1,0 +1,19 @@
+{
+  "chainId": 100,
+  "mode": "correct",
+  "date": "2026-09-14T18:20:23.550Z",
+  "requests": ["https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30083264/root"],
+  "results": [
+    {
+      "label": "cold",
+      "ok": false,
+      "error": "proof for latest too old"
+    },
+    {
+      "label": "same proof 28 days later, warm verifier",
+      "ok": false,
+      "error": "proof for latest too old"
+    }
+  ],
+  "storageKeys": ["sync_100_3672", "states_100"]
+}

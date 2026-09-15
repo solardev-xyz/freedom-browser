@@ -1,0 +1,17 @@
+{
+  "chainId": 100,
+  "mode": "finalized-tag",
+  "date": "2026-09-14T18:23:29.754Z",
+  "requests": ["https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30083264/root"],
+  "results": [
+    {
+      "label": "cold",
+      "ok": true,
+      "number": "0x2e03e89",
+      "hash": "0x7aa8bc5e992e56dcde93305cd75698eed2207caa76fe1cc700641b0225d7d4b8",
+      "timestamp": "0x6aa83a4e"
+    }
+  ],
+  "simulatedColdTime": "2026-09-14T18:18:00.114Z",
+  "storageKeys": ["sync_100_3672", "states_100"]
+}

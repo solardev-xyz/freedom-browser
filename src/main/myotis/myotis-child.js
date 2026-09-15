@@ -1,6 +1,6 @@
 // Private child entry point. Never import this module into Electron main.
 // No profile policy, wallet signing, renderer IPC, or credentials live here.
-const EXPECTED_ABI = 22;
+const EXPECTED_ABI = 25;
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const OPERATIONS = Object.freeze({
   ens: 'ensRecordJson',
@@ -39,14 +39,34 @@ function runChild(host = process, loadAddon = require) {
         if (!['mainnet', 'gnosis'].includes(message.network)) throw new Error('network');
         failure = 'load';
         addon = loadAddon(message.addonPath);
+        failure = 'methods';
+        if (['init', 'create', 'start', 'stop', 'statusJson', 'drainLogs', ...Object.values(OPERATIONS)]
+          .some((method) => typeof addon[method] !== 'function')) throw new Error('methods');
         failure = 'abi';
         if (addon.init() !== EXPECTED_ABI) throw new Error('ABI');
         failure = 'create';
-        handle = addon.create(message.network, message.dataDir);
+        const checkpointSupported = typeof addon.createWithCheckpoint === 'function' &&
+          typeof addon.checkpointImportVersion === 'function' && addon.checkpointImportVersion() === 1;
+        if (message.checkpoint) {
+          failure = 'configuration';
+          const checkpoint = message.checkpoint;
+          const chainId = message.network === 'mainnet' ? 1 : 100;
+          if (checkpoint.chainId !== chainId || checkpoint.network !== message.network ||
+              !/^0x[0-9a-f]{64}$/i.test(checkpoint.root || '') || /^0x0{64}$/i.test(checkpoint.root) ||
+              !Number.isSafeInteger(checkpoint.slot) || checkpoint.slot <= 0 ||
+              typeof message.resumeVerifiedState !== 'boolean') throw new Error('checkpoint');
+          failure = 'checkpoint-unsupported';
+          if (!checkpointSupported) throw new Error('checkpoint capability');
+          failure = 'create';
+          handle = addon.createWithCheckpoint(message.network, message.dataDir,
+            checkpoint.root, checkpoint.slot, message.resumeVerifiedState);
+        } else {
+          handle = addon.create(message.network, message.dataDir);
+        }
         if (handle < 1) throw new Error('create');
         failure = 'start';
         if (!addon.start(handle)) throw new Error('start');
-        send({ type: 'started', ok: true });
+        send({ type: 'started', ok: true, checkpointSupported });
       } catch {
         send({ type: 'started', ok: false, failure });
         stop();
@@ -61,7 +81,7 @@ function runChild(host = process, loadAddon = require) {
     lastId = id;
     const reply = (ok, result) => send({ type: 'reply', id, op, ok, result });
     if (JSON.stringify(args).length > MAX_MESSAGE_BYTES ||
-      (op !== 'status' && (!Object.hasOwn(OPERATIONS, op) || active >= 2))) {
+      (op !== 'status' && (!Object.hasOwn(OPERATIONS, op) || active >= 1))) {
       reply(false);
       return;
     }

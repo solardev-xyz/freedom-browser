@@ -1,0 +1,47 @@
+{
+  "started": "2026-09-14T18:17:18.889Z",
+  "chainId": 1,
+  "zkProof": true,
+  "tag": "finalized",
+  "runtime": "WASM, exact installed 2.0.6",
+  "requests": [
+    {
+      "url": "https://mainnet1.colibri-proof.tech",
+      "method": "POST",
+      "body": "{\"method\":\"eth_getBlockByNumber\",\"params\":[\"finalized\",false],\"version\":131078,\"zk_proof\":true}",
+      "started": 1789409838896,
+      "status": 502,
+      "bytes": 43,
+      "sha256": "fd0671550b08cb89a66cf93490eb4953b120cbd8ce2d9d34bc04d3937a5b7c7f",
+      "durationMs": 168
+    },
+    {
+      "url": "https://mainnet1.colibri-proof.tech",
+      "method": "POST",
+      "body": "{\"method\":\"eth_getBlockHeader\",\"params\":[\"finalized\"],\"version\":131078,\"zk_proof\":true}",
+      "started": 1789409839066,
+      "status": 502,
+      "bytes": 43,
+      "sha256": "fd0671550b08cb89a66cf93490eb4953b120cbd8ce2d9d34bc04d3937a5b7c7f",
+      "durationMs": 233
+    }
+  ],
+  "results": [
+    {
+      "method": "eth_getBlockByNumber",
+      "params": ["finalized", false],
+      "support": 1,
+      "error": "Error in rpc call eth_getBlockByNumber[\"finalized\",false] : Invalid block: \"finalized\"",
+      "zkAfter": true
+    },
+    {
+      "method": "eth_getBlockHeader",
+      "params": ["finalized"],
+      "support": 1,
+      "error": "Error in rpc call eth_getBlockHeader[\"finalized\"] : Invalid block: \"finalized\"",
+      "zkAfter": true
+    }
+  ],
+  "storageKeys": [],
+  "finished": "2026-09-14T18:17:19.299Z"
+}

@@ -1,0 +1,118 @@
+--- a/rust/myotis-engine/src/host.rs
++++ b/rust/myotis-engine/src/host.rs
+@@ -175,17 +175,40 @@
+ /// network this engine doesn't host yet (gnosis), or `CREATE_FAILED` (-1) for an
+ /// unknown name, an unavailable runtime, or an uncreatable dataDir.
+ pub fn create(network_name: &str, data_dir: &str) -> i64 {
+-    let Some(engine) = engine() else {
+-        return CREATE_FAILED;
+-    };
+     // Unknown network → CREATE_FAILED; canonical-but-not-hosted → UNSUPPORTED.
+-    let mut config = match crate::catalog::canonical_network_name(network_name) {
++    let config = match crate::catalog::canonical_network_name(network_name) {
+         None => return CREATE_FAILED,
+         Some(_) => match config_for(network_name) {
+             Some(c) => c,
+             None => return UNSUPPORTED_NETWORK,
+         },
+     };
++    create_config(config, data_dir)
++}
++
++/// Freedom extension: bootstrap only from the host-authenticated root. Existing
++/// snapshots are refused unless the host confirms the same owned generation.
++pub fn create_with_checkpoint(network_name: &str, data_dir: &str, root: &str, slot: u64, resume_verified_state: bool) -> i64 {
++    let Some(mut config) = config_for(network_name) else { return CREATE_FAILED; };
++    if !matches!(config.name, "mainnet" | "gnosis") { return UNSUPPORTED_NETWORK; }
++    let Some(root) = parse_hex_fixed::<32>(root) else { return CREATE_FAILED; };
++    let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else { return CREATE_FAILED; };
++    let wall_slot = elapsed.as_secs().saturating_sub(config.genesis_time) / config.seconds_per_slot;
++    if root == [0; 32] || slot == 0 || slot > 9_007_199_254_740_991
++        || slot > wall_slot || !std::path::Path::new(data_dir).is_absolute() {
++        return CREATE_FAILED;
++    }
++    let snapshot = if config.name == "mainnet" { "sync-state.snapshot" } else { "sync-state-gnosis.snapshot" };
++    if !resume_verified_state && std::fs::symlink_metadata(std::path::Path::new(data_dir).join(snapshot)).is_ok() {
++        return CREATE_FAILED;
++    }
++    config.checkpoint_root = root;
++    config.checkpoint_slot = slot;
++    create_config(config, data_dir)
++}
++
++fn create_config(mut config: ChainConfig, data_dir: &str) -> i64 {
++    let Some(engine) = engine() else { return CREATE_FAILED; };
+     // Persistence lives under the host's dataDir, in the SAME files (names and
+     // formats) the Java hosts/engine maintain — `sync-state[-net].snapshot` and
+     // `cl-peers[-net].cache`, mainnet keeping the bare name — so verified sync
+--- a/rust/myotis-engine/src/capi.rs
++++ b/rust/myotis-engine/src/capi.rs
+@@ -98,6 +98,20 @@
+     };
+     let data_dir = read_string(data_dir).unwrap_or_default();
+     crate::host::create(&network, &data_dir)
++}
++
++/// Freedom checkpoint-import extension. Host authenticates the root and slot.
++/// The old create API and ABI version remain unchanged.
++/// # Safety
++/// String pointers must reference valid null-terminated strings.
++#[no_mangle]
++pub unsafe extern "C" fn myotis_create_with_checkpoint(
++    network: *const c_char, data_dir: *const c_char, root: *const c_char, slot: u64,
++    resume_verified_state: bool,
++) -> i64 {
++    let (Some(network), Some(data_dir), Some(root)) =
++        (read_string(network), read_string(data_dir), read_string(root)) else { return -1; };
++    crate::host::create_with_checkpoint(&network, &data_dir, &root, slot, resume_verified_state)
+ }
+ 
+ /// Start the sync loop (`nativeStart` twin). True on success; false for an
+--- a/rust/myotis-node/src/lib.rs
++++ b/rust/myotis-node/src/lib.rs
+@@ -35,7 +35,7 @@
+ // resolve `extern "C"` imports of its no_mangle symbols.
+ use myotis_engine::capi::{
+     myotis_accept_stale_anchor, myotis_available_networks_json, myotis_canonical_network_name,
+-    myotis_create, myotis_drain_logs, myotis_ens_record_json, myotis_estimate_gas_json,
++    myotis_create, myotis_create_with_checkpoint, myotis_drain_logs, myotis_ens_record_json, myotis_estimate_gas_json,
+     myotis_eth_call_json, myotis_fee_estimate_json, myotis_init, myotis_pause,
+     myotis_request_account_json, myotis_resolve_ens_json, myotis_resume,
+     myotis_send_raw_transaction_json, myotis_set_ws_bound_periods, myotis_start,
+@@ -118,6 +118,24 @@
+         return Ok(-1);
+     };
+     let handle = unsafe { myotis_create(n.as_ptr(), d.as_ptr()) };
++    if handle > 0 { scheduler::created(env, handle)?; }
++    Ok(handle)
++}
++
++/// Freedom extension version, separate from the unmodified upstream ABI.
++#[napi]
++pub fn checkpoint_import_version() -> u32 { 1 }
++
++/// Create from a host-authenticated checkpoint. Resume only the same host-owned
++/// generation, with its original root/slot; false is required for fresh recovery.
++#[napi]
++pub fn create_with_checkpoint(env: &Env, network: String, data_dir: String, root: String, slot: f64, resume_verified_state: Option<bool>) -> Result<i64> {
++    if !slot.is_finite() || slot.fract() != 0.0 || slot <= 0.0 || slot > 9_007_199_254_740_991.0 {
++        return Ok(-1);
++    }
++    let (Ok(n), Ok(d), Ok(r)) = (c_arg(&network), c_arg(&data_dir), c_arg(&root)) else { return Ok(-1); };
++    scheduler::prepare(env)?;
++    let handle = unsafe { myotis_create_with_checkpoint(n.as_ptr(), d.as_ptr(), r.as_ptr(), slot as u64, resume_verified_state.unwrap_or(false)) };
+     if handle > 0 { scheduler::created(env, handle)?; }
+     Ok(handle)
+ }
+--- a/rust/include/myotis_engine.h
++++ b/rust/include/myotis_engine.h
+@@ -55,6 +55,9 @@
+  * failure, -2 canonical-but-unsupported network. `data_dir` is where the
+  * engine persists sync snapshots and caches. */
+ int64_t myotis_create(const char *network, const char *data_dir);
++/* Freedom extension v1: authenticated root/slot; resume only same host-owned generation. */
++int64_t myotis_create_with_checkpoint(const char *network, const char *data_dir,
++                                    const char *root, uint64_t slot, bool resume_verified_state);
+ 
+ /* Start the sync loop. False for an unknown/already-running handle. */
+ bool myotis_start(int64_t handle);

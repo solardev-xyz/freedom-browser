@@ -1,0 +1,37 @@
+{
+  "started": "2026-09-14T19:42:18.813Z",
+  "chainId": 100,
+  "observed": {
+    "event": "status",
+    "unixTime": 1789414937,
+    "chainId": 100,
+    "state": "SYNCED",
+    "period": 3672,
+    "finalizedSlot": 30084271,
+    "finalizedRoot": "0x58d85fcf41dcb947739caf21b2dbebf5e66439040c4b928ed540203690f6de21",
+    "optimisticSlot": 30084317,
+    "peerCount": 8,
+    "hunting": false,
+    "execution": {
+      "number": 48251432,
+      "hash": "0x8e218667abc36db0cbc596438aff99728e600a9dfaf0c02b5e3f93f614b26aa1",
+      "stateRoot": "0x3f6eac71ece4d3d65981bed13e95b92d08fc1310bc459b203dbdaf09e457b519"
+    }
+  },
+  "requests": [
+    {
+      "url": "https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30084271/root",
+      "status": 200
+    }
+  ],
+  "outcome": "matched",
+  "proofSha256": "62c2900a72ae0eca93c7982c4fbd74046a084e696375da01cd6901460b971068",
+  "compared": {
+    "executionNumber": 48251432,
+    "executionHash": "0x8e218667abc36db0cbc596438aff99728e600a9dfaf0c02b5e3f93f614b26aa1",
+    "stateRoot": "0x3f6eac71ece4d3d65981bed13e95b92d08fc1310bc459b203dbdaf09e457b519",
+    "beaconSlot": 30084271,
+    "beaconRoot": "0x58d85fcf41dcb947739caf21b2dbebf5e66439040c4b928ed540203690f6de21"
+  },
+  "finished": "2026-09-14T19:42:20.197Z"
+}

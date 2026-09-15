@@ -1,0 +1,18 @@
+{
+  "chainId": 100,
+  "mode": "unavailable",
+  "started": "2026-09-14T19:37:12.228Z",
+  "colibriVersion": "2.0.6",
+  "requests": [
+    {
+      "url": "https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30084224/root",
+      "started": "2026-09-14T19:37:12.710Z"
+    }
+  ],
+  "outcome": "rejected",
+  "proofSha256": "b37c84d280c256df0a813f79d3dfb052f54e890349c501130bcda44bd5aca5df",
+  "prover": "https://gnosis.colibri-proof.tech",
+  "error": "Request to https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30084224/root failed: Synthetic checkpoint unavailability\ncheckpoint_proof: checkpointz anchor mismatch",
+  "expectedRejection": true,
+  "finished": "2026-09-14T19:37:12.713Z"
+}

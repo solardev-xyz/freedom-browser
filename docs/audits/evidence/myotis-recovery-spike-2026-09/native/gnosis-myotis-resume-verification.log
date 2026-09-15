@@ -1,0 +1,2 @@
+2026-09-14T19:47:49.843849Z  INFO myotis_net::sync: bootstrap: requesting by checkpoint root peers=8 root=2f633551be8d07da3e05d3abf3aa1a17ccf15cab465ec9646e951cbc2a9d85e2 slot=30084208
+2026-09-14T19:47:53.881885Z  INFO myotis_net::sync: bootstrap verified and applied peer=[redacted] slot=30084208 period=3672

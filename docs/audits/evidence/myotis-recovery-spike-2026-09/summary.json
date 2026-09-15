@@ -1,0 +1,149 @@
+{
+  "outcome": "Live fresh-checkpoint recovery demonstrated on Ethereum and Gnosis",
+  "shippingBehaviorChanged": false,
+  "staleAnchorAcceptanceInvoked": false,
+  "myotisCommit": "b3c1fd0ff2ebd6c1df593fca40a46c22fa506f4e",
+  "colibriVersion": "2.0.6",
+  "runtime": "macOS arm64; Node 24.18.1; Rust 1.94.0; Colibri WASM",
+  "correctedHarnessSourceSha256": "bf64617812e2ed9df88bec1ba1a005479381a3f29bfc85726096e97417f87b83",
+  "correctedHarnessBinarySha256": "444ae8fcd23a90689b05f1c6cd834724dd345ea4a4f9544905caa50c445669a5",
+  "freshRunObservations": {
+    "mainnet": {
+      "importedCheckpointSlot": 15215808,
+      "firstSyncedSlot": 15215808,
+      "lastSyncedSlot": 15215840,
+      "distinctFinalizedSlots": [15215808, 15215840],
+      "observedNativeAdvancement": true,
+      "timeToFirstSyncedSeconds": 6,
+      "durationSeconds": 601,
+      "gracefulStop": true,
+      "snapshotPresent": false,
+      "originalHarnessReportedSuccess": false,
+      "originalHarnessBug": "Completion condition incorrectly required catch-up-specific sync_start_period>=0; current-period bootstrap can leave it at -1. Corrected restart run follows."
+    },
+    "gnosis": {
+      "importedCheckpointSlot": 30084208,
+      "firstSyncedSlot": 30084224,
+      "lastSyncedSlot": 30084336,
+      "distinctFinalizedSlots": [
+        30084224, 30084240, 30084256, 30084271, 30084288, 30084304, 30084320, 30084336
+      ],
+      "observedNativeAdvancement": true,
+      "timeToFirstSyncedSeconds": 6,
+      "durationSeconds": 601,
+      "gracefulStop": true,
+      "snapshotPresent": false,
+      "originalHarnessReportedSuccess": false,
+      "originalHarnessBug": "Completion condition incorrectly required catch-up-specific sync_start_period>=0; current-period bootstrap can leave it at -1. Corrected restart run follows."
+    }
+  },
+  "correctedRestartRuns": {
+    "mainnet": {
+      "start": {
+        "event": "start",
+        "unixTime": 1789415269,
+        "chainId": 1,
+        "checkpointRoot": "0x13262465a1a69d2ab579e8a06122dbe1b6f88a3ffb28d8218babaefe8d1a9124",
+        "checkpointSlot": 15215808,
+        "wsBoundPeriods": 13,
+        "acceptStaleAnchor": false,
+        "budgetSeconds": 600
+      },
+      "storage": {
+        "event": "storage",
+        "resumeRequested": true,
+        "snapshotPresentAtStart": false,
+        "snapshotPeriod": null,
+        "checkpointPeriod": 1857,
+        "snapshotEligibleByPeriod": false,
+        "expectedBootstrapPath": "checkpoint-rebootstrap"
+      },
+      "advancement": {
+        "event": "qualified-live-advancement",
+        "firstSyncedSlot": 15215872,
+        "checkpointSlot": 15215808,
+        "finalizedSlot": 15215904
+      },
+      "finish": {
+        "event": "finish",
+        "unixTime": 1789415665,
+        "chainId": 1,
+        "synced": true,
+        "gracefulStop": true,
+        "snapshotPresent": false
+      }
+    },
+    "gnosis": {
+      "start": {
+        "event": "start",
+        "unixTime": 1789415269,
+        "chainId": 100,
+        "checkpointRoot": "0x2f633551be8d07da3e05d3abf3aa1a17ccf15cab465ec9646e951cbc2a9d85e2",
+        "checkpointSlot": 30084208,
+        "wsBoundPeriods": 3,
+        "acceptStaleAnchor": false,
+        "budgetSeconds": 600
+      },
+      "storage": {
+        "event": "storage",
+        "resumeRequested": true,
+        "snapshotPresentAtStart": false,
+        "snapshotPeriod": null,
+        "checkpointPeriod": 3672,
+        "snapshotEligibleByPeriod": false,
+        "expectedBootstrapPath": "checkpoint-rebootstrap"
+      },
+      "advancement": {
+        "event": "qualified-live-advancement",
+        "firstSyncedSlot": 30084352,
+        "checkpointSlot": 30084208,
+        "finalizedSlot": 30084368
+      },
+      "finish": {
+        "event": "finish",
+        "unixTime": 1789415350,
+        "chainId": 100,
+        "synced": true,
+        "gracefulStop": true,
+        "snapshotPresent": false
+      }
+    }
+  },
+  "independentlyMatchedNativeObservations": {
+    "mainnet": {
+      "executionNumber": 25977785,
+      "executionHash": "0x626dc2fc377aede4447d25c172641dfc0dc04a234718432f7d29db83304b5f64",
+      "stateRoot": "0x34d136ec9d3f2b91f97ba39dd506dec091d98b880347f507cea0760e241eb8a0",
+      "beaconSlot": 15215840,
+      "beaconRoot": "0xbe2a3bbfd7e43319faec539df7599fe4bb6203ae3a066a9f141c2af036f0f120"
+    },
+    "gnosis": {
+      "executionNumber": 48251432,
+      "executionHash": "0x8e218667abc36db0cbc596438aff99728e600a9dfaf0c02b5e3f93f614b26aa1",
+      "stateRoot": "0x3f6eac71ece4d3d65981bed13e95b92d08fc1310bc459b203dbdaf09e457b519",
+      "beaconSlot": 30084271,
+      "beaconRoot": "0x58d85fcf41dcb947739caf21b2dbebf5e66439040c4b928ed540203690f6de21"
+    }
+  },
+  "negativeControls": [
+    "authentic stale checkpoints remain blocked on both chains",
+    "wrong checkpoint source response rejected on both chains",
+    "unavailable checkpoint source rejected on both chains",
+    "existing fresh-directory path refused",
+    "wrong-chain and wrong-root resume markers refused"
+  ],
+  "validation": [
+    "locked Rust example build passed",
+    "npm run lint passed",
+    "Rust formatting check passed",
+    "all archived proof SHA-256 values checked"
+  ],
+  "limits": [
+    "External checkpoint authority supplies canonical/finalized trust",
+    "Restart is checkpoint rebootstrap, not persisted-committee resume",
+    "No execution peer pool or wallet/account read integration",
+    "No shipping Node-addon checkpoint-import API yet",
+    "No committee-period boundary or long-offline qualification"
+  ],
+  "captureMetadataNormalization": "Renamed original extractor block metadata to proofRequestLatestBlock to distinguish requested latest execution block from checkpoint header payload; raw proof bytes unchanged."
+}

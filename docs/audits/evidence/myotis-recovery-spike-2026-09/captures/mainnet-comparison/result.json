@@ -1,0 +1,37 @@
+{
+  "started": "2026-09-14T19:42:22.279Z",
+  "chainId": 1,
+  "observed": {
+    "event": "status",
+    "unixTime": 1789414940,
+    "chainId": 1,
+    "state": "SYNCED",
+    "period": 1857,
+    "finalizedSlot": 15215840,
+    "finalizedRoot": "0xbe2a3bbfd7e43319faec539df7599fe4bb6203ae3a066a9f141c2af036f0f120",
+    "optimisticSlot": 15215908,
+    "peerCount": 10,
+    "hunting": false,
+    "execution": {
+      "number": 25977785,
+      "hash": "0x626dc2fc377aede4447d25c172641dfc0dc04a234718432f7d29db83304b5f64",
+      "stateRoot": "0x34d136ec9d3f2b91f97ba39dd506dec091d98b880347f507cea0760e241eb8a0"
+    }
+  },
+  "requests": [
+    {
+      "url": "https://mainnet.checkpoint.sigp.io/eth/v1/beacon/blocks/15215840/root",
+      "status": 200
+    }
+  ],
+  "outcome": "matched",
+  "proofSha256": "f7eea6251b84f95aa2dab92f0fd9a768944b4ed3f2dcfaf1d85f0236cba3d8c1",
+  "compared": {
+    "executionNumber": 25977785,
+    "executionHash": "0x626dc2fc377aede4447d25c172641dfc0dc04a234718432f7d29db83304b5f64",
+    "stateRoot": "0x34d136ec9d3f2b91f97ba39dd506dec091d98b880347f507cea0760e241eb8a0",
+    "beaconSlot": 15215840,
+    "beaconRoot": "0xbe2a3bbfd7e43319faec539df7599fe4bb6203ae3a066a9f141c2af036f0f120"
+  },
+  "finished": "2026-09-14T19:42:24.291Z"
+}

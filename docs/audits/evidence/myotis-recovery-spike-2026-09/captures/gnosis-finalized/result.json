@@ -1,0 +1,44 @@
+{
+  "chainId": 100,
+  "mode": "live",
+  "started": "2026-09-14T19:36:21.653Z",
+  "colibriVersion": "2.0.6",
+  "requests": [
+    {
+      "url": "https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30084208/root",
+      "started": "2026-09-14T19:36:22.095Z",
+      "status": 200,
+      "slot": 30084208,
+      "root": "0x2f633551be8d07da3e05d3abf3aa1a17ccf15cab465ec9646e951cbc2a9d85e2"
+    }
+  ],
+  "outcome": "verified",
+  "proofSha256": "b4179a4c7316bdda5531a6aeab09bbf505ea28c93a90724844361fd8ad1ee443",
+  "prover": "https://gnosis.colibri-proof.tech",
+  "checkpoint": {
+    "chainId": 100,
+    "network": "gnosis",
+    "root": "0x2f633551be8d07da3e05d3abf3aa1a17ccf15cab465ec9646e951cbc2a9d85e2",
+    "slot": 30084208,
+    "ageSeconds": 202,
+    "verifiedAt": "2026-09-14T19:36:22.957Z",
+    "trustSource": "https://checkpoint.gnosischain.com",
+    "finalitySource": "https://checkpoint.gnosischain.com/eth/v1/beacon/states/head/finality_checkpoints",
+    "finalizedEpoch": "1880263",
+    "proofSha256": "b4179a4c7316bdda5531a6aeab09bbf505ea28c93a90724844361fd8ad1ee443",
+    "committeeKeyCount": 512,
+    "beaconHeader": {
+      "slot": "0x1cb0c70",
+      "proposerIndex": "0x85b36",
+      "parentRoot": "0xf4b673d8f039c0777ff6a5c4f33056a6822b7f0a2c62b86e1d54506ab967b4b9",
+      "stateRoot": "0xefc17c0d4c9948062c0762d36873377c5e4f9ec0ebd14c7e781875e6e90ea46b",
+      "bodyRoot": "0x51edac68bbfbd6db06943c8315f79098d06f11cde0fa817805394a2fec9b4d7b"
+    },
+    "proofRequestLatestBlock": {
+      "number": "0x2e04210",
+      "hash": "0xa00eb2b49bf01b8b366b814b9716f242588fb7385cea89240ccc0780bb264664"
+    }
+  },
+  "storageKeys": ["sync_100_3672", "states_100"],
+  "finished": "2026-09-14T19:36:22.957Z"
+}

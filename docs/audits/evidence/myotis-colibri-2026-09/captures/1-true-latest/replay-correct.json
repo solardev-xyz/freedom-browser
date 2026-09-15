@@ -1,0 +1,19 @@
+{
+  "chainId": 1,
+  "mode": "correct",
+  "date": "2026-09-14T18:20:22.898Z",
+  "requests": ["https://sync-mainnet.beaconcha.in/eth/v1/beacon/blocks/15215424/root"],
+  "results": [
+    {
+      "label": "cold",
+      "ok": false,
+      "error": "proof for latest too old"
+    },
+    {
+      "label": "same proof 28 days later, warm verifier",
+      "ok": false,
+      "error": "proof for latest too old"
+    }
+  ],
+  "storageKeys": ["sync_1_1857", "states_1"]
+}

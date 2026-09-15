@@ -1,0 +1,2 @@
+{"chainId":1,"checkpoint":{"schemaVersion":1,"chainId":1,"network":"mainnet","root":"0x21de30c5044d52f51ce88df61b2b209018f083a62f46d52ec5aaf58db005520b","slot":15216064,"verifiedAt":1789417780596,"source":"https://mainnet.checkpoint.sigp.io","finalizedEpoch":475502}}
+{"chainId":100,"checkpoint":{"schemaVersion":1,"chainId":100,"network":"gnosis","root":"0x3f377c8fb870b4e7734a96b9c64872f290e38746b050747529444ab4f51150ca","slot":30084848,"verifiedAt":1789417781723,"source":"https://checkpoint.gnosischain.com","finalizedEpoch":1880303}}

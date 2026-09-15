@@ -1,0 +1,22 @@
+{
+  "chainId": 1,
+  "mode": "correct",
+  "date": "2026-09-14T18:20:51.706Z",
+  "requests": ["https://sync-mainnet.beaconcha.in/eth/v1/beacon/blocks/15215424/root"],
+  "results": [
+    {
+      "label": "cold",
+      "ok": true,
+      "number": "0x18c625d",
+      "hash": "0x42c423afcaaa15a3ad600b81371fc85aedd5cace34a905061010f069bb36e936",
+      "timestamp": "0x6aa83a4b"
+    },
+    {
+      "label": "same proof 28 days later, warm verifier",
+      "ok": false,
+      "error": "proof for latest too old"
+    }
+  ],
+  "simulatedColdTime": "2026-09-14T18:18:03.573Z",
+  "storageKeys": ["sync_1_1857", "states_1"]
+}

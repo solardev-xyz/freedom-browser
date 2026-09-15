@@ -1,0 +1,2 @@
+# Keep the checksum-pinned native patch identical on every checkout.
+/scripts/myotis-native/checkpoint-import-v1.patch text eol=lf

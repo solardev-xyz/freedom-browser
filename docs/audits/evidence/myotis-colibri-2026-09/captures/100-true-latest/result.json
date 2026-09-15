@@ -1,0 +1,168 @@
+{
+  "started": "2026-09-14T18:17:58.114Z",
+  "chainId": 100,
+  "zkProof": true,
+  "tag": "latest",
+  "runtime": "WASM, exact installed 2.0.6",
+  "requests": [
+    {
+      "url": "https://gnosis.colibri-proof.tech",
+      "method": "POST",
+      "body": "{\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false],\"version\":131078,\"zk_proof\":true}",
+      "started": 1789409878120,
+      "status": 200,
+      "bytes": 42212,
+      "sha256": "675d957be807e50ca0d17aea23721c51fdd07fce1a9dd5b3ab598d846bf5681e",
+      "durationMs": 591
+    },
+    {
+      "url": "https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30083264/root",
+      "method": "GET",
+      "started": 1789409878715,
+      "status": 200,
+      "bytes": 84,
+      "sha256": "98c44d8de1e14ffdebc816ee3135c2c2016d5f6a063b02b8a2a2700a3bf05283",
+      "durationMs": 481
+    },
+    {
+      "url": "https://gnosis.colibri-proof.tech",
+      "method": "POST",
+      "body": "{\"method\":\"eth_getBlockHeader\",\"params\":[\"latest\"],\"version\":131078,\"c4\":\"0x01580e0000\",\"zk_proof\":true}",
+      "started": 1789409879730,
+      "status": 200,
+      "bytes": 1168,
+      "sha256": "28bdf20b6e5998325b87a276272da0d87fe9d65e8e706899cb23fc4cea1566d6",
+      "durationMs": 204
+    }
+  ],
+  "results": [
+    {
+      "method": "eth_getBlockByNumber",
+      "params": ["latest", false],
+      "support": 1,
+      "value": {
+        "number": "0x2e03e89",
+        "hash": "0x7aa8bc5e992e56dcde93305cd75698eed2207caa76fe1cc700641b0225d7d4b8",
+        "transactions": [
+          "0xab0f54b2e9190631e39eeb724c8915bf0835b9b79721f18dd772e530e7c939fa",
+          "0xf0186ef475961971154e6226f481ac7bcba2aea2b78e10a2f8b57d2deaed7f74",
+          "0xb2e0702802e00ee23b8821aa23abc220bd54ebdede931316032182b1d2bd092d",
+          "0x4030b7499a2352b0e9318ec16f7a6cfc95264d99ec8c838b0aa9c30e2525c6b0",
+          "0x0501425d7b7f64e9e5b8fe3fbfd56f91a34d35398334e1de443891b53ea31221",
+          "0x3b397128d6d810c4f38c8561f729def2ebb5cfcf07cabfc32d605b12de8664c6",
+          "0xd21a33cf1d4d5bfb0ecd1650dcfd4c5c93e3781d0db38cc132ecbea60943c2c7",
+          "0xd2a072f23aa72a7459c4a44cc27ef7c50e297e00ae8f705f0e6d3e5c32f57599",
+          "0x3592aeb73179662c37e1da4085df7330a3967ec89a0e9ab3ee757faae9de1f6b",
+          "0x49515d08d2bfedc85d933805875841675524f471ea440ee705609aaa14d6cfff",
+          "0x1964ab3a24f468f02cb247802edd2b09aad4efbf75be31f8f1a3d4e7f118f47f",
+          "0x33b1a2982b16c2c073343680c131f4a975d023607d440ba5cc221c524fd0524d",
+          "0x9a71524266cb3937550d12ac39716f8922c8d3880b017f0c93515a8ddae2370a",
+          "0xe686ed9fa2f0995750eafcf249174fb33b9af6094970b396a1be521e380d0c64",
+          "0x6e792f12338afb35ba528eb1aa0bbf922ee6ab727df992e72258e1505b06b060",
+          "0xcead0a947774ebc15e1259dbd1db510e29863069c42601763f69180c487d7490",
+          "0x72836994539a4d48930a460afb59577b40728f714d61db1ddb73bd839982fd5a",
+          "0x4561b512881647b9b4c9d737edaf606e573a71dc3b707db02a5c8c8a4202357b",
+          "0x71121495b8261059d2ca123d78746c5ae8f53f4d9c421df5a0c887f7996ae0e1",
+          "0xea49db68a64be16dc923041fadf0cc857b302dbd25d1933ff19dd5ba418f4cad",
+          "0xb769b11a2205de8dff1db9bf66f21ae56be1c566dd079610b3ea3b811e82f093",
+          "0xbb0f43a1254fb1d70747df4b186a9a2b605f6856f804a9a2b918aa7ae700fff3"
+        ],
+        "logsBloom": "0x050000016020540240000440008001002608105c000040001210280010080000300820200013104008000001000000001000080016000000011082004025000200101060012000004218000c1c9004000840004010040409008000202000000000200000028820000508000230230a0000040000e2804a0c4200c010400400802000000004a0000000110000010400202020200022000008000405000502420032232010000020182040080403c09000030000000080002000030624800c4c88000300020a8100410001000000111004102004005000004400000100810060002490080000000200002210500000100220002004240002144310400088001000",
+        "receiptsRoot": "0x0005e621a58108071bd592b107449a3bd19873555a89da5cd2496b87441a4b55",
+        "extraData": "0x726275696c6465722d676e6f736973",
+        "withdrawalsRoot": "0xfc0649e477a86bcf9a6e02e9988e2e60b9ab86442c4fbed4055eeb015cc5ecc4",
+        "baseFeePerGas": "0x8",
+        "nonce": "0x0000000000000000",
+        "miner": "0x2435c28cbbf8e5063c0bb416d1edf3e9fc442df9",
+        "withdrawals": [
+          {
+            "index": "0x90fb444",
+            "validatorIndex": "0x81695",
+            "address": "0x79dbec2d18a758c62d410f9763956d52fbd4a3cc",
+            "amount": "0x12b8f0"
+          },
+          {
+            "index": "0x90fb445",
+            "validatorIndex": "0x81696",
+            "address": "0x79dbec2d18a758c62d410f9763956d52fbd4a3cc",
+            "amount": "0x12c1a1"
+          },
+          {
+            "index": "0x90fb446",
+            "validatorIndex": "0x81697",
+            "address": "0x79dbec2d18a758c62d410f9763956d52fbd4a3cc",
+            "amount": "0x12c5c7"
+          },
+          {
+            "index": "0x90fb447",
+            "validatorIndex": "0x81698",
+            "address": "0x79dbec2d18a758c62d410f9763956d52fbd4a3cc",
+            "amount": "0x12d17d"
+          },
+          {
+            "index": "0x90fb448",
+            "validatorIndex": "0x81699",
+            "address": "0x79dbec2d18a758c62d410f9763956d52fbd4a3cc",
+            "amount": "0x12c62e"
+          },
+          {
+            "index": "0x90fb449",
+            "validatorIndex": "0x8169a",
+            "address": "0x79dbec2d18a758c62d410f9763956d52fbd4a3cc",
+            "amount": "0x12c6b7"
+          },
+          {
+            "index": "0x90fb44a",
+            "validatorIndex": "0x8169b",
+            "address": "0x79dbec2d18a758c62d410f9763956d52fbd4a3cc",
+            "amount": "0x12bc3d"
+          },
+          {
+            "index": "0x90fb44b",
+            "validatorIndex": "0x8169c",
+            "address": "0x79dbec2d18a758c62d410f9763956d52fbd4a3cc",
+            "amount": "0x12cc7e"
+          }
+        ],
+        "excessBlobGas": "0x0",
+        "difficulty": "0x0",
+        "gasLimit": "0x103a718",
+        "gasUsed": "0x3a3602",
+        "timestamp": "0x6aa83a4e",
+        "mixHash": "0x197b25c239115134faccc1c98b1a9acb1d40ce8da81eb5ce13afb4cfc4cb5a74",
+        "parentHash": "0x225114d49aa2f3d91e6f9636cff3b5aec436a116059e98cfcf46c8d4583dbf41",
+        "uncles": [],
+        "parentBeaconBlockRoot": "0x17da1759169dcf8ec88473bcc3071a80f7fb22e755fdb34637273dc0cdd3635d",
+        "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "transactionsRoot": "0x5935f236632a529eced9e5a4e2492fec716d29f7a8cf0a6c82ce3d9644ab101c",
+        "stateRoot": "0x62a48215ebdc9b117113203ed3b6c44acb724e4114333061538f4c8b5b00460b",
+        "blobGasUsed": "0x0"
+      },
+      "zkAfter": true
+    },
+    {
+      "method": "eth_getBlockHeader",
+      "params": ["latest"],
+      "support": 1,
+      "value": {
+        "parentHash": "0x225114d49aa2f3d91e6f9636cff3b5aec436a116059e98cfcf46c8d4583dbf41",
+        "stateRoot": "0x62a48215ebdc9b117113203ed3b6c44acb724e4114333061538f4c8b5b00460b",
+        "receiptsRoot": "0x0005e621a58108071bd592b107449a3bd19873555a89da5cd2496b87441a4b55",
+        "logsBloom": "0x050000016020540240000440008001002608105c000040001210280010080000300820200013104008000001000000001000080016000000011082004025000200101060012000004218000c1c9004000840004010040409008000202000000000200000028820000508000230230a0000040000e2804a0c4200c010400400802000000004a0000000110000010400202020200022000008000405000502420032232010000020182040080403c09000030000000080002000030624800c4c88000300020a8100410001000000111004102004005000004400000100810060002490080000000200002210500000100220002004240002144310400088001000",
+        "blockNumber": "0x2e03e89",
+        "gasLimit": "0x103a718",
+        "gasUsed": "0x3a3602",
+        "timestamp": "0x6aa83a4e",
+        "baseFeePerGas": "0x8",
+        "blockHash": "0x7aa8bc5e992e56dcde93305cd75698eed2207caa76fe1cc700641b0225d7d4b8",
+        "blobGasUsed": "0x0",
+        "excessBlobGas": "0x0",
+        "feeRecipient": "0x2435c28cbbf8e5063c0bb416d1edf3e9fc442df9",
+        "transactionsRoot": "0x326f23182e7e67acc76556d50e93dceb17fa729a86f8c9091cec79cbc0ab646a"
+      },
+      "zkAfter": true
+    }
+  ],
+  "storageKeys": ["sync_100_3672", "states_100"],
+  "finished": "2026-09-14T18:17:59.935Z"
+}

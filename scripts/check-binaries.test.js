@@ -3,6 +3,8 @@ jest.mock('fs', () => ({
   mkdirSync: jest.fn(),
 }));
 
+jest.mock('./build-myotis-addon', () => ({ validateInstalledAddon: jest.fn(() => null) }));
+const { validateInstalledAddon } = require('./build-myotis-addon');
 const fs = require('fs');
 const path = require('path');
 const packageJson = require('../package.json');
@@ -68,9 +70,16 @@ describe('Myotis supervisor build inputs', () => {
       ]);
     }
   );
+  test('refuses a vanilla or modified addon without valid checkpoint provenance', () => {
+    fs.existsSync.mockReturnValue(true);
+    validateInstalledAddon.mockReturnValueOnce('checkpoint-addon checksum mismatch');
+    expect(checkBinaries([{ os: 'mac', arch: 'arm64' }])).toEqual([
+      expect.stringContaining('myotis checkpoint addon for mac-arm64: checkpoint-addon checksum mismatch'),
+    ]);
+  });
   test('packages both helper names and only adds the mac helper to explicit signing', () => {
     const resource = packageJson.build.extraResources.find(({ to }) => to === 'myotis-node');
-    expect(resource.filter).toEqual(['myotis-node.node', 'myotis-supervisor', 'myotis-supervisor.exe']);
+    expect(resource.filter).toEqual(['myotis-node.node', 'myotis-build.json', 'myotis-supervisor', 'myotis-supervisor.exe']);
     expect(packageJson.build.mac.binaries).toEqual(['Contents/Resources/myotis-node/myotis-supervisor']);
   });
 });

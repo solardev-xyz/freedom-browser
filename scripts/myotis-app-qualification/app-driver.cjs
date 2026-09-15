@@ -136,7 +136,7 @@ async function run(options) {
   const result = { runId: ctx.runId, enteredAtMs, deadlineAtMs,
     timingScope: Number.isFinite(supplied) ? 'outer-launch-deadline' : 'driver-entry-only',
     startAttempted: false, readAttempted: false, actualOsExitObserved: false,
-    knownColdSyncBlocker: 'Myotis v0.1.7 issue #200; verified reads are not promised',
+    readQualification: 'ABI 25 requires fresh anchors and EL readiness; this bounded Quit driver does not qualify cold sync',
     addonAbi: 'not-directly-observed-by-driver' };
   let progressFd;
   let manager;

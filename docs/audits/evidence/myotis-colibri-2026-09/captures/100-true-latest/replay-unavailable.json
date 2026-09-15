@@ -1,0 +1,22 @@
+{
+  "chainId": 100,
+  "mode": "unavailable",
+  "date": "2026-09-14T18:20:24.089Z",
+  "requests": [
+    "https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30083264/root",
+    "https://gnosis.colibri-proof.tech/consensus/eth/v1/beacon/blocks/30083264/root",
+    "https://rpc-gbc.gnosischain.com/eth/v1/beacon/blocks/30083264/root",
+    "https://gnosis-beacon-api.publicnode.com/eth/v1/beacon/blocks/30083264/root",
+    "https://gnosis.colibri-proof.tech/eth/v1/beacon/blocks/30083264/root",
+    "https://gnosis-prover.incubed.net/eth/v1/beacon/blocks/30083264/root",
+    "https://gnosis.colimind.com/eth/v1/beacon/blocks/30083264/root"
+  ],
+  "results": [
+    {
+      "label": "cold",
+      "ok": false,
+      "error": "Request to https://gnosis.colimind.com/eth/v1/beacon/blocks/30083264/root failed: synthetic offline witness\ncheckpoint_proof: checkpointz anchor mismatch"
+    }
+  ],
+  "storageKeys": []
+}

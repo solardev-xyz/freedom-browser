@@ -1,0 +1,21 @@
+{
+  "chainId": 100,
+  "mode": "wrong-root",
+  "started": "2026-09-14T19:37:10.149Z",
+  "colibriVersion": "2.0.6",
+  "requests": [
+    {
+      "url": "https://checkpoint.gnosischain.com/eth/v1/beacon/blocks/30084224/root",
+      "started": "2026-09-14T19:37:10.588Z",
+      "status": 200,
+      "slot": 30084224,
+      "root": "0x8fd9b966aec50accc081082b57c631a7263e489804b559b58c365738046fdad2"
+    }
+  ],
+  "outcome": "rejected",
+  "proofSha256": "8ce5f1d4c8fb3476a0ec7fc57aea4bdbec2c4937bab52a16cf63efe13a6ce054",
+  "prover": "https://gnosis.colibri-proof.tech",
+  "error": "Weak subjectivity check failed: checkpoint mismatch\ncheckpoint_proof: checkpointz anchor mismatch",
+  "expectedRejection": true,
+  "finished": "2026-09-14T19:37:10.727Z"
+}

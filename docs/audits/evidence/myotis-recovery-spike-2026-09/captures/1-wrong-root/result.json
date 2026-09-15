@@ -1,0 +1,21 @@
+{
+  "chainId": 1,
+  "mode": "wrong-root",
+  "started": "2026-09-14T19:37:14.069Z",
+  "colibriVersion": "2.0.6",
+  "requests": [
+    {
+      "url": "https://mainnet.checkpoint.sigp.io/eth/v1/beacon/blocks/15215808/root",
+      "started": "2026-09-14T19:37:14.556Z",
+      "status": 200,
+      "slot": 15215808,
+      "root": "0x13262465a1a69d2ab579e8a06122dbe1b6f88a3ffb28d8218babaefe8d1a9124"
+    }
+  ],
+  "outcome": "rejected",
+  "proofSha256": "a160c1207e1348d8122e900c51997cb9f32565daa5303a8eb9a60d00719c730a",
+  "prover": "https://mainnet1.colibri-proof.tech",
+  "error": "Weak subjectivity check failed: checkpoint mismatch\ncheckpoint_proof: checkpointz anchor mismatch",
+  "expectedRejection": true,
+  "finished": "2026-09-14T19:37:15.626Z"
+}

@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "chains": {
+    "mainnet": {
+      "passed": true,
+      "elapsedMs": 92128,
+      "readCallerTimeouts": 4,
+      "firstReadMs": 52673,
+      "restartReadMs": 92104,
+      "checkpoint": {
+        "schemaVersion": 1,
+        "chainId": 1,
+        "network": "mainnet",
+        "root": "0x21de30c5044d52f51ce88df61b2b209018f083a62f46d52ec5aaf58db005520b",
+        "slot": 15216064,
+        "verifiedAt": 1789417660552,
+        "source": "https://mainnet.checkpoint.sigp.io",
+        "finalizedEpoch": 475502
+      },
+      "snapshotFiles": [],
+      "sameGenerationOnRestart": true,
+      "addonSha256": "56a646bb04b0c32f870bfa3eb426e3178b0f198ec8d325049a01ad7dbf46ab17",
+      "electron": "44.3.0",
+      "node": "24.20.0"
+    },
+    "gnosis": {
+      "passed": true,
+      "elapsedMs": 6736,
+      "readCallerTimeouts": 0,
+      "firstReadMs": 3303,
+      "restartReadMs": 6619,
+      "checkpoint": {
+        "schemaVersion": 1,
+        "chainId": 100,
+        "network": "gnosis",
+        "root": "0xc38573e1e3a4fc8cff7090253ca23044a9ca611d18c0d6226e6b38f29099a052",
+        "slot": 30084816,
+        "verifiedAt": 1789417661163,
+        "source": "https://checkpoint.gnosischain.com",
+        "finalizedEpoch": 1880301
+      },
+      "snapshotFiles": [],
+      "sameGenerationOnRestart": true,
+      "addonSha256": "56a646bb04b0c32f870bfa3eb426e3178b0f198ec8d325049a01ad7dbf46ab17",
+      "electron": "44.3.0",
+      "node": "24.20.0"
+    }
+  },
+  "sourceSha256": {
+    "src/main/myotis/myotis-manager.js": "d86b16b977af112dda0d53ff196dd563dc34ba504649248fefeb09e0471bbd78",
+    "src/main/myotis/myotis-process.js": "350ba7393fdc2fd8358729a2d535b0904098260e881da338aa9d782a93da7de3",
+    "src/main/myotis/myotis-child.js": "c986ec3785186c6be7d5dc79875b082d82b89c7d342c0566cbc667ba38a2e45d",
+    "src/main/myotis/checkpoint-store.js": "dae9ff5546211c6570a713a251cf1bd19db7903cb0c9f4e16595f3658234381e",
+    "src/main/myotis/checkpoint-verifier.js": "104452f2bbcb5d15606adad1557ca64781bbb8dd35a2256f78a34a1899e25fdb",
+    "src/main/myotis/checkpoint-verifier-worker.js": "9e80a67b1442d7d5e3feb02fe372e14dea8ef323e7f64082f9c0ca7eac60df88",
+    "myotis-bin/mac-arm64/myotis-supervisor": "5f196d453b2417cd0c6ffacd446e423f916fdb4554738c4d0adb692be831e203"
+  }
+}

@@ -43,8 +43,8 @@
     "dist:mac:notary-status": "dotenv -- node scripts/macos-notary.js status",
     "dist:mac:notary-log": "dotenv -- node scripts/macos-notary.js log",
     "dist:mac:staple-notary": "dotenv -- node scripts/macos-notary.js staple",
-    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
-    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils curl git ca-certificates && curl --proto '=https' --tlsv1.2 -sSf https://static.rust-lang.org/rustup/archive/1.28.2/aarch64-unknown-linux-gnu/rustup-init -o /tmp/freedom-rustup-init && echo 'e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c  /tmp/freedom-rustup-init' | sha256sum -c - && chmod +x /tmp/freedom-rustup-init && /tmp/freedom-rustup-init -y --profile minimal --default-toolchain 1.94 && . /root/.cargo/env && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils curl git ca-certificates && curl --proto '=https' --tlsv1.2 -sSf https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init -o /tmp/freedom-rustup-init && echo '20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  /tmp/freedom-rustup-init' | sha256sum -c - && chmod +x /tmp/freedom-rustup-init && /tmp/freedom-rustup-init -y --profile minimal --default-toolchain 1.94 && . /root/.cargo/env && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
@@ -229,6 +229,7 @@
         "to": "myotis-node",
         "filter": [
           "myotis-node.node",
+          "myotis-build.json",
           "myotis-supervisor",
           "myotis-supervisor.exe"
         ]

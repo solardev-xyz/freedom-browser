@@ -3295,6 +3295,12 @@
             if (!status) return 'Status unknown';
             if (status.state === 'ready') return 'Ready';
             if (status.state === 'syncing') return 'Syncing';
+            if (status.state === 'recovering') return 'Updating checkpoint';
+            if (status.state === 'recovery-blocked') {
+              return status.recovery?.reason === 'stalled'
+                ? 'Syncing slowly — open Nodes'
+                : 'Sync paused — open Nodes';
+            }
             if (status.state === 'off') return 'Off';
             if (status.state === 'disabled') return 'Profile disabled';
             return 'Unavailable';
@@ -3972,6 +3978,16 @@
             setBadge('myotis', 'Off');
           } else if (myotisStatus.state === 'error') {
             setBadge('myotis', 'Error', 'warning');
+          } else if (myotisStatus.state === 'recovering') {
+            setBadge('myotis', 'Updating checkpoint', 'warning');
+          } else if (myotisStatus.state === 'recovery-blocked') {
+            setBadge(
+              'myotis',
+              myotisStatus.recovery?.reason === 'stalled'
+                ? 'Syncing slowly — open Nodes'
+                : 'Sync paused — open Nodes',
+              'warning'
+            );
           } else if (myotisStatus.state === 'ready') {
             setBadge('myotis', 'Ready', 'ready');
           } else {
@@ -4365,7 +4381,11 @@
                   ? 'Disabled for this profile under Settings → Nodes.'
                   : supported && !available
                     ? 'Addon not installed — run "npm run myotis:download" and restart.'
-                    : defaultLaunchHelp;
+                    : myotisStatus.state === 'recovery-blocked'
+                      ? 'Sync recovery needs attention. Open Nodes in the toolbar to retry or turn the node off.'
+                      : myotisStatus.state === 'recovering'
+                        ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
+                        : defaultLaunchHelp;
             }
           }
           if (gnosisLaunchRow && gnosisLaunchToggle) {
@@ -4382,7 +4402,11 @@
                   ? 'Disabled for this profile under Settings → Nodes.'
                   : supported && !available
                     ? 'Addon not installed — run "npm run myotis:download" and restart.'
-                    : defaultGnosisLaunchHelp;
+                    : myotisGnosisStatus.state === 'recovery-blocked'
+                      ? 'Sync recovery needs attention. Open Nodes in the toolbar to retry or turn the node off.'
+                      : myotisGnosisStatus.state === 'recovering'
+                        ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
+                        : defaultGnosisLaunchHelp;
             }
           }
           updateMethodStatuses();

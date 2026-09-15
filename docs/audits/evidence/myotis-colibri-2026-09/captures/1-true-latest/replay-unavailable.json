@@ -1,0 +1,28 @@
+{
+  "chainId": 1,
+  "mode": "unavailable",
+  "date": "2026-09-14T18:20:23.471Z",
+  "requests": [
+    "https://sync-mainnet.beaconcha.in/eth/v1/beacon/blocks/15215424/root",
+    "https://mainnet.checkpoint.sigp.io/eth/v1/beacon/blocks/15215424/root",
+    "https://mainnet-checkpoint-sync.attestant.io/eth/v1/beacon/blocks/15215424/root",
+    "https://beaconstate-mainnet.chainsafe.io/eth/v1/beacon/blocks/15215424/root",
+    "https://mainnet-checkpoint-sync.stakely.io/eth/v1/beacon/blocks/15215424/root",
+    "https://checkpointz.pietjepuk.net/eth/v1/beacon/blocks/15215424/root",
+    "https://beaconstate.ethstaker.cc/eth/v1/beacon/blocks/15215424/root",
+    "https://mainnet.colibri-proof.tech/consensus/eth/v1/beacon/blocks/15215424/root",
+    "https://gateway.tenderly.co/public/mainnet/eth/v1/beacon/blocks/15215424/root",
+    "https://ethereum-beacon-api.publicnode.com/eth/v1/beacon/blocks/15215424/root",
+    "https://mainnet.colibri-proof.tech/eth/v1/beacon/blocks/15215424/root",
+    "https://mainnet-prover.incubed.net/eth/v1/beacon/blocks/15215424/root",
+    "https://mainnet.colimind.com/eth/v1/beacon/blocks/15215424/root"
+  ],
+  "results": [
+    {
+      "label": "cold",
+      "ok": false,
+      "error": "Request to https://mainnet.colimind.com/eth/v1/beacon/blocks/15215424/root failed: synthetic offline witness\ncheckpoint_proof: checkpointz anchor mismatch"
+    }
+  ],
+  "storageKeys": []
+}

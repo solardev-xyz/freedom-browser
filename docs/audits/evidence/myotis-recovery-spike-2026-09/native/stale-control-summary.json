@@ -1,0 +1,30 @@
+{
+  "gnosis": {
+    "budgetSeconds": 15,
+    "states": ["STARTING", "STALE_ANCHOR"],
+    "allFinalizedZero": true,
+    "allExecutionAbsent": true,
+    "finish": {
+      "event": "finish",
+      "unixTime": 1789414690,
+      "chainId": 100,
+      "synced": false,
+      "gracefulStop": true,
+      "snapshotPresent": false
+    }
+  },
+  "mainnet": {
+    "budgetSeconds": 15,
+    "states": ["STARTING", "STALE_ANCHOR"],
+    "allFinalizedZero": true,
+    "allExecutionAbsent": true,
+    "finish": {
+      "event": "finish",
+      "unixTime": 1789414690,
+      "chainId": 1,
+      "synced": false,
+      "gracefulStop": true,
+      "snapshotPresent": false
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "chainId": 1,
+  "mode": "unavailable",
+  "started": "2026-09-14T19:37:12.752Z",
+  "colibriVersion": "2.0.6",
+  "requests": [
+    {
+      "url": "https://mainnet.checkpoint.sigp.io/eth/v1/beacon/blocks/15215808/root",
+      "started": "2026-09-14T19:37:13.235Z"
+    }
+  ],
+  "outcome": "rejected",
+  "proofSha256": "a160c1207e1348d8122e900c51997cb9f32565daa5303a8eb9a60d00719c730a",
+  "prover": "https://mainnet1.colibri-proof.tech",
+  "error": "Request to https://mainnet.checkpoint.sigp.io/eth/v1/beacon/blocks/15215808/root failed: Synthetic checkpoint unavailability\ncheckpoint_proof: checkpointz anchor mismatch",
+  "expectedRejection": true,
+  "finished": "2026-09-14T19:37:13.239Z"
+}

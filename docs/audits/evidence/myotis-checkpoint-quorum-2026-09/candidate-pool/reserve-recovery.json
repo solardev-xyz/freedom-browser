@@ -1,0 +1,70 @@
+{
+  "checkpoint": {
+    "schemaVersion": 2,
+    "chainId": 1,
+    "network": "mainnet",
+    "root": "0x24e6b485d036c327ccc170bd6c6ec4e0ea86611f7698687629b2799a9aa881c7",
+    "slot": 15219872,
+    "verifiedAt": 1789463498734,
+    "sources": [
+      "https://mainnet-checkpoint-sync.attestant.io",
+      "https://sync-mainnet.beaconcha.in",
+      "https://checkpointz.pietjepuk.net"
+    ],
+    "finalizedEpoch": 475621
+  },
+  "events": [
+    {
+      "url": "https://mainnet1.colibri-proof.tech",
+      "status": 200
+    },
+    {
+      "url": "https://mainnet.checkpoint.sigp.io/eth/v1/beacon/blocks/15219872/root",
+      "injected": "unavailable"
+    },
+    {
+      "url": "https://mainnet.checkpoint.sigp.io/eth/v1/beacon/states/head/finality_checkpoints",
+      "injected": "unavailable"
+    },
+    {
+      "url": "https://beaconstate.ethstaker.cc/eth/v1/beacon/blocks/15219872/root",
+      "injected": "unavailable"
+    },
+    {
+      "url": "https://beaconstate.ethstaker.cc/eth/v1/beacon/states/head/finality_checkpoints",
+      "injected": "unavailable"
+    },
+    {
+      "url": "https://beaconstate-mainnet.chainsafe.io/eth/v1/beacon/blocks/15219872/root",
+      "injected": "unavailable"
+    },
+    {
+      "url": "https://beaconstate-mainnet.chainsafe.io/eth/v1/beacon/states/head/finality_checkpoints",
+      "injected": "unavailable"
+    },
+    {
+      "url": "https://mainnet-checkpoint-sync.attestant.io/eth/v1/beacon/blocks/15219872/root",
+      "status": 200
+    },
+    {
+      "url": "https://mainnet-checkpoint-sync.attestant.io/eth/v1/beacon/states/head/finality_checkpoints",
+      "status": 200
+    },
+    {
+      "url": "https://sync-mainnet.beaconcha.in/eth/v1/beacon/states/head/finality_checkpoints",
+      "status": 200
+    },
+    {
+      "url": "https://sync-mainnet.beaconcha.in/eth/v1/beacon/blocks/15219872/root",
+      "status": 200
+    },
+    {
+      "url": "https://checkpointz.pietjepuk.net/eth/v1/beacon/states/head/finality_checkpoints",
+      "status": 200
+    },
+    {
+      "url": "https://checkpointz.pietjepuk.net/eth/v1/beacon/blocks/15219872/root",
+      "status": 200
+    }
+  ]
+}

@@ -7,6 +7,56 @@ network/provider/blockchain request. It neither downloads software nor launches
 the Freedom application. The disposable Mac checkpoint below qualifies only
 the recorded finite campaign; the remaining product gates still apply.
 
+## Current checkpoint-recovery integration
+
+The current integration uses Myotis v0.1.9 / ABI 25 with Freedom's versioned
+checkpoint-import extension. A stale anchor starts automatic Colibri checkpoint
+verification and a guarded native-generation replacement. It does not show the
+previous stale-anchor consent dialog or call `acceptStaleAnchor`. The supervisor
+must still establish the old child's exit before the manager switches to a fresh
+state directory. Active ownership records and unconfirmed exits remain blocked;
+checkpoint recovery is not an ownership-quarantine escape hatch. An active or
+unknown legacy base-directory ownership record also blocks fresh migration;
+only an absent record or a validated native-retired record permits it. This
+guard is checked on every state load and replacement.
+
+The complete [recovery contract](myotis-process-isolation.md#automatic-stale-checkpoint-recovery)
+contains the trust-source policy, attempt/deadline limits, immutable state layout,
+and retry/cancellation behavior. The [native extension documentation](../scripts/myotis-native/README.md)
+describes the pinned source build and capability checks. Historical campaigns
+below retain their original revision, runtime and evidence limits; an ABI22
+fixture pass does not establish checkpoint-import behavior.
+
+Qualification of the current product flow must cover:
+
+- Ethereum and Gnosis stale detection, successful checkpoint verification,
+  confirmed old-generation exit, fresh import and verified reads.
+- Process restart using the same authenticated checkpoint/state generation,
+  plus a later expiry requiring a fresh generation without deleting the old one.
+- Wrong evidence, unavailable services, outdated replies and clock disagreement;
+  only transient conditions retry automatically, with a three-attempt limit.
+- Legacy active/unknown ownership records must block migration, while absent or
+  native-retired records permit it; no recovery action clears quarantine.
+- Storage corruption/write failure and incompatible addons: no state adoption,
+  no routing readiness and an actionable failure status.
+- Stop, profile change and app shutdown during checking, backoff and restart;
+  cancelled work must not start a successor or reopen a stopped node.
+- Terminal failures visible with Nodes closed, persistent retry controls after
+  dismissal, both chains' switches, and clear progress in both themes.
+- Native ownership, actual app Quit, signed/packaged loading and platform-specific
+  behavior under the exact candidate build; successful proof verification alone
+  does not establish these lifecycle properties.
+
+The [recovery spike evidence](audits/evidence/myotis-recovery-spike-2026-09/README.md)
+records the earlier live feasibility result separately from product integration.
+The [current renderer evidence](audits/images/myotis-recovery/README.md) uses
+simulated statuses in real Electron and documents both-theme interactions and
+contrast; it is not live checkpoint-verification evidence. New integration
+campaigns must record their exact build and results rather than extending any
+historical pass below.
+
+Current product-path evidence is recorded in the [final-source live campaign](audits/evidence/myotis-recovery-integration-2026-09/review-fixed/README.md): both chains recovered, served verified account reads, stopped and restarted, with four ownership rejection controls. Restarts rebootstrap from the authenticated checkpoint; no persisted committee snapshot was produced. The [ASAR worker campaign](audits/evidence/myotis-recovery-integration-2026-09/asar/review-fixed/README.md) passed separately. Full signed packages, other platforms and long-duration behavior remain separate checks.
+
 ## Disposable Mac checkpoint — 2026-09-08
 
 Commit `098149e7155393b1ce719e7e71ad1c6a38c409e3` passed the original eight cases (1–8) below

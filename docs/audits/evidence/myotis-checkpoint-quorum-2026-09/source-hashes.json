@@ -1,0 +1,8 @@
+{
+  "src/main/myotis/checkpoint-verifier.js": "18aed07518db3f4ca51c115d94f0f62e66a69f0f2731c7fb40c99c004d57b38f",
+  "src/main/myotis/checkpoint-verifier-worker.js": "f68b5cfd63b62d502ad17d396f23db0d159acd57f8ac1856aff0e10353454f2e",
+  "src/main/myotis/myotis-manager.js": "1602d1a673578c8593793a2548afe47659070dbc912fd4a13234da523d9c2c14",
+  "src/main/myotis/checkpoint-store.js": "2268466a35233f8a283a729fdd5e372787b8ec4623066e98c47c664a4ab2f7d6",
+  "src/renderer/lib/myotis-ui.js": "6fcf1379f8eb45d4fb70ec92af6ae1d2c55efefba2a7fb59f6d5ae98940ff256",
+  "docs/audits/evidence/myotis-recovery-integration-2026-09/review-fixed/electron-main.js": "54a29e83a867c7ed493aee9adeed7a20cc489582c9f4f532434d74a4e12f2aeb"
+}
