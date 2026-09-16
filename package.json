@@ -176,10 +176,13 @@
     "pacman": {
       "depends": [
         "gtk3",
+        "libnotify",
         "nss",
-        "alsa-lib",
+        "libxss",
         "libxtst",
-        "xdg-utils"
+        "xdg-utils",
+        "at-spi2-core",
+        "alsa-lib"
       ]
     },
     "nsis": {
