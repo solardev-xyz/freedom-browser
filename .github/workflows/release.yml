@@ -494,11 +494,17 @@ jobs:
       # sets USE_SYSTEM_FPM=true. Do the same on both runners so both legs
       # build the .deb and the .pacman the identical way (both go through fpm,
       # `-t deb` and `-t pacman`).
+      #
+      # libarchive-tools is for the pacman target specifically: fpm generates a
+      # package's .MTREE manifest by shelling out to `bsdtar --format=mtree`,
+      # which the runner images do not ship, and a missing bsdtar fails the
+      # build with a bare `exit code 127`.
       - name: Install fpm for the .deb and .pacman targets
         run: |
-          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential xz-utils
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential xz-utils libarchive-tools
           sudo gem install fpm --no-document
           fpm --version
+          bsdtar --version
 
       - name: Install dependencies
         run: npm ci
