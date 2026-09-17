@@ -843,6 +843,39 @@ describe('Pi browser tool adapter', () => {
     ]);
   });
 
+  test('adds bounded recovery guidance without changing envelopes, receipts or dispatch count', async () => {
+    const onToolOutcome = jest.fn();
+    const envelope = successEnvelope({ text: 'PRIVATE-PAGE-TEXT', elements: [], frames: [] });
+    const controller = { execute: jest.fn(async () => envelope) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+    let result;
+    for (let index = 0; index < 4; index += 1) result = await snapshot.execute(`read_${index}`, {});
+    expect(result.content).toHaveLength(2);
+    expect(JSON.parse(result.content[0].text)).toEqual(envelope);
+    expect(result.content[1].text).toContain('same returned browser observation');
+    expect(result.content[1].text).not.toContain('PRIVATE-PAGE-TEXT');
+    expect(result.details.envelope).toBe(envelope);
+    expect(controller.execute).toHaveBeenCalledTimes(4);
+    expect(onToolOutcome).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('PRIVATE-PAGE-TEXT');
+  });
+
+  test('error recovery guidance preserves failure codes and never repeats the operation', async () => {
+    const controller = { execute: jest.fn(async () => ({ ok: false, error: {
+      code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE, message: 'Covered', retryable: true,
+      suggestedAction: 'Read the page again',
+    } })) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned' });
+    const click = tools.find((tool) => tool.name === OPERATIONS.CLICK);
+    for (let index = 0; index < 4; index += 1) {
+      const checked = expect(click.execute(`click_${index}`, { ref: 'same' }));
+      await checked.rejects.toMatchObject({ code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE, retryable: true, suggestedAction: 'Read the page again',
+        message: index === 3 ? expect.stringContaining('same retryable error 4 times') : '[ELEMENT_NOT_INTERACTABLE] Covered' });
+    }
+    expect(controller.execute).toHaveBeenCalledTimes(4);
+  });
+
   test('retains the canonical controller policy boundary', async () => {
     const authorize = jest.fn(async () => ({ allowed: true }));
     const controller = new AutomationController({

@@ -1,5 +1,6 @@
 'use strict';
 
+const { BrowserRecoveryTracker } = require('./browser-recovery-tracker');
 const {
   OPERATIONS,
   MAX_WAIT_TIMEOUT_MS,
@@ -707,6 +708,7 @@ async function createFreedomBrowserTools(options = {}) {
   const tabState = { currentTabId: options.tabId };
   const pageOrigins = new Map();
   const pageDetails = new Map();
+  const recovery = new BrowserRecoveryTracker();
   const availableSpecs = TOOL_SPECS.filter(
     (spec) => spec.requiresVision !== true || options.visionEnabled === true
   );
@@ -788,6 +790,10 @@ async function createFreedomBrowserTools(options = {}) {
             pageOrigins.delete(targetTabId);
             pageDetails.delete(targetTabId);
           }
+          const guidance = recovery.record(
+            spec.operation, { ...params, tabId: targetTabId }, result.details.envelope
+          );
+          if (guidance) result.content.push({ type: 'text', text: guidance });
           return result;
         } catch (error) {
           const receipt = createToolReceipt(spec.operation, {
@@ -806,6 +812,10 @@ async function createFreedomBrowserTools(options = {}) {
             errorCode:
               error instanceof FreedomBrowserToolError ? error.code : ERROR_CODES.INTERNAL_ERROR,
           });
+          const guidance = recovery.record(
+            spec.operation, { ...params, tabId: targetTabId }, null, error
+          );
+          if (guidance && error instanceof FreedomBrowserToolError) error.message += `\n${guidance}`;
           throw error;
         }
       },

@@ -65,7 +65,11 @@ has passed live qualification.
   Native dropdown labels/disabled groups and delayed custom-menu flows are covered.
   Read-only cross-origin frame listing/search now uses owned, document-bound
   handles and effective execution-context origins; opaque origins are denied.
-  Broader forms/waits, cross-frame interaction and visual targeting remain pending.
+  Repetition recovery now gives bounded model-facing hints for unchanged
+  observations, retryable failures and scroll boundaries. A native five-click/
+  five-approval case and 174 tests in 5 focused suites pass; hints cannot retry or
+  grant authority. Broader forms/waits, cross-frame interaction and visual
+  targeting remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -125,11 +129,18 @@ harness has been selected.
    integration, provider image transforms, post-check races and platform qualification
    remain open; no arbitrary JavaScript/CDP tool is implied.
 
-Follow-through opportunities are recorded rather than silently added to the
-first slice: no-progress detection, guarded batching, exact observation
-retrieval after compaction, dialog handling and lifecycle diagnostics. Deepen
-the relevant source/test/history review when selecting each for implementation.
-Retain Freedom's canonical controller and Pi's reasoning responsibilities.
+6. **Repetition recovery — advisory slice implemented:** bounded session-local
+   fingerprints detect repeated unchanged observations, retryable attempts and
+   scroll boundaries/no-movement. Hints appear at four/eight matches without
+   retries, action vetoes or new authority. Document/control/focus/scroll progress,
+   continuation scopes and original action outcomes remain distinct. A native
+   five-click/five-approval fixture and 174 tests in 5 focused suites pass. Threshold
+   tuning against real tasks, broader cycles and stronger blocker policy remain open.
+
+Follow-through opportunities include guarded batching, exact observation retrieval
+after compaction, dialog handling and lifecycle diagnostics. Deepen the relevant
+source/test/history review when selecting each for implementation. Retain
+Freedom's canonical controller and Pi's reasoning responsibilities.
 
 Use local synthetic browser fixtures plus a small manual task set to validate
 actual outcomes. The user deferred a cross-project comparative benchmark, not

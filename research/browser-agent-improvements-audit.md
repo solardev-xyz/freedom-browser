@@ -547,6 +547,69 @@ release builds or a real-model embedded-content reliability benchmark. No new
 dependencies, user-profile access or public browsing was involved.
 
 
+### Repetition recovery hints, 2026-09-18
+
+Deeper inspection of the pinned Python `ActionLoopDetector`, its tests and agent
+integration confirmed that upstream uses soft guidance, not an action veto. Its
+fingerprints include page URL/text/count and normalized attempts. Freedom adapts
+the idea in the Pi tool adapter; automation policy and Pi reasoning keep their
+existing responsibilities. No upstream implementation was copied.
+
+A bounded tracker now adds a model-facing hint on the fourth and eighth identical
+returned observation, repeated equivalent retryable attempt, or repeated scroll
+boundary/no-movement outcome. New ephemeral element/frame reference strings do
+not count as progress. Literal search comparison normalizes case/whitespace while
+preserving word order and punctuation. Document/URL/text/control/focus/scroll
+changes and different continuation windows reset matching observations; measured
+scroll movement and successful typing/selection/wait/navigation receipts also
+reset the relevant streak. It does not automatically retry, terminate a task,
+grant permission, change a tool's success/failure, or claim the user goal is done.
+
+Guidance explicitly distinguishes an unchanged returned observation from evidence
+about an interaction's side effects. Retry hints cover only selected retryable
+browser errors; permission/cancellation/privileged operations never receive them.
+The canonical envelope and UI receipt remain unchanged. Stop, close, idle gaps
+and new tool sessions reset history; malformed advisory evidence fails open for
+bookkeeping without changing an executed tool outcome.
+
+Tracker retention is limited to eight pages, 512 reference digests per page and a
+20-attempt window. All retained payload/observation/reference fingerprints use a
+private random per-tool-session HMAC key. The tracker keeps no raw page bodies,
+URLs, typed values or persistent/linkable hashes, and includes none in guidance.
+This is additional tracker retention only; it does not change ordinary model
+context or existing conversation persistence.
+
+**5 focused unit suites / 174 tests passed** (including service/session/progress
+integration); lint and whitespace checks passed. **One native integration case
+passed in 2.9s** using actual installed Pi tool definitions, the scoped canonical
+controller and five trusted Electron clicks with five independent approvals.
+The fixture records each click without changing visible prose. Its first click
+changes focus, correctly resetting the fingerprint; four subsequent matching
+focused observations produce one hint. Stop resets the hint state. Exact native
+receipts prove the tracker neither duplicated input nor skipped approval.
+
+The initial native test expected the fourth total read to trigger; inspection
+showed the first focus change was real progress in the returned observation.
+The test now includes that transition rather than weakening the fingerprint.
+Unit coverage includes fresh reference identities, literal searches, changed
+state/navigation/focus, pagination, distinct controls/errors/typed values,
+transient failure recovery, scroll boundaries/movement, session isolation,
+bounded old-history eviction and unchanged error/envelope semantics.
+
+Commands: `npm run test:e2e -- test-e2e/automation-recovery.spec.js`;
+`npm test -- src/main/agent/browser-recovery-tracker.test.js src/main/agent/pi-browser-tools.test.js src/main/agent/freedom-agent-service.test.js src/main/agent/pi-session-factory.test.js src/main/agent/agent-progress.test.js`;
+`npm run lint`.
+
+Limits: thresholds are provisional fixture-backed choices, not a measured model
+reliability improvement. This detects selected repetition patterns, not every
+semantic cycle or all unseen side effects; animated text and changing windows
+can reset it. Different observation scopes are not treated as equivalent merely
+because their excerpts match. Historical/stale references never gain authority
+from the tracker. Stronger stop/blocker policy and long-session context recovery
+remain separate work. No paid model, public browsing, dependency or user profile
+was involved in this slice.
+
+
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119
 [h-root]: https://github.com/browser-use/browser-harness-js/tree/2d9a5ed37ed11f31b2622cd69c4b55f979cb905f
