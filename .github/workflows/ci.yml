@@ -5,13 +5,8 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      myotis_force_live:
-        description: >-
-          Run the myotis-native-e2e live spec even though issue #200 keeps it
-          skipped (sets MYOTIS_E2E_IGNORE_KNOWN_STALL=1). This is how we check
-          whether a newer addon clears the upstream beacon wedge; a still-wedged
-          addon now aborts on the spec's stall guard in a few minutes rather
-          than burning the readiness budget.
+      myotis_live:
+        description: 'Run real Myotis reads on all platforms (requires fresh checkpoints; never accepts stale-anchor risk)'
         type: boolean
         default: false
 
@@ -40,7 +35,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Run lint
         run: npm run lint
@@ -80,7 +77,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Run migration + profile suites
         run: npm run test:migration
@@ -116,7 +115,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Assert shipped native-addon target
         run: node -e "const target = process.platform + '-' + process.arch; const expected = process.env.EXPECTED_TARGET; if (target !== expected) { console.error('Expected ' + expected + ' runner, got ' + target); process.exit(1); } console.log(target);"
@@ -183,7 +184,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Download this runner's libradicle addon
         run: npm run radicle:download -- ${{ matrix.flags }}
@@ -222,7 +225,7 @@ jobs:
             target: win32-x64
             addon: myotis-bin/win-x64/myotis-node.node
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -235,16 +238,18 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
-      - name: Download this runner's Myotis addon
+      - name: Download this runner's official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
 
       - name: Load addon and verify ABI
-        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==22) throw new Error('Expected ABI 22, got '+abi); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
+        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==26) throw new Error('Expected ABI 26, got '+abi); if(typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import API'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
         env:
           MYOTIS_ADDON: ${{ matrix.addon }}
 
@@ -260,21 +265,14 @@ jobs:
   # out first attempt still preserves its cleanly-stopped partial sync; a
   # re-run continues from that snapshot instead of starting from zero.
   #
-  # CURRENTLY SKIPPED at the spec level, see issue #200: myotis v0.1.7 (the
-  # newest published release) bootstraps every cold start from a checkpoint
-  # embedded in the binary and then wedges — the catch-up applies beacon
-  # periods 1825 -> 1840 and can never obtain the update for period 1840, so
-  # readiness is unreachable. The job stayed green only while the cache chain
-  # carried a pre-stall warm snapshot forward; GitHub evicted it after 7 idle
-  # days and a cold start can no longer re-warm it. The remaining steps still
-  # cost a few minutes each, so the budgets below are sized for a real run
-  # (MYOTIS_E2E_IGNORE_KNOWN_STALL=1) rather than the 190-minute worst case
-  # that burned ~4 h of CI per push.
+  # The pinned v0.1.10 release carries the catch-up stall fix that first landed
+  # in v0.1.9 (observed as of 2026-09). Run the live spec normally;
+  # stale anchors fail explicitly and never receive automatic risk consent.
   myotis-native-e2e:
-    # A feature branch with an open PR otherwise launches this 30-40 minute
-    # live-network matrix twice (push + pull_request), doubling cost and exposure
-    # to transient peer selection. Keep PR/manual gates and post-merge coverage on main.
-    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    # Live peers and expiring trust anchors need an explicit qualification run.
+    # Unit and native-load checks still run on ordinary PRs; the separate
+    # Windows supervisor workflow retains its existing push/manual triggers.
+    if: github.event_name == 'workflow_dispatch' && inputs.myotis_live
     strategy:
       fail-fast: false
       matrix:
@@ -308,13 +306,13 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Download Myotis release addons
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -346,9 +344,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/myotis-data
-          key: myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-
+            myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
@@ -369,9 +367,7 @@ jobs:
           # The stall window keeps its 3-minute default, which must stay below
           # the readiness budget above for the guard to be reachable at all
           # (test-e2e/live/myotis-sync-guard.js owns and unit-tests that
-          # invariant). Empty unless a maintainer forces the run from the
-          # workflow_dispatch input.
-          MYOTIS_E2E_IGNORE_KNOWN_STALL: ${{ inputs.myotis_force_live && '1' || '' }}
+          # invariant).
           FREEDOM_TEST_HIDE_WINDOW: '1'
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -388,7 +384,7 @@ jobs:
       # Evidence for each branch, so a future reader knows what is proven:
       #   present=true  — ubuntu-latest and macos-14 (run 33450528176, cache
       #                   restore hit), and windows-latest via a forced
-      #                   `myotis_force_live` dispatch, which populates the data
+      #                   manual dispatch, which populates the data
       #                   dir before the stall guard aborts.
       #   present=false — windows-latest (run 33450528176: cache miss + skip,
       #                   the case that would have failed the job outright under
@@ -419,7 +415,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/myotis-data
-          key: myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -454,7 +450,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -500,7 +496,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -519,6 +515,42 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Whether a request honours `session.setProxy` — the `.onion` PAC in
+  # `src/main/tor-proxy.js` — is decided by Chromium's network stack, which no
+  # jest mock can stand in for (that is exactly how #355 happened: the external
+  # IPFS gateway proxy used undici, whose sockets never see the session). This
+  # runs the one suite that spawns a real Electron process to check it. The
+  # `test` job installs with `--ignore-scripts` and therefore has no Electron
+  # binary, so the suite self-skips there; `FREEDOM_ELECTRON_NET_TEST=1` makes a
+  # missing binary a failure here rather than a silent skip.
+  ipfs-gateway-proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Electron system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run the external gateway proxy integration test
+        env:
+          FREEDOM_ELECTRON_NET_TEST: '1'
+        run: npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
+
   # Tab activation, link dispositions and menu dismissal are all about *focus*
   # — which of the shell and the guest `<webview>` owns the keyboard — and no
   # unit test can see that: it is decided by the real Chromium focus tree.
@@ -531,7 +563,22 @@ jobs:
   # first asserts Escape hands focus back to the button that opened a menu
   # (#306), the second drives modified/middle clicks and a real HTML5 drag on
   # the bookmarks bar (#307) — dispositions and drag gestures a synthetic DOM
-  # dispatch cannot exercise.
+  # dispatch cannot exercise. `page-context-menu.spec.js` joins them for the
+  # selection search item (#330), whose Ctrl/Cmd-click background disposition
+  # is likewise invisible to a synthetic click.
+  #
+  # `chrome-popovers.spec.js` likewise needs the real thing: it resizes the
+  # actual BrowserWindow and reads laid-out geometry (a menu's bottom edge, the
+  # chrome document's scrollHeight, where a context menu lands relative to the
+  # pointer), none of which a jsdom-less unit fake can produce (#324).
+  #
+  # `permissions.spec.js` belongs to the same family and was likewise in no
+  # job's list: the anchored prompt is decided by real input and focus routing
+  # (Escape and click-away as a deny-once, a background tab's prompt held
+  # rather than dismissed, a modal <dialog> taking the Escape instead), and it
+  # drives the indicator popover the dismissal embargo is surfaced and lifted
+  # in — including the private-window scoping, which needs two real windows on
+  # two real sessions (#364, #365).
   e2e-tabs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -550,24 +597,80 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + bookmarks E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
             test-e2e/onchain-apps.spec.js \
             test-e2e/menus.spec.js \
-            test-e2e/bookmarks.spec.js
+            test-e2e/chrome-popovers.spec.js \
+            test-e2e/bookmarks.spec.js \
+            test-e2e/page-context-menu.spec.js \
+            test-e2e/permissions.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-tabs-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Name resolution reaches the user through two surfaces that only the real
+  # main → preload → renderer round trip exercises: the address bar (what a
+  # typed name or `ipfs://` URL resolves to, and what gets painted back into
+  # the bar) and the wallet's Send recipient field (which chain a name is
+  # resolved for, and which address the review screen commits to).
+  #
+  # `ensv2.spec.js` drives the wallet DNS/Unicode-recipient flow and asserts
+  # each lookup is requested for the selected chain; its second describe —
+  # the native-IPFS ENS checker — self-skips unless `ENSV2_UI_LIVE=1`, so
+  # this job stays offline and deterministic. `address-bar.spec.js` covers
+  # the scheme/gateway-form rewrites the name parser has to decline, plus the
+  # typed-draft rules from #305/#310/#313/#314. Neither spec was in any job's
+  # curated list, so a regression in either shipped green — the #319 lesson.
+  e2e-address-bar-ens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run address-bar + ENSv2 E2E
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/address-bar.spec.js \
+            test-e2e/ensv2.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-address-bar-ens-traces
           path: |
             test-results/
             playwright-report/
@@ -604,7 +707,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -674,7 +777,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -728,7 +831,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -748,6 +851,69 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-address-bar-clipboard-${{ matrix.os }}-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Issue #97 — Cmd/Ctrl+W must close the active tab, not the window. The
+  # accelerator is resolved by the platform's own menu layer, so the ownership
+  # half runs on all three (that is where macOS and Windows/Linux differed);
+  # the real-keypress half needs X11 key injection and runs on Linux only,
+  # which is where the bug shipped.
+  e2e-close-tab-shortcut:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-playwright-deps
+
+      # xdotool sends the real Ctrl+W: Playwright's own key dispatch goes
+      # through CDP into the renderer and never reaches a menu accelerator.
+      # Through the shared apt wrapper, like every other apt call on Linux CI.
+      - name: Install xdotool
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool
+
+      - name: Run close-tab shortcut E2E
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js
+          else
+            npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js
+          fi
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-close-tab-shortcut-${{ matrix.os }}-traces
           path: |
             test-results/
             playwright-report/
@@ -780,7 +946,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -800,6 +966,145 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-profiles-${{ matrix.os }}-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # --- Renderer visual guards (#261 item 1) ---------------------------------
+  #
+  # Both jobs below are gated on this one: they only have anything to say about
+  # a change that touches the renderer, its harness, or the specs themselves,
+  # and a screenshot job that runs on every backend-only PR is a job people
+  # learn to ignore. On a push (not a PR) they always run, so `main` keeps the
+  # baselines honest even when nobody opened a PR.
+  renderer-changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      renderer: ${{ steps.filter.outputs.renderer }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the renderer changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "not a pull request — running the visual jobs"
+            echo "renderer=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE"
+          changed=$(git diff --name-only "origin/$BASE...HEAD")
+          echo "$changed"
+          # Everything the two visual jobs read, not just the renderer: the
+          # specs, the fixtures, the gate that can turn them into no-ops, the
+          # list of surfaces the screenshot spec declares (which decides which
+          # baselines are taken and which count as stranded), *and the
+          # baselines they compare against* — a baseline-adoption PR
+          # (`node scripts/apply-screenshot-baselines.js <artifact>`) touches
+          # only `__screenshots__/` or the contrast baseline, and skipping both
+          # jobs on it would land the new pixels unchecked. `package.json` is in
+          # the list because the npm scripts are how the jobs launch the specs.
+          if echo "$changed" | grep -Eq '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate|screenshot-baselines)\.js|test-e2e/theme-contrast-baseline\.json|test-e2e/__screenshots__/|package\.json|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)'; then
+            echo "renderer=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "renderer=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Both themes, every surface the tour reaches: the declared theme plus WCAG
+  # contrast on headings, body copy, buttons and inputs. This is the check that
+  # fails on a reintroduced #224 (dark resolver rows under the light theme) or
+  # #249 (white-on-white permission origin).
+  e2e-theme-parity:
+    needs: renderer-changed
+    if: needs.renderer-changed.outputs.renderer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run theme parity E2E
+        run: xvfb-run -a npm run test:e2e -- test-e2e/theme-parity.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-theme-parity-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Committed pixel baselines for the tour's surfaces, both themes. Ubuntu only:
+  # font rasterisation differs enough between platforms that a macOS or Windows
+  # leg would disagree with every baseline (the spec skips itself off Linux).
+  #
+  # When this fails, download the `renderer-screenshots-diff` artifact — it
+  # carries `<name>-actual.png` and `<name>-diff.png` per surface — and either
+  # fix the regression or adopt the new pixels with
+  # `node scripts/apply-screenshot-baselines.js <unzipped-artifact>`.
+  # Locally: `xvfb-run -a npm run test:e2e:screenshots:update`.
+  e2e-renderer-screenshots:
+    needs: renderer-changed
+    if: needs.renderer-changed.outputs.renderer == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Compare renderer screenshots
+        run: xvfb-run -a npm run test:e2e:screenshots
+
+      - name: Upload screenshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-screenshots-diff
           path: |
             test-results/
             playwright-report/

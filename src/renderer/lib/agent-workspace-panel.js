@@ -1,3 +1,5 @@
+import { boundPopoverToViewport } from './popover-bounds.js';
+
 import { createWorkspaceViewers } from './workspace-viewers.js';
 
 function element(tag, className, text) {
@@ -57,6 +59,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
     popup.style.maxHeight = `${height}px`;
     popup.style.left = `${Math.max(12, Math.min(beside ? rect.left - width - 8 : rect.left, window.innerWidth - width - 12))}px`;
     popup.style.top = `${Math.max(12, Math.min(beside ? rect.top : rect.bottom + 6, window.innerHeight - popup.offsetHeight - 12))}px`;
+    boundPopoverToViewport(popup);
   }
   document.addEventListener('click', (event) => {
     if (!popup) return;
@@ -80,7 +83,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
     closePopup(false);
     const sequence = popupSequence;
     const version = generation;
-    popup = element('section', 'agent-workspace-popover');
+    popup = element('section', 'agent-workspace-popover chrome-popover');
     popup.setAttribute('role', 'dialog');
     popup.setAttribute('aria-label', title);
     const header = element('header', 'agent-workspace-popover-heading');

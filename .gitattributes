@@ -1,0 +1,6 @@
+# Evidence digests describe exact bytes, including on core.autocrlf checkouts.
+# Auto-detection keeps binary captures untouched; pin known binary formats too.
+docs/audits/evidence/** text=auto eol=lf
+docs/audits/evidence/**/*.png -text
+docs/audits/evidence/**/*.ssz -text
+docs/audits/evidence/**/*.bin -text

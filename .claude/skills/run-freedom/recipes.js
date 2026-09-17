@@ -304,6 +304,18 @@ async function dappConnect({ win }) {
   await win.waitForTimeout(600);
 }
 
+// The wallet's manage-permissions subscreen for a connected dApp — the screen
+// #249 rendered white-on-white on the light theme. Needs stubWalletIpc() first
+// (it reads the permission back over `dapp:get-permission`).
+async function dappPermissions({ win }, origin = 'https://swap.example') {
+  await win.evaluate(async (key) => {
+    const pm = await import('./lib/wallet/permission-manage.js');
+    await pm.showDappPermissions(key);
+  }, origin);
+  await win.waitForSelector('#sidebar-dapp-permissions', { state: 'visible' });
+  await win.waitForTimeout(400);
+}
+
 // Swarm approval screens: 'connect' | 'publish' | 'messaging' | 'feed'
 async function swarmApproval({ win }, kind = 'connect') {
   await win.evaluate(async (k) => {
@@ -441,6 +453,7 @@ module.exports = {
   dappTxApproval,
   dappSign,
   dappConnect,
+  dappPermissions,
   swarmApproval,
   onchainApp,
   trustPopover,

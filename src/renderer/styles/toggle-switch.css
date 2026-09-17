@@ -39,6 +39,7 @@
 }
 
 .toggle-switch input:checked + .toggle-slider {
+  /* theme-literal: switch-on green, the same value light-theme.css repeats for the light palette */
   background: #4caf50;
 }
 
@@ -47,5 +48,6 @@
 }
 
 .toggle-switch input:focus + .toggle-slider {
+  /* theme-literal: accent focus glow, deliberately identical in both themes */
   box-shadow: 0 0 0 2px rgba(94, 193, 255, 0.3);
 }

@@ -122,6 +122,13 @@
   white-space: nowrap;
 }
 
+.external-node-trust-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .external-node-choice {
   display: inline-grid;
   grid-template-columns: 1fr 1fr;

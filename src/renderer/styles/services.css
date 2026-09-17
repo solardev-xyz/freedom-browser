@@ -43,10 +43,12 @@
 }
 
 .bee-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
 .bee-toggle-switch.starting {
+  /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
@@ -134,10 +136,12 @@
 }
 
 .ipfs-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
 .ipfs-toggle-switch.starting {
+  /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
@@ -185,10 +189,12 @@
 }
 
 .radicle-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
 .radicle-toggle-switch.starting {
+  /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
@@ -250,6 +256,7 @@
 
 .bee-toggle.external .bee-toggle-switch.running,
 .ipfs-toggle.external .ipfs-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
@@ -284,11 +291,14 @@
 }
 
 .status-indicator.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
+  /* theme-literal: glow of the running-green dot above */
   box-shadow: 0 0 4px #4caf50;
 }
 
 .status-indicator.starting {
+  /* theme-literal: node status colour: orange means starting up */
   background: #ff9800;
   animation: pulse 1s infinite;
 }
@@ -345,10 +355,12 @@
 }
 
 .tor-toggle-switch.running {
+  /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
 .tor-toggle-switch.starting {
+  /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
@@ -367,12 +379,14 @@
 }
 
 /*
- * Unlike the Radicle/IPFS info panels (which gate the whole block on a
- * `.visible` class toggled while the menu is open + polling), the Tor block is
- * always shown when the section is enabled; its individual rows self-manage
- * visibility (status via .node-status-row, exit rows via .hidden, version
- * always). So there is intentionally no `.tor-info:not(.visible)` hide rule.
+ * Same gate as the Radicle/IPFS info panels: nothing renders beneath the toggle
+ * while the node is off (#349). `tor-ui.js`'s updateTorInfoVisibility is the
+ * sole writer of the class; individual rows still self-manage inside a visible
+ * block (status via .node-status-row, version via [hidden] in external mode).
  */
+.tor-info:not(.visible) {
+  display: none;
+}
 
 .tor-info-row {
   display: flex;
@@ -395,4 +409,52 @@
 
 .tor-toggle.disabled .tor-toggle-switch {
   background: var(--border);
+}
+
+.myotis-checkpoint-retry[hidden],
+.myotis-recovery-message[hidden] {
+  display: none;
+}
+
+.myotis-recovery-message {
+  margin: 0 0 4px;
+  line-height: 1.5;
+  white-space: normal;
+  color: var(--text);
+}
+
+.myotis-recovery-message.warning {
+  border-left: 2px solid var(--warning-fg);
+  padding-left: 8px;
+}
+
+.myotis-checkpoint-retry {
+  align-self: flex-start;
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.myotis-checkpoint-retry:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+#myotis-recovery-notice {
+  bottom: 88px;
+  max-width: min(520px, calc(100vw - 32px));
+}
+
+#myotis-recovery-notice .update-toast-content {
+  flex-wrap: wrap;
+}
+
+#myotis-recovery-notice-text {
+  flex: 1 1 230px;
+  line-height: 1.5;
 }

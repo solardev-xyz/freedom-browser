@@ -5,6 +5,33 @@
 // and the harness already gives us deterministic content.
 
 const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { cidV0ToV1Base32 } = require('../src/shared/cid-utils');
+
+for (const gateway of ['ipfs.io', 'dweb.link', '127.0.0.1', 'localhost:8080']) {
+  test(`gateway-form IPFS navigation through ${gateway} loads its CID without ENS lookup`, async ({
+    window,
+    harness,
+  }) => {
+    const cid = 'QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR';
+    const target = `ipfs://${cidV0ToV1Base32(cid)}/`;
+    await harness.setContentFixture(target, {
+      body: '<!doctype html><title>Gateway fixture</title><h1>Gateway CID loaded</h1>',
+    });
+    const dialogs = [];
+    window.on('dialog', async (dialog) => {
+      dialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    const input = window.locator('[data-test="address-input"]');
+    await input.fill(`ipfs://${gateway}/ipfs/${cid}`);
+    await input.press('Enter');
+    await expect
+      .poll(() => evalInActiveWebview(window, 'document.body.textContent'))
+      .toContain('Gateway CID loaded');
+    await expect(input).toHaveValue(target);
+    expect(dialogs).toEqual([]);
+  });
+}
 
 const evalInActiveWebview = (window, snippet) =>
   window.evaluate(async (source) => {

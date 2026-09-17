@@ -1,9 +1,17 @@
 name: Release
+# Every run of this file used to show up as "Release #N" whether it was a tag
+# release, a nightly or a throwaway pipeline test. Name each run by what it is.
+run-name: >-
+  ${{ github.event_name == 'push' && format('Release {0}', github.ref_name)
+   || github.event_name == 'schedule' && 'Nightly build (scheduled)'
+   || (inputs.nightly && inputs.publish_nightly) && format('Nightly build (manual, {0})', github.ref_name)
+   || inputs.nightly && format('Nightly pipeline test on {0} (no publish)', github.ref_name)
+   || format('Pipeline test on {0} (no publish)', github.ref_name) }}
 
 # Builds every distributable Freedom ships — macOS arm64 (signed + notarized),
-# Linux x64/arm64 (AppImage + deb) and Windows x64 (NSIS installer + portable
-# zip, unsigned) — on GitHub-hosted runners and attaches them all to one
-# GitHub Release for the pushed tag. Windows arm64 is deliberately not built
+# Linux x64/arm64 (AppImage + deb + pacman) and Windows x64 (NSIS installer +
+# portable zip, unsigned) — on GitHub-hosted runners and attaches them all to
+# one GitHub Release for the pushed tag. Windows arm64 is deliberately not built
 # (never shipped on freedom.baby; no Myotis addon for it).
 #
 # Triggers:
@@ -16,7 +24,16 @@ name: Release
 #     docs/agent-playbooks/release-process.md.
 #   - workflow_dispatch: same builds from any branch; macOS is signed by
 #     default, set `signed: false` for a pipeline test without secrets.
-#     Dispatch runs only upload workflow artifacts, never a release.
+#     Dispatch runs only upload workflow artifacts, never a release —
+#     unless `nightly` + `publish_nightly` are ticked (see below).
+#   - schedule (22:07 UTC daily): a nightly build of `main` for internal
+#     testers. The `plan` job stamps a
+#     `<version>-nightly.<date>.<sha>` version, every build job is signed
+#     and bundles Tor exactly like a tag push, the artifacts publish to the
+#     rolling `nightly` pre-release, and they update from the `nightly`
+#     channel — never from the stable `latest` one on freedom.baby. A
+#     scheduled run whose head commit is already published as the current
+#     nightly skips every job. See release-process.md "Nightly builds".
 #
 # Required repository secrets for a signed macOS build (Settings → Secrets
 # and variables → Actions); Linux and Windows need none:
@@ -38,8 +55,31 @@ on:
   push:
     tags:
       - 'v*'
+  schedule:
+    # 22:07 UTC (00:07 CEST / 23:07 CET). GitHub has fired this repo's
+    # schedule ~5 hours late on every observed night whatever the minute
+    # (03:00 → 08:04, 03:23 → 08:45 UTC), and a signed nightly takes ~35 min.
+    # Scheduling just after the European day ends puts the build in testers'
+    # hands by 07:00 CEST even with a six-hour delay, and simply lands it
+    # earlier on a night GitHub is punctual; the skip check makes a late or
+    # duplicate fire harmless.
+    - cron: '7 22 * * *'
   workflow_dispatch:
     inputs:
+      nightly:
+        description: >-
+          Build as a nightly: stamp a nightly version
+          (<version>-nightly.<date>.<sha>) and publish to the `nightly`
+          update channel instead of the stable `latest` one.
+        type: boolean
+        default: false
+      publish_nightly:
+        description: >-
+          Publish the nightly build to the rolling `nightly` pre-release
+          (moves the `nightly` tag). Needs `nightly` ticked as well;
+          without it the run only uploads workflow artifacts.
+        type: boolean
+        default: false
       signed:
         description: >-
           macOS only: sign and notarize with the Developer ID secrets.
@@ -48,27 +88,131 @@ on:
         default: true
       bundle_tor:
         description: >-
-          macOS and Linux: build and bundle the Arti (Tor) client. Compiles
-          from crates.io with cargo and adds several minutes per job.
+          macOS, Linux and Windows x64: build and bundle the Arti (Tor)
+          client. Compiles from crates.io with cargo and adds several minutes
+          per job.
         type: boolean
         default: true
 
 permissions:
   contents: read
 
+# Tag pushes queue behind each other and are never cancelled: a half-uploaded
+# release is worse than a slow one. Nightly runs share one group and do cancel
+# — only the newest build of `main` is worth finishing, and a stale one would
+# race the rolling `nightly` release it publishes to.
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: >-
+    ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly))
+    && 'nightly' || format('release-{0}', github.ref) }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly) }}
 
 jobs:
+  # What kind of run is this, what version does it build, and does it need to
+  # run at all? Every other job hangs off these four outputs, so the answer is
+  # computed once instead of re-derived (differently) in eight places.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      # 'true' when this run builds a nightly rather than a release/pipeline test.
+      nightly: ${{ steps.plan.outputs.nightly }}
+      # 'true' when it also publishes to the rolling `nightly` pre-release.
+      publish: ${{ steps.plan.outputs.publish }}
+      # The version every build job packages.
+      version: ${{ steps.plan.outputs.version }}
+      # 'true' when there is nothing new to build and every job should skip.
+      skip: ${{ steps.plan.outputs.skip }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Plan the run
+        id: plan
+        env:
+          # Read through the environment rather than interpolated into the
+          # script: `inputs.*` is null on push and schedule, and a bare
+          # `${{ }}` in a `run:` block is a script-injection shape.
+          INPUT_NIGHTLY: ${{ inputs.nightly }}
+          INPUT_PUBLISH_NIGHTLY: ${{ inputs.publish_nightly }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          nightly=false
+          publish=false
+          case "$GITHUB_EVENT_NAME" in
+            schedule)
+              nightly=true
+              publish=true
+              ;;
+            workflow_dispatch)
+              if [ "$INPUT_NIGHTLY" = 'true' ]; then
+                nightly=true
+                if [ "$INPUT_PUBLISH_NIGHTLY" = 'true' ]; then publish=true; fi
+              fi
+              ;;
+          esac
+
+          version="$(node -p "require('./package.json').version")"
+          if [ "$nightly" = 'true' ]; then
+            # Drop any prerelease suffix (`-dev` on main, `-rc.N` on a release
+            # branch) and stamp date + short sha. The result is valid semver
+            # and sorts *below* the release it leads up to, so a nightly never
+            # looks newer than the stable build of the same version.
+            version="${version%%-*}-nightly.$(date -u +%Y%m%d).${GITHUB_SHA:0:7}"
+          fi
+
+          # Nothing merged since the last nightly? Then the scheduled run would
+          # republish the same tree under a new version number, so skip it.
+          # Only schedules skip: a manual nightly is always someone asking for
+          # this exact build. On any API trouble the default is to build.
+          skip=false
+          if [ "$GITHUB_EVENT_NAME" = 'schedule' ]; then
+            if notes="$(gh release view nightly --repo "$GH_REPO" --json body --jq .body 2>/dev/null)"; then
+              # Herestring, not a pipe: `grep -q` exits on the first match and
+              # the SIGPIPE that gives the writer would fail the step under
+              # `pipefail`.
+              if grep -qE "^commit: ${GITHUB_SHA}[[:space:]]*$" <<< "$notes"; then
+                skip=true
+              fi
+            else
+              echo "No existing nightly release (or it could not be read); building."
+            fi
+          fi
+
+          echo "event=$GITHUB_EVENT_NAME nightly=$nightly publish=$publish version=$version skip=$skip"
+          {
+            echo "nightly=$nightly"
+            echo "publish=$publish"
+            echo "version=$version"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$skip" = 'true' ]; then
+            echo "::notice::${GITHUB_SHA} is already published as the current nightly; skipping this run."
+          fi
+
   mac-arm64:
+    needs: [plan]
+    if: needs.plan.outputs.skip != 'true'
     runs-on: macos-14
     timeout-minutes: 120
     env:
-      # Tag pushes are always signed and always bundle Tor; dispatch runs
-      # follow their inputs (`inputs.*` is null on push, hence the OR).
-      SIGNED: ${{ github.event_name == 'push' || inputs.signed }}
-      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
+      # Tag pushes and scheduled nightlies are always signed and always bundle
+      # Tor — testers on macOS need a notarized build as much as users do;
+      # dispatch runs follow their inputs (`inputs.*` is null on anything but
+      # a dispatch, hence the OR).
+      SIGNED: ${{ github.event_name != 'workflow_dispatch' || inputs.signed }}
+      BUNDLE_TOR: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_tor }}
+      # Nightlies publish to their own channel and feed so a nightly install
+      # updates to the next nightly and no stable user is ever offered one.
+      # Also names the update manifest: `<channel>-mac.yml`.
+      FREEDOM_UPDATE_CHANNEL: ${{ needs.plan.outputs.nightly == 'true' && 'nightly' || 'latest' }}
+      FREEDOM_UPDATE_URL: ${{ needs.plan.outputs.nightly == 'true' && format('{0}/{1}/releases/download/nightly', github.server_url, github.repository) || '' }}
 
     steps:
       - name: Check out repository
@@ -120,7 +264,20 @@ jobs:
       # Full install (with lifecycle scripts): `electron-builder install-app-deps`
       # rebuilds the native modules against Electron on the arm64 host.
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
+
+      # A nightly has no tag to take a version from, and `main`'s package.json
+      # says `<next>-dev`, which is not a version anything should ship. Stamp
+      # the one the plan job computed so electron-builder names the artifacts
+      # and writes the update manifest under it. After `npm ci`, so the install
+      # still resolves the lockfile the repository committed.
+      - name: Stamp nightly version
+        if: needs.plan.outputs.nightly == 'true'
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          node -p "'Building version ' + require('./package.json').version"
 
       - name: Download adblock filter lists
         run: npm run adblock:download
@@ -138,7 +295,7 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --mac --arm64
 
-      - name: Download Myotis addon
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -216,7 +373,7 @@ jobs:
       # Stapling rewrites the disk image, so the sha512/size electron-builder
       # recorded for it before the ticket was attached no longer describe the
       # file that gets uploaded. electron-updater only ever reads the `.zip`
-      # entry on macOS, but latest-mac.yml is a checksum manifest: refresh the
+      # entry on macOS, but <channel>-mac.yml is a checksum manifest: refresh the
       # `.dmg` entry so every hash it publishes matches the bytes actually
       # shipped. The `.dmg.blockmap` still describes the pre-staple bytes;
       # nothing on the macOS update path reads it, and a mismatch there only
@@ -229,7 +386,7 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          const ymlPath = path.join('dist', 'latest-mac.yml');
+          const ymlPath = path.join('dist', `${process.env.FREEDOM_UPDATE_CHANNEL || 'latest'}-mac.yml`);
           let yml = fs.readFileSync(ymlPath, 'utf8');
 
           for (const name of fs.readdirSync('dist').filter((f) => f.endsWith('.dmg'))) {
@@ -267,7 +424,7 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.blockmap
-            dist/latest-mac.yml
+            dist/${{ env.FREEDOM_UPDATE_CHANNEL }}-mac.yml
           if-no-files-found: error
           # "Re-run failed jobs" keeps the previous attempt's artifact; without
           # this the upload 409s and the run never reaches the release step.
@@ -282,21 +439,27 @@ jobs:
             runner: ubuntu-latest
             uname: x86_64
             myotis: linux-x64
-            manifest: latest-linux.yml
+            # Manifest name minus the channel: `<channel>-linux[-arm64].yml`.
+            manifest_suffix: linux
             rust_triple: x86_64-unknown-linux-gnu
             rustup_sha256: 20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
           - arch: arm64
             runner: ubuntu-24.04-arm
             uname: aarch64
             myotis: linux-arm64
-            manifest: latest-linux-arm64.yml
+            manifest_suffix: linux-arm64
             rust_triple: aarch64-unknown-linux-gnu
             rustup_sha256: e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c
     name: linux-${{ matrix.arch }}
+    needs: [plan]
+    if: needs.plan.outputs.skip != 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
-      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
+      BUNDLE_TOR: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_tor }}
+      # See the mac job: nightlies build and publish on their own channel.
+      FREEDOM_UPDATE_CHANNEL: ${{ needs.plan.outputs.nightly == 'true' && 'nightly' || 'latest' }}
+      FREEDOM_UPDATE_URL: ${{ needs.plan.outputs.nightly == 'true' && format('{0}/{1}/releases/download/nightly', github.server_url, github.repository) || '' }}
 
     steps:
       - name: Check out repository
@@ -331,15 +494,32 @@ jobs:
       # electron-builder's bundled fpm is x64-only; the arm64 Docker recipe in
       # package.json (`dist:linux:arm64:docker`) installs fpm from RubyGems and
       # sets USE_SYSTEM_FPM=true. Do the same on both runners so both legs
-      # build the .deb the identical way.
-      - name: Install fpm for the .deb target
+      # build the .deb and the .pacman the identical way. fpm drives both
+      # (`-t deb` / `-t pacman`) and needs xz for either one's compression.
+      # libarchive-tools is for the pacman target specifically: fpm builds the
+      # package's .MTREE manifest by shelling out to `bsdtar --format=mtree`,
+      # which the ubuntu runner images do not ship, and a missing one fails the
+      # build with a bare `/bin/bash failed (exit code 127)`.
+      - name: Install fpm for the .deb and .pacman targets
         run: |
-          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential xz-utils
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential xz-utils libarchive-tools
           sudo gem install fpm --no-document
           fpm --version
+          bsdtar --version
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
+
+      # Same as the mac job: `main`'s package.json says `<next>-dev`, so a
+      # nightly gets the version the plan job computed stamped in before the
+      # build reads it.
+      - name: Stamp nightly version
+        if: needs.plan.outputs.nightly == 'true'
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          node -p "'Building version ' + require('./package.json').version"
 
       - name: Download adblock filter lists
         run: npm run adblock:download
@@ -355,7 +535,7 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --linux --${{ matrix.arch }}
 
-      - name: Download Myotis addon
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -383,7 +563,7 @@ jobs:
           fi
           npm run tor:download
 
-      - name: Build AppImage and deb
+      - name: Build AppImage, deb and pacman
         run: npm run dist -- --linux --${{ matrix.arch }}
         env:
           USE_SYSTEM_FPM: 'true'
@@ -391,9 +571,29 @@ jobs:
       - name: Sanity-check the distributables
         run: |
           ls -la dist
-          test -f "dist/${{ matrix.manifest }}" || { echo "Expected dist/${{ matrix.manifest }} (update manifest for this arch)" >&2; exit 1; }
+          manifest="dist/${FREEDOM_UPDATE_CHANNEL}-${{ matrix.manifest_suffix }}.yml"
+          test -f "$manifest" || { echo "Expected $manifest (update manifest for this arch and channel)" >&2; exit 1; }
           for deb in dist/*.deb; do dpkg-deb -f "$deb" Package Version Architecture; done
           ls dist/*.AppImage
+          # No runner has pacman, so the package cannot be installed here — read
+          # its own metadata out of the tarball instead. `pacman -U` on real Arch
+          # stays a manual check (release-process.md §6).
+          ls dist/*.pacman
+          for pac in dist/*.pacman; do
+            info=$(tar -xOf "$pac" .PKGINFO)
+            echo "$info" | grep -E '^(pkgname|pkgver|pkgdesc|arch|depend) '
+            # fpm writes pkgdesc from the first line only of the deb-shaped
+            # --description electron-builder passes, and that line is
+            # build.pacman.synopsis: leave it unset and the shipped package
+            # reports "Description : None" under pacman -Qi.
+            echo "$info" | grep -qE '^pkgdesc = .' \
+              || { echo "$pac has an empty pkgdesc; set build.pacman.synopsis" >&2; exit 1; }
+            # Without libsecret, Chromium's safeStorage downgrades to its
+            # hardcoded-key basic_text backend with no warning, and the
+            # quick-unlock credential is encrypted with that instead of the keyring.
+            echo "$info" | grep -qx 'depend = libsecret' \
+              || { echo "$pac does not depend on libsecret" >&2; exit 1; }
+          done
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -402,8 +602,9 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*.deb
+            dist/*.pacman
             dist/*.blockmap
-            dist/${{ matrix.manifest }}
+            dist/${{ env.FREEDOM_UPDATE_CHANNEL }}-${{ matrix.manifest_suffix }}.yml
           if-no-files-found: error
           overwrite: true
 
@@ -417,10 +618,13 @@ jobs:
   # This and the mac/windows jobs below automate steps 1 (launch), 2 (version)
   # and 6 (persistence) of the manual checklist in
   # docs/agent-playbooks/release-process.md §6 on every platform the release
-  # ships; navigation, the bundled nodes, the headline feature and
+  # ships, and re-check the site-permission fixes #361/#364 in the built app
+  # (test-e2e/packaged/permissions.spec.js); navigation, the bundled nodes, the
+  # headline feature, the macOS camera/microphone TCC pass and
   # upgrade-from-previous are still tested by hand there.
   smoke-linux:
-    needs: [linux]
+    needs: [plan, linux]
+    if: needs.plan.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -432,6 +636,10 @@ jobs:
     name: smoke-linux-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    env:
+      # Must resolve to the same value as the build job's: it decides whether
+      # the artifact is expected to carry the arti binary at all.
+      BUNDLE_TOR: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_tor }}
 
     steps:
       - name: Check out repository
@@ -447,7 +655,9 @@ jobs:
       # an already-built artifact, so there is nothing to rebuild against
       # Electron and no bundled binary to download.
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -458,12 +668,18 @@ jobs:
           name: freedom-linux-${{ matrix.arch }}
           path: artifact
 
-      # A tag push must smoke-test the version it claims to be shipping; a
-      # dispatch run has no tag, so the working tree's version is the only
-      # truth available.
+      # A tag push must smoke-test the version it claims to be shipping. A
+      # nightly has no tag and this job checks out an unstamped tree, so the
+      # only truth is the version the plan job handed the build jobs. Any
+      # other dispatch run builds the working tree's version.
       - name: Resolve the expected version
+        env:
+          NIGHTLY: ${{ needs.plan.outputs.nightly }}
+          NIGHTLY_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = 'push' ]; then
+          if [ "$NIGHTLY" = 'true' ]; then
+            version="$NIGHTLY_VERSION"
+          elif [ "$GITHUB_EVENT_NAME" = 'push' ]; then
             version="${GITHUB_REF_NAME#v}"
           else
             version="$(node -p "require('./package.json').version")"
@@ -486,6 +702,23 @@ jobs:
           dpkg -s "$package" | grep -E '^(Package|Version|Architecture):'
           test -x /opt/Freedom/freedom
 
+      # `packaged-live`'s Tor leg skips itself when a build bundles no Arti, so
+      # on its own it cannot tell "Tor is bundled and starts" from "Tor was
+      # never packaged". Assert the file the package actually laid down: a
+      # dropped `linux.extraResources` entry, or an Arti build that failed
+      # without failing its step, fails here instead of shipping silently.
+      # Same assertion as the mac and Windows smoke jobs.
+      - name: Assert the installed .deb bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          arti=/opt/Freedom/resources/arti-bin/arti
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la /opt/Freedom/resources >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti present ($(stat -c %s "$arti") bytes)"
+
       - name: Smoke-test the installed .deb
         env:
           FREEDOM_E2E_EXECUTABLE: /opt/Freedom/freedom
@@ -507,6 +740,19 @@ jobs:
           chmod +x "${images[0]}"
           "$(realpath "${images[0]}")" --appimage-extract >/dev/null
           test -x squashfs-root/freedom
+
+      # Same assertion as for the .deb: the two artifacts are packed
+      # separately, so a missing binary can appear in either one alone.
+      - name: Assert the AppImage bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          arti=squashfs-root/resources/arti-bin/arti
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la squashfs-root/resources >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti present ($(stat -c %s "$arti") bytes)"
 
       - name: Smoke-test the AppImage
         env:
@@ -532,9 +778,14 @@ jobs:
   # broken separately, and only a copy taken out of the read-only mount proves
   # the app still runs once it leaves it.
   smoke-mac-arm64:
-    needs: [mac-arm64]
+    needs: [plan, mac-arm64]
+    if: needs.plan.outputs.skip != 'true'
     runs-on: macos-14
     timeout-minutes: 45
+    env:
+      # Must resolve to the same value as the build job's: it decides whether
+      # the artifact is expected to carry the arti binary at all.
+      BUNDLE_TOR: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_tor }}
 
     steps:
       - name: Check out repository
@@ -550,7 +801,9 @@ jobs:
       # an already-built artifact, so there is nothing to rebuild against
       # Electron and no bundled binary to download.
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       # Signed and unsigned runs upload under different names, so match both
       # and let the step below read the signing state back off the name that
@@ -561,12 +814,18 @@ jobs:
           pattern: freedom-mac-arm64-*
           path: artifact
 
-      # A tag push must smoke-test the version it claims to be shipping; a
-      # dispatch run has no tag, so the working tree's version is the only
-      # truth available.
+      # A tag push must smoke-test the version it claims to be shipping. A
+      # nightly has no tag and this job checks out an unstamped tree, so the
+      # only truth is the version the plan job handed the build jobs. Any
+      # other dispatch run builds the working tree's version.
       - name: Resolve the expected version
+        env:
+          NIGHTLY: ${{ needs.plan.outputs.nightly }}
+          NIGHTLY_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = 'push' ]; then
+          if [ "$NIGHTLY" = 'true' ]; then
+            version="$NIGHTLY_VERSION"
+          elif [ "$GITHUB_EVENT_NAME" = 'push' ]; then
             version="${GITHUB_REF_NAME#v}"
           else
             version="$(node -p "require('./package.json').version")"
@@ -622,6 +881,23 @@ jobs:
           done
           test -x "$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/MacOS/Freedom"
 
+      # `packaged-live`'s Tor leg skips itself when a build bundles no Arti, so
+      # on its own it cannot tell "Tor is bundled and starts" from "Tor was
+      # never packaged". Assert the file the copied bundle actually carries: a
+      # dropped `mac.extraResources` entry, or an Arti build that failed
+      # without failing its step, fails here instead of shipping silently.
+      # Same assertion as the Linux and Windows smoke jobs.
+      - name: Assert the disk image bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          arti="$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/Resources/arti-bin/arti"
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la "$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/Resources" >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
+
       # What a user's first double-click asks Gatekeeper, on the copy rather
       # than on the build tree the mac-arm64 job assessed: an app whose ticket
       # did not survive being wrapped in a disk image is rejected here. Skipped
@@ -642,6 +918,26 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The camera and microphone entitlements (#362) only reach the app
+      # through codesign, so `config/entitlements.mac.test.js` — which guards
+      # the plist and the package.json paths on every pull request — cannot say
+      # the shipped signature carries them. Read them back out of the bundle a
+      # user actually installs — the outer bundle and each helper bundle under
+      # Contents/Frameworks, which host the capture processes and are signed
+      # separately through `entitlementsInherit` — plus the Info.plist usage
+      # descriptions the TCC prompt shows, and fail the job when one is missing.
+      #
+      # Signed runs only, for both halves: entitlements reach a bundle only
+      # through the signing pass an unsigned dispatch run skips, so there is
+      # nothing to assert there (whether `codesign -d` then errors out or prints
+      # an empty set has not been verified against an unsigned artifact — the
+      # gate does not depend on which), and the Info.plist check belongs with
+      # the entitlements one — it is the same fix. The assertion itself is
+      # mutation-tested off a Mac by scripts/check-mac-entitlements.test.js.
+      - name: Assert the app from the disk image carries the media entitlements
+        if: env.SIGNED == 'true'
+        run: node scripts/check-mac-entitlements.js "$RUNNER_TEMP/apps-dmg/Freedom.app"
 
       # No --no-sandbox here: macOS needs no sandbox opt-out, and passing one
       # would smoke-test a configuration no user runs.
@@ -665,6 +961,27 @@ jobs:
           ditto -x -k "${zips[0]}" "$RUNNER_TEMP/apps-zip"
           test -x "$RUNNER_TEMP/apps-zip/Freedom.app/Contents/MacOS/Freedom"
 
+      # Same assertion as for the disk image: the two artifacts are packed
+      # separately, so a missing binary can appear in either one alone.
+      - name: Assert the mac zip bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          arti="$RUNNER_TEMP/apps-zip/Freedom.app/Contents/Resources/arti-bin/arti"
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la "$RUNNER_TEMP/apps-zip/Freedom.app/Contents/Resources" >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
+
+      # Same assertion as for the disk image: the two artifacts are signed and
+      # packed separately, and the `-mac.zip` is what electron-updater installs
+      # over an existing app, so an entitlement lost on that path would take the
+      # camera away from users who only ever updated in place.
+      - name: Assert the app from the zip carries the media entitlements
+        if: env.SIGNED == 'true'
+        run: node scripts/check-mac-entitlements.js "$RUNNER_TEMP/apps-zip/Freedom.app"
+
       - name: Smoke-test the app from the zip
         env:
           FREEDOM_E2E_EXECUTABLE: ${{ runner.temp }}/apps-zip/Freedom.app/Contents/MacOS/Freedom
@@ -682,11 +999,24 @@ jobs:
           overwrite: true
 
   windows-x64:
+    needs: [plan]
+    if: needs.plan.outputs.skip != 'true'
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
       run:
         shell: bash
+    env:
+      # Tag pushes and scheduled nightlies always bundle Tor; dispatch runs
+      # follow their input (`inputs.*` is null on anything but a dispatch,
+      # hence the OR). Same expression as the mac and Linux jobs.
+      BUNDLE_TOR: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_tor }}
+      # See the mac job. On Windows the architecture is part of the channel
+      # name (electron-updater derives no platform suffix there), so the
+      # manifest is `<channel>-win-x64.yml`; scripts/build.js appends the
+      # `-win-<arch>` half.
+      FREEDOM_UPDATE_CHANNEL: ${{ needs.plan.outputs.nightly == 'true' && 'nightly' || 'latest' }}
+      FREEDOM_UPDATE_URL: ${{ needs.plan.outputs.nightly == 'true' && format('{0}/{1}/releases/download/nightly', github.server_url, github.repository) || '' }}
 
     steps:
       - name: Check out repository
@@ -716,7 +1046,17 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
+
+      # Same as the mac and Linux jobs: stamp the nightly version before
+      # anything reads package.json's `<next>-dev`.
+      - name: Stamp nightly version
+        if: needs.plan.outputs.nightly == 'true'
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          node -p "'Building version ' + require('./package.json').version"
 
       - name: Download adblock filter lists
         run: npm run adblock:download
@@ -732,19 +1072,61 @@ jobs:
       - name: Download libradicle addon
         run: npm run radicle:download -- --win --x64
 
-      - name: Download Myotis addon
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: win32-x64
 
+      # Same convention as the mac and Linux jobs: the runner image normally
+      # ships cargo, and if it ever does not, install a pinned rustup-init
+      # checked against a sha256 recorded here rather than running an
+      # unpinned installer off the network.
+      #
+      # Arti's dependency tree compiles C (bundled SQLite, ring), so the build
+      # runs inside the same already installed x64 MSVC developer shell the
+      # packaging step below uses — no compiler is downloaded here either.
+      # `arti.exe` lands in arti-bin/win-x64/ and reaches the package through
+      # the `win.extraResources` entry in package.json.
+      - name: Build Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true'
+        shell: pwsh
+        env:
+          RUSTUP_VERSION: 1.28.2
+          RUSTUP_SHA256: 88d8258dcf6ae4f7a80c7d1088e1f36fa7025a1cfd1343731b4ee6f385121fc0
+        run: |
+          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            Push-Location $env:RUNNER_TEMP
+            $url = "https://static.rust-lang.org/rustup/archive/$env:RUSTUP_VERSION/x86_64-pc-windows-msvc/rustup-init.exe"
+            Invoke-WebRequest -Uri $url -OutFile rustup-init.exe
+            $actual = (Get-FileHash rustup-init.exe -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $env:RUSTUP_SHA256) {
+              throw "rustup-init.exe sha256 is $actual, expected $env:RUSTUP_SHA256"
+            }
+            ./rustup-init.exe -y --profile minimal --no-modify-path
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Remove-Item rustup-init.exe
+            Pop-Location
+            $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+            $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $env:PATH = "$cargoBin;$env:PATH"
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          npm run tor:download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # No Windows code-signing certificate exists yet, so this installer is
       # unsigned (same as every release on freedom.baby so far) and SmartScreen
       # prompts on first run. scripts/build.js pins the update channel to
-      # latest-win-x64 so the manifest is named the way freedom.baby serves it.
+      # <channel>-win-x64 (`latest-win-x64` for a release, the way
+      # freedom.baby serves it).
       # build.nsis.artifactName keeps the installer name free of spaces:
       # GitHub rewrites spaces in release-asset names to dots, which would
-      # break the `url:` latest-win-x64.yml records for the updater.
+      # break the `url:` <channel>-win-x64.yml records for the updater.
       - name: Build NSIS installer and portable zip
         shell: pwsh
         run: |
@@ -759,7 +1141,8 @@ jobs:
       - name: Sanity-check the distributables
         run: |
           ls -la dist
-          test -f dist/latest-win-x64.yml || { echo "Expected dist/latest-win-x64.yml" >&2; exit 1; }
+          manifest="dist/${FREEDOM_UPDATE_CHANNEL}-win-x64.yml"
+          test -f "$manifest" || { echo "Expected $manifest (update manifest for this channel)" >&2; exit 1; }
           ls dist/*.exe dist/*-win.zip
 
       - name: Upload workflow artifact
@@ -770,7 +1153,7 @@ jobs:
             dist/*.exe
             dist/*.zip
             dist/*.blockmap
-            dist/latest-win-x64.yml
+            dist/${{ env.FREEDOM_UPDATE_CHANNEL }}-win-x64.yml
           if-no-files-found: error
           overwrite: true
 
@@ -781,12 +1164,17 @@ jobs:
   # only shows up once the tree has been unpacked by NSIS rather than by a zip
   # reader fails there and nowhere else.
   smoke-windows-x64:
-    needs: [windows-x64]
+    needs: [plan, windows-x64]
+    if: needs.plan.outputs.skip != 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
       run:
         shell: bash
+    env:
+      # Must resolve to the same value as the build job's: it decides whether
+      # the artifact is expected to carry arti.exe at all.
+      BUNDLE_TOR: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_tor }}
 
     steps:
       - name: Check out repository
@@ -802,7 +1190,9 @@ jobs:
       # an already-built artifact, so there is nothing to rebuild against
       # Electron and no bundled binary to download.
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Download the win x64 artifact
         uses: actions/download-artifact@v4
@@ -810,12 +1200,18 @@ jobs:
           name: freedom-win-x64
           path: artifact
 
-      # A tag push must smoke-test the version it claims to be shipping; a
-      # dispatch run has no tag, so the working tree's version is the only
-      # truth available.
+      # A tag push must smoke-test the version it claims to be shipping. A
+      # nightly has no tag and this job checks out an unstamped tree, so the
+      # only truth is the version the plan job handed the build jobs. Any
+      # other dispatch run builds the working tree's version.
       - name: Resolve the expected version
+        env:
+          NIGHTLY: ${{ needs.plan.outputs.nightly }}
+          NIGHTLY_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = 'push' ]; then
+          if [ "$NIGHTLY" = 'true' ]; then
+            version="$NIGHTLY_VERSION"
+          elif [ "$GITHUB_EVENT_NAME" = 'push' ]; then
             version="${GITHUB_REF_NAME#v}"
           else
             version="$(node -p "require('./package.json').version")"
@@ -881,6 +1277,23 @@ jobs:
           Get-Item $exe | Format-List Name, Length, VersionInfo
           "FREEDOM_INSTALLED_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # `packaged-live`'s Tor leg skips itself when a build bundles no Arti,
+      # so on its own it cannot tell "Tor is bundled and starts" from "Tor was
+      # never packaged". Assert the file the installer actually laid down:
+      # a dropped `win.extraResources` entry, or an Arti build that failed
+      # without failing its step, fails here instead of shipping silently.
+      - name: Assert the installed package bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          installed="$(cygpath -u "$FREEDOM_INSTALLED_EXE")"
+          arti="$(dirname "$installed")/resources/arti-bin/arti.exe"
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la "$(dirname "$installed")/resources" >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti.exe present ($(stat -c %s "$arti") bytes)"
+
       # No --no-sandbox here: Windows needs no sandbox opt-out, and passing one
       # would smoke-test a configuration no user runs.
       - name: Smoke-test the installed package
@@ -907,6 +1320,20 @@ jobs:
           }
           "FREEDOM_PORTABLE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # Same assertion as for the installed package: the two artifacts are
+      # packed separately, so a missing binary can appear in either one alone.
+      - name: Assert the portable zip bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          portable="$(cygpath -u "$FREEDOM_PORTABLE_EXE")"
+          arti="$(dirname "$portable")/resources/arti-bin/arti.exe"
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la "$(dirname "$portable")/resources" >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti.exe present ($(stat -c %s "$arti") bytes)"
+
       - name: Smoke-test the portable zip
         env:
           FREEDOM_E2E_EXECUTABLE: ${{ env.FREEDOM_PORTABLE_EXE }}
@@ -928,8 +1355,8 @@ jobs:
   # a partial or dead-on-arrival set. "Re-run failed jobs" re-runs this job too
   # and picks the successful jobs' artifacts back up from the run.
   release:
-    if: github.event_name == 'push'
-    needs: [mac-arm64, linux, windows-x64, smoke-linux, smoke-mac-arm64, smoke-windows-x64]
+    if: github.event_name == 'push' && needs.plan.outputs.skip != 'true'
+    needs: [plan, mac-arm64, linux, windows-x64, smoke-linux, smoke-mac-arm64, smoke-windows-x64]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -969,14 +1396,14 @@ jobs:
             *-*)
               prerelease=true
               title="Freedom ${version} (pre-release)"
-              notes="Pre-release build of Freedom ${version}: macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb) and Windows x64 (installer and portable zip, unsigned — expect a SmartScreen prompt). Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
+              notes="Pre-release build of Freedom ${version}: macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb and pacman — on Arch or Omarchy install the pacman package with \`sudo pacman -U ./<file>\`) and Windows x64 (installer and portable zip, unsigned — expect a SmartScreen prompt). Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
 
           Changelog so far: ${changelog}"
               ;;
             *)
               prerelease=false
               title="Freedom ${version}"
-              notes="Freedom ${version} for macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb) and Windows x64 (installer and portable zip).
+              notes="Freedom ${version} for macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb and pacman — on Arch or Omarchy install the pacman package with \`sudo pacman -U ./<file>\`) and Windows x64 (installer and portable zip).
 
           Changelog: ${changelog}"
               ;;
@@ -1007,4 +1434,245 @@ jobs:
           gh release upload "$TAG" --clobber release/*
           if [ "$prerelease" = true ]; then
             gh release edit "$TAG" --draft=false --prerelease
+          fi
+
+  # The whole Playwright `harness` project, which no other workflow runs: CI
+  # runs curated per-job spec lists to keep pull requests fast, so roughly two
+  # dozen harness specs otherwise execute nowhere. A nightly is where a slow,
+  # complete run belongs. Deliberately *not* a dependency of the `nightly`
+  # publish job below: a red full suite is a signal for the morning, not a
+  # reason to withhold the build from testers.
+  e2e-full:
+    needs: [plan]
+    if: needs.plan.outputs.nightly == 'true' && needs.plan.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+
+      - name: Run the full harness E2E suite
+        run: xvfb-run -a npm run test:e2e
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # One rolling pre-release, tag `nightly`, assets replaced every night. A
+  # tester installs it once and every later nightly arrives as an in-app
+  # update, because the build jobs published these artifacts on the `nightly`
+  # channel pointing at this release's download URL.
+  #
+  # Same gate as the `release` job: every build and every packaged smoke test
+  # must have passed, so testers never get a dead-on-arrival build.
+  nightly:
+    if: needs.plan.outputs.publish == 'true'
+    needs: [plan, mac-arm64, linux, windows-x64, smoke-linux, smoke-mac-arm64, smoke-windows-x64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Creating/editing the release, uploading its assets and force-moving
+      # the `nightly` tag. Nothing else in this workflow escalates.
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # "Merged since the last nightly" is a git log between two commits
+          # that can be many merges apart.
+          fetch-depth: 0
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: freedom-*
+          merge-multiple: true
+          path: release
+
+      - name: List release assets
+        run: ls -la release
+
+      - name: Compose the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # The previous nightly's commit, read back off the `commit:` line
+          # this step writes. The plan job parses the same line to decide
+          # whether a scheduled run has anything new to build, so its shape is
+          # load-bearing: `commit: <full sha>`, alone on its line.
+          prev=''
+          if body="$(gh release view nightly --repo "$GH_REPO" --json body --jq .body 2>/dev/null)"; then
+            echo 'NIGHTLY_RELEASE_EXISTS=true' >> "$GITHUB_ENV"
+            prev="$(awk 'match($0, /^commit: [0-9a-f]{40}[ \t]*$/) { print $2; exit }' <<< "$body")"
+          else
+            echo 'NIGHTLY_RELEASE_EXISTS=false' >> "$GITHUB_ENV"
+          fi
+
+          if [ -n "$prev" ] && git cat-file -e "${prev}^{commit}" 2>/dev/null; then
+            # `awk NR<=50`, not `head -50`: head exits early and the SIGPIPE
+            # it sends git would fail the step under `pipefail`.
+            merged="$(git log --merges --format='- %s' "${prev}..${GITHUB_SHA}" | awk 'NR <= 50')"
+            if [ -z "$merged" ]; then
+              merged='- Nothing merged since the last nightly; this is a rebuild of the same tree.'
+            fi
+            merged="${merged}
+
+          Full diff: ${GITHUB_SERVER_URL}/${GH_REPO}/compare/${prev}...${GITHUB_SHA}"
+          else
+            merged='- First nightly: no previous nightly commit is recorded, so there is nothing to diff against.'
+          fi
+
+          # Unquoted heredoc for the variables; the backticks are escaped
+          # because an unquoted heredoc would run them as commands.
+          cat > nightly-notes.md <<NOTES
+          Nightly build of \`main\` for internal testing. This is not a release.
+
+          version: ${VERSION}
+          commit: ${GITHUB_SHA}
+
+          ## Merged since the last nightly
+
+          ${merged}
+
+          ## Install
+
+          - **macOS (Apple Silicon)**: the \`.dmg\`, signed and notarized like a release, so it opens without a Gatekeeper override. The \`-mac.zip\` is what the updater downloads; you do not need it.
+          - **Linux**: the \`.AppImage\` (\`chmod +x\` and run), the \`.deb\` (\`sudo apt install ./<file>\`) or, on Arch Linux and Omarchy, the \`.pacman\` (\`sudo pacman -U <file>\`), x64 and arm64.
+          - **Windows x64**: \`Freedom-Setup-${VERSION}.exe\`. Unsigned, so SmartScreen prompts on first run — "More info" then "Run anyway". The \`-win.zip\` is the portable build.
+
+          ## Before you install
+
+          - **Internal testing only.** A nightly is whatever was on \`main\` when the schedule fired (22:07 UTC, often hours later). It has passed the packaged smoke tests on every platform and nothing else; expect breakage, and do not hand these out.
+          - **Updates come from the \`nightly\` channel.** A nightly updates itself to the next nightly. It never offers a stable release, and no stable install on freedom.baby is ever offered a nightly. To go back to stable, uninstall the nightly and install the latest release.
+          - **Use a separate profile.** Nightly and stable share an app id and a profile directory, so run the nightly against a scratch one and a broken migration cannot touch your real data: set \`FREEDOM_TEST_USER_DATA\` to a throwaway directory when launching (see docs/agent-playbooks/release-process.md §6).
+          NOTES
+
+          echo "----- notes -----"
+          cat nightly-notes.md
+
+      - name: Publish the rolling nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Move the rolling tag before touching the release, so the release
+          # page never shows last night's source next to tonight's assets.
+          # A lightweight tag: no identity to configure, and nothing reads a
+          # tag message here. actions/checkout left the workflow token in the
+          # remote's credentials; `contents: write` above is what lets it push.
+          git tag -f nightly "$GITHUB_SHA"
+          git push -f origin refs/tags/nightly
+
+          title="Freedom nightly ${VERSION}"
+
+          # Recreate the release object rather than editing it: GitHub sets a
+          # release's "released this <date>" once, when it is first published,
+          # and never on edit, so an edited rolling release would say the date
+          # of the very first nightly forever. Deleting and recreating costs a
+          # minute or two in which the nightly page is empty and an updater
+          # check 404s (it retries on its next interval) — acceptable for an
+          # internal nightly, and a fresh release also starts with no stale
+          # assets from the previous night. The download URLs are keyed by tag
+          # name, so nothing a tester or the updater holds changes.
+          if [ "${NIGHTLY_RELEASE_EXISTS:-false}" = 'true' ]; then
+            gh release delete nightly --repo "$GH_REPO" --yes
+          fi
+          gh release create nightly --repo "$GH_REPO" --target "$GITHUB_SHA" \
+            --prerelease --title "$title" --notes-file nightly-notes.md
+
+          gh release upload nightly --repo "$GH_REPO" release/*
+
+          echo "Published ${GITHUB_SERVER_URL}/${GH_REPO}/releases/tag/nightly"
+
+  # A nightly nobody looks at is a nightly nobody fixes. One open issue,
+  # commented on rather than re-filed, so a run of bad nights is one thread.
+  nightly-failed:
+    if: always() && needs.plan.outputs.nightly == 'true' && contains(needs.*.result, 'failure')
+    needs:
+      [
+        plan,
+        mac-arm64,
+        linux,
+        windows-x64,
+        smoke-linux,
+        smoke-mac-arm64,
+        smoke-windows-x64,
+        e2e-full,
+        nightly,
+      ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+
+    steps:
+      - name: Report the failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+
+          failed="$(printf '%s' "$NEEDS" | jq -r '
+            to_entries | map(select(.value.result == "failure") | .key) | join(", ")')"
+          run_url="${GITHUB_SERVER_URL}/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+          body="Nightly build \`${VERSION}\` failed.
+
+          - Failed jobs: ${failed:-unknown}
+          - Run: ${run_url}
+          - Commit: ${GITHUB_SHA}
+
+          Testers get no new nightly until this is green again."
+
+          # `--force` creates the label or updates it in place, so this works
+          # on the first failure the repository ever has.
+          gh label create nightly --repo "$GH_REPO" --color FBCA04 \
+            --description 'Nightly build from main' --force
+
+          issue="$(gh issue list --repo "$GH_REPO" --state open --label nightly \
+            --json number,title --jq 'map(select(.title == "Nightly build failed")) | .[0].number // empty')"
+
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$GH_REPO" --body "$body"
+            echo "Commented on issue #${issue}"
+          else
+            gh issue create --repo "$GH_REPO" --title 'Nightly build failed' \
+              --label nightly --body "$body"
           fi

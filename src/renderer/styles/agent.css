@@ -19,7 +19,7 @@
 .agent-toggle-btn:hover:not(:disabled),
 .agent-toggle-btn[aria-expanded='true'] {
   color: var(--accent);
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--agent-hover-1);
 }
 
 .agent-toggle-btn:disabled {
@@ -124,7 +124,7 @@
 
 .agent-icon-btn:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--agent-hover-1);
 }
 
 .agent-icon-btn svg {
@@ -228,7 +228,7 @@ body.platform-mac.agent-first-mode .agent-first-title {
 
 .agent-titlebar-button:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--agent-hover-09);
 }
 
 .agent-first-titlebar-center {
@@ -310,7 +310,7 @@ body.platform-mac.agent-first-mode .agent-first-title {
 
 .agent-session-sidebar-header button:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--agent-hover-09);
 }
 
 .agent-session-sidebar-header button:disabled {
@@ -441,7 +441,7 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
 }
 
 .agent-session-row.active {
-  background: rgba(255, 255, 255, 0.075);
+  background: var(--agent-hover-075);
 }
 
 .agent-session-select {
@@ -458,7 +458,7 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
 }
 
 .agent-session-row:not(.active) .agent-session-select:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--agent-hover-05);
 }
 
 .agent-session-select span {
@@ -488,6 +488,7 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
   background: var(--toolbar);
   border: 1px solid var(--agent-divider, var(--border));
   border-radius: 8px;
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
@@ -507,11 +508,11 @@ body.agent-first-mode .agent-workspace-scroll::-webkit-scrollbar,
 
 .agent-session-actions button:hover,
 .agent-session-actions button:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--agent-hover-08);
 }
 
 .agent-session-actions .danger {
-  color: var(--danger, #f06f6f);
+  color: var(--danger);
 }
 
 .agent-session-history-empty {
@@ -633,7 +634,7 @@ body.agent-sidebar-resizing .agent-pane-resizer::after {
 
 .agent-task-page-list .tab:not(.active):hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--agent-hover-07);
 }
 
 body.agent-first-mode .agent-task-page-list .tab.active {
@@ -709,7 +710,7 @@ body.agent-first-mode .agent-task-page-list .tab.agent-controlled.active {
 
 .agent-workspace-nav button:hover:not(:disabled) {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--agent-hover-08);
 }
 
 .agent-workspace-nav button:disabled {
@@ -1151,7 +1152,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 
 .agent-provider-remove {
   padding: 5px 7px;
-  color: #ff9b9b;
+  color: var(--agent-danger-soft);
   font-size: 10px;
   background: transparent;
   border: 0;
@@ -1181,6 +1182,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: color-mix(in srgb, var(--toolbar) 54%, var(--bg));
   border: 1px solid var(--agent-divider, var(--border));
   border-radius: 14px;
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 14px 34px color-mix(in srgb, black 16%, transparent);
 }
 
@@ -1406,7 +1408,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-lifecycle-actions .danger:not(:disabled) {
-  color: #ff9b9b;
+  color: var(--agent-danger-soft);
 }
 
 .agent-empty-state {
@@ -1542,14 +1544,14 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-button.primary {
-  color: white;
+  color: var(--agent-on-accent);
   background: var(--accent);
   border-color: var(--accent);
 }
 
 .agent-button.danger:not(:disabled) {
-  color: #ff8b8b;
-  border-color: rgba(255, 95, 95, 0.45);
+  color: var(--agent-danger);
+  border-color: var(--agent-danger-border);
 }
 
 .agent-button:disabled,
@@ -1572,7 +1574,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-message.error {
-  color: #ff8b8b;
+  color: var(--agent-danger);
 }
 
 .agent-privacy-note {
@@ -1633,6 +1635,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: var(--menu-bg);
   border: 1px solid var(--agent-divider);
   border-radius: 16px;
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 16px 42px color-mix(in srgb, black 30%, transparent);
 }
 
@@ -1698,11 +1701,13 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: var(--agent-composer-surface);
   border: 1px solid var(--agent-composer-border);
   border-radius: 22px;
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 8px 24px color-mix(in srgb, black 12%, transparent);
   transition: box-shadow 0.15s ease;
 }
 
 .agent-composer.approval-pending {
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 10px 30px color-mix(in srgb, black 17%, transparent);
 }
 
@@ -1714,6 +1719,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 
 .agent-composer:focus-within {
   border-color: var(--agent-composer-border);
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 8px 24px color-mix(in srgb, black 16%, transparent);
 }
 
@@ -1831,18 +1837,18 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-message-attachment[data-kind='folder'] .agent-message-attachment-visual {
-  color: color-mix(in srgb, #e3ad51 78%, var(--text));
-  background: color-mix(in srgb, #e3ad51 13%, transparent);
+  color: color-mix(in srgb, var(--agent-document-mark) 78%, var(--text));
+  background: color-mix(in srgb, var(--agent-document-mark) 13%, transparent);
 }
 
 .agent-message-attachment[data-kind='pdf'] .agent-message-attachment-visual {
-  color: color-mix(in srgb, #ef726d 82%, var(--text));
-  background: color-mix(in srgb, #ef726d 12%, transparent);
+  color: color-mix(in srgb, var(--agent-pdf-mark) 82%, var(--text));
+  background: color-mix(in srgb, var(--agent-pdf-mark) 12%, transparent);
 }
 
 .agent-message-attachment[data-kind='image'] .agent-message-attachment-visual {
-  color: color-mix(in srgb, #8f8ce7 78%, var(--text));
-  background: color-mix(in srgb, #8f8ce7 13%, transparent);
+  color: color-mix(in srgb, var(--agent-image-mark) 78%, var(--text));
+  background: color-mix(in srgb, var(--agent-image-mark) 13%, transparent);
 }
 
 .agent-message-attachment[data-kind='code'] .agent-message-attachment-visual {
@@ -2092,7 +2098,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 .agent-composer-chip:hover,
 .agent-composer-chip[aria-expanded='true'] {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--agent-hover-08);
 }
 
 .agent-composer-chip > span:first-of-type {
@@ -2175,7 +2181,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-page-interlock.dialog-open {
-  background: color-mix(in srgb, black 18%, transparent);
+  background: var(--agent-interlock-overlay);
 }
 
 .agent-page-lock-trigger {
@@ -2201,6 +2207,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: color-mix(in srgb, var(--toolbar) 94%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
   border-radius: 999px;
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 5px 18px rgba(0, 0, 0, 0.24);
   pointer-events: none;
 }
@@ -2214,6 +2221,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: var(--menu-bg);
   border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   border-radius: 12px;
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42);
 }
 
@@ -2257,7 +2265,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-takeover-actions button.primary {
-  color: white;
+  color: var(--agent-on-accent);
   background: var(--accent);
 }
 
@@ -2273,6 +2281,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: var(--menu-bg);
   border: 1px solid var(--agent-divider);
   border-radius: 14px;
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.42);
 }
 
@@ -2320,7 +2329,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 
 .agent-model-option:hover,
 .agent-popover-action:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--agent-hover-08);
 }
 
 .agent-model-option.active {
@@ -2362,7 +2371,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 
 .agent-approval-mode-option:hover,
 .agent-approval-mode-option.active {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--agent-hover-08);
 }
 
 .agent-approval-mode-option strong {
@@ -3072,11 +3081,11 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-turn-outcome.caution .agent-turn-outcome-icon {
-  color: #d6a85f;
+  color: var(--agent-caution);
 }
 
 .agent-turn-outcome.danger .agent-turn-outcome-icon {
-  color: #ff8b8b;
+  color: var(--agent-danger);
 }
 
 .agent-turn-outcome.neutral .agent-turn-outcome-icon {
@@ -3196,7 +3205,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-tool-item.failed .agent-tool-state {
-  color: #ff8b8b;
+  color: var(--agent-danger);
 }
 
 .agent-tool-item.cancelled .agent-tool-state {
@@ -3280,6 +3289,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 12px;
+  /* theme-literal: translucent black elevation shadow in both themes */
   box-shadow: 0 12px 30px color-mix(in srgb, black 22%, transparent);
 }
 .agent-workspace-popover-heading { display: flex; align-items: center; gap: 10px; padding: 12px; font-size: 12px; }

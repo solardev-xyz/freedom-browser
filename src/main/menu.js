@@ -195,6 +195,42 @@ function buildAppMenuSubmenu(updateMenuItems) {
   ];
 }
 
+// Close Window is spelled out instead of `{ role: 'close' }`, and carries no
+// accelerator at all. Every Electron menu role has an implicit default
+// accelerator and `close`'s is CommandOrControl+W — the chord Close Tab above
+// already owns. Windows and Linux resolve that collision in the role's favour,
+// so Ctrl+W closed the whole window instead of the active tab (#97); macOS's
+// NSMenu picks the first matching row (Close Tab) and hid the bug.
+//
+// Probed against the Electron this repo ships (44.3.0, Linux, 2026-09-16) with
+// a real Ctrl+W keypress, because neither alternative holds up:
+//   { role: 'close' }                            → window closes (the bug)
+//   { role: 'close', accelerator: null }         → window closes; a null
+//                                                  accelerator falls back to
+//                                                  the role's own default
+//   { role: 'close', registerAccelerator: false} → Close Tab fires, but the
+//                                                  row still prints "Ctrl+W",
+//                                                  advertising a chord it no
+//                                                  longer answers
+// A plain item with no role and no accelerator is the only shape that leaves
+// Cmd/Ctrl+W solely owned by Close Tab on every platform. Chrome's own Close
+// Window chord (Ctrl+Shift+W) is not free here — view.toggleSidebar owns it —
+// so this row stays accelerator-less rather than taking a chord off another
+// shortcut. Closing the last tab still closes the window (tabs.js closeTab).
+function buildCloseWindowMenuItem() {
+  return {
+    id: 'close-window',
+    label: 'Close Window',
+    click: () => {
+      // Same target the `close` role used: whichever window has focus.
+      const win = BrowserWindow.getFocusedWindow();
+      if (win) {
+        win.close();
+      }
+    },
+  };
+}
+
 function buildFileSubmenu(isMac) {
   const submenu = [
     {
@@ -270,7 +306,7 @@ function buildFileSubmenu(isMac) {
       },
     },
     { type: 'separator' },
-    { role: 'close' }
+    buildCloseWindowMenuItem()
   );
 
   if (!isMac) {

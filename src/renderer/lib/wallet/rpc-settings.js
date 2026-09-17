@@ -5,7 +5,7 @@
  * page. The wallet sidebar keeps a single deep-link there.
  */
 
-import { createTab } from '../tabs.js';
+import { openOrFocusInternalPage } from '../tabs.js';
 
 export function initRpcSettings() {
   const container = document.getElementById('rpc-providers-list');
@@ -21,6 +21,9 @@ export function initRpcSettings() {
 
   const btn = document.getElementById('rpc-open-providers');
   if (btn) {
-    btn.addEventListener('click', () => createTab('freedom://settings/rpc'));
+    // Singleton, like every other chrome path to an internal page: an already
+    // open Settings tab is focused and routed to the RPC section rather than
+    // duplicated. `createTab` here always made a second Settings tab (#325).
+    btn.addEventListener('click', () => openOrFocusInternalPage('settings', 'rpc'));
   }
 }

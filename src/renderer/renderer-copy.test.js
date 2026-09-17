@@ -178,6 +178,36 @@ describe('Nodes menu placeholders (#252, #253)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #323 — one Nodes menu section-label convention
+// ---------------------------------------------------------------------------
+
+describe('Nodes menu section labels (#323)', () => {
+  const index = read(path.join(RENDERER, 'index.html'));
+
+  // Each section header is `<span class="<node>-toggle-label"> <Label> <span
+  // class="…-toggle-switch">…`, so the label is the text between the opening
+  // tag and the nested switch.
+  const sectionLabels = () =>
+    [...index.matchAll(/<span class="[a-z-]*toggle-label">\s*([^<]*?)\s*<span class="/g)].map(
+      ([, label]) => label
+    );
+
+  test('every section is labelled with the bare product name', () => {
+    // "Tor (.onion)" was the one qualified label in the menu. The qualifier
+    // belongs on the Settings row that turns the integration on, not on a
+    // section header sitting next to Swarm, IPFS, Ethereum, Gnosis, Radicle.
+    expect(sectionLabels()).toEqual(['Swarm', 'IPFS', 'Ethereum', 'Gnosis', 'Radicle', 'Tor']);
+  });
+
+  test('the Settings row keeps the (.onion access) qualifier', () => {
+    // Where the qualifier does belong: the row that turns the integration on
+    // is the one place a user meets the feature without context (#323).
+    const settings = read(path.join(RENDERER, 'pages', 'settings.html'));
+    expect(settings).toContain('Enable Tor (.onion access)');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #258 — empty-state punctuation and the bulk-clear label
 // ---------------------------------------------------------------------------
 

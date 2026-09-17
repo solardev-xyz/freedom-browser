@@ -75,14 +75,14 @@ describe('MyotisProcess', () => {
 
   test('bounds native admission and queue, with independently bounded status', async () => {
     ready();
-    const requests = Array.from({ length: 18 }, () => processClient.request('call').catch((e) => e));
+    const requests = Array.from({ length: 17 }, () => processClient.request('call').catch((e) => e));
     const overflow = processClient.request('call');
     await expect(overflow).rejects.toThrow('queue is full');
-    expect(processClient.active.size).toBe(2);
+    expect(processClient.active.size).toBe(1);
     expect(processClient.queue).toHaveLength(16);
     const status = processClient.request('status').catch((e) => e);
     await expect(processClient.request('status')).rejects.toThrow('already pending');
-    expect(processClient.active.size).toBe(3);
+    expect(processClient.active.size).toBe(2);
     const sent = child.send.mock.calls.at(-1)[0];
     reply(sent, { snapPeers: 1 });
     await status;
@@ -112,25 +112,70 @@ describe('MyotisProcess', () => {
     }
   });
 
-  test('timed-out native requests retain permits, reject queue and cannot refill', async () => {
+  test('soft caller expiry retains native admission; only the hard watchdog stops a stuck generation', async () => {
     ready();
     const pending = Array.from({ length: 4 }, () => processClient.request('call', [], 100).catch((e) => e));
-    const sent = child.send.mock.calls.filter(([m]) => m.type === 'request').map(([m]) => m);
     jest.advanceTimersByTime(100);
-    expect(processClient.accepting).toBe(false);
-    expect(callbacks.onUnavailable).toHaveBeenCalledTimes(1);
-    expect(processClient.active.size).toBe(2);
-    expect(processClient.queue).toHaveLength(0);
-    await expect(processClient.request('call')).rejects.toThrow('unavailable');
-    reply(sent[0]);
+    expect(processClient.accepting).toBe(true);
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
     expect(processClient.active.size).toBe(1);
-    expect(child.send.mock.calls.filter(([m]) => m.type === 'request')).toHaveLength(2);
+    expect(processClient.queue).toHaveLength(0);
+    const next = processClient.request('call').catch((e) => e);
+    expect(child.send.mock.calls.filter(([m]) => m.type === 'request')).toHaveLength(1);
+    jest.advanceTimersByTime(99900);
+    expect(processClient.accepting).toBe(false);
+    expect(processClient.active.size).toBe(1);
+    expect(callbacks.onUnavailable).toHaveBeenCalledTimes(1);
     jest.advanceTimersByTime(1500);
     expect(child.stdin.end).toHaveBeenCalledTimes(1);
     expect(child.kill).not.toHaveBeenCalled();
-    verifiedExit();
+    receipt('reaped', { exitCode: -1, signal: 9, forced: true });
+    expect(processClient.active.size).toBe(1);
+    child.stdout.emit('end'); child.emit('exit', 0, null);
     expect(processClient.active.size).toBe(0);
-    await Promise.all(pending);
+    await Promise.all([...pending, next]);
+  });
+
+  test('late actual completion releases its slot without delivering a timed-out result or stopping the chain', async () => {
+    ready();
+    const first = processClient.request('call', [], 100).catch((e) => e);
+    const sent = child.send.mock.calls.at(-1)[0];
+    jest.advanceTimersByTime(100);
+    expect((await first).code).toBe('MYOTIS_UNAVAILABLE');
+    const second = processClient.request('call');
+    expect(processClient.queue).toHaveLength(1);
+    reply(sent, { resultHex: '0xlate' });
+    expect(processClient.active.size).toBe(1);
+    expect(processClient.queue).toHaveLength(0);
+    reply(child.send.mock.calls.at(-1)[0], { resultHex: '0xfresh' });
+    await expect(second).resolves.toEqual({ resultHex: '0xfresh' });
+    expect(processClient.accepting).toBe(true);
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
+  });
+
+  test('started broadcast caller expiry is uncertain while unsent queued expiry is not', async () => {
+    ready();
+    const first = processClient.request('broadcast', ['0xsigned'], 100).catch((e) => e);
+    const queued = processClient.request('broadcast', ['0xunsent'], 100).catch((e) => e);
+    jest.advanceTimersByTime(100);
+    expect((await first).code).toBe('MYOTIS_BROADCAST_UNCERTAIN');
+    expect((await queued).code).toBe('MYOTIS_UNAVAILABLE');
+    expect(processClient.accepting).toBe(true);
+    expect(processClient.active.size).toBe(1);
+    expect(child.send.mock.calls.filter(([m]) => m.op === 'broadcast')).toHaveLength(1);
+    processClient.stop(); verifiedExit();
+  });
+
+  test('does not forward an expired queue entry even before its timer callback runs', async () => {
+    ready();
+    const first = processClient.request('call');
+    const sent = child.send.mock.calls.at(-1)[0];
+    const queued = processClient.request('call', [], 10).catch((error) => error);
+    jest.setSystemTime(Date.now() + 11);
+    reply(sent);
+    await first;
+    expect((await queued).code).toBe('MYOTIS_UNAVAILABLE');
+    expect(child.send.mock.calls.filter(([m]) => m.type === 'request')).toHaveLength(1);
   });
 
   test('retains the pending status permit until the ten-second hard deadline stops the generation', async () => {
@@ -151,13 +196,13 @@ describe('MyotisProcess', () => {
 
   test('queued deadlines remove only unsent work and do not retire healthy native work', async () => {
     ready();
-    const active = [processClient.request('call').catch((e) => e), processClient.request('call').catch((e) => e)];
+    const active = [processClient.request('call').catch((e) => e)];
     const queued = processClient.request('call', [], 10);
     const rejected = expect(queued).rejects.toThrow('queue deadline');
     jest.advanceTimersByTime(10);
     await rejected;
     expect(processClient.accepting).toBe(true);
-    expect(processClient.active.size).toBe(2);
+    expect(processClient.active.size).toBe(1);
     processClient.stop(); verifiedExit(); await Promise.all(active);
   });
 
@@ -194,6 +239,49 @@ describe('MyotisProcess', () => {
     expect(events.some((event) => event.event === 'unavailable')).toBe(false);
   });
 
+  // Only a receipt from this generation, whose bounded fields all parse, may
+  // classify an exit as verified. Everything else quarantines the directory.
+  test.each([
+    ['another generation', { generation: 'other' }],
+    ['a non-boolean forced flag', { forced: 'no' }],
+    ['a missing forced flag', { forced: undefined }],
+    ['a fractional child exit code', { exitCode: 1.5 }],
+    ['a child exit code above the 32-bit range', { exitCode: 0x100000000 }],
+    ['a child exit code below -1', { exitCode: -2 }],
+    ['a missing child exit code', { exitCode: undefined }],
+    ['a negative signal', { signal: -1 }],
+    ['a signal above the platform range', { signal: 129 }],
+    ['a missing signal', { signal: undefined }],
+  ])('a reaped receipt with %s leaves the exit unconfirmed', async (_label, change) => {
+    ready();
+    receipt('reaped', { exitCode: 0, signal: 0, forced: false, ...change });
+    child.stdout.emit('end');
+    child.emit('exit', 0, null);
+    expect(processClient.exited).toBe(false);
+    const events = callbacks.onLifecycle.mock.calls.map(([event]) => event);
+    expect(events.find((event) => event.event === 'supervisor-exit')).toMatchObject({
+      classification: 'unconfirmed',
+    });
+    jest.advanceTimersByTime(5000);
+    await expect(processClient.stop()).resolves.toBe(false);
+    expect(callbacks.onExit).not.toHaveBeenCalled();
+  });
+
+  test('an oversized receipt stream is refused even when it would otherwise parse', async () => {
+    ready();
+    // Well-formed apart from its size: only the 1 KiB stream cap rejects it.
+    receipt('reaped', { exitCode: 0, signal: 0, forced: false, pad: 'a'.repeat(1024) });
+    child.stdout.emit('end');
+    child.emit('exit', 0, null);
+    expect(processClient.exited).toBe(false);
+    const events = callbacks.onLifecycle.mock.calls.map(([event]) => event);
+    expect(events.find((event) => event.event === 'supervisor-exit')).toMatchObject({
+      classification: 'unconfirmed', receipt: 'invalid',
+    });
+    jest.advanceTimersByTime(5000);
+    await expect(processClient.stop()).resolves.toBe(false);
+  });
+
   test('supervisor loss without terminal proof never authorizes data reuse', async () => {
     ready();
     child.emit('exit', null, 'SIGKILL'); child.stdout.emit('end');
@@ -201,6 +289,13 @@ describe('MyotisProcess', () => {
     await expect(processClient.stop()).resolves.toBe(false);
     expect(processClient.exited).toBe(false);
     expect(callbacks.onExit).not.toHaveBeenCalled();
+  });
+
+  test('propagates native anchor mismatch as a bounded storage error', () => {
+    receipt('owned');
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: false, failure: 'anchor-mismatch' });
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.any(String), 'CHECKPOINT_STORAGE');
+    expect(processClient.accepting).toBe(false);
   });
 
   test('logs bounded startup and unknown-exit facts without addon payloads', async () => {
@@ -251,4 +346,37 @@ describe('MyotisProcess', () => {
     await uncertain; await unsent; await active;
     verifiedExit();
   });
+  test('forwards the imported checkpoint only after supervisor ownership', () => {
+    const { MyotisProcess } = require('./myotis-process');
+    const checkpoint = { chainId: 100, network: 'gnosis', root: '0x' + 'ab'.repeat(32), slot: 123 };
+    processClient = new MyotisProcess({ addonPath: '/addon.node', network: 'gnosis', dataDir: '/owned', checkpoint, ...callbacks });
+    expect(child.send).not.toHaveBeenCalled();
+    receipt('owned');
+    expect(child.send).toHaveBeenCalledWith(expect.objectContaining({ checkpoint, dataDir: '/owned' }), expect.any(Function));
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: true, checkpointSupported: true });
+    expect(processClient.checkpointSupported).toBe(true);
+  });
+
+  test('old addon capability remains false unless explicitly reported', () => {
+    ready();
+    expect(processClient.checkpointSupported).toBe(false);
+  });
+
+  test('a verified late exit supersedes the old false stop result', async () => {
+    ready();
+    const stopping = processClient.stop();
+    await jest.advanceTimersByTimeAsync(5001);
+    await expect(stopping).resolves.toBe(false);
+    verifiedExit();
+    expect(processClient.exited).toBe(true);
+    await expect(processClient.stop()).resolves.toBe(true);
+    expect(callbacks.onExit).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['load', 'abi', 'methods'])('%s startup failures request installation repair with a bounded category', async failure => {
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: false, failure });
+    await expect(processClient.startPromise).resolves.toBe(false);
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith(expect.any(String), 'CHECKPOINT_INSTALLATION');
+  });
+
 });

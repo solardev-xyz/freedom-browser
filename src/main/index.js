@@ -276,6 +276,7 @@ const {
   stopIpfs,
   startIpfs,
   getStatus: getIpfsStatus,
+  syncProfileMode: syncIpfsProfileMode,
   setUseInjectedIdentity: setIpfsInjectedIdentity,
 } = require('./ipfs-manager');
 const {
@@ -655,6 +656,7 @@ async function bootstrap() {
       window: mainWindow,
       enabledProtocols: {
         bee: settings.startBeeAtLaunch !== false,
+        ipfs: settings.startIpfsAtLaunch !== false,
         tor: settings.enableTorIntegration === true && settings.startTorAtLaunch === true,
       },
       logger: log,
@@ -671,6 +673,13 @@ async function bootstrap() {
     }
     if (settings.startIpfsAtLaunch) {
       startIpfs();
+    } else {
+      // Same reason as Radicle below: publish the profile's IPFS mode even when
+      // the node is not started at launch, so the nodes-menu toggle knows an
+      // external gateway is controllable (and a disabled profile routes
+      // `ipfs://` to its panel) instead of seeing a registry that still says
+      // 'none'.
+      void syncIpfsProfileMode();
     }
     if (settings.startRadicleAtLaunch) {
       startRadicle();

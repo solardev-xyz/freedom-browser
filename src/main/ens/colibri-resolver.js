@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
 const { ethers } = require('ethers');
+const { ccipReadFetch } = require('./ccip-fetch');
 // Never require the package directly — colibri-runtime pins the WASM runtime
 // (see the comment there; the 2.0.5+ native addon crashes Electron).
 const { Colibri, Strategy } = require('./colibri-runtime');
@@ -218,7 +219,12 @@ async function buildClient({ chainId, key, proverUrl, zkProof, generation }) {
   // captures the {client, provider} pair atomically — a separate providers
   // map can return undefined mid-rebuild or a provider from another
   // generation.
-  clients.set(chainId, { client, key, provider: new ethers.BrowserProvider(client) });
+  const provider = new ethers.BrowserProvider(client);
+  // Colibri pins EVM reads internally, so ethers sees "latest" and follows
+  // OffchainLookup automatically. Its inherited gateway fetch has no body
+  // cap and a 300s timeout; use the same bounds as Myotis and pinned RPCs.
+  provider.ccipReadFetch = ccipReadFetch;
+  clients.set(chainId, { client, key, provider });
   retireClient(previousClient);
   log.info(`[colibri] chain ${chainId} client ready (prover=${hostOf(proverUrl)}, zk=${zkProof})`);
   return client;
@@ -277,9 +283,9 @@ async function resolveViaColibri(name, callData) {
 // address. Returns { name } on a successful (forward-verified) lookup.
 // Throws on revert (UR's ResolverNotFound / ReverseAddressMismatch) or
 // network/verification failure — the orchestrator classifies.
-async function resolveReverseViaColibri(addressBytes) {
+async function resolveReverseViaColibri(addressBytes, coinType = 60n) {
   return withColibriClientRetry(1, ({ provider }) =>
-    universalResolverReverse(provider, addressBytes)
+    universalResolverReverse(provider, addressBytes, {}, coinType)
   );
 }
 

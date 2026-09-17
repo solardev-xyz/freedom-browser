@@ -1,0 +1,60 @@
+name: Auto-retry
+run-name: >-
+  Auto-retry ${{ github.event.workflow_run.name }} #${{ github.event.workflow_run.run_number }}
+  (${{ github.event.workflow_run.conclusion }} on ${{ github.event.workflow_run.head_branch }})
+
+# One automatic "Re-run failed jobs" per run, so a transient failure stops
+# needing a human to press the button. See scripts/ci/auto-retry.sh for the
+# rules and docs/agent-playbooks/release-process.md (Appendix B) for how to
+# read an auto-retried run.
+#
+# `workflow_run` workflows only ever run from the repository's default branch,
+# and the checkout below pins that branch explicitly: a pull request can change
+# this workflow and its script, but only the merged copy on `main` runs with
+# the `actions: write` token this job holds.
+
+on:
+  workflow_run:
+    workflows: [CI, Release]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  rerun-failed-jobs:
+    # A job killed by `timeout-minutes` reports the run as cancelled, so a hang
+    # arrives here as `cancelled`, not `failure`; `timed_out` is accepted too,
+    # since it is the conclusion the API documents for that state and the gate
+    # here is what decides whether the script ever sees the run. Attempt 2 is
+    # never retried.
+    if: >-
+      github.event.workflow_run.run_attempt == 1 &&
+      (github.event.workflow_run.conclusion == 'failure' ||
+      github.event.workflow_run.conclusion == 'cancelled' ||
+      github.event.workflow_run.conclusion == 'timed_out')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the retry script from the default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/ci/auto-retry.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Re-run the failed jobs once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT_NAME: ${{ github.event.workflow_run.event }}
+        run: bash scripts/ci/auto-retry.sh

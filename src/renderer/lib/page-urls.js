@@ -3,7 +3,8 @@
 // Canonical source of truth: src/shared/internal-pages.json
 // Served to the renderer via sync IPC → preload → window.internalPages
 
-import { isEnsHost, isTezosDomainHost } from './origin-utils.js';
+import { isEnsHost, isTezosDomainHost, isPotentialEnsName } from './origin-utils.js';
+import { isIpfsGatewayFormUrl } from './url-utils.js';
 
 const ROUTABLE_PAGES = window.internalPages?.routable || {};
 
@@ -27,6 +28,15 @@ export const homeUrlNormalized = homeUrl;
 export const errorUrlBase = internalPageUrl('error.html');
 
 export const isErrorPageUrl = (url) => matchesInternalPage(url, errorUrlBase);
+
+// True for the shell's own home page, anchored to its resolved
+// `file:///…/pages/home.html` base like every other chrome-page test above —
+// never an `endsWith('/pages/home.html')` substring, which any external site
+// can satisfy by serving that path. `tabs.js` keys the "this tab is the new
+// tab page" title treatment on it, so the substring form let
+// `https://example.com/pages/home.html` reset the tab title to "New Tab" and
+// blank the window title on commit. See issue #235.
+export const isHomePageUrl = (url) => matchesInternalPage(url, homeUrl);
 
 // Internal pages map for freedom:// protocol
 export const internalPages = Object.fromEntries(
@@ -138,6 +148,14 @@ export const getInternalPageName = (url) => {
 // "this is a fresh empty tab" focus test. See issue #312.
 const NEW_TAB_PAGE_NAMES = new Set(['home', 'private']);
 
+// True for an internal page *name* (`home`, `private`, with or without a
+// sub-path) that acts as a new-tab page. The URL form below is derived from
+// this; `tabs.js` needs the name form because the singleton-tab rules for the
+// internal pages are keyed on the page name, and a new-tab page is explicitly
+// not a singleton — see `routeInternalPageNavigation`.
+export const isNewTabPageName = (pageName) =>
+  typeof pageName === 'string' && NEW_TAB_PAGE_NAMES.has(pageName.toLowerCase().split('/')[0]);
+
 // True for a new-tab-page URL in either form it appears in: the friendly
 // `freedom://home` / `freedom://private` one `tab.url` carries while the page
 // is still resolving, and the resolved `file://…/pages/<page>.html` one
@@ -146,7 +164,7 @@ export const isNewTabPageUrl = (url) => {
   if (!url || typeof url !== 'string') return false;
   const friendly = /^freedom:\/\/([a-z0-9-]+)\/?$/i.exec(url);
   const name = friendly ? friendly[1].toLowerCase() : getInternalPageName(url);
-  return !!name && NEW_TAB_PAGE_NAMES.has(name.split('/')[0]);
+  return !!name && isNewTabPageName(name);
 };
 
 // Trust interstitials are deliberately not routable freedom:// pages, but the
@@ -204,6 +222,14 @@ export const getOnchainInterstitialTarget = (url) => {
 // form. Callers gate the cross-transport assertion on this — if the user
 // typed `bzz://name.eth` and the contenthash is IPFS, the assertion fails
 // rather than silently switching transports.
+//
+// An explicitly-typed `ens://`/`bzz://`/`ipfs://` scheme also admits plain
+// DNS names (ENSv2 resolves those), but gateway-form IPFS URLs are excluded:
+// in `ipfs://ipfs.io/ipfs/<cid>` the outer host is a gateway, not a name, and
+// `formatIpfsUrl` rewrites the URL to the embedded CID. Since `loadTarget`
+// consults this parser before that rewrite, claiming the host here would send
+// every gateway-form bookmark, history entry, and Kubo dir-listing link to the
+// ENS resolver instead of loading the content. See `isIpfsGatewayFormUrl`.
 const ENS_INPUT_PREFIXES = [
   { prefix: 'ens://', assertedTransport: null },
   { prefix: 'bzz://', assertedTransport: 'bzz' },
@@ -218,11 +244,13 @@ export const parseEnsInput = (raw) => {
   const lower = value.toLowerCase();
   let assertedTransport = null;
   let legacyEnsScheme = false;
+  let explicitEnsName = false;
   for (const { prefix, assertedTransport: assertion } of ENS_INPUT_PREFIXES) {
     if (lower.startsWith(prefix)) {
       value = value.slice(prefix.length);
       assertedTransport = assertion;
       legacyEnsScheme = prefix === 'ens://';
+      explicitEnsName = prefix !== 'ipns://' && !isIpfsGatewayFormUrl(raw);
       break;
     }
   }
@@ -236,7 +264,10 @@ export const parseEnsInput = (raw) => {
   }
 
   const isTezos = isTezosDomainHost(name);
-  if ((!isEnsHost(name) && !isTezos) || (legacyEnsScheme && isTezos)) {
+  if (
+    (!isEnsHost(name) && !isTezos && !(explicitEnsName && isPotentialEnsName(name))) ||
+    (legacyEnsScheme && isTezos)
+  ) {
     return null;
   }
 

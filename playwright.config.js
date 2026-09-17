@@ -50,6 +50,12 @@ module.exports = defineConfig({
   fullyParallel: false,
   workers: 1,
   reporter: [['list']],
+  // Screenshot baselines (test-e2e/renderer-screenshots.spec.js, #261 item 1c)
+  // are named explicitly by the spec and live in one flat directory, rather
+  // than the default per-spec/per-platform tree: they are rendered on Linux and
+  // compared on Linux only, so a `{platform}` segment would just be a directory
+  // nobody else ever writes to. See that spec's header for how to update them.
+  snapshotPathTemplate: 'test-e2e/__screenshots__/{arg}{ext}',
   use: {
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',

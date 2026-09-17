@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { validateInstalledAddon } = require('./fetch-myotis');
 
 const ANT_BIN_DIR = path.join(__dirname, '..', 'ant-bin');
 const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
@@ -13,7 +14,7 @@ const FREEDOM_IPFS_NATIVE_ADDON = 'freedom_ipfs_native.node';
 const RADICLE_BIN_DIR = path.join(__dirname, '..', 'radicle-bin');
 const RADICLE_EMBEDDED_ADDON = 'libradicle.node';
 const MYOTIS_BIN_DIR = path.join(__dirname, '..', 'myotis-bin');
-// Targets the Myotis release publishes addons for (see scripts/fetch-myotis.js).
+// Targets published by the pinned official Myotis release addon.
 // Anything else (e.g. win-arm64) is skipped with a notice — the app degrades
 // gracefully to Colibri/quorum when the addon is absent.
 const MYOTIS_SUPPORTED = new Set(['mac-x64', 'mac-arm64', 'linux-x64', 'linux-arm64', 'win-x64']);
@@ -124,6 +125,10 @@ function checkBinaries(platforms) {
       if (!fs.existsSync(myotisAddonPath)) {
         missing.push(`myotis-node addon for ${platformDir}: ${myotisAddonPath}`);
       }
+      const provenanceError = validateInstalledAddon(path.dirname(myotisAddonPath));
+      if (provenanceError) {
+        missing.push(`myotis checkpoint addon for ${platformDir}: ${provenanceError}; run npm run myotis:download`);
+      }
       const supervisorPath = path.join(MYOTIS_BIN_DIR, platformDir,
         `myotis-supervisor${os === 'win' ? '.exe' : ''}`);
       if (!fs.existsSync(supervisorPath)) {
@@ -147,9 +152,9 @@ function checkBinaries(platforms) {
  */
 function ensureOptionalArti(platforms) {
   for (const { os, arch } of platforms) {
-    if (os === 'win') continue; // Arti is bundled for macOS/Linux only
     const platformDir = `${os}-${arch}`;
-    const artiPath = path.join(ARTI_BIN_DIR, platformDir, 'arti');
+    // Same name `scripts/fetch-arti.js` writes and `tor-manager.js` looks for.
+    const artiPath = path.join(ARTI_BIN_DIR, platformDir, os === 'win' ? 'arti.exe' : 'arti');
     if (!fs.existsSync(artiPath)) {
       fs.mkdirSync(path.join(ARTI_BIN_DIR, platformDir), { recursive: true });
       console.warn(

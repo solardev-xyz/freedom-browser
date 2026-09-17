@@ -11,21 +11,32 @@
  *    while that tab is the active one — a background tab's request is
  *    held and surfaces when the user switches to it. The answer goes
  *    back via `permissions:prompt-response`. Dismissing (Esc, clicking
- *    away) denies once without recording anything. Navigation-driven
+ *    away) denies once without recording anything — until the third
+ *    dismissal in a row for the same site + permission, which main
+ *    embargoes for the rest of the run so the page cannot re-raise the
+ *    prompt indefinitely (#364). Navigation-driven
  *    invalidation is owned by main: it watches the REQUESTING
  *    webContents and withdraws its prompts via
  *    `permissions:prompt-cancel`, so navigating the active tab never
  *    dismisses a background tab's pending request.
  *
  * 2. The address-bar indicator + popover: a small icon when the current
- *    site holds granted permissions, listing decisions with quick revoke.
- *    Mirrors the ENS trust shield's popover interaction pattern.
+ *    site holds granted permissions (or an embargoed one), listing
+ *    decisions with quick revoke. Mirrors the ENS trust shield's popover
+ *    interaction pattern. Both the list and its Remove are scoped to the
+ *    window they are shown in: main answers `permissions:get-for-origin`
+ *    from the asking window's own tier, and `sitePermissions.revoke` is
+ *    marked window-scoped in the preload so a Remove clicked in a private
+ *    window cannot clear the normal profile's run-scoped decision, or
+ *    vice versa (#365, #366). Profile-wide removal is Settings > Site
+ *    Permissions.
  */
 
 import { getActiveWebview, getDisplayUrlForWebview } from './tabs.js';
 import { getPermissionKey } from './origin-utils.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { pushDebug } from './debug.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
 
 // Storage-key → human noun (indicator popover, settings mirror this).
 const PERMISSION_LABELS = {
@@ -182,6 +193,11 @@ const showNextPrompt = () => {
   }
 
   promptEl.hidden = false;
+  // Shown first, then bounded: in a short window the prompt's own bottom would
+  // otherwise be clipped by the pinned document rather than scrolled to, the
+  // same rule its sibling `.permission-popover` follows (#328).
+  promptEl.scrollTop = 0;
+  boundPopoverToViewport(promptEl);
   pushDebug(
     isNotice
       ? `[permissions] showing macOS-denied notice (${keys.join('+')})`
@@ -220,6 +236,12 @@ const setPopoverOpen = (open) => {
   if (!popoverEl || !indicatorBtn) return;
   popoverEl.hidden = !open;
   indicatorBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    // A site with many remembered permissions must scroll inside the popover
+    // rather than run off the bottom of the window (#324).
+    popoverEl.scrollTop = 0;
+    boundPopoverToViewport(popoverEl);
+  }
 };
 
 const renderPopover = () => {
@@ -245,7 +267,13 @@ const renderPopover = () => {
     if (entry.decision === 'allow') {
       status.textContent = `Allowed${scope}`;
     } else {
-      status.textContent = `Blocked${scope}`;
+      // An embargoed permission (#364) is blocked for the rest of the run
+      // because the prompt was dismissed three times, not because the user
+      // chose Block — say so, or "Blocked (this session)" reads as a
+      // decision they never made.
+      status.textContent = entry.embargoed
+        ? 'Blocked after repeated dismissals (this session)'
+        : `Blocked${scope}`;
       status.classList.add('blocked');
     }
 
@@ -275,7 +303,8 @@ const renderPopover = () => {
 /**
  * Recompute the indicator for the active tab's committed origin.
  * Shown when the site holds at least one granted permission (stored or
- * session-scoped); the popover lists blocks too once open.
+ * session-scoped), or one under the dismissal embargo; the popover lists
+ * blocks too once open.
  */
 const refreshIndicator = async () => {
   if (!indicatorBtn) return;
@@ -302,8 +331,15 @@ const refreshIndicator = async () => {
   indicatorOrigin = origin;
   indicatorDecisions = decisions;
 
+  // The indicator shows for a site that holds a grant — and for one under
+  // the dismissal embargo (#364), which is the only kind of block the user
+  // never chose: the site simply stopped asking. The popover is where they
+  // see why and lift it, so it has to be reachable. A Block they made
+  // themselves keeps the status quo (no indicator); Settings > Site
+  // Permissions lists those.
   const hasGrant = Object.values(decisions).some((entry) => entry?.decision === 'allow');
-  indicatorBtn.classList.toggle('hidden', !hasGrant);
+  const hasEmbargo = Object.values(decisions).some((entry) => entry?.embargoed === true);
+  indicatorBtn.classList.toggle('hidden', !hasGrant && !hasEmbargo);
 
   if (!popoverEl?.hidden) {
     if (Object.keys(decisions).length === 0) {
@@ -422,6 +458,10 @@ export const initSitePermissionsUi = () => {
   // Firefox; it still dismisses on click-away in the chrome and Esc,
   // is withdrawn by main when the requesting document navigates or
   // dies, and grants nothing by itself.
+  //
+  // Deliberately the raw `blur`, not `onWindowDeactivated` (#328): this
+  // popover raises no `#menu-backdrop`, so the guest-focus blur the shared
+  // helper filters out is exactly the signal that dismisses it here.
   window.addEventListener('blur', () => {
     setPopoverOpen(false);
   });

@@ -462,7 +462,9 @@ describe('autocomplete', () => {
       preventDefault: jest.fn(),
     });
 
-    expect(onNavigate).toHaveBeenCalledWith('https://navigate.example');
+    expect(onNavigate).toHaveBeenCalledWith('https://navigate.example', {
+      commitsAddressBar: true,
+    });
     expect(addressInput.value).toBe('https://navigate.example');
 
     addressInput.value = 'nav';
@@ -533,7 +535,9 @@ describe('autocomplete', () => {
     const onNavigate = jest.fn();
     mod.setOnNavigate(onNavigate);
     addressInput.handlers.keydown({ key: 'Enter', preventDefault: jest.fn() });
-    expect(onNavigate).toHaveBeenCalledWith('https://second.example');
+    expect(onNavigate).toHaveBeenCalledWith('https://second.example', {
+      commitsAddressBar: true,
+    });
   });
 
   test('escape with a previewed suggestion restores the typed text and keeps focus', async () => {
@@ -677,7 +681,9 @@ describe('autocomplete', () => {
         })),
       },
     });
-    expect(onNavigate).toHaveBeenCalledWith('https://navigate.example');
+    expect(onNavigate).toHaveBeenCalledWith('https://navigate.example', {
+      commitsAddressBar: true,
+    });
 
     dropdown.handlers.click({
       target: {

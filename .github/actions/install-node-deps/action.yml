@@ -1,0 +1,96 @@
+name: Install Node dependencies
+description: >
+  Install the repo's npm dependencies deterministically: npm's own fetch
+  retries/timeouts configured up front, `npm ci` run under a per-attempt
+  wall-clock bound with retries, and a warm Electron download cache — instead
+  of a bare `npm ci` that can stall until the job's timeout-minutes cancels it.
+
+inputs:
+  ignore-scripts:
+    description: >
+      Install with `--ignore-scripts`. Jobs that only need the JavaScript on
+      disk (jest, lint, an addon download) skip the lifecycle scripts, which
+      also means they never download Electron — so the Electron cache below is
+      skipped for them too.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # npm's own knobs bound a single *request*, not the install: with the
+    # defaults a tarball fetch retries twice and gives up, and `fetch-timeout`
+    # is 5 minutes per request. Widen the retries and shorten the per-request
+    # timeout so a stalled connection is dropped and retried inside npm before
+    # the step-level bound below ever has to kill anything. `npm config set`
+    # (rather than env vars on one process) so the npx/npm invocations later in
+    # the job inherit them too.
+    - name: Configure npm fetch bounds
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm config set fetch-retries 5
+        npm config set fetch-retry-mintimeout 10000
+        npm config set fetch-retry-maxtimeout 60000
+        npm config set fetch-timeout 120000
+        echo "[install-node-deps] npm fetch bounds:"
+        npm config get fetch-retries fetch-retry-mintimeout fetch-retry-maxtimeout fetch-timeout
+
+    # The single biggest thing `npm ci` pulls is Electron's own postinstall
+    # download: a ~100 MB zip from GitHub releases through `@electron/get`,
+    # with no timeout of its own. Keyed on the exact `electron` version in the
+    # lockfile plus the runner's OS/arch, because that tuple is what decides
+    # which zip gets fetched.
+    - name: Resolve the Electron download cache
+      id: electron-cache-meta
+      if: inputs.ignore-scripts != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="$(node -p "require(process.cwd() + '/package-lock.json').packages['node_modules/electron'].version")"
+        dir="$(node scripts/ci/npm-ci-hardening.js --print-electron-cache-dir)"
+        {
+          echo "version=$version"
+          echo "dir=$dir"
+        } >> "$GITHUB_OUTPUT"
+        echo "[install-node-deps] electron $version caches its download in $dir"
+
+    - name: Restore the Electron download cache
+      id: electron-cache
+      if: inputs.ignore-scripts != 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.electron-cache-meta.outputs.dir }}
+        key: electron-${{ runner.os }}-${{ runner.arch }}-${{ steps.electron-cache-meta.outputs.version }}
+
+    - name: Report the Electron download cache
+      if: inputs.ignore-scripts != 'true'
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.electron-cache.outputs.cache-hit }}
+        CACHE_DIR: ${{ steps.electron-cache-meta.outputs.dir }}
+        CACHE_VERSION: ${{ steps.electron-cache-meta.outputs.version }}
+      run: |
+        set -euo pipefail
+        if [ "$CACHE_HIT" = 'true' ]; then
+          echo "[install-node-deps] Electron download cache HIT for ${CACHE_VERSION} (${CACHE_DIR}) — postinstall will not download Electron"
+        else
+          echo "[install-node-deps] Electron download cache MISS for ${CACHE_VERSION} (${CACHE_DIR}) — postinstall will download it and this job will populate the cache"
+        fi
+
+    # `scripts/better-sqlite3-prebuilds.js`, the other half of `postinstall`,
+    # downloads nothing — it only deletes better-sqlite3's unused `binding.gyp`
+    # so @electron/rebuild skips the module (see its header). The prebuilt
+    # addons it looks for ship inside the npm tarball, which `actions/setup-node`'s
+    # `cache: npm` already covers, so there is no second directory to cache here.
+    - name: Run npm ci (bounded and retried)
+      shell: bash
+      env:
+        IGNORE_SCRIPTS: ${{ inputs.ignore-scripts }}
+      run: |
+        set -euo pipefail
+        if [ "$IGNORE_SCRIPTS" = 'true' ]; then
+          node scripts/ci/npm-ci-hardening.js --ignore-scripts
+        else
+          node scripts/ci/npm-ci-hardening.js
+        fi

@@ -147,9 +147,12 @@ describe('buildGatewayUrl(ipfs)', () => {
     expect(mockResolveEnsContent).not.toHaveBeenCalled();
   });
 
-  test('returns null for DNSLink-style hosts under ipfs:// (only ipns:// accepts those)', async () => {
-    await expect(buildGatewayUrl('ipfs', 'ipfs://docs.ipfs.tech/install')).resolves.toBeNull();
-    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  test('resolves DNS names through ENS under explicit ipfs://', async () => {
+    mockResolveEnsContent.mockResolvedValue({ type: 'ok', protocol: 'ipfs', decoded: CIDV1_BASE32 });
+    await expect(buildGatewayUrl('ipfs', 'ipfs://docs.ipfs.tech/install')).resolves.toMatchObject({
+      ok: true, url: `http://freedom-ipfs.localhost/ipfs/${CIDV1_BASE32}/install`,
+    });
+    expect(mockResolveEnsContent).toHaveBeenCalledWith('docs.ipfs.tech');
   });
 
   describe('gateway-form rewrite', () => {
@@ -262,7 +265,8 @@ describe('buildGatewayUrl(ipfs)', () => {
       // `ipfs://<cid>/...` URLs directly.
       await expect(
         buildGatewayUrl('ipfs', `ipfs://my-gateway.example/ipfs/${CIDV1_BASE32}`)
-      ).resolves.toBeNull();
+      ).resolves.toMatchObject({ ok: false });
+      expect(mockResolveEnsContent).toHaveBeenCalledWith('my-gateway.example');
     });
 
     test('still 400s when the gateway-form embeds garbage under /ipfs/', async () => {
@@ -1024,5 +1028,73 @@ describe('registerIpfsProtocol / registerIpnsProtocol private sessions', () => {
     await session.handlers.get('ipfs')({ url: 'ipfs://public-site.eth/page.html', headers: {} });
 
     expect(loggedText()).toContain('ipfs://public-site.eth/page.html');
+  });
+});
+
+
+describe('extensionless IPFS text navigation', () => {
+  const fixture = 'Hello from IPFS Gateway Checker\n';
+  // Chromium's fixed navigation Accept header — the only signal a
+  // `protocol.handle` request carries that distinguishes a document load
+  // from a subresource (no Sec-Fetch-Dest on custom schemes; `destination`
+  // is always '' and `mode` always 'cors'). See `isDocumentRequest`.
+  const NAVIGATION_ACCEPT =
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,' +
+    'image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+  async function response(body, headers = {}, method = 'GET', accept = NAVIGATION_ACCEPT) {
+    return handleRequest(
+      'ipfs',
+      new Request(`ipfs://${CIDV1_BASE32}/`, { method, headers: accept ? { accept } : {} }),
+      {
+        requestImpl: async () => new Response(method === 'HEAD' ? null : body, {
+          headers: { 'content-type': 'application/octet-stream', 'content-length': String(Buffer.byteLength(body)), ...headers },
+        }),
+      }
+    );
+  }
+  test('renders the checker fixture inline as text, never HTML', async () => {
+    const result = await response(fixture);
+    expect(result.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+    expect(result.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await result.text()).toBe(fixture);
+    const html = await response('<script>alert(1)</script>');
+    expect(html.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+  });
+  test.each([
+    ['attachment', { 'content-disposition': 'attachment; filename="test.txt"' }],
+    ['nosniff', { 'x-content-type-options': 'nosniff' }],
+    ['range', { 'content-range': 'bytes 0-31/32' }],
+  ])('preserves explicit %s metadata', async (_label, headers) => {
+    const result = await response(fixture, headers);
+    expect(result.headers.get('content-type')).toBe('application/octet-stream');
+    expect(await result.text()).toBe(fixture);
+  });
+  test.each([Buffer.from([0, 1, 2]), Buffer.from([255, 254]), Buffer.alloc(4097, 65)])('preserves binary/large data', async (body) => {
+    const result = await response(body);
+    expect(result.headers.get('content-type')).toBe('application/octet-stream');
+    expect(Buffer.from(await result.arrayBuffer())).toEqual(body);
+  });
+  test('does not trust an understated length or consume HEAD bodies', async () => {
+    const body = 'a'.repeat(5000);
+    const result = await response(body, { 'content-length': '32' });
+    expect(result.headers.get('content-type')).toBe('application/octet-stream');
+    expect(await result.text()).toBe(body);
+    const head = await response(fixture, {}, 'HEAD');
+    expect(head.headers.get('content-type')).toBe('application/octet-stream');
+  });
+  // A subresource relabelled `text/plain; nosniff` is one Chromium refuses
+  // to execute or apply, so an existing page loading a small bare-CID
+  // script or stylesheet would silently lose it. Only document loads get
+  // the rewrite; every subresource Accept below is Chromium's real one.
+  test.each([
+    ['script/fetch', '*/*'],
+    ['stylesheet', 'text/css,*/*;q=0.1'],
+    ['image', 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'],
+    ['no Accept at all', ''],
+  ])('leaves a %s subresource untouched', async (_label, accept) => {
+    const result = await response(fixture, {}, 'GET', accept);
+    expect(result.headers.get('content-type')).toBe('application/octet-stream');
+    expect(result.headers.get('x-content-type-options')).toBeNull();
+    expect(await result.text()).toBe(fixture);
   });
 });

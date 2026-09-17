@@ -14,6 +14,7 @@
   border-top: none;
   border-bottom-left-radius: 8px;
   border-bottom-right-radius: 8px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
@@ -22,6 +23,7 @@
 }
 
 [data-theme='light'] .find-bar {
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
@@ -37,6 +39,7 @@
 }
 
 [data-theme='light'] .find-bar-input {
+  /* theme-literal: light-theme input fill, the same value light-theme.css gives .address-input */
   background: #f1f3f4;
 }
 
@@ -84,10 +87,12 @@
 }
 
 .find-bar-btn:hover:not(:disabled) {
+  /* theme-literal: neutral hover tint; the light override is the rule below */
   background: rgba(255, 255, 255, 0.1);
 }
 
 [data-theme='light'] .find-bar-btn:hover:not(:disabled) {
+  /* theme-literal: the light half of the pair above */
   background: rgba(0, 0, 0, 0.1);
 }
 

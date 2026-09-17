@@ -85,6 +85,75 @@ const DEFAULTS = {
   ensColibriZkProof: true,
 };
 
+// Exercise ethers' actual automatic CCIP path. A mock UR that only returns
+// canned data cannot detect an unbounded inherited BrowserProvider fetcher.
+describe('automatic CCIP through the Colibri provider', () => {
+  test.each(['forward', 'reverse'])(
+    '%s callbacks use the bounded gateway fetcher',
+    async (direction) => {
+      const { ethers } = jest.requireActual('ethers');
+      const abi = ethers.AbiCoder.defaultAbiCoder();
+      const ur = '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe';
+      const iface = new ethers.Interface([
+        'error OffchainLookup(address sender,string[] urls,bytes callData,bytes4 callbackFunction,bytes extraData)',
+      ]);
+      let provider;
+      mockBrowserProvider.mockImplementationOnce((client) => {
+        provider = new ethers.BrowserProvider(client);
+        client.request.mockImplementation(async ({ method, params }) => {
+          if (method === 'eth_chainId') return '0x1';
+          if (method !== 'eth_call') throw new Error(`Unexpected RPC ${method}`);
+          if (params[0].data.startsWith('0x12345678')) return '0xcafe';
+          throw Object.assign(new Error('execution reverted'), {
+            code: 3,
+            data: iface.encodeErrorResult('OffchainLookup', [
+              ur,
+              ['https://ccip.example/{data}'],
+              '0xbeef',
+              '0x12345678',
+              '0xdead',
+            ]),
+          });
+        });
+        return provider;
+      });
+      const resolve =
+        direction === 'forward' ? mockUniversalResolverCall : mockUniversalResolverReverse;
+      resolve.mockImplementationOnce((p) =>
+        p.call({ to: ur, data: '0xabcdef01', enableCcipRead: true })
+      );
+      const inherited = jest
+        .spyOn(ethers.AbstractProvider.prototype, 'ccipReadFetch')
+        .mockRejectedValue(new Error('unbounded inherited fetch must not run'));
+      const originalFetch = global.fetch;
+      global.fetch = jest.fn(async () => new Response(JSON.stringify({ data: '0xabcd' })));
+      try {
+        const result =
+          direction === 'forward'
+            ? await resolveViaColibri('test.offchaindemo.eth', '0x')
+            : await resolveReverseViaColibri(ethers.getBytes(ur), 2147492101n);
+        expect(result).toBe('0xcafe');
+        expect(inherited).not.toHaveBeenCalled();
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(mockClientInstances[0].request).toHaveBeenCalledWith({
+          method: 'eth_call',
+          params: [
+            {
+              to: ur.toLowerCase(),
+              data: '0x12345678' + abi.encode(['bytes', 'bytes'], ['0xabcd', '0xdead']).slice(2),
+            },
+            'latest',
+          ],
+        });
+      } finally {
+        provider?.destroy();
+        inherited.mockRestore();
+        global.fetch = originalFetch;
+      }
+    }
+  );
+});
+
 beforeEach(() => {
   clearColibriClientForTest();
   jest.clearAllMocks();
@@ -316,6 +385,8 @@ describe('resolveReverseViaColibri', () => {
     expect(mockUniversalResolverReverse).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'browser-provider' }),
       ADDR_BYTES,
+      {},
+      60n,
     );
     expect(result).toEqual({ name: 'vitalik.eth' });
   });

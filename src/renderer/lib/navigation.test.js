@@ -128,6 +128,10 @@ const loadNavigationModule = async (options = {}) => {
     custodyListener: null,
     createTab: jest.fn(),
     openInNewTabWithTarget: jest.fn(),
+    // "This tab is the right place to land" is the default answer, i.e. the
+    // in-place navigation every pre-existing freedom:// test in this file
+    // assumes. The singleton routing itself is covered in tabs-ui.test.js.
+    routeInternalPageNavigation: jest.fn(() => false),
     getActiveWebview: jest.fn(() => activeRef.tab?.webview || null),
     getActiveTab: jest.fn(() => activeRef.tab || null),
     getActiveTabState: jest.fn(() => activeRef.tab?.navigationState || null),
@@ -502,6 +506,9 @@ const loadNavigationModule = async (options = {}) => {
     electronAPI,
     location: {
       href: 'file:///app/index.html',
+      // Private windows are opened with `?privatePartition=private-<uuid>`;
+      // private-mode.js reads it at import time.
+      search: options.locationSearch || '',
     },
     addEventListener: jest.fn((event, handler) => {
       windowHandlers[event] = handler;
@@ -1020,9 +1027,21 @@ describe('navigation', () => {
       immediate: true,
     });
     expect(ctx.elements.reloadBtn.dataset.state).toBe('reload');
+    // #75: a finished load on its own fetches nothing — the icon URL comes
+    // from the webview's own report, which lands next.
+    expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+
+    ctx.tabsMocks.webviewEventHandler('page-favicon-updated', {
+      tabId: ctx.activeRef.tab.id,
+      pageUrl: 'https://loaded.example',
+      iconUrl: 'https://loaded.example/icon.png',
+    });
+    await flushMicrotasks();
+
     expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledWith(
       'https://loaded.example',
-      'https://recorded.example'
+      'https://recorded.example',
+      'https://loaded.example/icon.png'
     );
     expect(ctx.tabsMocks.updateTabFavicon).toHaveBeenCalledWith(
       ctx.activeRef.tab.id,
@@ -1073,6 +1092,338 @@ describe('navigation', () => {
     ctx.tabsMocks.webviewEventHandler('dom-ready', {});
     await flushMicrotasks();
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('Webview ready.');
+  });
+
+  // #75. Favicon discovery used to re-download the page in the main process
+  // (cookieless) just to run a regex over its HTML, so every external
+  // navigation hit the server twice. The icon URL now comes from the
+  // webview's own `page-favicon-updated` report, and main fetches the icon
+  // and nothing else. These tests pin "one favicon-related fetch per load,
+  // never the page" on the renderer side of that contract.
+  describe('favicon fetching (#75)', () => {
+    const finishLoad = async (ctx, { displayUrl, pageUrl }) => {
+      ctx.elements.addressInput.value = displayUrl;
+      ctx.tabsMocks.webviewEventHandler('did-stop-loading', { url: pageUrl });
+      await flushMicrotasks();
+    };
+
+    const reportFavicon = async (ctx, { pageUrl, iconUrl, tabId }) => {
+      ctx.tabsMocks.webviewEventHandler('page-favicon-updated', {
+        tabId: tabId ?? ctx.activeRef.tab.id,
+        pageUrl,
+        iconUrl,
+      });
+      await flushMicrotasks();
+    };
+
+    test('a page load fetches the reported icon exactly once, and never the page', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledWith(
+        'https://shop.example/item',
+        'https://shop.example/item',
+        'https://shop.example/icon.png'
+      );
+      // The page URL goes over only as the *context* the icon URL is
+      // resolved and cached against; that main never fetches it is asserted
+      // against the real module in src/main/favicons.test.js.
+    });
+
+    test('repeated icon reports for one load do not fetch again', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      // Chromium can report several candidates (icon, apple-touch-icon) for
+      // one document; each arrives as its own event.
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/apple-touch-icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+    });
+
+    // Measured ordering on a live http load is report-after-stop, but the
+    // pairing must not depend on it: a cached page can report its icon
+    // before the load finishes.
+    test('an icon reported before the load finishes still fetches once', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledWith(
+        'https://shop.example/item',
+        'https://shop.example/item',
+        'https://shop.example/icon.png'
+      );
+    });
+
+    // A report left over from the previous document (or one racing in from a
+    // page the tab has already navigated away from) describes a different
+    // page URL than the load that just finished — caching it under this
+    // page's key would paint the wrong site's icon.
+    test('an icon reported for a different page is not fetched', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://other.example/old',
+        iconUrl: 'https://other.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    test('a report for a tab that no longer exists is ignored', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        tabId: ctx.activeRef.tab.id + 99,
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    // Chromium emits the report *after* did-stop-loading, so the user can
+    // switch tabs in between. The report still belongs to the tab that
+    // finished loading, and completes the half that load recorded — keying
+    // this on "is it the active tab" dropped the icon for that whole visit,
+    // which only a reload recovered (#376).
+    test('a report landing after a tab switch still fetches for the tab that loaded', async () => {
+      const loaded = createTab(1, 'https://shop.example/item');
+      const other = createTab(2, 'https://other.example/');
+      const ctx = await loadNavigationModule({
+        tabs: [loaded, other],
+        activeTab: loaded,
+        firstTab: loaded,
+      });
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      // The user switches to the other tab before the icon is reported.
+      ctx.activeRef.tab = other;
+      await reportFavicon(ctx, {
+        tabId: loaded.id,
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledWith(
+        'https://shop.example/item',
+        'https://shop.example/item',
+        'https://shop.example/icon.png'
+      );
+      expect(ctx.tabsMocks.updateTabFavicon).toHaveBeenCalledWith(
+        loaded.id,
+        'https://shop.example/item'
+      );
+    });
+
+    // The mirror case: a tab that never recorded a load half — a background
+    // load, whose address bar never supplied a cache key — reports its icon
+    // and nothing is fetched, exactly as before.
+    test('a report from a tab that recorded no load half fetches nothing', async () => {
+      const foreground = createTab(1, 'https://shop.example/item');
+      const background = createTab(2, 'https://other.example/');
+      const ctx = await loadNavigationModule({
+        tabs: [foreground, background],
+        activeTab: foreground,
+        firstTab: foreground,
+      });
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await reportFavicon(ctx, {
+        tabId: background.id,
+        pageUrl: 'https://other.example/',
+        iconUrl: 'https://other.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    // Both halves are otherwise cleared only by being consumed, so an extra
+    // icon report for one document (a JS favicon swap, a late
+    // `apple-touch-icon`) is left sitting on the tab. A committed navigation
+    // has to drop it, or the next visit to the same URL pairs with it before
+    // its own report ever lands — fetching the previous visit's candidate and
+    // leaving the fresh one over in turn, one visit behind for good (#376).
+    const navigateTo = async (ctx, url, tabId) => {
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        tabId: tabId ?? ctx.activeRef.tab.id,
+        event: { url },
+      });
+      await flushMicrotasks();
+    };
+
+    test('a revisit fetches its own reported icon, not the previous visit’s leftover', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      // Visit 1: the document reports two candidates. The first pairs and is
+      // fetched; the second is recorded with nothing left to pair with.
+      await navigateTo(ctx, 'https://shop.example/item');
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/apple-touch-icon.png',
+      });
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+
+      // Away, and back to the same URL — the site has changed its icon since.
+      await navigateTo(ctx, 'https://other.example/');
+      await navigateTo(ctx, 'https://shop.example/item');
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      // Nothing may fire before this visit's own report lands.
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon-v2.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(2);
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenLastCalledWith(
+        'https://shop.example/item',
+        'https://shop.example/item',
+        'https://shop.example/icon-v2.png'
+      );
+    });
+
+    // The load half is dropped by the same reset. A page that finishes
+    // loading without reporting an icon leaves its half on the tab; once the
+    // tab has committed a new document, a straggling report for the page it
+    // left must not complete that half and cache an icon under the old
+    // page's key.
+    test('a report for the page a tab has navigated away from fetches nothing', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await navigateTo(ctx, 'https://shop.example/item');
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await navigateTo(ctx, 'https://other.example/');
+
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
+
+    // A same-document navigation (in-page anchor, history.pushState) keeps
+    // the document and its reported icon, so it clears neither half.
+    test('an in-page navigation keeps the pairing halves', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await navigateTo(ctx, 'https://shop.example/item');
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      ctx.tabsMocks.webviewEventHandler('did-navigate-in-page', {
+        tabId: ctx.activeRef.tab.id,
+        event: { url: 'https://shop.example/item#reviews' },
+      });
+      await flushMicrotasks();
+
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).toHaveBeenCalledTimes(1);
+    });
+
+    // PRIVATE MODE GUARD (favicons): a private window records no load half,
+    // so a reported icon can never complete a pair and nothing is fetched or
+    // cached. Main refuses a private sender's fetch too (favicons.test.js).
+    test('a private window fetches no favicon even when the icon is reported', async () => {
+      const ctx = await loadNavigationModule({
+        locationSearch: '?privatePartition=private-test',
+      });
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      await finishLoad(ctx, {
+        displayUrl: 'https://shop.example/item',
+        pageUrl: 'https://shop.example/item',
+      });
+      await reportFavicon(ctx, {
+        pageUrl: 'https://shop.example/item',
+        iconUrl: 'https://shop.example/icon.png',
+      });
+
+      expect(ctx.electronAPI.fetchFaviconWithKey).not.toHaveBeenCalled();
+    });
   });
 
   describe('address bar search fallback', () => {
@@ -1142,6 +1493,152 @@ describe('navigation', () => {
       ctx.mod.loadTarget('ipfs://bafybeigdyrzt');
 
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('ipfs://bafybeigdyrzt');
+    });
+  });
+
+  // #325: a chrome-driven `freedom://` navigation is routed by the tab layer
+  // first — an open Settings tab is focused instead of duplicated. Before the
+  // fix this branch went straight to `webview.loadURL`, so the hamburger menu
+  // and the address bar produced a second Settings tab next to the first.
+  describe('internal-page singleton routing', () => {
+    test('asks the tab layer where a freedom:// page should land', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.mod.loadTarget('freedom://settings/shortcuts');
+
+      expect(ctx.tabsMocks.routeInternalPageNavigation).toHaveBeenCalledWith(
+        'settings',
+        'shortcuts',
+        ctx.activeRef.tab.webview
+      );
+      // Answered "this tab": navigated in place, sub-path as the fragment.
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'file:///app/pages/settings.html#shortcuts'
+      );
+    });
+
+    test('leaves the current tab alone when the page was routed elsewhere', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+
+      ctx.mod.loadTarget('freedom://settings');
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    // "Leaves the tab alone" is the whole tab, not just its webview: the entry
+    // bookkeeping at the top of loadTarget acts on the tab being navigated, so
+    // it has to run *after* the routing decision, never before it.
+    test("a routed-away open keeps the current tab's uncommitted draft (#314)", async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.elements.addressInput.value = 'half-typed-draft';
+      ctx.elements.addressInput.dispatch('input');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-draft');
+
+      // Settings opens from the hamburger menu and is routed to its own tab.
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-draft');
+      expect(ctx.elements.addressInput.value).toBe('half-typed-draft');
+
+      // The in-place answer still commits the bar, as every chrome-driven
+      // navigation does.
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+    });
+
+    // …with one exception: the draft the user *committed*. Typing
+    // `freedom://settings` and pressing Enter ends that edit wherever the open
+    // lands — holding it would leave the committed text as a phantom draft
+    // that repaints, focused, on every switch back to this tab.
+    test('a routed-away address-bar commit still ends the committed edit', async () => {
+      const tabB = createTab(2, 'https://second.example', {
+        title: 'Settings',
+        webview: createWebview('https://second.example', { webContentsId: 22 }),
+      });
+      const ctx = await loadNavigationModule();
+      const tabA = ctx.activeRef.tab;
+      ctx.tabsRef.list = [tabA, tabB];
+      await ctx.mod.initNavigation();
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+
+      // Routing to another tab switches to it synchronously, exactly as
+      // `openOrFocusInternalPage` does — which fires the `tab-switched`
+      // handler while the edit is still in progress and re-saves the bar as
+      // this tab's draft. The clear has to survive that, i.e. run after.
+      ctx.tabsMocks.routeInternalPageNavigation.mockImplementationOnce(() => {
+        ctx.activeRef.tab = tabB;
+        ctx.tabsMocks.webviewEventHandler('tab-switched', {
+          tabId: tabB.id,
+          tab: tabB,
+          isNewTab: false,
+        });
+        return true;
+      });
+
+      ctx.elements.addressInput.value = 'freedom://settings';
+      ctx.elements.addressInput.dispatch('input');
+      ctx.elements.navForm.dispatch('submit', { preventDefault: jest.fn() });
+      await flushMicrotasks();
+
+      expect(tabA.navigationState.addressBarPendingInput).toBeNull();
+      // …and the committed text is not adopted as the leaving tab's page
+      // display either, so switching back paints Page A's own URL.
+      expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
+
+      // Switching back leaves the bar on the page URL, unfocused — the page
+      // keeps the keyboard (#319) instead of an uncommitted-edit exception.
+      ctx.elements.addressInput.focus.mockClear();
+      ctx.activeRef.tab = tabA;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+      expect(ctx.elements.addressInput.value).toBe(`switched:${tabA.url}`);
+      expect(ctx.elements.addressInput.focus).not.toHaveBeenCalled();
+    });
+
+    test('a routed-away open leaves an in-flight Swarm probe running', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${'a'.repeat(64)}`);
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+
+      // Settings opens in its own tab while the probe is still in flight: the
+      // bzz navigation on this tab was never interrupted, so it must settle.
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+
+      expect(ctx.swarmProbeState.cancelCalls).toEqual([]);
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+
+      // An open that *does* land here is a real navigation away, and cancels it.
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+      expect(ctx.swarmProbeState.cancelCalls).toEqual(['probe-1']);
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
     });
   });
 
@@ -2040,6 +2537,24 @@ describe('navigation', () => {
       expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(verifiedTrust);
       expect(loadCalls.find(([u]) => u.includes('ens-conflict.html'))).toBeUndefined();
       expect(loadCalls.find(([u]) => u.includes('ens-unverified.html'))).toBeUndefined();
+    });
+
+    test('DNS ENS pointing to IPNS loads its key instead of resolving the ENS name as DNSLink', async () => {
+      const ctx = await setupEnsDispatch();
+      ctx.pageUrlsMocks.parseEnsInput.mockReturnValueOnce({
+        name: 'example.com',
+        suffix: '/docs',
+        assertedTransport: null,
+      });
+      ctx.urlUtilsMocks.buildEnsDisplayUri.mockReturnValueOnce('ens://example.com/docs');
+      const loadCalls = await dispatchEns(ctx, 'ens://example.com/docs', {
+        type: 'ok',
+        name: 'example.com',
+        protocol: 'ipns',
+        uri: 'ipns://k51qtest',
+        trust: { level: 'verified', agreed: ['a', 'b'] },
+      });
+      expect(loadCalls).toContainEqual(['ipns://k51qtest/docs']);
     });
 
     test('native .tez resolution keeps the name origin for IPFS content', async () => {

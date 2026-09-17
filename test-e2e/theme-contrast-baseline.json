@@ -1,0 +1,470 @@
+{
+  "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
+  "total": 58,
+  "gaps": [
+    {
+      "surface": "Swarm connect approval",
+      "theme": "dark",
+      "el": "button#swarm-connect-approve.swarm-connect-approve-btn",
+      "text": "Allow",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "Swarm feed approval",
+      "theme": "dark",
+      "el": "button#swarm-feed-approve.swarm-connect-approve-btn",
+      "text": "Allow",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "Swarm messaging approval",
+      "theme": "dark",
+      "el": "button#swarm-messaging-confirm.swarm-connect-approve-btn",
+      "text": "Allow",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "Swarm publish approval",
+      "theme": "dark",
+      "el": "button#swarm-publish-confirm.swarm-connect-approve-btn",
+      "text": "Publish",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "conflict interstitial",
+      "theme": "dark",
+      "el": "button#back-btn.button-primary",
+      "text": "← Go back",
+      "ratio": 4.29,
+      "bar": 4.5
+    },
+    {
+      "surface": "conflict interstitial",
+      "theme": "dark",
+      "el": "p.learn-more",
+      "text": "If you trust one of the answers above an",
+      "ratio": 2.87,
+      "bar": 4.5
+    },
+    {
+      "surface": "dApp connect",
+      "theme": "dark",
+      "el": "button#dapp-connect-approve.dapp-connect-approve-btn",
+      "text": "Connect",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "dApp sign",
+      "theme": "dark",
+      "el": "button#dapp-sign-approve.dapp-sign-approve-btn",
+      "text": "Sign",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "dApp transaction approval",
+      "theme": "dark",
+      "el": "button#dapp-tx-approve.dapp-tx-approve-btn",
+      "text": "Confirm",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "dark",
+      "el": "span.bee-toggle-label",
+      "text": "Swarm",
+      "ratio": 2.73,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "dark",
+      "el": "span.ipfs-toggle-label",
+      "text": "IPFS",
+      "ratio": 2.73,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "dark",
+      "el": "span.radicle-toggle-label",
+      "text": "Radicle",
+      "ratio": 2.73,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#bee-status-label.bee-info-label",
+      "text": "Test mode (Swarm stub)",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#bee-version-text",
+      "text": "Unknown",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#ipfs-data-read",
+      "text": "0 B",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#ipfs-version-text",
+      "text": "Unknown",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#myotis-finalized-block",
+      "text": "25684159",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#myotis-state-text",
+      "text": "Ready",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#myotis-version-text",
+      "text": "Myotis v0.1.7",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span#radicle-version-text",
+      "text": "libradicle v0.7.1",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span.bee-info-label",
+      "text": "Connected Peers:",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span.bee-toggle-label",
+      "text": "Swarm",
+      "ratio": 1.81,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span.ipfs-info-label",
+      "text": "Active Requests:",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span.ipfs-toggle-label",
+      "text": "IPFS",
+      "ratio": 1.81,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span.radicle-info-label",
+      "text": "Connected Peers:",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "nodes menu",
+      "theme": "light",
+      "el": "span.radicle-toggle-label",
+      "text": "Radicle",
+      "ratio": 1.81,
+      "bar": 4.5
+    },
+    {
+      "surface": "page downloads",
+      "theme": "dark",
+      "el": "p",
+      "text": "No downloads yet",
+      "ratio": 3.31,
+      "bar": 4.5
+    },
+    {
+      "surface": "page history",
+      "theme": "dark",
+      "el": "p",
+      "text": "No history yet",
+      "ratio": 3.31,
+      "bar": 4.5
+    },
+    {
+      "surface": "page links",
+      "theme": "dark",
+      "el": "div.info",
+      "text": "Click any link below. Links with or Java",
+      "ratio": 4.45,
+      "bar": 4.5
+    },
+    {
+      "surface": "page links",
+      "theme": "dark",
+      "el": "span.badge.js",
+      "text": "JS",
+      "ratio": 4.29,
+      "bar": 4.5
+    },
+    {
+      "surface": "page payments",
+      "theme": "dark",
+      "el": "p",
+      "text": "No payments yet",
+      "ratio": 3.77,
+      "bar": 4.5
+    },
+    {
+      "surface": "page payments",
+      "theme": "light",
+      "el": "p#stats.subtitle",
+      "text": "0 payments",
+      "ratio": 4.1,
+      "bar": 4.5
+    },
+    {
+      "surface": "permission indicator popover",
+      "theme": "light",
+      "el": "div.permission-popover-row-status",
+      "text": "Allowed",
+      "ratio": 3.85,
+      "bar": 4.5
+    },
+    {
+      "surface": "send form",
+      "theme": "dark",
+      "el": "button#send-continue-btn.send-continue-btn",
+      "text": "Continue",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "send form",
+      "theme": "light",
+      "el": "button#send-max-btn.send-max-btn",
+      "text": "MAX",
+      "ratio": 4.22,
+      "bar": 4.5
+    },
+    {
+      "surface": "send review",
+      "theme": "dark",
+      "el": "button#send-confirm-btn.send-confirm-btn",
+      "text": "Confirm & Send",
+      "ratio": 1.97,
+      "bar": 4.5
+    },
+    {
+      "surface": "send review",
+      "theme": "light",
+      "el": "button#send-confirm-btn.send-confirm-btn",
+      "text": "Confirm & Send",
+      "ratio": 3.95,
+      "bar": 4.5
+    },
+    {
+      "surface": "send success",
+      "theme": "dark",
+      "el": "button#send-done-btn.send-done-btn",
+      "text": "Done",
+      "ratio": 1.97,
+      "bar": 4.5
+    },
+    {
+      "surface": "send success",
+      "theme": "light",
+      "el": "button#send-done-btn.send-done-btn",
+      "text": "Done",
+      "ratio": 3.95,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings appearance",
+      "theme": "light",
+      "el": "button.nav-item.active",
+      "text": "Appearance",
+      "ratio": 4.32,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings chains",
+      "theme": "light",
+      "el": "button.nav-item.active",
+      "text": "Chains",
+      "ratio": 4.32,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "dark",
+      "el": "a.row-help",
+      "text": "Configure →",
+      "ratio": 2.98,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "dark",
+      "el": "p.row-help",
+      "text": "Uses one configured endpoint. This is no",
+      "ratio": 2.61,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "dark",
+      "el": "p.row-label",
+      "text": "Direct RPC",
+      "ratio": 4.31,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "dark",
+      "el": "span.resolver-badge.warning",
+      "text": "Public endpoint",
+      "ratio": 2.96,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "dark",
+      "el": "span.resolver-rank",
+      "text": "–",
+      "ratio": 2.61,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "light",
+      "el": "a.row-help",
+      "text": "Configure →",
+      "ratio": 2.48,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "light",
+      "el": "button.nav-item.active",
+      "text": "Name Resolution",
+      "ratio": 4.32,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "light",
+      "el": "p.row-help",
+      "text": "Uses one configured endpoint. This is no",
+      "ratio": 2.55,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "light",
+      "el": "p.row-label",
+      "text": "Direct RPC",
+      "ratio": 3.82,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "light",
+      "el": "span.resolver-badge.warning",
+      "text": "Public endpoint",
+      "ratio": 2.31,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings ens",
+      "theme": "light",
+      "el": "span.resolver-rank",
+      "text": "–",
+      "ratio": 2.55,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings nodes",
+      "theme": "light",
+      "el": "button.nav-item.active",
+      "text": "Nodes",
+      "ratio": 4.32,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings permissions",
+      "theme": "light",
+      "el": "button.nav-item.active",
+      "text": "Site Permissions",
+      "ratio": 4.32,
+      "bar": 4.5
+    },
+    {
+      "surface": "settings shortcuts",
+      "theme": "light",
+      "el": "button.nav-item.active",
+      "text": "Shortcuts",
+      "ratio": 4.32,
+      "bar": 4.5
+    },
+    {
+      "surface": "sidebar",
+      "theme": "dark",
+      "el": "button#sidebar-setup-btn.setup-cta-btn",
+      "text": "Get Started",
+      "ratio": 2.11,
+      "bar": 4.5
+    },
+    {
+      "surface": "unverified interstitial",
+      "theme": "dark",
+      "el": "button#continue-btn.button-primary",
+      "text": "Continue once",
+      "ratio": 4.29,
+      "bar": 4.5
+    },
+    {
+      "surface": "unverified interstitial",
+      "theme": "dark",
+      "el": "p.learn-more",
+      "text": "You can disable this warning globally in",
+      "ratio": 2.87,
+      "bar": 4.5
+    }
+  ]
+}

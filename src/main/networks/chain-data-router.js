@@ -307,8 +307,14 @@ function normalizeParams(method, params) {
 }
 
 function nativeResult(payload, ...keys) {
-  if (!payload || payload.error || payload.status === 'error') {
-    throw new Error(payload?.error || payload?.message || 'Myotis request failed');
+  if (payload?.status === 'revert') {
+    const error = new Error('execution reverted');
+    error.code = 3;
+    error.data = typeof payload.dataHex === 'string' ? payload.dataHex : '0x';
+    throw error;
+  }
+  if (!payload || payload.error || ['error', 'unavailable'].includes(payload.status)) {
+    throw new SourceUnavailableError('Myotis native read unavailable');
   }
   for (const key of keys) {
     if (payload[key] != null) return payload[key];
@@ -457,7 +463,9 @@ async function requestMyotis(chainId, method, params) {
       data: call.data || '0x',
       value: decimal(call.value),
     });
-    return quantity(nativeResult(result, 'gasLimit', 'result'));
+    const gas = nativeResult(result, 'gas');
+    if (!Number.isSafeInteger(gas) || gas < 0) throw new SourceUnavailableError('Myotis returned invalid gas');
+    return quantity(gas);
   }
 
   if (method === 'eth_gasPrice' || method === 'eth_maxPriorityFeePerGas') {
@@ -998,6 +1006,7 @@ async function request(
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
+      if (source === 'myotis' && err.code === 3) throw err;
       if (source === 'quorum') {
         if (err.directFallback) directFallback = err.directFallback;
         if (Array.isArray(err.directAttemptedUrls)) {
@@ -1076,7 +1085,12 @@ async function broadcastRawTransaction(chainId, rawTransaction) {
       if (source === 'myotis') {
         if (!myotis.isReady(chainId)) throw new SourceUnavailableError('Myotis is not ready');
         const payload = await myotis.sendRawTransaction(rawTransaction, chainId);
-        result = nativeResult(payload, 'txHash', 'result');
+        try { result = nativeResult(payload, 'txHash', 'result'); }
+        catch {
+          const error = new Error('Myotis broadcast outcome uncertain; reconcile the original signed transaction');
+          error.code = 'MYOTIS_BROADCAST_UNCERTAIN';
+          throw error;
+        }
       } else if (source === 'direct') {
         result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction]);
       } else {

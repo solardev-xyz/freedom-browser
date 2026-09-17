@@ -34,6 +34,6 @@
 process.env.C4_DISABLE_NATIVE = '1';
 
 const Colibri = require('@corpus-core/colibri-stateless').default;
-const { Strategy } = require('@corpus-core/colibri-stateless');
+const { Strategy, decode_proof } = require('@corpus-core/colibri-stateless');
 
-module.exports = { Colibri, Strategy };
+module.exports = { Colibri, Strategy, decode_proof };

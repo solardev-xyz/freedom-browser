@@ -1922,6 +1922,10 @@ function handleUnsubscribe(params, origin) {
  * @returns {{ ok: boolean, reason?: string }}
  */
 async function checkBeeReachable() {
+  // Global `fetch` (undici), which never sees `session.setProxy` — so an
+  // external Ant API on a `.onion` host is handed to the system resolver
+  // instead of Tor, the shape #355 fixed for the external IPFS gateway.
+  // Tracked for every Swarm call site in #360.
   const beeUrl = getAntApiUrl();
   if (!beeUrl) return { ok: false, reason: 'node-stopped' };
   try {

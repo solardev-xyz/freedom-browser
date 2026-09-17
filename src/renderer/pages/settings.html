@@ -145,6 +145,24 @@
         color: var(--text-muted);
       }
 
+      /* A section title that carries a section-level action beside it (#272):
+         Site Permissions' "Remove all" sits next to the `<h2>`, where the
+         page's other section-level actions live, instead of inside the list
+         it acts on. */
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 0 16px 0;
+      }
+
+      /* The heading's own bottom margin now belongs to the flex row, which
+         also has to centre it against the button. */
+      .section-header .section-title {
+        margin: 0;
+      }
+
       .card {
         background: var(--bg-card);
         border: 1px solid var(--border);
@@ -681,6 +699,13 @@
         font-size: 12px;
       }
 
+      .profile-node-note {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
       .profile-node-actions {
         display: flex;
         justify-content: flex-end;
@@ -1103,7 +1128,10 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Search engine</p>
-                <p class="row-help">Used when the address bar input is not a URL, hash, or name.</p>
+                <p class="row-help">
+                  Used when the address bar input is not a URL, hash, or name, and by the
+                  &ldquo;Search &hellip; for&rdquo; item on a page&rsquo;s right-click menu.
+                </p>
               </div>
               <div class="row-control">
                 <!-- Values mirror SEARCH_PROVIDERS in renderer/lib/search-utils.js -->
@@ -1129,7 +1157,7 @@
             <div id="custom-search-provider-list"></div>
             <div class="rpc-block" style="border-top: none">
               <button type="button" class="btn" id="add-search-provider">
-                + Add a search engine
+                Add search engine
               </button>
             </div>
             <div class="rpc-block search-provider-form" id="search-provider-form" hidden>
@@ -1171,7 +1199,6 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Name</p>
-                <p class="row-help">The display name for the current profile.</p>
               </div>
               <div class="row-control profile-name-control">
                 <input
@@ -1187,7 +1214,7 @@
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
               <button type="button" class="btn" id="manage-profiles-link">
-                Manage all profiles →
+                Manage profiles
               </button>
             </div>
           </div>
@@ -1205,11 +1232,12 @@
 
         <!-- Startup -->
         <section class="section" id="startup">
-          <h2 class="section-title">Automatic Startup</h2>
+          <h2 class="section-title">Startup</h2>
           <div class="card">
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Start Swarm node</p>
+                <p class="row-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1221,6 +1249,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Start IPFS node</p>
+                <p class="row-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1232,9 +1261,7 @@
             <div class="row" id="radicle-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Radicle node</p>
-                <p class="row-help" id="radicle-launch-help">
-                  Starts this profile's embedded Radicle node when Freedom opens.
-                </p>
+                <p class="row-help" id="radicle-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1245,11 +1272,11 @@
             </div>
             <div class="row" id="myotis-launch-row">
               <div class="row-body">
-                <p class="row-label">Start Ethereum light client (Myotis)</p>
-                <p class="row-help" id="myotis-launch-help">
-                  Experimental: a fully peer-to-peer Ethereum node — name resolution verified
-                  against the chain itself, no RPC provider involved. Takes effect on next launch.
+                <p class="row-label">
+                  Start Ethereum node
+                  <span class="resolver-badge">Beta</span>
                 </p>
+                <p class="row-help" id="myotis-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1260,11 +1287,11 @@
             </div>
             <div class="row" id="myotis-gnosis-launch-row">
               <div class="row-body">
-                <p class="row-label">Start Gnosis light client (Myotis)</p>
-                <p class="row-help" id="myotis-gnosis-launch-help">
-                  Starts the independent Gnosis P2P client for verified wallet, transaction, and
-                  dapp reads. Takes effect on next launch.
+                <p class="row-label">
+                  Start Gnosis node
+                  <span class="resolver-badge">Beta</span>
                 </p>
+                <p class="row-help" id="myotis-gnosis-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1283,9 +1310,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Ask where to save each file</p>
-                <p class="row-help">
-                  When off, files are saved to your Downloads folder automatically.
-                </p>
+                <p class="row-help">Otherwise: ~/Downloads</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1334,13 +1359,13 @@
 
         <!-- Ethereum Name Resolution — a focused lens on the Ethereum network -->
         <section class="section" id="ens">
-          <h2 class="section-title">Ethereum Name Resolution</h2>
+          <h2 class="section-title">Name Resolution</h2>
           <p class="row-help" style="margin-bottom: 16px">
             How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
             <code>.gwei</code> names. These records live on Ethereum — manage RPC endpoints under
             <a href="#chains">Chains settings</a>.
           </p>
-          <h3 class="row-label" style="margin: 0 0 8px 0">Resolution order</h3>
+          <h3 class="subsection-title">Resolution order</h3>
           <p class="row-help" style="margin: 0 0 12px 0">
             Freedom tries enabled methods from top to bottom. Drag the handle to change priority;
             with the handle focused, the arrow keys work too.
@@ -1365,7 +1390,7 @@
             </div>
           </div>
 
-          <h3 class="row-label" style="margin: 22px 0 8px 0">Safety</h3>
+          <h3 class="subsection-title">Safety</h3>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -1384,7 +1409,12 @@
 
         <!-- Site Permissions -->
         <section class="section" id="permissions">
-          <h2 class="section-title">Site Permissions</h2>
+          <div class="section-header">
+            <h2 class="section-title">Site Permissions</h2>
+            <button type="button" class="btn danger" id="permissions-revoke-all" disabled>
+              Remove all
+            </button>
+          </div>
           <div id="permissions-view"></div>
         </section>
 
@@ -1470,10 +1500,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Allowlisted sites</p>
-                <p class="row-help">
-                  Ad blocking is turned off on these sites, including their subdomains. Changes
-                  apply to pages loaded afterwards — reload open tabs.
-                </p>
+                <p class="row-help">Ad blocking is off on these sites and their subdomains.</p>
               </div>
               <div class="row-control">
                 <input
@@ -1689,7 +1716,10 @@
       // to (Esc, an empty/unchanged value, or a failed save).
       let savedProfileName = '';
 
-      let isWindows = false;
+      // Whether this build ships an Arti (Tor) binary. Assumed present until
+      // the check answers, so the markup's own state is what a normal build
+      // shows and only a build without one repaints.
+      let torBundled = true;
       let profileRefreshTimer = null;
       let setProfileRefreshActive = () => {};
 
@@ -1984,6 +2014,20 @@
       }
       showSection(initialSection);
 
+      // The Tor rows follow the bundled Arti binary, not the platform: every
+      // platform the release workflow builds compiles Arti (Windows x64
+      // included since #337), and a source build that skipped
+      // `npm run tor:download` bundles none. A profile that already has the
+      // integration enabled keeps the rows either way — an external Tor SOCKS
+      // proxy needs no bundled binary, and a setting nothing can switch off
+      // again would be worse than a row that explains nothing.
+      const applyTorRowVisibility = (settings = cachedSettings) => {
+        const visible = torBundled || settings?.enableTorIntegration === true;
+        document
+          .querySelectorAll('[data-tor]')
+          .forEach((el) => (el.style.display = visible ? '' : 'none'));
+      };
+
       const setFieldEnabled = (checkbox, container, ...inputs) => {
         const enabled = checkbox?.checked === true;
         container?.classList.toggle('disabled', !enabled);
@@ -2016,8 +2060,19 @@
         {
           protocol: 'ipfs',
           label: 'IPFS',
-          modes: ['managed', 'disabled'],
-          endpointLines: () => ['Embedded freedom-ipfs native node'],
+          modes: ['managed', 'external', 'disabled'],
+          externalFields: [
+            { key: 'externalGateway', label: 'Gateway', placeholder: 'http://127.0.0.1:8080' },
+          ],
+          // Shown under the gateway field whenever "Use external node" is
+          // selected: the embedded node verifies what it retrieves, an external
+          // gateway is trusted for the bytes it serves.
+          externalNote:
+            'Freedom does not verify content integrity in this mode — the gateway is trusted for every ipfs:// page it serves.',
+          endpointLines: (config) =>
+            config?.externalGateway
+              ? [config.externalGateway]
+              : ['Embedded freedom-ipfs native node'],
         },
         {
           protocol: 'myotis',
@@ -2036,7 +2091,6 @@
           label: 'Tor',
           modes: ['managed', 'external', 'disabled'],
           settingKey: 'enableTorIntegration',
-          hideOnWindows: true,
           externalFields: [
             { key: 'externalSocks', label: 'SOCKS5', placeholder: '127.0.0.1:9150' },
           ],
@@ -2060,7 +2114,6 @@
         PROFILE_NODE_SERVICES.map((definition) => [definition.protocol, definition.label])
       );
       const isProfileServiceVisible = (definition, settings) => {
-        if (definition.hideOnWindows && isWindows) return false;
         if (definition.settingKey && settings?.[definition.settingKey] !== true) return false;
         return true;
       };
@@ -2076,9 +2129,22 @@
         return mode.charAt(0).toUpperCase() + mode.slice(1);
       };
 
+      // A node config keeps its external endpoint across a switch back to
+      // managed (the catalog merges node config updates rather than clamping
+      // them), so the stored value is only the endpoint in use while the mode
+      // actually is 'external'. Hide it otherwise, for every row, or a managed
+      // node advertises an address it is not serving from.
+      const withoutStoredExternalFields = (definition, config) => {
+        const stripped = { ...(config || {}) };
+        for (const field of definition.externalFields || []) delete stripped[field.key];
+        return stripped;
+      };
+
       const endpointLines = (definition, config, service) => {
         if (config?.mode === 'disabled') return [];
-        return definition.endpointLines?.(config, service) || [];
+        const effective =
+          config?.mode === 'external' ? config : withoutStoredExternalFields(definition, config);
+        return definition.endpointLines?.(effective, service) || [];
       };
 
       const externalFields = (definition, config) =>
@@ -2113,9 +2179,14 @@
             </div>`
         );
 
+        const note = definition?.externalNote
+          ? `<p class="profile-node-note">${esc(definition.externalNote)}</p>`
+          : '';
+
         return `
           <div class="profile-node-editor" data-external-editor ${mode === 'external' ? '' : 'hidden'}>
             ${fields.join('')}
+            ${note}
           </div>`;
       };
 
@@ -2325,8 +2396,8 @@
         startMyotisGnosisAtLaunch: fields.startMyotisGnosis.checked,
         askWhereToSave: fields.askWhereToSave.checked,
         startRadicleAtLaunch: fields.startRadicle.checked,
-        enableTorIntegration: isWindows ? false : fields.enableTor.checked,
-        startTorAtLaunch: isWindows ? false : fields.startTor.checked,
+        enableTorIntegration: fields.enableTor.checked,
+        startTorAtLaunch: fields.startTor.checked,
         enableIdentityWallet: fields.enableIdentity.checked,
         showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
         autoUpdate: fields.autoUpdate.checked,
@@ -2362,6 +2433,16 @@
         fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
         fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
         setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+        // Re-evaluated whenever the form is repainted from a payload — first
+        // load, and a broadcast that differs from what's on screen. Enabling
+        // the integration is what keeps the rows on a build that bundles no
+        // Arti binary. Note the broadcast that follows this page's *own* save
+        // matches the form, so `onSettingsUpdated` skips applyFormState and
+        // this call with it: switching the integration back off on such a
+        // build leaves the rows up until the page is reloaded, which is the
+        // intended escape hatch rather than an oversight — the user can still
+        // see and re-enable what they just turned off.
+        applyTorRowVisibility(settings);
         applyAdblockGating();
       };
 
@@ -2426,7 +2507,7 @@
           control.className = 'row-control';
           const removeBtn = document.createElement('button');
           removeBtn.type = 'button';
-          removeBtn.className = 'btn danger';
+          removeBtn.className = 'btn';
           removeBtn.textContent = 'Remove';
           removeBtn.addEventListener('click', async () => {
             await freedomAPI.adblockRemoveAllowlistHost(host).catch(() => {});
@@ -2521,7 +2602,7 @@
 
         swarmModeHelp.textContent =
           'Ultra-light — read-only. Set up publishing to switch to light mode.';
-        showAction('Set up publishing →', () => {
+        showAction('Set up publishing', () => {
           freedomAPI.openPublishSetup().catch(() => {});
         });
       };
@@ -2604,15 +2685,6 @@
       (async () => {
         try {
           const platform = await freedomAPI.getPlatform();
-          isWindows = platform === 'win32';
-          if (isWindows) {
-            // Arti is bundled for macOS/Linux only (built host-only from
-            // crates.io). Radicle has native Windows x64 and ARM64 addons.
-            document.querySelectorAll('[data-tor]').forEach((el) => (el.style.display = 'none'));
-            if (isProfileOrNodesSection()) {
-              refreshProfileSection(true);
-            }
-          }
           if (platform !== 'linux') {
             // Frameless titlebar is a Linux-only option.
             document
@@ -2620,8 +2692,18 @@
               .forEach((el) => (el.style.display = 'none'));
           }
         } catch {
-          // Non-fatal — assume non-Windows.
+          // Non-fatal — assume Linux and leave the row visible.
         }
+
+        try {
+          const binary = await freedomAPI.checkTorBinary?.();
+          torBundled = binary?.available !== false;
+        } catch {
+          // Non-fatal — assume the build bundles Arti and leave the rows up,
+          // the same way the Radicle launch row stays live when its status
+          // read fails.
+        }
+        applyTorRowVisibility();
 
         try {
           const [settings, registry] = await Promise.all([
@@ -2681,7 +2763,12 @@
         const matchesQuery = (entry) => {
           const q = query.trim().toLowerCase();
           if (!q) return true;
-          return [entry.description, entry.category, entry.formatted, entry.accelerator]
+          return [
+            entry.settingsLabel || entry.description,
+            entry.category,
+            entry.formatted,
+            entry.accelerator,
+          ]
             .concat(entry.aliases)
             .join(' ')
             .toLowerCase()
@@ -2690,11 +2777,13 @@
 
         const kbd = (text) => `<kbd class="shortcut-kbd">${esc(text)}</kbd>`;
 
+        // The banner names the colliding shortcut the way its own row does
+        // (sentence case, #277) — the two sit inside one card.
         const renderConflict = (state) => {
           const { conflict } = state;
           const message = conflict.fixed
-            ? `${esc(state.formatted)} is already used by “${esc(conflict.description)}” and cannot be reassigned. Pick a different combination.`
-            : `${esc(state.formatted)} is already used by “${esc(conflict.description)}”. Swap the bindings so “${esc(conflict.description)}” becomes ${kbd(conflict.swapFormatted)}?`;
+            ? `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
+            : `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
           return `
             <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
               <div class="row-body"><p class="row-label">${message}</p></div>
@@ -2736,7 +2825,7 @@
           return `
             <div class="row" data-shortcut-id="${esc(entry.id)}">
               <div class="row-body">
-                <p class="row-label">${esc(entry.description)}</p>
+                <p class="row-label">${esc(entry.settingsLabel || entry.description)}</p>
                 ${aliasLine}
                 ${revertedLine}
                 ${warnLine}
@@ -2977,14 +3066,14 @@
               <span class="net-row-name">${name}</span>
               <span class="net-row-sub">${sub}</span>
             </span>
-            <span class="net-chevron">›</span>
+            <span class="net-chevron" aria-hidden="true">›</span>
           </button>`;
 
         // A standalone action button in its own card (12px top margin).
-        const cardButton = (label, action) => `
+        const cardButton = (label, action, variant = '') => `
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" data-action="${action}">${label}</button>
+              <button type="button" class="btn${variant ? ' ' + variant : ''}" data-action="${action}">${label}</button>
             </div>
           </div>`;
 
@@ -3007,7 +3096,7 @@
               chain to manage its RPC and prover endpoints.
             </p>
             <div class="card">${rows}</div>
-            ${cardButton('+ Add a chain', 'add-chain')}`;
+            ${cardButton('Add chain', 'add-chain')}`;
         };
 
         // --- add-chain flow ------------------------------------------
@@ -3149,7 +3238,7 @@
                 <span class="slider"></span></label>`;
           } else {
             controls = `<button type="button" class="btn" data-action="edit-source" data-id="${esc(src.id)}">Edit</button>
-               <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}" title="Remove" aria-label="Remove">✕</button>`;
+               <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}">Remove</button>`;
           }
 
           return `
@@ -3204,8 +3293,15 @@
             if (cid !== '1' && cid !== '100') return 'Unsupported';
             const status = myotisStatuses[cid];
             if (!status) return 'Status unknown';
+            if (status.recovery?.reason === 'installation' || status.recovery?.reason === 'unsupported') return 'Update or reinstall — open Nodes';
             if (status.state === 'ready') return 'Ready';
             if (status.state === 'syncing') return 'Syncing';
+            if (status.state === 'recovering') return 'Updating checkpoint';
+            if (status.state === 'recovery-blocked') {
+              return status.recovery?.reason === 'stalled'
+                ? 'Syncing slowly — open Nodes'
+                : 'Sync paused — open Nodes';
+            }
             if (status.state === 'off') return 'Off';
             if (status.state === 'disabled') return 'Profile disabled';
             return 'Unavailable';
@@ -3322,7 +3418,7 @@
             <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
             ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
-            ${cardButton('+ Add a custom RPC', 'add-endpoint')}
+            ${cardButton('Add RPC', 'add-endpoint')}
             ${endpointForm ? endpointFormHtml() : ''}
 
             ${
@@ -3347,7 +3443,7 @@
                 : ''
             }
 
-            ${isCustom ? cardButton('Remove this chain', 'remove-chain') : ''}`;
+            ${isCustom ? cardButton('Remove this chain', 'remove-chain', 'danger') : ''}`;
         };
 
         const render = () => {
@@ -3800,7 +3896,7 @@
             label: 'Myotis light client',
             help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
             link: '#nodes',
-            linkLabel: 'Node settings →',
+            linkLabel: 'Node settings',
           },
           {
             id: 'colibri',
@@ -3812,14 +3908,14 @@
             label: 'RPC quorum',
             help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
             link: '#chains/1',
-            linkLabel: 'Manage endpoints →',
+            linkLabel: 'Manage endpoints',
           },
           {
             id: 'direct',
             label: 'Direct RPC',
             help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
             link: '#chains/1',
-            linkLabel: 'Configure →',
+            linkLabel: 'Configure',
           },
         ];
         const METHOD_IDS = new Set(METHODS.map((method) => method.id));
@@ -3875,6 +3971,8 @@
 
           if (!myotisStatus) {
             setBadge('myotis', 'Status unknown', 'warning');
+          } else if (['installation', 'unsupported'].includes(myotisStatus.recovery?.reason)) {
+            setBadge('myotis', 'Update or reinstall — open Nodes', 'warning');
           } else if (myotisStatus.state === 'unavailable') {
             setBadge('myotis', 'Unavailable');
           } else if (myotisStatus.state === 'disabled') {
@@ -3883,6 +3981,16 @@
             setBadge('myotis', 'Off');
           } else if (myotisStatus.state === 'error') {
             setBadge('myotis', 'Error', 'warning');
+          } else if (myotisStatus.state === 'recovering') {
+            setBadge('myotis', 'Updating checkpoint', 'warning');
+          } else if (myotisStatus.state === 'recovery-blocked') {
+            setBadge(
+              'myotis',
+              myotisStatus.recovery?.reason === 'stalled'
+                ? 'Syncing slowly — open Nodes'
+                : 'Sync paused — open Nodes',
+              'warning'
+            );
           } else if (myotisStatus.state === 'ready') {
             setBadge('myotis', 'Ready', 'ready');
           } else {
@@ -4275,8 +4383,12 @@
                 : disabled
                   ? 'Disabled for this profile under Settings → Nodes.'
                   : supported && !available
-                    ? 'Addon not installed — run "npm run myotis:download" and restart.'
-                    : defaultLaunchHelp;
+                    ? 'Sync component missing. Update or reinstall Freedom; open Nodes for help.'
+                    : myotisStatus.state === 'recovery-blocked'
+                      ? 'Sync recovery needs attention. Open Nodes in the toolbar for recovery actions and help.'
+                      : myotisStatus.state === 'recovering'
+                        ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
+                        : defaultLaunchHelp;
             }
           }
           if (gnosisLaunchRow && gnosisLaunchToggle) {
@@ -4292,8 +4404,12 @@
                 : disabled
                   ? 'Disabled for this profile under Settings → Nodes.'
                   : supported && !available
-                    ? 'Addon not installed — run "npm run myotis:download" and restart.'
-                    : defaultGnosisLaunchHelp;
+                    ? 'Sync component missing. Update or reinstall Freedom; open Nodes for help.'
+                    : myotisGnosisStatus.state === 'recovery-blocked'
+                      ? 'Sync recovery needs attention. Open Nodes in the toolbar for recovery actions and help.'
+                      : myotisGnosisStatus.state === 'recovering'
+                        ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
+                        : defaultGnosisLaunchHelp;
             }
           }
           updateMethodStatuses();
@@ -4364,7 +4480,7 @@
           }
           const controls = p.hasKey
             ? `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Replace key</button>
-               <button type="button" class="btn" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`
+               <button type="button" class="btn danger" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`
             : `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Add key</button>`;
           return `
             <div class="row">
@@ -4492,6 +4608,7 @@
       // listed here — they expire with the app anyway.
       (() => {
         const view = $('permissions-view');
+        const revokeAll = $('permissions-revoke-all');
         if (!view) return;
 
         const PERMISSION_LABELS = {
@@ -4507,35 +4624,13 @@
         const render = (all) => {
           const origins = Object.keys(all || {}).sort();
 
-          const intro = `
-            <div class="card" style="margin-bottom: 16px">
-              <div class="row">
-                <div class="row-body">
-                  <p class="row-label">Decisions you asked Freedom to remember</p>
-                  <p class="row-help">
-                    When a site asks to use your camera, microphone, notifications,
-                    clipboard, location, or MIDI devices, Freedom prompts you.
-                    Remembered answers are listed here. Everything else is denied
-                    by default.
-                  </p>
-                </div>
-                <div class="row-control">
-                  <button class="btn danger" data-action="revoke-all" ${
-                    origins.length === 0 ? 'disabled' : ''
-                  }>
-                    Remove all
-                  </button>
-                </div>
-              </div>
-            </div>`;
+          if (revokeAll) revokeAll.disabled = origins.length === 0;
 
           if (origins.length === 0) {
-            view.innerHTML =
-              intro +
-              `<div class="card"><div class="row"><div class="row-body">
-                 <p class="row-label">No stored site permissions</p>
-                 <p class="row-help">Allow or Block a site's request with
-                 “Remember for this site” checked and the decision appears here.</p>
+            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+                 <p class="row-label">No saved permissions</p>
+                 <p class="row-help">Sites you allow or block with
+                 “Remember for this site” appear here.</p>
                </div></div></div>`;
             return;
           }
@@ -4568,7 +4663,7 @@
                       <p class="row-label" style="word-break: break-all">${esc(origin)}</p>
                     </div>
                     <div class="row-control">
-                      <button class="btn" data-action="revoke-origin"
+                      <button class="btn danger" data-action="revoke-origin"
                         data-origin="${esc(origin)}">Remove site</button>
                     </div>
                   </div>
@@ -4577,19 +4672,32 @@
             })
             .join('');
 
-          view.innerHTML = intro + cards;
+          view.innerHTML = cards;
         };
 
         const reload = async () => {
           try {
             render(await freedomAPI.getSitePermissions());
           } catch (err) {
+            // The button lives in the section header now, outside the view
+            // this replaces, so the error render has to disable it itself —
+            // offering to wipe state the page just said it cannot read.
+            if (revokeAll) revokeAll.disabled = true;
             view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
               <p class="row-label">Could not load site permissions</p>
               <p class="row-help">${esc(err?.message || String(err))}</p>
             </div></div></div>`;
           }
         };
+
+        revokeAll?.addEventListener('click', async () => {
+          try {
+            await freedomAPI.revokeAllSitePermissions();
+          } catch (err) {
+            console.error('[settings] site-permission revoke failed:', err);
+          }
+          reload();
+        });
 
         view.addEventListener('click', async (e) => {
           const btn = e.target.closest('button[data-action]');
@@ -4600,8 +4708,6 @@
               await freedomAPI.revokeSitePermission(origin, permission);
             } else if (action === 'revoke-origin') {
               await freedomAPI.revokeSitePermissionOrigin(origin);
-            } else if (action === 'revoke-all') {
-              await freedomAPI.revokeAllSitePermissions();
             }
           } catch (err) {
             console.error('[settings] site-permission revoke failed:', err);

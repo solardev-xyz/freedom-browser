@@ -350,8 +350,8 @@ describe('profile resolver', () => {
     });
 
     updateActiveProfileNodeConfig('ipfs', {
-      mode: 'disabled',
-      externalApi: 'http://127.0.0.1:5001',
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
     });
 
     const metadata = JSON.parse(
@@ -362,18 +362,14 @@ describe('profile resolver', () => {
     );
     const record = catalog.profiles.find((entry) => entry.id === 'work');
 
-    expect(metadata.nodes.ipfs).toEqual({
-      mode: 'disabled',
+    const expectedIpfs = {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
       backend: 'freedom-ipfs',
-    });
-    expect(record.nodes.ipfs).toEqual({
-      mode: 'disabled',
-      backend: 'freedom-ipfs',
-    });
-    expect(getActiveProfile().metadata.nodes.ipfs).toEqual({
-      mode: 'disabled',
-      backend: 'freedom-ipfs',
-    });
+    };
+    expect(metadata.nodes.ipfs).toEqual(expectedIpfs);
+    expect(record.nodes.ipfs).toEqual(expectedIpfs);
+    expect(getActiveProfile().metadata.nodes.ipfs).toEqual(expectedIpfs);
   });
 
   test('creates, lists, and renames catalog profiles for the active app root', () => {

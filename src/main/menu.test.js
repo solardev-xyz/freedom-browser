@@ -1,6 +1,142 @@
 const fs = require('fs');
 const { loadMainModule } = require('../../test/helpers/main-process-test-utils');
-const { SHORTCUTS, getDefaultAccelerator, getAliasAccelerators } = require('../shared/shortcuts');
+const {
+  SHORTCUTS,
+  getDefaultAccelerator,
+  getAliasAccelerators,
+  normalizeAccelerator,
+} = require('../shared/shortcuts');
+
+// Electron gives most menu *roles* an implicit default accelerator that never
+// appears in the template — which is how `{ role: 'close' }` silently claimed
+// Cmd/Ctrl+W next to Close Tab and closed the whole window on Windows/Linux
+// (#97). A template-only duplicate check is blind to that, so the accelerator
+// sweep below resolves roles through this table.
+//
+// Some of those defaults are platform-conditional, so this table is keyed by
+// platform wherever Electron's own is: a flat table would sweep the win32 and
+// darwin legs below against chords the real menu never registers there (and
+// miss the ones it does).
+//
+// Provenance, both legs cross-checked on 2026-09-16 against the Electron this
+// repo ships (44.3.0):
+//   - linux: read empirically, by building a menu of every role used in this
+//     file under the real Electron binary and printing each
+//     MenuItem#accelerator (Electron resolves the role default into that
+//     getter). Every value in the `linux` column below came back verbatim.
+//   - darwin/win32: cannot be built on a Linux box — Electron resolves
+//     `process.platform` when its internal menu-item-roles module is first
+//     evaluated, which happens before any app code runs, so faking the
+//     platform does not reach it. Taken instead from the three `isMac`/
+//     `isWindows` ternaries in that module at the shipped tag,
+//     electron/electron v44.3.0 lib/browser/api/menu-item-roles.ts:135
+//     (pasteandmatchstyle), :150 (quit), :155 (redo) — confirmed to be the
+//     code actually shipped by finding those exact literals, in that order,
+//     in the binary's own string pool (`Cmd+Option+Shift+V`,
+//     `Shift+CommandOrControl+V`, a single `CommandOrControl+Q`, `Control+Y`,
+//     `Shift+CommandOrControl+Z`).
+//
+// test-e2e/close-tab-shortcut.spec.js re-derives ownership from the *real*
+// built menu on ubuntu/windows/macOS, but only for the Cmd/Ctrl+W chord — it
+// is not a general backstop for this table, so a role default that changes on
+// a chord other than Cmd/Ctrl+W is caught only by re-probing here.
+//
+// A value is either one accelerator (or null) for every platform, or a map
+// that must name all three. Any role not listed here throws rather than being
+// assumed accelerator-free — a new role has to be probed and added.
+const ROLE_DEFAULT_ACCELERATORS = {
+  // Submenu containers.
+  appmenu: null,
+  editmenu: null,
+  windowmenu: null,
+  // Leaf roles.
+  about: null,
+  close: 'CommandOrControl+W',
+  copy: 'CommandOrControl+C',
+  cut: 'CommandOrControl+X',
+  delete: null,
+  front: null,
+  hide: 'Command+H',
+  hideothers: 'Command+Alt+H',
+  minimize: 'CommandOrControl+M',
+  paste: 'CommandOrControl+V',
+  pasteandmatchstyle: {
+    darwin: 'Cmd+Option+Shift+V',
+    win32: 'Shift+CommandOrControl+V',
+    linux: 'Shift+CommandOrControl+V',
+  },
+  // Windows gets no accelerator at all: its Exit row is unbound.
+  quit: { darwin: 'CommandOrControl+Q', win32: null, linux: 'CommandOrControl+Q' },
+  redo: {
+    darwin: 'Shift+CommandOrControl+Z',
+    win32: 'Control+Y',
+    linux: 'Shift+CommandOrControl+Z',
+  },
+  selectall: 'CommandOrControl+A',
+  services: null,
+  startspeaking: null,
+  stopspeaking: null,
+  undo: 'CommandOrControl+Z',
+  unhide: null,
+  zoom: null,
+};
+
+// The role's implicit default accelerator on `platform`, unnormalized.
+function roleDefaultAccelerator(role, platform) {
+  if (!(role in ROLE_DEFAULT_ACCELERATORS)) {
+    throw new Error(
+      `Unmodelled menu role "${role}" — probe its default accelerator ` +
+        'and add it to ROLE_DEFAULT_ACCELERATORS so the #97 collision sweep stays honest.'
+    );
+  }
+  const modelled = ROLE_DEFAULT_ACCELERATORS[role];
+  if (modelled === null || typeof modelled === 'string') return modelled;
+  if (!(platform in modelled)) {
+    throw new Error(
+      `Menu role "${role}" has no modelled default for platform "${platform}" — ` +
+        'probe it and add it to ROLE_DEFAULT_ACCELERATORS.'
+    );
+  }
+  return modelled[platform];
+}
+
+// Accelerator a built menu item would actually answer to on `platform`:
+// its explicit accelerator, else its role's implicit default, else none.
+function effectiveAccelerator(item, platform) {
+  if (!item || item.type === 'separator') return null;
+  if (item.accelerator !== undefined && item.accelerator !== null) {
+    return normalizeAccelerator(item.accelerator, platform);
+  }
+  if (item.role) {
+    const roleAccelerator = roleDefaultAccelerator(String(item.role).toLowerCase(), platform);
+    return roleAccelerator ? normalizeAccelerator(roleAccelerator, platform) : null;
+  }
+  return null;
+}
+
+// Every (item, accelerator) pair a menu template would register on `platform`,
+// walking submenus. Disabled rows are skipped: Electron does not fire them.
+function collectBindings(items, platform, trail = [], found = []) {
+  for (const item of items || []) {
+    const label = item.label ?? item.role ?? item.type ?? '(unnamed)';
+    const path = [...trail, label];
+    if (item.enabled !== false) {
+      const accelerator = effectiveAccelerator(item, platform);
+      if (accelerator) {
+        found.push({
+          accelerator,
+          path: path.join(' > '),
+          id: item.id ?? null,
+          role: item.role ?? null,
+        });
+      }
+    }
+    if (Array.isArray(item.submenu)) {
+      collectBindings(item.submenu, platform, path, found);
+    }
+  }
+  return found;
+}
 
 function loadMenuModule(platform, options = {}) {
   let capturedTemplate = null;
@@ -404,6 +540,127 @@ describe('menu', () => {
 
     expect(view.submenu.find((entry) => entry.id === 'zoom-in').accelerator).toBe('Ctrl+Shift+Up');
     expect(view.submenu.find((entry) => entry.id === 'zoom-out').accelerator).toBe('CmdOrCtrl+-');
+  });
+
+  // #97: the File menu used to bind Cmd/Ctrl+W twice — the explicit Close Tab
+  // item and `{ role: 'close' }`, whose implicit default is the same chord.
+  // Windows and Linux gave the role the chord, so Ctrl+W closed the whole
+  // window (every tab at once) instead of the active tab.
+  describe('Cmd/Ctrl+W (#97)', () => {
+    const closeTabChord = (platform) => normalizeAccelerator('CmdOrCtrl+W', platform);
+
+    test('the accelerator sweep resolves a role default, not just explicit accelerators', () => {
+      // Guards the guard: if this returned null, every assertion below would
+      // pass against the bug it exists to catch.
+      expect(effectiveAccelerator({ role: 'close' }, 'linux')).toBe(closeTabChord('linux'));
+      expect(effectiveAccelerator({ role: 'close' }, 'darwin')).toBe(closeTabChord('darwin'));
+      expect(() => effectiveAccelerator({ role: 'notARole' }, 'linux')).toThrow(/Unmodelled/);
+    });
+
+    test('platform-conditional role defaults resolve per platform', () => {
+      // Electron picks these three from process.platform (see the table's
+      // provenance note). Pinned literally so the win32/darwin legs of the
+      // sweep below cannot silently drift back onto the Linux values.
+      expect(effectiveAccelerator({ role: 'redo' }, 'win32')).toBe('Ctrl+Y');
+      expect(effectiveAccelerator({ role: 'redo' }, 'linux')).toBe('Ctrl+Shift+Z');
+      expect(effectiveAccelerator({ role: 'redo' }, 'darwin')).toBe('Shift+Cmd+Z');
+
+      expect(effectiveAccelerator({ role: 'pasteAndMatchStyle' }, 'darwin')).toBe(
+        'Alt+Shift+Cmd+V'
+      );
+      expect(effectiveAccelerator({ role: 'pasteAndMatchStyle' }, 'win32')).toBe('Ctrl+Shift+V');
+
+      // Windows leaves Exit unbound; every other platform gets Cmd/Ctrl+Q.
+      expect(effectiveAccelerator({ role: 'quit' }, 'win32')).toBeNull();
+      expect(effectiveAccelerator({ role: 'quit' }, 'linux')).toBe('Ctrl+Q');
+      expect(effectiveAccelerator({ role: 'quit' }, 'darwin')).toBe('Cmd+Q');
+
+      // A platform the table does not model is an error, never a silent
+      // "this role is accelerator-free here".
+      expect(() => effectiveAccelerator({ role: 'quit' }, 'freebsd')).toThrow(
+        /no modelled default for platform/
+      );
+    });
+
+    test('exactly one enabled menu item owns it, and it is Close Tab', () => {
+      for (const platform of ['darwin', 'win32', 'linux']) {
+        const { capturedTemplate } = loadMenuModule(platform);
+        const owners = collectBindings(capturedTemplate, platform).filter(
+          (binding) => binding.accelerator === closeTabChord(platform)
+        );
+
+        expect(owners.map((binding) => binding.path)).toEqual(['File > Close Tab']);
+        expect(owners[0].id).toBe('close-tab');
+      }
+    });
+
+    test('Close Window is still in the File menu, with no accelerator of its own', () => {
+      for (const platform of ['darwin', 'win32', 'linux']) {
+        const { capturedTemplate } = loadMenuModule(platform);
+        const file = findTopLabel(capturedTemplate, 'File');
+        const closeWindow = file.submenu.find((item) => item.id === 'close-window');
+
+        expect(closeWindow).toEqual(expect.objectContaining({ label: 'Close Window' }));
+        expect(closeWindow.accelerator).toBeUndefined();
+        // Not a role either: `{ role: 'close' }` would drag its implicit
+        // Cmd/Ctrl+W back in without ever naming it in the template.
+        expect(closeWindow.role).toBeUndefined();
+      }
+    });
+
+    test('Close Window closes the focused window; Close Tab closes only the tab', () => {
+      const send = jest.fn();
+      const close = jest.fn();
+      const targetWindow = {
+        webContents: { send },
+        close,
+        isFocused: () => true,
+      };
+      const { capturedTemplate } = loadMenuModule('linux', { targetWindow });
+      const file = findTopLabel(capturedTemplate, 'File');
+
+      file.submenu.find((item) => item.id === 'close-tab').click();
+      expect(send).toHaveBeenCalledWith('tab:close');
+      expect(close).not.toHaveBeenCalled();
+
+      send.mockClear();
+      file.submenu.find((item) => item.id === 'close-window').click();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    test('a remapped Close Tab takes the whole binding with it', () => {
+      // The collision was invisible to the registry's own conflict checks
+      // (a role carries no registry entry), so re-run the sweep against a
+      // remap: nothing may inherit the freed Cmd/Ctrl+W.
+      const { capturedTemplate } = loadMenuModule('linux', {
+        shortcutOverrides: { 'tab.close': 'Ctrl+Shift+K' },
+      });
+      const bindings = collectBindings(capturedTemplate, 'linux');
+
+      expect(bindings.filter((b) => b.accelerator === closeTabChord('linux'))).toEqual([]);
+      expect(bindings.find((b) => b.id === 'close-tab').accelerator).toBe(
+        normalizeAccelerator('Ctrl+Shift+K', 'linux')
+      );
+    });
+
+    test('no two enabled menu items share an accelerator on any platform', () => {
+      for (const platform of ['darwin', 'win32', 'linux']) {
+        const { capturedTemplate } = loadMenuModule(platform);
+        const byAccelerator = new Map();
+        for (const binding of collectBindings(capturedTemplate, platform)) {
+          const paths = byAccelerator.get(binding.accelerator) || [];
+          paths.push(binding.path);
+          byAccelerator.set(binding.accelerator, paths);
+        }
+
+        const collisions = [...byAccelerator.entries()]
+          .filter(([, paths]) => paths.length > 1)
+          .map(([accelerator, paths]) => `${accelerator}: ${paths.join(' / ')}`);
+
+        expect({ platform, collisions }).toEqual({ platform, collisions: [] });
+      }
+    });
   });
 
   test('macOS places editMenu immediately after File', () => {

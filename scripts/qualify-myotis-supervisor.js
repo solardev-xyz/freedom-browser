@@ -29,7 +29,8 @@ function requireRuntime(runtime = process) {
     assert.equal(runtime.versions.electron, undefined, 'Windows campaign qualifies Node, not Electron');
     assert(['22', '24'].includes(runtime.versions.node?.split('.')[0]), 'Use preinstalled Node 22 or 24');
   } else {
-    assert.equal(runtime.versions.electron?.split('.')[0], '43', 'Use installed Electron 43');
+    const expected = require('../package-lock.json').packages['node_modules/electron'].version;
+    assert.equal(runtime.versions.electron, expected, `Use locked Electron ${expected}`);
     assert(['darwin', 'linux'].includes(runtime.platform), 'Supported POSIX hosts only');
   }
   assert.equal(runtime.env.FREEDOM_MYOTIS_DISPOSABLE, '1', 'Explicit disposable-host opt-in required');
@@ -266,8 +267,13 @@ async function runHarness(root) {
       await runCase(name, name, async (dir) => {
         const client = acquire(dir); await ready(client);
         await assert.rejects(client.request(op, [], 200), { code: 'MYOTIS_UNAVAILABLE' });
+        if (op === 'call') {
+          assert.equal(client.accepting, true, 'Caller expiry must not stop native work');
+          assert.equal(client.active.size, 1, 'Caller expiry must retain native admission');
+          await assert.rejects(client.request('status', [], 200), { code: 'MYOTIS_UNAVAILABLE' });
+        }
         assert.equal(client.accepting, false);
-        assert.equal(client.active.size, 1, 'Timeout must retain native admission');
+        assert.equal(client.active.size, op === 'call' ? 2 : 1, 'Health failure must retain native admission');
         await finish(client, true);
       });
     }

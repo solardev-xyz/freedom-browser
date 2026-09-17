@@ -5,7 +5,6 @@
 //
 //   MYOTIS_NODE_PATH=/path/to/myotis-node.node \
 //   MYOTIS_DATA_DIR=/path/to/warm-data \
-//   MYOTIS_E2E_IGNORE_KNOWN_STALL=1 \
 //   npx playwright test --project=live myotis-ens
 //
 // Budgets (minutes): MYOTIS_E2E_READY_TIMEOUT_MIN caps each chain's readiness
@@ -16,26 +15,12 @@
 const path = require('path');
 const { test, expect } = require('../live-fixtures');
 const {
-  envFlagEnabled,
   resolveTimeoutBudgets,
   createStallTracker,
 } = require('./myotis-sync-guard');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const MYOTIS_ENABLED = Boolean(process.env.MYOTIS_NODE_PATH);
-
-// The pinned addon (biafra23/myotis v0.1.7, the newest published release)
-// bootstraps every COLD start from a checkpoint embedded in the binary and
-// then wedges: the catch-up applies periods 1825 -> 1840 and can never obtain
-// the update for period 1840, so `beaconState` never leaves CATCHING_UP and
-// readiness — which requires SYNCED — is unreachable. Deterministic, not
-// network weather, and not fixable from this repo: the checkpoint is compiled
-// in, the napi surface is only create(network, dataDir)/start(handle), and the
-// binary exposes no MYOTIS_* knobs. See issue #200 for the captured evidence.
-// Set MYOTIS_E2E_IGNORE_KNOWN_STALL=1 to run anyway — that is how we check
-// whether a newer addon (or a warm MYOTIS_DATA_DIR) clears the stall.
-const KNOWN_STALL_ISSUE = 'https://github.com/solardev-xyz/freedom-browser/issues/200';
-const IGNORE_KNOWN_STALL = envFlagEnabled('MYOTIS_E2E_IGNORE_KNOWN_STALL');
 
 // Cold sync can take many minutes; a warm data dir reaches ready in ~10-30 s.
 // CI lets the production app perform the one and only native-client launch,
@@ -85,13 +70,17 @@ async function waitForVerifiedRead({ label, read, satisfied }) {
       console.log(`[myotis-e2e] waiting for ${label}:`, serializedSummary);
       lastReadinessLog = serializedSummary;
     }
+    if (state?.status?.beaconState === 'STALE_ANCHOR') {
+      throw new Error(`${label} Myotis checkpoint is stale; fresh trust-anchor recovery is required. ` +
+        'This test never accepts stale-anchor risk automatically.');
+    }
     if (satisfied(state)) return state;
 
     const stalledForMs = stall.update(state.status, Date.now());
     if (stalledForMs !== null && stalledForMs > STALL_TIMEOUT_MS) {
       throw new Error(
         `${label} Myotis light client sync is wedged: no beacon progress for ` +
-          `${STALL_TIMEOUT_MINUTES} min (see ${KNOWN_STALL_ISSUE}); ` +
+          `${STALL_TIMEOUT_MINUTES} min; ` +
           `last state: ${JSON.stringify(state)}`
       );
     }
@@ -188,11 +177,7 @@ async function resolveRecordsThroughMyotis(electronApp, paths, options) {
 
 test.describe('myotis live ENS resolution', () => {
   test.skip(!MYOTIS_ENABLED, 'MYOTIS_NODE_PATH not set — myotis spike disabled');
-  test.skip(
-    MYOTIS_ENABLED && !IGNORE_KNOWN_STALL,
-    `myotis v0.1.7 cold sync wedges at beacon period 1840 upstream (${KNOWN_STALL_ISSUE}) — ` +
-      'set MYOTIS_E2E_IGNORE_KNOWN_STALL=1 to run this spec anyway'
-  );
+
 
   test('P2P node serves ENS and NameNFT records through Freedom; page renders', async ({
     electronApp,

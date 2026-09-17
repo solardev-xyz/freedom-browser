@@ -11,6 +11,11 @@ body,
 html {
   height: 100%;
   margin: 0;
+  /* The browser chrome is a fixed frame, not a scrollable page: the toolbar,
+     tab strip and sidebar are always where the user left them. Anything that
+     outgrows the window — a menu with every node enabled — scrolls inside
+     itself instead (see styles/popovers.css). #324. */
+  overflow: hidden;
   font-family:
     'Inter',
     -apple-system,
@@ -70,10 +75,14 @@ body {
   min-height: 0;
 }
 
+/* The backdrop behind a guest that has not painted yet. It was a hard-coded
+   near-black, so a light-theme window flashed dark on every navigation (and a
+   private window flashed neutral rather than its own purple); the palette's
+   own page background is what belongs here. */
 #bzz-webview {
   flex: 1;
   border: none;
-  background: #0f0f0f;
+  background: var(--bg);
 }
 
 #bzz-webview.hidden {

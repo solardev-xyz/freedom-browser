@@ -19,6 +19,7 @@ import {
   setOnOpenDownloads,
   closeMenus,
   hideProfileFlyout,
+  anchorProfileFlyout,
 } from './lib/menus.js';
 import { initSettingsEffects, initTheme } from './lib/settings-ui.js';
 import {
@@ -95,6 +96,8 @@ import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
 import { initShortcuts } from './lib/shortcuts.js';
+import { initPopoverBounds } from './lib/popover-bounds.js';
+import { onWindowDeactivated } from './lib/window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -139,6 +142,9 @@ window.serviceRegistry?.getRegistry?.().then((registry) => {
   if (registry) {
     pushDebug(`[ServiceRegistry] Initial state: ${JSON.stringify(registry)}`);
     updateRegistry(registry);
+    // A profile already on an external IPFS gateway must have a usable toggle
+    // from the first paint, not only after the next registry broadcast.
+    updateIpfsToggleState();
   }
 });
 
@@ -148,7 +154,9 @@ setOnLoadTarget(loadTarget);
 setLoadTargetHandler(loadTarget);
 setReloadHandler(reloadPage);
 setHardReloadHandler(hardReloadPage);
-setOnNavigate(loadTarget);
+// autocomplete passes `loadTarget`'s own options through (a picked suggestion
+// is a `commitsAddressBar` navigation), so this stays a plain adapter.
+setOnNavigate((url, options) => loadTarget(url, null, null, options));
 // Escape ownership between the two handlers bound to the address input:
 // while a suggestion is previewed, autocomplete.js takes the press. #310.
 setSuggestionPreviewProbe(isSuggestionPreviewActive);
@@ -338,6 +346,15 @@ function initExternalNodeCandidatesModal() {
       }
 
       details.append(name, endpoints);
+      // What the user gives up by choosing the external node (IPFS: content is
+      // no longer verified by Freedom). Supplied per candidate by the main
+      // process, so the prompt and the message-box fallback say the same thing.
+      if (candidate.trustNote) {
+        const trustNote = document.createElement('p');
+        trustNote.className = 'external-node-trust-note';
+        trustNote.textContent = candidate.trustNote;
+        details.append(trustNote);
+      }
       row.append(details, choice);
       list.append(row);
     }
@@ -432,6 +449,10 @@ async function initProfileIndicator() {
     // hovered row is — otherwise nothing says which row owns the flyout.
     menuWrap?.classList.add('flyout-open');
     indicator.setAttribute('aria-expanded', 'true');
+    // Position it against the Profiles row and bound it to the viewport —
+    // it is `position: fixed` so the hamburger's own scrolling can't clip
+    // it (#324). Anchoring lives with hiding, in menus.js.
+    anchorProfileFlyout();
   };
 
   const setMenuStatus = (message, kind = '') => {
@@ -622,11 +643,12 @@ async function initProfileIndicator() {
     setMenuOpen(false);
   });
 
-  // Also dismiss when the window loses focus (e.g. alt-tab), matching the app's
-  // other transient menus (bookmarks, tab/context menus, autocomplete) and the
-  // old profile menu's behaviour — the flyout shouldn't linger over an inactive
-  // window.
-  window.addEventListener('blur', () => {
+  // Also dismiss when the window is deactivated (e.g. alt-tab), matching the
+  // app's other transient menus (bookmarks, tab/context menus, autocomplete)
+  // and the old profile menu's behaviour — the flyout shouldn't linger over an
+  // inactive window. A `<webview>` guest taking the keyboard is not that: it
+  // raises the same `blur` while the window is still active (#328).
+  onWindowDeactivated(() => {
     if (menu?.hidden !== false) return;
     closeProfileMenu();
   });
@@ -781,11 +803,14 @@ function initUpdateNotifications() {
   });
 }
 
-// Listen for open-url-new-tab custom event from context menu
+// Listen for open-url-new-tab custom event from context menu.
+// `detail.background` opens the tab behind the current one (a Ctrl/Cmd-clicked
+// "Search <Engine> for …", #330); every other emitter leaves it unset and gets
+// the foreground tab it always got.
 document.addEventListener('open-url-new-tab', (e) => {
   const url = e.detail?.url;
   if (url) {
-    createTab(url);
+    createTab(url, { background: e.detail?.background === true });
   }
 });
 
@@ -806,6 +831,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   initShortcuts(); // Live shortcut bindings — before any keydown consumers
+  // Every chrome popover bounds itself to the viewport and scrolls inside
+  // instead of growing past it (#324); this installs the window-level half.
+  initPopoverBounds();
   initMenuBackdrop(closeAllOverlays);
   initMenus();
   initAntUi();

@@ -1,8 +1,8 @@
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
+const { fetchJson, downloadToFile, TIMEOUTS } = require('./lib/fetch-with-retry');
 
 // Fetches the Ant (`antd`) Swarm light node. Ant is a bee-compatible drop-in
 // published at freedom-hq/ant (formerly solardev-xyz/ant); its release assets
@@ -32,9 +32,8 @@ const API_HOST = 'api.github.com';
 // canonical location rather than serving it, so a fetch that treats anything
 // other than 200 as fatal turns an upstream rename into a hard CI failure
 // (solardev-xyz/ant → freedom-hq/ant broke every job that downloads antd).
-// Following redirects makes the next rename degrade to an extra hop.
-const REDIRECT_STATUS_CODES = [301, 302, 303, 307, 308];
-const MAX_REDIRECTS = 5;
+// Redirects are followed by scripts/lib/fetch-with-retry.js, which makes the
+// next rename degrade to an extra hop.
 
 function releaseUrl() {
   const releasePath =
@@ -44,184 +43,58 @@ function releaseUrl() {
   return `https://${API_HOST}${releasePath}`;
 }
 
-function fetchReleaseOnce(url = releaseUrl(), redirectCount = 0) {
-  return new Promise((resolve, reject) => {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    const headers = {
-      'User-Agent': 'Freedom-Updater',
-      Accept: 'application/vnd.github+json',
-    };
-    // Only ever send the token to GitHub's own API host. A redirect can point
-    // anywhere, and forwarding Authorization off-host would leak CI's
-    // GITHUB_TOKEN to a third party.
-    if (token && new URL(url).host === API_HOST) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-
-    https
-      .get(url, { headers }, (res) => {
-        if (REDIRECT_STATUS_CODES.includes(res.statusCode)) {
-          // Drain the redirect body so the socket can be reused, and let the
-          // redirected request own completion from here.
-          res.resume();
-          if (redirectCount >= MAX_REDIRECTS) {
-            reject(new Error(`Too many redirects fetching release (${url})`));
-            return;
-          }
-          // Guard the missing header explicitly: `new URL(undefined, base)`
-          // resolves to `<base origin>/undefined` rather than throwing, which
-          // would send the next hop somewhere meaningless.
-          if (!res.headers.location) {
-            reject(new Error(`Redirect ${res.statusCode} with no Location header (${url})`));
-            return;
-          }
-          let location;
-          try {
-            location = new URL(res.headers.location, url);
-          } catch {
-            reject(
-              new Error(`Invalid redirect fetching release (${url}): ${res.headers.location}`)
-            );
-            return;
-          }
-          if (location.protocol !== 'https:') {
-            reject(new Error(`Refusing non-HTTPS redirect fetching release (${url})`));
-            return;
-          }
-          console.warn(
-            `Release fetch redirected to ${location.href} — upstream repo may have moved`
-          );
-          fetchReleaseOnce(location.href, redirectCount + 1).then(resolve, reject);
-          return;
-        }
-        let data = '';
-        res.on('error', reject);
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => {
-          if (res.statusCode !== 200) {
-            reject(new Error(`Failed to fetch release (${url}): ${res.statusCode}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(data));
-          } catch (err) {
-            reject(new Error(`Invalid JSON from release fetch (${url}): ${err.message}`));
-          }
-        });
-      })
-      .on('error', reject);
-  });
-}
-
-async function fetchRelease() {
-  const maxAttempts = 4;
-  let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fetchReleaseOnce();
-    } catch (err) {
-      lastErr = err;
-      if (attempt < maxAttempts) {
-        const delayMs = 1000 * attempt;
-        console.warn(
-          `Release fetch attempt ${attempt} failed (${err.message}); retrying in ${delayMs}ms...`
-        );
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
-    }
+/**
+ * Headers for one hop of the release lookup. Computed per hop, not once:
+ * only ever send the token to GitHub's own API host, because a redirect can
+ * point anywhere and forwarding Authorization off-host would leak CI's
+ * GITHUB_TOKEN to a third party.
+ * @param {string} url
+ */
+function releaseRequestHeaders(url) {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  const headers = {
+    'User-Agent': 'Freedom-Updater',
+    Accept: 'application/vnd.github+json',
+  };
+  if (token && new URL(url).host === API_HOST) {
+    headers.Authorization = `Bearer ${token}`;
   }
-  throw lastErr;
+  return headers;
 }
 
-// Abort a stalled request instead of letting it hang until the CI job-level
-// timeout (a hung binary download can otherwise burn a whole e2e job).
-const REQUEST_TIMEOUT_MS = 60000;
-
-function downloadFileOnce(url, dest, redirectCount = 0) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    let settled = false;
-    const fail = (err) => {
-      if (settled) return;
-      settled = true;
-      file.close();
-      fs.unlink(dest, () => reject(err));
-    };
-    const req = https
-      .get(url, { headers: { 'User-Agent': 'Freedom-Updater' } }, (response) => {
-        response.on('error', fail);
-        if (REDIRECT_STATUS_CODES.includes(response.statusCode)) {
-          if (redirectCount >= MAX_REDIRECTS) {
-            fail(new Error(`Too many redirects while downloading ${url}`));
-            return;
-          }
-          if (!response.headers.location) {
-            fail(new Error(`Redirect ${response.statusCode} with no Location header for ${url}`));
-            return;
-          }
-          let location;
-          try {
-            location = new URL(response.headers.location, url);
-          } catch {
-            fail(new Error(`Invalid redirect while downloading ${url}`));
-            return;
-          }
-          if (location.protocol !== 'https:') {
-            fail(new Error(`Refusing non-HTTPS redirect while downloading ${url}`));
-            return;
-          }
-          // The redirected request owns completion from here. Ignore any late
-          // error emitted by the response we are deliberately draining.
-          settled = true;
-          response.resume();
-          file.close();
-          fs.unlink(dest, () => {
-            downloadFileOnce(location.href, dest, redirectCount + 1)
-              .then(resolve)
-              .catch(reject);
-          });
-          return;
-        }
-        if (response.statusCode !== 200) {
-          fail(new Error(`HTTP ${response.statusCode} for ${url}`));
-          return;
-        }
-        response.pipe(file);
-        file.on('finish', () =>
-          file.close(() => {
-            if (settled) return;
-            settled = true;
-            resolve();
-          })
-        );
-        file.on('error', fail);
-      })
-      .on('error', fail);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error(`Download timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`));
-    });
+/**
+ * The release JSON, retried on 5xx/429/connection failures and never on a
+ * plain 404 (see scripts/lib/fetch-with-retry.js).
+ * @param {string} [url]
+ * @param {object} [options] retry-loop overrides, used by the unit tests
+ */
+function fetchRelease(url = releaseUrl(), options = {}) {
+  return fetchJson(url, {
+    label: `Ant release lookup (${ANT_REPO} @ ${ANT_RELEASE_TAG})`,
+    headers: releaseRequestHeaders,
+    timeoutMs: TIMEOUTS.metadata,
+    onRedirect: (location) => {
+      console.warn(`Release fetch redirected to ${location.href} — upstream repo may have moved`);
+    },
+    ...options,
   });
 }
 
-async function downloadFile(url, dest) {
+/**
+ * Download one release asset. `timeoutMs` is the per-attempt deadline: the
+ * archives are tens of megabytes on a runner link, SHA256SUMS is a few lines.
+ * @param {string} url
+ * @param {string} dest
+ * @param {object} [options] `timeoutMs`, plus retry-loop overrides used by the tests
+ */
+function downloadFile(url, dest, options = {}) {
   console.log(`Downloading ${url} to ${dest}...`);
-  const maxAttempts = 4;
-  let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await downloadFileOnce(url, dest);
-    } catch (err) {
-      lastErr = err;
-      if (attempt < maxAttempts) {
-        const delayMs = 1000 * attempt;
-        console.warn(
-          `Download attempt ${attempt} failed (${err.message}); retrying in ${delayMs}ms...`
-        );
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
-    }
-  }
-  throw lastErr;
+  return downloadToFile(url, dest, {
+    label: `Ant asset ${path.basename(dest)}`,
+    headers: { 'User-Agent': 'Freedom-Updater' },
+    timeoutMs: TIMEOUTS.binary,
+    ...options,
+  });
 }
 
 function sha256File(filePath) {
@@ -264,7 +137,9 @@ async function main() {
     }
     const sumsPath = path.join(OUTPUT_DIR, 'SHA256SUMS');
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    await downloadFile(sumsAsset.browser_download_url, sumsPath);
+    await downloadFile(sumsAsset.browser_download_url, sumsPath, {
+      timeoutMs: TIMEOUTS.metadata,
+    });
 
     // Anchor the downloaded checksums to the in-repo trust root. Only applies
     // to the pinned tag — an ANT_RELEASE_TAG override is a local-testing
@@ -414,4 +289,12 @@ if (require.main === module) {
 }
 
 // Exported for unit tests; `npm run ant:download` still runs main() above.
-module.exports = { fetchReleaseOnce, releaseUrl, parseChecksums, ANT_REPO, PINNED_RELEASE_TAG };
+module.exports = {
+  fetchRelease,
+  releaseRequestHeaders,
+  releaseUrl,
+  downloadFile,
+  parseChecksums,
+  ANT_REPO,
+  PINNED_RELEASE_TAG,
+};

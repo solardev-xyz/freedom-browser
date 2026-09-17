@@ -46,7 +46,7 @@ const {
   nameSystemLabelForResult,
   resolveContentName,
 } = require('../content-name-resolver');
-const { isDwebNameHost } = require('../../shared/origin-utils');
+const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const {
   runWithPrivateLogContext,
   redactForLog,
@@ -156,7 +156,7 @@ async function buildGatewayUrl(bzzUrl) {
     };
   }
 
-  if (isDwebNameHost(host) && !hasEmptyLabel(host)) {
+  if ((isDwebNameHost(host) || isPotentialEnsName(host)) && !hasEmptyLabel(host)) {
     const antApiUrl = getAntApiUrl();
     if (!antApiUrl) {
       return redactedFailure(503, () => 'Swarm node is not ready');
@@ -382,6 +382,12 @@ async function fetchWithRetry(
  * Core handler, exported for testability. `fetchImpl` defaults to global
  * fetch but tests can inject a stub. `attemptTimeoutMs` is exposed for
  * tests that need to exercise per-attempt timeout behaviour.
+ *
+ * That default is undici, which never sees `session.setProxy` — so an external
+ * Ant API on a `.onion` host is resolved by the system resolver rather than
+ * dialled over Tor, the shape #355 fixed for the external IPFS gateway. This
+ * path needs verbs/bodies `ipfs/gateway-transport.js` does not support yet;
+ * tracked with the other Swarm call sites in #360.
  */
 async function handleBzzRequest(
   request,

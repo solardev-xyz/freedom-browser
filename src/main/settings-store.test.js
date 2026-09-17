@@ -409,13 +409,13 @@ describe('settings-store', () => {
       'view.focusAddressBar': {
         accelerator: 'Ctrl+0',
         conflictId: 'page.zoomReset',
-        conflict: 'Actual Size',
+        conflict: 'Actual size',
       },
     });
     // One log line, at load, naming both sides.
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toContain('view.focusAddressBar');
-    expect(logger.warn.mock.calls[0][0]).toContain('Actual Size');
+    expect(logger.warn.mock.calls[0][0]).toContain('Actual size');
     // Cached: a second read does not re-log.
     mod.loadSettings();
     expect(logger.warn).toHaveBeenCalledTimes(1);
@@ -458,12 +458,12 @@ describe('settings-store', () => {
       'tab.new': {
         accelerator: 'Ctrl+R',
         conflictId: 'page.reload',
-        conflict: 'Reload This Page',
+        conflict: 'Reload this page',
       },
     });
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0][0]).toContain('tab.new');
-    expect(logger.warn.mock.calls[0][0]).toContain('Reload This Page');
+    expect(logger.warn.mock.calls[0][0]).toContain('Reload this page');
 
     // The next conflict-free save clears the notice again.
     expect(mod.saveSettings({ shortcutOverrides: { 'tab.new': 'Ctrl+Shift+U' } })).toBe(true);

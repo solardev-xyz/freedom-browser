@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.5-dev",
+  "version": "0.8.6-dev",
   "license": "MPL-2.0",
   "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
@@ -61,6 +61,11 @@
     "test:agent-sandbox:workspace:process-controls": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js process-controls",
     "test:agent-sandbox:workspace:self-test-fault": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js self-test-fault",
     "lint": "eslint .",
+    "styles:inventory": "node scripts/update-renderer-color-literals.js",
+    "test:e2e:theme-parity": "playwright test --project=harness test-e2e/theme-parity.spec.js",
+    "test:e2e:theme-parity:update": "THEME_CONTRAST_UPDATE=1 playwright test --project=harness test-e2e/theme-parity.spec.js",
+    "test:e2e:screenshots": "FREEDOM_E2E_STABLE_TEXT=1 playwright test --project=harness test-e2e/renderer-screenshots.spec.js",
+    "test:e2e:screenshots:update": "FREEDOM_E2E_STABLE_TEXT=1 playwright test --project=harness test-e2e/renderer-screenshots.spec.js --update-snapshots",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check-binaries": "node scripts/check-binaries.js",
@@ -71,8 +76,8 @@
     "dist:mac:notary-status": "dotenv -- node scripts/macos-notary.js status",
     "dist:mac:notary-log": "dotenv -- node scripts/macos-notary.js log",
     "dist:mac:staple-notary": "dotenv -- node scripts/macos-notary.js staple",
-    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
-    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
@@ -133,7 +138,9 @@
       "binaries": ["Contents/Resources/myotis-node/myotis-supervisor"],
       "gatekeeperAssess": false,
       "extendInfo": {
-        "LSMultipleInstancesProhibited": false
+        "LSMultipleInstancesProhibited": false,
+        "NSCameraUsageDescription": "Freedom needs camera access so websites you allow can use it for video calls.",
+        "NSMicrophoneUsageDescription": "Freedom needs microphone access so websites you allow can use it for video calls."
       },
       "entitlements": "config/entitlements.mac.plist",
       "entitlementsInherit": "config/entitlements.mac.plist",
@@ -163,6 +170,10 @@
             "freedom-workspace-supervisor",
             "manifest.json"
           ]
+        },
+        {
+          "from": "node_modules/electron/dist/LICENSES.chromium.html",
+          "to": "LICENSES.chromium.html"
         }
       ],
       "sign": "./scripts/sign-native-supervisors.js"
@@ -170,7 +181,8 @@
     "linux": {
       "target": [
         "deb",
-        "AppImage"
+        "AppImage",
+        "pacman"
       ],
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
@@ -224,6 +236,20 @@
         "bubblewrap"
       ]
     },
+    "pacman": {
+      "synopsis": "A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols",
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libxss",
+        "libxtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "alsa-lib",
+        "libsecret"
+      ]
+    },
     "nsis": {
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
@@ -242,6 +268,13 @@
           "to": "radicle-bin",
           "filter": [
             "libradicle.node"
+          ]
+        },
+        {
+          "from": "arti-bin/${os}-${arch}/",
+          "to": "arti-bin",
+          "filter": [
+            "**/*"
           ]
         }
       ]
@@ -295,6 +328,14 @@
       {
         "from": "config/default-bookmarks.json",
         "to": "default-bookmarks.json"
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "NOTICES",
+        "to": "NOTICES"
       }
     ],
     "beforePack": "./scripts/prepare-native-supervisors.js"
@@ -338,7 +379,7 @@
     "better-sqlite3": "^13.0.3",
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.3",
-    "ethers": "^6.16.0",
+    "ethers": "^6.17.0",
     "micro-key-producer": "^0.10.0",
     "pdfjs-dist": "6.3.289",
     "proper-lockfile": "^4.1.2",

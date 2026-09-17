@@ -1,0 +1,30 @@
+[
+  {
+    "el": "p#myotis-recovery-message.myotis-recovery-message.warning",
+    "text": "Could not reach the checkpoint service. ",
+    "ratio": 8.4,
+    "large": false,
+    "placeholder": false
+  },
+  {
+    "el": "button#myotis-retry-checkpoint.myotis-checkpoint-retry",
+    "text": "Retry sync",
+    "ratio": 8.4,
+    "large": false,
+    "placeholder": false
+  },
+  {
+    "el": "p#myotis-gnosis-recovery-message.myotis-recovery-message.warning",
+    "text": "Checkpoint could not be verified. Sync i",
+    "ratio": 8.4,
+    "large": false,
+    "placeholder": false
+  },
+  {
+    "el": "button#myotis-gnosis-retry-checkpoint.myotis-checkpoint-retry",
+    "text": "Retry sync",
+    "ratio": 8.4,
+    "large": false,
+    "placeholder": false
+  }
+]

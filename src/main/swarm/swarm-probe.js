@@ -100,6 +100,8 @@ function startProbe(hash, opts = {}) {
   const delays = opts.delays || DEFAULT_DELAYS_MS;
   const overallTimeoutMs = opts.overallTimeoutMs ?? DEFAULT_OVERALL_TIMEOUT_MS;
   const attemptTimeoutMs = opts.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS;
+  // undici again: no session proxy on this dial either, so an external Ant API
+  // on a `.onion` host is not probed over Tor. Tracked in #360 with the rest.
   const fetchImpl = opts.fetchImpl || fetch;
   const now = opts.now || Date.now;
   const sleep = opts.sleep || createAbortableSleep;

@@ -1,5 +1,6 @@
 import { state } from './state.js';
 import { isModalDialogOpen } from './modal-dialog.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
 
 // DOM references
 let bridgeBtn = null;
@@ -77,6 +78,10 @@ function showState(stateName) {
   importingState?.classList.toggle('hidden', stateName !== 'importing');
   successState?.classList.toggle('hidden', stateName !== 'success');
   errorState?.classList.toggle('hidden', stateName !== 'error');
+  // Each state is a different height, so the bound is re-taken on every switch
+  // (#328) — the panel is a toolbar popover like any other, and the chrome
+  // document is pinned, so an unbounded one is clipped rather than scrolled.
+  if (panelOpen) boundPopoverToViewport(panel);
 }
 
 /**
@@ -140,6 +145,10 @@ async function openPanel() {
 
   panelOpen = true;
   panel.classList.remove('hidden');
+  // Shown first, then bounded: the bound is measured from where the panel
+  // really is (#328).
+  panel.scrollTop = 0;
+  boundPopoverToViewport(panel);
   resetSteps();
 
   // Check prerequisites

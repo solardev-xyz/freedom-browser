@@ -24,14 +24,14 @@ Source builds (`npm start`) use a different, per-checkout port range; see [Confi
 
 Freedom manages nodes per browser profile:
 
-1. **Independent Managed Nodes**: By default, each profile has separate Ant, native IPFS, Myotis, Radicle, and Tor data. Ant and Tor use profile-specific non-default ports; IPFS, Myotis, and Radicle run as embedded native clients without loopback API or gateway ports.
-2. **Explicit External Nodes**: Profiles can opt into an external Swarm endpoint or an external Tor SOCKS5 endpoint under **Settings → Nodes**. External node identity, storage, or circuit state is shared outside that profile. IPFS, Myotis, and Radicle always use their embedded native clients.
+1. **Independent Managed Nodes**: By default, each profile has separate Ant, native IPFS, Myotis, Radicle, and Tor data. Ant and Tor use profile-specific non-default ports; IPFS, Myotis, and Radicle run as embedded native clients without loopback API or gateway ports of their own.
+2. **Explicit External Nodes**: Profiles can opt into an external Swarm endpoint, an external IPFS gateway, or an external Tor SOCKS5 endpoint under **Settings → Nodes**. External node identity, storage, or circuit state is shared outside that profile. Myotis and Radicle always use their embedded native clients. An external IPFS gateway serves `ipfs://` and `ipns://` content unverified: Freedom does not check the returned bytes against the CID in this mode, so the gateway is trusted for everything it serves.
 3. **Port Conflict Handling**: If a managed Ant or Tor profile port is busy, Freedom picks a free profile port and persists the reassignment.
 4. **Visual Feedback**: The Nodes panel and profile settings show whether a node is managed, external/shared, or disabled.
 
 This means Freedom works seamlessly whether you:
 
-- Run it standalone (bundled Swarm and native IPFS nodes start automatically; Radicle and Myotis startup are opt-in under **Settings → Automatic Startup**)
+- Run it standalone (bundled Swarm and native IPFS nodes start automatically; Radicle and Myotis startup are opt-in under **Settings → Startup**)
 - Create multiple independent browser profiles with their own browser data, vault, and managed node state
 - Already have a system-wide Swarm daemon running and explicitly configure a profile to use it
 - Have port conflicts with other software (Freedom finds and records available profile ports)
@@ -58,6 +58,7 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 - **Independent Toggle**: Start and stop IPFS separately from Swarm.
 - **Native Transport**: Uses the embedded `freedom-ipfs` native addon instead of a loopback Kubo process.
 - **Live Diagnostics**: View native gateway stats and request progress while IPFS/IPNS pages load.
+- **External Gateway Mode**: For hosts where the native addon cannot load, a profile can point IPFS at an external HTTP gateway (e.g. a local Kubo on `:8080`) under **Settings → Nodes**. Freedom does not verify content integrity in this mode — the gateway is trusted for every `ipfs://` page it serves, so prefer a gateway you run yourself. Address a local Kubo as `http://127.0.0.1:8080`, not `http://localhost:8080`: a default-config Kubo redirects `localhost` requests to its subdomain gateway (`<cid>.ipfs.localhost`), which Freedom deliberately does not follow, so the node reads as unreachable. The gateway's version is detected (and shown in the nodes menu) only for a loopback endpoint, where Kubo's RPC API conventionally sits on `:5001`; a remote gateway is never probed on a port you did not configure.
 
 ## Integrated Myotis Light Client (Experimental)
 
@@ -71,8 +72,8 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 - **Onion-only routing**: When enabled, Freedom routes only `.onion` hosts through the profile's Arti SOCKS5 proxy; clearnet and decentralized protocols remain direct.
 - **Fail-closed behavior**: If Arti stops unexpectedly, `.onion` requests fail instead of falling back to direct DNS.
 - **Profile isolation**: Managed Tor state, cache, endpoint, and private-window routing are profile-scoped.
-- **Optional binary**: Source builds require `npm run tor:download`; bundled Tor is currently available on macOS and Linux.
-- **Windows**: Arti is not bundled on Windows (it is built host-only from crates.io), so the Tor rows are hidden from the Experimental settings section on Windows builds and `.onion` access is unavailable.
+- **Optional binary**: Source builds require `npm run tor:download`; the release workflow bundles Tor for macOS arm64, Linux x64/arm64 and Windows x64. Windows x64 bundling landed in September 2026, so only releases cut after that carry Arti on Windows — an earlier Windows install has none.
+- **Bundled or nothing**: Arti is compiled host-only from crates.io, so each release runner builds its own platform's binary. The Tor rows are hidden from the Experimental settings section on any build that carries no Arti binary (a source build that skipped `npm run tor:download`, or a Windows release cut before Windows bundling landed), unless the integration is already enabled — an external Tor SOCKS proxy needs no bundled binary. No Windows ARM64 build is published; it would need the same build step on an ARM64 Windows runner.
 
 ## Integrated Radicle Node
 
@@ -80,7 +81,7 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 - **Native Provider Actions**: `window.radicle` seeding, identity, repository listing, COB writes, and GitHub imports all call the addon directly.
 - **Automatic Identity**: Creates a Radicle identity on first run (no manual setup required).
 - **Profile Control**: Enable or disable Radicle per profile under **Settings → Nodes**.
-- **Node Toggle**: Start and stop Radicle from the Nodes panel; automatic startup is opt-in under **Settings → Automatic Startup → Start Radicle node**.
+- **Node Toggle**: Start and stop Radicle from the Nodes panel; automatic startup is opt-in under **Settings → Startup → Start Radicle node**.
 - **Live Statistics**: View connected peers, seeded repos, addon version, and Node ID.
 - **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
 - **Windows**: The embedded node ships in the Windows x64 and ARM64 builds.
@@ -194,7 +195,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 
 - **Open**: `Cmd+Shift+N` / `Ctrl+Shift+N` (the default — remappable under Settings > Shortcuts, applies immediately) or File > New Private Window. Private windows have a dark, badged chrome so they're recognisable at a glance.
 - **Ephemeral by construction**: Every private window runs its webviews on a unique in-memory session (`private-<uuid>` partition, never written to disk). Cookies, logins, caches, and site data evaporate when the window closes.
-- **No local traces**: Nothing browsed in a private window is written to history, the favicon cache, or address-bar autocomplete. Downloads still work, but their entries are kept in memory only — never written to the profile's download database, visible only inside the private window, and gone when it closes (saved files stay on disk). Site-permission decisions made in a private window last only as long as the window — never remembered, even if you tick "remember".
+- **No local traces**: Nothing browsed in a private window is written to history, the favicon cache, or address-bar autocomplete. Downloads still work, but their entries are kept in memory only — never written to the profile's download database, visible only inside the private window, and gone when it closes (saved files stay on disk). Site-permission decisions made in a private window last only as long as the window — never remembered, even if you tick "remember" — and belong to that window alone: removing one from the address-bar indicator there does not touch the decisions your normal windows are running on.
 - **Wallet disabled**: Your identity and wallet are persistent by design, so they are unavailable in private windows — pages see no `window.ethereum` / `window.swarm` / `window.radicle` (nothing announces via EIP-6963), and x402 pay-per-request interception is off. The wallet toggle still opens the sidebar, but it reads "Wallet is unavailable in private windows" instead of offering identity setup. Use a normal window for anything wallet-related.
 - **Decentralized protocols still work**: `bzz://`, `ipfs://`, `ipns://`, and ENS names resolve and load through the shared local nodes, `web3://` onchain apps render through the chain-data router (without a wallet provider — see above), and `.onion` sites route through Tor in private windows too when Tor is enabled. Publishing (which records publish history) is unavailable from private windows.
 - **What private windows do NOT protect**: This is local privacy, not anonymity. Websites you sign in to still know it's you; your network operator can still see your traffic; Swarm/IPFS/Radicle peers still see your nodes' requests; and your IP address remains visible to every site and peer. The private new-tab page spells this out.
@@ -229,7 +230,7 @@ Right-click on pages for context-sensitive actions:
 
 - **Page Context**: Back, Forward, Reload (a hard reload — it bypasses the cache, unlike the toolbar Reload button), View Page Source, Inspect
 - **Link Context**: Open Link in New Tab, Open Link in New Window, Copy Link Address
-- **Selection Context**: Copy selected text
+- **Selection Context**: Copy selected text; **Search &lt;Engine&gt; for "&lt;selection&gt;"** — searches the selection with the engine configured under **Settings → Search** (built-in or custom), in a new tab, or behind the current one on a Ctrl/Cmd-click. Offered for selections in editable fields too, and withheld whenever the selection cannot be published safely: over a password field (whose "selection" is only the masking bullets), and over any field the browser cannot identify at all — a form control inside a closed shadow root, which no API outside the component can reach.
 - **Image Context**: Open Image in New Tab, Save Image As, Copy Image, Copy Image Address
 - **View Page Source**: Opens `view-source:` URL in a new tab
 
@@ -273,13 +274,13 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Tabs in Title Bar** (Linux only): Use the tab strip as the window title bar. Takes effect after restart.
 - **Search**: Choose the address-bar search engine, or add a custom one from an HTTPS URL template containing `{searchTerms}`.
 - **Node Auto-start**: Toggle whether Swarm, IPFS, Radicle, and (experimental) Myotis Ethereum/Gnosis nodes start automatically at launch (Swarm and IPFS enabled by default; Radicle and Myotis are opt-in).
-- **Site Permissions**: When a site asks to use your camera, microphone, notifications, clipboard, location, or MIDI devices, a prompt appears under the address bar (Allow / Block, with "Remember for this site"). Remembered decisions are listed under Settings → Site Permissions with per-permission, per-site, and remove-all revocation; sites with granted permissions show an indicator icon in the address bar with quick revoke.
+- **Site Permissions**: When a site asks to use your camera, microphone, notifications, clipboard, location, or MIDI devices, a prompt appears under the address bar (Allow / Block, with "Remember for this site"). Dismissing the prompt (Esc or clicking away) denies that one request without recording anything, so the site can ask again — but after three dismissals in a row Freedom blocks that permission for the rest of the session instead of letting the page keep re-asking. Remembered decisions are listed under Settings → Site Permissions with per-permission, per-site, and remove-all revocation; sites with granted permissions — and sites blocked that way after repeated dismissals — show an indicator icon in the address bar with quick revoke, which lets the site ask again. That indicator lists — and its Remove lifts — what applies in the window you are looking at: a decision made in a private window is lifted there only, and a Remove in a normal window leaves an open private window's own decisions alone. Settings → Site Permissions stays profile-wide, open private windows included.
 - **Ad Blocking**: Choose filter categories, automatic list updates, and per-host exemptions.
 - **Shortcuts**: Search and remap browser commands with conflict detection and per-command reset.
 - **Chains and RPC Providers**: Configure chain endpoints, keyed providers, and ENS verification behavior.
-- **Experimental**: Enable Identity & Wallet (Beta), Show IPFS load progress in the status bar, Swarm node mode, Enable Tor (.onion access) (Beta), and Start Tor when Freedom opens. The Tor rows are hidden on Windows builds. Radicle is no longer experimental — it is configured under **Settings → Nodes** and **Settings → Automatic Startup**.
+- **Experimental**: Enable Identity & Wallet (Beta), Show IPFS load progress in the status bar, Swarm node mode, Enable Tor (.onion access) (Beta), and Start Tor when Freedom opens. The Tor rows are hidden on builds that bundle no Arti binary — a source build that skipped `npm run tor:download`, or a Windows release cut before Windows Arti bundling landed (see the Tor section above). Radicle is no longer experimental — it is configured under **Settings → Nodes** and **Settings → Startup**.
 - **Auto-Updates**: Toggle automatic update checks (enabled by default).
-- **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), onchain app (Ethereum diamond), Radicle (seedling), or HTTP (globe) icon based on current protocol. When a page also has a resolution/provenance trust status (a resolved Ethereum name, or a `web3://` app whose retrieval was verified), the trust shield takes that slot instead — so onchain apps normally show the shield and fall back to the diamond only when no provenance is available.
+- **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), onchain app (Ethereum diamond), Radicle (seedling), or HTTP (globe) icon based on current protocol. When a page also has a resolution/provenance trust status (a resolved Ethereum name, or a `web3://` app whose retrieval was verified), the trust shield takes that slot instead — so onchain apps normally show the shield and fall back to the diamond only when no provenance is available. The shield reports how the _name_ resolved, not how the content was retrieved: on an `ipfs://` page served through an external gateway (see Smart Node Connection) the name is still verified, but the bytes behind it are not.
 - **Hamburger Menu**: Access browser features (Profile submenu, New Tab, New Window, New Private Window, History, Zoom, Print, Developer Tools, Settings, About Freedom, Check for Updates…).
 
 ## Error Handling

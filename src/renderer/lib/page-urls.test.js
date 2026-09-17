@@ -149,6 +149,22 @@ describe('page-urls', () => {
     expect(mod.isErrorPageUrl('file:///app/pages/error.html?url=https%3A%2F%2Fa.test')).toBe(true);
     expect(mod.isErrorPageUrl('file:///app/pages/error.html#frag')).toBe(true);
     expect(mod.isErrorPageUrl(undefined)).toBe(false);
+
+    // Same shape for the home page: `tabs.js` keys the "New Tab" title
+    // treatment on it, and an `endsWith('/pages/home.html')` test handed that
+    // treatment to any site serving the path (#376).
+    for (const hostile of [
+      'https://example.com/pages/home.html',
+      'https://evil.test/home.html',
+      'file:///app/pages/home.html.evil',
+    ]) {
+      expect(mod.isHomePageUrl(hostile)).toBe(false);
+    }
+
+    expect(mod.isHomePageUrl('file:///app/pages/home.html')).toBe(true);
+    expect(mod.isHomePageUrl('file:///app/pages/home.html#recent')).toBe(true);
+    expect(mod.isHomePageUrl('file:///app/pages/home.html?x=1')).toBe(true);
+    expect(mod.isHomePageUrl(undefined)).toBe(false);
   });
 
   test('maps internal page urls back to freedom:// names', async () => {
@@ -197,6 +213,22 @@ describe('page-urls', () => {
     expect(mod.isNewTabPageUrl(null)).toBe(false);
     // A remote look-alike path must not pass as chrome's own page (#235).
     expect(mod.isNewTabPageUrl('https://evil.test/pages/private.html')).toBe(false);
+  });
+
+  // The name-keyed form the internal-page singleton rules in `tabs.js` use:
+  // a new-tab page is deliberately *not* a singleton tab.
+  test('recognises the new-tab pages by name, sub-path and all', async () => {
+    const mod = await loadModule({ home: 'home.html', private: 'private.html' });
+
+    expect(mod.isNewTabPageName('home')).toBe(true);
+    expect(mod.isNewTabPageName('private')).toBe(true);
+    expect(mod.isNewTabPageName('HOME')).toBe(true);
+    expect(mod.isNewTabPageName('home/anything')).toBe(true);
+
+    expect(mod.isNewTabPageName('settings')).toBe(false);
+    expect(mod.isNewTabPageName('')).toBe(false);
+    expect(mod.isNewTabPageName(null)).toBe(false);
+    expect(mod.isNewTabPageName(undefined)).toBe(false);
   });
 
   test('extracts the web3 target only from the bundled onchain interstitial', async () => {
@@ -271,7 +303,52 @@ describe('page-urls', () => {
       assertedTransport: null,
     });
     expect(mod.parseEnsInput('example.com')).toBeNull();
+    for (const scheme of ['ens', 'ipfs', 'bzz']) {
+      expect(mod.parseEnsInput(`${scheme}://gregskril.com/docs`)).toEqual({
+        name: 'gregskril.com', suffix: '/docs', assertedTransport: scheme === 'ens' ? null : scheme,
+      });
+    }
+    expect(mod.parseEnsInput('ens://bücher.eth')).toEqual({
+      name: 'bücher.eth', suffix: '', assertedTransport: null,
+    });
+    expect(mod.parseEnsInput('ipns://example.com')).toBeNull();
     expect(mod.parseEnsInput('')).toBeNull();
+  });
+
+  test('declines gateway-form ipfs urls so the CID rewrite still runs', async () => {
+    // `loadTarget` calls parseEnsInput before formatIpfsUrl, and every IPFS
+    // gateway hostname is also a well-formed DNS name. Claiming one as an
+    // ENSv2 DNS name sends `ipfs://ipfs.io/ipfs/<cid>` to the resolver
+    // (alert: "ENS resolution failed for ipfs.io") instead of loading the
+    // content, breaking existing gateway-form bookmarks, history entries,
+    // and Kubo directory-listing links.
+    const mod = await loadModule();
+    const cidV0 = 'QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR';
+    const cidV1 = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
+
+    expect(mod.parseEnsInput(`ipfs://ipfs.io/ipfs/${cidV0}`)).toBeNull();
+    expect(mod.parseEnsInput(`ipfs://dweb.link/ipfs/${cidV1}/a/b`)).toBeNull();
+    expect(mod.parseEnsInput(`ipfs://127.0.0.1/ipfs/${cidV1}`)).toBeNull();
+    expect(mod.parseEnsInput(`ipfs://localhost:8080/ipfs/${cidV1}/page`)).toBeNull();
+    expect(mod.parseEnsInput('ipfs://gateway.pinata.cloud/ipns/docs.ipfs.tech/install')).toBeNull();
+
+    // The ENSv2 DNS-name acceptance this carve-out narrows is untouched:
+    // only the shape formatIpfsUrl actually rewrites is declined.
+    expect(mod.parseEnsInput('ipfs://gregskril.com/docs')).toEqual({
+      name: 'gregskril.com',
+      suffix: '/docs',
+      assertedTransport: 'ipfs',
+    });
+    expect(mod.parseEnsInput(`ipfs://my-gateway.example/ipfs/${cidV1}`)).toEqual({
+      name: 'my-gateway.example',
+      suffix: `/ipfs/${cidV1}`,
+      assertedTransport: 'ipfs',
+    });
+    expect(mod.parseEnsInput(`ipfs://vitalik.eth/ipfs/${cidV1}`)).toEqual({
+      name: 'vitalik.eth',
+      suffix: `/ipfs/${cidV1}`,
+      assertedTransport: 'ipfs',
+    });
   });
 
   test('parses transport-prefixed ens inputs (bzz://, ipfs://, ipns://)', async () => {

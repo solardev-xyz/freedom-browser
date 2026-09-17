@@ -1,3 +1,8 @@
+> The original ABI 22 / Electron 43 campaign below is historical evidence.
+> This branch uses official Myotis v0.1.10 / ABI 26 and locked Electron 44.3.0.
+> Use those exact artifacts for new runs; this short Quit driver does not
+> qualify cold sync or grant stale-anchor consent.
+
 # Standalone PR #295 Mac app driver
 
 `app-driver.cjs` is source-only qualification tooling. Requiring it performs no

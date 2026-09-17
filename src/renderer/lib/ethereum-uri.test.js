@@ -149,8 +149,8 @@ describe('parseEthereumUri', () => {
     expect(parseEthereumUri('ethereum:vitalik.eth@0').ok).toBe(false);
   });
 
-  test('rejects non-address non-ENS target', () => {
-    expect(parseEthereumUri('ethereum:example.com').ok).toBe(false);
+  test('accepts DNS names and rejects malformed targets', () => {
+    expect(parseEthereumUri('ethereum:example.com').ok).toBe(true);
     expect(parseEthereumUri('ethereum:not_a_name').ok).toBe(false);
     expect(parseEthereumUri('ethereum:0x1234').ok).toBe(false); // too short
   });

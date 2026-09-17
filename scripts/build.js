@@ -16,6 +16,10 @@
  *   --no-notarize           Disable built-in notarization (macOS dist only)
  *   --verbose               Enable electron-builder debug output
  *
+ * Environment (see scripts/publish-channel.js):
+ *   FREEDOM_UPDATE_CHANNEL  Update channel for a dist build (default: latest)
+ *   FREEDOM_UPDATE_URL      Update feed URL (default: package.json build.publish.url)
+ *
  * Examples:
  *   npm run build -- --mac --arm64
  *   npm run build -- --mac --arm64 --unsigned --verbose
@@ -29,6 +33,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { buildForTargets } = require('./build-myotis-supervisor');
+const { publishOverrideArgs } = require('./publish-channel');
 const {
   SOURCE_BUILD_ENV,
   pruneSourceBuildFallback,
@@ -82,6 +87,43 @@ if (dist && process.env.FREEDOM_ALLOW_INTERIM_BRIDGE !== '1') {
   }
 }
 
+// Chromium's third-party notices have to be present before packaging starts.
+// Electron's dist carries LICENSES.chromium.html next to the executable, which
+// is the copy Linux and Windows packages ship. electron-builder deletes it on
+// the macOS path (`unlinkIfExists(path.join(appOutDir, "LICENSES.chromium.html"))`
+// in app-builder-lib/out/electron/electronMac.js) and the .dmg/.zip only ever
+// carry Freedom.app, so `build.mac.extraResources` copies it out of the same
+// dist into Contents/Resources instead. NOTICES points users at that file; a
+// missing one would ship Chromium with a dangling attribution reference.
+//
+// The dist is populated by electron's postinstall (`node install.js`), which
+// npm on the CI runners no longer runs for dependencies unless approved, and
+// which ELECTRON_SKIP_BINARY_DOWNLOAD skips locally. electron-builder never
+// needs that dist (it fetches its own zip), so a missing one only surfaces
+// here: run electron's own installer once, then insist on the file.
+const CHROMIUM_NOTICES = 'node_modules/electron/dist/LICENSES.chromium.html';
+const chromiumNoticesPath = path.join(__dirname, '..', CHROMIUM_NOTICES);
+if (!fs.existsSync(chromiumNoticesPath)) {
+  console.log(`\n→ ${CHROMIUM_NOTICES} is missing; running electron's installer to fetch the dist\n`);
+  try {
+    execSync('node node_modules/electron/install.js', {
+      stdio: 'inherit',
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, ELECTRON_SKIP_BINARY_DOWNLOAD: '' },
+    });
+  } catch (err) {
+    console.error(`electron's installer failed: ${err.message}`);
+  }
+}
+if (!fs.existsSync(chromiumNoticesPath)) {
+  console.error(
+    `Error: ${CHROMIUM_NOTICES} is still missing, so this build would ship Chromium with no ` +
+      `third-party license notices. It comes from electron's postinstall download — run ` +
+      `\`node node_modules/electron/install.js\` (or \`npm rebuild electron\`) and build again.`
+  );
+  process.exit(1);
+}
+
 // Build the owned Myotis helper from local source before binary preflight.
 // Native macOS builds cover every requested architecture; foreign targets
 // require a helper built with an already installed compiler on that target.
@@ -107,10 +149,13 @@ if (noNotarize && platform === 'mac' && dist) {
   builderArgs.push('-c.mac.notarize=false');
 }
 
-// Windows publish channels (signed dist only)
-if (dist && platform === 'win') {
-  const winArch = archs[0] || 'x64';
-  builderArgs.push(`-c.publish.channel=latest-win-${winArch}`);
+// Update feed overrides (dist only — an unpacked build publishes nothing).
+// Unset, this is the stable feed from package.json plus the Windows
+// `latest-win-<arch>` channel pin this line has always applied. The release
+// workflow's nightly runs set FREEDOM_UPDATE_CHANNEL/FREEDOM_UPDATE_URL so a
+// nightly updates from the nightly feed and never writes to `latest`.
+if (dist) {
+  builderArgs.push(...publishOverrideArgs({ platform, archs }));
 }
 
 // 3. Environment

@@ -26,6 +26,9 @@ module.exports = {
   // Myotis P2P Ethereum light client (experimental)
   MYOTIS_START: 'myotis:start',
   MYOTIS_STOP: 'myotis:stop',
+  MYOTIS_RETRY_CHECKPOINT: 'myotis:retryCheckpoint',
+  MYOTIS_REPAIR_SYNC_DATA: 'myotis:repairSyncData',
+  MYOTIS_RECOVERY_HELP: 'myotis:recoveryHelp',
   MYOTIS_GET_STATUS: 'myotis:getStatus',
   MYOTIS_STATUS_UPDATE: 'myotis:statusUpdate',
 

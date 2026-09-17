@@ -8,7 +8,7 @@ This guide covers local setup, the repository layout, tests, debugging, and deve
 - npm, included with Node.js.
 - Git.
 - Platform build tools required by Electron native modules.
-- Optional, for the bundled Tor client only (`npm run tor:download`): a Rust toolchain at or above the pinned Arti release's MSRV (`MIN_RUST_VERSION` in [`scripts/fetch-arti.js`](../scripts/fetch-arti.js); the script checks before building). Arti is compiled from crates.io rather than downloaded. On Linux that build also needs OpenSSL development headers, and `libsqlite3-dev` when `pkg-config` is installed.
+- Optional, for the bundled Tor client only (`npm run tor:download`): a Rust toolchain at or above the pinned Arti release's MSRV (`MIN_RUST_VERSION` in [`scripts/fetch-arti.js`](../scripts/fetch-arti.js); the script checks before building). Arti is compiled from crates.io rather than downloaded, for the host platform only. On Linux that build also needs OpenSSL development headers, and `libsqlite3-dev` when `pkg-config` is installed; on Windows it needs the x64 MSVC tools (the same developer shell the Myotis supervisor build uses), and the script asks Arti for its `static-sqlite` feature there because Windows ships no system SQLite for `libsqlite3-sys` to link.
 
 With `nvm` installed, select the repository version with:
 
@@ -30,7 +30,7 @@ npm run myotis:build-supervisor
 npm start
 ```
 
-Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Automatic Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. On macOS and Linux, install optional Tor support with `npm run tor:download`, then enable it under **Settings → Experimental**. Bundled Tor is unavailable on Windows.
+Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. Install optional Tor support with `npm run tor:download` (macOS, Linux, and Windows x64 — it compiles Arti for the host), then enable it under **Settings → Experimental**; the Tor rows stay hidden until that binary exists.
 
 Myotis also requires its small supervisor built from checked-in source with an
 already installed C compiler: Apple clang/CLT on macOS, a native C compiler on
@@ -142,14 +142,14 @@ Build an unpacked, unsigned application for the host platform with:
 npm run build -- --mac --unsigned
 ```
 
-Replace `--mac` with `--linux` or `--win` as appropriate. Native modules no longer need compiling for the target: `better-sqlite3` v13 ships prebuilt addons for every target we package (`darwin`/`linux`/`linuxmusl` x `x64`/`arm64`, plus `win32`), and each installer is built carrying only its own. Linux _distributables_ still use the Docker scripts, because the `.deb` target needs a system `fpm` (`USE_SYSTEM_FPM=true`) and its Ruby toolchain running in a container of the target architecture, which also fetches the arch-matched Radicle/IPFS/Myotis addons:
+Replace `--mac` with `--linux` or `--win` as appropriate. Native modules no longer need compiling for the target: `better-sqlite3` v13 ships prebuilt addons for every target we package (`darwin`/`linux`/`linuxmusl` x `x64`/`arm64`, plus `win32`), and each installer is built carrying only its own. Linux _distributables_ still use the Docker scripts, because the `.deb` and `.pacman` targets need a system `fpm` (`USE_SYSTEM_FPM=true`) and its Ruby toolchain running in a container of the target architecture, which also fetches the arch-matched Radicle/IPFS/Myotis addons:
 
 ```bash
 npm run dist:linux:x64:docker
 npm run dist:linux:arm64:docker
 ```
 
-Windows builds ship the embedded Radicle addon for x64 and ARM64 (the `win` target in `package.json` declares a `radicle-bin` `extraResources` entry), but not the bundled Tor (Arti) client, which declares no `arti-bin` entry. When cross-building for Windows, stage the target-native addon first with `npm run radicle:download -- --win --x64` or `-- --win --arm64`; the architecture must match the one passed to `npm run dist`. Signed releases, notarization, artifact verification, and deployment are maintainer workflows documented in the [release playbook](agent-playbooks/release-process.md).
+Windows builds ship the embedded Radicle addon for x64 and ARM64 and, since the `win` target gained an `arti-bin` `extraResources` entry alongside its `radicle-bin` one, the bundled Tor (Arti) client as well. Arti is compiled for the host only, so a Windows package carries Tor only when `npm run tor:download` ran on a Windows machine (the release workflow builds it on the `windows-x64` runner); a cross-build from macOS or Linux produces a Windows package without it, and the app hides the Tor rows there. Windows ARM64 is not part of the release workflow, so no ARM64 build bundles Tor unless the same build step is run on an ARM64 Windows host. When cross-building for Windows, stage the target-native addon first with `npm run radicle:download -- --win --x64` or `-- --win --arm64`; the architecture must match the one passed to `npm run dist`. Signed releases, notarization, artifact verification, and deployment are maintainer workflows documented in the [release playbook](agent-playbooks/release-process.md).
 
 ## Testing updates locally
 

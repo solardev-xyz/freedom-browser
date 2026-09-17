@@ -46,6 +46,7 @@ import {
   getActiveTab,
   getActiveTabState,
   openInNewTabWithTarget,
+  routeInternalPageNavigation,
   setOnchainProvenanceChangeHandler,
   setWebviewEventHandler,
   updateActiveTabTitle,
@@ -93,6 +94,7 @@ import { walletState } from './wallet/wallet-state.js';
 import { formatWeiToDecimal } from './wallet/send.js';
 import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress-status.js';
 import { TOOLTIP_HOVER_DELAY_MS } from './hover-tooltip.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
 import { matchesShortcut } from './shortcuts.js';
 
 // Helper to get active tab's navigation state (with fallback to empty object)
@@ -189,6 +191,80 @@ const invalidateContentName = (input) => {
   electronAPI?.invalidateEnsContent?.(input.name).catch((err) => {
     pushDebug(`[ENS] invalidateEnsContent failed: ${err?.message || err}`);
   });
+};
+
+// Favicon fetching (#75). A favicon fetch needs two things that arrive on
+// separate webview events, in either order:
+//
+//   * `did-stop-loading` — which page finished, and what the address bar is
+//     displaying for it (the per-domain cache key).
+//   * `page-favicon-updated` — the icon URL Chromium parsed out of the
+//     document it already downloaded.
+//
+// Neither alone is enough, so each records its half on the tab and asks
+// `runFaviconFetch` to fire when both halves describe the same page URL. That
+// ordering is real, not defensive: on a live http page load Chromium emits
+// `page-favicon-updated` *after* `did-stop-loading` (measured against a local
+// server; see the PR for #75), so fetching at did-stop-loading time would
+// never see the reported URL.
+//
+// Both halves live on the tab object, so they are collected with the tab
+// rather than accumulating in a module-level map keyed by a dead tab id.
+//
+// Before #75 the main process instead re-fetched the page URL itself, with no
+// cookies, purely to run its own regex over the HTML — a second server-side
+// GET of every page the user visited. The webview already did that parse.
+const runFaviconFetch = (tab) => {
+  const load = tab?.faviconLoad;
+  const reported = tab?.reportedFavicon;
+  if (!load || !reported || load.pageUrl !== reported.pageUrl) return;
+  // Consume both halves: a page that reports several icon candidates (or
+  // re-reports one) must not produce a second fetch for the same load.
+  tab.faviconLoad = null;
+  tab.reportedFavicon = null;
+  electronAPI
+    ?.fetchFaviconWithKey?.(load.internalUrl, load.displayUrl, reported.iconUrl)
+    ?.then((favicon) => {
+      if (favicon) {
+        updateTabFavicon(tab.id, load.displayUrl);
+      }
+    })
+    ?.catch((err) => {
+      pushDebug(`[Nav] Favicon fetch failed for ${load.displayUrl}: ${err.message}`);
+    });
+};
+
+// Half one: a page load finished in `tab`, and this is what its icon should
+// be cached under.
+const noteFaviconPageLoad = (tab, load) => {
+  if (!tab) return;
+  tab.faviconLoad = load;
+  runFaviconFetch(tab);
+};
+
+// Half two: the webview reported an icon URL for the page it is showing.
+const noteReportedFavicon = (tab, reported) => {
+  if (!tab) return;
+  tab.reportedFavicon = reported;
+  runFaviconFetch(tab);
+};
+
+// Both halves describe one document, so a committed navigation ends their
+// life: `did-navigate` drops whatever either of them still holds.
+//
+// Being consumed by a fetch is otherwise the *only* way a half is cleared,
+// so a document that reports several icon candidates (a JS-driven favicon
+// swap, a late-injected `apple-touch-icon`) leaves the extra report sitting
+// on the tab. Without this reset, a revisit of that same URL pairs its
+// `did-stop-loading` half with that leftover *instantly* — fetching the
+// previous visit's candidate before the fresh report lands, and leaving the
+// fresh report over in turn, so the tab stays one visit behind for good
+// (#376). A `did-navigate-in-page` keeps the same document, and its icon,
+// so it deliberately does not clear anything.
+const clearFaviconPairing = (tab) => {
+  if (!tab) return;
+  tab.faviconLoad = null;
+  tab.reportedFavicon = null;
 };
 
 // Experimental opt-in (Settings → Experimental, default off). Mirrors the
@@ -538,6 +614,12 @@ const setTrustPopoverOpen = (open) => {
   if (!trustPopover || !trustShield) return;
   trustPopover.hidden = !open;
   trustShield.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    // A long provenance list must scroll inside the popover rather than run
+    // off the bottom of the window — the shared chrome-popover bound (#324).
+    trustPopover.scrollTop = 0;
+    boundPopoverToViewport(trustPopover);
+  }
   resetTrustTooltip();
   if (!open) {
     trustPopoverDisplayed = null;
@@ -1151,6 +1233,22 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
     });
 };
 
+// `freedom://<page>[/<sub>]` (e.g. freedom://settings/appearance), the only
+// shape the internal-page branch below accepts.
+const FREEDOM_PAGE_PATTERN = /^freedom:\/\/([a-zA-Z0-9-]+)(?:\/([a-zA-Z0-9-]+))?\/?$/i;
+
+// `{ pageName, subPath }` for a recognised internal page, else null. Parsed up
+// front so `loadTarget` can settle *where* the open lands before it runs any
+// bookkeeping on the tab it may be about to leave alone; an unknown page name
+// stays null here and is reported by the branch further down.
+const parseInternalPageTarget = (value) => {
+  const match = typeof value === 'string' ? value.match(FREEDOM_PAGE_PATTERN) : null;
+  if (!match) return null;
+  const pageName = match[1].toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(internalPages, pageName)) return null;
+  return { pageName, subPath: match[2]?.toLowerCase() || null };
+};
+
 export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
   if (!targetWebview && getActiveTab()?.kind === 'workspace-viewer') {
     if (!options.pageInitiated && !options.continuesNavigation && !options.keepsAddressBarEdit
@@ -1180,6 +1278,16 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // does too by construction, so these callers hold the draft as well.
   // See the `clearAddressBarEdit` call below.
   //
+  // `options.commitsAddressBar` — this call *is* the user committing what the
+  // address bar holds (the form submit, a picked autocomplete suggestion).
+  // Every other chrome caller (a menu item, a bookmark, an interstitial
+  // button) navigates for a reason unrelated to the bar's contents. The
+  // distinction only matters when the navigation is answered by a *different*
+  // tab: the committed text must stop being this tab's draft no matter where
+  // the open lands, while an unrelated draft the user is still typing here
+  // survives an open that never touches this tab. See the routed-away branch
+  // below.
+  //
   // `options.bzzLoadUrl` / `options.swarmHash` — set by the ENS resolution
   // path when an ENS name resolves to Swarm content: the recursive call
   // into the bzz branch carries the ENS-named load URL plus the resolved
@@ -1200,6 +1308,42 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   const navState = getTabById(targetTabId)?.navigationState || getNavState();
   if (!webview) {
     pushDebug('No active webview to load target');
+    return;
+  }
+
+  // An internal-page open can be answered by a *different* tab (Chrome's
+  // singleton rule — see the freedom:// branch below for the full story), in
+  // which case this tab is never navigated at all. Settle that before any of
+  // the entry bookkeeping underneath, all of which acts on *this* tab: a
+  // routed-away open must not cancel the in-flight Swarm probe this tab is
+  // still waiting on, nor end the address-bar draft the user has half-typed
+  // here (#314) — Chrome keeps both on a tab it leaves alone. When the answer
+  // is "this tab", the bookkeeping runs exactly as before and the branch below
+  // performs the in-place navigation.
+  const internalPageTarget = parseInternalPageTarget(value);
+  if (
+    internalPageTarget &&
+    routeInternalPageNavigation(internalPageTarget.pageName, internalPageTarget.subPath, webview)
+  ) {
+    // One exception to "leave this tab wholly untouched": the user committing
+    // the bar's own contents. `freedom://settings` typed and entered here (or
+    // picked from the dropdown) is an edit the user *finished* — holding it
+    // would leave the committed text behind as a phantom draft that repaints,
+    // focused, on every switch back to this tab, and takes the keyboard from
+    // its page (#319) until Escape. Only `commitsAddressBar` callers qualify;
+    // a menu/bookmark/interstitial open leaves a half-typed draft alone.
+    //
+    // Cleared *after* the routing call, not before: the switch it performs is
+    // synchronous, and the `tab-switched` handler re-saves the bar into this
+    // tab's draft while the edit still reads as in progress — clearing first
+    // would be undone by that re-save. Running last also keeps the handler on
+    // its draft branch, so the `!fromAddressBarCommit` arm never adopts the
+    // committed text as this tab's page display.
+    if (options.commitsAddressBar) {
+      clearAddressBarEdit(navState);
+    }
+    const { pageName, subPath } = internalPageTarget;
+    pushDebug(`Routed internal page to its own tab: ${pageName}${subPath ? `/${subPath}` : ''}`);
     return;
   }
 
@@ -1354,12 +1498,25 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // (e.g. freedom://settings/appearance → pages/settings.html#appearance).
   // The sub-path is carried as a URL fragment so client-side routing inside
   // the page can show the matching section without a full reload.
-  const fbMatch = value.match(/^freedom:\/\/([a-zA-Z0-9-]+)(?:\/([a-zA-Z0-9-]+))?\/?$/i);
+  const fbMatch = value.match(FREEDOM_PAGE_PATTERN);
   if (fbMatch) {
     const pageName = fbMatch[1].toLowerCase();
     const subPath = fbMatch[2]?.toLowerCase() || null;
     const pageUrl = internalPages[pageName];
     if (pageUrl) {
+      // Every internal page is a singleton, as in Chrome: an open Settings
+      // (History, Profiles, …) tab is focused rather than duplicated, whether
+      // the open came from the hamburger menu, the address bar, a bookmark, a
+      // same-tab link or an interstitial button — the paths that all funnel
+      // through here. `routeInternalPageNavigation` owns that decision and
+      // already ran it above (before the entry bookkeeping, so a routed-away
+      // open leaves this tab wholly untouched); reaching here means it
+      // answered "this tab": it is already the page's tab, it is an empty New
+      // Tab to overwrite, or the page is a new-tab page (`freedom://home`,
+      // `freedom://private`), which is deliberately not a singleton and always
+      // navigates in place. The link paths that never reach loadTarget (a
+      // new-tab/background link activation, `tab:new-with-url`) keep their own
+      // singleton branch in `openInNewTabWithTarget`. See #325.
       const targetUrl = subPath ? `${pageUrl}#${subPath}` : pageUrl;
       webview.loadURL(targetUrl);
       pushDebug(`Loading internal page: ${pageName}${subPath ? `/${subPath}` : ''}`);
@@ -1596,7 +1753,11 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           innerOptions.bzzLoadUrl = transportDisplay;
           innerOptions.swarmHash = result.decoded;
         } else if (result.protocol === 'ipfs' || result.protocol === 'ipns') {
-          innerOptions.ipfsLoadUrl = transportDisplay;
+          // DNS ENS names cannot occupy an IPNS hostname (that means
+          // DNSLink). Load their resolved key while retaining ens:// display.
+          innerOptions.ipfsLoadUrl = transportDisplay.startsWith('ens://')
+            ? targetUri
+            : transportDisplay;
         }
 
         // Pass captured webview to ensure we load in the correct tab
@@ -2343,6 +2504,10 @@ export const initNavigation = () => {
   // document (out-of-process frame), so a document-click listener alone
   // misses them. window.blur fires when focus shifts to the webview,
   // which covers any click into loaded page content.
+  //
+  // Deliberately the raw `blur`, not `onWindowDeactivated` (#328): this
+  // popover raises no `#menu-backdrop`, so the guest-focus blur the shared
+  // helper filters out is exactly the signal that dismisses it here.
   window.addEventListener('blur', () => {
     if (trustPopover && !trustPopover.hidden) setTrustPopoverOpen(false);
   });
@@ -2446,7 +2611,9 @@ export const initNavigation = () => {
     // ipfs://, https://, rad://) and owns the ENS trust state mutation.
     // Earlier this handler duplicated the ENS path, which bypassed the
     // trust updates and left the shield empty for typed-address flows.
-    loadTarget(addressInput.value);
+    // `commitsAddressBar` marks this as the user committing the bar's own
+    // contents, so an open answered by another tab still ends the edit here.
+    loadTarget(addressInput.value, null, null, { commitsAddressBar: true });
     addressInput.blur();
   });
 
@@ -2556,19 +2723,11 @@ export const initNavigation = () => {
             !displayUrl.startsWith('freedom://') &&
             !displayUrl.startsWith('view-source:')
           ) {
-            // Fetch and cache favicon in background, then update tab favicon
+            // Record what this load's icon would be cached under — the fetch
+            // itself waits for the webview to report the icon URL (#75).
             // Use displayUrl as cache key (so bzz://, ipfs:// sites get unique favicons)
             // Use internalUrl for fetching (the actual HTTP gateway URL)
-            electronAPI
-              ?.fetchFaviconWithKey?.(internalUrl, displayUrl)
-              .then((favicon) => {
-                if (favicon) {
-                  updateTabFavicon(activeTab.id, displayUrl);
-                }
-              })
-              .catch((err) => {
-                pushDebug(`[Nav] Favicon fetch failed for ${displayUrl}: ${err.message}`);
-              });
+            noteFaviconPageLoad(activeTab, { pageUrl: internalUrl, displayUrl, internalUrl });
 
             // Also try to show cached favicon immediately
             updateTabFavicon(activeTab.id, displayUrl);
@@ -2612,6 +2771,29 @@ export const initNavigation = () => {
         pushDebug('Webview finished loading.');
         break;
 
+      case 'page-favicon-updated': {
+        // A tab's webview reported the icon URL Chromium parsed out of the
+        // page it already loaded (#75). Pairs with the `faviconLoad` half
+        // recorded at did-stop-loading above; whichever lands second fires
+        // the single icon fetch.
+        //
+        // Resolved by tab id, not "is this the active tab": Chromium emits
+        // the report after did-stop-loading, so the user can have switched
+        // away in between — and the tab that finished loading is still the
+        // one the report describes and the one whose load half it completes
+        // (#376). A tab with no load half (a background load, a private
+        // window) pairs with nothing and fetches nothing.
+        //
+        // PRIVATE MODE GUARD (favicons): nothing to guard here — a private
+        // window never records the load half (shouldCacheFavicons() above),
+        // so the pair never completes and no fetch is made. The main process
+        // refuses a private sender's fetch anyway (src/main/favicons.js).
+        const tab = getTabById(data.tabId);
+        if (!tab) break;
+        noteReportedFavicon(tab, { pageUrl: data.pageUrl, iconUrl: data.iconUrl });
+        break;
+      }
+
       case 'did-fail-load':
         // Defensive twin of the per-tab gate in `tabs.js`. Chromium fires
         // `did-fail-load` for **any** frame, including third-party iframes
@@ -2648,6 +2830,9 @@ export const initNavigation = () => {
         break;
 
       case 'did-navigate':
+        // A committed navigation replaces the document, so neither favicon
+        // pairing half can belong to the load that follows (#376).
+        clearFaviconPairing(getTabById(data.tabId));
         if (webview) webview.classList.add('hidden');
         // Update bookmarks bar visibility based on destination
         updateBookmarkBarState(data.event?.url);

@@ -38,6 +38,7 @@
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   padding: 4px;
   min-width: 200px;
@@ -67,6 +68,7 @@
 }
 
 .bookmarks-overflow-item:hover {
+  /* theme-literal: neutral hover tint; light-theme.css overrides .bookmarks-overflow-item:hover */
   background: rgba(255, 255, 255, 0.1);
 }
 
@@ -109,6 +111,7 @@
 }
 
 .bookmark:hover {
+  /* theme-literal: neutral hover tint; light-theme.css overrides .bookmark:hover */
   background: rgba(255, 255, 255, 0.1);
 }
 

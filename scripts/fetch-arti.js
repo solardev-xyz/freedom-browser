@@ -6,20 +6,28 @@
  * crates.io, so we build from source with `cargo install`. This requires a
  * Rust toolchain (`cargo`) on the build machine.
  *
- * The binary is placed at `arti-bin/<platform>-<arch>/arti` to match the
- * layout that `src/main/tor-manager.js#getArtiBinaryPath` and the
- * electron-builder `extraResources` entries expect.
+ * The binary is placed at `arti-bin/<platform>-<arch>/arti` (`arti.exe` on
+ * Windows) to match the layout that
+ * `src/main/tor-manager.js#getArtiBinaryPath` and the electron-builder
+ * `extraResources` entries expect.
  *
  * Cross-compilation is out of scope here (it needs per-target toolchains), so
  * this builds for the host platform/arch only — mirroring how the Docker dist
  * jobs fetch the host-only libradicle addon.
  *
- * Build prerequisites beyond cargo, observed on Linux (the macOS and Linux
- * release runners build this with no extra setup step):
+ * Build prerequisites beyond cargo, observed on Linux (the macOS, Linux and
+ * Windows release runners build this with no extra setup step):
  *   - OpenSSL development headers (`libssl-dev`), for Arti's default
- *     `native-tls` runtime.
+ *     `native-tls` runtime. macOS and Windows use the OS TLS stack instead
+ *     (Secure Transport / SChannel) and need no equivalent package.
  *   - `libsqlite3-dev`, but only when `pkg-config` is installed: `libsqlite3-sys`
  *     then links the system SQLite instead of building its bundled copy.
+ *   - a C compiler for that bundled SQLite copy where no system one is
+ *     linked: Apple CLT on macOS, the x64 MSVC tools on Windows (the release
+ *     workflow builds inside the developer shell it already activates for
+ *     packaging, and downloads no compiler). Windows has no system SQLite at
+ *     all, so the build asks Arti for its `static-sqlite` feature there — see
+ *     cargoFeatures() below.
  *
  * Env:
  *   ARTI_VERSION   crates.io version to install (default: pinned below; an
@@ -30,7 +38,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
+const { withRetry, MAX_ATTEMPTS } = require('./lib/fetch-with-retry');
 
 // Pin a known-good Arti release. Bump deliberately and re-test the SOCKS flags
 // (`arti proxy -c <config>`) and the `arti.toml` keys tor-manager.js writes.
@@ -47,10 +56,60 @@ const CARGO_BIN = process.env.CARGO_BIN || 'cargo';
 
 const OUTPUT_DIR = path.join(__dirname, '..', 'arti-bin');
 
-function platformKey() {
+/**
+ * Resource directory name for a host, e.g. `win-x64`. Kept identical to
+ * `getArtiBinaryPath()` in `src/main/tor-manager.js` — the app looks the
+ * binary up by exactly this name in a dev tree.
+ * @param {NodeJS.Platform} [platform]
+ * @param {string} [arch]
+ */
+function platformKey(platform = process.platform, arch = process.arch) {
   const platformMap = { darwin: 'mac', linux: 'linux', win32: 'win' };
-  const platform = platformMap[process.platform] || process.platform;
-  return `${platform}-${process.arch}`;
+  return `${platformMap[platform] || platform}-${arch}`;
+}
+
+/**
+ * Name cargo gives the built binary, and the name the app looks for.
+ * @param {NodeJS.Platform} [platform]
+ */
+function artiBinaryName(platform = process.platform) {
+  return platform === 'win32' ? 'arti.exe' : 'arti';
+}
+
+/**
+ * Extra cargo features needed to build the pinned Arti on a given host.
+ *
+ * Windows has no system SQLite to link against, and `libsqlite3-sys` falls
+ * through to emitting a bare `-l sqlite3` when neither pkg-config nor vcpkg
+ * finds one, so the link fails with `LNK1181: cannot open input file
+ * 'sqlite3.lib'` (observed 2026-09-09 on `windows-latest`, MSVC 14.51, Arti
+ * 2.6.0). Arti's own `static-sqlite` feature switches rusqlite to its bundled
+ * amalgamation, which the MSVC toolchain compiles as part of the build. macOS
+ * and Linux keep linking the system library they always have — changing what
+ * they link is not this script's business.
+ *
+ * Re-check this list when bumping the pin: it is Arti's feature name, not a
+ * dependency's, and a major version may rename or drop it.
+ * @param {NodeJS.Platform} [platform]
+ * @returns {string[]}
+ */
+function cargoFeatures(platform = process.platform) {
+  return platform === 'win32' ? ['static-sqlite'] : [];
+}
+
+/**
+ * The exact `cargo install` argv used to build the pinned Arti.
+ * @param {string} version
+ * @param {string} installRoot
+ * @param {NodeJS.Platform} [platform]
+ */
+function installArgs(version, installRoot, platform = process.platform) {
+  const args = ['install', 'arti', '--version', version, '--locked', '--root', installRoot];
+  const features = cargoFeatures(platform);
+  if (features.length > 0) {
+    args.push('--features', features.join(','));
+  }
+  return args;
 }
 
 /** `cargo --version` output, or null when cargo is not runnable. */
@@ -106,7 +165,104 @@ function checkRustVersion(cargoVersionOutput, artiVersion = ARTI_VERSION) {
   return false;
 }
 
-function main() {
+/**
+ * The network half of this script is cargo's: it resolves the index and
+ * downloads every crate in Arti's tree from crates.io. Those failures look
+ * nothing like an HTTP status, so the shared retry loop
+ * (scripts/lib/fetch-with-retry.js) is given a classifier that reads cargo's
+ * own words for them. Everything else — a compile error, a missing MSRV, the
+ * Windows `LNK1181` — fails on the first attempt: retrying a multi-minute
+ * build that is going to fail identically wastes a release runner's time and
+ * buries the real error four copies deep.
+ *
+ * Phrases observed from cargo 1.9x; `cargo` retries spurious network errors a
+ * few times itself before printing these, so reaching one means its own
+ * retries are already spent.
+ */
+const RETRYABLE_CARGO_OUTPUT =
+  /(spurious network error|failed to download|failed to fetch|network failure|error sending request|connection reset|connection closed|could not resolve host|temporary failure in name resolution|operation timed out|timed out|unexpected eof|failed to get 200 response|failed to update registry)/i;
+
+/**
+ * Deterministic failures, which *veto* the network match above. The tail is a
+ * window over the whole build, not just its last line, so a network hiccup
+ * cargo recovered from on its own ("warning: spurious network error (3 tries
+ * remaining)") can still be sitting in it when the build later dies of an MSRV
+ * or compile error — a positive network match alone would then spend four
+ * multi-minute attempts on a failure that reproduces identically. A build that
+ * got far enough to emit one of these reached rustc or the linker, so whatever
+ * the network did earlier it recovered from.
+ *
+ * Only markers that rustc, the linker or the MSRV check emit are listed.
+ * Cargo's own `failed to compile \`arti v2.6.0\`` wrapper is deliberately *not*
+ * here: `cargo install` wraps a crate *download* failure in it too, so vetoing
+ * on it would stop retrying the exact class this loop exists for.
+ */
+const DETERMINISTIC_CARGO_OUTPUT =
+  /(error\[E\d+\]|LNK\d{4}|requires rustc|could not compile|linking with .* failed)/i;
+
+/** @param {string} output cargo's stderr (tail) */
+function isRetryableCargoFailure(output) {
+  const text = String(output || '');
+  if (DETERMINISTIC_CARGO_OUTPUT.test(text)) return false;
+  return RETRYABLE_CARGO_OUTPUT.test(text);
+}
+
+// Enough of cargo's stderr to classify the failure, without holding a whole
+// build log in memory.
+const CARGO_STDERR_TAIL_BYTES = 64 * 1024;
+
+/**
+ * One `cargo install` run. stderr is teed rather than swallowed: the build
+ * takes minutes and its progress has to stay visible, but the tail is also
+ * kept so the failure can be classified.
+ * @param {string[]} args
+ * @param {{spawnFn?: typeof spawn}} [options]
+ */
+function runCargoInstall(args, options = {}) {
+  const spawnFn = options.spawnFn || spawn;
+  return new Promise((resolve, reject) => {
+    const child = spawnFn(CARGO_BIN, args, { stdio: ['inherit', 'inherit', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      process.stderr.write(chunk);
+      stderr = (stderr + chunk).slice(-CARGO_STDERR_TAIL_BYTES);
+    });
+    // A spawn failure (no cargo on PATH) is not a network blip.
+    child.on('error', (error) => reject(Object.assign(error, { retryable: false })));
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        Object.assign(new Error(`cargo install arti exited with code ${code}`), {
+          retryable: isRetryableCargoFailure(stderr),
+        })
+      );
+    });
+  });
+}
+
+/**
+ * Build Arti, retrying only crates.io/network failures.
+ * @param {string[]} args
+ * @param {object} [options] `spawnFn` plus retry-loop overrides, used by the tests
+ */
+function buildArti(args, options = {}) {
+  const attempts = options.attempts || MAX_ATTEMPTS;
+  return withRetry(
+    `cargo install arti ${ARTI_VERSION}`,
+    (attempt) => {
+      if (attempt > 1) {
+        console.warn(`\nRetrying the Arti build (attempt ${attempt} of ${attempts})...`);
+      }
+      return runCargoInstall(args, options);
+    },
+    options
+  );
+}
+
+async function main() {
   const cargoVersionOutput = readCargoVersionOutput();
   if (cargoVersionOutput === null) {
     console.error(
@@ -122,7 +278,7 @@ function main() {
 
   const target = platformKey();
   const targetDir = path.join(OUTPUT_DIR, target);
-  const binName = process.platform === 'win32' ? 'arti.exe' : 'arti';
+  const binName = artiBinaryName();
   const destBin = path.join(targetDir, binName);
 
   fs.mkdirSync(targetDir, { recursive: true });
@@ -132,13 +288,15 @@ function main() {
   const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'arti-install-'));
   let ok = false;
 
-  console.log(`Building arti ${ARTI_VERSION} for ${target} (this can take several minutes)...`);
+  const args = installArgs(ARTI_VERSION, installRoot);
+  const features = cargoFeatures();
+  console.log(
+    `Building arti ${ARTI_VERSION} for ${target}` +
+      (features.length > 0 ? ` (features: ${features.join(',')})` : '') +
+      ' (this can take several minutes)...'
+  );
   try {
-    execFileSync(
-      CARGO_BIN,
-      ['install', 'arti', '--version', ARTI_VERSION, '--locked', '--root', installRoot],
-      { stdio: 'inherit' }
-    );
+    await buildArti(args);
 
     const builtBin = path.join(installRoot, 'bin', binName);
     if (!fs.existsSync(builtBin)) {
@@ -166,7 +324,10 @@ function main() {
 }
 
 if (require.main === module) {
-  main();
+  main().catch((err) => {
+    console.error(`\nError: ${err.message}`);
+    process.exit(1);
+  });
 }
 
 // Exported for unit tests; `npm run tor:download` still runs main() above.
@@ -176,4 +337,11 @@ module.exports = {
   MIN_RUST_VERSION,
   compareVersions,
   checkRustVersion,
+  platformKey,
+  artiBinaryName,
+  cargoFeatures,
+  installArgs,
+  isRetryableCargoFailure,
+  runCargoInstall,
+  buildArti,
 };

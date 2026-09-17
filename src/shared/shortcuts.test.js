@@ -64,6 +64,56 @@ describe('shortcut registry', () => {
     expect(getDefaultAccelerator('history.showAll', 'linux')).toBe('Ctrl+H');
   });
 
+  // #277: Settings > Shortcuts was the one section on the page whose row
+  // labels were Title Case, because they are the registry's `description` —
+  // the same strings the application menu shows, where Title Case is the
+  // macOS convention. `settingsLabel` is the sentence-case label for the
+  // Settings row; `description` stays exactly as it was, so the menu,
+  // docs/features.md and the docs↔registry guard below are unaffected.
+  describe('settings labels are sentence case (#277)', () => {
+    // Title Case → sentence case: first word untouched, the rest lowercased.
+    const sentenceCased = (description) =>
+      description
+        .split(' ')
+        .map((word, index) => (index === 0 ? word : word.toLowerCase()))
+        .join(' ');
+
+    // Entries whose Settings label legitimately keeps an inner capital (a
+    // product or protocol name). Empty today — every label is plain prose —
+    // and an entry only belongs here with a proper noun to point at.
+    const PROPER_NOUNS = new Set();
+
+    const settingsLabelOf = (entry) => entry.settingsLabel || entry.description;
+
+    test('every row label is the sentence-case form of its menu label', () => {
+      const drift = SHORTCUTS.filter(
+        (entry) =>
+          !PROPER_NOUNS.has(entry.id) && settingsLabelOf(entry) !== sentenceCased(entry.description)
+      ).map((entry) => ({ id: entry.id, label: settingsLabelOf(entry) }));
+      expect(drift).toEqual([]);
+    });
+
+    test('a label only differs from the menu string by case', () => {
+      for (const entry of SHORTCUTS) {
+        expect(settingsLabelOf(entry).toLowerCase()).toBe(entry.description.toLowerCase());
+      }
+    });
+
+    test('an entry already in sentence case needs no second string', () => {
+      // `Downloads` is one word, so the fallback is the whole mechanism for it.
+      const bare = SHORTCUTS.filter((entry) => !entry.settingsLabel);
+      expect(bare.map((entry) => entry.id)).toEqual(['downloads.show']);
+      expect(settingsLabelOf(getShortcutById('downloads.show'))).toBe('Downloads');
+    });
+
+    test('the menu strings are untouched — they are what the docs guard tracks', () => {
+      expect(getShortcutById('tab.new').description).toBe('New Tab');
+      expect(getShortcutById('tab.new').settingsLabel).toBe('New tab');
+      expect(getShortcutById('page.zoomReset').description).toBe('Actual Size');
+      expect(getShortcutById('page.zoomReset').settingsLabel).toBe('Actual size');
+    });
+  });
+
   test('aliases filter by platform', () => {
     expect(getAliasAccelerators('tab.close', 'win32')).toEqual(['Ctrl+F4']);
     expect(getAliasAccelerators('tab.close', 'linux')).toEqual(['Ctrl+F4']);
@@ -425,7 +475,7 @@ describe('override resolution', () => {
         {
           id: 'view.focusAddressBar',
           accelerator: 'Ctrl+0',
-          conflict: { id: 'page.zoomReset', description: 'Actual Size', fixed: false },
+          conflict: { id: 'page.zoomReset', settingsLabel: 'Actual size', fixed: false },
         },
       ]);
       // The other two chords this PR's zoom entries took, same story.
@@ -444,7 +494,7 @@ describe('override resolution', () => {
       expect(cleaned).toEqual({});
       expect(drops[0].conflict).toEqual({
         id: 'page.zoomIn',
-        description: 'Zoom In',
+        settingsLabel: 'Zoom in',
         fixed: true,
       });
       expect(sanitizeOverrides({ 'tab.new': 'Ctrl+numadd' }, 'linux')).toEqual({});
@@ -523,14 +573,14 @@ describe('override resolution', () => {
         {
           id: 'view.focusAddressBar',
           accelerator: 'Ctrl+0',
-          conflict: { id: 'page.zoomReset', description: 'Actual Size', fixed: false },
+          conflict: { id: 'page.zoomReset', settingsLabel: 'Actual size', fixed: false },
         },
         {
           id: 'tab.new',
           accelerator: 'Ctrl+L',
           conflict: {
             id: 'view.focusAddressBar',
-            description: 'Focus Address Bar',
+            settingsLabel: 'Focus address bar',
             fixed: false,
           },
         },
@@ -612,7 +662,7 @@ describe('findConflict', () => {
   test('detects collisions with effective primaries', () => {
     expect(findConflict('tab.new', 'CmdOrCtrl+W', {}, 'darwin')).toEqual({
       id: 'tab.close',
-      description: 'Close Tab',
+      settingsLabel: 'Close tab',
       fixed: false,
     });
     // Overrides shift what conflicts: tab.close remapped away frees Cmd+W.
@@ -622,12 +672,12 @@ describe('findConflict', () => {
   test('collisions with fixed aliases and non-editable entries are fixed', () => {
     expect(findConflict('tab.new', 'Ctrl+Tab', {}, 'linux')).toEqual({
       id: 'tab.next',
-      description: 'Next Tab',
+      settingsLabel: 'Next tab',
       fixed: true,
     });
     expect(findConflict('tab.new', 'Ctrl+Alt+I', {}, 'linux')).toEqual({
       id: 'devtools.toggle',
-      description: 'Developer Tools',
+      settingsLabel: 'Developer tools',
       fixed: true,
     });
     // Ctrl+F4 alias only exists on win/linux.
@@ -860,7 +910,7 @@ describe('zoom binding reachability across layouts and the keypad', () => {
       // …but they are real registry bindings, so nothing else may take them.
       expect(findConflict('tab.new', 'CmdOrCtrl+numsub', {}, platform)).toEqual({
         id: 'page.zoomOut',
-        description: 'Zoom Out',
+        settingsLabel: 'Zoom out',
         fixed: true,
       });
     }

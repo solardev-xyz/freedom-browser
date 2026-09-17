@@ -106,9 +106,9 @@ const getRevertedShortcutOverrides = () => revertedShortcutOverrides;
 // both feed getRevertedShortcutOverrides() → the Settings > Shortcuts row.
 function recordRevertedOverrides(target) {
   return ({ id, accelerator, conflict }) => {
-    target[id] = { accelerator, conflictId: conflict.id, conflict: conflict.description };
+    target[id] = { accelerator, conflictId: conflict.id, conflict: conflict.settingsLabel };
     log.warn(
-      `[shortcuts] Reverted remap ${id} → ${accelerator}: that combination is now used by "${conflict.description}".`
+      `[shortcuts] Reverted remap ${id} → ${accelerator}: that combination is now used by "${conflict.settingsLabel}".`
     );
   };
 }

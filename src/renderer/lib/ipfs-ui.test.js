@@ -297,6 +297,47 @@ describe('ipfs-ui', () => {
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('User toggled IPFS Off');
   });
 
+  // #350: on a host where the native addon can't load, an external gateway is
+  // the only way to get IPFS at all — so the missing addon must not disable the
+  // toggle, whichever of the two writers (binary probe, registry mode) lands last.
+  test('keeps the toggle usable in external mode even when the native addon is absent', async () => {
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'stopped',
+      binaryAvailable: false,
+      mode: 'external',
+      statusResult: { status: 'stopped', error: null },
+      startResult: { status: 'running', error: null },
+    });
+
+    ctx.mod.initIpfsUi();
+    await flushMicrotasks();
+
+    // The binary probe resolved last and must not have re-disabled the switch.
+    expect(ctx.elements.ipfsToggleBtn.classList.contains('disabled')).toBe(false);
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('disabled')).toBeUndefined();
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('title')).toBe(
+      'Using an external IPFS gateway'
+    );
+
+    ctx.elements.ipfsToggleBtn.dispatch('click');
+    await flushMicrotasks();
+    expect(ctx.ipfsApi.start).toHaveBeenCalled();
+
+    // Switching the profile off external with no addon disables it again.
+    ctx.state.registry.ipfs.mode = 'none';
+    ctx.mod.updateIpfsToggleState();
+    expect(ctx.elements.ipfsToggleBtn.classList.contains('disabled')).toBe(true);
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('disabled')).toBe('true');
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('title')).toBe('IPFS binary not found');
+
+    // ...and back on again without a relaunch, the registry update alone re-arms it.
+    ctx.state.registry.ipfs.mode = 'external';
+    ctx.mod.updateIpfsToggleState();
+    expect(ctx.elements.ipfsToggleBtn.classList.contains('disabled')).toBe(false);
+    expect(ctx.elements.ipfsToggleBtn.getAttribute('disabled')).toBeUndefined();
+  });
+
   test('switches the toggle instantly on each click and converges the backend to the final state', async () => {
     const ctx = await loadIpfsModule({
       antMenuOpen: true,

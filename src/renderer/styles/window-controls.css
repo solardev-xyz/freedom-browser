@@ -31,12 +31,15 @@
 }
 
 .window-control-btn:hover {
+  /* theme-literal: neutral hover tint; light-theme.css overrides .window-control-btn:hover */
   background: rgba(255, 255, 255, 0.1);
   color: var(--text);
 }
 
 .window-control-btn.window-control-close:hover {
+  /* theme-literal: Windows' own close-button red, matched to the host titlebar, not to the theme */
   background: #e81123;
+  /* theme-literal: fixed contrast pair with the close-button red above it */
   color: white;
 }
 

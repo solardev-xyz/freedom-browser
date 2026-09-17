@@ -25,6 +25,7 @@ export const SHORTCUTS = [
   {
     id: 'tab.new',
     description: 'New Tab',
+    settingsLabel: 'New tab',
     defaultAccelerator: 'CmdOrCtrl+T',
     context: 'both',
     category: 'Tabs',
@@ -33,6 +34,7 @@ export const SHORTCUTS = [
   {
     id: 'tab.close',
     description: 'Close Tab',
+    settingsLabel: 'Close tab',
     defaultAccelerator: 'CmdOrCtrl+W',
     aliases: [{ accelerator: 'Ctrl+F4', platforms: ['win32', 'linux'] }],
     context: 'both',
@@ -45,6 +47,7 @@ export const SHORTCUTS = [
   {
     id: 'tab.reopenClosed',
     description: 'Reopen Closed Tab',
+    settingsLabel: 'Reopen closed tab',
     defaultAccelerator: 'CmdOrCtrl+Shift+T',
     context: 'both',
     category: 'Tabs',
@@ -53,6 +56,7 @@ export const SHORTCUTS = [
   {
     id: 'tab.next',
     description: 'Next Tab',
+    settingsLabel: 'Next tab',
     defaultAccelerator: 'Ctrl+PageDown',
     aliases: [{ accelerator: 'Ctrl+Tab' }, { accelerator: 'Cmd+Shift+]', platforms: ['darwin'] }],
     context: 'both',
@@ -62,6 +66,7 @@ export const SHORTCUTS = [
   {
     id: 'tab.previous',
     description: 'Previous Tab',
+    settingsLabel: 'Previous tab',
     defaultAccelerator: 'Ctrl+PageUp',
     aliases: [
       { accelerator: 'Ctrl+Shift+Tab' },
@@ -74,6 +79,7 @@ export const SHORTCUTS = [
   {
     id: 'tab.moveRight',
     description: 'Move Tab Right',
+    settingsLabel: 'Move tab right',
     defaultAccelerator: 'Ctrl+Shift+PageDown',
     context: 'both',
     category: 'Tabs',
@@ -82,6 +88,7 @@ export const SHORTCUTS = [
   {
     id: 'tab.moveLeft',
     description: 'Move Tab Left',
+    settingsLabel: 'Move tab left',
     defaultAccelerator: 'Ctrl+Shift+PageUp',
     context: 'both',
     category: 'Tabs',
@@ -92,6 +99,7 @@ export const SHORTCUTS = [
   {
     id: 'page.reload',
     description: 'Reload This Page',
+    settingsLabel: 'Reload this page',
     defaultAccelerator: 'CmdOrCtrl+R',
     context: 'both',
     category: 'Page',
@@ -100,6 +108,7 @@ export const SHORTCUTS = [
   {
     id: 'page.hardReload',
     description: 'Force Reload This Page',
+    settingsLabel: 'Force reload this page',
     defaultAccelerator: 'CmdOrCtrl+Shift+R',
     context: 'both',
     category: 'Page',
@@ -108,6 +117,7 @@ export const SHORTCUTS = [
   {
     id: 'page.findInPage',
     description: 'Find in Page',
+    settingsLabel: 'Find in page',
     defaultAccelerator: 'CmdOrCtrl+F',
     context: 'both',
     category: 'Page',
@@ -125,6 +135,7 @@ export const SHORTCUTS = [
   {
     id: 'page.zoomIn',
     description: 'Zoom In',
+    settingsLabel: 'Zoom in',
     defaultAccelerator: 'CmdOrCtrl+=',
     // `=` is a shifted key on many layouts (German, Spanish, Italian, Swiss
     // and the Nordic ones all put it on Shift+0 — French does not: there `=`
@@ -147,6 +158,7 @@ export const SHORTCUTS = [
   {
     id: 'page.zoomOut',
     description: 'Zoom Out',
+    settingsLabel: 'Zoom out',
     defaultAccelerator: 'CmdOrCtrl+-',
     // Keypad minus is a distinct key to Electron's accelerator parser, so
     // the main-row binding above does not cover it.
@@ -158,6 +170,7 @@ export const SHORTCUTS = [
   {
     id: 'page.zoomReset',
     description: 'Actual Size',
+    settingsLabel: 'Actual size',
     defaultAccelerator: 'CmdOrCtrl+0',
     // Keypad zero, for the same reason as Zoom Out's keypad alias.
     aliases: [{ accelerator: 'CmdOrCtrl+num0' }],
@@ -170,6 +183,7 @@ export const SHORTCUTS = [
   {
     id: 'view.focusAddressBar',
     description: 'Focus Address Bar',
+    settingsLabel: 'Focus address bar',
     defaultAccelerator: 'CmdOrCtrl+L',
     context: 'both',
     category: 'Navigation',
@@ -178,6 +192,7 @@ export const SHORTCUTS = [
   {
     id: 'history.showAll',
     description: 'Show All History',
+    settingsLabel: 'Show all history',
     defaultAccelerator: { darwin: 'Cmd+Y', other: 'Ctrl+H' },
     context: 'menu',
     category: 'Navigation',
@@ -196,6 +211,7 @@ export const SHORTCUTS = [
   {
     id: 'window.new',
     description: 'New Window',
+    settingsLabel: 'New window',
     defaultAccelerator: 'CmdOrCtrl+N',
     context: 'menu',
     category: 'Window',
@@ -204,6 +220,7 @@ export const SHORTCUTS = [
   {
     id: 'window.newPrivate',
     description: 'New Private Window',
+    settingsLabel: 'New private window',
     defaultAccelerator: 'CmdOrCtrl+Shift+N',
     // 'both': enforced by the native menu accelerator AND by the renderer
     // keydown fallback (tabs.js, via matchesShortcut) — the fallback exists
@@ -216,6 +233,7 @@ export const SHORTCUTS = [
   {
     id: 'view.fullscreen',
     description: 'Toggle Full Screen',
+    settingsLabel: 'Toggle full screen',
     defaultAccelerator: 'F11',
     context: 'both',
     category: 'Window',
@@ -224,6 +242,7 @@ export const SHORTCUTS = [
   {
     id: 'view.toggleBookmarksBar',
     description: 'Toggle Bookmarks Bar',
+    settingsLabel: 'Toggle bookmarks bar',
     defaultAccelerator: 'CmdOrCtrl+Shift+B',
     context: 'menu',
     category: 'Window',
@@ -232,6 +251,7 @@ export const SHORTCUTS = [
   {
     id: 'view.toggleSidebar',
     description: 'Toggle Wallet Sidebar',
+    settingsLabel: 'Toggle wallet sidebar',
     defaultAccelerator: 'CmdOrCtrl+Shift+W',
     context: 'renderer',
     category: 'Window',
@@ -242,6 +262,7 @@ export const SHORTCUTS = [
   {
     id: 'devtools.toggle',
     description: 'Developer Tools',
+    settingsLabel: 'Developer tools',
     defaultAccelerator: 'CmdOrCtrl+Alt+I',
     aliases: [{ accelerator: 'Ctrl+Shift+I' }, { accelerator: 'F12' }],
     context: 'both',
@@ -252,6 +273,7 @@ export const SHORTCUTS = [
   {
     id: 'devtools.toggleApp',
     description: 'App Developer Tools',
+    settingsLabel: 'App developer tools',
     defaultAccelerator: 'CmdOrCtrl+Shift+Alt+I',
     context: 'menu',
     category: 'Developer',

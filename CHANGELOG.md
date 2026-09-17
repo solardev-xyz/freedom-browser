@@ -6,50 +6,191 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- Remappable keyboard shortcuts under Settings > Shortcuts:
-  - Searchable list grouped by category; click a binding and press the new combination
-  - Conflict warning with a one-click swap when a combination is already taken
-  - Per-shortcut reset and a Restore defaults button; changes apply without a restart
-- Private windows (`Cmd+Shift+N` / `Ctrl+Shift+N`, File > New Private Window): ephemeral browsing on a per-window in-memory session with dark, badged chrome
-  - No history, favicon-cache, or autocomplete writes; cookies and site data evaporate on close
-  - Downloads are allowed but flagged and drop out of the downloads list when the window closes (files stay on disk); permission prompts work but decisions are session-only
-  - Wallet and `window.ethereum` / `window.swarm` / `window.radicle` providers are unavailable in private windows (EIP-6963 silent); x402 payment interception is off
-  - Honest private start page: what's protected (local traces) and what isn't (network observers, sites you log into, your IP)
-- Per-site permission prompts for camera, microphone, notifications, clipboard reading, location, and MIDI, replacing the previous silent denial:
+- External IPFS node mode under Settings > Nodes, for hosts where the embedded node cannot run
+  - Point a profile at your own gateway, or accept the one Freedom detects on the standard local port at launch
+  - A gateway that is not on your own machine is dialled through the browser's own network stack, so it follows whatever proxy the app is using — a gateway on a `.onion` address is reached over Tor instead of being handed to your DNS resolver, and is not dialled at all until Tor is actually routing it. Gateways on `127.0.0.1` / `localhost` are dialled directly, as before
+  - A gateway that is not answering yet when Freedom starts — your own node still booting, or a `.onion` gateway waiting on Tor — is retried in the background and starts serving on its own as soon as it answers, instead of waiting for you to switch the node off and on; saving Settings > Nodes without changing anything keeps that retry and the unreachable diagnosis
+  - Nothing fetched from an external gateway is written to, or served from, the browser's HTTP cache: private-window `ipfs://` browsing leaves no page bytes or visited CIDs on disk, and a gateway that goes down is reported unreachable instead of being answered from a year-long cached copy
+  - Freedom does not verify content integrity in this mode; the gateway is trusted for every page it serves
+  - Address a local Kubo as `127.0.0.1`, not `localhost`: a default Kubo redirects `localhost` to its subdomain gateway, which Freedom does not follow, so it reads as unreachable — the node status now says so
+- Nightly builds of `main` for internal testers, on their own update channel — a nightly updates to the next nightly, stable installs are never offered one
+- A limit on how often a site can re-ask for a permission you keep dismissing, matching Chrome
+  - Pressing Esc or clicking away still denies just that one request and records nothing, so the site can ask again
+  - After three dismissals in a row it is blocked for the rest of the session instead, so a page can no longer put the prompt back up every time you close it
+  - The block shows in the address-bar indicator as "Blocked after repeated dismissals"; Remove there lets the site ask again. It is never saved to disk, and a private window's dismissals stay in that window
+- Linux pacman distribution target for Arch Linux and Omarchy users, next to the existing AppImage and deb, for x64 and arm64
+  - Install it with `sudo pacman -U <file>`; in-app updates work from there on, the same as they do for the deb, asking for your password when the new package is installed
+
+### Fixed
+
+- Visiting a site no longer downloads its page twice
+  - Finding a site's icon used to mean fetching the page a second time behind your back — without your cookies or session — purely to read its `<link rel="icon">` tag. Every site you visited saw two requests for the same address, one signed in and one not
+  - On sites that gate content — a paywall, a paid session, a rate limit, a login — that second anonymous request could be refused, logged as a failed visit, or counted against your quota
+  - Freedom now uses the icon address the page itself already reported while loading, and fetches only the icon. Icons that a page does not declare are still looked for at the site's `/favicon.ico`, as before
+  - The icon is still fetched without your cookies or session, and a `.onion` site's icon still goes over Tor. Private windows still fetch and cache no icons at all
+- The Nodes menu no longer shows a Tor version while Tor is off
+  - A stopped Tor still carried a `Version: Arti <n>` row beneath its toggle — the one section in that menu with anything under an off node, where Swarm, IPFS, Ethereum, Gnosis and Radicle all show nothing until they are running
+  - A running Tor is unchanged: the SOCKS endpoint and the version read as before, and a start that fails still says why
+- `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window
+  - The File menu carried the shortcut twice — on Close Tab, and invisibly on Close Window — and Windows and Linux gave it to Close Window, so one keystroke closed every tab in the window at once. It only looked right with a single tab open, where closing the tab closes the window anyway
+  - Closing the last tab still closes the window, and `Cmd+W` on macOS is unchanged
+  - Close Window keeps its place in the File menu and no longer advertises a shortcut of its own; `Ctrl+F4` still closes a tab on Windows and Linux
+- Removing a site permission from the address-bar indicator no longer reaches into another window's own decisions
+  - "Remove" in a private window lifts what that window is running on; it used to also clear the same site's this-session decision in your normal windows, with no sign of it in the window you were looking at
+  - "Remove" in a normal window likewise no longer reaches into an open private window's own decisions
+  - A remembered decision is a single saved entry for the whole profile, so removing one from the indicator clears it for every window — including from a private window, whose indicator lists it because that window inherits it
+  - Settings > Site Permissions is unchanged: "Remove", "Remove site" and "Remove all" still clear the profile's saved decisions everywhere, open private windows included
+- Camera and microphone on sites that check permission before they ask, such as Google Meet
+  - `navigator.permissions.query()` and `Notification.permission` no longer report "denied" for a site you have never been asked about, so those sites go on to ask and Freedom's own prompt appears instead of their "access is blocked" screen
+  - A remembered or this-session Block still reads as denied, and the prompt is unchanged: an undecided site is still asked about, and blocking it still denies
+  - macOS builds now carry the camera and microphone entitlements and their usage descriptions, so allowing a site can reach the system prompt and Freedom appears under Privacy & Security instead of being refused before it is ever listed
+
+## [0.8.5] - 2026-09-10
+
+### Added
+
+- Ad and tracker blocking:
+  - On by default
+  - Settings > Ad Blocking with a per-site allowlist and live rule counts
+  - Cookie-banner and annoyance filtering, off by default
+  - Filter lists refresh over Swarm without an app update
+- Find in page:
+  - `Cmd/Ctrl+F`, or Edit > Find in Page
+  - Per-tab overlay bar with a live match counter
+  - `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
+- Download manager:
+  - Covers every download source, including `bzz://` and `ipfs://` content
+  - Shelf card with live progress and cancel; Open / Show in Folder on completion
+  - `freedom://downloads` page with search, pause/resume, and Clear All
+  - Reached from the browser menu, the application menu, the shelf's Full Download History row, or `Cmd/Ctrl+Shift+J`
+  - "Ask where to save each file" toggle under Settings > Downloads
+- Per-site permission prompts:
+  - For camera, microphone, notifications, clipboard reading, location, and MIDI, replacing the previous silent denial
   - Prompt under the address bar with Allow / Block and "Remember for this site"
   - Remembered decisions per profile under Settings > Site Permissions, with per-site and remove-all revocation
   - Indicator icon in the address bar with quick revoke on sites holding granted permissions
-  - Location prompts note that positioning may be unreliable
-- Download manager covering every download source, including `bzz://` and `ipfs://` content:
-  - Shelf card with live progress and cancel; Open / Show in Folder on completion
-  - `freedom://downloads` page (Cmd/Ctrl+Shift+J) with search, pause/resume, and Clear All
-  - "Ask where to save each file" toggle under Settings > Downloads
-- Find in page (`Cmd+F` / `Ctrl+F`, also under Edit in the menu): overlay bar over the page with a live match counter, `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
-- Audio indicator on tabs playing sound; click it or use "Mute Tab" in the tab context menu to mute/unmute (mute survives navigation)
+- Private windows:
+  - `Cmd/Ctrl+Shift+N`, or File > New Private Window
+  - Ephemeral browsing on a per-window in-memory session with dark, badged chrome
+  - No history, favicon-cache or autocomplete writes; cookies and site data end on close
+  - Downloads leave the list on close and permission decisions are session-only; files stay on disk
+  - Wallet and `window.ethereum` / `window.swarm` / `window.radicle` providers are unavailable; x402 payment interception is off
+  - Start page listing what private windows do and do not protect
+- Remappable keyboard shortcuts:
+  - Under Settings > Shortcuts
+  - Searchable list grouped by category; click a binding and press the new combination
+  - Conflict warning with a one-click swap when a combination is already taken
+  - Per-shortcut reset and a Restore defaults button; changes apply without a restart
+- Page zoom (thanks @alexwbend!):
+  - `Cmd/Ctrl` with `=`, `-` and `0`
+  - Remappable like every other binding
+- Web search:
+  - Typed input that isn't a URL becomes a search
+  - Search a text selection from the page context menu
+  - DuckDuckGo, Google, Bing, Brave Search, Ecosia, Startpage or a custom engine under Settings > Search
+- Audio indicator on tabs:
+  - Shown on any tab playing sound
+  - Click it, or use "Mute Tab" in the tab context menu, to mute and unmute
+  - A muted tab stays muted across navigation
+- Contract-hosted onchain apps:
+  - On `web3://<address>[:<chainId>]/` — the app itself lives in the contract, not on a web server
+  - Address-bar shield popover reporting the chain, block, contract and content hash behind the page
+  - Unverified reads stop at a warning page you can pass once; disagreeing sources block the load
+  - The wallet provider is pinned to the app's chain; a page cannot switch it
+  - Reasoning: the page is a contract read, not a hosted file; the shield reports whether that read was verified
+- Radicle repositories in the browser:
+  - Browsable and writable — open a `rad:` URL the way you would a web page
+  - `rad:` as a fetchable scheme, plus a consented `window.radicle` provider for issues, comments and patches
+  - Seed-to-browse reports per-peer clone phases, with retry and cancellation
+  - Repository view pinned to any commit id, with commit, branch and contributor counts
+  - Nodes menu in the toolbar shows Radicle's connected peers, seeded repositories and addon version
+- [Myotis](https://github.com/biafra23/myotis) 0.1.7, a peer-to-peer Ethereum and Gnosis light client:
+  - An experimental verified source, off by default
+  - Draggable read and verification order per chain under Settings > Chains, alongside Colibri and RPC
+  - Reasoning: reads are proven against a chain head Myotis syncs from peers itself, rather than trusted from an endpoint
+- `.tez` name resolution:
+  - Read from the Tezos Domains contracts
+  - Covers bare names and `ipfs://` / `ipns://` targets
+- Encrypted messaging for Swarm apps:
+  - Point-to-point messages and topic broadcast through `window.swarm`
+  - Behind its own consent tier
+- App manifests for Swarm apps:
+  - A `freedom-manifest.json` an app ships alongside its content
+  - Its permissions become one decision instead of a stream of prompts
+- Three new wallet account types:
+  - All three usable with the vault locked and across dApp signing and sends
+  - Ledger hardware accounts, confirmed on the device, including x402 payments
+  - Phone accounts over Open Lavatory: QR pairing, signing on the phone, including x402 payments
+  - Safe multi-owner accounts on Gnosis, with a signing board owners sign in any order
+- Tor for `.onion` addresses, through a bundled [Arti](https://gitlab.torproject.org/tpo/core/arti) 2.6.0 client:
+  - Off by default under Settings > Experimental
+  - Bundled in every macOS, Linux and Windows build
+  - Clearnet traffic keeps connecting directly
+  - Prompt to use a system Tor client, such as Tor Browser, instead of Arti
+- Licence texts and third-party notices in every installed copy of Freedom
 
 ### Changed
 
-- Updated bundled [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44:
-  - Fixes the ~250 MiB upload stall
-  - Upload-side Reed-Solomon encoding, end-to-end Swarm content encryption, local pinning, and ACT access control
-  - Fewer intermittent upload failures under feed workloads, faster feed resolution
-  - Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
-  - Freshly bought batches rejected by peers during propagation now recover on their own
-  - Encrypted point-to-point and broadcast messaging on the light node
-- The Swarm node's API now comes up instantly on start, so the node menu shows peers counting up live instead of sitting at 0 during startup
-- Radicle now runs as an embedded libradicle 0.7.1 addon instead of separate daemon, HTTP, and CLI processes:
-  - Native browsing, seeding, synchronization, unseeding, GitHub imports, and provider writes
-  - Live peer-level clone phases with cancellation, retry, and timeout handling
-  - Concurrent cold-start discovery across a device-ranked 14-node seed book
-  - Historical commit browsing with repository remotes, branches, commits, and contributor stats
-  - Profile-scoped identity, peer and repository counts, and addon version in the Nodes menu
+- Radicle runs as an embedded [libradicle](https://github.com/solardev-xyz/libradicle) 0.7.1 addon instead of separate daemon, HTTP and CLI processes, and takes no local port
+- Swarm peers count up from launch instead of sitting at 0 during startup
+- Settings copy and controls:
+  - Automatic Startup and Ethereum Name Resolution are now Startup and Name Resolution
+  - Button labels drop the plus and arrow glyphs: Add chain, Add RPC, Manage profiles
+  - Helper lines that restated their own row label are gone
 - Installers are about 15 MB smaller: each build now ships only the `better-sqlite3` native addon for its own platform and architecture instead of all eight upstream prebuilds
+- The Windows installer is named `Freedom-Setup-<version>.exe`, previously `Freedom Setup <version>.exe`
+- Internal pages such as `freedom://history` and `freedom://settings` open in their own tab instead of taking over the page you are reading:
+  - An empty new tab is still navigated in place
+
+### Removed
+
+- Adopting a system Radicle node found on its default port as an external node — the embedded Radicle node takes no local port, so there is nothing to adopt
+
+### Fixed
+
+- Save image as and Copy image work on images loaded from `bzz://`, `ipfs://` and `ipns://` pages
+- A `bzz://` deep link resolves when the manifest has no root index document instead of stranding on the not-found page
+- Pages that call `preventDefault()` on a context menu no longer also get Freedom's native menu
+- Custom RPC endpoints accept `http://` for loopback addresses such as `http://localhost:8545`, and save errors appear at the field (thanks @biafra23!)
+- Uploads around 250 MiB no longer stall
+- Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
+- macOS disk images pass Gatekeeper without an online check
+- Internal pages follow the theme picked under Settings > Appearance instead of the operating system's
+- Name-resolution warning pages show the typed name in the address bar instead of an on-disk file path, and stay out of history
+- A failed page load titles itself instead of leaving the previous page's title on the tab and in history
+- A half-typed address survives the page updating around it, and a switch away from the tab and back
+- Escape in the address bar goes back to the page's own URL instead of leaving a half-typed fragment
+- Arrow keys through the address-bar suggestions stop at the typed text instead of wrapping past it
+- Ctrl/Cmd-click and middle-click open a link in a background tab instead of switching to it
+- Shift+click opens a link in a new window
+- Switching tabs puts the keyboard in the page instead of leaving it on the tab strip
+- The tab strip scrolls once the tabs stop fitting instead of clipping the ones past the edge
+- Settings opens its existing tab instead of a second copy when reached from the browser menu or the address bar
+- The tab context menu closes when the foreground tab changes instead of staying open over another tab
+- The Profiles flyout closes when another row of the browser menu is hovered instead of covering it
+- Escape closes the browser menu and the Nodes menu, like every other menu in the chrome
+- A menu taller than the window scrolls inside itself instead of pushing the toolbar off screen
+- A context menu near the window's edge opens back into view instead of covering the pointer
+- Bookmarks-bar items open in a background tab on Ctrl/Cmd-click or middle-click, and can be reordered by dragging
+- The page context menu closes on navigation instead of acting on the previous page's link
+- The Publish and Payments pages and the sidebar's permission screens are readable on the light theme
 
 ### Security
 
+- Escape repository-supplied names and identifiers in the Radicle repository viewer's HTML attributes, blocking script execution from a crafted file name
+- `window.ethereum` responses reach only the document that made the request, so a reply arriving after a navigation cannot land in the next page
+- A remote page that mimics Freedom's error page can no longer choose what the address bar shows when you switch back to its tab
+- Updated bundled nodes:
+  - [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44
 - Updated runtime dependencies:
+  - Electron 43.0.0 to 44.3.0 (Chromium 150.0.7871.46 to 152.0.7977.78, Node 24.17.0 to 24.20.0)
+  - `@corpus-core/colibri-stateless` 1.1.30 to 2.0.6 (thanks @simon-jentzsch!)
+  - `@ethersphere/bee-js` 12.2.2 to 13.0.0
   - `better-sqlite3` 12.11.1 to 13.0.3
   - `micro-key-producer` 0.9.0 to 0.10.2
+  - `@x402/core` 2.17.0 to 2.25.0
+  - `@x402/evm` 2.17.0 to 2.25.0
+  - `@scure/bip39` 2.2.0 to 2.4.0
 
 ## [0.8.0] - 2026-07-02
 

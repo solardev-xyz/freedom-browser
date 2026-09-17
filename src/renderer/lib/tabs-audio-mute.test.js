@@ -167,6 +167,16 @@ const loadTabsModule = async (options = {}) => {
     // which `switchTab` consults to decide whether the page or the address bar
     // gets the keyboard (#304).
     isNewTabPageUrl: (url) => url === (options.homeUrl || HOME_URL) || url === 'freedom://private',
+    isNewTabPageName: (pageName) => pageName === 'home' || pageName === 'private',
+    // Mirrors `page-urls.js#isHomePageUrl`: anchored to the home page's own
+    // resolved URL, never an `/pages/home.html` suffix (#376).
+    isHomePageUrl: (url) => {
+      const base = options.homeUrl || HOME_URL;
+      return (
+        typeof url === 'string' &&
+        (url === base || url.startsWith(`${base}?`) || url.startsWith(`${base}#`))
+      );
+    },
   }));
 
   const mod = await import('./tabs.js');

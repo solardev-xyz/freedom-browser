@@ -1,252 +1,119 @@
+// Official, checksum-pinned Myotis release addons. No local native patch/build.
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 const crypto = require('crypto');
-
-// Fetches the Myotis Node addon — the fully-P2P Ethereum light client
-// (biafra23/myotis) as a prebuilt napi-rs binding for the current platform.
-// Runs invisibly inside Freedom like the ant/IPFS nodes; see
-// src/main/myotis/myotis-manager.js. Installs into `myotis-bin/`.
+const { execFileSync } = require('child_process');
+const release = require('./myotis-release.json');
+const { fetchBuffer, TIMEOUTS } = require('./lib/fetch-with-retry');
+const PINNED_RELEASE_TAG = release.releaseTag;
 const OUTPUT_DIR = path.join(__dirname, '..', 'myotis-bin');
-const MYOTIS_REPO = process.env.MYOTIS_REPO || 'biafra23/myotis';
-// The known-good Myotis release this app version is built and tested against.
-// Bump deliberately (with a live e2e run) — do NOT float on `latest`. The
-// engine ABI the addon reports must match myotis-manager's EXPECTED_ABI.
-const PINNED_RELEASE_TAG = 'v0.1.7';
-// In-repo trust root for the pinned release: sha256 of its
-// myotis-node.SHA256SUMS asset, recorded at pin time. The sums file comes
-// from the same GitHub release as the addons, so without this pin a
-// compromised release could swap binaries *and* checksums together. Update
-// alongside PINNED_RELEASE_TAG on every deliberate bump.
-const PINNED_SHA256SUMS_DIGEST =
-  '458743f281a7886e953a32ccef599bc253781e278c12cfe05a5addc23aa2569a';
-const MYOTIS_RELEASE_TAG = process.env.MYOTIS_RELEASE_TAG || PINNED_RELEASE_TAG;
+// The published addons are ~10 MB; anything an order of magnitude larger is
+// not the asset this script came for, and is refused rather than buffered.
+const MAX_ASSET_BYTES = 32 * 1024 * 1024;
 
-// Every target the release publishes, installed in one run (fetch-ant.js
-// convention — cross-target dist builds and the Docker recipes then need no
-// --target flags). Dir names are electron-builder's ${os}-${arch}. Windows
-// ARM64 is deliberately absent: no upstream artifact, and check-binaries.js
-// skips it — the app degrades to Colibri/quorum there.
-const TARGETS = [
-  { runtime: 'darwin-arm64', dir: 'mac-arm64', asset: 'myotis-node.darwin-arm64.node' },
-  { runtime: 'darwin-x64', dir: 'mac-x64', asset: 'myotis-node.darwin-x64.node' },
-  { runtime: 'linux-x64', dir: 'linux-x64', asset: 'myotis-node.linux-x64-gnu.node' },
-  { runtime: 'linux-arm64', dir: 'linux-arm64', asset: 'myotis-node.linux-arm64-gnu.node' },
-  { runtime: 'win32-x64', dir: 'win-x64', asset: 'myotis-node.win32-x64-msvc.node' },
-];
+function sha256(bytes) {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
 
-const REQUEST_TIMEOUT_MS = 60000;
+function selectedTargets(requested = '') {
+  const targets = release.targets.filter((target) => !requested || target.runtime === requested);
+  if (!targets.length) throw new Error(`Unsupported Myotis target: ${requested}`);
+  return targets;
+}
 
-function httpsGetJson(pathName) {
-  return new Promise((resolve, reject) => {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    const headers = {
-      'User-Agent': 'Freedom-Updater',
-      Accept: 'application/vnd.github+json',
-    };
-    if (token) headers.Authorization = `Bearer ${token}`;
-    https
-      .get({ hostname: 'api.github.com', path: pathName, headers }, (res) => {
-        let data = '';
-        res.on('error', reject);
-        res.on('data', (c) => (data += c));
-        res.on('end', () => {
-          if (res.statusCode !== 200) {
-            reject(new Error(`Failed to fetch ${pathName}: ${res.statusCode}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(data));
-          } catch (err) {
-            reject(new Error(`Invalid JSON from ${pathName}: ${err.message}`));
-          }
-        });
-      })
-      .on('error', reject);
+function verifyBytes(target, bytes) {
+  if (sha256(bytes) !== target.sha256) throw new Error('checkpoint-addon checksum mismatch');
+}
+
+// Pre-signing packaging check: the committed release hashes authorize the bytes,
+// not a sidecar supplied alongside a locally built or downloaded addon.
+function validateInstalledAddon(directory) {
+  try {
+    const target = release.targets.find((entry) => entry.dir === path.basename(directory));
+    if (!target) return 'unsupported Myotis target';
+    verifyBytes(target, fs.readFileSync(path.join(directory, 'myotis-node.node')));
+    return null;
+  } catch (error) {
+    return error.code === 'ENOENT' ? 'missing official Myotis addon' : error.message;
+  }
+}
+
+// Bounded and retried by scripts/lib/fetch-with-retry.js: 5xx/429/connection
+// failures and per-attempt timeouts buy another attempt, any other 4xx and a
+// non-HTTPS redirect do not. The checksum comparisons below stay outside that
+// loop — a mismatch is tampering or corruption, never weather.
+function download(url, options = {}) {
+  return fetchBuffer(url, {
+    label: `Myotis ${url.split('/').pop()}`,
+    headers: { 'User-Agent': 'Freedom-Myotis-Downloader' },
+    timeoutMs: TIMEOUTS.binary,
+    maxBytes: MAX_ASSET_BYTES,
+    ...options,
   });
 }
 
-function downloadFileOnce(url, dest, redirectCount = 0) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    let settled = false;
-    const fail = (err) => {
-      if (settled) return;
-      settled = true;
-      file.close();
-      fs.unlink(dest, () => reject(err));
-    };
-    const req = https
-      .get(url, { headers: { 'User-Agent': 'Freedom-Updater' } }, (response) => {
-        response.on('error', fail);
-        if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-          if (redirectCount >= 5) {
-            fail(new Error(`Too many redirects while downloading ${url}`));
-            return;
-          }
-          let location;
-          try {
-            location = new URL(response.headers.location, url);
-          } catch {
-            fail(new Error(`Invalid redirect while downloading ${url}`));
-            return;
-          }
-          if (location.protocol !== 'https:') {
-            fail(new Error(`Refusing non-HTTPS redirect while downloading ${url}`));
-            return;
-          }
-          // The redirected request owns completion from here. Ignore any late
-          // error emitted by the response we are deliberately draining.
-          settled = true;
-          response.resume();
-          file.close();
-          fs.unlink(dest, () => {
-            downloadFileOnce(location.href, dest, redirectCount + 1).then(resolve).catch(reject);
-          });
-          return;
-        }
-        if (response.statusCode !== 200) {
-          fail(new Error(`HTTP ${response.statusCode} for ${url}`));
-          return;
-        }
-        response.pipe(file);
-        file.on('finish', () => file.close(() => {
-          if (settled) return;
-          settled = true;
-          resolve();
-        }));
-        file.on('error', fail);
-      })
-      .on('error', fail);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error(`Download timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`));
-    });
-  });
+function fetchAsset(asset, options) {
+  return download(`https://github.com/${release.repository}/releases/download/${release.releaseTag}/${asset}`, options);
 }
 
-async function withRetries(label, fn) {
-  const maxAttempts = 4;
-  let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+// A replaced or half-installed addon copy would otherwise be left behind on
+// every re-run or failed verification. Removal is best effort: a copy still
+// mapped by a running process cannot be deleted on Windows and is retried on
+// the next run. Only this script's own temporary names are considered.
+const LEFTOVER = /^myotis-node\.(candidate-[0-9a-f-]+\.node|node\.previous-[0-9a-f-]+)$/;
+
+function pruneLeftoverAddons(directory) {
+  for (const name of fs.readdirSync(directory)) {
+    if (!LEFTOVER.test(name)) continue;
     try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (attempt < maxAttempts) {
-        const delayMs = 1000 * attempt;
-        console.warn(`${label} attempt ${attempt} failed (${err.message}); retrying in ${delayMs}ms...`);
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
+      fs.rmSync(path.join(directory, name), { force: true });
+    } catch {
+      /* still mapped by a running process; retried on the next run */
     }
   }
-  throw lastErr;
-}
-
-function sha256Bytes(bytes) {
-  const hash = crypto.createHash('sha256');
-  hash.update(bytes);
-  return hash.digest('hex');
-}
-
-function sha256File(filePath) {
-  return sha256Bytes(fs.readFileSync(filePath));
-}
-
-// `sha256sum`-style lines: `<hex>␠␠<filename>` or `<hex> *<filename>`.
-function parseChecksums(text) {
-  const map = {};
-  for (const line of text.split('\n')) {
-    const match = line.trim().match(/^([0-9a-fA-F]{64})\s+\*?(.+)$/);
-    if (match) map[path.basename(match[2].trim())] = match[1].toLowerCase();
-  }
-  return map;
 }
 
 async function main() {
-  try {
-    const requestedTarget = process.env.MYOTIS_DOWNLOAD_TARGET || '';
-    const targets = requestedTarget
-      ? TARGETS.filter((target) => target.runtime === requestedTarget)
-      : TARGETS;
-    if (!targets.length) {
-      throw new Error(`Unknown MYOTIS_DOWNLOAD_TARGET: ${requestedTarget}`);
-    }
-    console.log(`Fetching Myotis release info from ${MYOTIS_REPO} @ ${MYOTIS_RELEASE_TAG}...`);
-    const releasePath =
-      MYOTIS_RELEASE_TAG === 'latest'
-        ? `/repos/${MYOTIS_REPO}/releases/latest`
-        : `/repos/${MYOTIS_REPO}/releases/tags/${MYOTIS_RELEASE_TAG}`;
-    const release = await withRetries('Release fetch', () => httpsGetJson(releasePath));
-    console.log(`Myotis version: ${release.tag_name}`);
-    const assets = release.assets || [];
-
-    if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-
-    // Checksums first — a Myotis release always ships myotis-node.SHA256SUMS.
-    const sumsAsset = assets.find((a) => a.name === 'myotis-node.SHA256SUMS');
-    if (!sumsAsset) {
-      throw new Error(
-        `Release ${release.tag_name} has no myotis-node.SHA256SUMS — refusing to install unverified addon.`
-      );
-    }
-    const sumsPath = path.join(OUTPUT_DIR, 'myotis-node.SHA256SUMS');
-    await withRetries('SHA256SUMS download', () =>
-      downloadFileOnce(sumsAsset.browser_download_url, sumsPath)
-    );
-
-    // Anchor to the in-repo trust root (pinned tag only — a tag override is a
-    // local-testing escape hatch with no committed digest).
-    let checksums;
-    if (MYOTIS_RELEASE_TAG === PINNED_RELEASE_TAG) {
-      const sumsBytes = fs.readFileSync(sumsPath);
-      const sumsDigest = sha256Bytes(sumsBytes);
-      if (sumsDigest !== PINNED_SHA256SUMS_DIGEST) {
-        throw new Error(
-          `myotis-node.SHA256SUMS for ${PINNED_RELEASE_TAG} does not match the in-repo pinned digest ` +
-            `(expected ${PINNED_SHA256SUMS_DIGEST}, got ${sumsDigest}). ` +
-            'The release assets may have been re-published or tampered with — refusing to install.'
-        );
+  for (const key of ['MYOTIS_REPO', 'MYOTIS_RELEASE_TAG']) {
+    if (process.env[key]) throw new Error(`${key} overrides are incompatible with the pinned official release`);
+  }
+  const targets = selectedTargets(process.env.MYOTIS_DOWNLOAD_TARGET);
+  const sums = await fetchAsset('myotis-node.SHA256SUMS');
+  if (sha256(sums) !== release.checksumsSha256) throw new Error('Myotis release checksum manifest mismatch');
+  for (const target of targets) {
+    const bytes = await fetchAsset(target.asset);
+    verifyBytes(target, bytes);
+    const directory = path.join(OUTPUT_DIR, target.dir);
+    fs.mkdirSync(directory, { recursive: true });
+    pruneLeftoverAddons(directory);
+    const candidate = path.join(directory, `myotis-node.candidate-${crypto.randomUUID()}.node`);
+    fs.writeFileSync(candidate, bytes, { flag: 'wx' });
+    const installed = path.join(directory, 'myotis-node.node');
+    let displaced = null;
+    try {
+      if (target.runtime === `${process.platform}-${process.arch}`) {
+        execFileSync(process.execPath, [path.join(__dirname, 'verify-myotis-checkpoint-addon.js'), candidate], {
+          stdio: 'inherit', timeout: 30000,
+        });
       }
-      console.log('Verified myotis-node.SHA256SUMS against the in-repo pinned digest');
-      checksums = parseChecksums(sumsBytes.toString('utf8'));
-    } else {
-      checksums = parseChecksums(fs.readFileSync(sumsPath, 'utf8'));
+      // The displaced copy keeps a temporary name because a loaded addon can be
+      // renamed but not removed while it is mapped.
+      if (fs.existsSync(installed)) {
+        displaced = `${installed}.previous-${crypto.randomUUID()}`;
+        fs.renameSync(installed, displaced);
+      }
+      fs.renameSync(candidate, installed);
+    } catch (error) {
+      fs.rmSync(candidate, { force: true });
+      throw error;
     }
-
-    // Stable install name under an electron-builder-style ${os}-${arch} dir —
-    // packaging copies myotis-bin/<os>-<arch>/ into resources/myotis-node/,
-    // and myotis-manager loads the dev path directly.
-    for (const target of targets) {
-      const asset = assets.find((a) => a.name === target.asset);
-      if (!asset) {
-        throw new Error(
-          `Release ${release.tag_name} has no asset ${target.asset} — refusing to produce an incomplete install.`
-        );
-      }
-      const platformDir = path.join(OUTPUT_DIR, target.dir);
-      if (!fs.existsSync(platformDir)) fs.mkdirSync(platformDir, { recursive: true });
-      const destPath = path.join(platformDir, 'myotis-node.node');
-      await withRetries('Addon download', () =>
-        downloadFileOnce(asset.browser_download_url, destPath)
-      );
-
-      const expected = checksums[target.asset];
-      if (!expected) {
-        throw new Error(`${target.asset} missing from myotis-node.SHA256SUMS`);
-      }
-      const actual = sha256File(destPath);
-      if (actual !== expected) {
-        fs.unlinkSync(destPath);
-        throw new Error(
-          `Checksum mismatch for ${target.asset}: expected ${expected}, got ${actual} — deleted.`
-        );
-      }
-      console.log(`Verified and installed ${target.asset} → ${destPath}`);
-    }
-  } catch (err) {
-    console.error(`fetch-myotis failed: ${err.message}`);
-    process.exit(1);
+    if (displaced) pruneLeftoverAddons(directory);
+    console.log(`Installed official Myotis ${release.releaseTag} (${target.runtime})`);
   }
 }
 
-main();
+if (require.main === module) main().catch((error) => {
+  console.error(`fetch-myotis failed: ${error.message}`);
+  process.exitCode = 1;
+});
+module.exports = { PINNED_RELEASE_TAG, release, sha256, selectedTargets, verifyBytes, validateInstalledAddon, download, pruneLeftoverAddons, main };

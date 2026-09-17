@@ -13,6 +13,14 @@
 
 const EXECUTABLE_VAR = 'FREEDOM_E2E_EXECUTABLE';
 const NO_SANDBOX_VAR = 'FREEDOM_E2E_NO_SANDBOX';
+// Set by `npm run test:e2e:screenshots` (#261 item 1c). Chromium promotes a
+// composited layer to greyscale text antialiasing and demotes it back to
+// subpixel (LCD) as layers come and go, which repaints every glyph on the
+// surface with different colour fringes — ~1% of the frame, on a page nothing
+// changed on. That is bistable rather than random, so it does not settle with
+// a longer wait; turning LCD text off makes the rasterisation deterministic.
+// Only the screenshot spec sets it, so nothing else changes how it renders.
+const STABLE_TEXT_VAR = 'FREEDOM_E2E_STABLE_TEXT';
 
 // Trimmed, because shells (and YAML `env:` blocks) capture stray whitespace
 // into a value and `executablePath: '/opt/Freedom/freedom '` would fail with
@@ -42,6 +50,10 @@ function packagedLaunchTarget() {
     args.push('--no-sandbox');
   }
 
+  if ((process.env[STABLE_TEXT_VAR] || '').trim() === '1') {
+    args.push('--disable-lcd-text', '--disable-font-subpixel-positioning');
+  }
+
   return {
     ...(executable ? { executablePath: executable } : {}),
     args,
@@ -51,6 +63,7 @@ function packagedLaunchTarget() {
 module.exports = {
   EXECUTABLE_VAR,
   NO_SANDBOX_VAR,
+  STABLE_TEXT_VAR,
   packagedExecutable,
   isPackagedRun,
   packagedLaunchTarget,

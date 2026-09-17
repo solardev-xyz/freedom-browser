@@ -1,4 +1,4 @@
-import { isDwebNameHost, isEnsHost } from './origin-utils.js';
+import { isDwebNameHost, isEnsHost, isPotentialEnsName } from './origin-utils.js';
 import { cidV0ToV1Base32, cidV1B58btcToBase32, ipnsMhToCidV1Base36 } from './cid-utils.js';
 
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
@@ -321,9 +321,8 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
  *   - View-source on name-backed content reuses the same shape with a
  *     `view-source:` prefix added by the caller.
  *
- * The legacy `ens://<name>` form is intentionally NOT produced here — it
- * stays parseable for compatibility with existing bookmarks, but is no
- * longer the canonical display.
+ * DNS names pointing to IPNS retain `ens://`: `ipns://example.com` already
+ * means DNSLink, so using that form would change the meaning on reload.
  *
  * @param {'bzz'|'ipfs'|'ipns'} protocol - resolved contenthash transport
  * @param {string} name - name (already normalized/lowercased upstream)
@@ -333,6 +332,7 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
 export const buildEnsDisplayUri = (protocol, name, suffix = '') => {
   if (!name) return null;
   if (!isSupportedEnsTransport(protocol)) return null;
+  if (protocol === 'ipns' && !isDwebNameHost(name)) return `ens://${name}${suffix || ''}`;
   return `${protocol}://${name}${suffix || ''}`;
 };
 
@@ -362,7 +362,12 @@ export const isEnsBackedDisplay = (displayUrl) => {
   if (lower.startsWith('ens://')) return true;
   const transportMatch = lower.match(/^(?:bzz|ipfs|ipns):\/\/([^/?#]+)/);
   if (transportMatch) {
-    return isDwebNameHost(transportMatch[1]);
+    // Same carve-out as `parseEnsInput`: a gateway-form `ipfs://` URL is
+    // IPFS content whose outer host happens to read like a DNS name, not
+    // a name-backed display. See `isIpfsGatewayFormUrl`.
+    if (isIpfsGatewayFormUrl(trimmed)) return false;
+    return isDwebNameHost(transportMatch[1]) ||
+      (!lower.startsWith('ipns://') && isPotentialEnsName(transportMatch[1]));
   }
   return isDwebNameHost(trimmed.split(/[/?#]/)[0]);
 };
@@ -599,21 +604,18 @@ const isKnownGatewayHost = (host) => {
   return false;
 };
 
-export const parseIpfsInput = (rawInput, ipfsRoutePrefix) => {
-  if (!ipfsRoutePrefix) {
-    return null;
-  }
+// Split an `ipfs://`/`ipns://` input (or a bare CID with a tail) into its
+// host slot and the path/query/fragment around it. Deliberately byte-level
+// — `new URL()` lowercases the host for these standard schemes and would
+// destroy base58btc CIDv0 / IPNS peer-ID multihashes (see `parseIpfsInput`).
+const splitIpfsReference = (rawInput) => {
+  if (typeof rawInput !== 'string') return null;
 
-  // Remove ipfs:// or ipns:// scheme
-  let withoutScheme = rawInput
+  const withoutScheme = rawInput
     .replace(/^ipfs:\/\//i, '')
     .replace(/^ipns:\/\//i, '')
     .replace(/^\/+/, '');
-  let isIpns = /^ipns:\/\//i.test(rawInput);
-
-  if (!withoutScheme) {
-    return null;
-  }
+  if (!withoutScheme) return null;
 
   let working = withoutScheme;
   let fragment = '';
@@ -639,40 +641,84 @@ export const parseIpfsInput = (rawInput, ipfsRoutePrefix) => {
     path = working.slice(slashIndex);
   }
 
-  if (!cid) {
+  if (!cid) return null;
+
+  return { isIpns: /^ipns:\/\//i.test(rawInput), cid, path, query, fragment };
+};
+
+// Gateway-form match. When the path looks like a path-gateway URL
+// (`/ipfs/<cid>/...` or `/ipns/<key>/...`) and the OUTER host is a
+// recognised public-gateway / loopback hostname, the embedded
+// reference is the actual content target. The most common source is
+// Kubo's auto-generated directory listings: those emit
+// `<a href="//localhost:<gateway-port>/ipfs/<cid>">` which Chromium resolves
+// against the page's `ipfs:` scheme to `ipfs://localhost/ipfs/<cid>`.
+// Without this rewrite, every link in a Kubo dir listing 404s.
+//
+// The gate is an explicit known-gateway allowlist (mirrors
+// src/main/ipfs/ipfs-protocol.js) — earlier versions used a negative
+// "host doesn't look like a content reference" check, which over-fired
+// for DNSLink hosts (e.g. `ipns://docs.ipfs.tech/ipfs/coverage` would
+// try to rewrite even though `docs.ipfs.tech` is the actual content
+// host). For `/ipns/`, the embedded ref is also allowed to be a
+// DNSLink-shaped name so `ipfs://dweb.link/ipns/docs.ipfs.tech/install`
+// rewrites to `ipns://docs.ipfs.tech/install`.
+//
+// Returns the reference the rewrite should adopt, or null when this input
+// is not gateway-form.
+const matchGatewayForm = (host, path) => {
+  if (!isKnownGatewayHost(host)) return null;
+  const gatewayMatch = path.match(/^\/(ipfs|ipns)\/([^/]+)(.*)$/);
+  if (!gatewayMatch) return null;
+  const innerNs = gatewayMatch[1];
+  const ref = gatewayMatch[2];
+  const refOk = looksLikeContentKey(ref) || (innerNs === 'ipns' && isLikelyDnsLinkName(ref));
+  if (!refOk) return null;
+  return { isIpns: innerNs === 'ipns', cid: ref, path: gatewayMatch[3] || '' };
+};
+
+/**
+ * True when `input` is an `ipfs://`/`ipns://` URL that the gateway-form
+ * rewrite above owns — a known gateway/loopback host carrying the real
+ * content reference in its path (`ipfs://ipfs.io/ipfs/<cid>`,
+ * `ipfs://dweb.link/ipns/docs.ipfs.tech/install`, Kubo's
+ * `ipfs://localhost:<port>/ipfs/<cid>` dir-listing links).
+ *
+ * Exported so the address bar's name parser can decline these: a gateway
+ * hostname is a perfectly well-formed DNS name, so `ipfs.io` / `dweb.link`
+ * would otherwise be claimed as an ENS DNS name and sent to the resolver
+ * before `formatIpfsUrl` ever gets to rewrite the URL. The main-process
+ * handler needs no equivalent because it applies the rewrite *before* its
+ * own name branch (`src/main/ipfs/ipfs-protocol.js#buildGatewayUrl`); the
+ * renderer runs the name parser first, so it has to ask.
+ *
+ * @param {string} input
+ * @returns {boolean}
+ */
+export const isIpfsGatewayFormUrl = (input) => {
+  if (typeof input !== 'string') return false;
+  const raw = input.trim();
+  if (!/^ipfs:\/\//i.test(raw) && !/^ipns:\/\//i.test(raw)) return false;
+  const parts = splitIpfsReference(raw);
+  return !!(parts && matchGatewayForm(parts.cid, parts.path));
+};
+
+export const parseIpfsInput = (rawInput, ipfsRoutePrefix) => {
+  if (!ipfsRoutePrefix) {
     return null;
   }
 
-  // Gateway-form rewrite. When the path looks like a path-gateway URL
-  // (`/ipfs/<cid>/...` or `/ipns/<key>/...`) and the OUTER host is a
-  // recognised public-gateway / loopback hostname, the embedded
-  // reference is the actual content target. The most common source is
-  // Kubo's auto-generated directory listings: those emit
-  // `<a href="//localhost:<gateway-port>/ipfs/<cid>">` which Chromium resolves
-  // against the page's `ipfs:` scheme to `ipfs://localhost/ipfs/<cid>`.
-  // Without this rewrite, every link in a Kubo dir listing 404s.
-  //
-  // The gate is an explicit known-gateway allowlist (mirrors
-  // src/main/ipfs/ipfs-protocol.js) — earlier versions used a negative
-  // "host doesn't look like a content reference" check, which over-fired
-  // for DNSLink hosts (e.g. `ipns://docs.ipfs.tech/ipfs/coverage` would
-  // try to rewrite even though `docs.ipfs.tech` is the actual content
-  // host). For `/ipns/`, the embedded ref is also allowed to be a
-  // DNSLink-shaped name so `ipfs://dweb.link/ipns/docs.ipfs.tech/install`
-  // rewrites to `ipns://docs.ipfs.tech/install`.
-  if (isKnownGatewayHost(cid)) {
-    const gatewayMatch = path.match(/^\/(ipfs|ipns)\/([^/]+)(.*)$/);
-    if (gatewayMatch) {
-      const innerNs = gatewayMatch[1];
-      const ref = gatewayMatch[2];
-      const refOk =
-        looksLikeContentKey(ref) || (innerNs === 'ipns' && isLikelyDnsLinkName(ref));
-      if (refOk) {
-        isIpns = innerNs === 'ipns';
-        cid = ref;
-        path = gatewayMatch[3] || '';
-      }
-    }
+  const parts = splitIpfsReference(rawInput);
+  if (!parts) {
+    return null;
+  }
+
+  let { isIpns, cid, path } = parts;
+  const { query, fragment } = parts;
+
+  const gatewayForm = matchGatewayForm(cid, path);
+  if (gatewayForm) {
+    ({ isIpns, cid, path } = gatewayForm);
   }
 
   // Canonicalise the CID/key to a lowercase form before we hand it to

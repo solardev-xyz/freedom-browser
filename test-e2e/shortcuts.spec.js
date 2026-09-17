@@ -206,22 +206,25 @@ test('conflicting combos warn with a swap offer instead of silently rebinding', 
      })()`
   );
 
-  // The conflict prompt names Close Tab and offers a swap.
-  await expect
-    .poll(() =>
-      inSettingsPage(
-        window,
-        `(() => {
-           const conflict = document.querySelector('.shortcut-conflict');
-           if (!conflict) return null;
-           return {
-             text: conflict.textContent,
-             hasSwap: !!conflict.querySelector('[data-action="swap"]'),
-           };
-         })()`
-      )
-    )
-    .toMatchObject({ hasSwap: true });
+  // The conflict prompt names Close Tab and offers a swap. It names it the
+  // way the row right below it does — sentence case (#277), not the Title
+  // Case menu label — since banner and row sit inside one card.
+  const conflictBanner = () =>
+    inSettingsPage(
+      window,
+      `(() => {
+         const conflict = document.querySelector('.shortcut-conflict');
+         if (!conflict) return null;
+         return {
+           text: conflict.textContent.replace(/\\s+/g, ' ').trim(),
+           hasSwap: !!conflict.querySelector('[data-action="swap"]'),
+         };
+       })()`
+    );
+  await expect.poll(conflictBanner).toMatchObject({ hasSwap: true });
+  const banner = await conflictBanner();
+  expect(banner.text).toContain('Close tab');
+  expect(banner.text).not.toContain('Close Tab');
 
   // Cancel keeps both bindings unchanged.
   await inSettingsPage(
@@ -292,8 +295,10 @@ test.describe('a remap the store reverted on load', () => {
 
     await expect
       .poll(rowNote, { message: 'Waiting for the reverted notice' })
-      .toContain('Actual Size');
+      .toContain('Actual size');
     expect(await rowNote()).toContain('was reset');
+    // Named the way the Actual size row itself is labelled (#277).
+    expect(await rowNote()).not.toContain('Actual Size');
     // The binding itself is back on its default, not the stale chord.
     expect(await effectiveAccelerator(window, 'view.focusAddressBar')).toBe('CmdOrCtrl+L');
   });
@@ -392,8 +397,10 @@ test.describe('a Reset that claims its default back from a sibling remap', () =>
 
     await expect
       .poll(rowNote, { message: 'Waiting for the notice on the New Tab row' })
-      .toContain('Reload This Page');
+      .toContain('Reload this page');
     expect(await rowNote()).toContain('was reset');
+    // Named the way the Reload this page row itself is labelled (#277).
+    expect(await rowNote()).not.toContain('Reload This Page');
     expect(await effectiveAccelerator(window, 'page.reload')).toBe('CmdOrCtrl+R');
     expect(await effectiveAccelerator(window, 'tab.new')).toBe('CmdOrCtrl+T');
   });

@@ -18,7 +18,7 @@ import {
   describeUnverifiedForward,
   describeUnverifiedReverse,
 } from '../navigation-utils.js';
-import { isEnsHost } from '../origin-utils.js';
+import { isPotentialEnsName } from '../origin-utils.js';
 import { createTab } from '../tabs.js';
 
 // DOM references
@@ -830,7 +830,7 @@ function classifyRecipient() {
   }
 
   if (isEnsLikeName(recipient)) {
-    return { ok: true, type: 'ens', value: recipient.toLowerCase() };
+    return { ok: true, type: 'ens', value: recipient };
   }
 
   showSendError('recipient', 'Invalid Ethereum address or supported Ethereum name');
@@ -842,8 +842,7 @@ function isValidEthereumAddress(address) {
 }
 
 function isEnsLikeName(value) {
-  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z0-9-]+$/i.test(value)) return false;
-  return isEnsHost(value);
+  return isPotentialEnsName(value);
 }
 
 function validateAmount() {
@@ -933,11 +932,19 @@ async function handleSendContinue() {
     sendContinueBtn.textContent = 'Loading…';
   }
 
+  const resolutionChainId = sendTxState.chainId;
+  // A previous review's primary name belongs to its resolution chain.
+  // Recompute it on every Continue, including after Edit + network change.
+  sendTxState.recipientResolution = null;
   try {
     let reverseLookup = Promise.resolve(null);
     if (recipientClass.type === 'ens') {
       if (sendContinueBtn) sendContinueBtn.textContent = 'Resolving name…';
       const resolved = await resolveRecipientEns(recipientClass.value);
+      if (resolutionChainId !== sendTxState.chainId) {
+        showSendError('recipient', 'Network changed. Resolve the recipient again.');
+        return;
+      }
       if (!resolved) return; // error already surfaced on the recipient field
       sendTxState.recipient = resolved.address;
       sendTxState.recipientResolution = { name: resolved.name, trust: resolved.trust };
@@ -947,8 +954,9 @@ async function handleSendContinue() {
       // recipient's primary Ethereum name alongside the address when one is
       // verifiably set. Fire in parallel with gas estimation so it
       // doesn't add latency to the Continue → Review transition; a
-      // failure here doesn't block the send.
-      reverseLookup = lookupPrimaryNameForAddress(recipientClass.value);
+      // failure here doesn't block the send. Pin it to the chain Continue
+      // was pressed on rather than letting it re-read the live selection.
+      reverseLookup = lookupPrimaryNameForAddress(recipientClass.value, resolutionChainId);
     }
 
     if (sendContinueBtn) sendContinueBtn.textContent = 'Loading…';
@@ -956,12 +964,37 @@ async function handleSendContinue() {
     // after signatures exist — there is no meaningful estimate here.
     const gasEstimate = activeSafeWallet() ? Promise.resolve() : estimateTransactionGas();
     const [, reverseResult] = await Promise.all([gasEstimate, reverseLookup]);
-    if (reverseResult && !sendTxState.recipientResolution) {
+    if (resolutionChainId !== sendTxState.chainId) {
+      showSendError('general', 'Network changed. Prepare the transaction again.');
+      return;
+    }
+    const autoUnlock = await configureSendUnlockUI();
+    // The network selector remains editable throughout gas and unlock
+    // preparation. Check again after the last await so a name's old-chain
+    // address cannot reach review under the newly selected network.
+    if (resolutionChainId !== sendTxState.chainId) {
+      showSendError('general', 'Network changed. Prepare the transaction again.');
+      return;
+    }
+    // Adopt a primary name only after the complete review has passed its
+    // network checks, together with its gas estimate and recipient address.
+    if (
+      reverseResult &&
+      !sendTxState.recipientResolution &&
+      resolutionChainId === sendTxState.chainId
+    ) {
       sendTxState.recipientResolution = reverseResult;
     }
     populateSendReview();
-    await configureSendUnlockUI();
     showSendReviewView();
+    if (autoUnlock) {
+      const reviewedState = sendTxState;
+      setTimeout(() => {
+        if (sendTxState === reviewedState && !sendReviewView?.classList.contains('hidden')) {
+          handleSendTouchIdUnlock();
+        }
+      }, 100);
+    }
   } catch (err) {
     console.error('[WalletUI] Failed to prepare transaction:', err);
     showSendError('general', err.message || 'Failed to estimate gas');
@@ -978,11 +1011,11 @@ async function handleSendContinue() {
 //   { warning: 'unverified', claimedName }   primary claim doesn't forward-verify
 //   null                                     no reverse record / hard error
 // Never throws — the review flow isn't blocked by a reverse-lookup failure.
-async function lookupPrimaryNameForAddress(address) {
+async function lookupPrimaryNameForAddress(address, chainId = sendTxState.chainId || 1) {
   const api = window.electronAPI;
   if (!api?.resolveEnsReverse) return null;
   try {
-    const result = await api.resolveEnsReverse(address);
+    const result = await api.resolveEnsReverse(address, chainId);
     if (result?.success && result.name) {
       return { name: result.name, trust: result.trust || null };
     }
@@ -1004,7 +1037,7 @@ async function resolveRecipientEns(name) {
 
   let result;
   try {
-    result = await api.resolveEnsAddress(name);
+    result = await api.resolveEnsAddress(name, sendTxState.chainId || 1);
   } catch (err) {
     showSendError('recipient', err.message || 'Name resolution failed');
     return null;
@@ -1239,9 +1272,7 @@ async function configureSendUnlockUI() {
       sendPasswordSection?.classList.add('hidden');
     }
 
-    if (hasTouchId) {
-      setTimeout(() => handleSendTouchIdUnlock(), 100);
-    }
+    return hasTouchId;
   } catch (err) {
     console.error('[WalletUI] Failed to configure send unlock UI:', err);
     sendTouchIdBtn?.classList.add('hidden');
@@ -1411,4 +1442,5 @@ async function handleSendConfirm() {
 export const __test__ = {
   lookupPrimaryNameForAddress,
   renderRecipientReview,
+  isEnsLikeName,
 };
