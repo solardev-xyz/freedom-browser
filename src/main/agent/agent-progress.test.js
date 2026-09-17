@@ -14,6 +14,15 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('frame-read receipts identify the embedded page without implying a browser change', () => {
+    const receipt = createToolReceipt(OPERATIONS.READ_FRAME, { envelope: {
+      ok: true, tabId: 'tab_owner', result: { title: 'Embedded document', url: 'https://child.example/private/path?secret=hidden' },
+    } });
+    expect(receipt).toMatchObject({ pageId: 'tab_owner', pageTitle: 'Embedded document', origin: 'https://child.example' });
+    expect(JSON.stringify(receipt)).not.toContain('secret');
+    expect(activityProgress(OPERATIONS.READ_FRAME, receipt)).toMatchObject({ effect: 'observed' });
+  });
+
   test.each(['cancelled', 'interrupted'])('describes a %s dependency setup as project work', (status) => {
     const workspace = {
       workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', kind: 'command',

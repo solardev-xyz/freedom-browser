@@ -477,6 +477,76 @@ Commands: `FREEDOM_OLLAMA_TEST_MODEL=qwen3:8b npm run test:e2e -- test-e2e/agent
 `npm run lint`. The local-model spec remains opt-in by environment variable.
 
 
+### Read-only cross-origin frame integration, 2026-09-18
+
+The prototype now has a bounded product path: `browser_list_frames` discovers
+frames belonging to the active task tab; `browser_read_frame` reads a listed
+frame using the same bounded semantic/text collector, including name filtering,
+literal text search and live continuation. Pi receives opaque frame handles,
+origin/URL/name metadata and read-only descriptions. Child control/viewport
+references are stripped so they cannot accidentally address root-page actions.
+No arbitrary script, CDP method, session ID or coordinate parameter is exposed.
+
+The main-process page adapter owns a short-lived debugger connection to its own
+WebContents. It recursively attaches only related iframe sessions (including
+nested out-of-process frames), never global target lookup or URL matching. A
+handle binds frame ID, loader, default execution-context unique identity and
+origin; equal URLs do not imply equal frames. The body collector executes in a
+fixed isolated world addressed by unique context ID, without universal access.
+Its origin must match the authorized default context. Document identity is
+rechecked before and after collection, and after asynchronous authorization.
+
+**Native negative evidence changed the implementation:** Electron 43.0.0's
+`Page.getFrameTree.securityOrigin` reported the HTTPS URL origin for a sandboxed
+opaque frame. The first desktop and hidden tests failed because that metadata
+would have granted it ordinary web-origin treatment. Discovery now takes the
+effective origin from the browser's default execution-context event, with absent
+or opaque context origins treated as `null`; the real sandbox fixtures are denied
+before body evaluation. This distinguishes URL metadata from the document's
+actual security context. Reference docs: [Runtime execution contexts](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/#type-ExecutionContextDescription)
+and [Electron debugger sessions](https://www.electronjs.org/docs/latest/api/debugger).
+
+The existing task boundary checks tab ownership, supported web/distributed-web
+origins and resume observation requirements. It supplies frame authorization as
+host execution context, never tool input. Unscoped reads without that callback
+fail closed. Freedom currently has workspace navigation scope, not a separate
+per-embedded-site consent policy; this change does not claim to add one.
+
+Discovery retains at most 64 frames/sessions and 128 handles, and emits at most
+64 KiB of frame metadata. Reads inherit snapshot bounds. A five-second operation
+deadline, one-second evaluation limit, serialized operations and cancellation
+release the connection; stopping page loading also cancels active/queued frame
+observations. Existing debuggers are neither borrowed nor detached. Protocol
+errors are mapped to bounded generic errors. Retained isolated worlds reuse one
+host-generated name per adapter rather than allocating a new world every read.
+Embedded page activity uses its own title/origin without replacing the cached
+parent-tab metadata for later actions.
+
+**21 Electron cases passed (47.2s)**: the new desktop/hidden frame cases plus all
+observation and automation-kernel cases. The new cases cover duplicate frame URLs,
+nested cross-origin text, page-world prototype overrides, truncated text/search,
+opaque sandbox denial, unrelated-tab ownership, absent host authorization,
+existing-debugger preservation, navigation/removal invalidation and cleanup.
+**8 focused unit suites / 243 tests passed (1.4s)**; lint and whitespace checks
+passed. Unit cases also cover navigation during authorization/world creation/read,
+origin changes, hung commands, active/queued cancellation, policy dispatch,
+continuation validation and progress attribution. Early reruns also corrected a
+test expectation that used lowercase rather than canonical uppercase error codes.
+
+Commands: `npm run test:e2e -- test-e2e/automation-frame-observation.spec.js test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`;
+`npm test -- src/main/automation/adapters/owned-frame-observer.test.js src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/automation/contract/operations.test.js src/main/automation/policy-controller.test.js src/main/agent/pi-browser-tools.test.js src/main/agent/agent-progress.test.js`;
+`npm run lint`.
+
+Limits: this is read-only integration, not cross-frame click/type/scroll support
+or visual-target exposure. A busy debugger makes the capability unavailable.
+Collection uses live documents rather than immutable text snapshots; Chromium
+layout/full temporary strings are not hard CPU/memory bounded. Frame/context
+limits can make metadata incomplete; unknown origins remain denied. Qualification
+is the installed macOS source-tree Electron runtime, not other platforms, signed
+release builds or a real-model embedded-content reliability benchmark. No new
+dependencies, user-profile access or public browsing was involved.
+
+
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119
 [h-root]: https://github.com/browser-use/browser-harness-js/tree/2d9a5ed37ed11f31b2622cd69c4b55f979cb905f

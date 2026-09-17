@@ -15,6 +15,8 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.FOCUS_TAB,
   OPERATIONS.CLOSE_TAB,
   OPERATIONS.SNAPSHOT,
+  OPERATIONS.LIST_FRAMES,
+  OPERATIONS.READ_FRAME,
   OPERATIONS.SCREENSHOT,
   OPERATIONS.NAVIGATE,
   OPERATIONS.CLICK,
@@ -408,6 +410,13 @@ class OriginScopedAutomationController {
         : null;
     if (requestedUrl && !this.#acceptRequestedOrigin(requestedUrl)) {
       return this.#originDenied(state);
+    }
+
+    if (operation === OPERATIONS.READ_FRAME) {
+      return this.#executeController(operation, input, {
+        ...execution,
+        authorizeFrame: (frame) => this.#acceptRequestedOrigin(frame?.origin),
+      });
     }
 
     if (PAGE_INTERACTION_OPERATIONS.has(operation)) {

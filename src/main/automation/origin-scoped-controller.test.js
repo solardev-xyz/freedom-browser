@@ -664,6 +664,26 @@ describe('OriginScopedAutomationController', () => {
     await expect(scoped.execute(OPERATIONS.CLICK, { tabId, ref: 'fresh_ref' })).resolves.toMatchObject({ ok: true });
   });
 
+  test('frame reads preserve task ownership, resume gates and actual-origin authorization', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned' });
+    const frameRef = 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    for (const operation of [OPERATIONS.LIST_FRAMES, OPERATIONS.READ_FRAME]) {
+      expect(await scoped.execute(operation, { tabId: 'tab_other', frameRef })).toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    }
+    await scoped.execute(OPERATIONS.READ_FRAME, { tabId: 'tab_assigned', frameRef }, { authorizeFrame: () => true });
+    const authorize = controller.execute.mock.calls.at(-1)[2].authorizeFrame;
+    expect(authorize({ origin: 'https://embedded.example' })).toBe(true);
+    for (const origin of ['null', '', 'file:///private/secret', 'freedom://settings']) expect(authorize({ origin })).toBe(false);
+    await scoped.prepareResume();
+    for (const operation of [OPERATIONS.LIST_FRAMES, OPERATIONS.READ_FRAME]) {
+      expect(await scoped.execute(operation, { tabId: 'tab_assigned', frameRef })).toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    }
+    await scoped.execute(OPERATIONS.GET_TAB, { tabId: 'tab_assigned' });
+    await scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' });
+    expect(await scoped.execute(OPERATIONS.READ_FRAME, { tabId: 'tab_assigned', frameRef })).toMatchObject({ ok: true });
+  });
+
   test('scroll cannot bypass task ownership or the fresh observation requirement after resume', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned' });

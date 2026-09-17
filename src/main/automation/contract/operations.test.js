@@ -3,6 +3,18 @@
 const { OPERATIONS, validateOperationInput } = require('./operations');
 
 describe('automation operation contract', () => {
+  test('frame reads accept bounded windows but no caller authority or script', () => {
+    const frameRef = 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    expect(validateOperationInput(OPERATIONS.LIST_FRAMES, { tabId: 'tab_1' })).toEqual({ tabId: 'tab_1' });
+    expect(validateOperationInput(OPERATIONS.READ_FRAME, {
+      tabId: 'tab_1', frameRef, query: ' Save ', textOffset: 12000,
+      authorizeFrame: true, script: 'document.body',
+    })).toEqual({ tabId: 'tab_1', frameRef, query: 'Save', textOffset: 12000 });
+    for (const input of [{ frameRef: 'child' }, { frameRef: '' }, { query: '' }, { textQuery: 'x'.repeat(201) }, { elementOffset: -1 }, { textOffset: 1000001 }, { textOffset: 1.5 }]) {
+      expect(() => validateOperationInput(OPERATIONS.READ_FRAME, { tabId: 'tab_1', frameRef, ...input })).toThrow();
+    }
+  });
+
   test('validates bounded live snapshot search and continuation', () => {
     expect(
       validateOperationInput(OPERATIONS.SNAPSHOT, {

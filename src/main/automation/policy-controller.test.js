@@ -4,6 +4,9 @@ const { OPERATIONS } = require('./contract/operations');
 const { createInitialAutomationPolicy, OPERATION_CLASSES } = require('./policy-controller');
 
 describe('AutomationPolicyController', () => {
+  test.each([OPERATIONS.LIST_FRAMES, OPERATIONS.READ_FRAME])('classifies %s as observation', (operation) => {
+    expect(OPERATION_CLASSES[operation]).toBe('observe');
+  });
   test('classifies scrolling as an interaction', () => {
     expect(OPERATION_CLASSES[OPERATIONS.SCROLL]).toBe('interact');
   });

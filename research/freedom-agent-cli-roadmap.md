@@ -55,15 +55,17 @@ has passed live qualification.
   state, snapshot name search, document-bound live continuation, field/output
   budgets, explicit page/container scrolling, literal text finding and control-state
   waits. Native typing/keys now revalidate document and focus before dispatch.
-  **19 Electron cases / 130 tests in the latest 4 focused suites** pass, with lint
-  clean (prior coverage: 177 tests in 5 suites; scrolling: 283 tests in 8 suites).
+  **21 Electron cases / 243 tests in the latest 8 focused suites** pass, with lint
+  clean (prior scrolling coverage: 283 tests in 8 suites).
   Scrolling retains task/origin/approval gates,
   measures actual movement and prevents scroll-only references becoming clicks.
   One real local `qwen3:8b` smoke passed through the normal composer, retrieving an
   exact token beyond the initial text window (54.5s). This is not a reliability
   benchmark; cross-platform/release qualification remains outstanding.
   Native dropdown labels/disabled groups and delayed custom-menu flows are covered.
-  Broader forms/waits, cross-origin frames and visual targeting remain pending.
+  Read-only cross-origin frame listing/search now uses owned, document-bound
+  handles and effective execution-context origins; opaque origins are denied.
+  Broader forms/waits, cross-frame interaction and visual targeting remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -105,11 +107,17 @@ harness has been selected.
    delayed custom menus, native single-select listboxes and disabled option groups.
    Remaining: broader form semantics, reverse-flow/complex scrolling geometry,
    and further cancellation/uncertain-effect coverage.
-4. **Frames — feasibility probe qualified:** two test-only Electron cases prove
-   child-session isolated reads, navigation/removal invalidation and native ownership
-   distinctions for duplicate URLs, unrelated tabs and opaque origins. Product
-   observation/actions remain unchanged. Next: stable owner-reference/session mapping,
-   shared debugger lifecycle and explicit frame-origin policy before exposure.
+4. **Frames — read-only integration implemented:** `browser_list_frames` and
+   `browser_read_frame` use owner/document-bound handles, recursively owned child
+   sessions, isolated-world collection and the existing task-origin policy. Browser
+   default execution contexts supply effective origins: frame-tree `securityOrigin`
+   alone incorrectly identifies opaque sandboxed frames by their URL origin.
+   Duplicate URLs, nested cross-origin frames, unrelated tabs, sandbox denial,
+   navigation/removal and debugger conflicts pass desktop/hidden fixtures. Reads
+   return descriptions without actionable child references; bounded lifecycle,
+   cancellation and host-only authorization have unit coverage. Next: cross-frame
+   action geometry/inspection/approval binding; debugger sharing remains deferred
+   (current reads never borrow or displace another debugger).
 5. **Visual fallback — test-only binding probe qualified:** 10 cases cover screenshot
    pixel mapping at two zoom levels, actual trusted canvas clicks, single-use capture
    binding, and rejection of viewport/document/layout/paint/overlay changes, including

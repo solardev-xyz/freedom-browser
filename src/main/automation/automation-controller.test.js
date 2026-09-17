@@ -53,6 +53,25 @@ function createController(authorize = jest.fn(async () => ({ allowed: true }))) 
 }
 
 describe('AutomationController', () => {
+  test('frame dispatch retains host-only authority behind the operation policy', async () => {
+    const { controller, authorize } = createController();
+    const adapter = new FakePageAdapter();
+    adapter.listFrames = jest.fn(async () => ({ frames: [] }));
+    adapter.readFrame = jest.fn(async () => ({ readOnly: true }));
+    const tabId = controller.registerPage(adapter);
+    const frameRef = 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const authorizeFrame = () => true;
+    expect(await controller.execute(OPERATIONS.LIST_FRAMES, { tabId })).toMatchObject({ ok: true });
+    expect(await controller.execute(OPERATIONS.READ_FRAME, { tabId, frameRef, authorizeFrame }, { authorizeFrame })).toMatchObject({ ok: true });
+    expect(adapter.readFrame).toHaveBeenLastCalledWith(frameRef, expect.any(Object), authorizeFrame);
+    await controller.execute(OPERATIONS.READ_FRAME, { tabId, frameRef, authorizeFrame });
+    expect(adapter.readFrame).toHaveBeenLastCalledWith(frameRef, expect.any(Object), undefined);
+    authorize.mockResolvedValue({ allowed: false });
+    adapter.readFrame.mockClear();
+    expect(await controller.execute(OPERATIONS.READ_FRAME, { tabId, frameRef }, { authorizeFrame })).toMatchObject({ ok: false });
+    expect(adapter.readFrame).not.toHaveBeenCalled();
+  });
+
   test('passes validated snapshot windows through the existing policy boundary', async () => {
     const { controller, authorize } = createController();
     const adapter = new FakePageAdapter();

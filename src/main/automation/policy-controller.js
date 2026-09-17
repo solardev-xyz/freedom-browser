@@ -9,6 +9,8 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.FOCUS_TAB]: 'control',
   [OPERATIONS.CLOSE_TAB]: 'control',
   [OPERATIONS.SNAPSHOT]: 'observe',
+  [OPERATIONS.LIST_FRAMES]: 'observe',
+  [OPERATIONS.READ_FRAME]: 'observe',
   [OPERATIONS.SCREENSHOT]: 'observe',
   [OPERATIONS.WAIT]: 'observe',
   [OPERATIONS.NAVIGATE]: 'navigate',

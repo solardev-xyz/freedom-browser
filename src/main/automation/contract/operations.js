@@ -24,6 +24,8 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.CLOSE_TAB,
   OPERATIONS.NAVIGATE,
   OPERATIONS.SNAPSHOT,
+  OPERATIONS.LIST_FRAMES,
+  OPERATIONS.READ_FRAME,
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
@@ -170,6 +172,24 @@ function validateOperationInput(operation, rawInput) {
 
   if (operation === OPERATIONS.NAVIGATE) {
     normalized.url = validateNavigationUrl(input.url);
+  }
+
+  if (operation === OPERATIONS.READ_FRAME) {
+    normalized.frameRef = requireString(input.frameRef, 'frameRef').trim();
+    if (!/^frame_[a-f0-9-]{36}$/.test(normalized.frameRef))
+      throw invalidArgument('frameRef must come from browser_list_frames');
+    for (const field of ['query', 'textQuery']) {
+      if (input[field] === undefined) continue;
+      normalized[field] = requireString(input[field], field).trim();
+      if (normalized[field].length > 200)
+        throw invalidArgument(`${field} cannot exceed 200 characters`);
+    }
+    for (const field of ['elementOffset', 'textOffset']) {
+      if (input[field] === undefined) continue;
+      if (!Number.isSafeInteger(input[field]) || input[field] < 0 || input[field] > 1_000_000)
+        throw invalidArgument(`${field} must be an integer from 0 to 1000000`);
+      normalized[field] = input[field];
+    }
   }
 
   if (operation === OPERATIONS.SNAPSHOT) {

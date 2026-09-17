@@ -312,6 +312,19 @@ class AutomationController {
       }
       case OPERATIONS.NAVIGATE:
         return entry.adapter.navigate(input.url);
+      case OPERATIONS.LIST_FRAMES:
+        return entry.adapter.listFrames();
+      case OPERATIONS.READ_FRAME:
+        return entry.adapter.readFrame(
+          input.frameRef,
+          {
+            query: input.query,
+            textQuery: input.textQuery,
+            elementOffset: input.elementOffset,
+            textOffset: input.textOffset,
+          },
+          execution.authorizeFrame
+        );
       case OPERATIONS.SNAPSHOT:
         return entry.adapter.snapshot({
           query: input.query,

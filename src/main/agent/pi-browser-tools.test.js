@@ -58,6 +58,8 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.FOCUS_TAB,
       OPERATIONS.CLOSE_TAB,
       OPERATIONS.SNAPSHOT,
+      OPERATIONS.LIST_FRAMES,
+      OPERATIONS.READ_FRAME,
       OPERATIONS.NAVIGATE,
       OPERATIONS.CLICK,
       OPERATIONS.TYPE,
@@ -803,6 +805,22 @@ describe('Pi browser tool adapter', () => {
     expect(JSON.stringify(onToolOutcome.mock.calls)).not.toMatch(
       /token|secret|sensitive page contents/
     );
+  });
+
+  test('embedded-page receipts do not replace the owning tab title or origin', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = { execute: jest.fn()
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://owner.test/a', title: 'Owner' }))
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://child.test/b', title: 'Child', readOnly: true }))
+      .mockResolvedValueOnce(successEnvelope({})) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const execute = (operation, input) => tools.find((tool) => tool.name === operation).execute(operation, input);
+    await execute(OPERATIONS.SNAPSHOT, {});
+    await execute(OPERATIONS.READ_FRAME, { frameRef: 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' });
+    await execute(OPERATIONS.CLICK, { ref: 'ref_owner' });
+    expect(onToolOutcome.mock.calls.map(([receipt]) => [receipt.pageTitle, receipt.origin])).toEqual([
+      ['Owner', 'https://owner.test'], ['Child', 'https://child.test'], ['Owner', 'https://owner.test'],
+    ]);
   });
 
   test('keeps the observed title on clicks and failures but clears it when navigating to another page', async () => {

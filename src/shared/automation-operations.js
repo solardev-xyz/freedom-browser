@@ -8,6 +8,8 @@ const OPERATIONS = Object.freeze({
   CLOSE_TAB: 'browser_close_tab',
   NAVIGATE: 'browser_navigate',
   SNAPSHOT: 'browser_snapshot',
+  LIST_FRAMES: 'browser_list_frames',
+  READ_FRAME: 'browser_read_frame',
   CLICK: 'browser_click',
   TYPE: 'browser_type',
   SELECT: 'browser_select',

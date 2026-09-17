@@ -90,6 +90,16 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Changing a selection on the current page',
     completed: 'Changed a selection on the current page',
   },
+  [OPERATIONS.LIST_FRAMES]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking embedded frames',
+    completed: 'Checked embedded frames',
+  },
+  [OPERATIONS.READ_FRAME]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Reading an embedded frame',
+    completed: 'Read an embedded frame',
+  },
   [OPERATIONS.SCROLL]: {
     effect: ACTIVITY_EFFECTS.CHANGED,
     intent: 'Scrolling the current page',

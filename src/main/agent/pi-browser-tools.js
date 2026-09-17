@@ -99,6 +99,31 @@ const TOOL_SPECS = Object.freeze([
     },
   },
   {
+    operation: OPERATIONS.LIST_FRAMES,
+    label: 'List embedded frames',
+    description:
+      'List document-bound frame references and their browser-reported origins in the active task tab. Use browser_read_frame to read an embedded document that a normal snapshot cannot access. Same URLs can belong to different frames; use the returned frame reference. Requires a free debugger connection.',
+    parameters: EMPTY_PARAMETERS,
+  },
+  {
+    operation: OPERATIONS.READ_FRAME,
+    label: 'Read embedded frame',
+    description:
+      'Read a frame from browser_list_frames, subject to the task origin scope. Returns bounded text and control descriptions only; frame controls cannot be clicked or typed through this tool. Optional query filters control names; textQuery finds literal rendered text. Use continuation offsets with the same frameRef and query. Navigation/removal invalidates the frame reference. Opaque and unsupported origins are denied.',
+    parameters: {
+      type: 'object',
+      properties: {
+        frameRef: { type: 'string', minLength: 1 },
+        query: { type: 'string', minLength: 1, maxLength: 200 },
+        textQuery: { type: 'string', minLength: 1, maxLength: 200 },
+        elementOffset: { type: 'integer', minimum: 0, maximum: 1_000_000 },
+        textOffset: { type: 'integer', minimum: 0, maximum: 1_000_000 },
+      },
+      required: ['frameRef'],
+      additionalProperties: false,
+    },
+  },
+  {
     operation: OPERATIONS.SCREENSHOT,
     label: 'Look at page',
     description:
@@ -745,10 +770,11 @@ async function createFreedomBrowserTools(options = {}) {
             pageTitle: !observedUrl || observedUrl === previousPage?.url ? previousPage?.title : undefined,
             requestedUrl: params.url,
           });
-          if (observedUrl) {
+          if (observedUrl && spec.operation !== OPERATIONS.READ_FRAME) {
             pageDetails.set(resultTabId, { url: observedUrl, title: receipt.pageTitle });
           }
-          if (receipt.pageId && receipt.origin) pageOrigins.set(receipt.pageId, receipt.origin);
+          if (receipt.pageId && receipt.origin && spec.operation !== OPERATIONS.READ_FRAME)
+            pageOrigins.set(receipt.pageId, receipt.origin);
           notifyToolOutcome(options.onToolOutcome, {
             toolCallId,
             operation: spec.operation,

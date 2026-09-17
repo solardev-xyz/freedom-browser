@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { AutomationError, ERROR_CODES } = require('../contract/errors');
+const { OwnedFrameObserver } = require('./owned-frame-observer');
 
 const AUTOMATION_WORLD_ID = 1001;
 const MAX_PAGE_TEXT_LENGTH = 12_000;
@@ -1011,6 +1012,20 @@ class WebContentsPageAdapter extends EventEmitter {
     this.stopLoadingHandler = options.stopLoading || null;
     this.references = new Map();
     this.activeWaits = new Set();
+    this.frameObserver = new OwnedFrameObserver(webContents, (snapshotOptions) =>
+      buildInvocation(
+        collectPageSnapshot,
+        [
+          MAX_PAGE_TEXT_LENGTH,
+          MAX_SNAPSHOT_ELEMENTS,
+          MAX_RETAINED_REFERENCES,
+          MAX_SELECT_OPTIONS,
+          this.referenceIdFactory(),
+          snapshotOptions,
+        ],
+        [readElementName, readScrollState, readControlState]
+      )
+    );
     this.listeners = {
       'did-start-navigation': (_event, _url, isInPlace, isMainFrame) => {
         if (isInPlace === true) return;
@@ -1076,6 +1091,16 @@ class WebContentsPageAdapter extends EventEmitter {
       });
     }
     return { url: this.webContents.getURL?.() || url };
+  }
+
+  async listFrames() {
+    this.#assertAvailable();
+    return this.frameObserver.list();
+  }
+
+  async readFrame(frameRef, options, authorizeFrame) {
+    this.#assertAvailable();
+    return this.frameObserver.read(frameRef, options, authorizeFrame);
   }
 
   async snapshot(options = {}) {
@@ -1514,6 +1539,7 @@ class WebContentsPageAdapter extends EventEmitter {
   async stopLoading() {
     this.#assertAvailable();
     const cancelledWaits = this.#cancelWaits();
+    this.frameObserver.cancel();
     if (this.stopLoadingHandler) {
       await this.stopLoadingHandler();
     } else {
@@ -1523,6 +1549,7 @@ class WebContentsPageAdapter extends EventEmitter {
   }
 
   dispose() {
+    this.frameObserver.dispose();
     if (typeof this.webContents.off === 'function') {
       for (const [event, listener] of Object.entries(this.listeners)) {
         this.webContents.off(event, listener);
