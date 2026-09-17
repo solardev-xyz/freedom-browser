@@ -337,13 +337,9 @@ class OriginScopedAutomationController {
       });
     }
     if (operation === OPERATIONS.CREATE_TAB) {
-      if (!previewNavigation && this.resumeObservation && this.resumeObservation !== 'create_tab') {
-        return errorEnvelope(
-          this.lastState,
-          ERROR_CODES.POLICY_DENIED,
-          'After resume, get the current tab and take a fresh snapshot before acting'
-        );
-      }
+      // Creating a tab from an explicit URL does not depend on observed page
+      // content. Keep the resume barrier for page actions; ownership and URL
+      // checks still run in #createOwnedTab.
       return this.#createOwnedTab(input);
     }
     if (this.ownedTabs.size === 0) {

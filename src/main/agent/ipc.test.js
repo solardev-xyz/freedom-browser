@@ -108,6 +108,9 @@ function register(overrides = {}) {
   const providerResolver = {
     getStatus: jest.fn(() => ({ configured: false, secureStorageAvailable: true })),
     getCatalog: jest.fn(async () => [{ providerId: 'openai', models: [] }]),
+    refreshModels: jest.fn(async () => [{ providerId: 'venice', models: [] }]),
+    setPreferences: jest.fn(() => ({ configured: true })),
+    testConnection: jest.fn(async () => ({ elapsedMs: 100 })),
     configureHosted: jest.fn(async () => ({ configured: true, providerId: 'openai' })),
     configureOllama: jest.fn(() => ({ configured: true, providerId: 'ollama' })),
     loginSubscription: jest.fn(async () => ({
@@ -169,6 +172,24 @@ function register(overrides = {}) {
 }
 
 describe('Freedom agent IPC', () => {
+  test.each([
+    [IPC.AGENT_PROVIDER_REFRESH_MODELS, 'refreshModels', { providerId: 'venice', apiKey: 'test-key' }],
+    [IPC.AGENT_PROVIDER_SET_PREFERENCES, 'setPreferences', { providerId: 'openrouter', privacyPolicy: 'zdr' }],
+    [IPC.AGENT_PROVIDER_TEST_CONNECTION, 'testConnection', { providerId: 'meta', modelId: 'muse-spark-1.3' }],
+  ])('provider management %s accepts only trusted senders and removes its handler on dispose', async (channel, method, payload) => {
+    const ctx = register();
+    const handler = ctx.ipcMain.handlers.get(channel);
+    expect((await handler({ sender: ctx.otherSender }, payload)).ok).toBe(false);
+    expect(ctx.providerResolver[method]).not.toHaveBeenCalled();
+    expect((await handler({ sender: ctx.sender }, payload)).ok).toBe(true);
+    expect(ctx.providerResolver[method]).toHaveBeenCalledWith(payload);
+    ctx.providerResolver[method].mockImplementation(() => { throw Object.assign(new Error('secret raw provider response'), { code: 'AGENT_CATALOG_AUTH_FAILED' }); });
+    const error = await handler({ sender: ctx.sender }, payload);
+    expect(error).toMatchObject({ ok: false, error: { code: 'AGENT_CATALOG_AUTH_FAILED' } });
+    expect(JSON.stringify(error)).not.toContain('secret');
+    await ctx.dispose();
+    expect(ctx.ipcMain.handlers.has(channel)).toBe(false);
+  });
   test('opens only canonical Swarm publication receipts in a browser tab', async () => {
     const ctx = register();
     const openPublication = ctx.ipcMain.handlers.get(IPC.AGENT_PUBLICATION_OPEN);
@@ -1078,6 +1099,19 @@ describe('Freedom agent IPC', () => {
       status: { configured: true, providerId: 'openai' },
     });
     expect(JSON.stringify(response)).not.toContain('sk-secret');
+  });
+
+  test('awaits Ollama discovery and returns actionable safe errors', async () => {
+    const ctx = register();
+    const configure = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA);
+    ctx.providerResolver.configureOllama.mockResolvedValueOnce({ configured: true, providerId: 'ollama', modelId: 'qwen3:8b' });
+    await expect(configure({ sender: ctx.sender }, {})).resolves.toEqual({
+      ok: true, status: { configured: true, providerId: 'ollama', modelId: 'qwen3:8b' },
+    });
+    ctx.providerResolver.configureOllama.mockRejectedValueOnce(Object.assign(new Error('raw server details'), { code: 'AGENT_OLLAMA_NO_MODELS' }));
+    await expect(configure({ sender: ctx.sender }, {})).resolves.toMatchObject({
+      ok: false, error: { code: 'AGENT_OLLAMA_NO_MODELS', message: 'Ollama is running, but no models are installed. Download a model in Ollama, then connect again.' },
+    });
   });
 
   test('selects and removes configured models only through trusted chrome', async () => {

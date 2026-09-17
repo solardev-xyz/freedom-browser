@@ -233,6 +233,8 @@ The filter lists (EasyList, EasyPrivacy, Fanboy Cookiemonster, Fanboy Annoyances
 
 `src/renderer/pages/images/` is Freedom's own internal-page artwork and wordmark, and `src/main/myotis/native/` is Freedom's own Myotis supervisor sources — original works under the same MPL-2.0 as the rest of the tree, needing no third-party notice. They are listed because the audit claims to describe what the artifact contains, and until this revision it named only `assets/`: a third-party file committed under `src/` outside `vendor/` was exactly how `qrious.min.js` shipped unnoticed.
 
+**Model provider marks.** `src/renderer/assets/provider-logos/` bundles official model provider marks solely to identify the integrations. Its README records the source URLs and collection date; NOTICES attributes their owners. Per-mark redistribution terms remain unconfirmed, as with the chain and token marks below.
+
 **Open item — the chain and token marks.** The chain marks in `src/renderer/assets/chains/` and the token marks in `src/renderer/assets/tokens/` are third-party logos (Ethereum, Gnosis, Base, Swarm, MakerDAO, Circle, Tether, Monerium). Freedom ships them to identify the chain or token each labels, which is nominative use, and `NOTICES` says so and claims no ownership. Per-mark redistribution terms have **not** been confirmed against each project's brand guidelines; several publish permissive brand kits and none is known to object, so this is recorded as a yellow open item for the maintainer rather than a blocker. Confirm before a final tag, or replace the marks with generic glyphs.
 
 ---

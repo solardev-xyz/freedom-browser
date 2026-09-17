@@ -38,7 +38,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.CREATE_TAB,
     label: 'Create task tab',
     description:
-      'Create a visible task-owned tab at a supported web or distributed-web URL and make it the active Agent tab.',
+      'Create a visible task-owned tab at a supported web or distributed-web URL and make it the active Agent tab. Call once per new tab. No page snapshot is required to create a tab.',
     parameters: {
       type: 'object',
       properties: { url: { type: 'string', minLength: 1 } },
@@ -649,6 +649,7 @@ async function createFreedomBrowserTools(options = {}) {
   const sdk = validatePiSdk(options.sdk || (await loadPiSdk()));
   const tabState = { currentTabId: options.tabId };
   const pageOrigins = new Map();
+  const pageDetails = new Map();
   const availableSpecs = TOOL_SPECS.filter(
     (spec) => spec.requiresVision !== true || options.visionEnabled === true
   );
@@ -696,6 +697,7 @@ async function createFreedomBrowserTools(options = {}) {
             for (const tab of result.details.envelope?.result?.tabs || []) {
               const origin = originScopeForUrl(tab?.url);
               if (typeof tab?.tabId === 'string' && origin) pageOrigins.set(tab.tabId, origin);
+              if (typeof tab?.tabId === 'string') pageDetails.set(tab.tabId, { url: tab.url, title: tab.title });
             }
           }
           const resultTabId =
@@ -703,12 +705,19 @@ async function createFreedomBrowserTools(options = {}) {
             result.details.envelope?.tabId ||
             activeTabId ||
             targetTabId;
+          const observedUrl = result.details.envelope?.result?.tab?.url || result.details.envelope?.result?.url ||
+            ([OPERATIONS.CREATE_TAB, OPERATIONS.NAVIGATE].includes(spec.operation) ? params.url : undefined);
+          const previousPage = pageDetails.get(resultTabId);
           const receipt = createToolReceipt(spec.operation, {
             envelope: result.details.envelope,
             pageId: resultTabId,
             origin: pageOrigins.get(resultTabId),
+            pageTitle: !observedUrl || observedUrl === previousPage?.url ? previousPage?.title : undefined,
             requestedUrl: params.url,
           });
+          if (observedUrl) {
+            pageDetails.set(resultTabId, { url: observedUrl, title: receipt.pageTitle });
+          }
           if (receipt.pageId && receipt.origin) pageOrigins.set(receipt.pageId, receipt.origin);
           notifyToolOutcome(options.onToolOutcome, {
             toolCallId,
@@ -719,12 +728,15 @@ async function createFreedomBrowserTools(options = {}) {
           });
           if (spec.operation === OPERATIONS.CLOSE_TAB && typeof targetTabId === 'string') {
             pageOrigins.delete(targetTabId);
+            pageDetails.delete(targetTabId);
           }
           return result;
         } catch (error) {
           const receipt = createToolReceipt(spec.operation, {
             pageId: targetTabId,
             origin: pageOrigins.get(targetTabId),
+            pageTitle: spec.operation === OPERATIONS.NAVIGATE || spec.operation === OPERATIONS.CREATE_TAB
+              ? undefined : pageDetails.get(targetTabId)?.title,
             requestedUrl: params.url,
           });
           notifyToolOutcome(options.onToolOutcome, {

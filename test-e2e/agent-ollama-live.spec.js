@@ -69,12 +69,61 @@ async function prepareEvaluationPage(window, harness) {
 
 async function configureOllama(window) {
   await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-select').selectOption('ollama');
-  await window.locator('#agent-ollama-model').fill(OLLAMA_MODEL);
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
   await window.locator('#agent-ollama-url').fill(OLLAMA_BASE_URL);
   await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${OLLAMA_MODEL}`);
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await window.locator('#agent-model-menu-button').click();
+  await window.locator('#agent-model-menu-list [role="menuitemradio"]').filter({ hasText: OLLAMA_MODEL }).click();
 }
+
+test('Ollama identifies its runtime and opens five Wikipedia tabs after chat-only turns', async ({ window, electronApp }) => {
+  test.skip(process.env.FREEDOM_OLLAMA_WIKIPEDIA_TEST !== '1', 'Explicit opt-in required for live Wikipedia requests');
+  test.setTimeout(9 * 60_000);
+  // Use Chromium's real navigation/redirect path only in this disposable test
+  // profile. Permit Wikipedia GETs and keep other HTTPS traffic blocked.
+  await electronApp.evaluate(({ session }) => {
+    session.defaultSession.protocol.unhandle('https');
+    session.defaultSession.webRequest.onBeforeRequest({ urls: ['https://*/*'] }, (request, callback) => {
+      callback({ cancel: new URL(request.url).hostname !== 'en.wikipedia.org' || request.method !== 'GET' });
+    });
+  });
+  await configureOllama(window);
+  const runTurn = async (prompt) => {
+    const started = await window.evaluate((text) => window.electronAPI.startAgent(null, text), prompt);
+    expect(started.ok).toBe(true);
+    await expect.poll(async () => {
+      const response = await window.evaluate(() => window.electronAPI.getAgentState());
+      return response.state?.transcript?.find((turn) => turn.runId === started.runId)?.status;
+    }, { timeout: 4 * 60_000, intervals: [1000] }).toMatch(/^(completed|failed|cancelled)$/);
+    const response = await window.evaluate(() => window.electronAPI.getAgentState());
+    const turn = response.state?.transcript?.find((item) => item.runId === started.runId);
+    expect(turn?.status).toBe('completed');
+    return turn;
+  };
+  try {
+    const identity = await runTurn('Which model and provider are you using?');
+    expect(identity.assistantText).toMatch(/qwen3/i);
+    expect(identity.assistantText).toMatch(/ollama/i);
+    expect(identity.activity).toHaveLength(0);
+    const result = await runTurn('open 5 random wikipedia articles in 5 different tabs');
+    const creates = result.activity.filter((item) => item.operation === 'browser_create_tab');
+    expect(creates).toHaveLength(5);
+    expect(creates.every((item) => item.status === 'succeeded')).toBe(true);
+    await expect.poll(async () => {
+      const urls = await window.evaluate(() => [...document.querySelectorAll('webview')].map((view) => view.getURL()));
+      const articles = urls.filter((url) => url.startsWith('https://en.wikipedia.org/wiki/') && !url.includes('Special:Random'));
+      return new Set(articles).size;
+    }, { timeout: 20_000 }).toBe(5);
+  } finally {
+    const response = await window.evaluate(() => window.electronAPI.getAgentState());
+    await test.info().attach('ollama-five-tabs-runtime', { body: JSON.stringify(response, null, 2), contentType: 'application/json' });
+    if (response.state?.runId) await window.evaluate((id) => window.electronAPI.stopAgent(id), response.state.runId);
+  }
+});
 
 async function runTask(window, prompt, { approveFormSubmission = false } = {}) {
   const startedAt = Date.now();

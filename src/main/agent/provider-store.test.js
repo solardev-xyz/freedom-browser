@@ -8,7 +8,9 @@ const { AgentProviderStore } = require('./provider-store');
 function createSafeStorage(available = true) {
   return {
     isEncryptionAvailable: jest.fn(() => available),
-    encryptString: jest.fn((value) => Buffer.from(`encrypted:${Buffer.from(value).toString('base64')}`)),
+    encryptString: jest.fn((value) =>
+      Buffer.from(`encrypted:${Buffer.from(value).toString('base64')}`)
+    ),
     decryptString: jest.fn((value) => {
       const encoded = value.toString().replace(/^encrypted:/, '');
       return Buffer.from(encoded, 'base64').toString();
@@ -32,6 +34,27 @@ function createStore(options = {}) {
 }
 
 describe('AgentProviderStore', () => {
+  test('favorites and privacy survive key replacement, model switches and reopening', () => {
+    const { store, dataDir, safeStorage } = createStore();
+    store.saveHosted({ providerId: 'venice', modelId: 'one', apiKey: 'first' });
+    store.savePreferences('venice', { privacyPolicy: 'tee', favoriteModelIds: ['one', 'two'] });
+    store.saveHosted({ providerId: 'venice', modelId: 'two', apiKey: 'replacement' });
+    store.saveHosted({ providerId: 'openai', modelId: 'other', apiKey: 'other-key' });
+    const reopened = createStore({ dataDir, safeStorage }).store;
+    expect(reopened.getSelection('venice').apiKey).toBe('replacement');
+    expect(reopened.getSelection().providerId).toBe('openai');
+    expect(
+      reopened.getPublicStatus().connections.find((item) => item.providerId === 'venice')
+    ).toMatchObject({
+      privacyPolicy: 'tee',
+      favoriteModelIds: ['one', 'two'],
+      modelId: 'two',
+    });
+    expect(JSON.stringify(reopened.getPublicStatus())).not.toMatch(
+      /replacement|other-key|encryptedApiKey/
+    );
+  });
+
   test('stores hosted credentials as profile-bound ciphertext', () => {
     const safeStorage = createSafeStorage();
     const { dataDir, store } = createStore({ safeStorage });
@@ -65,6 +88,72 @@ describe('AgentProviderStore', () => {
     }
   });
 
+  test.each([1, 2, 3])(
+    'retires a sole Free Pi connection from store version %s without decrypting it',
+    (version) => {
+      const { store, dataDir, safeStorage } = createStore();
+      store.saveHosted({ providerId: 'freepi', modelId: 'retired-model', apiKey: 'retired-key' });
+      const file = path.join(dataDir, 'provider.json');
+      const payload = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (version < 3) {
+        payload.selection = payload.connections.freepi;
+        delete payload.connections;
+        delete payload.activeProviderId;
+      }
+      payload.version = version;
+      fs.writeFileSync(file, JSON.stringify(payload));
+      safeStorage.decryptString.mockClear();
+
+      expect(store.getPublicStatus()).toMatchObject({ configured: false, connections: [] });
+      expect(store.getSelection()).toBeNull();
+      expect(safeStorage.decryptString).not.toHaveBeenCalled();
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({
+        version: 3,
+        connections: {},
+        activeProviderId: null,
+      });
+      expect(fs.readFileSync(file, 'utf8')).not.toContain('freepi');
+    }
+  );
+
+  test.each(['freepi', 'openai'])(
+    'retirement preserves other connections and credentials (active: %s)',
+    async (activeProviderId) => {
+      const { store, dataDir, safeStorage } = createStore();
+      const credentials = store.createCredentialStore();
+      const oauth = {
+        type: 'oauth',
+        access: 'test-access',
+        refresh: 'test-refresh',
+        expires: Date.now() + 60000,
+      };
+      await credentials.modify('openai-codex', async () => oauth);
+      store.saveSubscription({ providerId: 'openai-codex', modelId: 'codex-model' });
+      store.saveHosted({ providerId: 'openai', modelId: 'model-b', apiKey: 'openai-key' });
+      store.saveHosted({ providerId: 'freepi', modelId: 'retired-model', apiKey: 'retired-key' });
+      const file = path.join(dataDir, 'provider.json');
+      const payload = JSON.parse(fs.readFileSync(file, 'utf8'));
+      payload.activeProviderId = activeProviderId;
+      fs.writeFileSync(file, JSON.stringify(payload));
+      safeStorage.decryptString.mockClear();
+
+      const status = store.getPublicStatus();
+      expect(status.configured).toBe(activeProviderId === 'openai');
+      expect(status.connections.map(({ providerId }) => providerId)).toEqual([
+        'openai-codex',
+        'openai',
+      ]);
+      expect(safeStorage.decryptString).not.toHaveBeenCalled();
+      const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
+      expect(persisted.connections.openai).toEqual(payload.connections.openai);
+      expect(persisted.credentials).toEqual(payload.credentials);
+      expect(persisted.activeProviderId).toBe(activeProviderId === 'freepi' ? null : 'openai');
+      expect(await credentials.read('openai-codex')).toEqual(oauth);
+      store.select('openai', 'model-b');
+      expect(store.getSelection()).toMatchObject({ providerId: 'openai', apiKey: 'openai-key' });
+    }
+  );
+
   test('stores keyless loopback configuration without secure storage', () => {
     const safeStorage = createSafeStorage(false);
     const { store } = createStore({ safeStorage });
@@ -82,6 +171,21 @@ describe('AgentProviderStore', () => {
       configured: true,
       kind: 'ollama',
     });
+  });
+
+  test('persists discovered Ollama models and replaces stale models on refresh', () => {
+    const { store } = createStore();
+    const baseUrl = 'http://127.0.0.1:11434/v1';
+    store.saveOllama({ modelId: 'qwen3:8b', modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl });
+    store.select('ollama', 'llama3.2:3b');
+    store.savePreferences('ollama', { favoriteModelIds: ['qwen3:8b', 'llama3.2:3b'] });
+    expect(store.getPublicStatus().connections[0].modelIds).toEqual(['qwen3:8b', 'llama3.2:3b']);
+    expect(store.getSelection().modelId).toBe('llama3.2:3b');
+    store.saveOllama({ modelId: 'qwen3:8b', modelIds: ['qwen3:8b'], baseUrl });
+    expect(store.getPublicStatus().connections[0]).toMatchObject({
+      modelIds: ['qwen3:8b'], favoriteModelIds: ['qwen3:8b'],
+    });
+    expect(() => store.select('ollama', 'llama3.2:3b')).toThrow();
   });
 
   test('bounds Ollama model history without invalidating other provider credentials', async () => {

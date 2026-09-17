@@ -185,6 +185,12 @@ const VENDOR_FILES = {
  * every `auditName` in licenses-audit.json.
  */
 const SRC_ASSETS = {
+  'src/renderer/assets/provider-logos/': {
+    thirdParty: true,
+    label: 'model provider marks',
+    auditName: 'model provider marks',
+    noticeMatch: /^Model provider marks$/m,
+  },
   'src/main/agent/workspace-execution/native/': {
     thirdParty: false,
     label: "Freedom's own workspace supervisor sources",

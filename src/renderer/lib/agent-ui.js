@@ -6,10 +6,13 @@ import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature
 
 const PROVIDER_NAMES = Object.freeze({
   anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  'openai-codex': 'ChatGPT (Codex)',
+  openai: 'OpenAI · API',
+  'openai-codex': 'OpenAI · ChatGPT',
   openrouter: 'OpenRouter',
-  freepi: 'Free Pi',
+  xai: 'xAI (Grok)',
+  meta: 'Meta (Muse)',
+  venice: 'Venice',
+  'near-ai': 'NEAR AI',
   ollama: 'Ollama',
 });
 const APPROVAL_MODES = Object.freeze({
@@ -86,6 +89,7 @@ let providerCatalogPromise = null;
 let providerStatus = null;
 let providerReady = false;
 let providerLoginPending = false;
+let choosingProviderMethod = false;
 let currentConversationId = null;
 let conversationRendererTabId = null;
 let dismissedPageContextTabId = null;
@@ -480,8 +484,10 @@ function providerPrivacyMessage(providerId) {
     return 'Model requests stay on this device and are sent only to your local Ollama server.';
   }
   if (providerId === 'openai-codex') {
-    return 'Your task and page content the agent reads may be sent to OpenAI through your ChatGPT subscription. Avoid using Agent on pages containing sensitive information.';
+    return 'Requests go to OpenAI through your ChatGPT subscription, including conversation and content Agent reads.';
   }
+  const description = providerCatalog.find((provider) => provider.providerId === providerId)?.privacy;
+  if (description) return `Your task, conversation and content Agent reads are sent to this provider. ${description}`;
   return `Your task and page content the agent reads may be sent to ${providerName(providerId)}. Avoid using Agent on pages containing sensitive information.`;
 }
 
@@ -532,7 +538,13 @@ function configuredModels() {
           }))
         : providerCatalog.find((provider) => provider.providerId === connection.providerId)
             ?.models || [{ id: connection.modelId, name: connection.modelId }];
-    return models.map((model) => ({
+    const query = elements.modelMenuSearch.value.trim().toLowerCase();
+    const favorites = connection.favoriteModelIds || [connection.modelId];
+    return models.filter((model) => {
+      if (!uiModelAllowed(model, connection.privacyPolicy)) return false;
+      return !query || `${model.name} ${model.id} ${providerName(connection.providerId)}`.toLowerCase().includes(query);
+    }).sort((a, b) => Number(favorites.includes(b.id)) - Number(favorites.includes(a.id))).map((model) => ({
+      favorite: favorites.includes(model.id),
       providerId: connection.providerId,
       modelId: model.id,
       name: model.name || model.id,
@@ -1314,7 +1326,7 @@ function showPrimaryView() {
 function showProviderSetup() {
   setAgentView('setup');
   renderConnectedProviders();
-  elements.provider.focus();
+  showProviderScreen('home');
 }
 
 function setPanelOpen(nextOpen) {
@@ -1376,43 +1388,345 @@ function renderProviderFields() {
   const isSubscription = providerAuthType(providerId) === 'subscription';
   const connection = providerConnection(providerId);
   const isConnectedSubscription = connection?.kind === 'subscription';
+  const descriptor = providerCatalog.find((item) => item.providerId === providerId);
+  elements.providerHeading.textContent = providerName(providerId);
+  elements.providerStatus.textContent = connection ? 'Connected' : 'Not connected';
+  elements.providerStatus.classList.toggle('active', Boolean(connection));
   elements.providerPrivacy.textContent = providerPrivacyMessage(providerId);
-  elements.hostedFields.classList.toggle('hidden', isOllama);
+  elements.hostedFields.classList.toggle('hidden', isOllama || !connection);
   elements.ollamaFields.classList.toggle('hidden', !isOllama);
-  elements.apiKeyField.classList.toggle('hidden', isSubscription);
-  elements.subscriptionFields.classList.toggle('hidden', !isSubscription);
+  elements.apiKeyField.classList.toggle('hidden', isSubscription || isOllama);
+  (connection ? elements.keySettings : elements.connectionFields).prepend(elements.apiKeyField);
+  elements.subscriptionFields.classList.toggle('hidden', !isSubscription || (isConnectedSubscription && !providerLoginPending));
   elements.saveProvider.hidden = isSubscription;
+  elements.authCode.hidden = !providerLoginPending || !elements.authUserCode.textContent;
+  elements.subscriptionNote.hidden = Boolean(connection);
   elements.loginProvider.hidden =
     !isSubscription || isConnectedSubscription || providerLoginPending;
   elements.cancelProviderLogin.hidden = !isSubscription || !providerLoginPending;
   elements.provider.disabled = providerLoginPending;
   elements.model.disabled = providerLoginPending;
+  elements.modelRefresh.hidden = !isOllama && !descriptor?.canRefresh;
+  elements.modelRefresh.disabled = (isOllama || isSubscription) && !connection;
+  elements.apiKey.placeholder = connection ? 'Leave empty to keep your saved key' : 'Stored encrypted on this device';
+  elements.saveProvider.textContent = isOllama
+    ? connection ? 'Save connection' : 'Connect to Ollama'
+    : connection ? 'Save connection' : 'Connect provider';
+  elements.modelDetails.hidden = !connection;
+  elements.testProvider.hidden = !connection;
+  elements.providerDisconnect.hidden = !connection;
+  elements.testProviderNote.hidden = !connection;
+  const policies = descriptor?.policies || [];
+  elements.privacyControls.hidden = policies.length === 0;
+  elements.privacyPolicy.replaceChildren(...policies.map(([value, label]) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }));
+  elements.privacyPolicy.value = connection?.privacyPolicy || 'standard';
+  elements.privacySave.hidden = !connection;
+  elements.catalogStatus.textContent = descriptor?.updatedAt
+    ? `Catalog updated ${new Date(descriptor.updatedAt).toLocaleString()}`
+    : descriptor?.canRefresh ? 'Refresh to discover current models. No prompts are sent.' : 'Bundled model catalog';
   if (!isOllama) renderModelOptions(providerId);
+  else renderProviderModelPreview(providerId);
+  const chatgptConnected = Boolean(providerConnection('openai-codex'));
+  const apiConnected = Boolean(providerConnection('openai'));
+  elements.chatgptConnectionState.textContent = chatgptConnected ? 'Connected' : 'Connect';
+  elements.apiConnectionState.textContent = apiConnected ? 'Connected' : 'Connect';
+  elements.chatgptConnectionState.classList.toggle('active', chatgptConnected);
+  elements.apiConnectionState.classList.toggle('active', apiConnected);
+  if (choosingProviderMethod) {
+    elements.providerHeading.textContent = 'OpenAI';
+    elements.providerStatus.textContent = chatgptConnected || apiConnected ? 'Connected' : 'Not connected';
+    elements.providerStatus.classList.toggle('active', chatgptConnected || apiConnected);
+  }
+
+}
+
+function renderProviderModelPreview(providerId) {
+  const connection = providerConnection(providerId);
+  const models = providerId === 'ollama'
+    ? (connection?.modelIds || (connection ? [connection.modelId] : [])).map((id) => ({ id, name: id }))
+    : providerCatalog.find((provider) => provider.providerId === providerId)?.models || [];
+  const available = models.filter((model) => uiModelAllowed(model, elements.privacyPolicy.value || 'standard'));
+  elements.providerModelsHeading.textContent = available.length
+    ? `Available models · ${available.length}` : 'Available models';
+  elements.providerModelsList.replaceChildren(...available.map((model) => {
+    const row = document.createElement('li');
+    row.textContent = model.name || model.id;
+    row.title = model.id;
+    return row;
+  }));
+  elements.providerModelsList.scrollTop = 0;
+  elements.providerModelsList.hidden = !available.length;
+  elements.providerModelsEmpty.hidden = Boolean(available.length);
+  elements.providerModelsEmpty.textContent = models.length
+    ? 'No models meet the current requirements'
+    : connection ? 'Refresh to discover available models' : 'Connect to discover available models';
+}
+
+function uiModelAllowed(model, policy = 'standard') {
+  return model.available !== false && model.tools !== false &&
+    (policy !== 'private' || ['private', 'tee'].includes(model.privacy)) &&
+    (policy !== 'tee' || model.privacy === 'tee');
+}
+
+function showProviderScreen(screen) {
+  elements.providerHome.hidden = screen !== 'home';
+  elements.providerBrowser.hidden = screen !== 'browser';
+  elements.providerDetail.hidden = screen !== 'detail';
+  setMessage(elements.providerMessage, '');
+  if (screen === 'browser') elements.providerSearch.focus();
+}
+
+function openProviderDetail(providerId, chooseMethod = false) {
+  choosingProviderMethod = chooseMethod;
+  elements.provider.value = providerId;
+  elements.apiKey.value = '';
+  elements.model.value = providerConnection(providerId)?.modelId || '';
+  if (providerId === 'ollama') {
+    const connection = providerConnection(providerId);
+    elements.ollamaUrl.value = connection?.baseUrl || 'http://127.0.0.1:11434/v1';
+  }
+  elements.providerAdvanced.open = false;
+  elements.providerMethods.hidden = !chooseMethod;
+  elements.connectionFields.hidden = chooseMethod;
+  showProviderScreen('detail');
+  renderProviderFields();
+  if (chooseMethod) elements.providerHeading.textContent = 'OpenAI';
+  const descriptor = providerCatalog.find((item) => item.providerId === providerId);
+  if (!chooseMethod && providerConnection(providerId) && descriptor?.canRefresh &&
+      (!descriptor.updatedAt || Date.now() - descriptor.updatedAt > 24 * 60 * 60 * 1000)) {
+    refreshModelCatalog();
+  }
+}
+
+function createProviderLogo(providerId) {
+  const files = {
+    openai: 'openai.png', 'openai-codex': 'openai.png', anthropic: 'anthropic.png',
+    xai: 'xai-light.svg', meta: 'meta.svg', openrouter: 'openrouter.png',
+    venice: 'venice.png', 'near-ai': 'near-ai.svg', ollama: 'ollama.png',
+  };
+  const logo = document.createElement('span');
+  logo.className = 'agent-provider-avatar';
+  logo.setAttribute('aria-hidden', 'true');
+  const file = files[providerId];
+  if (!file) {
+    logo.textContent = providerName(providerId).slice(0, 1);
+    return logo;
+  }
+  const image = document.createElement('img');
+  image.className = 'agent-provider-logo';
+  image.src = `assets/provider-logos/${file}`;
+  image.alt = '';
+  image.width = 32;
+  image.height = 32;
+  image.draggable = false;
+  logo.appendChild(image);
+  if (providerId === 'xai') {
+    image.classList.add('agent-provider-logo-light');
+    const dark = document.createElement('img');
+    dark.className = 'agent-provider-logo agent-provider-logo-dark';
+    dark.src = 'assets/provider-logos/xai-dark.svg';
+    dark.alt = '';
+    dark.width = 32;
+    dark.height = 32;
+    dark.draggable = false;
+    logo.appendChild(dark);
+  }
+  return logo;
+}
+
+function renderProviderOptions() {
+  const selected = elements.provider.value;
+  const definitions = [...providerCatalog, { providerId: 'ollama', name: 'Ollama', group: 'On this device' }];
+  elements.provider.replaceChildren(...definitions.map((definition) => {
+    const option = document.createElement('option');
+    option.value = definition.providerId;
+    option.textContent = definition.name;
+    return option;
+  }));
+  elements.provider.value = definitions.some((item) => item.providerId === selected) ? selected : definitions[0]?.providerId || '';
+  const query = elements.providerSearch.value.trim().toLowerCase();
+  const content = [];
+  let group;
+  let groupRows;
+  const descriptions = {
+    openai: 'ChatGPT subscription or API key',
+    anthropic: 'Claude models',
+    xai: 'Grok models',
+    meta: 'Muse models',
+    openrouter: 'Many model providers, one API key',
+    venice: 'Models with privacy options',
+    'near-ai': 'TEE and external models',
+    ollama: 'Models running on your computer',
+  };
+  for (const definition of definitions) {
+    if (definition.providerId === 'openai-codex') continue;
+    const name = definition.providerId === 'openai' ? 'OpenAI' : definition.name;
+    if (!`${name} ${definition.providerId} ${definition.providerId === 'openai' ? 'ChatGPT subscription API' : ''}`.toLowerCase().includes(query)) continue;
+    if (!groupRows || group !== definition.group) {
+      group = definition.group;
+      const label = document.createElement('div');
+      label.className = 'agent-provider-group-label';
+      label.textContent = group || 'Providers';
+      groupRows = document.createElement('div');
+      groupRows.className = 'agent-provider-group';
+      content.push(label, groupRows);
+    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'agent-provider-choice';
+    button.setAttribute('aria-label', name);
+    const avatar = createProviderLogo(definition.providerId);
+    const copy = document.createElement('span');
+    copy.className = 'agent-provider-choice-copy';
+    const title = document.createElement('strong');
+    title.textContent = name;
+    const description = document.createElement('span');
+    description.textContent = descriptions[definition.providerId] || 'Connect with an API key';
+    copy.appendChild(title);
+    copy.appendChild(description);
+    const connected = Boolean(providerConnection(definition.providerId) ||
+      (definition.providerId === 'openai' && providerConnection('openai-codex')));
+    const indicator = document.createElement('span');
+    indicator.className = 'agent-provider-indicator';
+    indicator.textContent = connected ? '✓' : '›';
+    indicator.title = connected ? 'Connected' : 'Connect provider';
+    indicator.classList.toggle('active', connected);
+    button.appendChild(avatar);
+    button.appendChild(copy);
+    button.appendChild(indicator);
+    button.addEventListener('click', () => openProviderDetail(definition.providerId, definition.providerId === 'openai'));
+    groupRows.appendChild(button);
+  }
+  if (!content.length) {
+    const empty = document.createElement('p');
+    empty.textContent = 'No matching providers';
+    content.push(empty);
+  }
+  elements.providerChoices.replaceChildren(...content);
+}
+
+function favoriteButton(providerId, modelId) {
+  const connection = providerConnection(providerId);
+  const favorites = connection?.favoriteModelIds || [connection?.modelId];
+  const active = favorites.includes(modelId);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'agent-model-star';
+  button.textContent = active ? '★' : '☆';
+  button.setAttribute('aria-label', `${active ? 'Unfavorite' : 'Favorite'} ${modelName(providerId, modelId)}`);
+  button.setAttribute('aria-pressed', String(active));
+  button.hidden = !connection;
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    await saveProviderPreferences({ favoriteModelIds: active ? favorites.filter((id) => id !== modelId) : [...favorites, modelId] }, providerId);
+    button.disabled = false;
+  });
+  return button;
 }
 
 function renderModelOptions(providerId) {
+  renderProviderModelPreview(providerId);
   const selectedModel =
-    providerStatus?.providerId === providerId ? providerStatus.modelId : elements.model.value;
+    elements.model.value || providerConnection(providerId)?.modelId;
   const provider = providerCatalog.find((candidate) => candidate.providerId === providerId);
+  const connection = providerConnection(providerId);
+  const favorites = connection?.favoriteModelIds || [connection?.modelId];
   const options = (provider?.models || []).map((model) => {
     const option = document.createElement('option');
     option.value = model.id;
-    option.textContent = model.name || model.id;
+    option.textContent = `${favorites.includes(model.id) ? '★ ' : ''}${model.name || model.id}${model.available === false ? ' · Unavailable' : model.tools === false ? ' · No tool calling' : ''}`;
+    option.disabled = !uiModelAllowed(model, elements.privacyPolicy.value);
     return option;
   });
   elements.model.replaceChildren(...options);
-  if (options.some((option) => option.value === selectedModel)) {
+  if (options.some((option) => option.value === selectedModel && !option.disabled)) {
     elements.model.value = selectedModel;
-  } else if (options[0]) {
-    elements.model.value = options[0].value;
+  } else {
+    elements.model.value = options.find((option) => !option.disabled)?.value || '';
   }
+  renderModelDetails();
+}
+
+function renderModelDetails() {
+  const providerId = elements.provider.value;
+  const model = catalogModel(providerId, elements.model.value);
+  const parts = [];
+  if (model) {
+    parts.push(model.id);
+    if (model.contextWindow) parts.push(`${new Intl.NumberFormat().format(model.contextWindow)} context`);
+    if (model.vision) parts.push('Images');
+    if (model.reasoning) parts.push('Reasoning');
+    parts.push(model.tools === true ? 'Tool calling' : model.tools === false ? 'No tool calling' : 'Tool support not reported');
+    if (model.privacy && !['standard', 'routing'].includes(model.privacy)) parts.push(`${model.privacy.toUpperCase()} · provider reported`);
+    if (model.inputPrice != null && model.outputPrice != null) parts.push(`$${model.inputPrice} input / $${model.outputPrice} output per 1M tokens`);
+  }
+  elements.modelDetails.textContent = parts.join(' · ') || 'No matching models. Try another search or refresh the catalog.';
+
+}
+
+async function saveProviderPreferences(preferences, providerId = elements.provider.value) {
+  try {
+    const response = await window.electronAPI.setAgentProviderPreferences(providerId, preferences);
+    if (!response?.ok) {
+      setMessage(elements.providerMessage, responseMessage(response, 'Could not save preferences'), true);
+      return;
+    }
+    providerStatus = response.status;
+    if (elements.provider.value === providerId) { renderProviderFields(); renderModelDetails(); }
+    renderConnectedProviders();
+    renderActiveModel();
+    setMessage(elements.providerMessage, 'Preferences saved');
+  } catch { setMessage(elements.providerMessage, 'Could not save preferences', true); }
+}
+
+async function refreshModelCatalog() {
+  const providerId = elements.provider.value;
+  elements.modelRefresh.disabled = true;
+  setMessage(elements.providerMessage, 'Refreshing model catalog…');
+  try {
+    const response = await window.electronAPI.refreshAgentProviderModels(providerId, elements.apiKey.value || undefined);
+    if (!response?.ok) {
+      setMessage(elements.providerMessage, responseMessage(response, 'Could not refresh models. Your previous catalog is still available.'), true);
+      return;
+    }
+    providerCatalog = response.catalog;
+    if (response.status) providerStatus = response.status;
+    renderProviderFields();
+    renderConnectedProviders();
+    renderActiveModel();
+    setMessage(elements.providerMessage, 'Model catalog refreshed');
+    return true;
+  } catch { setMessage(elements.providerMessage, 'Could not refresh models. Your previous catalog is still available.', true); }
+  finally { elements.modelRefresh.disabled = false; }
+}
+
+async function testProviderConnection() {
+  const providerId = elements.provider.value;
+  elements.testProvider.disabled = true;
+  setMessage(elements.providerMessage, 'Sending test prompt…');
+  try {
+    const response = await window.electronAPI.testAgentProviderConnection(providerId,
+      providerId === 'ollama' ? providerConnection(providerId)?.modelId : elements.model.value);
+    setMessage(elements.providerMessage, response?.ok
+      ? response.result.outcome === 'token_limit'
+        ? 'Connection accepted. The model reached the test token limit before finishing.'
+        : `Model responded in ${Math.max(0.1, response.result.elapsedMs / 1000).toFixed(1)}s`
+      : responseMessage(response, 'Test prompt failed'), !response?.ok);
+  } catch { setMessage(elements.providerMessage, 'Test prompt failed', true); }
+  finally { elements.testProvider.disabled = false; }
 }
 
 function renderConnectedProviders() {
   const connections = providerConnections();
   elements.connectedProviders.hidden = connections.length === 0;
   const rows = connections.map((connection) => {
-    const row = document.createElement('div');
+    const row = document.createElement('button');
+    row.type = 'button';
     row.className = 'agent-connected-provider';
     const copy = document.createElement('div');
     copy.className = 'agent-connected-provider-copy';
@@ -1427,13 +1741,13 @@ function renderConnectedProviders() {
         : modelName(connection.providerId, connection.modelId);
     copy.appendChild(name);
     copy.appendChild(model);
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'agent-provider-remove';
-    remove.textContent = 'Disconnect';
-    remove.addEventListener('click', () => removeProviderConnection(connection.providerId));
+    row.appendChild(createProviderLogo(connection.providerId));
     row.appendChild(copy);
-    row.appendChild(remove);
+    const chevron = document.createElement('span');
+    chevron.textContent = '›';
+    chevron.setAttribute('aria-hidden', 'true');
+    row.appendChild(chevron);
+    row.addEventListener('click', () => openProviderDetail(connection.providerId));
     return row;
   });
   elements.connectedProviderList.replaceChildren(...rows);
@@ -1469,10 +1783,20 @@ function renderModelMenu() {
       option.appendChild(name);
       option.appendChild(check);
       option.addEventListener('click', () => selectModel(model.providerId, model.modelId));
-      content.push(option);
+      const row = document.createElement('div');
+      row.className = 'agent-model-row';
+      row.appendChild(option);
+      row.appendChild(favoriteButton(providerId, model.modelId));
+      content.push(row);
     }
   }
   elements.modelMenuList.replaceChildren(...content);
+  if (!content.length) {
+    const empty = document.createElement('p');
+    empty.className = 'agent-catalog-status';
+    empty.textContent = elements.modelMenuSearch.value ? 'No matching models meet your privacy settings' : 'Connect a provider to browse its models';
+    elements.modelMenuList.appendChild(empty);
+  }
 }
 
 function renderActiveModel() {
@@ -1496,7 +1820,6 @@ function renderProviderStatus(status) {
   if (configured && Object.hasOwn(PROVIDER_NAMES, status.providerId)) {
     elements.provider.value = status.providerId;
     if (status.providerId === 'ollama') {
-      elements.ollamaModel.value = status.modelId || '';
       elements.ollamaUrl.value = status.baseUrl || 'http://127.0.0.1:11434/v1';
     }
   }
@@ -1505,6 +1828,7 @@ function renderProviderStatus(status) {
   renderActiveModel();
   updateSendAvailability();
   if (agentView === 'loading') showPrimaryView();
+  else if (agentView === 'setup') setAgentView('setup');
 }
 
 async function refreshProvider() {
@@ -1539,6 +1863,7 @@ async function loadProviderCatalog() {
       const response = await window.electronAPI.getAgentProviderCatalog();
       if (!response?.ok || !Array.isArray(response.catalog)) return providerCatalog;
       providerCatalog = response.catalog;
+      renderProviderOptions();
       renderProviderFields();
       renderConnectedProviders();
       renderActiveModel();
@@ -1587,6 +1912,7 @@ async function removeProviderConnection(providerId) {
     }
     renderProviderStatus(response.status);
     if (!response.status?.configured) setAgentView('setup');
+    showProviderScreen('home');
   } catch {
     setMessage(elements.providerMessage, `Could not disconnect ${label}`, true);
   }
@@ -1594,20 +1920,36 @@ async function removeProviderConnection(providerId) {
 
 async function saveProvider() {
   const providerId = elements.provider.value;
+  const privacyPolicy = elements.privacyPolicy.value;
+  const adding = !providerConnection(providerId);
   elements.saveProvider.disabled = true;
-  setMessage(elements.providerMessage, 'Saving…');
+  setMessage(elements.providerMessage, providerId === 'ollama' ? 'Finding installed models…' : 'Saving…');
   try {
     let response;
+    if (adding && providerId !== 'ollama' && !elements.model.value) {
+      // Some catalogs require the entered key. Discover them as part of connecting,
+      // without making users select a model in the connection form.
+      if (!await refreshModelCatalog()) return;
+      elements.privacyPolicy.value = privacyPolicy;
+      renderModelOptions(providerId);
+      if (!elements.model.value) {
+        setMessage(elements.providerMessage, 'No supported models meet this privacy setting', true);
+        return;
+      }
+    }
     if (providerId === 'ollama') {
       response = await window.electronAPI.configureOllamaAgentProvider(
-        elements.ollamaModel.value.trim(),
+        undefined,
         elements.ollamaUrl.value.trim()
       );
+    } else if (providerAuthType(providerId) === 'subscription') {
+      response = await window.electronAPI.selectAgentModel(providerId, elements.model.value);
     } else {
       response = await window.electronAPI.configureHostedAgentProvider(
         providerId,
         elements.model.value,
-        elements.apiKey.value
+        elements.apiKey.value,
+        ...(elements.privacyControls.hidden ? [] : [elements.privacyPolicy.value])
       );
     }
     elements.apiKey.value = '';
@@ -1616,9 +1958,7 @@ async function saveProvider() {
       return;
     }
     renderProviderStatus(response.status);
-    setMessage(elements.providerMessage, 'Model saved for this profile');
-    setAgentView('workspace');
-    elements.prompt.focus();
+    setMessage(elements.providerMessage, providerId === 'ollama' ? 'Ollama models ready' : 'Model saved for this profile');
   } catch {
     elements.apiKey.value = '';
     setMessage(elements.providerMessage, 'Could not save model', true);
@@ -1664,9 +2004,8 @@ async function loginSubscriptionProvider() {
       return;
     }
     renderProviderStatus(response.status);
-    setMessage(elements.providerMessage, 'ChatGPT connected for this profile');
-    setAgentView('workspace');
-    elements.prompt.focus();
+    openProviderDetail(providerId);
+    setMessage(elements.providerMessage, 'ChatGPT connected');
   } catch {
     setMessage(elements.providerMessage, 'Could not sign in with ChatGPT', true);
   } finally {
@@ -2785,6 +3124,58 @@ function renderPublication(runId, publication) {
   view.artifactList.hidden = false;
 }
 
+function renderToolPage(record, event, finished = false) {
+  record.pageIcon = null;
+  record.label.classList.remove('agent-tool-page');
+  if (!event.operation?.startsWith('browser_') || !event.origin) return;
+  const label = (finished ? event.label : event.intent || event.label) || '';
+  if (!label.endsWith(event.origin)) return;
+  let host;
+  try { host = new URL(event.origin).hostname; } catch { return; }
+  if (!host) return;
+  const action = label.slice(0, -event.origin.length).trim();
+  const title = typeof event.pageTitle === 'string' ? event.pageTitle.slice(0, 240).trim() : '';
+  const icon = document.createElement('span');
+  icon.className = 'agent-tool-page-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20"/></svg>';
+  const copy = document.createElement('span');
+  copy.className = 'agent-tool-page-copy';
+  const headline = document.createElement('span');
+  headline.className = 'agent-tool-page-title';
+  headline.textContent = `${action} ${title || host}`;
+  headline.title = headline.textContent;
+  copy.appendChild(headline);
+  if (title) {
+    const site = document.createElement('span');
+    site.className = 'agent-tool-page-site';
+    site.textContent = host;
+    copy.appendChild(site);
+  }
+  if (finished && event.status === 'failed') {
+    const error = document.createElement('span');
+    error.className = 'agent-tool-page-error';
+    error.textContent = formatToolError(event.errorCode, event.operation);
+    copy.appendChild(error);
+  }
+  record.label.classList.add('agent-tool-page');
+  record.label.replaceChildren(icon, copy);
+  record.pageIcon = icon;
+  // History rendering must not initiate requests to sites the user visited.
+  void (async () => {
+    try {
+      const favicon = await window.electronAPI.getCachedFavicon?.(event.origin);
+      if (record.pageIcon !== icon || typeof favicon !== 'string' ||
+          !favicon.startsWith('data:image/') || favicon.length > 512 * 1024) return;
+      const image = document.createElement('img');
+      image.alt = '';
+      image.src = favicon;
+      image.addEventListener('error', () => { image.remove(); });
+      icon.appendChild(image);
+    } catch { /* Keep the neutral page icon when the favicon cache is unavailable. */ }
+  })();
+}
+
 function addToolRow(event) {
   const view = turnView(event.runId);
   if (!view || typeof event.toolCallId !== 'string') return;
@@ -2806,6 +3197,7 @@ function addToolRow(event) {
   view.activity.open = true;
   view.actionCount += 1;
   toolRows.set(`${event.runId}:${event.toolCallId}`, { row, state, label, approval });
+  renderToolPage(toolRows.get(`${event.runId}:${event.toolCallId}`), event);
   updateToolApproval(event.runId, event.toolCallId, event.approval);
 }
 
@@ -2857,6 +3249,7 @@ function finishToolRow(event) {
     record.row.title = formatToolError(event.errorCode, event.operation);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
   }
+  renderToolPage(record, event, true);
   updateToolApproval(event.runId, event.toolCallId, event.approval);
   if (userCancelled) {
     record.approval.textContent = 'Cancelled by you';
@@ -3691,9 +4084,40 @@ export function initAgentUi(options = {}) {
     processCompactPopover: byId('agent-process-compact-popover'),
     processCompactCount: byId('agent-process-compact-count'),
     processCompactList: byId('agent-process-compact-list'),
+    providerHome: byId('agent-provider-home'),
+    providerBrowser: byId('agent-provider-browser'),
+    providerDetail: byId('agent-provider-detail'),
+    providerAdd: byId('agent-provider-add'),
+    providerListBack: byId('agent-provider-list-back'),
+    providerDetailBack: byId('agent-provider-detail-back'),
+    providerChoices: byId('agent-provider-choices'),
+    providerMethods: byId('agent-provider-methods'),
+    providerChatgpt: byId('agent-provider-chatgpt'),
+    chatgptConnectionState: byId('agent-provider-chatgpt-state'),
+    apiConnectionState: byId('agent-provider-api-state'),
+    providerApi: byId('agent-provider-api'),
+    connectionFields: byId('agent-provider-connection-fields'),
+    providerAdvanced: byId('agent-provider-advanced'),
+    providerModelsHeading: byId('agent-provider-models-heading'),
+    providerModelsList: byId('agent-provider-models-list'),
+    providerModelsEmpty: byId('agent-provider-models-empty'),
+    keySettings: byId('agent-provider-key-settings'),
+    subscriptionNote: byId('agent-subscription-note'),
     connectedProviders: byId('agent-connected-providers'),
     connectedProviderList: byId('agent-connected-provider-list'),
     provider: byId('agent-provider-select'),
+    providerHeading: byId('agent-provider-form-heading'),
+    providerSearch: byId('agent-provider-search'),
+    testProvider: byId('agent-provider-test'),
+    testProviderNote: byId('agent-provider-test-note'),
+    modelRefresh: byId('agent-model-refresh'),
+    modelDetails: byId('agent-model-details'),
+    providerDisconnect: byId('agent-provider-disconnect'),
+    modelMenuSearch: byId('agent-model-menu-search'),
+    catalogStatus: byId('agent-catalog-status'),
+    privacyControls: byId('agent-privacy-controls'),
+    privacyPolicy: byId('agent-privacy-policy'),
+    privacySave: byId('agent-privacy-save'),
     providerStatus: byId('agent-provider-status'),
     providerPrivacy: byId('agent-provider-privacy'),
     hostedFields: byId('agent-hosted-fields'),
@@ -3702,7 +4126,6 @@ export function initAgentUi(options = {}) {
     ollamaFields: byId('agent-ollama-fields'),
     model: byId('agent-model-select'),
     apiKey: byId('agent-api-key'),
-    ollamaModel: byId('agent-ollama-model'),
     ollamaUrl: byId('agent-ollama-url'),
     saveProvider: byId('agent-provider-save'),
     loginProvider: byId('agent-provider-login'),
@@ -3857,7 +4280,25 @@ export function initAgentUi(options = {}) {
   );
   elements.sessionNewChat.addEventListener('click', startNewSessionFromSidebar);
   elements.back.addEventListener('click', () => setAgentView('workspace'));
-  elements.provider.addEventListener('change', renderProviderFields);
+  elements.provider.addEventListener('change', () => {
+    elements.apiKey.value = '';
+      elements.model.value = providerConnection(elements.provider.value)?.modelId || '';
+    renderProviderFields();
+    setMessage(elements.providerMessage, '');
+  });
+  elements.providerAdd.addEventListener('click', () => { renderProviderOptions(); showProviderScreen('browser'); });
+  elements.providerListBack.addEventListener('click', () => showProviderScreen('home'));
+  elements.providerDetailBack.addEventListener('click', () => { if (!providerLoginPending) showProviderScreen('home'); });
+  elements.providerChatgpt.addEventListener('click', () => openProviderDetail('openai-codex'));
+  elements.providerApi.addEventListener('click', () => openProviderDetail('openai'));
+  elements.providerSearch.addEventListener('input', renderProviderOptions);
+  elements.model.addEventListener('change', renderModelDetails);
+  elements.modelRefresh.addEventListener('click', refreshModelCatalog);
+  elements.testProvider.addEventListener('click', testProviderConnection);
+  elements.modelMenuSearch.addEventListener('input', renderModelMenu);
+  elements.privacyPolicy.addEventListener('change', () => renderModelOptions(elements.provider.value));
+  elements.privacySave.addEventListener('click', () => saveProviderPreferences({ privacyPolicy: elements.privacyPolicy.value }));
+  elements.providerDisconnect.addEventListener('click', () => removeProviderConnection(elements.provider.value));
   elements.saveProvider.addEventListener('click', saveProvider);
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);

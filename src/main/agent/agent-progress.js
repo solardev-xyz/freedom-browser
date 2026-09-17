@@ -892,6 +892,7 @@ function activityProgress(operation, receipt = {}) {
     label,
     effect,
     ...(origin && { origin }),
+    ...(boundedString(receipt.pageTitle, 240) && { pageTitle: boundedString(receipt.pageTitle, 240) }),
     ...(boundedString(receipt.pageId, 160) && { pageId: receipt.pageId.slice(0, 160) }),
     ...(pageCount !== null && { pageCount }),
     ...(artifact && { artifact }),
@@ -911,6 +912,10 @@ function createToolReceipt(operation, options = {}) {
   const envelope = options.envelope;
   const result = envelope?.result;
   const resultTab = result?.tab;
+  const rawTitle = resultTab?.title ?? result?.title ?? options.pageTitle;
+  const pageTitle = typeof rawTitle === 'string'
+    ? rawTitle.replace(/\p{Cc}/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 240)
+    : '';
   const pageId = boundedString(
     resultTab?.tabId || envelope?.tabId || result?.activeTabId || options.pageId,
     160
@@ -943,6 +948,7 @@ function createToolReceipt(operation, options = {}) {
 
   return Object.freeze({
     ...(pageId && { pageId }),
+    ...(pageTitle && { pageTitle }),
     ...(origin && { origin }),
     ...(pageCount !== null && { pageCount }),
     ...(artifact && { artifact }),

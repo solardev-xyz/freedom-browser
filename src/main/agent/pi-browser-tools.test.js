@@ -767,7 +767,7 @@ describe('Pi browser tool adapter', () => {
     expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('sensitiveRawNodeEvidence');
   });
 
-  test('reports only redacted browser metadata in successful progress receipts', async () => {
+  test('reports page titles but excludes URL paths and page bodies from progress receipts', async () => {
     const onToolOutcome = jest.fn();
     const controller = {
       execute: jest.fn(async () =>
@@ -796,10 +796,31 @@ describe('Pi browser tool adapter', () => {
       tabId: 'tab_assigned',
       pageId: 'tab_assigned',
       origin: 'https://accounts.example',
+      pageTitle: 'Private account',
     });
     expect(JSON.stringify(onToolOutcome.mock.calls)).not.toMatch(
-      /token|secret|Private account|sensitive page contents/
+      /token|secret|sensitive page contents/
     );
+  });
+
+  test('keeps the observed title on clicks and failures but clears it when navigating to another page', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = { execute: jest.fn()
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://example.test/a', title: 'Article A' }))
+      .mockResolvedValueOnce(successEnvelope({}))
+      .mockResolvedValueOnce({ ok: false, error: { code: ERROR_CODES.ELEMENT_NOT_FOUND, message: 'Missing' } })
+      .mockResolvedValueOnce(successEnvelope({ url: 'https://example.test/b' }))
+      .mockResolvedValueOnce(successEnvelope({})) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const execute = (operation, id, input) => tools.find((tool) => tool.name === operation).execute(id, input);
+    await execute(OPERATIONS.SNAPSHOT, 'read', {});
+    await execute(OPERATIONS.CLICK, 'click', { ref: 'ref_1' });
+    await expect(execute(OPERATIONS.CLICK, 'failed', { ref: 'ref_2' })).rejects.toThrow();
+    await execute(OPERATIONS.NAVIGATE, 'navigate', { url: 'https://example.test/b' });
+    await execute(OPERATIONS.CLICK, 'next', { ref: 'ref_3' });
+    expect(onToolOutcome.mock.calls.map(([receipt]) => receipt.pageTitle)).toEqual([
+      'Article A', 'Article A', 'Article A', undefined, undefined,
+    ]);
   });
 
   test('retains the canonical controller policy boundary', async () => {

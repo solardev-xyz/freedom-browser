@@ -18,11 +18,20 @@ const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
   AGENT_PROVIDER_STORE_UNSAFE: 'Agent provider storage is unsafe',
   AGENT_PROVIDER_STORE_INVALID: 'Agent provider storage is invalid',
   AGENT_PROVIDER_INVALID: 'Agent provider configuration is invalid',
+  AGENT_OLLAMA_DISCOVERY_FAILED: 'Could not load models from Ollama. Make sure Ollama is running and check the local URL in connection settings.',
+  AGENT_OLLAMA_NO_MODELS: 'Ollama is running, but no models are installed. Download a model in Ollama, then connect again.',
+  AGENT_OLLAMA_MODEL_LIMIT: 'This Ollama server has more than the supported 128 models.',
   AGENT_MODEL_INVALID: 'Selected agent model is invalid',
   AGENT_MODEL_UNAVAILABLE: 'No configured agent model is available',
   AGENT_PROVIDER_AUTH_BUSY: 'A provider sign-in is already in progress',
   AGENT_PROVIDER_AUTH_CANCELLED: 'Provider sign-in was cancelled',
   AGENT_PROVIDER_AUTH_UNSUPPORTED: 'The provider sign-in flow is unsupported',
+  AGENT_CATALOG_UNAVAILABLE: 'Could not refresh models. The previous catalog is still available.',
+  AGENT_CATALOG_KEY_REQUIRED: 'Enter a Venice API key to load its models.',
+  AGENT_CATALOG_AUTH_FAILED: 'The provider did not accept this API key.',
+  AGENT_CATALOG_EXPIRED: 'Refresh this provider’s model catalog before using its private or TEE-only setting.',
+  AGENT_PROVIDER_TEST_FAILED: 'The test prompt failed. Check your API key, model access and account balance.',
+  AGENT_MODEL_POLICY: 'This model is unavailable or does not meet your privacy settings. Choose another model.',
 });
 
 function providerError(code, message) {
@@ -368,6 +377,9 @@ function registerFreedomAgentIpc(options = {}) {
         } catch (error) {
           const errorCode = typeof error?.code === 'string' ? error.code : 'UNKNOWN';
           console.error('[agent] Model resolution failed:', errorCode);
+          if (['AGENT_MODEL_POLICY', 'AGENT_CATALOG_EXPIRED'].includes(errorCode)) {
+            return safeProviderError(error);
+          }
           return errorEnvelope(
             AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE,
             'No configured agent model is available'
@@ -946,8 +958,17 @@ function registerFreedomAgentIpc(options = {}) {
     handleProviderMutation(event, async () => ({
       status: await providerResolver.configureHosted(payload),
     }));
+  const handleRefreshModels = (event, payload) =>
+    handleProviderMutation(event, async () => ({
+      catalog: await providerResolver.refreshModels(payload),
+      status: providerResolver.getStatus(),
+    }));
+  const handleProviderPreferences = (event, payload) =>
+    handleProviderMutation(event, () => ({ status: providerResolver.setPreferences(payload) }));
+  const handleTestConnection = (event, payload) =>
+    handleProviderMutation(event, async () => ({ result: await providerResolver.testConnection(payload) }));
   const handleConfigureOllama = (event, payload) =>
-    handleProviderMutation(event, () => ({ status: providerResolver.configureOllama(payload) }));
+    handleProviderMutation(event, async () => ({ status: await providerResolver.configureOllama(payload) }));
   const handleLoginSubscription = (event, payload) =>
     handleProviderMutation(event, async () => {
       if (providerLogin) {
@@ -1188,6 +1209,9 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
+  ipcMain.handle(IPC.AGENT_PROVIDER_REFRESH_MODELS, handleRefreshModels);
+  ipcMain.handle(IPC.AGENT_PROVIDER_SET_PREFERENCES, handleProviderPreferences);
+  ipcMain.handle(IPC.AGENT_PROVIDER_TEST_CONNECTION, handleTestConnection);
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA, handleConfigureOllama);
   ipcMain.handle(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION, handleLoginSubscription);
@@ -1224,6 +1248,9 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_PUBLICATION_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_REFRESH_MODELS);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_SET_PREFERENCES);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_TEST_CONNECTION);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION);

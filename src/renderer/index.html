@@ -1511,107 +1511,67 @@
           </div>
 
           <div id="agent-setup-view" class="agent-view agent-setup-view" hidden>
-            <div class="agent-setup-intro">
-              <h3>Connect a model</h3>
-              <p>Choose a model provider to start using Agent in this browser profile.</p>
+            <div id="agent-provider-home">
+              <div class="agent-setup-intro"><h3>Models &amp; providers</h3><p>Your connected models, all in one place.</p></div>
+              <div id="agent-connected-providers" class="agent-connected-providers" hidden>
+                <div id="agent-connected-provider-list" class="agent-connected-provider-list"></div>
+              </div>
+              <button id="agent-provider-add" class="agent-button secondary" type="button">＋ Add provider</button>
             </div>
-
-            <div id="agent-connected-providers" class="agent-connected-providers" hidden>
-              <div class="agent-section-label">Connected providers</div>
-              <div id="agent-connected-provider-list" class="agent-connected-provider-list"></div>
+            <div id="agent-provider-browser" hidden>
+              <button id="agent-provider-list-back" class="agent-text-button" type="button">‹ Providers</button>
+              <h3>Add a provider</h3>
+              <input id="agent-provider-search" type="search" placeholder="Search providers…" aria-label="Search providers" autocomplete="off" />
+              <div id="agent-provider-choices" class="agent-provider-choices"></div>
             </div>
-
-            <section class="agent-setup-form" aria-labelledby="agent-provider-form-heading">
-              <div class="agent-card-heading">
-                <h3 id="agent-provider-form-heading">Choose a provider</h3>
-                <span id="agent-provider-status" class="agent-badge">Not configured</span>
+            <section id="agent-provider-detail" aria-labelledby="agent-provider-form-heading" hidden>
+              <button id="agent-provider-detail-back" class="agent-text-button" type="button">‹ Providers</button>
+              <div class="agent-card-heading"><h3 id="agent-provider-form-heading">Choose a provider</h3><span id="agent-provider-status" class="agent-badge">Not connected</span></div>
+              <select id="agent-provider-select" hidden aria-label="Provider"></select>
+              <div id="agent-provider-methods" hidden>
+                <p class="agent-catalog-status">How would you like to connect?</p>
+                <button id="agent-provider-chatgpt" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>ChatGPT subscription</strong><span>Use your ChatGPT account</span></span><span id="agent-provider-chatgpt-state" class="agent-provider-method-state">Connect</span></button>
+                <button id="agent-provider-api" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>API key</strong><span>Billed to your API account</span></span><span id="agent-provider-api-state" class="agent-provider-method-state">Connect</span></button>
               </div>
-
-              <label class="agent-field">
-                <span>Provider</span>
-                <select id="agent-provider-select">
-                  <option value="openai">OpenAI</option>
-                  <option value="openai-codex">ChatGPT (Codex)</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="freepi">Free Pi</option>
-                  <option value="ollama">Ollama (local)</option>
-                </select>
-              </label>
-
-              <p id="agent-provider-privacy" class="agent-privacy-note" role="note">
-                Your task and page content the agent reads may be sent to OpenAI. Avoid using Agent
-                on pages containing sensitive information.
-              </p>
-
-              <div id="agent-hosted-fields">
-                <label class="agent-field">
-                  <span>Model</span>
-                  <select id="agent-model-select"></select>
-                </label>
-                <label id="agent-api-key-field" class="agent-field">
-                  <span>API key</span>
-                  <input
-                    id="agent-api-key"
-                    type="password"
-                    autocomplete="off"
-                    spellcheck="false"
-                    placeholder="Stored encrypted on this device"
-                  />
-                </label>
-              </div>
-
-              <div id="agent-subscription-fields" class="hidden">
-                <p class="agent-subscription-note">
-                  Experimental · Uses a ChatGPT Plus or Pro subscription through Pi.
-                </p>
-                <div id="agent-auth-code" class="agent-auth-code" hidden>
-                  <span>Enter this code in the OpenAI page</span>
-                  <strong id="agent-auth-user-code"></strong>
+              <div id="agent-provider-connection-fields">
+                <button id="agent-provider-disconnect" class="agent-button secondary" type="button" hidden>Disconnect</button>
+                <label id="agent-api-key-field" class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Stored encrypted on this device" /></label>
+                <div id="agent-subscription-fields" class="hidden">
+                  <p id="agent-subscription-note" class="agent-subscription-note">Connect with your ChatGPT subscription.</p>
+                  <div id="agent-auth-code" class="agent-auth-code" hidden><span>Enter this code in the OpenAI page</span><strong id="agent-auth-user-code"></strong></div>
+                  <div class="agent-config-actions"><button id="agent-provider-login" class="agent-button secondary" type="button">Continue with ChatGPT</button><button id="agent-provider-cancel-login" class="agent-text-button" type="button" hidden>Cancel sign-in</button></div>
                 </div>
-                <div class="agent-config-actions">
-                  <button id="agent-provider-login" class="agent-button secondary" type="button">
-                    Continue with ChatGPT
-                  </button>
-                  <button
-                    id="agent-provider-cancel-login"
-                    class="agent-text-button"
-                    type="button"
-                    hidden
-                  >
-                    Cancel sign-in
-                  </button>
+                <div id="agent-privacy-controls" hidden>
+                  <label class="agent-field"><span>Privacy requirement</span><select id="agent-privacy-policy"></select></label>
+                  <button id="agent-privacy-save" class="agent-text-button" type="button">Save privacy setting</button>
                 </div>
+                <div class="agent-config-actions"><button id="agent-provider-save" class="agent-button secondary" type="button">Connect provider</button></div>
+                <section class="agent-provider-models" aria-labelledby="agent-provider-models-heading">
+                  <div class="agent-provider-models-heading">
+                    <h4 id="agent-provider-models-heading">Available models</h4>
+                    <button id="agent-model-refresh" class="agent-provider-models-refresh" type="button" aria-label="Refresh available models" title="Refresh available models"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
+                  </div>
+                  <ul id="agent-provider-models-list" class="agent-provider-models-list" aria-labelledby="agent-provider-models-heading" tabindex="0" hidden></ul>
+                  <p id="agent-provider-models-empty" class="agent-provider-models-empty">Connect to discover available models</p>
+                </section>
+                <details id="agent-provider-advanced" class="agent-provider-advanced">
+                  <summary>Details &amp; connection settings</summary>
+                  <div id="agent-ollama-fields" class="hidden">
+                    <label class="agent-field"><span>Local URL</span><input id="agent-ollama-url" type="url" spellcheck="false" value="http://127.0.0.1:11434/v1" /></label>
+                  </div>
+                  <p id="agent-provider-privacy" class="agent-catalog-status"></p>
+                  <div id="agent-hosted-fields">
+                    <p id="agent-catalog-status" class="agent-catalog-status" aria-live="polite"></p>
+                    <select id="agent-model-select" hidden aria-label="Model"></select>
+                  </div>
+                  <p id="agent-model-details" class="agent-catalog-status"></p>
+                  <div id="agent-provider-key-settings"></div>
+                  <button id="agent-provider-test" class="agent-text-button" type="button" hidden>Send test prompt</button>
+                  <p id="agent-provider-test-note" class="agent-catalog-status" hidden>Sends only “Reply with OK.” to this model. Token charges may apply.</p>
+                </details>
               </div>
-
-              <div id="agent-ollama-fields" class="hidden">
-                <label class="agent-field">
-                  <span>Model</span>
-                  <input
-                    id="agent-ollama-model"
-                    type="text"
-                    spellcheck="false"
-                    placeholder="qwen2.5:7b"
-                  />
-                </label>
-                <label class="agent-field">
-                  <span>Local URL</span>
-                  <input
-                    id="agent-ollama-url"
-                    type="url"
-                    spellcheck="false"
-                    value="http://127.0.0.1:11434/v1"
-                  />
-                </label>
-              </div>
-
-              <div class="agent-config-actions">
-                <button id="agent-provider-save" class="agent-button secondary" type="button">
-                  Connect provider
-                </button>
-              </div>
-              <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
             </section>
+            <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
           </div>
 
           <div id="agent-workspace-view" class="agent-view agent-workspace-view" hidden>
@@ -1957,6 +1917,7 @@
               </div>
 
               <div id="agent-model-menu" class="agent-popover agent-model-menu" role="menu" hidden>
+                <input id="agent-model-menu-search" class="agent-model-menu-search" type="search" placeholder="Search all connected models…" aria-label="Search connected models" autocomplete="off" />
                 <div id="agent-model-menu-list"></div>
                 <div class="agent-popover-divider"></div>
                 <button id="agent-manage-providers" class="agent-popover-action" type="button">

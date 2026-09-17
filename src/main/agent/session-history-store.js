@@ -66,6 +66,7 @@ function normalizeActivity(activity) {
       const label = optionalString(item.label, 240);
       const intent = optionalString(item.intent, 240);
       const origin = originScopeForUrl(optionalString(item.origin, 512));
+      const pageTitle = optionalString(item.pageTitle, 240);
       const destinationOrigin = originScopeForUrl(optionalString(item.destinationOrigin, 512));
       const pageId = optionalString(item.pageId, 160);
       const artifact = normalizeArtifact(item.artifact);
@@ -88,6 +89,7 @@ function normalizeActivity(activity) {
         ...(ACTIVITY_EFFECTS.has(item.effect) && { effect: item.effect }),
         ...(ACTIVITY_APPROVALS.has(item.approval) && { approval: item.approval }),
         ...(origin && { origin }),
+        ...(pageTitle && { pageTitle }),
         ...(destinationOrigin && { destinationOrigin }),
         ...(pageId && { pageId }),
         ...(artifact && { artifact }),

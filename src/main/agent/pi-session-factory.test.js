@@ -182,6 +182,21 @@ describe('isolated Pi session factory', () => {
     expect(created.toolNames).toEqual(['browser_snapshot']);
   });
 
+  test('supplies configured identity even with a custom system prompt, without connection secrets', async () => {
+    const created = await createIsolatedPiSession({
+      sdk: createSdk(),
+      model: { id: 'qwen3:8b', provider: 'ollama', baseUrl: 'http://private-host', apiKey: 'secret' },
+      modelRuntime: {},
+      systemPrompt: 'App task instructions',
+    });
+    const prompt = created.resourceLoader.getSystemPrompt();
+    expect(prompt).toContain('App task instructions');
+    expect(prompt).toContain('{"modelId":"qwen3:8b","providerId":"ollama"}');
+    expect(prompt).toContain('served through Ollama');
+    expect(prompt).not.toContain('private-host');
+    expect(prompt).not.toContain('secret');
+  });
+
   test('adds native Pi skill discovery and a virtual read tool only when enabled', async () => {
     const sdk = createSdk();
     const browserTool = { name: 'node_request', execute: jest.fn() };

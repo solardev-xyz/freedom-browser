@@ -94,7 +94,10 @@ const PROVIDER_LABELS = Object.freeze({
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
-  freepi: 'Free Pi',
+  xai: 'xAI (Grok)',
+  meta: 'Meta (Muse)',
+  venice: 'Venice',
+  'near-ai': 'NEAR AI',
   'openai-codex': 'ChatGPT (Codex)',
   ollama: 'Ollama',
 });
@@ -2304,6 +2307,7 @@ class FreedomAgentService {
     item.intent = normalized.intent;
     item.effect = normalized.effect;
     if (normalized.origin) item.origin = normalized.origin;
+    if (normalized.pageTitle) item.pageTitle = normalized.pageTitle;
     if (normalized.pageId) item.pageId = normalized.pageId;
     if (Number.isSafeInteger(normalized.pageCount)) item.pageCount = normalized.pageCount;
     if (normalized.errorCode) item.errorCode = normalized.errorCode;
@@ -2390,6 +2394,7 @@ class FreedomAgentService {
       }),
       progress: activityProgress(outcome.operation, {
         origin: outcome.origin,
+        pageTitle: outcome.pageTitle,
         pageId: outcome.pageId || outcome.tabId,
         pageCount: outcome.pageCount,
         artifact: outcome.artifact,

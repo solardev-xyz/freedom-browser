@@ -7,6 +7,11 @@ const flush = async () => {
 
 function createAgentElements() {
   const ids = [
+    'agent-provider-form-heading',
+    'agent-provider-test', 'agent-provider-test-note',
+    'agent-provider-search', 'agent-model-search', 'agent-model-refresh', 'agent-model-details',
+    'agent-provider-disconnect', 'agent-model-menu-search', 'agent-catalog-status',
+    'agent-privacy-controls', 'agent-privacy-policy', 'agent-privacy-save',
     'agent-toggle-btn',
     'agent-sidebar',
     'agent-sidebar-close',
@@ -60,6 +65,26 @@ function createAgentElements() {
     'agent-process-compact-popover',
     'agent-process-compact-count',
     'agent-process-compact-list',
+    'agent-provider-home',
+    'agent-provider-browser',
+    'agent-provider-detail',
+    'agent-provider-add',
+    'agent-provider-list-back',
+    'agent-provider-detail-back',
+    'agent-provider-choices',
+    'agent-provider-methods',
+    'agent-provider-chatgpt',
+    'agent-provider-chatgpt-state',
+    'agent-provider-api-state',
+    'agent-provider-api',
+    'agent-provider-connection-fields',
+    'agent-provider-advanced',
+    'agent-provider-models-heading',
+    'agent-provider-models-list',
+    'agent-provider-models-empty',
+    'agent-provider-key-settings',
+    'agent-model-list',
+    'agent-subscription-note',
     'agent-connected-providers',
     'agent-connected-provider-list',
     'agent-provider-select',
@@ -71,7 +96,6 @@ function createAgentElements() {
     'agent-ollama-fields',
     'agent-model-select',
     'agent-api-key',
-    'agent-ollama-model',
     'agent-ollama-url',
     'agent-provider-save',
     'agent-provider-login',
@@ -178,7 +202,6 @@ function createAgentElements() {
   elements['agent-provider-select'] = createElement('select', { value: 'openai' });
   elements['agent-model-select'] = createElement('select');
   elements['agent-api-key'] = createElement('input');
-  elements['agent-ollama-model'] = createElement('input');
   elements['agent-ollama-url'] = createElement('input', {
     value: 'http://127.0.0.1:11434/v1',
   });
@@ -1060,14 +1083,151 @@ describe('Agent UI', () => {
     await flush();
     ctx.elements['agent-manage-providers'].dispatch('click');
 
-    const disconnect = ctx.elements['agent-connected-provider-list'].children[0].children[1];
+    const disconnect = ctx.elements['agent-provider-disconnect'];
     disconnect.dispatch('click');
     await flush();
 
-    expect(global.window.confirm).toHaveBeenCalledWith('Disconnect OpenAI from Agent?');
+    expect(global.window.confirm).toHaveBeenCalledWith('Disconnect OpenAI · API from Agent?');
     expect(ctx.electronAPI.removeAgentProvider).toHaveBeenCalledWith('openai');
     expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
     expect(ctx.elements['agent-sidebar-back'].hidden).toBe(true);
+  });
+
+  test('provider navigation shows OpenAI once and separates subscription and API connection methods', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    expect(ctx.elements['agent-provider-home'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-detail'].hidden).toBe(true);
+    ctx.elements['agent-provider-add'].dispatch('click');
+    const choices = ctx.elements['agent-provider-choices'].children.flatMap((item) => item.children || []).filter((item) => item.tagName === 'BUTTON');
+    expect(choices.filter((item) => item.getAttribute('aria-label') === 'OpenAI')).toHaveLength(1);
+    expect(choices.some((item) => /ChatGPT|Codex/.test(item.textContent))).toBe(false);
+    choices.find((item) => item.getAttribute('aria-label') === 'OpenAI').dispatch('click');
+    expect(ctx.elements['agent-provider-methods'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-connection-fields'].hidden).toBe(true);
+    ctx.elements['agent-api-key'].value = 'draft-key';
+    ctx.elements['agent-provider-chatgpt'].dispatch('click');
+    expect(ctx.elements['agent-provider-select'].value).toBe('openai-codex');
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    expect(ctx.elements['agent-provider-methods'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(false);
+    expect(ctx.elements['agent-auth-code'].hidden).toBe(true);
+    ctx.elements['agent-provider-detail-back'].dispatch('click');
+    expect(ctx.elements['agent-provider-home'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-detail'].hidden).toBe(true);
+  });
+
+  test('OpenAI summarizes the subscription connection and keeps API setup free of model selection', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: {
+        configured: true, providerId: 'openai-codex', modelId: 'codex-model',
+        connections: [{ kind: 'subscription', providerId: 'openai-codex', modelId: 'codex-model' }],
+      } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-add'].dispatch('click');
+    const choice = ctx.elements['agent-provider-choices'].children.flatMap((item) => item.children || [])
+      .find((item) => item.getAttribute('aria-label') === 'OpenAI');
+    expect(choice.children[2].textContent).toBe('✓');
+    choice.dispatch('click');
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Connected');
+    expect(ctx.elements['agent-provider-chatgpt-state'].textContent).toBe('Connected');
+    expect(ctx.elements['agent-provider-api-state'].textContent).toBe('Connect');
+    ctx.elements['agent-provider-api'].dispatch('click');
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Not connected');
+    expect(ctx.elements['agent-hosted-fields'].classList.contains('hidden')).toBe(true);
+    expect(ctx.elements['agent-api-key-field'].classList.contains('hidden')).toBe(false);
+  });
+
+  test('connecting an uncatalogued provider discovers models and stays on the provider screen', async () => {
+    const definition = { providerId: 'venice', name: 'Venice', canRefresh: true, policies: [['standard', 'All'], ['tee', 'TEE only']], models: [] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [definition] }),
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: true, catalog: [{ ...definition, models: [
+        { id: 'private', name: 'Private', privacy: 'private', tools: true },
+        { id: 'tee', name: 'TEE', privacy: 'tee', tools: true },
+      ] }] }),
+      configureHostedAgentProvider: jest.fn().mockResolvedValue({ ok: true, status: {
+        configured: true, providerId: 'venice', modelId: 'tee',
+        connections: [{ kind: 'hosted', providerId: 'venice', modelId: 'tee', privacyPolicy: 'tee' }],
+      } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'venice';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-privacy-policy'].value = 'tee';
+    ctx.elements['agent-api-key'].value = 'test-key';
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    await flush();
+    expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('venice', 'test-key');
+    expect(ctx.electronAPI.configureHostedAgentProvider).toHaveBeenCalledWith('venice', 'tee', 'test-key', 'tee');
+    expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
+    expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
+    expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+  });
+
+  test('searches connected models beyond favorites and saves favorites without credentials', async () => {
+    const connection = { kind: 'hosted', providerId: 'openai', modelId: 'one', favoriteModelIds: ['one'] };
+    const status = { configured: true, providerId: 'openai', modelId: 'one', connections: [connection] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{
+        providerId: 'openai', name: 'OpenAI', models: [{ id: 'two', name: 'Two' }, { id: 'one', name: 'One' }],
+      }] }),
+      setAgentProviderPreferences: jest.fn().mockResolvedValue({ ok: true, status: { ...status, connections: [{ ...connection, favoriteModelIds: ['one', 'two'] }] } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')).toHaveLength(2);
+    expect(ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[0].children[0].textContent).toBe('One');
+    ctx.elements['agent-model-menu-search'].value = 'two';
+    ctx.elements['agent-model-menu-search'].dispatch('input');
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')[0].children[0].children[0].textContent).toBe('Two');
+    ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[1].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.setAgentProviderPreferences).toHaveBeenCalledWith('openai', { favoriteModelIds: ['one', 'two'] });
+
+  });
+
+  test('switching providers clears typed credentials and a failed refresh keeps models', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      refreshAgentProviderModels: jest.fn().mockResolvedValue({ ok: false, error: { message: 'Refresh unavailable' } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-api-key'].value = 'do-not-forward';
+    ctx.elements['agent-provider-select'].value = 'openai-codex';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(ctx.elements['agent-api-key'].value).toBe('');
+    const models = [...ctx.elements['agent-model-select'].children];
+    ctx.elements['agent-model-refresh'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('openai-codex', undefined);
+    expect(ctx.elements['agent-model-select'].children).toEqual(models);
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('Refresh unavailable');
+  });
+
+  test('connection inference happens only after an explicit test click', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      testAgentProviderConnection: jest.fn().mockResolvedValue({ ok: true, result: { elapsedMs: 500 } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.testAgentProviderConnection).not.toHaveBeenCalled();
+    ctx.elements['agent-provider-test'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.testAgentProviderConnection).toHaveBeenCalledWith('openai', 'gpt-4.1-mini');
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('Model responded in 0.5s');
   });
 
   test('saves credentials without retaining the key and renders structured run events as text', async () => {
@@ -1087,7 +1247,7 @@ describe('Agent UI', () => {
       'sk-user-secret'
     );
     expect(ctx.elements['agent-api-key'].value).toBe('');
-    expect(ctx.elements['agent-provider-status'].textContent).toBe('OpenAI · gpt-4.1-mini');
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Connected');
 
     ctx.elements['agent-prompt'].value = 'Summarize this page';
     ctx.elements['agent-run'].dispatch('click');
@@ -1440,7 +1600,9 @@ describe('Agent UI', () => {
   });
 
   test('shows live browser intent and trusted completion evidence', async () => {
-    const ctx = await loadAgentUi();
+    const ctx = await loadAgentUi({ electronAPI: {
+      getCachedFavicon: jest.fn().mockResolvedValue('data:image/png;base64,aWNvbg=='),
+    } });
     ctx.elements['agent-prompt'].value = 'Update the profile';
     ctx.elements['agent-run'].dispatch('click');
     await flush();
@@ -1472,7 +1634,15 @@ describe('Agent UI', () => {
       operation: 'browser_snapshot',
       status: 'succeeded',
       label: 'Read https://example.test',
+      origin: 'https://example.test',
+      pageTitle: '<b>Example article</b>',
     });
+    await flush();
+    const pageRow = ctx.elements['agent-transcript'].querySelector('.agent-tool-item');
+    expect(pageRow.querySelector('.agent-tool-page-title').textContent).toBe('Read <b>Example article</b>');
+    expect(pageRow.querySelector('.agent-tool-page-site').textContent).toBe('example.test');
+    expect(ctx.electronAPI.getCachedFavicon).toHaveBeenCalledWith('https://example.test');
+    expect(pageRow.querySelector('.agent-tool-page-icon').children.find((child) => child.tagName === 'IMG').src).toBe('data:image/png;base64,aWNvbg==');
     ctx.emit({
       type: 'run_finished',
       conversationId: 'conversation_test',
@@ -1903,7 +2073,12 @@ describe('Agent UI', () => {
       status: 'failed',
       errorCode: 'STALE_ELEMENT_REFERENCE',
       label: 'Clicked on https://example.test',
+      origin: 'https://example.test',
+      pageTitle: 'Example form',
     });
+    const pageRow = ctx.elements['agent-transcript'].querySelector('.agent-tool-item');
+    expect(pageRow.querySelector('.agent-tool-page-title').textContent).toBe('Clicked on Example form');
+    expect(pageRow.querySelector('.agent-tool-page-error').textContent).toContain('Page changed');
     expect(ctx.elements['agent-run-message'].textContent).toContain(
       'Page changed before this could run'
     );
@@ -3851,6 +4026,42 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
   });
 
+  test('connects Ollama in place and makes discovered models available without opening the composer', async () => {
+    const connection = {
+      kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b',
+      modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: 'http://127.0.0.1:11434/v1',
+    };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: false, connections: [] } }),
+      configureOllamaAgentProvider: jest.fn().mockResolvedValue({
+        ok: true, status: { configured: true, ...connection, connections: [connection] },
+      }),
+    } });
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(ctx.elements['agent-provider-save'].textContent).toBe('Connect to Ollama');
+    ctx.elements['agent-provider-save'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.configureOllamaAgentProvider).toHaveBeenCalledWith(undefined, 'http://127.0.0.1:11434/v1');
+    expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
+    expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
+    expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
+    const rows = ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row');
+    expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
+    expect(ctx.elements['agent-provider-save'].textContent).toBe('Save connection');
+    expect(ctx.elements['agent-sidebar-back'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
+    expect(ctx.elements['agent-provider-models-empty'].hidden).toBe(true);
+    ctx.electronAPI.refreshAgentProviderModels = jest.fn().mockResolvedValue({
+      ok: true, catalog: [], status: { configured: true, ...connection, connections: [{ ...connection, modelIds: ['qwen3:8b', 'new-model'] }] },
+    });
+    ctx.elements['agent-model-refresh'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('ollama', undefined);
+    expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.textContent)).toEqual(['qwen3:8b', 'new-model']);
+  });
+
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
     let resolveLogin;
     const loginPromise = new Promise((resolve) => {
@@ -3895,9 +4106,9 @@ describe('Agent UI', () => {
       },
     });
     await flush();
-    expect(ctx.elements['agent-provider-status'].textContent).toBe('ChatGPT (Codex) · codex-model');
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Connected');
     expect(ctx.elements['agent-provider-message'].textContent).toBe(
-      'ChatGPT connected for this profile'
+      'ChatGPT connected'
     );
     expect(ctx.elements['agent-provider-login'].hidden).toBe(true);
   });
@@ -3916,7 +4127,7 @@ describe('Agent UI', () => {
   test('formats tool operations for a compact activity timeline', async () => {
     const ctx = await loadAgentUi();
     expect(ctx.mod.formatOperation('browser_get_page_text')).toBe('get page text');
-    expect(ctx.mod.providerPrivacyMessage('freepi')).toContain('sent to Free Pi');
+    expect(ctx.mod.providerPrivacyMessage('openrouter')).toContain('sent to OpenRouter');
     expect(ctx.elements['agent-provider-privacy'].textContent).toContain('sent to OpenAI');
 
     ctx.elements['agent-provider-select'].value = 'ollama';

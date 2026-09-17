@@ -1,8 +1,6 @@
 'use strict';
 
 const {
-  FREE_PI_BASE_URL,
-  FREE_PI_MODEL_ID,
   OLLAMA_DEFAULT_BASE_URL,
   AgentProviderResolver,
   normalizeOllamaBaseUrl,
@@ -47,7 +45,7 @@ function createRuntime() {
   };
 }
 
-function createResolver(selection = null) {
+function createResolver(selection = null, options = {}) {
   const runtime = createRuntime();
   const store = {
     isEncryptionAvailable: jest.fn(() => true),
@@ -59,6 +57,7 @@ function createResolver(selection = null) {
               kind: selection.kind,
               providerId: selection.providerId,
               modelId: selection.modelId,
+              baseUrl: selection.baseUrl,
             },
           ]
         : [],
@@ -94,11 +93,174 @@ function createResolver(selection = null) {
       store,
       dataDir: '/profile/agent',
       loadSdk: jest.fn(async () => sdk),
+      ...options,
     }),
   };
 }
 
 describe('AgentProviderResolver', () => {
+  test('discovers installed Ollama models without a model name or inference', async () => {
+    const fetch = jest.fn(async () => new Response(JSON.stringify({ models: [
+      { name: 'qwen3:8b' }, { name: 'llama3.2:3b' }, { name: 'qwen3:8b' },
+    ] })));
+    const { resolver, store } = createResolver(null, { fetch });
+    await resolver.configureOllama();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:11434/api/tags', expect.objectContaining({
+      method: 'GET', redirect: 'error', signal: expect.any(AbortSignal),
+    }));
+    expect(store.saveOllama).toHaveBeenCalledWith({
+      modelId: 'qwen3:8b', modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: OLLAMA_DEFAULT_BASE_URL, activate: true,
+    });
+  });
+
+  test('rediscovery preserves an installed selection on the same server', async () => {
+    const fetch = jest.fn(async () => new Response(JSON.stringify({ models: [
+      { name: 'qwen3:8b' }, { name: 'llama3.2:3b' },
+    ] })));
+    const { resolver, store } = createResolver({
+      kind: 'ollama', providerId: 'ollama', modelId: 'llama3.2:3b', baseUrl: OLLAMA_DEFAULT_BASE_URL,
+    }, { fetch });
+    await resolver.configureOllama();
+    expect(store.saveOllama).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'llama3.2:3b' }));
+    await resolver.refreshModels({ providerId: 'ollama' });
+    expect(store.saveOllama).toHaveBeenLastCalledWith(expect.objectContaining({ modelId: 'llama3.2:3b', activate: false }));
+  });
+
+  test.each([
+    ['empty', () => new Response('{"models":[]}'), 'AGENT_OLLAMA_NO_MODELS'],
+    ['offline', () => { throw new Error('connection refused'); }, 'AGENT_OLLAMA_DISCOVERY_FAILED'],
+    ['HTTP error', () => new Response('{}', { status: 500 }), 'AGENT_OLLAMA_DISCOVERY_FAILED'],
+    ['malformed JSON', () => new Response('oops'), 'AGENT_OLLAMA_DISCOVERY_FAILED'],
+    ['missing models', () => new Response('{}'), 'AGENT_OLLAMA_DISCOVERY_FAILED'],
+    ['invalid name', () => new Response('{"models":[{"name":"bad\\nname"}]}'), 'AGENT_OLLAMA_DISCOVERY_FAILED'],
+    ['oversized body', () => new Response('x'.repeat(1024 * 1024 + 1)), 'AGENT_OLLAMA_DISCOVERY_FAILED'],
+    ['too many models', () => new Response(JSON.stringify({ models: Array.from({ length: 129 }, (_, i) => ({ name: `model-${i}` })) })), 'AGENT_OLLAMA_MODEL_LIMIT'],
+  ])('leaves the saved connection intact on %s discovery', async (_name, response, code) => {
+    const { resolver, store } = createResolver(null, { fetch: jest.fn(async () => response()) });
+    await expect(resolver.configureOllama()).rejects.toMatchObject({ code });
+    expect(store.saveOllama).not.toHaveBeenCalled();
+  });
+
+  test('rejects a remote Ollama URL before making a discovery request', async () => {
+    const fetch = jest.fn();
+    const { resolver } = createResolver(null, { fetch });
+    await expect(resolver.configureOllama({ baseUrl: 'http://example.com' })).rejects.toMatchObject({ code: 'AGENT_PROVIDER_INVALID' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test('rejects unsupported privacy settings and validates bounded favorites', () => {
+    const ctx = createResolver({
+      kind: 'hosted',
+      providerId: 'openrouter',
+      modelId: 'model-c',
+      apiKey: 'secret',
+    });
+    ctx.store.savePreferences = jest.fn();
+    expect(() =>
+      ctx.resolver.setPreferences({ providerId: 'openrouter', privacyPolicy: 'tee' })
+    ).toThrow();
+    expect(() =>
+      ctx.resolver.setPreferences({ providerId: 'openrouter', favoriteModelIds: ['bad\nmodel'] })
+    ).toThrow();
+    ctx.resolver.setPreferences({
+      providerId: 'openrouter',
+      privacyPolicy: 'zdr',
+      favoriteModelIds: ['one', 'one', 'two'],
+    });
+    expect(ctx.store.savePreferences).toHaveBeenCalledWith('openrouter', {
+      privacyPolicy: 'zdr',
+      favoriteModelIds: ['one', 'two'],
+    });
+  });
+
+  test('private selection blocks unsupported, reclassified and expired catalog entries', async () => {
+    const ctx = createResolver({
+      kind: 'hosted',
+      providerId: 'venice',
+      modelId: 'private-model',
+      apiKey: 'secret',
+    });
+    const model = {
+      id: 'private-model',
+      name: 'Private',
+      tools: true,
+      available: true,
+      privacy: 'private',
+      contextWindow: 32000,
+      maxTokens: 4096,
+    };
+    const entry = { updatedAt: Date.now(), models: [model] };
+    ctx.resolver.catalog = { get: (id) => (id === 'venice' ? entry : { models: [] }) };
+    ctx.store.getPublicStatus.mockReturnValue({
+      connections: [{ providerId: 'venice', privacyPolicy: 'private' }],
+    });
+    await expect(ctx.resolver.resolveModel()).resolves.toMatchObject({
+      model: { id: 'private-model' },
+    });
+    model.privacy = 'anonymized';
+    await expect(ctx.resolver.resolveModel()).rejects.toMatchObject({ code: 'AGENT_MODEL_POLICY' });
+    model.privacy = 'private';
+    entry.updatedAt = Date.now() - 86_400_001;
+    await expect(ctx.resolver.resolveModel()).rejects.toMatchObject({
+      code: 'AGENT_CATALOG_EXPIRED',
+    });
+    expect(ctx.store.select).not.toHaveBeenCalled();
+  });
+
+  test('a refresh uses only the selected provider credential and never saves an entered key', async () => {
+    const ctx = createResolver({
+      kind: 'hosted',
+      providerId: 'venice',
+      modelId: 'test',
+      apiKey: 'saved',
+    });
+    ctx.resolver.catalog.refresh = jest.fn();
+    await ctx.resolver.refreshModels({ providerId: 'venice' });
+    expect(ctx.store.getSelection).toHaveBeenCalledWith('venice');
+    expect(ctx.resolver.catalog.refresh).toHaveBeenCalledWith('venice', 'saved', expect.any(Object));
+    await ctx.resolver.refreshModels({ providerId: 'venice', apiKey: 'entered' });
+    expect(ctx.resolver.catalog.refresh).toHaveBeenLastCalledWith('venice', 'entered', expect.any(Object));
+    expect(ctx.store.saveHosted).not.toHaveBeenCalled();
+  });
+
+  test('connection test sends only a fixed, bounded prompt and exposes no provider output', async () => {
+    const ctx = createResolver({
+      kind: 'hosted',
+      providerId: 'openai',
+      modelId: 'model-b',
+      apiKey: 'secret',
+    });
+    ctx.runtime.completeSimple = jest
+      .fn()
+      .mockResolvedValue({
+        stopReason: 'stop',
+        content: [{ type: 'text', text: 'sensitive diagnostic' }],
+      });
+    const result = await ctx.resolver.testConnection({
+      providerId: 'openai',
+      modelId: 'model-b',
+      prompt: 'private user content',
+    });
+    expect(result).toEqual({ elapsedMs: expect.any(Number) });
+    ctx.runtime.completeSimple.mockResolvedValue({ stopReason: 'length', content: [] });
+    await expect(ctx.resolver.testConnection({ providerId: 'openai', modelId: 'model-b' })).resolves.toMatchObject({ outcome: 'token_limit' });
+    expect(ctx.runtime.completeSimple).toHaveBeenCalledWith(
+      expect.any(Object),
+      {
+        messages: [{ role: 'user', content: 'Reply with OK.', timestamp: expect.any(Number) }],
+      },
+      expect.objectContaining({ maxTokens: 32, maxRetries: 0, signal: expect.any(AbortSignal) })
+    );
+    ctx.runtime.completeSimple.mockResolvedValue({
+      stopReason: 'error',
+      errorMessage: 'raw credential',
+    });
+    await expect(
+      ctx.resolver.testConnection({ providerId: 'openai', modelId: 'model-b' })
+    ).rejects.toMatchObject({ code: 'AGENT_PROVIDER_TEST_FAILED' });
+  });
+
   test('configures and resolves a hosted model with only an in-memory key', async () => {
     const ctx = createResolver({
       kind: 'hosted',
@@ -124,51 +286,27 @@ describe('AgentProviderResolver', () => {
     expect(resolved.thinkingLevel).toBe('off');
   });
 
-  test('registers and resolves Free Pi through its fixed hosted endpoint', async () => {
+  test('rejects retired Free Pi configuration and runtime selection before supplying a key', async () => {
     const ctx = createResolver({
       kind: 'hosted',
       providerId: 'freepi',
-      modelId: FREE_PI_MODEL_ID,
+      modelId: 'retired-model',
       apiKey: 'test-key',
     });
-
-    await ctx.resolver.configureHosted({
-      providerId: 'freepi',
-      modelId: FREE_PI_MODEL_ID,
-      apiKey: 'new-test-key',
-    });
-    const resolved = await ctx.resolver.resolveModel();
-
-    expect(ctx.runtime.registerProvider).toHaveBeenCalledWith(
-      'freepi',
-      expect.objectContaining({
-        name: 'Free Pi',
-        baseUrl: FREE_PI_BASE_URL,
-        api: 'openai-completions',
-        models: [
-          expect.objectContaining({
-            id: FREE_PI_MODEL_ID,
-            compat: expect.objectContaining({
-              supportsDeveloperRole: false,
-              supportsReasoningEffort: false,
-              maxTokensField: 'max_tokens',
-            }),
-          }),
-        ],
+    await expect(
+      ctx.resolver.configureHosted({
+        providerId: 'freepi',
+        modelId: 'retired-model',
+        apiKey: 'test-key',
       })
-    );
-    const freePiConfig = ctx.runtime.registerProvider.mock.calls.find(
-      ([providerId]) => providerId === 'freepi'
-    )[1];
-    expect(freePiConfig).not.toHaveProperty('apiKey');
-    expect(JSON.stringify(freePiConfig)).not.toContain('test-key');
-    expect(ctx.store.saveHosted).toHaveBeenCalledWith({
-      providerId: 'freepi',
-      modelId: FREE_PI_MODEL_ID,
-      apiKey: 'new-test-key',
+    ).rejects.toMatchObject({ code: 'AGENT_PROVIDER_INVALID' });
+    await expect(ctx.resolver.resolveModel()).rejects.toMatchObject({
+      code: 'AGENT_PROVIDER_INVALID',
     });
-    expect(ctx.runtime.setRuntimeApiKey).toHaveBeenCalledWith('freepi', 'test-key');
-    expect(resolved.model).toMatchObject({ provider: 'freepi', id: FREE_PI_MODEL_ID });
+    expect(ctx.store.saveHosted).not.toHaveBeenCalled();
+    expect(ctx.runtime.registerProvider).not.toHaveBeenCalled();
+    expect(ctx.runtime.setRuntimeApiKey).not.toHaveBeenCalled();
+    expect(ctx.resolver.loadSdk).not.toHaveBeenCalled();
   });
 
   test('rejects unsupported providers, unknown models, and malformed keys', async () => {
@@ -236,7 +374,10 @@ describe('AgentProviderResolver', () => {
     expect(resolved.model).toMatchObject({ provider: 'openai-codex', id: 'codex-model' });
     expect(resolved.thinkingLevel).toBe('medium');
     expect(ctx.runtime.setRuntimeApiKey).not.toHaveBeenCalled();
-    expect(ctx.runtime.registerProvider).not.toHaveBeenCalled();
+    expect(ctx.runtime.registerProvider).toHaveBeenCalledWith(
+      'openai-codex',
+      expect.objectContaining({ api: 'openai-codex-responses', baseUrl: 'https://chatgpt.com/backend-api' })
+    );
   });
 
   test('selects only models exposed by a configured provider connection', async () => {
@@ -313,60 +454,30 @@ describe('AgentProviderResolver', () => {
   });
 
   test('normalizes supported Ollama URLs to the OpenAI-compatible v1 endpoint', () => {
-    expect(normalizeOllamaBaseUrl('http://localhost:11434')).toBe(
-      'http://localhost:11434/v1'
-    );
-    expect(normalizeOllamaBaseUrl('http://[::1]:11434/v1/')).toBe(
-      'http://[::1]:11434/v1'
-    );
+    expect(normalizeOllamaBaseUrl('http://localhost:11434')).toBe('http://localhost:11434/v1');
+    expect(normalizeOllamaBaseUrl('http://[::1]:11434/v1/')).toBe('http://[::1]:11434/v1');
   });
 
   test('returns a renderer-safe hosted catalog without credentials', async () => {
     const ctx = createResolver();
-    await expect(ctx.resolver.getCatalog()).resolves.toEqual([
-      {
-        providerId: 'anthropic',
-        name: 'Anthropic',
-        authType: 'api_key',
-        models: [{ id: 'model-a', name: 'Model A', reasoning: false }],
-      },
-      {
-        providerId: 'openai',
-        name: 'OpenAI',
-        authType: 'api_key',
-        models: [{ id: 'model-b', name: 'Model B', reasoning: false }],
-      },
-      {
-        providerId: 'openrouter',
-        name: 'OpenRouter',
-        authType: 'api_key',
-        models: [{ id: 'model-c', name: 'Model C', reasoning: false }],
-      },
-      {
-        providerId: 'freepi',
-        name: 'Free Pi',
-        authType: 'api_key',
-        models: [
-          {
-            id: FREE_PI_MODEL_ID,
-            name: 'DeepSeek V4 Flash',
-            reasoning: false,
-          },
-        ],
-      },
-      {
-        providerId: 'openai-codex',
-        name: 'ChatGPT (Codex)',
-        authType: 'subscription',
-        models: [
-          {
-            id: 'codex-model',
-            name: 'Codex Model',
-            reasoning: true,
-          },
-        ],
-      },
+    const catalog = await ctx.resolver.getCatalog();
+    expect(catalog.map((provider) => provider.providerId)).toEqual([
+      'openai',
+      'anthropic',
+      'xai',
+      'meta',
+      'openrouter',
+      'venice',
+      'near-ai',
+      'openai-codex',
     ]);
+    expect(catalog.find((p) => p.providerId === 'anthropic').models).toEqual([
+      expect.objectContaining({ id: 'model-a', name: 'Model A', reasoning: false }),
+    ]);
+    expect(catalog.find((p) => p.providerId === 'meta').models).toEqual([
+      expect.objectContaining({ id: 'muse-spark-1.3', tools: true }),
+    ]);
+    expect(catalog.find((p) => p.providerId === 'venice')).toMatchObject({ canRefresh: true });
     expect(JSON.stringify(await ctx.resolver.getCatalog())).not.toContain('sk-secret');
   });
 

@@ -88,6 +88,20 @@ function isStoredConnection(connection, providerId) {
   ) {
     return false;
   }
+  if (
+    connection.privacyPolicy !== undefined &&
+    !['standard', 'zdr', 'private', 'tee'].includes(connection.privacyPolicy)
+  )
+    return false;
+  if (
+    connection.favoriteModelIds !== undefined &&
+    (!Array.isArray(connection.favoriteModelIds) ||
+      connection.favoriteModelIds.length > 128 ||
+      !connection.favoriteModelIds.every(
+        (id) => typeof id === 'string' && id.length > 0 && id.length <= 200
+      ))
+  )
+    return false;
   if (connection.kind === 'hosted') {
     return (
       typeof connection.encryptedApiKey === 'string' &&
@@ -184,6 +198,8 @@ class AgentProviderStore {
         kind: candidate.kind,
         providerId: candidate.providerId,
         modelId: candidate.modelId,
+        ...(candidate.favoriteModelIds && { favoriteModelIds: [...candidate.favoriteModelIds] }),
+        ...(candidate.privacyPolicy && { privacyPolicy: candidate.privacyPolicy }),
         ...(candidate.kind === 'ollama' && {
           baseUrl: candidate.baseUrl,
           modelIds: [...candidate.modelIds],
@@ -198,9 +214,9 @@ class AgentProviderStore {
     };
   }
 
-  getSelection() {
+  getSelection(providerId) {
     const payload = this.#read();
-    const connection = payload.connections[payload.activeProviderId];
+    const connection = payload.connections[providerId || payload.activeProviderId];
     if (!connection) return null;
     if (connection.kind === 'ollama') {
       const { modelIds: _modelIds, ...selection } = connection;
@@ -236,7 +252,7 @@ class AgentProviderStore {
     };
   }
 
-  saveHosted({ providerId, modelId, apiKey }) {
+  saveHosted({ providerId, modelId, apiKey, privacyPolicy }) {
     if (!this.isEncryptionAvailable()) {
       throw new AgentProviderStoreError(
         'AGENT_SECURE_STORAGE_UNAVAILABLE',
@@ -248,28 +264,40 @@ class AgentProviderStore {
     this.#write({
       connections: {
         ...payload.connections,
-        [providerId]: { kind: 'hosted', providerId, modelId, encryptedApiKey },
+        [providerId]: {
+          ...payload.connections[providerId],
+          kind: 'hosted',
+          providerId,
+          modelId,
+          encryptedApiKey,
+          ...(privacyPolicy !== undefined && { privacyPolicy }),
+        },
       },
       activeProviderId: providerId,
       credentials: payload.credentials,
     });
   }
 
-  saveOllama({ modelId, baseUrl }) {
+  saveOllama({ modelId, modelIds: discoveredModels, baseUrl, activate = true }) {
     const payload = this.#read();
     const previous = payload.connections.ollama;
-    const modelIds =
+    const modelIds = discoveredModels || (
       previous?.kind === 'ollama' && previous.baseUrl === baseUrl
         ? [...previous.modelIds.filter((candidate) => candidate !== modelId), modelId].slice(
             -MAX_STORED_OLLAMA_MODELS
           )
-        : [modelId];
+        : [modelId]);
     this.#write({
       connections: {
         ...payload.connections,
-        ollama: { kind: 'ollama', providerId: 'ollama', modelId, modelIds, baseUrl },
+        ollama: {
+          kind: 'ollama', providerId: 'ollama', modelId, modelIds, baseUrl,
+          ...(previous?.baseUrl === baseUrl && previous.favoriteModelIds && {
+            favoriteModelIds: previous.favoriteModelIds.filter((id) => modelIds.includes(id)),
+          }),
+        },
       },
-      activeProviderId: 'ollama',
+      activeProviderId: activate ? 'ollama' : payload.activeProviderId,
       credentials: payload.credentials,
     });
   }
@@ -309,6 +337,14 @@ class AgentProviderStore {
       activeProviderId: providerId,
       credentials: payload.credentials,
     });
+  }
+
+  savePreferences(providerId, patch) {
+    const payload = this.#read();
+    if (!payload.connections[providerId])
+      throw new AgentProviderStoreError('AGENT_PROVIDER_INVALID', 'Provider is not connected');
+    payload.connections[providerId] = { ...payload.connections[providerId], ...patch };
+    this.#write(payload);
   }
 
   remove(providerId) {
@@ -372,20 +408,26 @@ class AgentProviderStore {
         'Agent provider storage does not belong to this profile'
       );
     }
-    if (validCurrent) {
-      return {
-        connections: payload.connections,
-        activeProviderId: payload.activeProviderId,
-        credentials: payload.credentials,
-      };
+    const connection = validCurrent ? null : connectionFromSelection(payload.selection);
+    const state = validCurrent
+      ? {
+          connections: payload.connections,
+          activeProviderId: payload.activeProviderId,
+          credentials: payload.credentials,
+        }
+      : {
+          connections: connection ? { [connection.providerId]: connection } : {},
+          activeProviderId: connection?.providerId || null,
+          credentials: payload.version === LEGACY_PROVIDER_STORE_VERSION ? {} : payload.credentials,
+        };
+    // Retire the old pilot connection without decrypting its key or silently
+    // switching requests to another provider. Preserve all other connections.
+    if (Object.hasOwn(state.connections, 'freepi')) {
+      delete state.connections.freepi;
+      if (state.activeProviderId === 'freepi') state.activeProviderId = null;
+      this.#write(state);
     }
-    const connection = connectionFromSelection(payload.selection);
-    return {
-      connections: connection ? { [connection.providerId]: connection } : {},
-      activeProviderId: connection?.providerId || null,
-      credentials:
-        payload.version === LEGACY_PROVIDER_STORE_VERSION ? {} : payload.credentials,
-    };
+    return state;
   }
 
   #write({ connections, activeProviderId, credentials }) {

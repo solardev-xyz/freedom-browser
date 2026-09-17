@@ -793,6 +793,26 @@
   },
   "assets": [
     {
+      "name": "model provider marks",
+      "path": "src/renderer/assets/provider-logos/",
+      "type": "asset",
+      "license": {
+        "spdx": [
+          "UNKNOWN"
+        ],
+        "raw": "Third-party provider marks; nominative identification, no ownership claimed",
+        "notice_required": true
+      },
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "trademark",
+          "details": "Official provider icons bundled locally; source URLs and attribution are recorded in the directory README and NOTICES. Per-mark redistribution terms remain unconfirmed.",
+          "recommended_fix": "Confirm brand terms before a final tag, or use generic glyphs."
+        }
+      ]
+    },
+    {
       "name": "icon.png",
       "path": "assets/icon.png",
       "type": "asset",
@@ -866,7 +886,7 @@
       "issues": []
     }
   ],
-  "summary": { "green": 266, "yellow": 2, "orange": 5, "red": 0, "unknown": 0 },
+  "summary": { "green": 266, "yellow": 3, "orange": 5, "red": 0, "unknown": 0 },
   "blockers": [],
   "resolved_since_last_audit": [
     {

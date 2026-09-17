@@ -223,8 +223,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAgentPublication: (bzzUrl) => ipcRenderer.invoke('agent:publication:open', { bzzUrl }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
   getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),
-  configureHostedAgentProvider: (providerId, modelId, apiKey) =>
-    ipcRenderer.invoke('agent:provider:configure-hosted', { providerId, modelId, apiKey }),
+  refreshAgentProviderModels: (providerId, apiKey) =>
+    ipcRenderer.invoke('agent:provider:refresh-models', { providerId, apiKey }),
+  setAgentProviderPreferences: (providerId, preferences) =>
+    ipcRenderer.invoke('agent:provider:set-preferences', { providerId, ...preferences }),
+  testAgentProviderConnection: (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:test-connection', { providerId, modelId }),
+  configureHostedAgentProvider: (providerId, modelId, apiKey, privacyPolicy) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { providerId, modelId, apiKey,
+      ...(privacyPolicy !== undefined && { privacyPolicy }) }),
   configureOllamaAgentProvider: (modelId, baseUrl) =>
     ipcRenderer.invoke('agent:provider:configure-ollama', { modelId, baseUrl }),
   loginSubscriptionAgentProvider: (providerId, modelId) =>

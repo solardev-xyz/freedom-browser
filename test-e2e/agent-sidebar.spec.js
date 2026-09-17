@@ -1,6 +1,28 @@
-const { test, expect } = require('./fixtures');
+const { test: baseTest, expect } = require('./fixtures');
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
+const http = require('http');
+
+const test = baseTest.extend({
+  ollamaServer: async ({ electronApp: _electronApp }, use) => {
+    const server = http.createServer((request, response) => {
+      response.setHeader('Content-Type', 'application/json');
+      if (request.method === 'GET' && request.url === '/api/tags') {
+        response.end(JSON.stringify({ models: [{ name: 'freedom-e2e-no-server' }] }));
+      } else {
+        response.writeHead(404);
+        response.end(JSON.stringify({ error: 'Model unavailable in discovery-only fixture' }));
+      }
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      await use(`http://127.0.0.1:${server.address().port}/v1`);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  },
+});
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
@@ -97,6 +119,7 @@ test('sent attachments form a compact horizontally scrollable shelf', async ({ w
 test('Agent sidebar configures hosted and local models and reports the run lifecycle', async ({
   electronApp,
   window,
+  ollamaServer,
 }) => {
   const toggle = window.locator('[data-test="agent-toggle-btn"]');
   const panel = window.locator('#agent-sidebar');
@@ -107,21 +130,24 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-setup-view')).toBeVisible();
   await expect(window.locator('#agent-workspace-view')).toBeHidden();
   await expect(window.locator('#agent-sidebar-title')).toHaveText('Set up Agent');
-  await expect(window.locator('#agent-provider-status')).toHaveText('Not configured');
+  await expect(window.locator('#agent-provider-status')).toHaveText('Not connected');
 
-  await window.locator('#agent-provider-select').selectOption('freepi');
-  await expect(window.locator('#agent-provider-privacy')).toContainText('sent to Free Pi');
-  await expect(window.locator('#agent-provider-privacy')).toContainText('sensitive information');
-  await expect(window.locator('#agent-model-select')).toHaveValue('deepseek/deepseek-v4-flash');
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await window.locator('#agent-provider-api').click();
+  await expect(window.locator('#agent-provider-privacy')).toContainText('Requests go to OpenAI');
+  await expect(window.locator('#agent-model-select')).not.toHaveValue('');
+  const hostedModelName = await window.locator('#agent-model-select option:checked').textContent();
   await window.locator('#agent-api-key').fill('test-only-not-a-credential');
   await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toContainText(
-    'Free Pi · deepseek/deepseek-v4-flash'
-  );
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
   await expect(window.locator('#agent-api-key')).toHaveValue('');
+  await expect(window.locator('#agent-setup-view')).toBeVisible();
+  await expect(window.locator('#agent-model-menu')).toBeHidden();
+  await window.locator('#agent-sidebar-back').click();
   await expect(window.locator('#agent-workspace-view')).toBeVisible();
   await expect(window.locator('#agent-setup-view')).toBeHidden();
-  await expect(window.locator('#agent-active-model-label')).toHaveText('DeepSeek V4 Flash');
+  await expect(window.locator('#agent-active-model-label')).toHaveText(hostedModelName);
   await window.locator('#agent-approval-mode-button').click();
   await expect(window.locator('#agent-approval-mode-popover')).toBeVisible();
   await expect(window.locator('#agent-approval-mode-every')).toContainText(
@@ -139,9 +165,11 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-model-menu')).toBeVisible();
   await window.locator('#agent-manage-providers').click();
   await expect(window.locator('#agent-setup-view')).toBeVisible();
-  await expect(window.locator('#agent-connected-provider-list')).toContainText('Free Pi');
+  await expect(window.locator('#agent-connected-provider-list')).toContainText('OpenAI');
 
-  await window.locator('#agent-provider-select').selectOption('openai-codex');
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await window.locator('#agent-provider-chatgpt').click();
   await expect(window.locator('#agent-provider-privacy')).toContainText(
     'through your ChatGPT subscription'
   );
@@ -151,34 +179,41 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-provider-login')).toHaveText('Continue with ChatGPT');
   await expect(window.locator('#agent-model-select')).not.toHaveValue('');
 
-  await window.locator('#agent-provider-select').selectOption('ollama');
+  await window.locator('#agent-provider-detail-back').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
   await expect(window.locator('#agent-provider-privacy')).toHaveText(
     'Model requests stay on this device and are sent only to your local Ollama server.'
   );
   await expect(window.locator('#agent-hosted-fields')).toHaveClass(/hidden/);
   await expect(window.locator('#agent-ollama-fields')).not.toHaveClass(/hidden/);
-  await window.locator('#agent-ollama-model').fill('freedom-e2e-no-server');
+  await expect(window.locator('#agent-ollama-model')).toHaveCount(0);
+  await window.locator('#agent-provider-advanced > summary').click();
+  await window.locator('#agent-ollama-url').fill(ollamaServer);
   await window.locator('#agent-provider-save').click();
 
-  await expect(window.locator('#agent-provider-status')).toContainText(
-    'Ollama · freedom-e2e-no-server'
-  );
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
   await expect(window.locator('#agent-provider-message')).toHaveText(
-    'Model saved for this profile'
+    'Ollama models ready'
   );
+  await expect(window.locator('#agent-setup-view')).toBeVisible();
+  await expect(window.locator('#agent-provider-models-list')).toContainText('freedom-e2e-no-server');
+  await expect(window.locator('#agent-model-menu')).toBeHidden();
+  await window.locator('#agent-sidebar-back').click();
   await expect(window.locator('#agent-workspace-view')).toBeVisible();
   await expect(window.locator('#agent-active-model-label')).toHaveText('freedom-e2e-no-server');
   await window.locator('#agent-model-menu-button').click();
-  await expect(window.locator('#agent-model-menu-list')).toContainText('DeepSeek V4 Flash');
+  await expect(window.locator('#agent-model-menu')).toBeVisible();
+  await expect(window.locator('#agent-model-menu-list')).toContainText(hostedModelName);
   await expect(window.locator('#agent-model-menu-list')).toContainText('freedom-e2e-no-server');
-  await window.getByRole('menuitemradio', { name: 'DeepSeek V4 Flash' }).click();
-  await expect(window.locator('#agent-active-model-label')).toHaveText('DeepSeek V4 Flash');
+  await window.getByRole('menuitemradio', { name: hostedModelName, exact: true }).click();
+  await expect(window.locator('#agent-active-model-label')).toHaveText(hostedModelName);
   await window.locator('#agent-model-menu-button').click();
   await window.getByRole('menuitemradio', { name: 'freedom-e2e-no-server' }).click();
   await expect(window.locator('#agent-active-model-label')).toHaveText('freedom-e2e-no-server');
   await window.locator('#agent-model-menu-button').click();
   await window.locator('#agent-manage-providers').click();
-  await expect(window.locator('#agent-connected-provider-list')).toContainText('Free Pi');
+  await expect(window.locator('#agent-connected-provider-list')).toContainText('OpenAI');
   await expect(window.locator('#agent-connected-provider-list')).toContainText('Ollama');
   await window.locator('#agent-sidebar-back').click();
 

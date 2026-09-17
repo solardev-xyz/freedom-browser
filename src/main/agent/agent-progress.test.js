@@ -275,7 +275,7 @@ describe('Agent progress projection', () => {
     });
   });
 
-  test('projects only an origin and opaque page identity from browser receipts', () => {
+  test('projects page titles with origin and opaque identity, without page bodies or URL paths', () => {
     const receipt = createToolReceipt(OPERATIONS.SNAPSHOT, {
       envelope: {
         ok: true,
@@ -291,13 +291,20 @@ describe('Agent progress projection', () => {
     expect(receipt).toEqual({
       pageId: 'tab_private',
       origin: 'https://accounts.example',
+      pageTitle: 'Private account',
     });
-    expect(JSON.stringify(receipt)).not.toMatch(/token|secret|Private account|sensitive/);
+    expect(JSON.stringify(receipt)).not.toMatch(/token|secret|sensitive/);
     expect(activityProgress(OPERATIONS.SNAPSHOT, receipt)).toMatchObject({
       intent: 'Reading https://accounts.example',
       label: 'Read https://accounts.example',
       effect: 'observed',
+      pageTitle: 'Private account',
     });
+    const long = createToolReceipt(OPERATIONS.SNAPSHOT, {
+      envelope: { result: { title: `  A\n${'b'.repeat(400)}` } },
+    });
+    expect(long.pageTitle).toHaveLength(240);
+    expect(long.pageTitle).toMatch(/^A b/);
   });
 
   test('projects screenshot observation without retaining image pixels', () => {

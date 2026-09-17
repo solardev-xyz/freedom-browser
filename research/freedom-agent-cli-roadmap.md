@@ -1,12 +1,48 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-05
+Last updated: 2026-09-17
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
+
+## Current working status — 2026-09-17
+
+The active development branch is `feature/freedom-automation-kernel` at
+`2829f028`. The UI experiment (`cf960030` plus `2829f028`) has been accepted by
+the user and fast-forwarded into this branch. The Agent feature remains
+**unreleased**. Earlier dated qualification results below describe their exact
+candidates; they are not claims that today's full checkout or every provider
+has passed live qualification.
+
+- Completed UI round: compact Workspace overview and read-only viewer tabs,
+  compact server controls, centered conversation/composer, attached expanding
+  Workspace bar, mirrored Agent/Browser mode menus, session context menus,
+  refined typography/titlebar alignment, and automatic closing of empty right
+  panes. Manual visual feedback accepted the direction. Latest merge checks:
+  **11 targeted suites / 364 tests**, lint and whitespace checks passed; full
+  Electron E2E was not rerun for that merge.
+- Free Pi removal is implemented locally but uncommitted: no setup option or
+  runtime registration, obsolete live-test tooling removed, and stale local
+  development connections cleared without selecting another provider. Other
+  connections survive. **5 suites / 235 tests** and lint passed. This is not a
+  migration for released Agent users.
+- Model-manager/provider implementation is now present locally, uncommitted:
+  Grok/xAI enabled through Pi; custom Meta/Muse, Venice and NEAR AI adapters;
+  bounded catalog refresh/cache, provider/model search, favorites, connection
+  management and explicit test prompts. OpenRouter zero-retention routing and
+  Venice/NEAR privacy requirements apply at the runtime request boundary.
+  Deterministic validation is described below; live account/model qualification
+  and independent attestation/E2EE remain pending.
+- Existing platform work remains separate: widget platform on its own branch;
+  Windows workspace containment, external filesystem grants, tool distribution,
+  richer checkpoint/history recovery and additional viewer formats remain
+  backlog items. Embedded `llama.cpp` is deferred; Ollama remains the local path.
+
+See [the provider plan](#2026-09-17--model-manager-and-provider-expansion-plan)
+for the current sequence, privacy requirements and open questions.
 
 ## Executive decision
 
@@ -427,10 +463,12 @@ Run Pi in the main process for the first slice, behind a service interface. This
 - The renderer may submit a new key once for storage, but it never receives stored key material back. It receives only provider/model metadata and configured/test status.
 - Main encrypts hosted-provider keys with Electron `safeStorage`, binds the record to the active Freedom profile, uses restrictive file permissions, and decrypts only when constructing the in-memory credential runtime.
 - Freedom does not reuse Pi's global auth file, shell-command key resolution, or ambient provider UI. A selected hosted provider must have an explicitly configured Freedom credential before a run begins, even if a matching environment variable exists.
-- The shared hosted-provider abstraction and redaction tests now cover OpenAI, Anthropic, OpenRouter, and the fixed Free Pi pilot endpoint, alongside one Ollama reference path. Additional custom endpoints remain out of scope until their SSRF, proxy, certificate, and credential-forwarding policy is explicit.
+- The shared hosted-provider abstraction and redaction tests cover OpenAI, Anthropic, and OpenRouter, alongside one Ollama reference path. The Free Pi pilot was removed on 2026-09-17. Additional custom endpoints remain out of scope until their SSRF, proxy, certificate, and credential-forwarding policy is explicit.
 - Local endpoints must be explicit loopback HTTP(S) URLs in V1. Do not permit arbitrary remote custom endpoints until SSRF, proxy, certificate, and credential-forwarding policy is designed.
 
-### Free Pi pilot qualification — 2026-08-22
+### Free Pi pilot qualification — 2026-08-22 (retired 2026-09-17)
+
+Free Pi has been removed from provider setup, model resolution, and live-test tooling as part of the model-manager cleanup. Local development profiles discard the retired connection while retaining other providers; an active Free Pi selection returns to setup. The findings below are historical, not an outstanding qualification task.
 
 The fixed Free Pi pilot endpoint is integrated and its basic embedded text-response smoke passes with the configured `deepseek/deepseek-v4-flash` model. It is **not yet qualified as a Freedom browser-agent provider**:
 
@@ -438,7 +476,7 @@ The fixed Free Pi pilot endpoint is integrated and its basic embedded text-respo
 - Direct OpenAI-compatible protocol probes reproduced the behavior outside Freedom. The endpoint ignored an advertised `browser_snapshot` function with `tool_choice: auto`, `required`, and an explicitly forced function choice, returning plain text with `finish_reason: stop` each time.
 - The authenticated `/models` catalog currently advertises only `deepseek/deepseek-v4-flash`, so there is no alternative tool-capable Free Pi model to select.
 
-This is an upstream model-route capability gap, not evidence of a Freedom controller or Pi adapter failure. Keep the basic live text smoke available when credentials are present, and keep the browser-control qualification behind the explicit `FREEDOM_FREE_PI_AGENT_EVAL=1` opt-in so normal verification remains green while preserving a one-command recheck. Free Pi does not satisfy the hosted-provider acceptance gate until that evaluation passes without Freedom-specific fallback parsing.
+This is an upstream model-route capability gap, not evidence of a Freedom controller or Pi adapter failure. At the time, the basic live text smoke remained available with credentials, and browser-control qualification required a separate opt-in. Both were retired with the provider on 2026-09-17. Free Pi does not satisfy the hosted-provider acceptance gate until that evaluation passes without Freedom-specific fallback parsing.
 
 ### ChatGPT/Codex subscription checkpoint — 2026-08-22
 
@@ -1429,6 +1467,11 @@ Mitigation: exact decoded intent, always-ask defaults, explicit budgets, time/va
 
 ## Immediate next iteration
 
+Current priority (2026-09-17): model-manager UX and provider expansion. The
+numbered capability record below retains its dated implementation evidence;
+see the [current provider plan](#2026-09-17--model-manager-and-provider-expansion-plan)
+for the work to pick up next.
+
 The embedded Pi product path is live in Freedom. The product now has durable multi-turn sessions, Agent-first and browser-first views of the same task, browser-wide Agent-tab custody, in-flight steering, a trusted resumable page-takeover interlock, fresh semantic and visual observation, reasoning-derived live progress with verified activity precedence, evidence-based completion/recovery receipts, bounded conversation attachments with local PDF processing, verified downloads and user-authorized page uploads, Agent-native dApp wallet approval, direct Freedom wallet transfers, read-only node intelligence, explicitly disclosed raw node/application diagnostics, independently classified direct node requests, durable recovery for long-running node mutations, native progressively disclosed operational skills, safe specific provider failure/recovery UX, a fail-closed **Ask when needed** website-interaction posture, Agent-native Swarm publication, and a gated private coding workspace with sandboxed shell/file tools, isolated static and declared managed-server preview, and exact managed-workspace publication to Swarm. All twenty-one deterministic browser/privileged product qualifications remain green alongside the newer workspace, preview, and publication qualification suites.
 
 The generic effect-classifier kernel is now implemented for exact runtime-owned actions, beginning with raw Ant API requests. It runs as a separate tool-free Pi session, treats the proposed request as untrusted data, returns a strict bounded effect record, and fails closed to approval on invalid output, timeout, provider failure, low confidence, or material uncertainty. Deterministic constraints remain authoritative: the acting Agent cannot supply its own safety label, non-read HTTP methods retain a minimum approval floor, and DELETE cannot be downgraded below destructive.
@@ -1949,7 +1992,6 @@ The numbered inventory below records completed foundations and remaining capabil
 - Moving Pi from main into an Electron utility process remains an evidence-driven reliability hardening decision based on crash, memory, shutdown, and provider behavior.
 - `freedom-cli` remains repository-local as a regression and architecture oracle. Packaging and distribution resume only for a concrete external-agent or CI use case.
 - External MCP remains deferred and, if justified later, must expose the same canonical controller over stdio rather than becoming a separate automation implementation. It is independent of the WebMCP page-tool TODO above.
-- Free Pi browser-tool qualification waits for a confirmed tool-capable route or model. The current limitation does not block the embedded product path.
 - Commercial embedding and distribution policy for ChatGPT/Codex subscription reuse remains an external release question even though technical qualification passes.
 
 ### Alpha product promise
@@ -3114,9 +3156,10 @@ the separately skipped native Myotis e2e job is not a runtime pass.
 The Workspace overview has two rows: **Changes** with a file count and
 **Checkpoints** with a count. It has no file browser, internal tab switches,
 checkpoint previews or redundant clean-state subtitle. Checkpoints open an
-anchored popover. Naming the latest reviewed state and exclusion settings live
-behind the overflow button, also without a modal. Naming still saves a named
-copy of the latest reviewed state, not an arbitrary historical rename.
+anchored popover. As refined on 2026-09-17, checkpoint settings live in that
+popover and Refresh lives in the Workspace header. The redundant inner header,
+overflow menu and named-copy action have been removed; checkpoints retain
+their automatic names.
 
 Changes open a shared read-only viewer with a changed-file list and diffs against
 the latest checkpoint. Selecting a checkpoint opens its saved files in another
@@ -3151,7 +3194,327 @@ wide/narrow layouts, with mocked page dependencies and IPC. Screenshots and
 results are retained under `/private/tmp/workspace-viewer-*`; earlier overview
 checks remain under `/private/tmp/workspace-polish-*`. No Freedom app, native
 workspace command, provider or live model was launched for this UI check. Full
-app smoke testing and user visual acceptance remain pending.
+app automated smoke testing was not rerun for the later polish. User visual
+acceptance has since been given, and the experiment was merged into the feature
+branch on 2026-09-17; see the current working status above.
+
+## 2026-09-17 — Model manager and provider expansion plan
+
+Status: implementation present in the working tree after the research proposal
+was approved. Main owns provider definitions, network catalog discovery,
+credentials and request policy; renderer owns search and connection controls.
+No package boundary, dependency, SDK version or native component changed.
+Provider availability remains distinct from live qualification of each model.
+
+### Provider inventory and research findings
+
+| Connection shown to users | Current Freedom support | Planned work |
+| --- | --- | --- |
+| OpenAI | Implemented API-key path | Keep; improve connection and model management. |
+| Anthropic | Implemented API-key path | Keep; improve connection and model management. |
+| ChatGPT (Codex) | Implemented subscription path | Preserve as a distinct connection/authentication choice. |
+| OpenRouter | Implemented API-key path, encrypted storage, bundled catalog and real Pi transport | Improve discovery and routing/privacy controls; perform model-specific live qualification. |
+| Grok (xAI) | Enabled using installed Pi 0.84.2 native `xai` provider/catalog | Live model qualification; subscription login remains separate. |
+| Meta (Muse) | Custom chat-completions adapter at `https://api.meta.ai/v1`, bundled `muse-spark-1.3` definition from the official cookbook | Live model qualification. |
+| Venice | Custom adapter at `https://api.venice.ai/api/v1`; authenticated catalog discovery, private/TEE requirements and provider extensions disabled | Live qualification; independent attestation/E2EE separate. |
+| NEAR AI | Custom adapter at `https://cloud-api.near.ai/v1`; public catalog discovery separates external and provider-reported TEE models | Live qualification; independent attestation/E2EE separate. |
+| Ollama | Implemented explicit uncredentialed loopback path | Retain; local models remain capability-dependent. |
+
+Source inspection: `src/main/agent/provider-resolver.js` really allows OpenRouter,
+resolves its Pi model, and injects the decrypted key into the in-memory runtime.
+It is not replaced by a mock in production. Installed Pi includes
+`providers/openrouter.js` and `providers/xai.js`; tests substitute fake runtimes
+only for deterministic checks. Freedom now owns bounded catalog refreshes.
+The composer shows all supported models from connected providers, favorites
+first, with inline stars and search across the full catalog. Runtime definitions come from the main registry;
+renderer/service fallback labels remain for startup and retained conversations.
+Those are concrete maintenance/UX problems to address in this work.
+
+Meta announced Muse Spark 1.3 availability in Meta Model API on September 2.
+Its earlier API announcement describes an OpenAI-compatible interface and tool
+calling. Integration should use this model API, not install Muse Code or embed
+Meta's separate personal agent. The developer reference returned 429/failed
+fetches during this research: confirm endpoint, exact model IDs, authentication,
+region/account access, reasoning/tool/image wire formats and API-specific data
+terms before implementing; do not infer API privacy from the consumer app.
+Sources: [Meta 1.3 announcement](https://research.meta.ai/blog/introducing-muse-spark-1-3)
+and [Meta API introduction](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/).
+
+Stripe announced an **agreement** to acquire OpenRouter on August 19. The
+primary announcement reviewed here does not substantiate the suggested $12bn
+price; acquisition status/valuation is not an integration dependency.
+[Stripe announcement](https://stripe.com/newsroom/news/stripe-agrees-to-acquire-openrouter).
+
+### Privacy is attached to a model route and actual connection mode
+
+Do not reduce privacy to one provider-wide green badge. Distinguish retention,
+training, upstream recipients, hardware isolation, client-side encryption and
+what Freedom has independently verified. A provider policy is a disclosed claim;
+a successful cryptographic check is a separate result. Hosted content policies
+do not imply absence of billing/account metadata or local Freedom history.
+
+- **OpenRouter:** prompt retention is opt-in at the gateway, with separate
+  upstream policies. Offer an explicit “Require zero data retention” control,
+  mapped to `provider.zdr: true`; do not silently relax it on failure. Also
+  require tool parameters on compatible routes and keep fallback within the
+  selected privacy constraint. Disable unrequested server tools/plugins.
+  Sources: [data collection](https://openrouter.ai/docs/guides/privacy/data-collection),
+  [ZDR](https://openrouter.ai/docs/guides/features/zdr),
+  [routing](https://openrouter.ai/docs/guides/routing/provider-selection).
+- **Grok:** xAI documents no API training without permission, but ordinary API
+  content retention is 30 days. ZDR is separate and has feature implications;
+  do not equate no training with no retention. Source:
+  [xAI API security](https://docs.x.ai/developers/faq/security).
+- **Venice:** distinguish Anonymized upstream routes, Private hosted models,
+  TEE-backed models and client-encrypted E2EE mode. Never imply that anonymizing
+  account metadata removes personal information from the prompt itself. The
+  catalog exposes model capabilities; discover rather than infer them from a
+  model name. Sources: [privacy tiers](https://docs.venice.ai/llms.txt),
+  [route distinction](https://docs.venice.ai/guides/integrations/openclaw-bot),
+  [model catalog](https://docs.venice.ai/api-reference/endpoint/models/list).
+- **Venice encrypted integration:** ordinary TEE requests and client E2EE are
+  different paths. Its guide requires client implementation and streaming for
+  E2EE; a server-supplied `verified: true` is not our own attestation check.
+  The example encrypts user/system content only. Investigate coverage of tool
+  results, tool arguments, assistant history, attachments and streamed reasoning
+  before advertising encrypted Agent conversations. Source:
+  [TEE/E2EE protocol](https://docs.venice.ai/guides/features/tee-e2ee-models).
+- **NEAR AI:** the gateway/model verification, TLS-to-enclave binding, and
+  request/response signatures have distinct checks. Optional client encryption
+  adds another layer; changing the base URL alone does not implement it in
+  Freedom. Verify the chosen model/route, not a blanket claim about every catalog
+  entry. Sources: [verification](https://docs.near.ai/cloud/verification),
+  [client encryption](https://docs.near.ai/cloud/guides/e2ee-chat-completions),
+  [Cloud privacy policy](https://cloud.near.ai/docs/privacy.pdf).
+
+### Proposed implementation sequence
+
+1. **Model-manager foundation and UI.** One bounded provider descriptor registry
+   owns IDs, labels, authentication type, fixed origins, documentation/key links
+   and metadata provenance; expose only its safe projection to the renderer.
+   Keep credentials and transport policy in main. Show connected providers first,
+   with Add provider opening a searchable list grouped as direct labs, model
+   marketplaces/privacy services, and local. A provider detail view handles
+   connection, key replacement, model selection and disconnect. Avoid adding
+   another long static dropdown or multiple nested modals.
+2. **Useful model selection.** Search models, show capability/route information,
+   and sort favorites first while keeping all supported connected models searchable
+   and selectable in the composer. Keep provider identity beside the model name:
+   the same model via OpenRouter and Venice has different billing/privacy.
+   Connection validation should use a documented metadata/auth endpoint where
+   available; a paid test prompt must be explicit. Separate “connected” from
+   “tested with Agent tools”. Support reasoning settings only where truthful.
+3. **First delivery: OpenRouter polish and Grok.** Reuse installed Pi providers,
+   encrypted keys and existing controller tools. Add bounded Freedom-owned
+   catalog refresh on connection/explicit Refresh, with timestamps and a valid
+   cached/offline fallback. Treat downloaded model metadata as untrusted data,
+   never as an authority to change endpoints, headers, keys or executable code.
+   Keep Pi's ambient/global configuration and automatic network refresh off.
+4. **Next delivery: Venice, NEAR AI and Meta/Muse.** Use small fixed-origin
+   adapters and explicitly mapped model metadata: tool support, image input,
+   reasoning, context/output limits and pricing freshness. Start with qualified
+   Agent-capable text models, retaining images only where verified supported.
+   Preserve Freedom's system prompt; disable provider-added personas, browsing,
+   search and hosted tool execution by default. Model inference must not bypass
+   Freedom's browser/workspace/approval tools. Meta's contract was subsequently
+   confirmed through its [official cookbook](https://github.com/meta-models/meta-model-cookbook/tree/main/01_api_fundamentals).
+5. **Verified private transport.** Treat independent attestation and E2EE as a
+   dedicated implementation/review milestone for Venice and NEAR. Verify fresh
+   evidence, trusted hardware chains, acceptable measurements, key binding and
+   the actual request/response path before claiming verification. Cover the
+   entire multi-turn Agent payload and cancellation behavior. Once strict
+   verification/encryption is selected, failure stops the request rather than
+   retrying through plaintext or a weaker provider. Preserve minimal safe
+   verification receipts, never raw private prompts. New crypto dependencies
+   require separate review/approval; do not copy documentation snippets as a
+   complete production verifier.
+
+Acceptance for each delivery: deterministic adapter/request fixtures plus
+opt-in live qualification of exact provider/model pairs. Exercise streaming,
+multiple tool turns and tool errors, Stop, rate limits/auth failures, safe error
+redaction, key replacement/disconnect, model removal, offline/stale catalogs,
+and profile isolation. Test the independent classifiers and compaction as well
+as the visible Agent loop: privacy/routing policy must cover every model call.
+A text reply alone is not proof of Agent compatibility. Live tests use disposable
+non-sensitive inputs and supplied test credentials; no credentials are needed
+for deterministic tests. Provider adapters are implemented; live qualification
+remains pending until the exact account/model pairs are exercised.
+
+### Implemented delivery — 2026-09-17
+
+- Shared main-process descriptor catalog, xAI exposure and custom Meta, Venice,
+  NEAR adapters. Origins, APIs and compatibility settings are pinned by Freedom;
+  remote metadata cannot supply endpoints, headers or executable configuration.
+- Model refresh for OpenAI API, ChatGPT subscription, OpenRouter, Venice and NEAR; 15-second deadline,
+  4 MiB response/cache cap, 2,000-model cap, redirects rejected, normalized safe
+  fields only. An atomic profile-local cache survives restarts. Failed refreshes
+  keep the last usable snapshot. No background discovery or inference occurs on
+  startup. Opening a connected provider's detail screen refreshes missing or
+  day-old catalogs; Refresh is also available explicitly. OpenAI API discovers
+  supported model IDs at /v1/models; ChatGPT uses its separate Codex catalog,
+  app-owned OAuth and account header. Discovery pins Codex catalog compatibility
+  revision 0.153.0 from Astra's published minimum; originator remains Pi, whose
+  0.84.2 package version is a different version namespace. Live account availability
+  and inference remain unqualified.
+  Pi's bundled models plus a documented Astra fallback survive offline use
+  (API context 1,050,000; subscription default 272,000; medium reasoning).
+  API IDs without known agent capabilities are omitted; subscription metadata
+  accepts only visible entries and never remote instructions/URLs. Anthropic
+  and xAI remain bundled; Meta uses a verified cookbook definition. Ollama
+  discovers installed models from its loopback `/api/tags` endpoint when connecting.
+- Connected providers → Add provider or connection detail navigation, with
+  searchable provider rows. OpenAI appears once when adding, then offers
+  ChatGPT subscription or API key; saved connections keep distinct labels/auth.
+  Provider choices use compact grouped cards with subtitles and connection state.
+  OpenAI aggregates subscription/API status and labels each method separately.
+  Hosted connection forms ask for credentials and privacy requirements, not a
+  model. Missing catalogs are discovered while connecting; successful new
+  connections stay on the provider screen with connected status and available
+  models. Returning to the composer is an explicit navigation action, including
+  for Ollama and ChatGPT sign-in. Model selection and stars live in the
+  composer; connection details retain catalog refresh and explicit tests.
+  Connection screens also show a compact, scrollable, read-only model list with
+  a refresh icon in its header. Selection and favorites remain in the composer.
+  Ollama needs no model name: Connect discovers installed models and displays them
+  in place. Its local URL lives under connection settings; model-list refresh
+  replaces the saved list while retaining an installed selection, favorites and the
+  active provider. Refresh keeps the connection screen open.
+  Discovery sends no prompts (10-second deadline, 1 MiB limit, 128 models,
+  no redirects). Empty/offline responses leave prior settings intact and show an
+  actionable error. Composer shows all supported
+  connected models, favorites first. Key replacement (blank preserves saved key),
+  privacy explanation, capability/price details and explicit tests
+  live under collapsed connection settings. Disconnect is a visible button below
+  the connected provider heading. Privacy requirements remain visible.
+  Empty sign-in code UI is hidden outside an active device-code flow. Known non-tool, offline, E2EE-only or policy-incompatible models are
+  disabled. Unknown tool support is labeled, not advertised as qualified.
+- Explicit “Send test prompt” sends only `Reply with OK.`, with a 32-token cap,
+  20-second deadline and no retries. UI discloses possible token charges; no
+  conversation, page or workspace content enters this check. A reply establishes
+  connectivity only, not tool reliability.
+- OpenRouter strict mode sets `zdr`, `data_collection: deny` and
+  `require_parameters` on every request and removes plugin/model-fallback
+  instructions. Venice disables injected system prompts, search, scraping and
+  X search. Venice supports Private-or-TEE and TEE-only requirements; NEAR supports
+  TEE-only. Private/TEE classifications must have a catalog refresh within 24 h.
+  These are provider claims and routing constraints, **not independently verified
+  attestation or E2EE**. E2EE-only Venice entries are unavailable, never downgraded.
+- Policy is read again at each streaming/completion request, including retained
+  sessions, classifiers, summarization and explicit tests. A changed classification,
+  expired strict catalog or disconnected provider blocks the next request. Already
+  sent requests cannot be recalled. No weaker model/provider is selected for the user.
+- Credential encryption/profile binding and subscription isolation are preserved.
+  Catalog reads use only the relevant connection's credential: OpenAI API/Venice
+  keys or refreshed ChatGPT OAuth; public catalogs receive no supplied key.
+  New IPC uses the existing trusted-sender and serialized mutation boundary, with
+  allowlisted errors. No dependencies installed or upgraded.
+
+Validation: **9 targeted suites / 312 tests** passed, including real installed Pi
+transport with mocked HTTP: 20 requests covering all four stream/completion entry
+points and a tool-result follow-up for each custom/routing adapter, plus four
+pre-request cancellations. Additional real-runtime checks cover Astra API and
+subscription SSE requests (including request compression), medium reasoning,
+bundled-model preservation, OAuth preservation and mocked subscription discovery.
+Tests cover single-OpenAI navigation, inline favorites, late policy changes, cache failure/size/
+timeout, credential retention/isolation, privacy validation, favorites, search and
+trusted IPC. Lint and whitespace checks pass. Headless Chromium checked production
+markup/CSS and model-manager functions in light/dark themes with a mocked catalog
+and blocked networking; screenshots `/private/tmp/freedom-provider-manager-*.png`.
+This was not a full Electron or live account smoke test.
+
+Ollama discovery follow-up: **5 targeted suites / 239 tests** passed, including
+discovery, empty/offline/malformed/oversized responses, loopback enforcement,
+persisted model lists, asynchronous IPC and the composer handoff. Lint passed.
+The production resolver discovered `qwen3:8b` from the running local server using
+an in-memory store (no profile mutation, model load or inference). Light/dark
+headless checks verified the model-name field is absent and the URL stays under
+collapsed settings. The Electron regression fixture now serves a deterministic
+model list; that full Electron scenario was not rerun in this follow-up.
+
+Read-only public catalog captures on this date normalized 444 OpenRouter text
+models (375 advertise tools), and 50 NEAR text models (43 advertise tools;
+7 meet the reported TEE/tool requirement). Counts are observations, not constants.
+NEAR's raw catalog includes non-text entries and external providers; these are
+not blanket-labeled private. Captures are in `/private/tmp/freedom-*-model-catalog-20260917.json`.
+No user credentials were accessed or paid inference performed.
+
+OpenAI metadata references: [Astra API](https://developers.openai.com/api/docs/models/gpt-6-astra),
+[Codex model metadata](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json),
+[Codex models endpoint](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/models.rs).
+Fallback definitions describe supported models, not account entitlement.
+
+Remaining qualification: supplied test accounts for actual API auth, streaming,
+long tool conversations, rate limits and Stop; the UI test prompt is intentionally
+smaller than this acceptance matrix. Independent hardware-chain/measurement/key
+verification and full Agent-payload E2EE remain milestone 5 above. They are not
+exposed as completed protections.
+
+### Ollama follow-up tab creation and runtime identity — 2026-09-17
+
+The reported `qwen3:8b` five-Wikipedia-tab run recorded one successful create,
+four `POLICY_DENIED` creates, then three snapshots before a stop request. A
+deterministic controller reproduction confirmed the empty-workspace resume
+barrier allowed the first create and blocked the remaining four until a snapshot.
+
+Tab creation from an explicit URL now passes through the existing ownership,
+URL and origin checks without requiring page observation first. The resume
+barrier remains in force for page actions. Regressions exercise five consecutive
+creates after both empty and nonempty resumes, reject unrelated opener tabs and
+unsupported URLs, and confirm stale page interactions remain blocked.
+
+Pi sessions now receive only their configured model/provider identifiers as
+runtime identity, including when the app supplies a custom system prompt. The
+prompt distinguishes the Freedom Agent role from the model's developer; it does
+not include credentials or endpoint URLs. Browser instructions clarify that
+creating tabs does not require snapshots.
+
+Validation: four targeted suites / 161 tests passed. The opt-in Ollama Electron
+qualification now exercises an identity question followed by the exact five-tab
+request in the same empty conversation. One live run correctly reported
+`qwen3:8b` and `ollama`, then completed five successful tab creates with no failed
+tools in 26.9 seconds. Its page-load assertions failed under the test's custom
+HTTPS forwarding; this established tool execution, not five loaded articles.
+The fixture now uses normal Chromium navigation restricted to Wikipedia GETs.
+The corrected live test passed in 51.2 seconds including setup and both turns:
+correct runtime identity, five successful creates, and five distinct resolved
+Wikipedia article URLs in real Electron tabs. This is one successful local-model
+regression run, not a broader reliability claim. Reproduce with
+`FREEDOM_OLLAMA_TEST_MODEL=qwen3:8b FREEDOM_OLLAMA_WIKIPEDIA_TEST=1 npx playwright test --project=harness test-e2e/agent-ollama-live.spec.js --grep 'identifies its runtime'`.
+Lint and whitespace checks passed. No dependency changes or user-profile changes.
+
+### Browser activity presentation — 2026-09-17
+
+Browser activity rows show the action, observed page title, site hostname and
+cached favicon. Titles are captured with each receipt and retained in session
+history; navigating a tab later does not rewrite earlier activity. Missing titles
+fall back to the hostname and missing icons use a neutral globe. Failed actions
+retain their status mark and a separate readable error line. Long titles truncate
+visually while their full bounded text remains available on hover.
+
+Receipts retain at most 240 title characters, origin and opaque tab identity;
+URL paths/query strings and page bodies remain excluded from activity metadata.
+Favicon lookup reads the existing local cache only, never fetching a visited
+site just to render history. Six targeted suites / 282 tests passed, including
+title persistence, navigation invalidation, failure rendering and text-only title
+handling. Headless production-renderer/CSS checks passed in light/dark themes
+at normal and narrow widths; no network requests were used for those checks.
+
+### Later local inference
+
+Keep Ollama as the supported local integration. Track embedded `llama.cpp` as a
+separate future runtime project: model acquisition/provenance and licenses,
+disk/RAM/VRAM sizing, CPU/Metal/CUDA support, native packaging, process ownership,
+startup/download progress, cancellation, updates/removal and model-specific tool
+quality. Do not bundle it or acquire models as part of this provider expansion.
+
+### Scope and remaining decisions
+
+Direct Google/Gemini could later extend the major-lab list; it is not silently
+added to this request. Additional subscription logins, wallet/x402 provider
+billing, arbitrary custom endpoints and media-generation tools are also separate
+work. BYOK API connections are the first delivery. Research initially changed
+only this roadmap. The subsequent implementation is described below; Free Pi
+removal and provider work remain uncommitted in the same working tree.
 
 ## Final target statement
 

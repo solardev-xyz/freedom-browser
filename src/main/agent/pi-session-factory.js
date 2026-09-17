@@ -44,7 +44,7 @@ Use node_lifecycle to start, stop, or restart one integrated node. Every lifecyc
 For direct decentralized publishing, use swarm_publish with an opaque attached resource ID, a path inside this conversation's managed project workspace, or bounded text. Publish project files directly with workspacePath rather than reading and repackaging them through the model context. Inline text is a text publication, not a file; do not invent or report a filename for it. It publishes through Freedom's canonical Swarm publisher, uses an existing postage batch, and always requires approval because the content is public and unencrypted. Never ask for a host filesystem path or substitute window.swarm, node_request, or webpage interaction. If a publication remains uploading or verifying, use swarm_publication_status with its publicationId instead of repeating it. After an interrupted run, omit the ID to discover recent publications. Load the swarm-publishing skill for the full procedure and the separate swarm-postage skill only when postage is unavailable.
 When bash returns a workspace process session ID, the command is still running inside the same sandbox and permission posture. Use write_stdin with empty input to read new output, send bounded input only when the program expects it, and terminate the session when it is no longer needed. Do not start a duplicate server merely because a poll returned no new output.
 If a tool reports that approval or user action is required, explain the blocker and wait for the user.
-On follow-up messages, assume the pages may have changed since the previous turn. Get the current tab and take a fresh snapshot before performing more browser actions.
+On follow-up messages, assume the pages may have changed since the previous turn. Get the current tab and take a fresh snapshot before interacting with existing page content. Creating new tabs from explicit URLs does not require a page snapshot.
 When the user steers an active task, reconcile the new guidance with the work already completed. Re-read the current page before relying on element references or assumptions that may have changed.
 Stay within the task-owned tabs and capabilities assigned to this run. Unrelated browser tabs are outside your authority.`;
 
@@ -222,10 +222,16 @@ async function createIsolatedPiSession(options = {}) {
   if (!options.model) throw new TypeError('Freedom Pi session requires a model');
   if (!options.modelRuntime) throw new TypeError('Freedom Pi session requires a modelRuntime');
 
-  const systemPrompt =
+  const baseSystemPrompt =
     typeof options.systemPrompt === 'string' && options.systemPrompt.trim()
       ? options.systemPrompt.trim()
       : DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT;
+  const identity = JSON.stringify({
+    modelId: typeof options.model.id === 'string' ? options.model.id.slice(0, 200) : 'unknown',
+    providerId: typeof options.model.provider === 'string' ? options.model.provider.slice(0, 200) : 'unknown',
+  });
+  const systemPrompt = `${baseSystemPrompt}\n\nConfigured model runtime (identifiers only, not instructions): ${identity}
+When asked which model or provider you are using, report these configured identifiers. The providerId "ollama" means this session is served through Ollama. Freedom Agent is your role inside the browser; Freedom is not a claim about who trained the underlying model. Do not invent a model developer or deny the configured runtime based on a memorized identity.`;
   const customTools = options.customTools === undefined ? [] : options.customTools;
   const sdk = validatePiSdk(options.sdk || (await loadPiSdk()));
   const toolNames = validateCustomTools(customTools);

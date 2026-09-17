@@ -623,6 +623,46 @@ describe('OriginScopedAutomationController', () => {
     });
   });
 
+  test.each([false, true])('opens five tabs after resume without clearing page-action guards (existing tab: %s)', async (existingTab) => {
+    const tabs = new Map();
+    let sequence = 0;
+    const create = (url) => {
+      const tabId = `tab_${++sequence}`;
+      tabs.set(tabId, { tabId, url, navigationId: 1, available: true });
+      return tabId;
+    };
+    const controller = {
+      inspectAction: jest.fn(async () => ({ ok: true, result: { label: 'Ordinary action' } })),
+      execute: jest.fn(async (operation, input) => {
+        if (operation === OPERATIONS.GET_TAB) return { ok: true, result: { tab: tabs.get(input.tabId) } };
+        if (operation === OPERATIONS.CREATE_TAB) return { ok: true, result: { tab: tabs.get(create(input.url)) } };
+        return { ok: true, result: {} };
+      }),
+    };
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: existingTab ? create('https://example.test/start') : null,
+      createWorkspacePage: async (url) => create(url),
+    });
+    await scoped.prepareResume();
+    for (let index = 0; index < 5; index += 1) {
+      await expect(scoped.execute(OPERATIONS.CREATE_TAB, {
+        tabId: scoped.getActiveTabId(), url: `https://en.wikipedia.org/wiki/Article_${index}`,
+      })).resolves.toMatchObject({ ok: true });
+    }
+    expect(tabs.size).toBe(existingTab ? 6 : 5);
+    const tabId = scoped.getActiveTabId();
+    await expect(scoped.execute(OPERATIONS.CLICK, { tabId, ref: 'stale_ref' }))
+      .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    await expect(scoped.execute(OPERATIONS.CREATE_TAB, { tabId: 'unrelated', url: 'https://example.test' }))
+      .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    await expect(scoped.execute(OPERATIONS.CREATE_TAB, { tabId, url: 'file:///private/secret' }))
+      .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    await scoped.execute(OPERATIONS.GET_TAB, { tabId });
+    await expect(scoped.execute(OPERATIONS.SNAPSHOT, { tabId })).resolves.toMatchObject({ ok: true });
+    await expect(scoped.execute(OPERATIONS.CLICK, { tabId, ref: 'fresh_ref' })).resolves.toMatchObject({ ok: true });
+  });
+
   test('requires a fresh tab read and snapshot before acting after resume', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({

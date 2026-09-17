@@ -131,6 +131,13 @@ Chain and token marks (sidebar and wallet icons)
   claims no ownership of them. No per-mark redistribution terms have been
   confirmed; see LICENSE_AUDIT.md.
 
+Model provider marks
+  The marks under `src/renderer/assets/provider-logos/` belong to OpenAI,
+  Anthropic, xAI, Meta, OpenRouter, Venice, NEAR AI and Ollama. They identify
+  their provider integrations; Freedom claims no ownership. Official source
+  URLs are recorded in that directory's README.md. Per-mark redistribution
+  terms have not been independently confirmed.
+
 Everything else committed under `src/` — the internal-page artwork and
 wordmark in `src/renderer/pages/images/`, and the Myotis supervisor
 sources in `src/main/myotis/native/` — is Freedom's own work under the
