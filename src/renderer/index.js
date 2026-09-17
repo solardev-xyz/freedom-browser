@@ -198,6 +198,7 @@ setOnBookmarkContextMenuOpening(onAnyMenuOpening);
 // Initialize platform-specific UI adjustments
 async function initPlatformUI() {
   const platform = await electronAPI.getPlatform();
+  document.body.classList.toggle('platform-mac', platform === 'darwin');
 
   if (platform === 'linux') {
     // platform-linux governs the titlebar spacer width (shrinks the 76px macOS

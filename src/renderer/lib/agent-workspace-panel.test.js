@@ -8,16 +8,16 @@ const popup = () => document.querySelector('.agent-workspace-popover');
 const checkpoint = { id: 'a'.repeat(40), label: 'Working game', createdAt: 1000, reviewed: true };
 
 describe('workspace summary and popovers', () => {
-  let panel, compact, inspector, api, historyApi;
+  let panel, compact, refreshControl, inspector, api, historyApi;
   const start = async () => { inspector.setWorkspace('one'); jest.advanceTimersByTime(250); await flush(); };
   beforeEach(() => {
     jest.useFakeTimers(); jest.clearAllMocks();
-    panel = createElement('div'); compact = createElement('div');
+    panel = createElement('div'); compact = createElement('div'); refreshControl = createElement('button');
     global.document = createDocument({ elementsById: { panel, compact } });
     api = jest.fn(async (conversationId) => ({ ok: true, conversationId, result: { available: true, changes: [] } }));
     historyApi = jest.fn(async (conversationId) => ({ ok: true, conversationId, result: { versions: [checkpoint] } }));
     global.window = { addEventListener: jest.fn(), innerWidth: 1000, innerHeight: 700, electronAPI: { inspectAgentWorkspace: api, agentWorkspaceHistory: historyApi } };
-    inspector = createWorkspaceInspector([panel, compact]);
+    inspector = createWorkspaceInspector([panel, compact], {}, { compactHost: compact, refreshControl });
   });
   afterEach(() => { inspector.setWorkspace(null); jest.useRealTimers(); delete global.document; delete global.window; });
 
@@ -33,6 +33,25 @@ describe('workspace summary and popovers', () => {
     }
     expect(api).toHaveBeenCalledWith('one', 'changes', '.', false);
     expect(api).toHaveBeenCalledTimes(1);
+    expect(compact.querySelector('.agent-workspace-inspector-heading')).toBeNull();
+    expect(panel.querySelector('.agent-workspace-refresh')).not.toBeNull();
+  });
+
+  test('refreshes directly from either header without opening or collapsing content', async () => {
+    await start();
+    expect(refreshControl.hidden).toBe(false);
+    refreshControl.dispatch('click');
+    expect(refreshControl.disabled).toBe(true);
+    await flush();
+    expect(api).toHaveBeenCalledTimes(2);
+    expect(historyApi).toHaveBeenCalledTimes(2);
+    expect(popup()).toBeNull();
+    expect(refreshControl.disabled).toBe(false);
+    panel.querySelector('.agent-workspace-refresh').dispatch('click');
+    await flush();
+    expect(api).toHaveBeenCalledTimes(3);
+    inspector.setWorkspace(null);
+    expect(refreshControl.hidden).toBe(true);
   });
 
   test('opens changes as a viewer and checkpoints as a non-modal anchored list', async () => {
@@ -48,16 +67,6 @@ describe('workspace summary and popovers', () => {
     expect(popup()).toBeNull();
   });
 
-  test('names latest reviewed state within the popover without implicitly including edits', async () => {
-    await start();
-    panel.querySelector('.agent-workspace-options-toggle').dispatch('click');
-    find(popup(), 'Name latest checkpoint…').dispatch('click');
-    const form = popup().querySelector('.agent-workspace-version-save');
-    form.children[0].value = 'Before enemies'; form.children[1].dispatch('click'); await flush();
-    expect(historyApi).toHaveBeenCalledWith('one', 'save', { label: 'Before enemies' });
-    expect(popup().attributes['aria-label']).toBe('Checkpoints');
-  });
-
   test('preserves contextual exclusions behind settings', async () => {
     let exclusions = [];
     historyApi.mockImplementation(async (conversationId, action, options = {}) => {
@@ -65,7 +74,7 @@ describe('workspace summary and popovers', () => {
       if (action === 'include') exclusions = [];
       return { ok: true, conversationId, result: { versions: [checkpoint], exclusions } };
     });
-    await start(); panel.querySelector('.agent-workspace-options-toggle').dispatch('click');
+    await start(); panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
     find(popup(), 'Checkpoint settings').dispatch('click');
     const form = popup().querySelector('.agent-workspace-version-save');
     form.children[0].value = 'private.csv'; form.children[1].value = 'Private data'; form.children[2].dispatch('click'); await flush();
@@ -87,5 +96,28 @@ describe('workspace summary and popovers', () => {
   test('does not turn failed inspection into a clean zero', async () => {
     api.mockResolvedValue({ ok: false }); await start();
     expect(panel.querySelectorAll('.agent-workspace-summary')[0].children[1].textContent).toBe('Unavailable');
+  });
+
+  test.each([false, true])('counts available checkpoints with a history notice (limit reached: %s)', async (limitReached) => {
+    const notice = 'Only explicitly reviewed file versions are checkpointed. Later edits and unselected files remain outside saved history.';
+    historyApi.mockImplementation(async (conversationId) => ({ ok: true, conversationId, result: { versions: [checkpoint], notice, limitReached } }));
+    await start();
+    for (const host of [panel, compact]) {
+      expect(host.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe(limitReached ? '1+' : '1');
+    }
+    panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    expect(popup().querySelectorAll('.agent-workspace-checkpoint')).toHaveLength(1);
+    if (!limitReached) expect(popup().querySelector('.agent-workspace-note').textContent).toBe(notice);
+  });
+
+  test('distinguishes a failed history request from an available empty history and recovers', async () => {
+    historyApi.mockRejectedValueOnce(new Error('History busy'));
+    await start();
+    expect(panel.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe('Unavailable');
+    panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    expect(popup().querySelector('.agent-workspace-note').textContent).toBe('Checkpoints could not be refreshed. Try again.');
+    historyApi.mockImplementation(async (conversationId) => ({ ok: true, conversationId, result: { versions: [], notice: 'Later edits remain outside saved history.' } }));
+    await start();
+    expect(panel.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe('0');
   });
 });

@@ -73,27 +73,6 @@
           </button>
         </div>
         <div class="agent-first-titlebar-center">
-          <button
-            id="agent-first-browser-return"
-            class="agent-titlebar-return"
-            type="button"
-            aria-label="Return to browser"
-            title="Return to browser"
-            data-test="agent-first-browser-return"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="m15 18-6-6 6-6" />
-            </svg>
-            <span>Browser</span>
-          </button>
           <span id="agent-first-title" class="agent-first-title">New task</span>
         </div>
         <div class="agent-first-titlebar-right">
@@ -1122,6 +1101,21 @@
       id="bookmarks-bar"
       data-test="bookmarks-bar"
     ></nav>
+        <div id="agent-mode-menu" class="agent-session-actions agent-mode-menu" role="menu" aria-label="Freedom mode" popover="manual" hidden>
+          <button id="agent-mode-agent" type="button" role="menuitemradio" aria-checked="true" aria-labelledby="agent-mode-agent-label" aria-describedby="agent-mode-agent-description">
+            <span class="agent-mode-copy">
+              <span id="agent-mode-agent-label">Freedom Agent</span>
+              <small id="agent-mode-agent-description">Focus on tasks and conversations</small>
+            </span>
+          </button>
+          <button id="agent-mode-browser" type="button" role="menuitemradio" aria-checked="false" aria-labelledby="agent-mode-browser-label" aria-describedby="agent-mode-browser-description">
+            <span class="agent-mode-copy">
+              <span id="agent-mode-browser-label">Freedom Browser</span>
+              <small id="agent-mode-browser-description">Browse websites with Agent alongside</small>
+            </span>
+          </button>
+        </div>
+
     <section class="app-body">
       <aside
         id="agent-session-sidebar"
@@ -1131,7 +1125,19 @@
         hidden
       >
         <div class="agent-session-sidebar-header">
-          <strong>Freedom Agent</strong>
+          <button
+            id="agent-mode-toggle"
+            class="agent-mode-toggle"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="agent-mode-menu"
+          >
+            <span>Freedom Agent</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
           <button id="agent-session-new-chat" type="button" aria-label="New chat" title="New chat">
             <svg
               viewBox="0 0 24 24"
@@ -1152,7 +1158,6 @@
             <p>Your conversations will appear here.</p>
           </div>
         </div>
-        <p class="agent-session-history-note">Saved locally in this profile.</p>
         <div
           id="agent-session-resizer"
           class="agent-pane-resizer agent-session-resizer"
@@ -1369,6 +1374,20 @@
                   <path d="m15 18-6-6 6-6" />
                 </svg>
               </button>
+              <button
+                id="agent-browser-mode-toggle"
+                class="agent-mode-toggle"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="agent-mode-menu"
+                hidden
+              >
+                <span>Freedom Browser</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </button>
               <div>
                 <h2 id="agent-sidebar-title">Agent</h2>
                 <p id="agent-sidebar-subtitle">Give Agent a task</p>
@@ -1547,8 +1566,8 @@
 
                 <div id="agent-empty-state" class="agent-empty-state">
                   <div class="agent-empty-state-icon" aria-hidden="true">✦</div>
-                  <h3>What should I do?</h3>
-                  <p>Ask Agent to research, fill in a form, or complete a task across the web.</p>
+                  <h3>What would you like to do?</h3>
+                  <p>Research a topic, build an app, or work on a project. Tell Agent what you have in mind.</p>
                 </div>
 
                 <div id="agent-transcript" class="agent-transcript" aria-live="polite" hidden></div>
@@ -1569,22 +1588,27 @@
               </aside>
             </div>
 
-            <div class="agent-composer-wrap">
+            <div id="agent-composer-wrap" class="agent-composer-wrap">
               <div id="agent-process-compact" class="agent-process-compact" hidden>
-                <button
-                  id="agent-process-compact-toggle"
-                  class="agent-process-compact-toggle"
-                  type="button"
-                  aria-expanded="false"
-                  aria-controls="agent-process-compact-popover"
-                >
-                  <span class="agent-process-live-dot" aria-hidden="true"></span>
-                  <span id="agent-process-compact-label">Process running</span>
-                  <span aria-hidden="true">⌃</span>
-                </button>
+                <div class="agent-process-compact-header">
+                  <button
+                    id="agent-process-compact-toggle"
+                    class="agent-process-compact-toggle"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="agent-process-compact-popover"
+                  >
+                    <span class="agent-process-live-dot" aria-hidden="true"></span>
+                    <span id="agent-process-compact-label">Process running</span>
+                    <span aria-hidden="true">⌃</span>
+                  </button>
+                  <button id="agent-workspace-refresh" class="agent-workspace-refresh" type="button" aria-label="Refresh workspace" title="Refresh workspace" hidden></button>
+                </div>
                 <div
                   id="agent-process-compact-popover"
                   class="agent-process-compact-popover"
+                  role="region"
+                  aria-label="Workspace details"
                   hidden
                 >
                   <div id="agent-workspace-inspector-compact" hidden></div>
@@ -1712,7 +1736,9 @@
                       aria-controls="agent-model-menu"
                     >
                       <span id="agent-active-model-label">Choose model</span>
-                      <span aria-hidden="true">⌄</span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
                     </button>
                     <button
                       class="agent-composer-icon-button"

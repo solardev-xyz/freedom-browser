@@ -503,7 +503,8 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
   await window.locator('[data-test="agent-workspace-sidebar-toggle"]').click();
 
-  await window.locator('[data-test="agent-first-browser-return"]').click();
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
   await expect(window.locator('.toolbar')).toBeVisible();
   await expect(window.locator('#nav-form > .address-bar-container')).toHaveCount(1);

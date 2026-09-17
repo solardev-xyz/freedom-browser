@@ -109,10 +109,13 @@ let taskTabProjection = [];
 let workspaceProcesses = [];
 let workspaceProjectionGeneration = 0;
 let workspaceInspector = null;
+let composerResizeObserver = null;
 let workspaceInspectionConversationId = null;
 let agentFirstMode = false;
 let sessionSidebarOpen = true;
+let sessionContextMenu = null;
 let workspaceSidebarOpen = true;
+const hiddenWorkspaceConversations = new Set();
 let conversationTitle = 'New task';
 let sessionHistory = [];
 let sessionHistoryLoading = false;
@@ -542,11 +545,9 @@ function closeComposerPopovers() {
   elements.modelMenu.hidden = true;
   elements.approvalModePopover.hidden = true;
   elements.attachmentMenu.hidden = true;
-  elements.processCompactPopover.hidden = true;
   elements.modelMenuButton.setAttribute('aria-expanded', 'false');
   elements.approvalModeButton.setAttribute('aria-expanded', 'false');
   elements.attachmentButton.setAttribute('aria-expanded', 'false');
-  elements.processCompactToggle.setAttribute('aria-expanded', 'false');
 }
 
 function setApprovalMode(nextMode, options = {}) {
@@ -618,12 +619,16 @@ async function selectApprovalMode(nextMode) {
 }
 
 function setAgentView(nextView) {
+  setModeMenuOpen(false);
   if (nextView !== 'workspace' && agentFirstMode) setAgentFirstMode(false);
   agentView = nextView;
   elements.loadingView.hidden = nextView !== 'loading';
   elements.setupView.hidden = nextView !== 'setup';
   elements.workspaceView.hidden = nextView !== 'workspace';
   const setup = nextView === 'setup';
+  elements.browserModeToggle.hidden = nextView !== 'workspace';
+  elements.title.hidden = nextView === 'workspace';
+  elements.subtitle.hidden = nextView === 'workspace';
   const canReturn = setup && providerStatus?.configured === true;
   elements.back.hidden = !canReturn;
   elements.title.textContent = setup ? (canReturn ? 'Models' : 'Set up Agent') : 'Agent';
@@ -649,7 +654,41 @@ function setConversationTitle(nextTitle) {
   elements.agentFirstTitle.textContent = conversationTitle;
 }
 
+function setModeMenuOpen(open, restoreFocus = false) {
+  const { modeMenu, modeAgent, modeBrowser } = elements;
+  const modeToggle = agentFirstMode ? elements.modeToggle : elements.browserModeToggle;
+  if (!open) {
+    modeMenu.hidePopover?.();
+    modeMenu.hidden = true;
+    elements.modeToggle.setAttribute('aria-expanded', 'false');
+    elements.browserModeToggle.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) modeToggle.focus();
+    return;
+  }
+  closeComposerPopovers();
+  closeSessionContextMenu();
+  modeMenu.hidden = false;
+  modeMenu.showPopover?.();
+  modeToggle.setAttribute('aria-expanded', 'true');
+  const anchor = modeToggle.getBoundingClientRect();
+  const bounds = modeMenu.getBoundingClientRect();
+  modeMenu.style.left = `${Math.max(8, Math.min(anchor.left, window.innerWidth - bounds.width - 8))}px`;
+  modeMenu.style.top = `${Math.max(8, Math.min(anchor.bottom + 6, window.innerHeight - bounds.height - 8))}px`;
+  (agentFirstMode ? modeAgent : modeBrowser).focus();
+}
+
+function closeSessionContextMenu(restoreFocus = false) {
+  if (!sessionContextMenu) return;
+  const { actions, select } = sessionContextMenu;
+  actions.hidePopover?.();
+  actions.hidden = true;
+  select.setAttribute('aria-expanded', 'false');
+  sessionContextMenu = null;
+  if (restoreFocus) select.focus();
+}
+
 function renderSessionSidebar() {
+  closeSessionContextMenu();
   const rows = sessionHistory.map((session) => {
     const row = document.createElement('div');
     row.className = 'agent-session-row';
@@ -664,47 +703,72 @@ function renderSessionSidebar() {
     select.setAttribute('aria-current', active ? 'page' : 'false');
     const title = document.createElement('span');
     title.textContent = session.title || 'Untitled session';
-    const meta = document.createElement('small');
-    const turnCount = Number.isSafeInteger(session.turnCount) ? session.turnCount : 0;
-    meta.textContent = `${turnCount} ${turnCount === 1 ? 'turn' : 'turns'}${session.status === 'interrupted' ? ' · Interrupted' : ''}`;
+    select.title = session.title || 'Untitled session';
+    select.setAttribute('aria-haspopup', 'menu');
+    select.setAttribute('aria-expanded', 'false');
     select.appendChild(title);
-    select.appendChild(meta);
     select.addEventListener('click', () => openSavedSession(session.conversationId));
-
-    const more = document.createElement('button');
-    more.type = 'button';
-    more.className = 'agent-session-more';
-    more.textContent = '•••';
-    more.title = 'Session options';
-    more.setAttribute('aria-label', `Options for ${session.title || 'session'}`);
-    more.setAttribute('aria-expanded', 'false');
-    more.disabled = currentRunStatus !== 'idle';
 
     const actions = document.createElement('div');
     actions.className = 'agent-session-actions';
+    actions.setAttribute('popover', 'manual');
+    actions.setAttribute('role', 'menu');
+    actions.setAttribute('aria-label', `Options for ${session.title || 'session'}`);
     actions.hidden = true;
     const rename = document.createElement('button');
     rename.type = 'button';
     rename.textContent = 'Rename';
-    rename.addEventListener('click', () => renameSavedSession(session));
+    rename.setAttribute('role', 'menuitem');
+    rename.addEventListener('click', () => {
+      closeSessionContextMenu(true);
+      void renameSavedSession(session);
+    });
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'danger';
     remove.textContent = 'Delete';
-    remove.addEventListener('click', () => deleteSavedSession(session));
+    remove.setAttribute('role', 'menuitem');
+    remove.addEventListener('click', () => {
+      closeSessionContextMenu(true);
+      void deleteSavedSession(session);
+    });
     actions.appendChild(rename);
     actions.appendChild(remove);
-    more.addEventListener('click', () => {
-      const nextOpen = actions.hidden;
-      for (const menu of elements.sessionList.querySelectorAll('.agent-session-actions')) {
-        menu.hidden = true;
+    const openMenu = (event, keyboard = false) => {
+      event.preventDefault();
+      closeSessionContextMenu();
+      setModeMenuOpen(false);
+      if (currentRunStatus !== 'idle') return;
+      actions.hidden = false;
+      actions.showPopover?.();
+      select.setAttribute('aria-expanded', 'true');
+      sessionContextMenu = { actions, select, row };
+      const anchor = select.getBoundingClientRect();
+      const bounds = actions.getBoundingClientRect();
+      const x = keyboard ? anchor.left : event.clientX;
+      const y = keyboard ? anchor.bottom : event.clientY;
+      actions.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
+      actions.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
+      rename.focus();
+    };
+    row.addEventListener('contextmenu', (event) => openMenu(event, !event.clientX && !event.clientY));
+    select.addEventListener('keydown', (event) => {
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+        openMenu(event, true);
       }
-      actions.hidden = !nextOpen;
-      more.setAttribute('aria-expanded', String(nextOpen));
+    });
+    actions.addEventListener('keydown', (event) => {
+      if (event.key === 'Tab') {
+        closeSessionContextMenu(true);
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        const next = event.key === 'Home' ? rename : event.key === 'End' ? remove
+          : document.activeElement === rename ? remove : rename;
+        next.focus();
+      }
     });
 
     row.appendChild(select);
-    row.appendChild(more);
     row.appendChild(actions);
     return row;
   });
@@ -764,6 +828,7 @@ function renderTaskPages() {
       tabIds: pages.map((entry) => entry.rendererTabId),
     });
   }
+  syncWorkspaceSidebar(pages.length > 0);
   elements.taskPageCount.textContent = String(pages.length);
   elements.taskPagesEmpty.hidden = pages.length > 0;
   document.body.classList.toggle('agent-workspace-page-empty', pages.length === 0);
@@ -884,6 +949,7 @@ async function openWorkspaceProcessPreview(processId, button) {
       return;
     }
     applyWorkspaceProjection(response.state);
+    if (agentFirstMode) setWorkspaceSidebarOpen(true);
     setMessage(elements.runMessage, 'Server preview opened.');
   } catch {
     setMessage(elements.runMessage, 'Could not open the server preview', true);
@@ -942,37 +1008,62 @@ function createWorkspaceProcessItem(process) {
 
 function createWorkspaceServerItem(server) {
   const running = server.state === 'running';
-  const item = createWorkspaceProcessItem({
-    ...server, processId: server.processId || '', networkPosture: running ? 'full' : 'none',
-  });
+  const item = document.createElement('div');
+  item.className = 'agent-process-item agent-server-item';
   item.dataset.serverId = server.serverId;
-  item.querySelector('.agent-process-meta').textContent =
-    running ? 'Running' : server.state === 'exit_unconfirmed' ? 'Exit unconfirmed' : server.state === 'needs_restart' ? 'Needs restart' : server.state === 'restarting' ? 'Restarting' : 'Stopped';
-  item.title = `${server.command} · ${server.workingDirectory === '.' ? 'Project workspace' : server.workingDirectory} · Port ${server.previewPort}`;
+  item.dataset.processId = server.processId || '';
   const details = document.createElement('details');
   details.className = 'agent-process-details';
-  const detailsToggle = document.createElement('summary');
-  detailsToggle.textContent = 'Details';
-  details.appendChild(detailsToggle);
-  const description = document.createElement('p');
-  description.textContent = item.title;
-  details.appendChild(description);
-  item.appendChild(details);
-  if (!running) {
-    item.querySelector('.agent-process-live-dot').remove();
-    item.querySelector('.agent-process-actions').replaceChildren();
+  const summary = document.createElement('summary');
+  summary.title = 'Show server configuration';
+  const command = document.createElement('span');
+  command.className = 'agent-process-command';
+  command.textContent = server.command;
+  const meta = document.createElement('span');
+  meta.className = 'agent-server-meta';
+  const stateLabel = { running: 'Running', stopped: 'Stopped', needs_restart: 'Needs restart', restarting: 'Restarting', exit_unconfirmed: 'Exit unconfirmed' }[server.state];
+  meta.textContent = `${stateLabel} · :${server.previewPort}`;
+  summary.appendChild(command);
+  summary.appendChild(meta);
+  details.appendChild(summary);
+  for (const text of [`Command: ${server.command}`, `Directory: ${server.workingDirectory === '.' ? 'Project workspace' : server.workingDirectory}`, `Port: ${server.previewPort}`]) {
+    const line = document.createElement('p');
+    line.textContent = text;
+    details.appendChild(line);
   }
-  const restart = document.createElement('button');
-  restart.type = 'button';
-  restart.textContent = running ? 'Restart with Agent' : 'Start with Agent';
-  restart.title = 'Uses the saved command and checks current permissions before launch';
-  restart.disabled = Boolean(currentRunId) || ['restarting', 'exit_unconfirmed'].includes(server.state);
-  restart.addEventListener('click', () => {
-    if (currentRunId) return;
+
+  const actions = document.createElement('div');
+  actions.className = 'agent-process-actions';
+  function iconButton(label, path, handler, danger = false) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    if (danger) button.className = 'danger';
+    // Static icons only; command and other server data use textContent above.
+    button.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${path}</svg>`;
+    button.addEventListener('click', () => { if (!button.disabled) handler(button); });
+    actions.appendChild(button);
+    return button;
+  }
+  if (running) {
+    iconButton('Open preview', '<path d="M14 3h7v7M21 3l-11 11M10 3H3v18h18v-7"/>', button => openWorkspaceProcessPreview(server.processId, button));
+    iconButton('Stop server', '<rect x="5" y="5" width="14" height="14" rx="1"/>', button => stopWorkspaceProcess(server.processId, button), true);
+  }
+  const restart = iconButton(running ? 'Restart server' : 'Start server', running
+    ? '<path d="M20 7a9 9 0 1 0 1 8M20 2v6h-6"/>'
+    : '<path d="M7 4l14 8-14 8z"/>', () => {
+    if (currentRunId || ['restarting', 'exit_unconfirmed'].includes(server.state)) return;
     restart.disabled = true;
     void startRun({ prompt: `Restart saved development server ${server.serverId} using workspace_server. Check its saved command and current permissions first, then reopen its preview.` });
   });
-  item.querySelector('.agent-process-actions').appendChild(restart);
+  restart.disabled = Boolean(currentRunId) || ['restarting', 'exit_unconfirmed'].includes(server.state);
+  restart.title = server.state === 'exit_unconfirmed' ? 'Start blocked: the previous process exit is unconfirmed'
+    : server.state === 'restarting' ? 'Server restart in progress'
+      : currentRunId ? 'Wait for the current Agent task to finish'
+        : `${running ? 'Restart' : 'Start'} server — Agent checks the saved command and permissions, then opens the preview`;
+  item.appendChild(details);
+  item.appendChild(actions);
   return item;
 }
 
@@ -1045,6 +1136,7 @@ async function refreshWorkspaceProjection() {
 }
 
 function setAgentFirstMode(nextMode) {
+  setModeMenuOpen(false);
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
   if (agentFirstMode) {
     setWorkspaceNavigationProjection(elements.workspaceAddressHost);
@@ -1052,6 +1144,8 @@ function setAgentFirstMode(nextMode) {
     setTabStripProjection();
     setWorkspaceNavigationProjection();
   }
+  elements.modeAgent.setAttribute('aria-checked', String(agentFirstMode));
+  elements.modeBrowser.setAttribute('aria-checked', String(!agentFirstMode));
   document.body.classList.toggle('agent-first-mode', agentFirstMode);
   document.body.classList.toggle('agent-session-sidebar-closed', !sessionSidebarOpen);
   document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
@@ -1084,14 +1178,35 @@ function setSessionSidebarOpen(nextOpen) {
   );
 }
 
-function setWorkspaceSidebarOpen(nextOpen) {
-  workspaceSidebarOpen = nextOpen === true;
+function syncWorkspaceSidebar(hasPages = workspacePages().length > 0) {
+  workspaceSidebarOpen = hasPages && !hiddenWorkspaceConversations.has(currentConversationId);
   document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
-  elements.workspaceSidebarToggle.setAttribute('aria-expanded', String(workspaceSidebarOpen));
-  elements.workspaceSidebarToggle.setAttribute(
-    'aria-label',
-    workspaceSidebarOpen ? 'Hide workspace sidebar' : 'Show workspace sidebar'
-  );
+  const toggle = elements.workspaceSidebarToggle;
+  toggle.disabled = !hasPages;
+  toggle.setAttribute('aria-expanded', String(workspaceSidebarOpen));
+  const label = !hasPages ? 'No pages or viewers in this conversation'
+    : workspaceSidebarOpen ? 'Hide workspace sidebar' : 'Show workspace sidebar';
+  toggle.setAttribute('aria-label', label);
+  toggle.title = label;
+}
+
+function setWorkspaceSidebarOpen(nextOpen) {
+  if (nextOpen) hiddenWorkspaceConversations.delete(currentConversationId);
+  else hiddenWorkspaceConversations.add(currentConversationId);
+  syncWorkspaceSidebar();
+}
+
+function observeComposerHeight() {
+  composerResizeObserver?.disconnect();
+  const update = () => {
+    const height = elements.composerWrap.getBoundingClientRect().height;
+    if (height > 0) elements.workspaceView.style.setProperty('--agent-composer-height', `${height}px`);
+  };
+  update();
+  if (typeof ResizeObserver === 'function') {
+    composerResizeObserver = new ResizeObserver(update);
+    composerResizeObserver.observe(elements.composerWrap);
+  }
 }
 
 function setBodyStyleProperty(name, value) {
@@ -1203,6 +1318,7 @@ function showProviderSetup() {
 }
 
 function setPanelOpen(nextOpen) {
+  if (!nextOpen) setModeMenuOpen(false);
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
   elements.toggle.setAttribute('aria-expanded', String(panelOpen));
@@ -2798,11 +2914,11 @@ function finishTurnView(runId, event = {}) {
 function applyReadyConversationState(state) {
   if (!state?.conversationId) return false;
   workspaceProjectionGeneration += 1;
+  currentConversationId = state.conversationId;
   applyWorkspaceProjection(state);
   if (Object.hasOwn(APPROVAL_MODE_LABELS, state.approvalMode)) {
     setApprovalMode(state.approvalMode, { force: true });
   }
-  currentConversationId = state.conversationId;
   currentRunId = null;
   lastFinishedRunId = null;
   stopRequestedRunId = null;
@@ -2918,6 +3034,7 @@ async function deleteSavedSession(session) {
 function applyConversationCleared() {
   workspaceProjectionGeneration += 1;
   currentConversationId = null;
+  hiddenWorkspaceConversations.delete(null);
   workspaceInspectionConversationId = null;
   workspaceInspector?.setWorkspace(null);
   conversationRendererTabId = null;
@@ -3527,10 +3644,14 @@ export function initAgentUi(options = {}) {
     agentFirstToggle: byId('agent-first-toggle'),
     agentFirstTitlebar: byId('agent-first-titlebar'),
     agentFirstTitle: byId('agent-first-title'),
-    browserReturn: byId('agent-first-browser-return'),
     sessionSidebarToggle: byId('agent-session-sidebar-toggle'),
     workspaceSidebarToggle: byId('agent-workspace-sidebar-toggle'),
     sessionSidebar: byId('agent-session-sidebar'),
+    modeToggle: byId('agent-mode-toggle'),
+    browserModeToggle: byId('agent-browser-mode-toggle'),
+    modeMenu: byId('agent-mode-menu'),
+    modeAgent: byId('agent-mode-agent'),
+    modeBrowser: byId('agent-mode-browser'),
     sessionResizer: byId('agent-session-resizer'),
     pageSurface: byId('agent-page-surface'),
     workspaceResizer: byId('agent-workspace-resizer'),
@@ -3565,6 +3686,7 @@ export function initAgentUi(options = {}) {
     processPanelList: byId('agent-process-panel-list'),
     processCompact: byId('agent-process-compact'),
     processCompactToggle: byId('agent-process-compact-toggle'),
+    workspaceRefresh: byId('agent-workspace-refresh'),
     processCompactLabel: byId('agent-process-compact-label'),
     processCompactPopover: byId('agent-process-compact-popover'),
     processCompactCount: byId('agent-process-compact-count'),
@@ -3593,6 +3715,7 @@ export function initAgentUi(options = {}) {
     pageContextLabel: byId('agent-page-context-label'),
     prompt: byId('agent-prompt'),
     composer: byId('agent-composer'),
+    composerWrap: byId('agent-composer-wrap'),
     run: byId('agent-run'),
     newChat: byId('agent-new-chat'),
     pageInterlock: byId('agent-page-interlock'),
@@ -3676,19 +3799,49 @@ export function initAgentUi(options = {}) {
     openTab: options.createWorkspaceViewerTab,
     closeTab: options.closeViewerTab,
     onOpenViewer: () => { if (agentFirstMode) setWorkspaceSidebarOpen(true); },
-  });
+  }, { compactHost: elements.workspaceInspectorCompact, refreshControl: elements.workspaceRefresh });
   setAgentTabClaimHandler(claimAgentOwnedTab);
 
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
   elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
-  elements.browserReturn.addEventListener('click', () => setAgentFirstMode(false));
+  for (const toggle of [elements.modeToggle, elements.browserModeToggle]) {
+    toggle.addEventListener('click', () => setModeMenuOpen(elements.modeMenu.hidden));
+    toggle.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setModeMenuOpen(true);
+        (event.key === 'ArrowUp' ? elements.modeBrowser : elements.modeAgent).focus();
+      }
+    });
+  }
+  elements.modeAgent.addEventListener('click', () => {
+    if (agentFirstMode) setModeMenuOpen(false, true);
+    else setAgentFirstMode(true);
+  });
+  elements.modeBrowser.addEventListener('click', () => {
+    if (!agentFirstMode) setModeMenuOpen(false, true);
+    else {
+      setAgentFirstMode(false);
+      elements.browserModeToggle.focus();
+    }
+  });
+  elements.modeMenu.addEventListener('keydown', (event) => {
+    if (event.key === 'Tab') {
+      setModeMenuOpen(false, true);
+    } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === 'Home' ? elements.modeAgent : event.key === 'End' ? elements.modeBrowser
+        : document.activeElement === elements.modeAgent ? elements.modeBrowser : elements.modeAgent;
+      next.focus();
+    }
+  });
   elements.sessionSidebarToggle.addEventListener('click', () =>
     setSessionSidebarOpen(!sessionSidebarOpen)
   );
-  elements.workspaceSidebarToggle.addEventListener('click', () =>
-    setWorkspaceSidebarOpen(!workspaceSidebarOpen)
-  );
+  elements.workspaceSidebarToggle.addEventListener('click', () => {
+    if (!elements.workspaceSidebarToggle.disabled) setWorkspaceSidebarOpen(!workspaceSidebarOpen);
+  });
   initPaneResizer('session', elements.sessionResizer);
   initPaneResizer('workspace', elements.workspaceResizer);
   elements.taskPageList.addEventListener(
@@ -3790,6 +3943,8 @@ export function initAgentUi(options = {}) {
   );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
+    if (!elements.modeMenu.hidden && !elements.modeMenu.contains(event.target) && !elements.modeToggle.contains(event.target) && !elements.browserModeToggle.contains(event.target)) setModeMenuOpen(false);
+    if (sessionContextMenu && !sessionContextMenu.actions.contains(event.target)) closeSessionContextMenu();
     for (const host of [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]) {
       const options = host.querySelector('.agent-workspace-options');
       if (options?.open && !(event.composedPath?.() || []).includes(options) && !options.contains(event.target)) options.open = false;
@@ -3815,17 +3970,28 @@ export function initAgentUi(options = {}) {
     ) {
       closeComposerPopovers();
     }
-    if (
-      !elements.processCompactPopover.hidden &&
-      !(event.composedPath?.() || []).includes(elements.processCompactPopover) &&
-      !elements.processCompactPopover.contains(event.target) &&
-      !elements.processCompactToggle.contains(event.target)
-    ) {
-      closeComposerPopovers();
-    }
+
+  });
+  document.addEventListener('contextmenu', (event) => {
+    if (sessionContextMenu && !sessionContextMenu.row.contains(event.target)) closeSessionContextMenu();
+  });
+  document.addEventListener('scroll', () => closeSessionContextMenu(), true);
+  window.addEventListener('resize', () => {
+    closeSessionContextMenu();
+    setModeMenuOpen(false);
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (!elements.modeMenu.hidden) {
+      event.preventDefault();
+      setModeMenuOpen(false, true);
+      return;
+    }
+    if (sessionContextMenu) {
+      event.preventDefault();
+      closeSessionContextMenu(true);
+      return;
+    }
     const openOptions = [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]
       .map((host) => host.querySelector('.agent-workspace-options')).find((options) => options?.open);
     if (openOptions) {
@@ -3836,11 +4002,15 @@ export function initAgentUi(options = {}) {
     const popoverWasOpen =
       !elements.modelMenu.hidden ||
       !elements.approvalModePopover.hidden ||
-      !elements.attachmentMenu.hidden ||
-      !elements.processCompactPopover.hidden;
+      !elements.attachmentMenu.hidden;
     closeComposerPopovers();
     if (!elements.takeoverDialog.hidden) {
       setTakeoverDialogOpen(false);
+    } else if (!popoverWasOpen && !elements.processCompactPopover.hidden) {
+      event.preventDefault();
+      elements.processCompactPopover.hidden = true;
+      elements.processCompactToggle.setAttribute('aria-expanded', 'false');
+      elements.processCompactToggle.focus();
     } else if (!popoverWasOpen && currentRunStatus === 'running' && currentRunId) {
       void stopRun();
     } else if (!popoverWasOpen && agentFirstMode) {
@@ -3874,6 +4044,7 @@ export function initAgentUi(options = {}) {
           renderPageInterlock();
         })
       : null;
+  observeComposerHeight();
   setPanelOpen(false);
   setSessionSidebarOpen(true);
   setWorkspaceSidebarOpen(true);

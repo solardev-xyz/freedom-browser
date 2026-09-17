@@ -13,10 +13,14 @@ function createAgentElements() {
     'agent-first-toggle',
     'agent-first-titlebar',
     'agent-first-title',
-    'agent-first-browser-return',
     'agent-session-sidebar-toggle',
     'agent-workspace-sidebar-toggle',
     'agent-session-sidebar',
+    'agent-mode-toggle',
+    'agent-browser-mode-toggle',
+    'agent-mode-menu',
+    'agent-mode-agent',
+    'agent-mode-browser',
     'agent-session-resizer',
     'agent-page-surface',
     'agent-workspace-resizer',
@@ -51,6 +55,7 @@ function createAgentElements() {
     'agent-process-panel-list',
     'agent-process-compact',
     'agent-process-compact-toggle',
+    'agent-workspace-refresh',
     'agent-process-compact-label',
     'agent-process-compact-popover',
     'agent-process-compact-count',
@@ -78,6 +83,7 @@ function createAgentElements() {
     'agent-page-context',
     'agent-page-context-label',
     'agent-composer',
+    'agent-composer-wrap',
     'agent-prompt',
     'agent-run',
     'agent-new-chat',
@@ -137,7 +143,6 @@ function createAgentElements() {
   elements['agent-first-toggle'].hidden = true;
   elements['agent-first-titlebar'] = createElement('div');
   elements['agent-first-titlebar'].hidden = true;
-  elements['agent-first-browser-return'] = createElement('button');
   elements['agent-session-sidebar-toggle'] = createElement('button');
   elements['agent-workspace-sidebar-toggle'] = createElement('button');
   elements['agent-session-sidebar'] = createElement('aside', {
@@ -256,6 +261,9 @@ function createAgentElements() {
 async function loadAgentUi(options = {}) {
   jest.resetModules();
   const elements = createAgentElements();
+  elements['agent-workspace-view'].style.setProperty = jest.fn((name, value) => {
+    elements['agent-workspace-view'].style[name] = value;
+  });
   const document = createDocument({ elementsById: elements });
   document.dispatchEvent = jest.fn();
   let eventHandler = null;
@@ -408,6 +416,7 @@ async function loadAgentUi(options = {}) {
         isActive: true,
       },
     ]);
+  let tabPresentationListener;
   const mod = await import('./agent-ui.js');
   mod.initAgentUi({
     getActiveTab:
@@ -421,6 +430,7 @@ async function loadAgentUi(options = {}) {
     setWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable,
     subscribeTabPresentation: (listener) => {
+      tabPresentationListener = listener;
       listener(getOpenTabs());
       return jest.fn();
     },
@@ -440,6 +450,7 @@ async function loadAgentUi(options = {}) {
     setTabStripProjection,
     setWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable,
+    emitTabs: (tabs) => tabPresentationListener(tabs),
     emit: (event) => eventHandler(event),
     emitProviderAuth: (event) => providerAuthEventHandler(event),
   };
@@ -1975,6 +1986,7 @@ describe('Agent UI', () => {
     const state = {
       status: 'ready',
       conversationId: 'conversation_process',
+      taskTabs: [{ rendererTabId: 7, agentActive: true }],
       approvalMode: 'every_interaction',
       transcript: [],
       workspace: { processes: [process], commands: [] },
@@ -2007,12 +2019,25 @@ describe('Agent UI', () => {
     ctx.document.handlers.click({ target: removedTarget, composedPath: () => [removedTarget, ctx.elements['agent-process-compact-popover']] });
     expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(false);
     ctx.document.handlers.click({ target: removedTarget, composedPath: () => [removedTarget] });
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(false);
+    ctx.elements['agent-process-compact-toggle'].dispatch('click');
     expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(true);
+    ctx.elements['agent-process-compact-toggle'].dispatch('click');
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(true);
+    expect(ctx.elements['agent-process-compact-toggle'].getAttribute('aria-expanded')).toBe('false');
 
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    ctx.elements['agent-workspace-sidebar-toggle'].dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-workspace-sidebar-closed')).toBe(true);
     const actions = ctx.elements['agent-process-panel-list'].children[0].children[2];
     actions.children[0].dispatch('click');
     await flush();
     expect(openAgentProcessPreview).toHaveBeenCalledWith(process.processId);
+    expect(ctx.document.body.classList.contains('agent-workspace-sidebar-closed')).toBe(false);
 
     actions.children[1].dispatch('click');
     await flush();
@@ -2034,10 +2059,14 @@ describe('Agent UI', () => {
     expect(panel.children).toHaveLength(1);
     expect(ctx.elements['agent-process-panel-label'].textContent).toBe('Development servers');
     expect(ctx.elements['agent-process-panel-count'].hidden).toBe(true);
-    expect(panel.children[0].children[1].textContent).toBe('Stopped');
-    expect(panel.children[0].querySelector('.agent-process-details').children[1].textContent).toContain('Port 5173');
-    const button = panel.children[0].children[2].children[0];
-    expect(button.textContent).toBe('Start with Agent');
+    expect(panel.children[0].querySelector('.agent-server-meta').textContent).toBe('Stopped · :5173');
+    const details = panel.children[0].querySelector('.agent-process-details');
+    expect(details.children[0].tagName).toBe('SUMMARY');
+    expect(details.children[2].textContent).toBe('Directory: game');
+    expect(details.children[3].textContent).toBe('Port: 5173');
+    const button = panel.children[0].querySelector('.agent-process-actions').children[0];
+    expect(button.getAttribute('aria-label')).toBe('Start server');
+    expect(button.title).toContain('Agent checks');
     button.dispatch('click'); await flush();
     expect(startAgent.mock.calls[0][1]).toContain(serverId);
     expect(startAgent.mock.calls[0][1]).toContain('permissions');
@@ -2049,8 +2078,35 @@ describe('Agent UI', () => {
         command: 'npm run dev', workingDirectory: 'game', state: 'exit_unconfirmed', previewPort: 5173 }] } };
     const ctx = await loadAgentUi({ electronAPI: { getAgentState: jest.fn(async () => ({ ok: true, state })) } });
     const row = ctx.elements['agent-process-panel-list'].children[0];
-    expect(row.children[1].textContent).toContain('Exit unconfirmed');
-    expect(row.children[2].children[0].disabled).toBe(true);
+    expect(row.querySelector('.agent-server-meta').textContent).toContain('Exit unconfirmed');
+    const button = row.querySelector('.agent-process-actions').children[0];
+    expect(button.disabled).toBe(true);
+    expect(button.title).toContain('exit is unconfirmed');
+    button.dispatch('click');
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+  });
+
+  test('compact running server controls keep preview, stop and Agent restart routes', async () => {
+    const serverId = `workspace_server_${'b'.repeat(24)}`;
+    const processId = `workspace_process_${'c'.repeat(24)}`;
+    const server = { serverId, processId, command: 'npm run dev', workingDirectory: '.', state: 'running', previewPort: 5173 };
+    const state = { status: 'ready', conversationId: 'conversation_server', transcript: [], workspace: { processes: [], commands: [], servers: [server] } };
+    const openAgentProcessPreview = jest.fn(async () => ({ ok: true, state }));
+    const stopAgentProcess = jest.fn(async () => ({ ok: true, state }));
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn(async () => ({ ok: true, state })), openAgentProcessPreview, stopAgentProcess,
+    } });
+    const row = () => ctx.elements['agent-process-panel-list'].children[0];
+    const actions = () => row().querySelector('.agent-process-actions').children;
+    expect(actions().map(button => button.getAttribute('aria-label'))).toEqual(['Open preview', 'Stop server', 'Restart server']);
+    row().querySelector('.agent-process-details').open = true;
+    actions()[0].dispatch('click'); await flush();
+    expect(openAgentProcessPreview).toHaveBeenCalledWith(processId);
+    expect(row().querySelector('.agent-process-details').open).toBe(true);
+    actions()[1].dispatch('click'); await flush();
+    expect(stopAgentProcess).toHaveBeenCalledWith(processId);
+    actions()[2].dispatch('click'); await flush();
+    expect(ctx.electronAPI.startAgent.mock.calls[0][1]).toContain(serverId);
   });
 
   test('opens a saved session and continues without silently adopting the current page', async () => {
@@ -2205,8 +2261,11 @@ describe('Agent UI', () => {
     });
 
     let row = ctx.elements['agent-session-list'].children[0];
-    row.children[1].dispatch('click');
-    row.children[2].children[0].dispatch('click');
+    expect(row.children).toHaveLength(2);
+    expect(row.children[0].children).toHaveLength(1);
+    row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
+    expect(row.children[1].hidden).toBe(false);
+    row.children[1].children[0].dispatch('click');
     await flush();
     expect(ctx.electronAPI.renameAgentSession).toHaveBeenCalledWith(
       'conversation_saved',
@@ -2214,13 +2273,53 @@ describe('Agent UI', () => {
     );
 
     row = ctx.elements['agent-session-list'].children[0];
-    row.children[1].dispatch('click');
-    row.children[2].children[1].dispatch('click');
+    row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
+    row.children[1].children[1].dispatch('click');
     await flush();
     expect(global.window.confirm).toHaveBeenCalledWith(
       'Delete “Original title”? This cannot be undone.'
     );
     expect(ctx.electronAPI.deleteAgentSession).toHaveBeenCalledWith('conversation_saved');
+  });
+
+  test('opens session actions by keyboard and dismisses on Escape, outside click, or scrolling', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions: [
+          { conversationId: 'first', title: 'First session', turnCount: 8 },
+          { conversationId: 'second', title: 'Second session', turnCount: 2 },
+        ] }),
+      },
+    });
+    const [first, second] = ctx.elements['agent-session-list'].children;
+    const select = first.children[0];
+    const menu = first.children[1];
+    jest.spyOn(select, 'focus');
+    jest.spyOn(menu.children[0], 'focus');
+    jest.spyOn(menu.children[1], 'focus');
+    const keyboard = { key: 'F10', shiftKey: true, preventDefault: jest.fn() };
+    select.dispatch('keydown', keyboard);
+    expect(keyboard.preventDefault).toHaveBeenCalled();
+    expect(menu.hidden).toBe(false);
+    expect(select.getAttribute('aria-expanded')).toBe('true');
+    expect(menu.children[0].focus).toHaveBeenCalled();
+    menu.dispatch('keydown', { key: 'End', preventDefault: jest.fn() });
+    expect(menu.children[1].focus).toHaveBeenCalled();
+    ctx.document.handlers.keydown( { key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(select.focus).toHaveBeenCalled();
+    expect(select.getAttribute('aria-expanded')).toBe('false');
+
+    select.dispatch('keydown', keyboard);
+    second.dispatch('contextmenu', { clientX: 24, clientY: 100, preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(second.children[1].hidden).toBe(false);
+    ctx.document.handlers.click( { target: ctx.document.body });
+    expect(second.children[1].hidden).toBe(true);
+    select.dispatch('keydown', keyboard);
+    ctx.document.handlers.scroll();
+    expect(menu.hidden).toBe(true);
+    expect(ctx.electronAPI.openAgentSession).not.toHaveBeenCalled();
   });
 
   test('projects owned pages and conversation viewers without leaving Agent-first', async () => {
@@ -2309,11 +2408,125 @@ describe('Agent UI', () => {
     expect(ctx.document.body.classList.contains('agent-session-sidebar-closed')).toBe(true);
     expect(ctx.document.body.classList.contains('agent-workspace-sidebar-closed')).toBe(true);
 
-    ctx.elements['agent-first-browser-return'].dispatch('click');
+    ctx.elements['agent-mode-toggle'].dispatch('click');
+    ctx.elements['agent-mode-browser'].dispatch('click');
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
     expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
     expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
     expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith();
+  });
+
+  test('collapses an empty conversation pane and remembers manual hiding per conversation', async () => {
+    let tabs = [
+      { id: 7, title: 'Home', isActive: true },
+      { id: 8, title: 'Loading page', isActive: false, isLoading: true },
+    ];
+    const sessions = [
+      { conversationId: 'empty', title: 'Empty conversation' },
+      { conversationId: 'with_page', title: 'Conversation with page' },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => tabs,
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions }),
+        openAgentSession: jest.fn(async (conversationId) => ({ ok: true, state: {
+          conversationId, status: 'ready', title: conversationId, transcript: [],
+          taskTabs: conversationId === 'with_page' ? [{ rendererTabId: 8, agentActive: true }] : [],
+        } })),
+      },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const toggle = ctx.elements['agent-workspace-sidebar-toggle'];
+    const closed = () => ctx.document.body.classList.contains('agent-workspace-sidebar-closed');
+    const select = async (index) => {
+      ctx.elements['agent-session-list'].children[index].children[0].dispatch('click');
+      await flush();
+    };
+    expect(closed()).toBe(false); // A new conversation starts with the current Home tab.
+    await select(0);
+    expect(closed()).toBe(true);
+    expect(toggle.hidden).not.toBe(true);
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    toggle.dispatch('click');
+    expect(closed()).toBe(true);
+    await select(1);
+    expect(closed()).toBe(false); // Loading is content, not an empty pane.
+    expect(toggle.disabled).toBe(false);
+    toggle.dispatch('click');
+    expect(closed()).toBe(true);
+    ctx.emitTabs(tabs.map(tab => ({ ...tab, isLoading: false })));
+    expect(closed()).toBe(true); // A background update cannot undo the manual close.
+    await select(0);
+    await select(1);
+    expect(closed()).toBe(true); // The manual choice belongs to this conversation.
+    toggle.dispatch('click');
+    expect(closed()).toBe(false);
+    tabs = tabs.filter(tab => tab.id !== 8);
+    ctx.emitTabs(tabs);
+    expect(closed()).toBe(true);
+    expect(toggle.disabled).toBe(true);
+    tabs = [...tabs, { id: 9, kind: 'workspace-viewer', conversationId: 'with_page', title: 'Changes', isActive: true }];
+    ctx.emitTabs(tabs);
+    expect(closed()).toBe(false); // A viewer also counts as content.
+    expect(toggle.disabled).toBe(false);
+  });
+
+  test('switches to Browser from the mode menu without closing the conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+    const toggle = ctx.elements['agent-mode-toggle'];
+    const menu = ctx.elements['agent-mode-menu'];
+    const agent = ctx.elements['agent-mode-agent'];
+    const browser = ctx.elements['agent-mode-browser'];
+    jest.spyOn(toggle, 'focus');
+    jest.spyOn(browser, 'focus');
+    expect(agent.getAttribute('aria-checked')).toBe('true');
+    expect(browser.getAttribute('aria-checked')).toBe('false');
+    toggle.dispatch('click');
+    expect(menu.hidden).toBe(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    agent.dispatch('click');
+    expect(menu.hidden).toBe(true);
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    toggle.dispatch('keydown', { key: 'ArrowUp', preventDefault: jest.fn() });
+    expect(browser.focus).toHaveBeenCalled();
+    ctx.document.handlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
+    expect(menu.hidden).toBe(true);
+    expect(toggle.focus).toHaveBeenCalled();
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    toggle.dispatch('click');
+    ctx.document.handlers.click({ target: ctx.document.body });
+    expect(menu.hidden).toBe(true);
+    toggle.dispatch('click');
+    browser.dispatch('click');
+    expect(menu.hidden).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+    expect(browser.getAttribute('aria-checked')).toBe('true');
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
+    const browserToggle = ctx.elements['agent-browser-mode-toggle'];
+    expect(browserToggle.hidden).toBe(false);
+    expect(ctx.elements['agent-sidebar-title'].hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar-subtitle'].hidden).toBe(true);
+    browserToggle.dispatch('click');
+    expect(menu.hidden).toBe(false);
+    expect(browserToggle.getAttribute('aria-expanded')).toBe('true');
+    browser.dispatch('click');
+    expect(menu.hidden).toBe(true);
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
+    browserToggle.dispatch('click');
+    agent.dispatch('click');
+    expect(menu.hidden).toBe(true);
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(agent.getAttribute('aria-checked')).toBe('true');
   });
 
   test('delegates workspace address editing policy to shared browser navigation', async () => {

@@ -13,7 +13,7 @@ function button(text, action, className = 'agent-workspace-item') {
   return node;
 }
 
-export function createWorkspaceInspector(hosts, viewerOptions = {}) {
+export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHost = null, refreshControl = null } = {}) {
   let conversationId = null;
   let generation = 0;
   let refreshTimer = null;
@@ -21,12 +21,21 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}) {
   let refreshQueued = false;
   let changes = null;
   let history = null;
+  let historyLoadFailed = false;
   let error = '';
   let popup = null;
   let anchorHost = null;
   let anchorKey = null;
   let popupSequence = 0;
   const viewers = createWorkspaceViewers(viewerOptions);
+  function configureRefresh(control) {
+    control.setAttribute('aria-label', 'Refresh workspace');
+    control.title = 'Refresh workspace';
+    control.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>';
+    control.addEventListener('click', () => { if (!control.disabled) void refresh(); });
+  }
+  if (refreshControl) configureRefresh(refreshControl);
+
 
   const findAnchor = () => [...(anchorHost?.querySelectorAll('[data-workspace-focus]') || [])]
     .find((node) => node.dataset.workspaceFocus === anchorKey);
@@ -109,7 +118,8 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}) {
 
   function showCheckpoints(anchor = null) {
     const ui = popover('Checkpoints', anchor);
-    if (!history) ui.fail('Loading checkpoints…');
+    if (historyLoadFailed) ui.fail('Checkpoints could not be refreshed. Try again.');
+    else if (!history) ui.fail('Loading checkpoints…');
     else if (history.notice) ui.fail(history.notice);
     else if (!history.versions.length) ui.fail('No checkpoints yet');
     for (const version of history?.versions || []) {
@@ -122,31 +132,14 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}) {
       ui.body.appendChild(row);
     }
     if (history?.limitReached) ui.fail('Showing the latest 100 checkpoints.');
+    const actions = element('div', 'agent-workspace-checkpoint-actions');
+    actions.appendChild(button('Checkpoint settings', showSettings));
+    ui.body.appendChild(actions);
     ui.finish();
   }
 
-  function showName() {
-    const ui = popover('Name latest checkpoint', null, () => showOptions());
-    ui.fail('Saves a named copy of the latest reviewed checkpoint. No new files or edits are included.');
-    const form = element('form', 'agent-workspace-version-save');
-    const input = element('input', ''); input.maxLength = 80; input.placeholder = 'Checkpoint name'; input.setAttribute('aria-label', 'Checkpoint name');
-    const submit = button('Name checkpoint', () => void save(), 'agent-text-button');
-    async function save() {
-      if (!ui.valid() || submit.disabled || !input.value.trim()) return;
-      submit.disabled = true;
-      try {
-        await historyRequest('save', { label: input.value.trim() });
-        if (!ui.valid()) return;
-        await refresh();
-        if (ui.valid()) showCheckpoints();
-      } catch (cause) { if (ui.valid()) { ui.fail(cause.message); submit.disabled = false; } }
-    }
-    form.addEventListener('submit', (event) => { event.preventDefault(); void save(); });
-    form.appendChild(input); form.appendChild(submit); ui.body.appendChild(form); ui.finish(); input.focus();
-  }
-
   function showSettings() {
-    const ui = popover('Checkpoint settings', null, () => showOptions());
+    const ui = popover('Checkpoint settings', null, () => showCheckpoints());
     ui.fail('Only Agent-reviewed revisions are saved. Limits: 200 files, 64 KiB per file, 512 KiB total.');
     const form = element('form', 'agent-workspace-version-save');
     const path = element('input', ''); path.placeholder = 'Project-relative file path'; path.maxLength = 1024; path.setAttribute('aria-label', 'Excluded file path');
@@ -174,27 +167,27 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}) {
     ui.finish();
   }
 
-  function showOptions(anchor = null) {
-    const ui = popover('Workspace options', anchor);
-    ui.body.appendChild(button('Refresh', () => { closePopup(); void refresh(); }));
-    const name = button('Name latest checkpoint…', showName); name.disabled = !history?.versions?.length;
-    ui.body.appendChild(name);
-    ui.body.appendChild(button('Checkpoint settings', showSettings));
-    ui.finish();
-  }
-
   function render() {
+    if (refreshControl) {
+      refreshControl.hidden = !conversationId;
+      refreshControl.disabled = loading || !conversationId;
+    }
     for (const host of hosts) {
       if (!host) continue;
       const activeKey = host.contains(document.activeElement) ? document.activeElement?.dataset?.workspaceFocus : null;
       host.hidden = !conversationId;
       host.replaceChildren();
       if (!conversationId) continue;
-      const heading = element('div', 'agent-workspace-inspector-heading');
-      heading.appendChild(element('strong', '', 'Workspace'));
-      const options = button('⋯', () => showOptions(options), 'agent-workspace-options-toggle');
-      options.setAttribute('aria-label', 'Workspace options'); options.title = 'Workspace options'; options.dataset.workspaceFocus = 'options';
-      heading.appendChild(options); host.appendChild(heading);
+      if (host !== compactHost) {
+        const heading = element('div', 'agent-workspace-inspector-heading');
+        heading.appendChild(element('strong', '', 'Workspace'));
+        const refreshButton = element('button', 'agent-workspace-refresh');
+        refreshButton.type = 'button';
+        refreshButton.dataset.workspaceFocus = 'refresh';
+        refreshButton.disabled = loading;
+        configureRefresh(refreshButton);
+        heading.appendChild(refreshButton); host.appendChild(heading);
+      }
       const body = element('div', 'agent-workspace-overview');
       const summary = (label, count, key, onClick) => {
         const row = button('', () => onClick(row), 'agent-workspace-item agent-workspace-summary');
@@ -207,7 +200,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}) {
       };
       const count = changes?.changes?.length || 0;
       summary('Changes', changes?.available ? `${count}${changes.limitReached ? '+' : ''} ${count === 1 ? 'file' : 'files'}` : loading ? 'Loading…' : 'Unavailable', 'changes', () => openViewer());
-      summary('Checkpoints', history && !history.notice ? `${history.versions.length}${history.limitReached ? '+' : ''}` : loading ? 'Loading…' : 'Unavailable', 'checkpoints', showCheckpoints);
+      summary('Checkpoints', history ? `${history.versions.length}${history.limitReached ? '+' : ''}` : loading ? 'Loading…' : 'Unavailable', 'checkpoints', showCheckpoints);
       if (error) body.appendChild(element('p', 'agent-workspace-note', error));
       host.appendChild(body);
       if (activeKey) [...host.querySelectorAll('[data-workspace-focus]')].find((node) => node.dataset.workspaceFocus === activeKey)?.focus();
@@ -229,7 +222,8 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}) {
       if (version !== generation) return;
       changes = git.status === 'fulfilled' && git.value?.ok && git.value.conversationId === expected
         ? git.value.result : { available: false };
-      history = saved.status === 'fulfilled' && saved.value ? saved.value : { versions: [], notice: 'Checkpoints could not be refreshed. Try again.' };
+      history = saved.status === 'fulfilled' && saved.value ? saved.value : null;
+      historyLoadFailed = !history;
     } finally {
       if (version === generation) { loading = false; render(); if (refreshQueued) void refresh(); }
     }
@@ -243,7 +237,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}) {
         closePopup(false);
         conversationId = next;
         viewers.setConversation(next);
-        changes = null; history = null; error = ''; loading = false; refreshQueued = false;
+        changes = null; history = null; historyLoadFailed = false; error = ''; loading = false; refreshQueued = false;
         render();
       }
       clearTimeout(refreshTimer);

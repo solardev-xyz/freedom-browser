@@ -530,7 +530,8 @@ test('a conversation survives its original and then all task tabs closing', asyn
   await window.locator('#agent-task-page-list .tab:not([hidden])').first().click();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await expect(window.locator('#agent-page-surface .content')).toBeVisible();
-  await window.locator('[data-test="agent-first-browser-return"]').click();
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
 
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
@@ -577,7 +578,8 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
   await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(5);
-  await window.locator('[data-test="agent-first-browser-return"]').click();
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
 
   await window.locator('[data-test="new-tab-btn"]').click();
   await expect(window.locator('[data-test="tab"]')).toHaveCount(7);
@@ -606,7 +608,8 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#agent-task-page-count')).toHaveText('0');
   await firstSession.click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
-  await window.locator('[data-test="agent-first-browser-return"]').click();
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
 
   const claimedTab = window.locator('[data-test="tab"].agent-owned').first();
   await claimedTab.click();
@@ -619,7 +622,8 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#agent-task-page-count')).toHaveText('4');
   await window.locator('#agent-new-chat').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('1');
-  await window.locator('[data-test="agent-first-browser-return"]').click();
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
   await expect(window.locator('#agent-task-pages-empty')).toHaveCSS('display', 'none');
   await expect(window.locator('#webview-container webview:not(.hidden)')).toBeVisible();
