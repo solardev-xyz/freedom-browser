@@ -10,9 +10,12 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-09-17
 
-The active development branch is `feature/freedom-automation-kernel` at
-`2829f028`. The UI experiment (`cf960030` plus `2829f028`) has been accepted by
-the user and fast-forwarded into this branch. The Agent feature remains
+The integration branch is `feature/freedom-automation-kernel` at
+`3438d498`, including the main merge `d3882e41` (main through `ee2d4147`)
+and committed provider/browser-activity work. The UI experiment (`cf960030`
+plus `2829f028`) was accepted and fast-forwarded into that branch. Current
+browser-competence research is isolated on `experiment/browser-agent-improvements`,
+created from `3438d498`. The Agent feature remains
 **unreleased**. Earlier dated qualification results below describe their exact
 candidates; they are not claims that today's full checkout or every provider
 has passed live qualification.
@@ -21,28 +24,86 @@ has passed live qualification.
   compact server controls, centered conversation/composer, attached expanding
   Workspace bar, mirrored Agent/Browser mode menus, session context menus,
   refined typography/titlebar alignment, and automatic closing of empty right
-  panes. Manual visual feedback accepted the direction. Latest merge checks:
+  panes. Manual visual feedback accepted the direction. UI integration checks:
   **11 targeted suites / 364 tests**, lint and whitespace checks passed; full
   Electron E2E was not rerun for that merge.
-- Free Pi removal is implemented locally but uncommitted: no setup option or
+- Free Pi removal is committed in `3438d498`: no setup option or
   runtime registration, obsolete live-test tooling removed, and stale local
   development connections cleared without selecting another provider. Other
   connections survive. **5 suites / 235 tests** and lint passed. This is not a
   migration for released Agent users.
-- Model-manager/provider implementation is now present locally, uncommitted:
+- Model-manager/provider implementation is committed in `3438d498`:
   Grok/xAI enabled through Pi; custom Meta/Muse, Venice and NEAR AI adapters;
   bounded catalog refresh/cache, provider/model search, favorites, connection
   management and explicit test prompts. OpenRouter zero-retention routing and
   Venice/NEAR privacy requirements apply at the runtime request boundary.
   Deterministic validation is described below; live account/model qualification
   and independent attestation/E2EE remain pending.
+- Combined post-merge validation: **20 focused suites / 590 tests**, lint and
+  whitespace checks passed. Full-suite failures remain outside that focused
+  result: stale/missing local dependencies and known platform-specific
+  expectations were not resolved by the provider commit. The pinned Myotis
+  v0.1.10 / ABI 26 artifacts were subsequently installed and their hashes
+  checked; that does not qualify chain sync or the rest of the dependency tree.
+- Browser competence is the next active improvement track. A
+  [source-linked Browser Use audit](browser-agent-improvements-audit.md) records
+  14 findings across observation, actions, recovery, agent loop, context,
+  lifecycle, trust and evaluation. The upfront comparative benchmark is
+  deferred by user decision; implementation retains focused regression and
+  manual acceptance checks. First-pass research is complete; behavior changes
+  and live qualification are pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
   backlog items. Embedded `llama.cpp` is deferred; Ollama remains the local path.
 
-See [the provider plan](#2026-09-17--model-manager-and-provider-expansion-plan)
-for the current sequence, privacy requirements and open questions.
+See [the browser improvement plan](#2026-09-17--browser-competence-improvement-track)
+for the next implementation slices and
+[the provider plan](#2026-09-17--model-manager-and-provider-expansion-plan)
+for provider privacy requirements and open qualification questions.
+
+## 2026-09-17 — Browser competence improvement track
+
+Work on `experiment/browser-agent-improvements`, integrating validated slices
+back into the feature branch individually. Keep visual-targeting experiments
+isolated until their behavior and approval semantics are accepted. Work remains
+local and sequential; no remote delegation or subagent implementation is part
+of this track.
+
+The [reference audit](browser-agent-improvements-audit.md) pins the Python
+Browser Use, Browser Use Pi and Browser Harness JS sources separately. Each
+finding identifies Freedom's current behavior, a reuse decision, expected
+benefit/effort and an acceptance case. No upstream dependency or replacement
+harness has been selected.
+
+1. **Semantic correctness:** associated HTML labels, role-appropriate control
+   state and real Chromium fixtures, including password exclusion and stale
+   references. Evaluate browser-computed AX where it earns its complexity.
+2. **Observation coverage:** separate text/control truncation and bounded
+   retrieval/search for omitted content; specify document identity, freshness,
+   field limits and traversal budgets before adding continuation.
+3. **Actions and forms:** explicit page/container scrolling and text finding,
+   representative dynamic forms, outcome-aware waits and preserved approval,
+   cancellation and uncertain-effect semantics.
+4. **Frames:** prototype owned descendant-frame observation and routing;
+   establish frame-origin attribution and negative cases before cross-origin
+   actions. Preserve existing same-origin behavior.
+5. **Visual fallback:** experimental targeting bound to capture/document/
+   viewport identity, with scale, layout-change, overlay and approval tests.
+   No arbitrary JavaScript/CDP tool is implied.
+
+Follow-through opportunities are recorded rather than silently added to the
+first slice: no-progress detection, guarded batching, exact observation
+retrieval after compaction, dialog handling and lifecycle diagnostics. Deepen
+the relevant source/test/history review when selecting each for implementation.
+Retain Freedom's canonical controller and Pi's reasoning responsibilities.
+
+Use local synthetic browser fixtures plus a small manual task set to validate
+actual outcomes. The user deferred a cross-project comparative benchmark, not
+regression verification. Upstream tests inspected during research have not
+been run. External filesystem grants, subagent capability and broader provider
+qualification remain on the roadmap; this browser improvement track is the
+current product priority.
 
 ## Executive decision
 
@@ -1969,6 +2030,18 @@ The numbered inventory below records completed foundations and remaining capabil
 - Qualify and refine the implemented **Ask when needed** interruption posture across messages, account changes, deletion, publication, bookings, purchases, and other consequential website intents. False-negative measurement is more important than merely producing plausible classifier prose.
 - Promote stable consequential mechanisms into deterministic runtime-owned boundaries when Freedom can observe them exactly; the generic intended-consequence classifier remains a conservative interruption layer rather than a substitute for those boundaries.
 - Add identity use, payments beyond the explicit wallet transaction primitive, and decentralized publication as separate explicit capability and approval packages. Website approval settings must never grant them implicitly.
+
+#### TODO — Subagents and parallel delegation
+
+Added 2026-09-17. Future capability; implementation priority and first delivery
+scope remain to be selected.
+
+- Let the main Agent delegate bounded subtasks to specialized child agents, run independent work in parallel, and incorporate their results into the parent conversation. Initial use cases include parallel research, code review, and independent project tasks.
+- Give each child an explicit task, selected context and accountable result. Define parent/child messaging, follow-up work, result attribution and history persistence; avoid copying the entire conversation or unrelated private data by default.
+- Keep every child behind Freedom's existing automation and approval boundaries. Delegation may narrow the parent's permissions, never expand them. Define exclusive tab-control leases and coordinated workspace writes so agents cannot race on the same page or overwrite each other's work. Sensitive actions retain their existing approval requirements.
+- Show delegated tasks, status, results and failures in the parent conversation, with details available on demand. Support stopping an individual child; stopping the parent must cancel its descendants, pending model/tool requests and approvals, and reconcile any effects already performed.
+- Bound concurrent children, nesting, runtime and aggregate token/cost usage. Decide model/provider selection and disclose any additional provider receiving delegated context; do not silently move data to a different provider or weaken the parent's privacy requirements.
+- Qualify delegation, concurrent resource access, child failure, cancellation, parent/session closure, permission revocation and restart recovery. Treat child output as task evidence rather than new authority, and preserve the actual platform limits on managed-process cleanup.
 
 #### TODO — Agent-created home/start-page widgets
 
