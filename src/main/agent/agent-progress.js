@@ -90,6 +90,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Changing a selection on the current page',
     completed: 'Changed a selection on the current page',
   },
+  [OPERATIONS.SCROLL]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Scrolling the current page',
+    completed: 'Scrolled the current page',
+  },
   [OPERATIONS.PRESS]: {
     effect: ACTIVITY_EFFECTS.CHANGED,
     intent: 'Using the keyboard on the current page',
@@ -869,6 +874,7 @@ function activityProgress(operation, receipt = {}) {
       [OPERATIONS.CLICK]: ['Clicking on', 'Clicked on'],
       [OPERATIONS.TYPE]: ['Entering information on', 'Entered information on'],
       [OPERATIONS.SELECT]: ['Changing a selection on', 'Changed a selection on'],
+      [OPERATIONS.SCROLL]: ['Scrolling', 'Scrolled'],
       [OPERATIONS.PRESS]: ['Using the keyboard on', 'Used the keyboard on'],
       [OPERATIONS.UPLOAD]: ['Choosing a file for', 'Attached a file on'],
       [OPERATIONS.WAIT]: ['Waiting for', 'Waited for'],
@@ -880,13 +886,19 @@ function activityProgress(operation, receipt = {}) {
     }
   }
 
+  if (operation === OPERATIONS.SCROLL) {
+    if (receipt.scrollOutcome === 'boundary') label = 'Scroll boundary reached';
+    if (receipt.scrollOutcome === 'no_movement') label = 'Scroll did not move the page or container';
+  }
   const effect =
-    (operation === OPERATIONS.NODE_REQUEST || operation === OPERATIONS.NODE_OPERATION_STATUS) &&
-    nodeRequest
-      ? nodeRequest.effect === 'read'
-        ? ACTIVITY_EFFECTS.OBSERVED
-        : ACTIVITY_EFFECTS.CHANGED
-      : copy.effect;
+    operation === OPERATIONS.SCROLL && receipt.scrollOutcome === 'boundary'
+      ? ACTIVITY_EFFECTS.OBSERVED
+      : (operation === OPERATIONS.NODE_REQUEST || operation === OPERATIONS.NODE_OPERATION_STATUS) &&
+          nodeRequest
+        ? nodeRequest.effect === 'read'
+          ? ACTIVITY_EFFECTS.OBSERVED
+          : ACTIVITY_EFFECTS.CHANGED
+        : copy.effect;
   return Object.freeze({
     intent,
     label,
@@ -947,6 +959,8 @@ function createToolReceipt(operation, options = {}) {
     : [];
 
   return Object.freeze({
+    ...(operation === OPERATIONS.SCROLL &&
+      ['moved', 'boundary', 'no_movement'].includes(result?.outcome) && { scrollOutcome: result.outcome }),
     ...(pageId && { pageId }),
     ...(pageTitle && { pageTitle }),
     ...(origin && { origin }),

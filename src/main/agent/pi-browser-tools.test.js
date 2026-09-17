@@ -62,6 +62,7 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.CLICK,
       OPERATIONS.TYPE,
       OPERATIONS.SELECT,
+      OPERATIONS.SCROLL,
       OPERATIONS.PRESS,
       OPERATIONS.UPLOAD,
       OPERATIONS.DOWNLOAD,
@@ -120,6 +121,7 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.CLICK,
       OPERATIONS.TYPE,
       OPERATIONS.SELECT,
+      OPERATIONS.SCROLL,
       OPERATIONS.PRESS,
     ]) {
       expect(TOOL_SPEC_BY_NAME.get(operation).parameters.properties.intent).toMatchObject({

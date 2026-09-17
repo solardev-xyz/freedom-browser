@@ -338,3 +338,190 @@ test('observation collection reports scan and text limits instead of claiming co
   expect(result.result.text.length).toBeLessThanOrEqual(12000);
   expect(result.result).not.toHaveProperty('nextElementOffset');
 });
+
+test('oversized labels and dropdowns stay bounded without inventing option values', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  const label = '界'.repeat(3_000);
+  const oversizedValue = 'value'.repeat(1_000);
+  const tabId = await openFixture(
+    { electronApp, window, harness },
+    'hidden',
+    `<select aria-label="Choices"><option value="${oversizedValue}">Oversized value</option>
+      <option value="exact">${label}</option><option value="short">Short</option></select>
+      ${Array.from({ length: 100 }, (_, index) => `<button aria-label="${index} ${label}">Button</button>`).join('')}`
+  );
+  const first = await snapshot(electronApp, tabId);
+  expect(first.fieldsTruncated).toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(384_000);
+  const select = named(first, 'Choices');
+  expect(select).toMatchObject({ valueOmitted: true, optionsTruncated: true });
+  expect(select).not.toHaveProperty('value');
+  expect(select.options).toEqual([
+    expect.objectContaining({ value: 'exact', labelTruncated: true }),
+    expect.objectContaining({ value: 'short', label: 'Short' }),
+  ]);
+  expect(select.options[0].label.length).toBeLessThanOrEqual(2_000);
+  expect(first.nextElementOffset).toBeGreaterThan(0);
+  expect(first.nextElementOffset).toBeLessThan(101);
+  const next = await execute(electronApp, 'browser_snapshot', {
+    tabId,
+    documentId: first.documentId,
+    navigationId: first.navigationId,
+    elementOffset: first.nextElementOffset,
+  });
+  expect(next.ok).toBe(true);
+  expect(next.result.elements[0].name).toMatch(new RegExp(`^${first.nextElementOffset - 1} `));
+  expect(next.result.nextElementOffset).toBeGreaterThan(first.nextElementOffset);
+  expect(Buffer.byteLength(JSON.stringify(next.result))).toBeLessThan(384_000);
+  const selected = await execute(electronApp, 'browser_select', {
+    tabId,
+    ref: select.ref,
+    value: 'exact',
+  });
+  expect(selected.ok).toBe(true);
+  const after = await snapshot(electronApp, tabId);
+  expect(named(after, 'Choices').value).toBe('exact');
+});
+
+for (const mode of ['desktop', 'hidden']) {
+  test(`${mode} scrolls page and nested containers with measured movement and trusted input`, async ({
+    electronApp,
+    window,
+    harness,
+  }) => {
+    const tabId = await openFixture(
+      { electronApp, window, harness },
+      mode,
+      `
+      <style>body { margin: 0 } #list { width: 300px; height: 200px; overflow: auto; }
+      #content { height: 1500px; width: 900px } #blocked { height: 120px; width: 300px; overflow: auto }</style>
+      <div id="list" aria-label="Results list"><div id="content">Items</div></div>
+      <div id="blocked" aria-label="Wheel blocked"><div style="height:1000px">Blocked</div></div>
+      <button>Ordinary button</button><div style="height:3500px">Long page</div>
+      <script>
+        document.addEventListener('wheel', event => { document.body.dataset.trusted = String(event.isTrusted) });
+        document.querySelector('#blocked').addEventListener('wheel', event => event.preventDefault(), {passive:false});
+        document.querySelector('#list').addEventListener('scroll', () => {
+          if (!document.querySelector('#revealed')) {
+            const button = document.createElement('button'); button.id = 'revealed';
+            button.textContent = 'Loaded after scrolling'; document.querySelector('#content').prepend(button);
+          }
+        });
+      </script>`
+    );
+    const first = await snapshot(electronApp, tabId);
+    const viewport = first.frames[0].viewport;
+    const list = named(first, 'Results list');
+    expect(viewport.vertical).toBe(true);
+    for (const ref of [viewport.ref, list.ref]) {
+      expect(await execute(electronApp, 'browser_click', { tabId, ref })).toMatchObject({
+        ok: false,
+        error: { code: 'CAPABILITY_UNAVAILABLE' },
+      });
+    }
+    expect(list.scrollable).toMatchObject({ vertical: true, horizontal: true, y: 0, x: 0 });
+    const scroll = (ref, direction, pages = 1) =>
+      execute(electronApp, 'browser_scroll', { tabId, ref, direction, pages });
+    const down = await scroll(list.ref, 'down');
+    expect(down).toMatchObject({ ok: true, result: { moved: true, outcome: 'moved' } });
+    expect(down.result.deltaY).toBeGreaterThan(0);
+    const afterList = await snapshot(electronApp, tabId);
+    expect(afterList.frames[0].viewport.y).toBe(0);
+    named(afterList, 'Loaded after scrolling');
+    const right = await scroll(named(afterList, 'Results list').ref, 'right');
+    expect(right).toMatchObject({ ok: true, result: { moved: true } });
+    expect(right.result.deltaX).toBeGreaterThan(0);
+    expect(await scroll(named(afterList, 'Results list').ref, 'left')).toMatchObject({
+      ok: true,
+      result: { moved: true },
+    });
+    expect(await scroll(list.ref, 'up', 3)).toMatchObject({ ok: true, result: { moved: true } });
+    expect(await scroll(list.ref, 'up')).toMatchObject({
+      ok: true,
+      result: { moved: false, outcome: 'boundary' },
+    });
+    expect((await snapshot(electronApp, tabId)).frames[0].viewport.y).toBe(0);
+    expect(await scroll(named(first, 'Wheel blocked').ref, 'down')).toMatchObject({
+      ok: true,
+      result: { moved: false, outcome: 'no_movement' },
+    });
+    expect(await scroll(named(first, 'Ordinary button').ref, 'down')).toMatchObject({
+      ok: false,
+      error: { code: 'ELEMENT_NOT_INTERACTABLE' },
+    });
+    const pageDown = await scroll(viewport.ref, 'down');
+    expect(pageDown).toMatchObject({ ok: true, result: { moved: true } });
+    expect(pageDown.result.deltaY).toBeGreaterThan(0);
+    const trusted = await electronApp.evaluate(async ({ webContents }, url) => {
+      const guest = webContents.getAllWebContents().find((entry) => entry.getURL() === url);
+      return guest.executeJavaScript('document.body.dataset.trusted');
+    }, FIXTURE_URL);
+    expect(trusted).toBe('true');
+    await execute(electronApp, 'browser_navigate', { tabId, url: `${FIXTURE_URL}?next` });
+    expect(await scroll(viewport.ref, 'down')).toMatchObject({
+      ok: false,
+      error: { code: 'STALE_ELEMENT_REFERENCE' },
+    });
+  });
+}
+
+test('scroll targets stay inside visible same-origin frames and reject covered or detached containers', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  const tabId = await openFixture(
+    { electronApp, window, harness },
+    'hidden',
+    `
+    <style>body { margin:0 } iframe { width:400px; height:220px; border:3px solid }
+      #cover { display:none; position:fixed; inset:0; z-index:10; background:white }
+      #rtl { direction:rtl; width:300px; height:100px; overflow:auto }</style>
+    <iframe name="Inner page" srcdoc="<style>body{margin:0}</style><div style='height:2000px'>Frame content</div>"></iframe>
+    <div id="rtl" aria-label="RTL list"><div style="width:1000px;height:80px">Wide</div></div>
+    <div id="cover">Cover</div>
+    <script>document.addEventListener('wheel', () => document.body.dataset.wheels = String(Number(document.body.dataset.wheels || 0) + 1))</script>`
+  );
+  const first = await snapshot(electronApp, tabId);
+  const frame = first.frames.find((entry) => entry.name === 'Inner page');
+  expect(frame.viewport.vertical).toBe(true);
+  const scroll = (ref, direction) =>
+    execute(electronApp, 'browser_scroll', { tabId, ref, direction });
+  expect(await scroll(frame.viewport.ref, 'down')).toMatchObject({
+    ok: true,
+    result: { moved: true },
+  });
+  const afterFrame = await snapshot(electronApp, tabId);
+  expect(afterFrame.frames[0].viewport.y).toBe(first.frames[0].viewport.y);
+  const rtl = named(afterFrame, 'RTL list');
+  const left = await scroll(rtl.ref, 'left');
+  expect(left).toMatchObject({ ok: true, result: { moved: true } });
+  expect(left.result.deltaX).toBeLessThan(0);
+  const mutateFixture = (script) =>
+    electronApp.evaluate(
+      async ({ webContents }, payload) => {
+        const guest = webContents
+          .getAllWebContents()
+          .find((entry) => entry.getURL() === payload.url);
+        return guest.executeJavaScript(payload.script);
+      },
+      { url: FIXTURE_URL, script }
+    );
+  await mutateFixture("document.querySelector('#cover').style.display = 'block'");
+  expect(await scroll(frame.viewport.ref, 'down')).toMatchObject({
+    ok: false,
+    error: { code: 'ELEMENT_NOT_INTERACTABLE' },
+  });
+  expect(await scroll(rtl.ref, 'left')).toMatchObject({
+    ok: false,
+    error: { code: 'ELEMENT_NOT_INTERACTABLE' },
+  });
+  await mutateFixture("document.querySelector('#rtl').remove()");
+  expect(await scroll(rtl.ref, 'left')).toMatchObject({
+    ok: false,
+    error: { code: 'STALE_ELEMENT_REFERENCE' },
+  });
+});

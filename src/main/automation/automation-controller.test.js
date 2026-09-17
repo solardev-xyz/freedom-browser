@@ -72,6 +72,21 @@ describe('AutomationController', () => {
     expect(adapter.snapshot).not.toHaveBeenCalled();
   });
 
+  test('scrolling is authorized before dispatch and forwards only validated parameters', async () => {
+    const { controller, authorize } = createController();
+    const adapter = new FakePageAdapter();
+    adapter.scroll = jest.fn(async () => ({ moved: true }));
+    const tabId = controller.registerPage(adapter);
+    const input = { tabId, ref: 'ref_viewport', direction: 'down' };
+    expect(await controller.execute(OPERATIONS.SCROLL, input)).toMatchObject({ ok: true });
+    expect(adapter.scroll).toHaveBeenCalledWith('ref_viewport', { direction: 'down', pages: 1 });
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ operation: OPERATIONS.SCROLL }));
+    adapter.scroll.mockClear();
+    authorize.mockResolvedValue({ allowed: false });
+    expect(await controller.execute(OPERATIONS.SCROLL, input)).toMatchObject({ ok: false });
+    expect(adapter.scroll).not.toHaveBeenCalled();
+  });
+
   test('requires a policy boundary', () => {
     expect(() => new AutomationController()).toThrow('requires a policyController');
   });

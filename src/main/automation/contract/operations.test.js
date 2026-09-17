@@ -452,3 +452,18 @@ describe('automation operation contract', () => {
     );
   });
 });
+
+
+describe('scroll input bounds', () => {
+  test('requires an observed reference and applies bounded page defaults', () => {
+    expect(validateOperationInput(OPERATIONS.SCROLL, { tabId: 'tab_1', ref: 'ref_1', direction: 'down' }))
+      .toEqual({ tabId: 'tab_1', ref: 'ref_1', direction: 'down', pages: 1 });
+    expect(() => validateOperationInput(OPERATIONS.SCROLL, { tabId: 'tab_1', direction: 'down' })).toThrow();
+  });
+  test.each([0, -1, 3.1, Infinity, NaN, '1', true])('rejects invalid pages %s', pages => {
+    expect(() => validateOperationInput(OPERATIONS.SCROLL, { tabId: 'tab_1', ref: 'ref_1', direction: 'down', pages })).toThrow();
+  });
+  test('rejects arbitrary wheel events or directions', () => {
+    expect(() => validateOperationInput(OPERATIONS.SCROLL, { tabId: 'tab_1', ref: 'ref_1', direction: 'diagonal' })).toThrow();
+  });
+});

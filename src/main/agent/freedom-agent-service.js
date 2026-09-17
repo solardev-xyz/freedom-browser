@@ -210,7 +210,7 @@ function approvalPolicyPrompt(prompt, approvalMode) {
       'Freedom will ask the user before every page interaction. Page reading, navigation, and task-tab management remain available without that interaction approval.';
   } else if (approvalMode === AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS) {
     policy =
-      'Freedom will independently classify the intended consequence of each website interaction. Ordinary browsing may proceed, while consequential or uncertain interactions ask the user. For every browser_click, browser_type, browser_select, and browser_press call, include a brief literal intent describing what you expect that exact interaction to accomplish. Downloads, uploads, wallet actions, node mutations, and other privileged capabilities keep their separate Freedom approval boundaries.';
+      'Freedom will independently classify the intended consequence of each website interaction. Ordinary browsing may proceed, while consequential or uncertain interactions ask the user. For every browser_click, browser_type, browser_select, browser_press, and browser_scroll call, include a brief literal intent describing what you expect that exact interaction to accomplish. Downloads, uploads, wallet actions, node mutations, and other privileged capabilities keep their separate Freedom approval boundaries.';
   } else {
     policy =
       'Freedom allows ordinary website interactions without asking each time. Downloads, uploads, wallet actions, node mutations, and other privileged capabilities keep their separate Freedom approval boundaries.';
@@ -2397,6 +2397,7 @@ class FreedomAgentService {
         pageTitle: outcome.pageTitle,
         pageId: outcome.pageId || outcome.tabId,
         pageCount: outcome.pageCount,
+        scrollOutcome: outcome.scrollOutcome,
         artifact: outcome.artifact,
         upload: outcome.upload,
         wallet: outcome.wallet,

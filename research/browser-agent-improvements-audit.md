@@ -1,7 +1,7 @@
 # Browser-agent improvements: Browser Use reference audit
 
 Date: 2026-09-17
-Status: first-pass source audit complete; initial semantic and coverage slices implemented and locally qualified
+Status: first-pass source audit complete; semantic, coverage and initial scrolling slices implemented and locally qualified
 Branch: `experiment/browser-agent-improvements`
 Freedom baseline: `3438d498a6a427795f81e518407711e7c161d9c0`
 Related plan: [Freedom Agent roadmap](freedom-agent-cli-roadmap.md)
@@ -248,6 +248,62 @@ was exercised. Existing approval/custody/action semantics were retained.
 Commands: `npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`;
 `npm test -- src/main/automation/contract/operations.test.js src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/agent/pi-browser-tools.test.js`;
 `npm run lint`.
+
+### Slice 3 — Output budgets and explicit scrolling, 2026-09-17
+
+OBS-02 follow-through now bounds emitted display fields (2,000 characters; role/tag
+128), control entries (128,000 serialized UTF-8 bytes per window), select choices
+(8,000 bytes per control), and frame metadata (32,000 bytes before compact identity/
+viewport-only entries). Oversized URL identities are omitted at 8,192 characters;
+select values are omitted at 2,000 rather than shortened into invalid choices.
+`fieldsTruncated`, individual `*Truncated`/`*Omitted` flags and advancing control
+continuation report the limits. Small exact options remain actionable. The output
+fixture stays under 384,000 serialized bytes; this is not a hard CPU/memory deadline
+for Chromium layout, DOM naming or temporary page text. Full-name query matching
+can find text beyond the displayed name prefix. Huge names are not fully shown.
+
+`browser_scroll` takes an observed reference, direction and 0.1–3 viewport pages
+(default 1). Snapshots expose `frames[].viewport` references/scroll metrics and
+nested elements with `scrollable` metrics. Viewport references and plain containers
+identified only for scrolling are scroll-only: they cannot become broad click or
+keyboard targets. Native controls retain their established interaction references.
+
+The main-process adapter inspects a visible wheel point whose nearest scroll
+container matches the requested target, checks ordinary same-origin frame geometry,
+rechecks after focus, and sends Electron wheel input. It does not click, select,
+set page scroll offsets, or auto-scroll a hidden target into view. Boundary requests
+send no input, avoiding wheel chaining at the edge. Results distinguish `moved`,
+`boundary` and `no_movement`, with actual before/after positions and a bounded
+settling observation (up to one second). No movement is not proof that wheel
+handlers had no other effects; only a boundary result is projected as observation.
+
+The operation passes through the existing canonical validation, policy, task-tab
+ownership, origin, resume-observation and interaction approval paths. Direction and
+amount are included in approval/classification context and declined-action identity.
+No dependency, IPC channel or arbitrary code/CDP tool was added. References remain
+navigation-bound and point to actual DOM objects; detached targets reject.
+
+Validation: **13 real-Electron cases passed** (31.1s), including all prior observation
+and HTTPS/Swarm/IPFS cases, desktop/hidden vertical and horizontal scrolling, trusted
+wheel input, nested-list isolation, lazy-loaded content, boundary/no-movement cases,
+RTL, same-origin iframe scrolling, covered/detached targets and stale navigation.
+After adding scroll-only enforcement, both desktop/hidden scroll cases passed again
+(5.7s). **8 focused unit suites / 283 tests passed** (1.4s), including invalid inputs,
+policy denial, declined approval, ownership/resume gates, post-focus invalidation,
+scroll-only references and honest activity receipts. Lint and diff checks passed.
+No live model, signed build or other operating system was tested.
+
+Limits: the nine-point visible-area search is conservative and may decline a usable
+container with a narrow exposed area. Transformed ancestor frames are rejected;
+cross-origin frame routing and closed-shadow internals are not added. Reverse-flow
+vertical scrolling and general geometry/occlusion completeness remain follow-up
+work. A changed layout or continuing animation can invalidate the result after
+observation; the tool instructs the model to reread, not blindly repeat.
+
+Commands: `npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`;
+`npm test -- src/main/automation/contract/operations.test.js src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/automation/policy-controller.test.js src/main/agent/pi-browser-tools.test.js src/main/agent/agent-progress.test.js src/main/agent/freedom-agent-service.test.js`;
+`npm run lint`. Electron wheel API reference: https://www.electronjs.org/docs/latest/api/structures/mouse-wheel-input-event
+
 
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119

@@ -52,10 +52,12 @@ has passed live qualification.
   deferred by user decision; implementation retains focused regression and
   manual acceptance checks. First-pass research and initial semantic/coverage
   slices are complete: HTML labels, shared observation/approval naming, control
-  state, snapshot name search and document-bound live continuation. **9 Electron
-  cases / 155 focused unit tests** pass, with lint clean. No live model or
-  cross-platform/release qualification was run for these slices. Individual
-  field/output budgets, richer actions, frames and visual targeting remain pending.
+  state, snapshot name search, document-bound live continuation, field/output
+  budgets and explicit page/container scrolling. **13 Electron cases / 283 focused
+  unit tests** pass, with lint clean. Scrolling retains task/origin/approval gates,
+  measures actual movement and prevents scroll-only references becoming clicks.
+  No live model or cross-platform/release qualification was run for these slices.
+  Text finding, richer forms/waits, cross-origin frames and visual targeting remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -87,11 +89,14 @@ harness has been selected.
 2. **Observation coverage — first slice implemented:** separate text/control
    truncation, control-name search and document-bound live continuation, with
    explicit scan/text collection limits. Offsets reread the live page, not an
-   immutable observation. Remaining: individual field/total-output budgets,
+   immutable observation. Display fields, option payloads and serialized control/
+   frame metadata now have budgets with explicit omission markers. Remaining:
    browser layout-cost investigation and richer structure/viewport semantics.
-3. **Actions and forms:** explicit page/container scrolling and text finding,
-   representative dynamic forms, outcome-aware waits and preserved approval,
-   cancellation and uncertain-effect semantics.
+3. **Actions and forms — scrolling implemented:** explicit reference-bound page/
+   container scrolling, trusted input and measured movement, including same-origin
+   frames and RTL. Boundary/blocked/stale cases retain policy and approval gates.
+   Remaining: text finding, representative dynamic forms and outcome-aware waits,
+   with preserved cancellation and uncertain-effect semantics.
 4. **Frames:** prototype owned descendant-frame observation and routing;
    establish frame-origin attribution and negative cases before cross-origin
    actions. Preserve existing same-origin behavior.

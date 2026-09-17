@@ -300,6 +300,7 @@ describe('OriginScopedAutomationController', () => {
     [OPERATIONS.TYPE, { ref: 'ref_field', text: 'sensitive' }],
     [OPERATIONS.SELECT, { ref: 'ref_select', value: 'one' }],
     [OPERATIONS.PRESS, { ref: 'ref_field', key: 'Enter' }],
+    [OPERATIONS.SCROLL, { ref: 'ref_viewport', direction: 'down' }],
   ])('requires approval before %s in every-interaction mode', async (operation, input) => {
     const controller = createController();
     const requestApproval = jest.fn(async () => 'declined');
@@ -661,6 +662,21 @@ describe('OriginScopedAutomationController', () => {
     await scoped.execute(OPERATIONS.GET_TAB, { tabId });
     await expect(scoped.execute(OPERATIONS.SNAPSHOT, { tabId })).resolves.toMatchObject({ ok: true });
     await expect(scoped.execute(OPERATIONS.CLICK, { tabId, ref: 'fresh_ref' })).resolves.toMatchObject({ ok: true });
+  });
+
+  test('scroll cannot bypass task ownership or the fresh observation requirement after resume', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned' });
+    const input = { ref: 'ref_viewport', direction: 'down' };
+    expect(await scoped.execute(OPERATIONS.SCROLL, { tabId: 'tab_other', ...input }))
+      .toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    await scoped.prepareResume();
+    expect(await scoped.execute(OPERATIONS.SCROLL, { tabId: 'tab_assigned', ...input }))
+      .toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.SCROLL, expect.anything());
+    await scoped.execute(OPERATIONS.GET_TAB, { tabId: 'tab_assigned' });
+    await scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' });
+    expect(await scoped.execute(OPERATIONS.SCROLL, { tabId: 'tab_assigned', ...input })).toMatchObject({ ok: true });
   });
 
   test('requires a fresh tab read and snapshot before acting after resume', async () => {

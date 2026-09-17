@@ -4,6 +4,9 @@ const { OPERATIONS } = require('./contract/operations');
 const { createInitialAutomationPolicy, OPERATION_CLASSES } = require('./policy-controller');
 
 describe('AutomationPolicyController', () => {
+  test('classifies scrolling as an interaction', () => {
+    expect(OPERATION_CLASSES[OPERATIONS.SCROLL]).toBe('interact');
+  });
   test('does not give the legacy wallet action alias privileged click authority', async () => {
     expect(OPERATION_CLASSES[OPERATIONS.WALLET_ACTION]).toBe('interact');
     await expect(

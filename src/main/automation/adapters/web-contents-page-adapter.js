@@ -68,6 +68,115 @@ function readElementName(element) {
   );
 }
 
+function readScrollState(element) {
+  const view = element.ownerDocument.defaultView;
+  const style = view.getComputedStyle(element);
+  const isViewport = element === element.ownerDocument.scrollingElement;
+  const permits = (overflow) =>
+    isViewport ? !['hidden', 'clip'].includes(overflow) : ['auto', 'scroll'].includes(overflow);
+  const width = isViewport ? view.innerWidth : element.clientWidth;
+  const height = isViewport ? view.innerHeight : element.clientHeight;
+  const rangeX = Math.max(0, element.scrollWidth - element.clientWidth);
+  const rangeY = Math.max(0, element.scrollHeight - element.clientHeight);
+  const rtl = style.direction === 'rtl';
+  return {
+    x: element.scrollLeft,
+    y: element.scrollTop,
+    width,
+    height,
+    minX: rtl ? -rangeX : 0,
+    maxX: rtl ? 0 : rangeX,
+    maxY: rangeY,
+    horizontal: permits(style.overflowX) && rangeX > 1,
+    vertical: permits(style.overflowY) && rangeY > 1,
+  };
+}
+
+// No scrolling/focusing during inspection. Only wheel points whose nearest
+// scroll container is the requested reference are eligible; this avoids
+// accidentally scrolling an inner list when the caller requested the page.
+function inspectScrollReference(ref, direction, requirePoint = true) {
+  const reference = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__?.refs?.get(ref);
+  if (!reference) return { ok: false, reason: 'changed' };
+  const { element, frameWindow } = reference;
+  if (!reference.scrollTarget) return { ok: false, reason: 'not_interactable' };
+  try {
+    if (!element.isConnected || element.ownerDocument !== frameWindow.document) {
+      return { ok: false, reason: 'changed' };
+    }
+    const scroll = readScrollState(element);
+    if (!requirePoint) return { ok: true, scroll };
+    const horizontal = ['left', 'right'].includes(direction);
+    const axis = horizontal ? 'horizontal' : 'vertical';
+    if (!scroll[axis]) return { ok: true, scroll, boundary: true };
+    const coordinate = horizontal ? scroll.x : scroll.y;
+    const minimum = horizontal ? scroll.minX : 0;
+    const maximum = horizontal ? scroll.maxX : scroll.maxY;
+    const forward = ['down', 'right'].includes(direction);
+    if (forward ? coordinate >= maximum - 1 : coordinate <= minimum + 1) {
+      return { ok: true, scroll, boundary: true };
+    }
+    const parentOf = (node) => node.parentElement || node.getRootNode()?.host;
+    const deepestHit = (root, x, y) => {
+      let hit = root.elementFromPoint(x, y);
+      while (hit?.shadowRoot) {
+        const nested = hit.shadowRoot.elementFromPoint(x, y);
+        if (!nested || nested === hit) break;
+        hit = nested;
+      }
+      return hit;
+    };
+    const isViewport = element === element.ownerDocument.scrollingElement;
+    const rect = isViewport
+      ? { left: 0, top: 0, right: frameWindow.innerWidth, bottom: frameWindow.innerHeight }
+      : element.getBoundingClientRect();
+    const left = Math.max(0, rect.left),
+      top = Math.max(0, rect.top);
+    const right = Math.min(frameWindow.innerWidth, rect.right);
+    const bottom = Math.min(frameWindow.innerHeight, rect.bottom);
+    if (right - left < 2 || bottom - top < 2) return { ok: false, reason: 'not_interactable' };
+    for (const fy of [0.5, 0.15, 0.85]) {
+      for (const fx of [0.5, 0.15, 0.85]) {
+        let x = Math.floor(left + (right - left) * fx);
+        let y = Math.floor(top + (bottom - top) * fy);
+        let hit = deepestHit(element.ownerDocument, x, y);
+        let nearest = null;
+        while (hit) {
+          if (readScrollState(hit)[axis]) {
+            nearest = hit;
+            break;
+          }
+          hit = parentOf(hit);
+        }
+        if (nearest !== element) continue;
+        let view = frameWindow;
+        let usable = true;
+        while (view !== view.top) {
+          const frame = view.frameElement;
+          if (!frame) return { ok: false, reason: 'changed' };
+          // Coordinate conversion below supports ordinary same-origin frames.
+          // Transformed frames require a different geometry path.
+          for (let ancestor = frame; ancestor; ancestor = parentOf(ancestor)) {
+            if (ancestor.ownerDocument.defaultView.getComputedStyle(ancestor).transform !== 'none')
+              usable = false;
+          }
+          const frameRect = frame.getBoundingClientRect();
+          x += frameRect.left + frame.clientLeft;
+          y += frameRect.top + frame.clientTop;
+          view = view.parent;
+          if (deepestHit(view.document, x, y) !== frame) usable = false;
+        }
+        if (usable && x >= 0 && y >= 0 && x < view.innerWidth && y < view.innerHeight) {
+          return { ok: true, scroll, point: { x: Math.round(x), y: Math.round(y) } };
+        }
+      }
+    }
+    return { ok: false, reason: 'not_interactable' };
+  } catch {
+    return { ok: false, reason: 'changed' };
+  }
+}
+
 function collectPageSnapshot(
   maxTextLength,
   maxElements,
@@ -83,6 +192,74 @@ function collectPageSnapshot(
     String(value || '')
       .replace(/\s+/g, ' ')
       .trim();
+  let fieldsTruncated = false;
+  const shorten = (value, limit = 2_000) => {
+    const text = String(value || '');
+    if (text.length <= limit) return text;
+    fieldsTruncated = true;
+    const end = /[\uD800-\uDBFF]/.test(text[limit - 1]) ? limit - 1 : limit;
+    return text.slice(0, end);
+  };
+  const displayField = (key, value, limit) => {
+    const text = String(value || '');
+    return {
+      [key]: shorten(text, limit),
+      ...(text.length > (limit || 2_000) && { [`${key}Truncated`]: true }),
+    };
+  };
+  // URL and option values are identities, not display text. Omit oversized
+  // values rather than returning a shortened string that looks actionable.
+  const exactField = (key, value, limit) => {
+    if (value.length <= limit) return { [key]: value };
+    fieldsTruncated = true;
+    return { [`${key}Omitted`]: true };
+  };
+  const encodedSize = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
+  let elementBytes = 0;
+  let elementBudgetReached = false;
+  let frameBytes = 0;
+  const addFrame = (frame) => {
+    if (frameBytes + encodedSize(frame) > 32_000) {
+      fieldsTruncated = true;
+      frame = {
+        frameId: frame.frameId,
+        parentFrameId: frame.parentFrameId,
+        depth: frame.depth,
+        accessible: frame.accessible,
+        ...(frame.viewport && { viewport: frame.viewport }),
+        metadataOmitted: true,
+      };
+    }
+    frameBytes += encodedSize(frame);
+    frames.push(frame);
+  };
+  const selectState = (element) => {
+    const result = { ...exactField('value', element.value, 2_000), options: [] };
+    let bytes = 0;
+    for (let index = 0; index < Math.min(element.options.length, maxSelectOptions); index += 1) {
+      const option = element.options[index];
+      if (option.value.length > 2_000) {
+        result.optionsTruncated = true;
+        continue;
+      }
+      const entry = {
+        value: option.value,
+        ...displayField('label', normalize(option.label || option.textContent)),
+        disabled: option.disabled,
+        selected: option.selected,
+      };
+      const size = encodedSize(entry);
+      if (bytes + size > 8_000) {
+        result.optionsTruncated = true;
+        continue;
+      }
+      bytes += size;
+      result.options.push(entry);
+    }
+    if (element.options.length > maxSelectOptions) result.optionsTruncated = true;
+    if (result.optionsTruncated) fieldsTruncated = true;
+    return result;
+  };
   const styleCache = new WeakMap();
   const styleFor = (element) => {
     let style = styleCache.get(element);
@@ -217,23 +394,31 @@ function collectPageSnapshot(
       frameDocument = frameWindow.document;
       void frameDocument.documentElement;
     } catch {
-      frames.push({
+      addFrame({
         frameId,
         parentFrameId,
         depth,
-        name: frameElement?.getAttribute('name') || '',
-        url: frameElement?.src || '',
+        ...displayField('name', frameElement?.getAttribute('name') || ''),
+        ...exactField('url', frameElement?.src || '', 8_192),
         accessible: false,
       });
       return;
     }
 
-    frames.push({
+    const viewportRef = `${frameId}_${snapshotToken}_viewport`;
+    const scrollingElement = frameDocument.scrollingElement;
+    const viewport = scrollingElement
+      ? { ref: viewportRef, ...readScrollState(scrollingElement) }
+      : null;
+    if (scrollingElement)
+      state.refs.set(viewportRef, { element: scrollingElement, frameWindow, scrollTarget: true });
+    addFrame({
+      ...(viewport && { viewport }),
       frameId,
       parentFrameId,
       depth,
-      name: frameElement?.getAttribute('name') || '',
-      url: frameWindow.location.href,
+      ...displayField('name', frameElement?.getAttribute('name') || ''),
+      ...exactField('url', frameWindow.location.href, 8_192),
       accessible: true,
     });
     // innerText retains the browser's rendered-text semantics. Its layout cost
@@ -261,17 +446,27 @@ function collectPageSnapshot(
         visitedNodes += 1;
         if (element.shadowRoot) shadowRoots.push(element.shadowRoot);
         if (element.matches('iframe,frame')) childFrames.push(element);
+        if (element === frameDocument.scrollingElement) continue;
+        const scroll = readScrollState(element);
+        const scrollable = scroll.horizontal || scroll.vertical;
         const semantic = element.matches(semanticCandidateSelector);
         const inferred =
           !semantic && (isExplicitClickTarget(element) || isPointerBoundary(element));
-        if (!semantic && !inferred) continue;
+        if (!semantic && !inferred && !scrollable) continue;
         if (!visible(element)) continue;
         const name = readElementName(element);
-        if (inferred && !name) continue;
+        if (inferred && !name && !scrollable) continue;
         if (search && !name.toLowerCase().includes(search)) continue;
         candidateCount += 1;
-        if (candidateCount <= elementOffset || elements.length >= maxElements) continue;
-        const role = element.getAttribute('role') || (inferred ? 'button' : implicitRole(element));
+        if (
+          candidateCount <= elementOffset ||
+          elements.length >= maxElements ||
+          elementBudgetReached
+        )
+          continue;
+        const role =
+          element.getAttribute('role') ||
+          (inferred ? 'button' : scrollable && !semantic ? 'region' : implicitRole(element));
         const ref = `${snapshotToken}_${String(elements.length)}`;
         const tag = element.tagName.toLowerCase();
         const inputType = normalize(element.getAttribute('type')).toLowerCase();
@@ -282,13 +477,12 @@ function collectPageSnapshot(
             (tag === 'input' && ['submit', 'image'].includes(inputType)));
         const downloadsFile =
           tag === 'a' && element.hasAttribute('href') && element.hasAttribute('download');
-        state.refs.set(ref, { element, frameWindow });
-        elements.push({
+        const entry = {
           ref,
           frameId,
-          role,
-          name,
-          tag,
+          ...displayField('role', role, 128),
+          ...displayField('name', name),
+          ...displayField('tag', tag, 128),
           ...(inferred && { inferred: true }),
           disabled:
             element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
@@ -297,6 +491,8 @@ function collectPageSnapshot(
             (!uploadsFile && element.matches('input:not([readonly]),textarea:not([readonly])')) ||
             element.isContentEditable,
           ...controlState(element, role),
+          ...(scrollable && { scrollable: scroll }),
+          ...(scrollable && !semantic && !inferred && { scrollOnly: true }),
           ...(uploadsFile
             ? { effect: 'file_upload' }
             : downloadsFile
@@ -308,19 +504,16 @@ function collectPageSnapshot(
             accept: normalize(element.getAttribute('accept')).slice(0, 500),
             multiple: element.multiple === true,
           }),
-          ...(tag === 'select' && {
-            value: element.value,
-            options: Array.from(element.options)
-              .slice(0, maxSelectOptions)
-              .map((option) => ({
-                value: option.value,
-                label: normalize(option.label || option.textContent),
-                disabled: option.disabled,
-                selected: option.selected,
-              })),
-            ...(element.options.length > maxSelectOptions && { optionsTruncated: true }),
-          }),
-        });
+          ...(tag === 'select' && selectState(element)),
+        };
+        const size = encodedSize(entry);
+        if (elementBytes + size > 128_000) {
+          elementBudgetReached = true;
+          continue;
+        }
+        elementBytes += size;
+        state.refs.set(ref, { element, frameWindow, scrollTarget: scrollable });
+        elements.push(entry);
       }
       for (const shadowRoot of shadowRoots) {
         if (visitedNodes >= 20_000) {
@@ -364,8 +557,8 @@ function collectPageSnapshot(
   const moreText = textEnd < fullText.length;
 
   return {
-    url: window.location.href,
-    title: document.title,
+    ...exactField('url', window.location.href, 8_192),
+    ...displayField('title', document.title),
     text: fullText.slice(textStart, textEnd),
     frames,
     elements,
@@ -378,7 +571,9 @@ function collectPageSnapshot(
     textTruncated: moreText || textCollectionTruncated || scanTruncated,
     scanTruncated,
     textCollectionTruncated,
-    truncated: moreElements || moreText || scanTruncated || textCollectionTruncated,
+    fieldsTruncated,
+    truncated:
+      moreElements || moreText || scanTruncated || textCollectionTruncated || fieldsTruncated,
   };
 }
 
@@ -807,7 +1002,7 @@ class WebContentsPageAdapter extends EventEmitter {
         options,
       ],
       false,
-      [readElementName]
+      [readElementName, readScrollState]
     );
     if (!snapshot || !Array.isArray(snapshot.elements)) {
       throw new AutomationError(
@@ -818,11 +1013,99 @@ class WebContentsPageAdapter extends EventEmitter {
     if (navigationId !== this.navigationId) throw this.#staleReferenceError();
 
     const elements = snapshot.elements.map((publicNode) => {
-      this.references.set(publicNode.ref, { navigationId, effect: publicNode.effect || '' });
+      this.references.set(publicNode.ref, {
+        navigationId,
+        effect: publicNode.effect || '',
+        scrollOnly: publicNode.scrollOnly === true,
+      });
       return publicNode;
     });
+    for (const frame of snapshot.frames || []) {
+      if (frame.viewport?.ref)
+        this.references.set(frame.viewport.ref, { navigationId, effect: '', scrollOnly: true });
+    }
     this.#pruneReferences();
     return { ...snapshot, elements, navigationId, documentId };
+  }
+
+  async scroll(ref, { direction, pages = 1 }) {
+    this.#assertAvailable();
+    this.#requireReference(ref, true);
+    this.#requireTrustedKeyInput();
+    const navigationId = this.navigationId;
+    const inspect = async (requirePoint) => {
+      const result = await this.#execute(
+        inspectScrollReference,
+        [ref, direction, requirePoint],
+        false,
+        [readScrollState]
+      );
+      this.#assertActionResult(result);
+      if (navigationId !== this.navigationId) throw this.#staleReferenceError();
+      return result;
+    };
+    const prepared = await inspect(true);
+    const before = prepared.scroll;
+    if (prepared.boundary)
+      return { ref, direction, moved: false, outcome: 'boundary', before, after: before };
+    this.webContents.focus?.();
+    // Focusing may run page handlers; resolve the point and position again.
+    const confirmed = await inspect(true);
+    if (confirmed.boundary)
+      return {
+        ref,
+        direction,
+        moved: false,
+        outcome: 'boundary',
+        before: confirmed.scroll,
+        after: confirmed.scroll,
+      };
+    const horizontal = ['left', 'right'].includes(direction);
+    const forward = ['down', 'right'].includes(direction);
+    const start = confirmed.scroll;
+    const coordinate = horizontal ? start.x : start.y;
+    const remaining = forward
+      ? (horizontal ? start.maxX : start.maxY) - coordinate
+      : coordinate - (horizontal ? start.minX : 0);
+    const distance = Math.max(
+      1,
+      Math.floor(Math.min(remaining, pages * (horizontal ? start.width : start.height)))
+    );
+    const delta = (forward ? -1 : 1) * distance;
+    this.webContents.sendInputEvent({
+      type: 'mouseWheel',
+      ...confirmed.point,
+      deltaX: horizontal ? delta : 0,
+      deltaY: horizontal ? 0 : delta,
+      hasPreciseScrollingDeltas: true,
+      canScroll: true,
+    });
+    const started = Date.now();
+    let changedAt = started;
+    let after = start;
+    let settled = false;
+    while (Date.now() - started < 1_000) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const next = (await inspect(false)).scroll;
+      if (next.x !== after.x || next.y !== after.y) changedAt = Date.now();
+      after = next;
+      if (Date.now() - started >= 150 && Date.now() - changedAt >= 100) {
+        settled = true;
+        break;
+      }
+    }
+    const moved = after.x !== start.x || after.y !== start.y;
+    return {
+      ref,
+      direction,
+      moved,
+      outcome: moved ? 'moved' : 'no_movement',
+      settled,
+      before: start,
+      after,
+      deltaX: after.x - start.x,
+      deltaY: after.y - start.y,
+    };
   }
 
   async click(ref) {
@@ -982,9 +1265,21 @@ class WebContentsPageAdapter extends EventEmitter {
     return { clicked: true, ref };
   }
 
-  async inspectAction(ref, { operation = 'browser_click', key = '' } = {}) {
+  async inspectAction(
+    ref,
+    { operation = 'browser_click', key = '', direction = 'down', pages = 1 } = {}
+  ) {
     this.#assertAvailable();
-    this.#requireReference(ref);
+    this.#requireReference(ref, operation === 'browser_scroll');
+    if (operation === 'browser_scroll') {
+      const result = await this.#execute(inspectScrollReference, [ref, 'down', false], false, [
+        readScrollState,
+      ]);
+      this.#assertActionResult(result);
+      return {
+        label: `Scroll ${direction} by ${pages} viewport(s) in the observed page or container`,
+      };
+    }
     const action =
       operation === 'browser_press'
         ? 'press'
@@ -1150,7 +1445,7 @@ class WebContentsPageAdapter extends EventEmitter {
     );
   }
 
-  #requireReference(ref) {
+  #requireReference(ref, allowScrollOnly = false) {
     const reference = this.references.get(ref);
     if (!reference) {
       throw new AutomationError(
@@ -1164,6 +1459,12 @@ class WebContentsPageAdapter extends EventEmitter {
     }
     if (reference.navigationId !== this.navigationId || this.navigationInProgress) {
       throw this.#staleReferenceError();
+    }
+    if (reference.scrollOnly && !allowScrollOnly) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'This reference is only available for browser_scroll; use a control reference for other interactions'
+      );
     }
     return reference;
   }

@@ -1281,3 +1281,13 @@ describe('Agent progress projection', () => {
     expect(outcome.detail).not.toContain('.txt');
   });
 });
+
+
+test.each([
+  ['moved', 'Scrolled the current page', 'changed'],
+  ['boundary', 'Scroll boundary reached', 'observed'],
+  ['no_movement', 'Scroll did not move the page or container', 'changed'],
+])('scroll receipts describe %s without inventing movement', (outcome, label, effect) => {
+  const receipt = createToolReceipt(OPERATIONS.SCROLL, { envelope: { ok: true, result: { outcome } } });
+  expect(activityProgress(OPERATIONS.SCROLL, receipt)).toMatchObject({ label, effect });
+});

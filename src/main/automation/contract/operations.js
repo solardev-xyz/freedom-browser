@@ -28,6 +28,7 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
   OPERATIONS.PRESS,
+  OPERATIONS.SCROLL,
   OPERATIONS.UPLOAD,
   OPERATIONS.DOWNLOAD,
   OPERATIONS.WALLET_ACTION,
@@ -216,6 +217,7 @@ function validateOperationInput(operation, rawInput) {
     operation === OPERATIONS.TYPE ||
     operation === OPERATIONS.SELECT ||
     operation === OPERATIONS.PRESS ||
+    operation === OPERATIONS.SCROLL ||
     operation === OPERATIONS.UPLOAD ||
     operation === OPERATIONS.DOWNLOAD ||
     operation === OPERATIONS.WALLET_ACTION
@@ -224,7 +226,13 @@ function validateOperationInput(operation, rawInput) {
   }
 
   if (
-    [OPERATIONS.CLICK, OPERATIONS.TYPE, OPERATIONS.SELECT, OPERATIONS.PRESS].includes(operation) &&
+    [
+      OPERATIONS.CLICK,
+      OPERATIONS.TYPE,
+      OPERATIONS.SELECT,
+      OPERATIONS.PRESS,
+      OPERATIONS.SCROLL,
+    ].includes(operation) &&
     input.intent !== undefined
   ) {
     normalized.intent = requireString(input.intent, 'intent').trim();
@@ -242,6 +250,17 @@ function validateOperationInput(operation, rawInput) {
 
   if (operation === OPERATIONS.SELECT) {
     normalized.value = requireString(input.value, 'value', { allowEmpty: true });
+  }
+
+  if (operation === OPERATIONS.SCROLL) {
+    normalized.direction = requireString(input.direction, 'direction').trim();
+    if (!['up', 'down', 'left', 'right'].includes(normalized.direction)) {
+      throw invalidArgument('direction must be up, down, left, or right', { field: 'direction' });
+    }
+    normalized.pages = input.pages ?? 1;
+    if (!Number.isFinite(normalized.pages) || normalized.pages < 0.1 || normalized.pages > 3) {
+      throw invalidArgument('pages must be a number between 0.1 and 3', { field: 'pages' });
+    }
   }
 
   if (operation === OPERATIONS.PRESS) {

@@ -111,6 +111,46 @@ describe('WebContentsPageAdapter', () => {
     expect(webContents.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
   });
 
+  test('viewport references cannot become broad click or keyboard targets', async () => {
+    const webContents = new FakeWebContents();
+    const result = snapshotResult();
+    result.frames[0].viewport = { ref: 'ref_viewport' };
+    webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(result);
+    const adapter = new WebContentsPageAdapter(webContents);
+    await adapter.snapshot();
+    for (const action of [() => adapter.click('ref_viewport'), () => adapter.press('ref_viewport', 'Enter'),
+      () => adapter.inspectAction('ref_viewport', { operation: 'browser_click' })]) {
+      await expect(action()).rejects.toMatchObject({ code: ERROR_CODES.CAPABILITY_UNAVAILABLE });
+    }
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+  });
+
+  test('never dispatches a wheel when focus invalidates the observed reference', async () => {
+    const webContents = new FakeWebContents();
+    const snapshot = snapshotResult();
+    snapshot.frames[0].viewport = { ref: 'ref_viewport' };
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValueOnce({ ok: true, point: { x: 0, y: 0 }, scroll: { y: 0 } })
+      .mockResolvedValueOnce({ ok: false, reason: 'changed' });
+    const adapter = new WebContentsPageAdapter(webContents);
+    await adapter.snapshot();
+    await expect(adapter.scroll('ref_viewport', { direction: 'down' })).rejects.toMatchObject({ code: ERROR_CODES.STALE_ELEMENT_REFERENCE });
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+  });
+
+  test('does not inject a wheel at a boundary', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(snapshotResult())
+      .mockResolvedValueOnce({ ok: true, boundary: true, scroll: { x: 0, y: 0 } });
+    const adapter = new WebContentsPageAdapter(webContents);
+    await adapter.snapshot();
+    await expect(adapter.scroll('ref_test_0', { direction: 'up' })).resolves.toMatchObject({ moved: false, outcome: 'boundary' });
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+    expect(webContents.focus).not.toHaveBeenCalled();
+  });
+
   test('creates public references without leaking selectors', async () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult());

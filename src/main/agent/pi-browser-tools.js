@@ -84,7 +84,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.SNAPSHOT,
     label: 'Snapshot page',
     description:
-      'Read the active task tab with control names and available checked/selected/pressed/expanded states. Use references for interaction. Optional query filters control names (case-insensitive), not page text. For omitted controls/text, pass the returned nextElementOffset/nextTextOffset as elementOffset/textOffset with the documentId, navigationId and same query. Each call reads the live page: content can move between calls; restart or search if it changes. Respect scanTruncated and textCollectionTruncated; no match is not proof of absence when collection was limited.',
+      'Read the active task tab with control names and available checked/selected/pressed/expanded states. Use references for interaction. Optional query filters control names (case-insensitive), not page text. For omitted controls/text, pass the returned nextElementOffset/nextTextOffset as elementOffset/textOffset with the documentId, navigationId and same query. Each call reads the live page: content can move between calls; restart or search if it changes. Display fields can be shortened (nameTruncated, labelTruncated); oversized URLs and exact values are omitted (urlOmitted, valueOmitted). optionsTruncated means some dropdown choices are missing. Respect fieldsTruncated, scanTruncated and textCollectionTruncated; no match is not proof of absence when collection was limited.',
     parameters: {
       type: 'object',
       properties: {
@@ -163,6 +163,23 @@ const TOOL_SPECS = Object.freeze([
         intent: INTERACTION_INTENT_PROPERTY,
       },
       required: ['ref', 'value'],
+      additionalProperties: false,
+    },
+  },
+  {
+    operation: OPERATIONS.SCROLL,
+    label: 'Scroll page',
+    description:
+      'Scroll using a reference from the latest snapshot: frames[].viewport.ref for a page or frame, or an element with scrollable state for a nested container. Choose up/down/left/right and optionally 0.1–3 viewport pages (default 1). Uses wheel input at a visible point; cannot scroll an occluded or offscreen container. Result reports actual movement, boundary, or no_movement. Do not repeat a blocked/no-movement scroll blindly; read a fresh snapshot to check lazy-loaded content or choose another container. This does not click or focus a control.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', minLength: 1 },
+        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
+        pages: { type: 'number', minimum: 0.1, maximum: 3 },
+        intent: INTERACTION_INTENT_PROPERTY,
+      },
+      required: ['ref', 'direction'],
       additionalProperties: false,
     },
   },

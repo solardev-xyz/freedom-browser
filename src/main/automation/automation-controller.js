@@ -233,6 +233,7 @@ class AutomationController {
           OPERATIONS.TYPE,
           OPERATIONS.SELECT,
           OPERATIONS.PRESS,
+          OPERATIONS.SCROLL,
           OPERATIONS.UPLOAD,
           OPERATIONS.DOWNLOAD,
           OPERATIONS.WALLET_ACTION,
@@ -253,6 +254,7 @@ class AutomationController {
       const result = await entry.adapter.inspectAction(input.ref, {
         operation,
         ...(input.key && { key: input.key }),
+        ...(operation === OPERATIONS.SCROLL && { direction: input.direction, pages: input.pages }),
       });
       return this.#successEnvelope(entry, result);
     } catch (error) {
@@ -324,6 +326,8 @@ class AutomationController {
         return entry.adapter.type(input.ref, input.text, { replace: input.replace });
       case OPERATIONS.SELECT:
         return entry.adapter.select(input.ref, input.value);
+      case OPERATIONS.SCROLL:
+        return entry.adapter.scroll(input.ref, { direction: input.direction, pages: input.pages });
       case OPERATIONS.PRESS:
         return entry.adapter.press(input.ref, input.key);
       case OPERATIONS.UPLOAD:

@@ -21,6 +21,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
   OPERATIONS.PRESS,
+  OPERATIONS.SCROLL,
   OPERATIONS.UPLOAD,
   OPERATIONS.DOWNLOAD,
   OPERATIONS.WALLET_ACTION,
@@ -50,6 +51,7 @@ const PAGE_INTERACTION_OPERATIONS = new Set([
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
   OPERATIONS.PRESS,
+  OPERATIONS.SCROLL,
   OPERATIONS.UPLOAD,
   OPERATIONS.DOWNLOAD,
   OPERATIONS.WALLET_ACTION,
@@ -668,6 +670,8 @@ class OriginScopedAutomationController {
       input.tabId,
       input.ref,
       input.key || '',
+      input.direction || '',
+      input.pages ?? 1,
       input.value || '',
       input.text || '',
       input.replace !== false,
@@ -706,6 +710,10 @@ class OriginScopedAutomationController {
                     intent:
                       typeof input.intent === 'string' ? input.intent.trim().slice(0, 240) : '',
                     ...(operation === OPERATIONS.PRESS && { key: input.key || '' }),
+                    ...(operation === OPERATIONS.SCROLL && {
+                      direction: input.direction,
+                      pages: input.pages ?? 1,
+                    }),
                     ...(operation === OPERATIONS.TYPE && {
                       characters: typeof input.text === 'string' ? input.text.length : 0,
                       replace: input.replace !== false,
