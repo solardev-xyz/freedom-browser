@@ -935,6 +935,16 @@ describe('Pi browser tool adapter', () => {
     expect(failure.message).not.toContain('secret');
   });
 
+  test.each([OPERATIONS.LIST_FRAMES, OPERATIONS.READ_FRAME])('cancels %s through canonical page cleanup', async (operation) => {
+    const controller = { execute: jest.fn((name) => name === operation ? new Promise(() => {}) : Promise.resolve(successEnvelope({ stopped: true }))) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned' });
+    const abort = new AbortController();
+    const execution = tools.find((tool) => tool.name === operation).execute('frame_call', { frameRef: 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, abort.signal);
+    abort.abort();
+    await expect(execution).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+    expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.STOP_LOADING, { tabId: 'tab_assigned' });
+  });
+
   test('cancels a blocking operation through canonical stop-loading', async () => {
     let settleWait;
     const controller = {

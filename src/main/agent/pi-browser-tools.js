@@ -101,6 +101,7 @@ const TOOL_SPECS = Object.freeze([
   {
     operation: OPERATIONS.LIST_FRAMES,
     label: 'List embedded frames',
+    cancellable: true,
     description:
       'List document-bound frame references and their browser-reported origins in the active task tab. Use browser_read_frame to read an embedded document that a normal snapshot cannot access. Same URLs can belong to different frames; use the returned frame reference. Requires a free debugger connection.',
     parameters: EMPTY_PARAMETERS,
@@ -108,6 +109,7 @@ const TOOL_SPECS = Object.freeze([
   {
     operation: OPERATIONS.READ_FRAME,
     label: 'Read embedded frame',
+    cancellable: true,
     description:
       'Read a frame from browser_list_frames, subject to the task origin scope. Returns bounded text and control descriptions only; frame controls cannot be clicked or typed through this tool. Optional query filters control names; textQuery finds literal rendered text. Use continuation offsets with the same frameRef and query. Navigation/removal invalidates the frame reference. Opaque and unsupported origins are denied.',
     parameters: {
