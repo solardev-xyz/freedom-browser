@@ -54,7 +54,16 @@ function readElementName(element) {
   // The browser resolves explicit, wrapping and multiple labels in tree order,
   // within the control's own document/shadow root.
   const associatedLabel = normalize(
-    Array.from(element.labels || [], (label) => label.textContent || '').join(' ')
+    Array.from(element.labels || [], (label) => {
+      const parts = [];
+      const walker = label.ownerDocument.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        // A wrapping label must not absorb the labelled control's own subtree
+        // (notably every option of a select or the contents of a textarea).
+        if (!element.contains(node)) parts.push(node.textContent || '');
+      }
+      return parts.join('');
+    }).join(' ')
   );
   if (associatedLabel) return associatedLabel;
   return normalize(
@@ -177,13 +186,77 @@ function inspectScrollReference(ref, direction, requirePoint = true) {
   }
 }
 
+function readControlState(element, role) {
+  const checkedRoles = new Set([
+    'checkbox',
+    'radio',
+    'switch',
+    'menuitemcheckbox',
+    'menuitemradio',
+    'option',
+    'treeitem',
+  ]);
+  const selectedRoles = new Set([
+    'option',
+    'tab',
+    'row',
+    'gridcell',
+    'columnheader',
+    'rowheader',
+    'treeitem',
+  ]);
+  const expandedRoles = new Set([
+    'application',
+    'button',
+    'checkbox',
+    'combobox',
+    'gridcell',
+    'link',
+    'listbox',
+    'menuitem',
+    'row',
+    'rowheader',
+    'columnheader',
+    'tab',
+    'treeitem',
+    'menuitemcheckbox',
+    'menuitemradio',
+    'switch',
+  ]);
+  const result = {};
+  const ariaState = (attribute, mixed = false) => {
+    const value = element.getAttribute(attribute)?.trim().toLowerCase();
+    if (value === 'true' || value === 'false') return value === 'true';
+    if (mixed && value === 'mixed') return 'mixed';
+    return undefined;
+  };
+  const add = (key, value) => {
+    if (value !== undefined) result[key] = value;
+  };
+  if (element.tagName === 'INPUT' && ['checkbox', 'radio'].includes(element.type)) {
+    // Native state wins over conflicting ARIA markup.
+    result.checked =
+      element.type === 'checkbox' && element.indeterminate ? 'mixed' : element.checked;
+  } else if (checkedRoles.has(role)) {
+    const checked = ariaState('aria-checked', true);
+    add(
+      'checked',
+      checked === 'mixed' && ['radio', 'menuitemradio', 'switch'].includes(role) ? false : checked
+    );
+  }
+  if (role === 'button') add('pressed', ariaState('aria-pressed', true));
+  if (selectedRoles.has(role)) add('selected', ariaState('aria-selected'));
+  if (expandedRoles.has(role)) add('expanded', ariaState('aria-expanded'));
+  return result;
+}
+
 function collectPageSnapshot(
   maxTextLength,
   maxElements,
   maxRetainedReferences,
   maxSelectOptions,
   snapshotToken,
-  { query = '', elementOffset = 0, textOffset = 0 } = {}
+  { query = '', textQuery = '', elementOffset = 0, textOffset = 0 } = {}
 ) {
   const stateKey = '__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__';
   const state = globalThis[stateKey] || { refs: new Map() };
@@ -245,7 +318,7 @@ function collectPageSnapshot(
       const entry = {
         value: option.value,
         ...displayField('label', normalize(option.label || option.textContent)),
-        disabled: option.disabled,
+        disabled: option.matches(':disabled'),
         selected: option.selected,
       };
       const size = encodedSize(entry);
@@ -276,74 +349,11 @@ function collectPageSnapshot(
     }
     return element.getClientRects().length > 0;
   };
-  const checkedRoles = new Set([
-    'checkbox',
-    'radio',
-    'switch',
-    'menuitemcheckbox',
-    'menuitemradio',
-    'option',
-    'treeitem',
-  ]);
-  const selectedRoles = new Set([
-    'option',
-    'tab',
-    'row',
-    'gridcell',
-    'columnheader',
-    'rowheader',
-    'treeitem',
-  ]);
-  const expandedRoles = new Set([
-    'application',
-    'button',
-    'checkbox',
-    'combobox',
-    'gridcell',
-    'link',
-    'listbox',
-    'menuitem',
-    'row',
-    'rowheader',
-    'columnheader',
-    'tab',
-    'treeitem',
-    'menuitemcheckbox',
-    'menuitemradio',
-    'switch',
-  ]);
-  const controlState = (element, role) => {
-    const result = {};
-    const ariaState = (attribute, mixed = false) => {
-      const value = element.getAttribute(attribute)?.trim().toLowerCase();
-      if (value === 'true' || value === 'false') return value === 'true';
-      if (mixed && value === 'mixed') return 'mixed';
-      return undefined;
-    };
-    const add = (key, value) => {
-      if (value !== undefined) result[key] = value;
-    };
-    if (element.tagName === 'INPUT' && ['checkbox', 'radio'].includes(element.type)) {
-      // Native state wins over conflicting ARIA markup.
-      result.checked =
-        element.type === 'checkbox' && element.indeterminate ? 'mixed' : element.checked;
-    } else if (checkedRoles.has(role)) {
-      const checked = ariaState('aria-checked', true);
-      add(
-        'checked',
-        checked === 'mixed' && ['radio', 'menuitemradio', 'switch'].includes(role) ? false : checked
-      );
-    }
-    if (role === 'button') add('pressed', ariaState('aria-pressed', true));
-    if (selectedRoles.has(role)) add('selected', ariaState('aria-selected'));
-    if (expandedRoles.has(role)) add('expanded', ariaState('aria-expanded'));
-    return result;
-  };
   const implicitRole = (element) => {
     const tag = element.tagName.toLowerCase();
     if (tag === 'a' && element.hasAttribute('href')) return 'link';
     if (tag === 'button') return 'button';
-    if (tag === 'select') return 'combobox';
+    if (tag === 'select') return element.multiple || element.size > 1 ? 'listbox' : 'combobox';
     if (tag === 'textarea') return 'textbox';
     if (tag === 'input') {
       if (element.type === 'file') return 'button';
@@ -370,6 +380,8 @@ function collectPageSnapshot(
   const elements = [];
   const frames = [];
   const pageText = [];
+  const textSources = [];
+  let collectedTextLength = 0;
   let candidateCount = 0;
   let visitedNodes = 0;
   let scanTruncated = false;
@@ -428,7 +440,12 @@ function collectPageSnapshot(
     if (rawText.length > remainingText) textCollectionTruncated = true;
     const text = normalize(rawText.slice(0, remainingText));
     remainingText = Math.max(0, remainingText - rawText.length);
-    if (text) pageText.push(text);
+    if (text) {
+      const start = collectedTextLength + (pageText.length ? 1 : 0);
+      pageText.push(text);
+      textSources.push({ frameId, start, end: start + text.length });
+      collectedTextLength = start + text.length;
+    }
 
     const childFrames = [];
     const visitRoot = (root, shadowDepth = 0) => {
@@ -490,7 +507,7 @@ function collectPageSnapshot(
           editable:
             (!uploadsFile && element.matches('input:not([readonly]),textarea:not([readonly])')) ||
             element.isContentEditable,
-          ...controlState(element, role),
+          ...readControlState(element, role),
           ...(scrollable && { scrollable: scroll }),
           ...(scrollable && !semantic && !inferred && { scrollOnly: true }),
           ...(uploadsFile
@@ -546,7 +563,33 @@ function collectPageSnapshot(
     /[\uD800-\uDBFF]/.test(fullText[textStart - 1])
   )
     textStart -= 1;
-  let textEnd = Math.min(textStart + maxTextLength, fullText.length);
+  let textMatch = null;
+  let excerptLength = maxTextLength;
+  if (textQuery) {
+    // Escape literal text rather than allowing model-supplied regular expressions.
+    // Unicode regexp indices stay in the original text, unlike lowercasing it
+    // first (which can change the length of characters such as dotted I).
+    const literal = normalize(textQuery).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let matchedSource;
+    for (const source of textSources) {
+      const from = Math.max(textStart, source.start);
+      if (from >= source.end) continue;
+      const match = new RegExp(literal, 'iu').exec(fullText.slice(from, source.end));
+      if (!match) continue;
+      const start = from + match.index;
+      textMatch = { start, end: start + match[0].length, frameId: source.frameId };
+      matchedSource = source;
+      break;
+    }
+    if (textMatch) {
+      textStart = Math.max(matchedSource.start, textMatch.start - 240);
+      if (/[\uDC00-\uDFFF]/.test(fullText[textStart] || '') && textStart > 0) textStart -= 1;
+      excerptLength = Math.min(matchedSource.end, textMatch.end + 240) - textStart;
+    } else {
+      excerptLength = 0;
+    }
+  }
+  let textEnd = Math.min(textStart + excerptLength, fullText.length);
   if (
     textEnd < fullText.length &&
     /[\uDC00-\uDFFF]/.test(fullText[textEnd]) &&
@@ -566,7 +609,12 @@ function collectPageSnapshot(
     textOffset: textStart,
     ...(query && { query }),
     ...(moreElements && { nextElementOffset: elementOffset + elements.length }),
-    ...(moreText && { nextTextOffset: textEnd }),
+    ...(!textQuery && moreText && { nextTextOffset: textEnd }),
+    ...(textQuery && {
+      textQuery,
+      textMatch,
+      ...(textMatch && textMatch.end < fullText.length && { nextMatchOffset: textMatch.end }),
+    }),
     elementsTruncated: moreElements || scanTruncated,
     textTruncated: moreText || textCollectionTruncated || scanTruncated,
     scanTruncated,
@@ -842,11 +890,11 @@ function selectOptionByValue(ref, value) {
   if (!inspected.ok) return inspected;
   const { element, frameWindow } =
     globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__.refs.get(ref);
-  if (element.tagName.toLowerCase() !== 'select' || element.multiple || element.size > 1) {
+  if (element.tagName.toLowerCase() !== 'select' || element.multiple) {
     return { ok: false, reason: 'unsupported_select' };
   }
   const option = Array.from(element.options).find(
-    (candidate) => candidate.value === value && !candidate.disabled
+    (candidate) => candidate.value === value && !candidate.matches(':disabled')
   );
   if (!option) return { ok: false, reason: 'option_unavailable' };
   const valueSetter = Object.getOwnPropertyDescriptor(
@@ -879,6 +927,50 @@ function prepareTextInsertion(ref, replace) {
     element.setSelectionRange(end, end);
   }
   return { ok: true };
+}
+
+function referencedElementMatchesState(ref, expectedState) {
+  const reference = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__?.refs?.get(ref);
+  if (!reference) return { ok: false, reason: 'changed' };
+  const { element, frameWindow } = reference;
+  try {
+    if (element.ownerDocument !== frameWindow.document) return { ok: false, reason: 'changed' };
+    if (!element.isConnected) return { ok: true, matched: expectedState === 'hidden' };
+    const style = frameWindow.getComputedStyle(element);
+    const visible =
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.opacity !== '0' &&
+      element.getClientRects().length > 0;
+    if (expectedState === 'hidden') return { ok: true, matched: !visible };
+    if (!visible) return { ok: true, matched: false };
+    const disabled =
+      element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true';
+    const role =
+      element.getAttribute('role') ||
+      {
+        BUTTON: 'button',
+        A: 'link',
+        SELECT: element.multiple || element.size > 1 ? 'listbox' : 'combobox',
+      }[element.tagName] ||
+      'generic';
+    const state = readControlState(element, role);
+    return {
+      ok: true,
+      matched:
+        {
+          visible: true,
+          enabled: !disabled,
+          disabled,
+          checked: state.checked === true,
+          unchecked: state.checked === false,
+          expanded: state.expanded === true,
+          collapsed: state.expanded === false,
+        }[expectedState] === true,
+    };
+  } catch {
+    return { ok: false, reason: 'changed' };
+  }
 }
 
 function pageContainsText(text) {
@@ -1002,7 +1094,7 @@ class WebContentsPageAdapter extends EventEmitter {
         options,
       ],
       false,
-      [readElementName, readScrollState]
+      [readElementName, readScrollState, readControlState]
     );
     if (!snapshot || !Array.isArray(snapshot.elements)) {
       throw new AutomationError(
@@ -1387,6 +1479,7 @@ class WebContentsPageAdapter extends EventEmitter {
           return {
             matched: true,
             condition: options.condition,
+            ...(options.condition === 'element' && { ref: options.ref, state: options.state }),
             url: this.webContents.getURL?.() || '',
             navigationId: this.navigationId,
           };
@@ -1554,6 +1647,19 @@ class WebContentsPageAdapter extends EventEmitter {
         return this.navigationId > options.sinceNavigationId;
       case 'url':
         return this.webContents.getURL?.() === options.url;
+      case 'element': {
+        this.#requireReference(options.ref);
+        const navigationId = this.navigationId;
+        const result = await this.#execute(
+          referencedElementMatchesState,
+          [options.ref, options.state],
+          false,
+          [readControlState]
+        );
+        if (navigationId !== this.navigationId) throw this.#staleReferenceError();
+        this.#assertActionResult(result);
+        return result.matched === true;
+      }
       case 'text': {
         const navigationId = this.navigationId;
         try {

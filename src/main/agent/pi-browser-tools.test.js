@@ -99,7 +99,7 @@ describe('Pi browser tool adapter', () => {
     }
     expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.WAIT).parameters).toMatchObject({
       properties: {
-        condition: { enum: ['load', 'navigation', 'text', 'url'] },
+        condition: { enum: ['load', 'navigation', 'text', 'url', 'element'] },
         timeoutMs: { minimum: 1, maximum: MAX_WAIT_TIMEOUT_MS },
       },
       required: ['condition'],

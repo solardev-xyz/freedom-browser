@@ -525,3 +525,167 @@ test('scroll targets stay inside visible same-origin frames and reject covered o
     error: { code: 'STALE_ELEMENT_REFERENCE' },
   });
 });
+
+test('literal text search retrieves bounded, frame-attributed excerpts without moving the page', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  const tabId = await openFixture(
+    { electronApp, window, harness },
+    'hidden',
+    `
+    <p>${'Intro '.repeat(3_000)}</p><p>İ 😀 Price (USD): $5.00 [today]</p>
+    <p>${'Middle '.repeat(3_000)}</p><p>Price (USD): $5.00 [today]</p>
+    <p hidden>Hidden sentinel</p>
+    <iframe name="Footnotes" srcdoc="<p>Frame-only needle</p>"></iframe>`
+  );
+  const textQuery = 'PRICE (USD): $5.00 [today]';
+  const first = await execute(electronApp, 'browser_snapshot', { tabId, textQuery });
+  expect(first.ok).toBe(true);
+  expect(first.result.textMatch.start).toBeGreaterThan(12_000);
+  expect(first.result.textMatch.frameId).toBe('frame_main');
+  expect(first.result.text).toContain('Price (USD): $5.00 [today]');
+  expect(first.result.text.length).toBeLessThan(700);
+  expect(first.result.frames[0].viewport.y).toBe(0);
+  const next = await execute(electronApp, 'browser_snapshot', {
+    tabId,
+    textQuery,
+    textOffset: first.result.nextMatchOffset,
+    documentId: first.result.documentId,
+    navigationId: first.result.navigationId,
+  });
+  expect(next.result.textMatch.start).toBeGreaterThan(first.result.textMatch.start);
+  expect(next.result.text).toContain('Price (USD): $5.00 [today]');
+  for (const missing of ['Hidden sentinel', '(a+)+$', 'Not in this document']) {
+    const result = await execute(electronApp, 'browser_snapshot', { tabId, textQuery: missing });
+    expect(result.result).toMatchObject({ textMatch: null, text: '' });
+    expect(result.result).not.toHaveProperty('nextMatchOffset');
+  }
+  const frameMatch = await execute(electronApp, 'browser_snapshot', {
+    tabId,
+    textQuery: 'Frame-only needle',
+  });
+  expect(frameMatch.result.textMatch.frameId).toBe(
+    frameMatch.result.frames.find((frame) => frame.name === 'Footnotes').frameId
+  );
+  expect(frameMatch.result.frames[0].viewport.y).toBe(0);
+});
+
+test('native dropdowns preserve disabled groups and support single-select listboxes', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  const tabId = await openFixture(
+    { electronApp, window, harness },
+    'hidden',
+    `
+    <label>Plan<select><option value="basic">Basic</option>
+      <optgroup label="Unavailable" disabled><option value="restricted">Restricted</option></optgroup>
+      <option value="pro">Pro</option></select></label>
+    <label>Size<select size="3"><option value="small">Small</option><option value="large">Large</option></select></label>
+    <label>Many<select multiple><option value="one">One</option><option value="two">Two</option></select></label>`
+  );
+  const first = await snapshot(electronApp, tabId);
+  const plan = named(first, 'Plan');
+  expect(plan.options.find((option) => option.value === 'restricted').disabled).toBe(true);
+  expect(
+    await execute(electronApp, 'browser_select', { tabId, ref: plan.ref, value: 'restricted' })
+  ).toMatchObject({ ok: false, error: { code: 'ELEMENT_NOT_FOUND' } });
+  expect(named(await snapshot(electronApp, tabId), 'Plan').value).toBe('basic');
+  expect(named(first, 'Size').role).toBe('listbox');
+  expect(
+    await execute(electronApp, 'browser_select', {
+      tabId,
+      ref: named(first, 'Size').ref,
+      value: 'large',
+    })
+  ).toMatchObject({ ok: true });
+  expect(named(await snapshot(electronApp, tabId), 'Size').value).toBe('large');
+  expect(
+    await execute(electronApp, 'browser_select', {
+      tabId,
+      ref: named(first, 'Many').ref,
+      value: 'two',
+    })
+  ).toMatchObject({ ok: false, error: { code: 'CAPABILITY_UNAVAILABLE' } });
+});
+
+for (const mode of ['desktop', 'hidden']) {
+  test(`${mode} handles delayed custom menus and waits on the original control state`, async ({
+    electronApp,
+    window,
+    harness,
+  }) => {
+    const tabId = await openFixture(
+      { electronApp, window, harness },
+      mode,
+      `
+      <button id="menu" aria-expanded="false" onclick="setTimeout(() => {
+        this.setAttribute('aria-expanded', 'true'); document.querySelector('#choices').hidden = false;
+      }, 200)">Choose colour</button>
+      <div id="choices" role="listbox" hidden>
+        <div role="option" aria-selected="false" tabindex="0" onclick="this.setAttribute('aria-selected', 'true');
+          document.querySelector('#menu').setAttribute('aria-expanded', 'false'); this.parentElement.hidden = true;
+          document.querySelector('#result').textContent = 'Selected Blue trusted=' + event.isTrusted;
+          setTimeout(() => document.querySelector('#save').disabled = false, 200)">Blue</div>
+      </div>
+      <button id="save" disabled onclick="this.replaceWith(this.cloneNode(true))">Save choice</button>
+      <label><input id="check" type="checkbox">Accept choice</label>
+      <p id="result">Waiting</p>`
+    );
+    const initial = await snapshot(electronApp, tabId);
+    const trigger = named(initial, 'Choose colour');
+    const save = named(initial, 'Save choice');
+    const waitState = (ref, state, timeoutMs = 2000) =>
+      execute(electronApp, 'browser_wait', { tabId, condition: 'element', ref, state, timeoutMs });
+    expect(await waitState(trigger.ref, 'collapsed')).toMatchObject({ ok: true });
+    expect(await waitState(save.ref, 'disabled')).toMatchObject({ ok: true });
+    expect(await execute(electronApp, 'browser_click', { tabId, ref: trigger.ref })).toMatchObject({
+      ok: true,
+    });
+    expect(await waitState(trigger.ref, 'expanded')).toMatchObject({
+      ok: true,
+      result: { matched: true, state: 'expanded' },
+    });
+    const expanded = await snapshot(electronApp, tabId);
+    const blue = expanded.elements.find(element => element.role === 'option' && element.name === 'Blue');
+    expect(blue).toBeDefined();
+    expect(await execute(electronApp, 'browser_click', { tabId, ref: blue.ref })).toMatchObject({
+      ok: true,
+    });
+    expect(await waitState(blue.ref, 'hidden')).toMatchObject({ ok: true });
+    expect(await waitState(save.ref, 'enabled')).toMatchObject({ ok: true });
+    expect(
+      await execute(electronApp, 'browser_wait', {
+        tabId,
+        condition: 'text',
+        text: 'Selected Blue trusted=true',
+      })
+    ).toMatchObject({ ok: true });
+    const check = named(initial, 'Accept choice');
+    expect(await waitState(check.ref, 'unchecked')).toMatchObject({ ok: true });
+    expect(await execute(electronApp, 'browser_click', { tabId, ref: check.ref })).toMatchObject({
+      ok: true,
+    });
+    expect(await waitState(check.ref, 'checked')).toMatchObject({ ok: true });
+    expect(await waitState(check.ref, 'unchecked', 100)).toMatchObject({
+      ok: false,
+      error: { code: 'WAIT_TIMEOUT' },
+    });
+    expect(await execute(electronApp, 'browser_click', { tabId, ref: save.ref })).toMatchObject({
+      ok: true,
+    });
+    expect(await waitState(save.ref, 'hidden')).toMatchObject({ ok: true });
+    expect(await waitState(save.ref, 'enabled', 100)).toMatchObject({
+      ok: false,
+      error: { code: 'WAIT_TIMEOUT' },
+    });
+    await execute(electronApp, 'browser_navigate', { tabId, url: `${FIXTURE_URL}?new` });
+    expect(await waitState(check.ref, 'checked')).toMatchObject({
+      ok: false,
+      error: { code: 'STALE_ELEMENT_REFERENCE' },
+    });
+  });
+}

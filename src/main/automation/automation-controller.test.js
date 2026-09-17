@@ -57,7 +57,7 @@ describe('AutomationController', () => {
     const { controller, authorize } = createController();
     const adapter = new FakePageAdapter();
     const tabId = controller.registerPage(adapter);
-    const options = { query: 'Save', textOffset: 12000, elementOffset: 250, navigationId: 3, documentId: 'document_test' };
+    const options = { query: 'Save', textQuery: 'Details', textOffset: 12000, elementOffset: 250, navigationId: 3, documentId: 'document_test' };
     expect(await controller.execute(OPERATIONS.SNAPSHOT, { tabId, ...options })).toMatchObject({
       ok: true,
     });

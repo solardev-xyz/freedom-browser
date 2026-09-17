@@ -44,7 +44,7 @@ const ALLOWED_NAVIGATION_SCHEMES = new Set([
   'ipns:',
   'freedom-preview:',
 ]);
-const WAIT_CONDITIONS = new Set(['load', 'navigation', 'text', 'url']);
+const WAIT_CONDITIONS = new Set(['load', 'navigation', 'text', 'url', 'element']);
 const PRESS_KEYS = Object.freeze([
   'Enter',
   'Tab',
@@ -177,10 +177,11 @@ function validateOperationInput(operation, rawInput) {
       normalized.documentId = requireString(input.documentId, 'documentId');
       if (normalized.documentId.length > 80) throw invalidArgument('documentId is too long');
     }
-    if (input.query !== undefined) {
-      normalized.query = requireString(input.query, 'query').trim();
-      if (normalized.query.length > 200)
-        throw invalidArgument('query cannot exceed 200 characters');
+    for (const field of ['query', 'textQuery']) {
+      if (input[field] === undefined) continue;
+      normalized[field] = requireString(input[field], field).trim();
+      if (normalized[field].length > 200)
+        throw invalidArgument(`${field} cannot exceed 200 characters`);
     }
     for (const field of ['elementOffset', 'textOffset', 'navigationId']) {
       if (input[field] === undefined) continue;
@@ -273,7 +274,7 @@ function validateOperationInput(operation, rawInput) {
   if (operation === OPERATIONS.WAIT) {
     normalized.condition = requireString(input.condition, 'condition').trim();
     if (!WAIT_CONDITIONS.has(normalized.condition)) {
-      throw invalidArgument('condition must be one of: load, navigation, text, url', {
+      throw invalidArgument('condition must be one of: load, navigation, text, url, element', {
         field: 'condition',
       });
     }
@@ -284,6 +285,27 @@ function validateOperationInput(operation, rawInput) {
       });
     }
     normalized.timeoutMs = timeoutMs;
+    if (normalized.condition === 'element') {
+      normalized.ref = requireString(input.ref, 'ref').trim();
+      normalized.state = requireString(input.state, 'state').trim();
+      if (
+        ![
+          'visible',
+          'hidden',
+          'enabled',
+          'disabled',
+          'checked',
+          'unchecked',
+          'expanded',
+          'collapsed',
+        ].includes(normalized.state)
+      ) {
+        throw invalidArgument(
+          'state must be visible, hidden, enabled, disabled, checked, unchecked, expanded, or collapsed',
+          { field: 'state' }
+        );
+      }
+    }
     if (normalized.condition === 'text') {
       normalized.text = requireString(input.text, 'text');
     }

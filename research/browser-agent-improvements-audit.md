@@ -1,7 +1,7 @@
 # Browser-agent improvements: Browser Use reference audit
 
 Date: 2026-09-17
-Status: first-pass source audit complete; semantic, coverage and initial scrolling slices implemented and locally qualified
+Status: first-pass source audit complete; semantic, coverage, scrolling and initial dynamic-form slices implemented and locally qualified
 Branch: `experiment/browser-agent-improvements`
 Freedom baseline: `3438d498a6a427795f81e518407711e7c161d9c0`
 Related plan: [Freedom Agent roadmap](freedom-agent-cli-roadmap.md)
@@ -303,6 +303,53 @@ observation; the tool instructs the model to reread, not blindly repeat.
 Commands: `npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`;
 `npm test -- src/main/automation/contract/operations.test.js src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/automation/policy-controller.test.js src/main/agent/pi-browser-tools.test.js src/main/agent/agent-progress.test.js src/main/agent/freedom-agent-service.test.js`;
 `npm run lint`. Electron wheel API reference: https://www.electronjs.org/docs/latest/api/structures/mouse-wheel-input-event
+
+
+### Slice 4 — Text finding and dynamic-form waits, 2026-09-17
+
+`browser_snapshot.textQuery` searches literal, case-insensitive rendered text
+already collected from the page and accessible frames. It returns a short excerpt,
+original-text UTF-16 match offsets and frame attribution. `nextMatchOffset` with the
+same document/navigation IDs retrieves another match. Regex syntax is escaped;
+Unicode matching does not first lowercase the source and shift its offsets. Search
+never spans two frame bodies and never scrolls, focuses or highlights a page. It
+retains the collection limits and explicit incomplete-observation flags. Hidden
+text is excluded under the existing rendered-text collection semantics; unloaded
+content still requires scrolling. This adapts the discoverability goal of upstream
+`find_text` without importing its implicit scroll mutation into observation.
+
+Form fixtures exposed a real naming failure: wrapping a label around a native
+select included the select's whole option subtree in the name. Associated labels
+now omit the labelled control's own subtree (also avoiding textarea contents).
+Option observations and selection use Chromium's `:disabled` semantics, including
+disabled optgroups. Native single-select listboxes are supported; multi-select
+remains explicitly unsupported. Custom ARIA menus use observed trigger/option
+references and normal click approval, rather than pretending to be native selects.
+
+`browser_wait` gains `condition: element`, an original reference and a named state:
+visible, hidden, enabled, disabled, checked, unchecked, expanded or collapsed.
+Observation and waits share the same role-aware checked/expanded state extraction.
+Hidden can match a removed original element; a replacement does not inherit its
+reference or satisfy enabled. Navigation invalidates the wait even if the old
+execution context returns a match. Existing timeout/cancellation behavior is kept;
+no selector, JS predicate or arbitrary delay tool is introduced.
+
+Validation: **17 Electron cases passed together** (40.3s). New cases cover literal
+search beyond the first text window, punctuation/regex escaping, Unicode before a
+match, repeat-match continuation, frame attribution, no scroll, hidden-text
+exclusion, wrapping select labels, disabled groups, listboxes and delayed custom
+menus in both desktop and hidden modes. The dynamic flow waits for expansion,
+clicks an observed option with trusted input, waits for a delayed enabled button,
+checks checkbox state, and rejects stale/replaced references. **5 focused unit
+suites / 177 tests passed** (1.4s), including input validation, reference invalidation
+during an element wait, and cancellation via stop-loading. Lint and diff checks
+passed. The initial native fixture failed at the wrapping-label mismatch; the
+custom-menu fixture was corrected to distinguish its same-named listbox and option
+by role. These are real-browser deterministic fixtures, not live-model acceptance.
+
+Commands: `npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`;
+`npm test -- src/main/automation/contract/operations.test.js src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/agent/pi-browser-tools.test.js`;
+`npm run lint`. No dependency, IPC or module-boundary changes.
 
 
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d

@@ -518,6 +518,30 @@ describe('WebContentsPageAdapter', () => {
     ).resolves.toMatchObject({ matched: true, condition: 'text', navigationId: 1 });
   });
 
+  test('element waits reject navigation even if the old context reports a match', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult())
+      .mockImplementationOnce(async () => {
+        webContents.emit('did-start-navigation', {}, 'https://example.test/new', false, true);
+        return { ok: true, matched: true };
+      });
+    const adapter = new WebContentsPageAdapter(webContents);
+    await adapter.snapshot();
+    await expect(adapter.wait({ condition: 'element', ref: 'ref_test_0', state: 'enabled', timeoutMs: 1000 }))
+      .rejects.toMatchObject({ code: ERROR_CODES.STALE_ELEMENT_REFERENCE });
+  });
+
+  test('stop-loading cancels pending element-state waits', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult())
+      .mockResolvedValue({ ok: true, matched: false });
+    const adapter = new WebContentsPageAdapter(webContents);
+    await adapter.snapshot();
+    const pending = adapter.wait({ condition: 'element', ref: 'ref_test_0', state: 'enabled', timeoutMs: 1000 });
+    await expect(adapter.stopLoading()).resolves.toMatchObject({ cancelledWaits: 1 });
+    await expect(pending).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+  });
+
   test('stop-loading cancels active waits', async () => {
     const webContents = new FakeWebContents();
     const adapter = new WebContentsPageAdapter(webContents);

@@ -467,3 +467,17 @@ describe('scroll input bounds', () => {
     expect(() => validateOperationInput(OPERATIONS.SCROLL, { tabId: 'tab_1', ref: 'ref_1', direction: 'diagonal' })).toThrow();
   });
 });
+
+
+test.each(['', ' '.repeat(4), 'x'.repeat(201), 42])('rejects invalid rendered-text search %j', textQuery => {
+  expect(() => validateOperationInput(OPERATIONS.SNAPSHOT, { tabId: 'tab_1', textQuery })).toThrow();
+});
+
+
+test('element waits accept named states without selectors or arbitrary predicates', () => {
+  expect(validateOperationInput(OPERATIONS.WAIT, { tabId: 'tab_1', condition: 'element', ref: 'ref_1', state: 'enabled', timeoutMs: 1500 }))
+    .toEqual({ tabId: 'tab_1', condition: 'element', ref: 'ref_1', state: 'enabled', timeoutMs: 1500 });
+  for (const input of [{ state: 'enabled' }, { ref: 'ref_1' }, { ref: 'ref_1', state: 'javascript' }]) {
+    expect(() => validateOperationInput(OPERATIONS.WAIT, { tabId: 'tab_1', condition: 'element', ...input })).toThrow();
+  }
+});

@@ -315,6 +315,7 @@ class AutomationController {
       case OPERATIONS.SNAPSHOT:
         return entry.adapter.snapshot({
           query: input.query,
+          textQuery: input.textQuery,
           elementOffset: input.elementOffset,
           textOffset: input.textOffset,
           navigationId: input.navigationId,

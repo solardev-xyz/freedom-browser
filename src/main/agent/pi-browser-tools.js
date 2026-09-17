@@ -84,11 +84,12 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.SNAPSHOT,
     label: 'Snapshot page',
     description:
-      'Read the active task tab with control names and available checked/selected/pressed/expanded states. Use references for interaction. Optional query filters control names (case-insensitive), not page text. For omitted controls/text, pass the returned nextElementOffset/nextTextOffset as elementOffset/textOffset with the documentId, navigationId and same query. Each call reads the live page: content can move between calls; restart or search if it changes. Display fields can be shortened (nameTruncated, labelTruncated); oversized URLs and exact values are omitted (urlOmitted, valueOmitted). optionsTruncated means some dropdown choices are missing. Respect fieldsTruncated, scanTruncated and textCollectionTruncated; no match is not proof of absence when collection was limited.',
+      'Read the active task tab with control names and available checked/selected/pressed/expanded states. Use references for interaction. Optional query filters control names. Optional textQuery finds the next literal, case-insensitive match in collected rendered text and returns a short excerpt plus textMatch offsets (or null). This only reads; it does not scroll. For the next match, pass nextMatchOffset as textOffset with the documentId/navigationId and same textQuery. Text not yet loaded requires scrolling first. For omitted controls/text, pass the returned nextElementOffset/nextTextOffset as elementOffset/textOffset with the documentId, navigationId and same query. Each call reads the live page: content can move between calls; restart or search if it changes. Display fields can be shortened (nameTruncated, labelTruncated); oversized URLs and exact values are omitted (urlOmitted, valueOmitted). optionsTruncated means some dropdown choices are missing. Respect fieldsTruncated, scanTruncated and textCollectionTruncated; no match is not proof of absence when collection was limited.',
     parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', minLength: 1, maxLength: 200 },
+        textQuery: { type: 'string', minLength: 1, maxLength: 200 },
         elementOffset: { type: 'integer', minimum: 0, maximum: 1_000_000 },
         textOffset: { type: 'integer', minimum: 0, maximum: 1_000_000 },
         navigationId: { type: 'integer', minimum: 0 },
@@ -154,7 +155,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.SELECT,
     label: 'Select option',
     description:
-      'Select an enabled option in a single-select control using its value from the latest page snapshot.',
+      'Select an enabled option in a native single-select dropdown or listbox using its exact value from the latest snapshot. For custom ARIA menus, click the trigger, wait for its expanded state or visible option text, take a fresh snapshot, then click the observed option. This tool does not select custom menus or multiple options.',
     parameters: {
       type: 'object',
       properties: {
@@ -443,11 +444,13 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.WAIT,
     label: 'Wait for page',
     description:
-      'Wait up to 30 seconds for load completion, a navigation, visible text, or an exact URL in the active task tab.',
+      'Wait up to 30 seconds for load completion, a navigation, visible text, an exact URL, or a state of an observed control. For condition element, supply its ref and state. Hidden includes a removed original element; a replacement never inherits its reference. Element waits reject navigation to a new document. Wait for an actual expected outcome instead of repeating an action or guessing a sleep.',
     parameters: {
       type: 'object',
       properties: {
-        condition: { type: 'string', enum: ['load', 'navigation', 'text', 'url'] },
+        condition: { type: 'string', enum: ['load', 'navigation', 'text', 'url', 'element'] },
+        ref: { type: 'string', minLength: 1 },
+        state: { type: 'string', enum: ['visible', 'hidden', 'enabled', 'disabled', 'checked', 'unchecked', 'expanded', 'collapsed'] },
         timeoutMs: { type: 'integer', minimum: 1, maximum: MAX_WAIT_TIMEOUT_MS },
         text: { type: 'string', minLength: 1 },
         url: { type: 'string', minLength: 1 },

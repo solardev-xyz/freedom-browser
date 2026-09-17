@@ -53,11 +53,13 @@ has passed live qualification.
   manual acceptance checks. First-pass research and initial semantic/coverage
   slices are complete: HTML labels, shared observation/approval naming, control
   state, snapshot name search, document-bound live continuation, field/output
-  budgets and explicit page/container scrolling. **13 Electron cases / 283 focused
-  unit tests** pass, with lint clean. Scrolling retains task/origin/approval gates,
+  budgets, explicit page/container scrolling, literal text finding and control-state
+  waits. **17 Electron cases / 177 tests in the latest 5 focused suites** pass, with
+  lint clean (prior scrolling validation: 283 tests in 8 suites). Scrolling retains task/origin/approval gates,
   measures actual movement and prevents scroll-only references becoming clicks.
   No live model or cross-platform/release qualification was run for these slices.
-  Text finding, richer forms/waits, cross-origin frames and visual targeting remain pending.
+  Native dropdown labels/disabled groups and delayed custom-menu flows are covered.
+  Broader forms/waits, cross-origin frames and visual targeting remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -95,8 +97,10 @@ harness has been selected.
 3. **Actions and forms — scrolling implemented:** explicit reference-bound page/
    container scrolling, trusted input and measured movement, including same-origin
    frames and RTL. Boundary/blocked/stale cases retain policy and approval gates.
-   Remaining: text finding, representative dynamic forms and outcome-aware waits,
-   with preserved cancellation and uncertain-effect semantics.
+   Literal rendered-text search and original-reference state waits now support
+   delayed custom menus, native single-select listboxes and disabled option groups.
+   Remaining: broader form semantics, reverse-flow/complex scrolling geometry,
+   and further cancellation/uncertain-effect coverage.
 4. **Frames:** prototype owned descendant-frame observation and routing;
    establish frame-origin attribution and negative cases before cross-origin
    actions. Preserve existing same-origin behavior.
