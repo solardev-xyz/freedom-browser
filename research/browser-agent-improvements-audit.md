@@ -352,6 +352,54 @@ Commands: `npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/
 `npm run lint`. No dependency, IPC or module-boundary changes.
 
 
+### Frame routing feasibility probe — test-only, 2026-09-17
+
+`test-e2e/automation-frame-prototype.spec.js` uses disposable HTTPS fixtures in the
+installed Electron **43.0.0**. It does not add a product adapter, IPC, model tool or
+cross-origin permission. The current product snapshot correctly continues to mark
+the cross-origin frame inaccessible and does not return its controls.
+
+Observed routing facts:
+
+- A cross-site child runs in another renderer in this fixture. Root-session
+  `Page.getFrameTree` returns only the owner; `Target.setAutoAttach` supplies an
+  iframe session that must be passed to child-frame commands.
+- `WebFrameMain` exposes native ancestry, stable frame-tree-node identity and
+  browser-reported origin, but no `executeJavaScriptInIsolatedWorld` method in this
+  runtime. `frame.url` alone is not sufficient for ownership or origin attribution.
+- `Page.createIsolatedWorld` in the child session, with `grantUniveralAccess: false`,
+  plus `Runtime.evaluate` with its **unique context ID**, reads the actual DOM without
+  seeing a page-world sentinel or a page override of `Document.querySelector`.
+  The isolated child still cannot read its cross-origin parent document.
+- After same-origin child navigation, the session still works but the old unique
+  execution context rejects. After removal, the replacement context/session also
+  rejects and native ancestry no longer contains the frame.
+- Identical resource URLs can identify three distinct owned frames. One sandboxed
+  iframe reports origin `null`; a same-URL iframe in another tab fails membership
+  in the owner's native subtree. Never infer these facts from URL equality.
+
+Both probe cases passed (4.6s); lint and whitespace checks passed. The initial probe
+needed the normal window fixture to finish application startup before using the
+harness. Later assertions cover actual isolated reads and invalidation, not only
+metadata discovery. This is a one-runtime feasibility result, not a completed
+cross-origin integration or a security audit of all CDP routing behavior.
+
+Before production exposure, implement a shared, owned debugger-session lifecycle;
+map each observed frame-owner DOM reference to its specific child session/context
+without URL/name matching; bind frame and document identities across navigation;
+and apply explicit frame-origin policy before observation or action. Opaque origins,
+nested process boundaries, redirects, detach/reattach, competing debugger consumers
+and existing native upload behavior need negative tests. Cross-origin coordinates
+and approval attribution remain unqualified. The experimental probe sends no input
+to cross-origin content and is not imported by production code.
+
+References: [Electron WebFrameMain](https://www.electronjs.org/docs/latest/api/web-frame-main),
+[Electron Debugger](https://www.electronjs.org/docs/latest/api/debugger),
+[CDP Page](https://chromedevtools.github.io/devtools-protocol/tot/Page/),
+[CDP Runtime](https://chromedevtools.github.io/devtools-protocol/tot/Runtime/).
+Command: `npm run test:e2e -- test-e2e/automation-frame-prototype.spec.js`.
+
+
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119
 [h-root]: https://github.com/browser-use/browser-harness-js/tree/2d9a5ed37ed11f31b2622cd69c4b55f979cb905f

@@ -101,9 +101,11 @@ harness has been selected.
    delayed custom menus, native single-select listboxes and disabled option groups.
    Remaining: broader form semantics, reverse-flow/complex scrolling geometry,
    and further cancellation/uncertain-effect coverage.
-4. **Frames:** prototype owned descendant-frame observation and routing;
-   establish frame-origin attribution and negative cases before cross-origin
-   actions. Preserve existing same-origin behavior.
+4. **Frames — feasibility probe qualified:** two test-only Electron cases prove
+   child-session isolated reads, navigation/removal invalidation and native ownership
+   distinctions for duplicate URLs, unrelated tabs and opaque origins. Product
+   observation/actions remain unchanged. Next: stable owner-reference/session mapping,
+   shared debugger lifecycle and explicit frame-origin policy before exposure.
 5. **Visual fallback:** experimental targeting bound to capture/document/
    viewport identity, with scale, layout-change, overlay and approval tests.
    No arbitrary JavaScript/CDP tool is implied.
