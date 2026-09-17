@@ -1,6 +1,7 @@
 # Browser-agent improvements: Browser Use reference audit
 
 Date: 2026-09-17
+Last updated: 2026-09-18
 Status: first-pass source audit complete; semantic, coverage, scrolling and initial dynamic-form slices implemented and locally qualified
 Branch: `experiment/browser-agent-improvements`
 Freedom baseline: `3438d498a6a427795f81e518407711e7c161d9c0`
@@ -436,6 +437,44 @@ semantic references whenever they represent the intended target.
 
 Command: `npm run test:e2e -- test-e2e/automation-visual-prototype.spec.js`.
 Runtime: installed Electron 43.0.0 on macOS; only disposable synthetic fixtures.
+
+
+### Native input revalidation and one local-model smoke, 2026-09-17–18
+
+A focused follow-through on input freshness found that `type` and `press` could
+still dispatch native input when navigation began during asynchronous target
+preparation. Two regression tests reproduced success/input dispatch on the old
+code when rejection was required. Both now reject before dispatch. The adapter
+also checks, without restoring focus, that the original live control is still
+focused after preparation (and after webContents focus for key presses). A page
+that redirects focus in a microtask no longer receives text or Enter in the other
+control. The final check/input boundary is not atomic; this closes the reproduced
+race rather than claiming to eliminate all page-driven input races.
+
+**19 browser cases passed** (44.9s), including real desktop/hidden focus redirection
+with neither input values nor key receipts changed. **4 focused unit suites / 130
+tests passed** (1.4s); lint and whitespace checks passed. These checks retain
+existing trusted input behavior and scope/approval handling.
+
+The existing local Ollama endpoint offered `qwen3:8b` (8.2B, Q4_K_M, digest
+`500a1f067a9f782620b40bee6f7b0c89e17ae61f686b92c24933e4ca4b2b8b41`). An opt-in,
+disposable-profile test used the actual provider and normal composer to find an
+exact synthetic token beyond the first 12,000-character observation window.
+**One live-model case passed in 54.5s**, returning `AUTUMN-48-KITE` with successful
+snapshot activity. No paid provider, public browsing, copied profile or model
+installation was involved. This is one end-to-end acceptance case, not a benchmark
+or reliability rate. It does not qualify cross-origin or visual model behavior.
+
+The initial smoke incorrectly called `startAgent(null, ...)`, starting a chat-only
+task with no assigned tab. Qwen asked for a URL; that was a test setup error, not a
+browser failure. The corrected test starts through the composer and assigns the
+current fixture page. Its filler avoids repeating the target phrase, keeping this
+a retrieval test rather than a repeated-match stress test.
+
+Commands: `FREEDOM_OLLAMA_TEST_MODEL=qwen3:8b npm run test:e2e -- test-e2e/agent-ollama-live.spec.js --grep 'beyond the first observation'`;
+`npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`;
+`npm test -- src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/agent/pi-browser-tools.test.js`;
+`npm run lint`. The local-model spec remains opt-in by environment variable.
 
 
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d

@@ -650,7 +650,9 @@ for (const mode of ['desktop', 'hidden']) {
       result: { matched: true, state: 'expanded' },
     });
     const expanded = await snapshot(electronApp, tabId);
-    const blue = expanded.elements.find(element => element.role === 'option' && element.name === 'Blue');
+    const blue = expanded.elements.find(
+      (element) => element.role === 'option' && element.name === 'Blue'
+    );
     expect(blue).toBeDefined();
     expect(await execute(electronApp, 'browser_click', { tabId, ref: blue.ref })).toMatchObject({
       ok: true,
@@ -687,5 +689,41 @@ for (const mode of ['desktop', 'hidden']) {
       ok: false,
       error: { code: 'STALE_ELEMENT_REFERENCE' },
     });
+  });
+}
+
+for (const mode of ['desktop', 'hidden']) {
+  test(`${mode} refuses typing and key presses after focus is redirected during preparation`, async ({
+    electronApp,
+    window,
+    harness,
+  }) => {
+    const tabId = await openFixture(
+      { electronApp, window, harness },
+      mode,
+      `
+      <input aria-label="Target" onfocus="queueMicrotask(() => document.querySelector('#other').focus())">
+      <input id="other" aria-label="Other"><p id="status">No key delivered</p>
+      <script>document.addEventListener('keydown', () => document.querySelector('#status').textContent='Key delivered')</script>`
+    );
+    for (const [operation, params] of [
+      ['browser_type', { text: 'Only for Target' }],
+      ['browser_press', { key: 'Enter' }],
+    ]) {
+      const current = await snapshot(electronApp, tabId);
+      const result = await execute(electronApp, operation, {
+        tabId,
+        ref: named(current, 'Target').ref,
+        ...params,
+      });
+      expect(result).toMatchObject({ ok: false, error: { code: 'ELEMENT_NOT_INTERACTABLE' } });
+    }
+    const state = await electronApp.evaluate(async ({ webContents }, url) => {
+      const guest = webContents.getAllWebContents().find((entry) => entry.getURL() === url);
+      return guest.executeJavaScript(
+        '({ values: [...document.querySelectorAll("input")].map(input => input.value), status: document.querySelector("#status").textContent })'
+      );
+    }, FIXTURE_URL);
+    expect(state).toEqual({ values: ['', ''], status: 'No key delivered' });
   });
 }

@@ -151,6 +151,34 @@ describe('WebContentsPageAdapter', () => {
     expect(webContents.focus).not.toHaveBeenCalled();
   });
 
+  test.each(['type', 'press'])('%s rejects navigation during target preparation before native input', async (action) => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult())
+      .mockImplementationOnce(async () => {
+        webContents.emit('did-start-navigation', {}, 'https://other.test/', false, true);
+        return { ok: true };
+      });
+    const adapter = new WebContentsPageAdapter(webContents);
+    await adapter.snapshot();
+    await expect(action === 'type' ? adapter.type('ref_test_0', 'private fixture text') : adapter.press('ref_test_0', 'Enter'))
+      .rejects.toMatchObject({ code: ERROR_CODES.STALE_ELEMENT_REFERENCE });
+    expect(webContents.insertText).not.toHaveBeenCalled();
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+  });
+
+  test.each(['type', 'press'])('%s rejects redirected focus without sending input', async action => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult())
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, reason: 'not_interactable' });
+    const adapter = new WebContentsPageAdapter(webContents);
+    await adapter.snapshot();
+    await expect(action === 'type' ? adapter.type('ref_test_0', 'fixture text') : adapter.press('ref_test_0', 'Enter'))
+      .rejects.toMatchObject({ code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE });
+    expect(webContents.insertText).not.toHaveBeenCalled();
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+  });
+
   test('creates public references without leaking selectors', async () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult());
@@ -187,6 +215,7 @@ describe('WebContentsPageAdapter', () => {
       .mockResolvedValueOnce(snapshotResult())
       .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
       .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
+      .mockResolvedValueOnce({ ok: true })
       .mockResolvedValueOnce({ ok: true });
     const adapter = new WebContentsPageAdapter(webContents, {
       referenceIdFactory: () => 'ref_test',
@@ -380,6 +409,7 @@ describe('WebContentsPageAdapter', () => {
     webContents.executeJavaScriptInIsolatedWorld
       .mockResolvedValueOnce(snapshotResult())
       .mockResolvedValueOnce({ ok: true, trusted: false })
+      .mockResolvedValueOnce({ ok: true })
       .mockResolvedValueOnce({ ok: true });
     const adapter = new WebContentsPageAdapter(webContents, {
       referenceIdFactory: () => 'ref_test',

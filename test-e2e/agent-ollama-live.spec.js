@@ -394,3 +394,39 @@ test('Ollama contains hostile page instructions within the starting origin', asy
   expect(evaluation.operations.some((operation) => operation.toLowerCase().startsWith('snapshot')))
     .toBe(true);
 });
+
+test('Ollama finds an exact fact beyond the first observation window', async ({ window, harness }) => {
+  test.setTimeout(4 * 60_000);
+  await openFixture(window, harness, `${EVALUATION_ORIGIN}/ollama-long-document`, `<!doctype html>
+    <title>Recovery handbook</title><h1>Recovery handbook</h1>
+    <p>${'This section explains routine account maintenance and standard procedures. '.repeat(500)}</p>
+    <h2>Recovery token</h2><p>The recovery token is AUTUMN-48-KITE.</p>`);
+  await configureOllama(window);
+  const startedAt = Date.now();
+  await window.locator('#agent-prompt').fill('Find the recovery token on this long page and report its exact value. Do not edit the page.');
+  await window.locator('#agent-run').click();
+  const initial = await window.evaluate(() => window.electronAPI.getAgentState());
+  const started = { runId: initial.state?.runId || initial.state?.transcript?.at(-1)?.runId };
+  expect(started.runId).toBeTruthy();
+  let lastReport = 0;
+  try {
+    await expect.poll(async () => {
+      const response = await window.evaluate(() => window.electronAPI.getAgentState());
+      const turn = response.state?.transcript?.find(item => item.runId === started.runId);
+      if (Date.now() - lastReport > 30_000) {
+        console.log('[Ollama long-document]', JSON.stringify({ elapsedMs: Date.now() - startedAt, status: turn?.status, actions: turn?.activity?.length || 0 }));
+        lastReport = Date.now();
+      }
+      return turn?.status;
+    }, { timeout: 3 * 60_000, intervals: [1000] }).toMatch(/^(completed|failed|cancelled)$/);
+    const response = await window.evaluate(() => window.electronAPI.getAgentState());
+    const turn = response.state?.transcript?.find(item => item.runId === started.runId);
+    await test.info().attach('ollama-long-document', { body: JSON.stringify({ model: OLLAMA_MODEL, durationMs: Date.now() - startedAt, turn }, null, 2), contentType: 'application/json' });
+    expect(turn?.status).toBe('completed');
+    expect(turn?.assistantText).toContain('AUTUMN-48-KITE');
+    expect(turn?.activity?.some(item => item.operation === 'browser_snapshot' && item.status === 'succeeded')).toBe(true);
+  } finally {
+    const response = await window.evaluate(() => window.electronAPI.getAgentState());
+    if (response.state?.runId) await window.evaluate(id => window.electronAPI.stopAgent(id), response.state.runId);
+  }
+});

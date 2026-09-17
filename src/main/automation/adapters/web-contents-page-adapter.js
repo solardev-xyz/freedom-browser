@@ -648,6 +648,12 @@ function inspectReferencedElement(ref, action) {
     element.getAttribute('aria-disabled') === 'true';
   if (unavailable) return { ok: false, reason: 'not_interactable' };
 
+  if (action === 'verify_focus') {
+    let active = element.ownerDocument.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    return active === element ? { ok: true } : { ok: false, reason: 'not_interactable' };
+  }
+
   if (action === 'upload') {
     const tag = element.tagName.toLowerCase();
     const inputType = String(element.getAttribute('type') || '').toLowerCase();
@@ -1425,6 +1431,7 @@ class WebContentsPageAdapter extends EventEmitter {
         'Text insertion is unavailable for this page'
       );
     }
+    await this.#confirmFocusedReference(ref);
     await this.webContents.insertText(text);
     return { typed: true, ref, characters: text.length };
   }
@@ -1444,8 +1451,10 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#requireReference(ref);
     const prepared = await this.#execute(inspectReferencedElement, [ref, 'press'], true);
     this.#assertActionResult(prepared);
+    this.#requireReference(ref);
     this.#requireTrustedKeyInput();
     this.webContents.focus?.();
+    await this.#confirmFocusedReference(ref);
     this.#sendKey(key);
     return { pressed: true, ref, key };
   }
@@ -1613,6 +1622,17 @@ class WebContentsPageAdapter extends EventEmitter {
       );
     }
     this.#assertActionResult(result);
+  }
+
+  async #confirmFocusedReference(ref) {
+    this.#assertAvailable();
+    this.#requireReference(ref);
+    // Preparation and native dispatch cross renderer queues. Do not restore
+    // focus here: a redirected focus or replacement is evidence to reread.
+    const confirmed = await this.#execute(inspectReferencedElement, [ref, 'verify_focus'], false);
+    this.#assertActionResult(confirmed);
+    this.#assertAvailable();
+    this.#requireReference(ref);
   }
 
   #requireTrustedKeyInput() {

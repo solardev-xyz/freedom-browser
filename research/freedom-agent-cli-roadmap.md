@@ -54,10 +54,14 @@ has passed live qualification.
   slices are complete: HTML labels, shared observation/approval naming, control
   state, snapshot name search, document-bound live continuation, field/output
   budgets, explicit page/container scrolling, literal text finding and control-state
-  waits. **17 Electron cases / 177 tests in the latest 5 focused suites** pass, with
-  lint clean (prior scrolling validation: 283 tests in 8 suites). Scrolling retains task/origin/approval gates,
+  waits. Native typing/keys now revalidate document and focus before dispatch.
+  **19 Electron cases / 130 tests in the latest 4 focused suites** pass, with lint
+  clean (prior coverage: 177 tests in 5 suites; scrolling: 283 tests in 8 suites).
+  Scrolling retains task/origin/approval gates,
   measures actual movement and prevents scroll-only references becoming clicks.
-  No live model or cross-platform/release qualification was run for these slices.
+  One real local `qwen3:8b` smoke passed through the normal composer, retrieving an
+  exact token beyond the initial text window (54.5s). This is not a reliability
+  benchmark; cross-platform/release qualification remains outstanding.
   Native dropdown labels/disabled groups and delayed custom-menu flows are covered.
   Broader forms/waits, cross-origin frames and visual targeting remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
