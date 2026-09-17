@@ -106,9 +106,12 @@ harness has been selected.
    distinctions for duplicate URLs, unrelated tabs and opaque origins. Product
    observation/actions remain unchanged. Next: stable owner-reference/session mapping,
    shared debugger lifecycle and explicit frame-origin policy before exposure.
-5. **Visual fallback:** experimental targeting bound to capture/document/
-   viewport identity, with scale, layout-change, overlay and approval tests.
-   No arbitrary JavaScript/CDP tool is implied.
+5. **Visual fallback — test-only binding probe qualified:** 10 cases cover screenshot
+   pixel mapping at two zoom levels, actual trusted canvas clicks, single-use capture
+   binding, and rejection of viewport/document/layout/paint/overlay changes, including
+   transparent overlays. Production coordinates remain unavailable. Real approval
+   integration, provider image transforms, post-check races and platform qualification
+   remain open; no arbitrary JavaScript/CDP tool is implied.
 
 Follow-through opportunities are recorded rather than silently added to the
 first slice: no-progress detection, guarded batching, exact observation

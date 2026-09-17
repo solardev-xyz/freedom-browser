@@ -400,6 +400,44 @@ References: [Electron WebFrameMain](https://www.electronjs.org/docs/latest/api/w
 Command: `npm run test:e2e -- test-e2e/automation-frame-prototype.spec.js`.
 
 
+### Visual targeting feasibility probe — test-only, 2026-09-17
+
+`test-e2e/automation-visual-prototype.spec.js` adds no production coordinate tool.
+It calibrates known screenshot pixels against a synthetic red canvas, with actual
+PNG dimensions and a bitmap colour assertion, then verifies the received trusted
+click's CSS coordinates at 100% and 150% page zoom. This tests coordinate mapping;
+no vision model has selected a target and no resized-provider image is involved.
+
+The experimental binding records owner, document generation, viewport/zoom, full
+PNG digest, an opaque token and the actual hit DOM element in an isolated world.
+It checks the binding again after simulated changes during an approval pause and
+consumes it before dispatch. Full-image equality catches painted/layout changes;
+actual-element equality catches transparent overlays that can preserve every pixel.
+The token cannot be reused after an attempted click.
+
+**10 cases passed** (22.7s): two zoom mappings with trusted canvas receipts; stale
+rejection after scrolling, zoom, layout shift, opaque overlay, transparent overlay,
+canvas repaint, resize and navigation. Rejected cases dispatch no click. Initial
+positive tests read receipts too early; native input dispatch and JS evaluation
+queues are not a completion guarantee. A bounded wait for the actual fixture click
+receipt corrected the probe, and both positive cases then passed before the full
+matrix was run. Lint and diff checks passed on the new test code.
+
+This is not ready for product exposure. It simulates the approval pause; it does not
+exercise Freedom's real approval UI/classifier or add a capability to Pi. The final
+check and input dispatch are not atomic. Hover-triggered mutations, DOM mutation
+with unchanged pixels/hit identity, image resizing by providers, cross-frame geometry,
+closed shadow roots, navigation during dispatch and platform-specific scaling still
+need work. Full-image hashing is deliberately conservative and likely rejects
+otherwise valid targets on animated pages. Any integration must keep a bounded
+server-side capture store, expired/consumed-token rules, independently inspected
+consequences and the existing upload/download/wallet/permission boundaries. Prefer
+semantic references whenever they represent the intended target.
+
+Command: `npm run test:e2e -- test-e2e/automation-visual-prototype.spec.js`.
+Runtime: installed Electron 43.0.0 on macOS; only disposable synthetic fixtures.
+
+
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119
 [h-root]: https://github.com/browser-use/browser-harness-js/tree/2d9a5ed37ed11f31b2622cd69c4b55f979cb905f
