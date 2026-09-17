@@ -171,6 +171,39 @@ function validateOperationInput(operation, rawInput) {
     normalized.url = validateNavigationUrl(input.url);
   }
 
+  if (operation === OPERATIONS.SNAPSHOT) {
+    if (input.documentId !== undefined) {
+      normalized.documentId = requireString(input.documentId, 'documentId');
+      if (normalized.documentId.length > 80) throw invalidArgument('documentId is too long');
+    }
+    if (input.query !== undefined) {
+      normalized.query = requireString(input.query, 'query').trim();
+      if (normalized.query.length > 200)
+        throw invalidArgument('query cannot exceed 200 characters');
+    }
+    for (const field of ['elementOffset', 'textOffset', 'navigationId']) {
+      if (input[field] === undefined) continue;
+      if (
+        !Number.isSafeInteger(input[field]) ||
+        input[field] < 0 ||
+        (field !== 'navigationId' && input[field] > 1_000_000)
+      ) {
+        throw invalidArgument(`${field} must be a non-negative integer within its limit`, {
+          field,
+        });
+      }
+      normalized[field] = input[field];
+    }
+    if (
+      (normalized.elementOffset > 0 || normalized.textOffset > 0) &&
+      (normalized.navigationId === undefined || normalized.documentId === undefined)
+    ) {
+      throw invalidArgument(
+        'Snapshot continuation requires the previous documentId and navigationId'
+      );
+    }
+  }
+
   if (operation === OPERATIONS.CREATE_TAB) {
     normalized.url = validateNavigationUrl(input.url);
     if (input.openerTabId !== undefined) {

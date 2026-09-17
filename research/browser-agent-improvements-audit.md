@@ -1,7 +1,7 @@
 # Browser-agent improvements: Browser Use reference audit
 
 Date: 2026-09-17
-Status: first-pass source audit complete; semantic-correctness slice implemented and locally qualified
+Status: first-pass source audit complete; initial semantic and coverage slices implemented and locally qualified
 Branch: `experiment/browser-agent-improvements`
 Freedom baseline: `3438d498a6a427795f81e518407711e7c161d9c0`
 Related plan: [Freedom Agent roadmap](freedom-agent-cli-roadmap.md)
@@ -210,6 +210,43 @@ Electron qualification, not signed-release or cross-platform qualification.
 Commands: `npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`
 (the two label cases were rerun with `--grep 'associated labels'` after correcting
 the test's main-process module loader); `npm test -- src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/agent/pi-browser-tools.test.js`;
+`npm run lint`.
+
+### Slice 2 — Live snapshot search and continuation, 2026-09-17
+
+Extended the existing `browser_snapshot` contract with bounded `query` (control
+names only), `elementOffset`, `textOffset`, `documentId` and `navigationId` inputs. The default
+response remains 250 controls / 12,000 text characters. It now reports separate
+text/control truncation and continuation offsets. Continuation requires the
+previous document's opaque ID and navigation counter and rejects a different
+document before collection, including another tab with an identical counter.
+Each call is a fresh live observation: same-document content can
+move, so offsets are not immutable archives or guarantees of stable pagination.
+Query filtering helps reach a specific late control without replaying every page.
+
+Collection now uses an element TreeWalker rather than materializing every element
+twice with `querySelectorAll`. Our scan is capped at 20,000 elements, 64 frames and
+16 levels for frames/shadow roots; retained rendered text is capped at 1,000,000
+UTF-16 code units. `scanTruncated`/`textCollectionTruncated` explicitly distinguish
+those limits from another retrievable response window. Text windows avoid splitting
+surrogate pairs. Browser-owned `innerText` layout cost is **not** a hard-bounded
+operation; individual control-name/option-value budgets and total serialized-output
+limits remain follow-up work under OBS-02. Do not interpret these changes as a
+complete hostile-DOM resource bound or complete accessible-name implementation.
+
+Validation: all **9 Electron cases** in `automation-observation.spec.js` and
+`automation-kernel.spec.js` passed together (21.6 seconds). They include controls
+past index 250, text past character 12,000, case-insensitive search, an actual trusted
+click on the discovered late control, Unicode boundaries, stale continuation and
+honest limits on an oversized fixture. The two continuation cases passed again
+after adding the per-document identity guard (4.1 seconds).
+**5 focused unit suites / 155 tests** passed,
+including canonical validation and forwarding through the policy controller; lint
+and diff whitespace checks passed. No live model, installed release or other OS
+was exercised. Existing approval/custody/action semantics were retained.
+
+Commands: `npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`;
+`npm test -- src/main/automation/contract/operations.test.js src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/agent/pi-browser-tools.test.js`;
 `npm run lint`.
 
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d

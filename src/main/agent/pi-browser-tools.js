@@ -84,8 +84,18 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.SNAPSHOT,
     label: 'Snapshot page',
     description:
-      'Read a compact accessibility-oriented snapshot of the active task tab. Use returned element references for interaction.',
-    parameters: EMPTY_PARAMETERS,
+      'Read the active task tab with control names and available checked/selected/pressed/expanded states. Use references for interaction. Optional query filters control names (case-insensitive), not page text. For omitted controls/text, pass the returned nextElementOffset/nextTextOffset as elementOffset/textOffset with the documentId, navigationId and same query. Each call reads the live page: content can move between calls; restart or search if it changes. Respect scanTruncated and textCollectionTruncated; no match is not proof of absence when collection was limited.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', minLength: 1, maxLength: 200 },
+        elementOffset: { type: 'integer', minimum: 0, maximum: 1_000_000 },
+        textOffset: { type: 'integer', minimum: 0, maximum: 1_000_000 },
+        navigationId: { type: 'integer', minimum: 0 },
+        documentId: { type: 'string', minLength: 1, maxLength: 80 },
+      },
+      additionalProperties: false,
+    },
   },
   {
     operation: OPERATIONS.SCREENSHOT,

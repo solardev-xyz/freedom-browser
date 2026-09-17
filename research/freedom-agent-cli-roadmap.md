@@ -50,12 +50,12 @@ has passed live qualification.
   14 findings across observation, actions, recovery, agent loop, context,
   lifecycle, trust and evaluation. The upfront comparative benchmark is
   deferred by user decision; implementation retains focused regression and
-  manual acceptance checks. First-pass research and the first semantic slice
-  are complete: HTML labels, shared observation/approval naming and control
-  state pass four new real-Electron cases in visible/hidden pages, both existing
-  kernel E2E cases and 115 focused unit tests, with lint clean. No live model or
-  cross-platform/release qualification was run for this slice. Observation
-  coverage, richer actions, frames and visual targeting remain pending.
+  manual acceptance checks. First-pass research and initial semantic/coverage
+  slices are complete: HTML labels, shared observation/approval naming, control
+  state, snapshot name search and document-bound live continuation. **9 Electron
+  cases / 155 focused unit tests** pass, with lint clean. No live model or
+  cross-platform/release qualification was run for these slices. Individual
+  field/output budgets, richer actions, frames and visual targeting remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -84,9 +84,11 @@ harness has been selected.
    shared snapshot/approval naming, role-appropriate control state and real
    Chromium fixtures, including password exclusion and stale references.
    Browser-computed AX remains an option for more complex naming semantics.
-2. **Observation coverage:** separate text/control truncation and bounded
-   retrieval/search for omitted content; specify document identity, freshness,
-   field limits and traversal budgets before adding continuation.
+2. **Observation coverage — first slice implemented:** separate text/control
+   truncation, control-name search and document-bound live continuation, with
+   explicit scan/text collection limits. Offsets reread the live page, not an
+   immutable observation. Remaining: individual field/total-output budgets,
+   browser layout-cost investigation and richer structure/viewport semantics.
 3. **Actions and forms:** explicit page/container scrolling and text finding,
    representative dynamic forms, outcome-aware waits and preserved approval,
    cancellation and uncertain-effect semantics.

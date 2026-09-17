@@ -55,6 +55,72 @@ function named(observation, name) {
 }
 
 for (const mode of ['desktop', 'hidden']) {
+  test(`${mode} observations retrieve omitted text and controls with document-bound live windows`, async ({
+    electronApp,
+    window,
+    harness,
+  }) => {
+    const tabId = await openFixture(
+      { electronApp, window, harness },
+      mode,
+      `
+      <title>Long page</title><p>${'a'.repeat(11_999)}😀AFTER-TEXT-LIMIT</p>
+      ${Array.from({ length: 300 }, (_unused, index) => `<button>Control ${index}</button>`).join('')}
+      <button onclick="document.querySelector('#result').textContent='Late action trusted=' + event.isTrusted">Late target</button>
+      <p id="result">Waiting</p>
+    `
+    );
+    const first = await snapshot(electronApp, tabId);
+    expect(first).toMatchObject({
+      textTruncated: true,
+      elementsTruncated: true,
+      scanTruncated: false,
+      textCollectionTruncated: false,
+      nextElementOffset: 250,
+    });
+    expect(first.elements).toHaveLength(250);
+    expect(first.text).not.toContain('AFTER-TEXT-LIMIT');
+    expect(first.text).not.toMatch(/[\uD800-\uDBFF]$/);
+    const next = await execute(electronApp, 'browser_snapshot', {
+      tabId,
+      textOffset: first.nextTextOffset,
+      elementOffset: first.nextElementOffset,
+      navigationId: first.navigationId,
+      documentId: first.documentId,
+    });
+    expect(next.ok).toBe(true);
+    expect(next.result.text).toContain('😀AFTER-TEXT-LIMIT');
+    expect(next.result.elements).toHaveLength(51);
+    named(next.result, 'Late target');
+    expect(next.result.elementsTruncated).toBe(false);
+    expect(next.result).not.toHaveProperty('nextElementOffset');
+    const search = await execute(electronApp, 'browser_snapshot', { tabId, query: 'lAtE tArGeT' });
+    expect(search.ok).toBe(true);
+    expect(search.result.elements).toHaveLength(1);
+    await expect(
+      execute(electronApp, 'browser_click', {
+        tabId,
+        ref: named(search.result, 'Late target').ref,
+      })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      execute(electronApp, 'browser_wait', {
+        tabId,
+        condition: 'text',
+        text: 'Late action trusted=true',
+      })
+    ).resolves.toMatchObject({ ok: true });
+    await execute(electronApp, 'browser_navigate', { tabId, url: `${FIXTURE_URL}?changed` });
+    expect(
+      await execute(electronApp, 'browser_snapshot', {
+        tabId,
+        textOffset: first.nextTextOffset,
+        navigationId: first.navigationId,
+        documentId: first.documentId,
+      })
+    ).toMatchObject({ ok: false, error: { code: 'STALE_ELEMENT_REFERENCE' } });
+  });
+
   test(`${mode} observations use associated labels without exposing input values as names`, async ({
     electronApp,
     window,
@@ -242,3 +308,33 @@ for (const mode of ['desktop', 'hidden']) {
     expect(stale).toMatchObject({ ok: false, error: { code: 'STALE_ELEMENT_REFERENCE' } });
   });
 }
+
+test('observation collection reports scan and text limits instead of claiming complete absence', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  const tabId = await openFixture(
+    { electronApp, window, harness },
+    'hidden',
+    `
+    <p>${'x'.repeat(1_000_001)}</p>
+    ${'<div></div>'.repeat(20_001)}<button>Beyond scan budget</button>
+  `
+  );
+  const result = await execute(electronApp, 'browser_snapshot', {
+    tabId,
+    query: 'Beyond scan budget',
+  });
+  expect(result).toMatchObject({
+    ok: true,
+    result: {
+      elements: [],
+      scanTruncated: true,
+      textCollectionTruncated: true,
+      truncated: true,
+    },
+  });
+  expect(result.result.text.length).toBeLessThanOrEqual(12000);
+  expect(result.result).not.toHaveProperty('nextElementOffset');
+});

@@ -311,7 +311,13 @@ class AutomationController {
       case OPERATIONS.NAVIGATE:
         return entry.adapter.navigate(input.url);
       case OPERATIONS.SNAPSHOT:
-        return entry.adapter.snapshot();
+        return entry.adapter.snapshot({
+          query: input.query,
+          elementOffset: input.elementOffset,
+          textOffset: input.textOffset,
+          navigationId: input.navigationId,
+          documentId: input.documentId,
+        });
       case OPERATIONS.CLICK:
         return entry.adapter.click(input.ref);
       case OPERATIONS.TYPE:

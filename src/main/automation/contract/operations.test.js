@@ -3,6 +3,50 @@
 const { OPERATIONS, validateOperationInput } = require('./operations');
 
 describe('automation operation contract', () => {
+  test('validates bounded live snapshot search and continuation', () => {
+    expect(
+      validateOperationInput(OPERATIONS.SNAPSHOT, {
+        tabId: 'tab_1',
+        query: ' Target ',
+        elementOffset: 250,
+        textOffset: 12000,
+        navigationId: 3,
+        documentId: 'document_test',
+      })
+    ).toEqual({
+      tabId: 'tab_1',
+      query: 'Target',
+      elementOffset: 250,
+      textOffset: 12000,
+      navigationId: 3,
+      documentId: 'document_test',
+    });
+    expect(validateOperationInput(OPERATIONS.SNAPSHOT, { tabId: 'tab_1' })).toEqual({
+      tabId: 'tab_1',
+    });
+    for (const input of [
+      { query: '' },
+      { query: 'x'.repeat(201) },
+      { query: {} },
+      { elementOffset: 250 },
+      { elementOffset: 250, navigationId: 3 },
+      { elementOffset: 250, documentId: 'document_test' },
+      { documentId: '' },
+      { documentId: 'x'.repeat(81) },
+      { textOffset: 12000 },
+      { elementOffset: -1, navigationId: 3 },
+      { textOffset: 1.5, navigationId: 3 },
+      { textOffset: '12000', navigationId: 3 },
+      { textOffset: 1_000_001, navigationId: 3 },
+      { navigationId: -1 },
+      { navigationId: Number.MAX_SAFE_INTEGER + 1 },
+    ]) {
+      expect(() =>
+        validateOperationInput(OPERATIONS.SNAPSHOT, { tabId: 'tab_1', ...input })
+      ).toThrow();
+    }
+  });
+
   test('normalizes supported operation inputs', () => {
     expect(
       validateOperationInput(OPERATIONS.TYPE, {

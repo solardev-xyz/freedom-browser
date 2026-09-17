@@ -53,6 +53,25 @@ function createController(authorize = jest.fn(async () => ({ allowed: true }))) 
 }
 
 describe('AutomationController', () => {
+  test('passes validated snapshot windows through the existing policy boundary', async () => {
+    const { controller, authorize } = createController();
+    const adapter = new FakePageAdapter();
+    const tabId = controller.registerPage(adapter);
+    const options = { query: 'Save', textOffset: 12000, elementOffset: 250, navigationId: 3, documentId: 'document_test' };
+    expect(await controller.execute(OPERATIONS.SNAPSHOT, { tabId, ...options })).toMatchObject({
+      ok: true,
+    });
+    expect(adapter.snapshot).toHaveBeenCalledWith(options);
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: OPERATIONS.SNAPSHOT })
+    );
+    adapter.snapshot.mockClear();
+    expect(
+      await controller.execute(OPERATIONS.SNAPSHOT, { tabId, textOffset: 12000 })
+    ).toMatchObject({ ok: false, error: { code: ERROR_CODES.INVALID_ARGUMENT } });
+    expect(adapter.snapshot).not.toHaveBeenCalled();
+  });
+
   test('requires a policy boundary', () => {
     expect(() => new AutomationController()).toThrow('requires a policyController');
   });

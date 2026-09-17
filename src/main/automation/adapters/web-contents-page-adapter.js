@@ -73,7 +73,8 @@ function collectPageSnapshot(
   maxElements,
   maxRetainedReferences,
   maxSelectOptions,
-  snapshotToken
+  snapshotToken,
+  { query = '', elementOffset = 0, textOffset = 0 } = {}
 ) {
   const stateKey = '__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__';
   const state = globalThis[stateKey] || { refs: new Map() };
@@ -193,6 +194,11 @@ function collectPageSnapshot(
   const frames = [];
   const pageText = [];
   let candidateCount = 0;
+  let visitedNodes = 0;
+  let scanTruncated = false;
+  let textCollectionTruncated = false;
+  let remainingText = 1_000_000;
+  const search = normalize(query).toLowerCase();
 
   const composedActiveElement = (frameDocument) => {
     let active = frameDocument.activeElement;
@@ -201,6 +207,10 @@ function collectPageSnapshot(
   };
 
   const visitDocument = (frameWindow, parentFrameId, depth, frameElement) => {
+    if (depth > 16 || frames.length >= 64 || visitedNodes >= 20_000) {
+      scanTruncated = true;
+      return;
+    }
     const frameId = depth === 0 ? 'frame_main' : `frame_${snapshotToken}_${String(frames.length)}`;
     let frameDocument;
     try {
@@ -226,20 +236,41 @@ function collectPageSnapshot(
       url: frameWindow.location.href,
       accessible: true,
     });
-    const text = normalize(frameDocument.body?.innerText || '');
+    // innerText retains the browser's rendered-text semantics. Its layout cost
+    // is browser-owned; these limits bound retained text and our own traversal,
+    // not a hard deadline for Chromium's layout work.
+    const rawText = frameDocument.body?.innerText || '';
+    if (rawText.length > remainingText) textCollectionTruncated = true;
+    const text = normalize(rawText.slice(0, remainingText));
+    remainingText = Math.max(0, remainingText - rawText.length);
     if (text) pageText.push(text);
 
-    const visitRoot = (root) => {
-      const descendants = root.querySelectorAll('*');
-      for (const element of descendants) {
+    const childFrames = [];
+    const visitRoot = (root, shadowDepth = 0) => {
+      if (shadowDepth > 16) {
+        scanTruncated = true;
+        return;
+      }
+      const shadowRoots = [];
+      const walker = frameDocument.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      for (let element = walker.nextNode(); element; element = walker.nextNode()) {
+        if (visitedNodes >= 20_000) {
+          scanTruncated = true;
+          break;
+        }
+        visitedNodes += 1;
+        if (element.shadowRoot) shadowRoots.push(element.shadowRoot);
+        if (element.matches('iframe,frame')) childFrames.push(element);
         const semantic = element.matches(semanticCandidateSelector);
         const inferred =
           !semantic && (isExplicitClickTarget(element) || isPointerBoundary(element));
         if (!semantic && !inferred) continue;
-        candidateCount += 1;
-        if (elements.length >= maxElements || !visible(element)) continue;
+        if (!visible(element)) continue;
         const name = readElementName(element);
         if (inferred && !name) continue;
+        if (search && !name.toLowerCase().includes(search)) continue;
+        candidateCount += 1;
+        if (candidateCount <= elementOffset || elements.length >= maxElements) continue;
         const role = element.getAttribute('role') || (inferred ? 'button' : implicitRole(element));
         const ref = `${snapshotToken}_${String(elements.length)}`;
         const tag = element.tagName.toLowerCase();
@@ -291,14 +322,18 @@ function collectPageSnapshot(
           }),
         });
       }
-      for (const host of root.querySelectorAll('*')) {
-        if (host.shadowRoot) visitRoot(host.shadowRoot);
+      for (const shadowRoot of shadowRoots) {
+        if (visitedNodes >= 20_000) {
+          scanTruncated = true;
+          break;
+        }
+        visitRoot(shadowRoot, shadowDepth + 1);
       }
     };
 
     visitRoot(frameDocument);
 
-    for (const childFrame of frameDocument.querySelectorAll('iframe,frame')) {
+    for (const childFrame of childFrames) {
       const childWindow = childFrame.contentWindow;
       if (childWindow) visitDocument(childWindow, frameId, depth + 1, childFrame);
     }
@@ -309,13 +344,41 @@ function collectPageSnapshot(
     state.refs.delete(state.refs.keys().next().value);
   }
 
+  const fullText = pageText.join(' ');
+  // Offsets count UTF-16 code units, but emitted pages must not split a pair.
+  let textStart = Math.min(textOffset, fullText.length);
+  if (
+    textStart > 0 &&
+    /[\uDC00-\uDFFF]/.test(fullText[textStart] || '') &&
+    /[\uD800-\uDBFF]/.test(fullText[textStart - 1])
+  )
+    textStart -= 1;
+  let textEnd = Math.min(textStart + maxTextLength, fullText.length);
+  if (
+    textEnd < fullText.length &&
+    /[\uDC00-\uDFFF]/.test(fullText[textEnd]) &&
+    /[\uD800-\uDBFF]/.test(fullText[textEnd - 1])
+  )
+    textEnd -= 1;
+  const moreElements = candidateCount > elementOffset + elements.length;
+  const moreText = textEnd < fullText.length;
+
   return {
     url: window.location.href,
     title: document.title,
-    text: normalize(pageText.join(' ')).slice(0, maxTextLength),
+    text: fullText.slice(textStart, textEnd),
     frames,
     elements,
-    truncated: candidateCount > elements.length && elements.length >= maxElements,
+    elementOffset,
+    textOffset: textStart,
+    ...(query && { query }),
+    ...(moreElements && { nextElementOffset: elementOffset + elements.length }),
+    ...(moreText && { nextTextOffset: textEnd }),
+    elementsTruncated: moreElements || scanTruncated,
+    textTruncated: moreText || textCollectionTruncated || scanTruncated,
+    scanTruncated,
+    textCollectionTruncated,
+    truncated: moreElements || moreText || scanTruncated || textCollectionTruncated,
   };
 }
 
@@ -647,6 +710,7 @@ class WebContentsPageAdapter extends EventEmitter {
     this.webContents = webContents;
     this.kind = options.kind || 'unknown';
     this.navigationId = 0;
+    this.documentId = `document_${crypto.randomUUID()}`;
     this.navigationInProgress = false;
     this.destroyed = false;
     this.referenceIdFactory = options.referenceIdFactory || defaultReferenceIdFactory;
@@ -659,6 +723,7 @@ class WebContentsPageAdapter extends EventEmitter {
         if (isInPlace === true) return;
         if (isMainFrame !== false) this.navigationInProgress = true;
         this.navigationId += 1;
+        this.documentId = `document_${crypto.randomUUID()}`;
         this.#pruneReferences();
         if (isMainFrame !== false) this.emit('navigation-started', this.getState());
       },
@@ -668,6 +733,7 @@ class WebContentsPageAdapter extends EventEmitter {
       },
       'did-navigate-in-page': (_event, _url, isMainFrame) => {
         this.navigationId += 1;
+        this.documentId = `document_${crypto.randomUUID()}`;
         this.#pruneReferences();
         if (isMainFrame !== false) this.emit('navigation-committed', this.getState());
       },
@@ -719,9 +785,16 @@ class WebContentsPageAdapter extends EventEmitter {
     return { url: this.webContents.getURL?.() || url };
   }
 
-  async snapshot() {
+  async snapshot(options = {}) {
     this.#assertAvailable();
     const navigationId = this.navigationId;
+    const documentId = this.documentId;
+    if (
+      (options.navigationId !== undefined && options.navigationId !== navigationId) ||
+      (options.documentId !== undefined && options.documentId !== documentId)
+    ) {
+      throw this.#staleReferenceError();
+    }
     const snapshotToken = this.referenceIdFactory();
     const snapshot = await this.#execute(
       collectPageSnapshot,
@@ -731,6 +804,7 @@ class WebContentsPageAdapter extends EventEmitter {
         MAX_RETAINED_REFERENCES,
         MAX_SELECT_OPTIONS,
         snapshotToken,
+        options,
       ],
       false,
       [readElementName]
@@ -748,7 +822,7 @@ class WebContentsPageAdapter extends EventEmitter {
       return publicNode;
     });
     this.#pruneReferences();
-    return { ...snapshot, elements, navigationId };
+    return { ...snapshot, elements, navigationId, documentId };
   }
 
   async click(ref) {

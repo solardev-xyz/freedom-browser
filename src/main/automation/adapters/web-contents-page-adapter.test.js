@@ -83,6 +83,34 @@ function snapshotResult() {
 }
 
 describe('WebContentsPageAdapter', () => {
+  test('does not reuse a continuation across tabs with identical navigation counters', async () => {
+    const firstPage = new FakeWebContents();
+    firstPage.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult());
+    const first = new WebContentsPageAdapter(firstPage);
+    const secondPage = new FakeWebContents();
+    const second = new WebContentsPageAdapter(secondPage);
+    const observed = await first.snapshot();
+    expect(first.getState().navigationId).toBe(second.getState().navigationId);
+    await expect(
+      second.snapshot({
+        textOffset: 12000,
+        navigationId: observed.navigationId,
+        documentId: observed.documentId,
+      })
+    ).rejects.toMatchObject({ code: ERROR_CODES.STALE_ELEMENT_REFERENCE });
+    expect(secondPage.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
+  });
+
+  test('rejects snapshot continuation from a different document before collecting the page', async () => {
+    const webContents = new FakeWebContents();
+    const adapter = new WebContentsPageAdapter(webContents);
+    webContents.emit('did-start-navigation', {}, 'https://example.test/next', false, true);
+    await expect(adapter.snapshot({ textOffset: 12000, navigationId: 0 })).rejects.toMatchObject({
+      code: ERROR_CODES.STALE_ELEMENT_REFERENCE,
+    });
+    expect(webContents.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
+  });
+
   test('creates public references without leaking selectors', async () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult());
