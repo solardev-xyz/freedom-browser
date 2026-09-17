@@ -31,6 +31,43 @@ function buildInvocation(fn, args, dependencies = []) {
   return declarations ? `(() => {${declarations}return ${invocation};})()` : invocation;
 }
 
+// Shared by observations and approval inspection. This is a bounded-purpose
+// DOM name fallback, not a complete implementation of the accessible-name spec.
+function readElementName(element) {
+  const normalize = (value) =>
+    String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const labelledBy = element.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const root = element.getRootNode();
+    const name = normalize(
+      labelledBy
+        .split(/\s+/)
+        .map((id) => root.getElementById?.(id)?.textContent || '')
+        .join(' ')
+    );
+    if (name) return name;
+  }
+  const ariaLabel = normalize(element.getAttribute('aria-label'));
+  if (ariaLabel) return ariaLabel;
+  // The browser resolves explicit, wrapping and multiple labels in tree order,
+  // within the control's own document/shadow root.
+  const associatedLabel = normalize(
+    Array.from(element.labels || [], (label) => label.textContent || '').join(' ')
+  );
+  if (associatedLabel) return associatedLabel;
+  return normalize(
+    element.getAttribute('alt') ||
+      element.getAttribute('title') ||
+      element.getAttribute('placeholder') ||
+      element.innerText ||
+      (element.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(element.type)
+        ? element.value
+        : '')
+  );
+}
+
 function collectPageSnapshot(
   maxTextLength,
   maxElements,
@@ -61,29 +98,68 @@ function collectPageSnapshot(
     }
     return element.getClientRects().length > 0;
   };
-  const accessibleName = (element) => {
-    const labelledBy = element.getAttribute('aria-labelledby');
-    if (labelledBy) {
-      const root = element.getRootNode();
-      const label = labelledBy
-        .split(/\s+/)
-        .map(
-          (id) =>
-            root.getElementById?.(id)?.textContent ||
-            element.ownerDocument.getElementById(id)?.textContent ||
-            ''
-        )
-        .join(' ');
-      if (normalize(label)) return normalize(label);
+  const checkedRoles = new Set([
+    'checkbox',
+    'radio',
+    'switch',
+    'menuitemcheckbox',
+    'menuitemradio',
+    'option',
+    'treeitem',
+  ]);
+  const selectedRoles = new Set([
+    'option',
+    'tab',
+    'row',
+    'gridcell',
+    'columnheader',
+    'rowheader',
+    'treeitem',
+  ]);
+  const expandedRoles = new Set([
+    'application',
+    'button',
+    'checkbox',
+    'combobox',
+    'gridcell',
+    'link',
+    'listbox',
+    'menuitem',
+    'row',
+    'rowheader',
+    'columnheader',
+    'tab',
+    'treeitem',
+    'menuitemcheckbox',
+    'menuitemradio',
+    'switch',
+  ]);
+  const controlState = (element, role) => {
+    const result = {};
+    const ariaState = (attribute, mixed = false) => {
+      const value = element.getAttribute(attribute)?.trim().toLowerCase();
+      if (value === 'true' || value === 'false') return value === 'true';
+      if (mixed && value === 'mixed') return 'mixed';
+      return undefined;
+    };
+    const add = (key, value) => {
+      if (value !== undefined) result[key] = value;
+    };
+    if (element.tagName === 'INPUT' && ['checkbox', 'radio'].includes(element.type)) {
+      // Native state wins over conflicting ARIA markup.
+      result.checked =
+        element.type === 'checkbox' && element.indeterminate ? 'mixed' : element.checked;
+    } else if (checkedRoles.has(role)) {
+      const checked = ariaState('aria-checked', true);
+      add(
+        'checked',
+        checked === 'mixed' && ['radio', 'menuitemradio', 'switch'].includes(role) ? false : checked
+      );
     }
-    return normalize(
-      element.getAttribute('aria-label') ||
-        element.getAttribute('alt') ||
-        element.getAttribute('title') ||
-        element.getAttribute('placeholder') ||
-        element.innerText ||
-        (element.tagName === 'INPUT' && element.type !== 'password' ? element.value : '')
-    );
+    if (role === 'button') add('pressed', ariaState('aria-pressed', true));
+    if (selectedRoles.has(role)) add('selected', ariaState('aria-selected'));
+    if (expandedRoles.has(role)) add('expanded', ariaState('aria-expanded'));
+    return result;
   };
   const implicitRole = (element) => {
     const tag = element.tagName.toLowerCase();
@@ -162,7 +238,7 @@ function collectPageSnapshot(
         if (!semantic && !inferred) continue;
         candidateCount += 1;
         if (elements.length >= maxElements || !visible(element)) continue;
-        const name = accessibleName(element);
+        const name = readElementName(element);
         if (inferred && !name) continue;
         const role = element.getAttribute('role') || (inferred ? 'button' : implicitRole(element));
         const ref = `${snapshotToken}_${String(elements.length)}`;
@@ -189,6 +265,7 @@ function collectPageSnapshot(
           editable:
             (!uploadsFile && element.matches('input:not([readonly]),textarea:not([readonly])')) ||
             element.isContentEditable,
+          ...controlState(element, role),
           ...(uploadsFile
             ? { effect: 'file_upload' }
             : downloadsFile
@@ -350,26 +427,7 @@ async function describeReferencedElement(ref, action, key) {
     String(value || '')
       .replace(/\s+/g, ' ')
       .trim();
-  const labelledBy = element.getAttribute('aria-labelledby');
-  const root = element.getRootNode();
-  const labelledByText = labelledBy
-    ? labelledBy
-        .split(/\s+/)
-        .map(
-          (id) =>
-            root.getElementById?.(id)?.textContent ||
-            element.ownerDocument.getElementById(id)?.textContent ||
-            ''
-        )
-        .join(' ')
-    : '';
-  const label = normalize(
-    labelledByText ||
-      element.getAttribute('aria-label') ||
-      element.getAttribute('title') ||
-      element.innerText ||
-      element.value
-  );
+  const label = readElementName(element);
   const tag = element.tagName.toLowerCase();
   const inputType = normalize(element.getAttribute('type')).toLowerCase();
   const uploadsFile = action === 'upload' && tag === 'input' && inputType === 'file';
@@ -674,7 +732,8 @@ class WebContentsPageAdapter extends EventEmitter {
         MAX_SELECT_OPTIONS,
         snapshotToken,
       ],
-      false
+      false,
+      [readElementName]
     );
     if (!snapshot || !Array.isArray(snapshot.elements)) {
       throw new AutomationError(
@@ -715,7 +774,9 @@ class WebContentsPageAdapter extends EventEmitter {
   async download(ref) {
     this.#assertAvailable();
     this.#requireReference(ref);
-    const described = await this.#execute(describeReferencedElement, [ref, 'download', ''], false);
+    const described = await this.#execute(describeReferencedElement, [ref, 'download', ''], false, [
+      readElementName,
+    ]);
     this.#assertActionResult(described);
     if (described.effect !== 'file_download') {
       throw new AutomationError(
@@ -868,7 +929,8 @@ class WebContentsPageAdapter extends EventEmitter {
     const result = await this.#execute(
       describeReferencedElement,
       [ref, describeAction, key],
-      false
+      false,
+      [readElementName]
     );
     this.#assertActionResult(result);
     return {

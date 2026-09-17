@@ -1,7 +1,7 @@
 # Browser-agent improvements: Browser Use reference audit
 
 Date: 2026-09-17
-Status: first-pass source audit complete; implementation and live qualification pending
+Status: first-pass source audit complete; semantic-correctness slice implemented and locally qualified
 Branch: `experiment/browser-agent-improvements`
 Freedom baseline: `3438d498a6a427795f81e518407711e7c161d9c0`
 Related plan: [Freedom Agent roadmap](freedom-agent-cli-roadmap.md)
@@ -181,6 +181,36 @@ For live manual acceptance, use a small set of tasks: labelled form, long articl
 ## Validation of this audit
 
 Source review only. Upstream tests were read, not run. No benchmark, live-provider/browser task, dependency change or source port was performed. Checked documentation links against the pinned local trees and Freedom files, and checked diff whitespace. The roadmap's historical qualification records remain historical; this document makes no claim that the current checkout's full test suite is green.
+
+## Implementation journal
+
+### Slice 1 — Labels and control state, 2026-09-17
+
+Implemented OBS-01 in the existing page adapter. Native `labels` resolves explicit,
+wrapping and multiple labels; ARIA naming retains precedence and shadow-root ID
+lookup stays scoped. Snapshot and approval inspection share the naming helper.
+Only button-like input values serve as name fallbacks; password, file and ordinary
+text-input values are not used as names. Native checkbox/radio state and explicit
+role-appropriate ARIA checked/pressed/selected/expanded states are now observed.
+Missing/invalid optional state remains absent rather than inventing a value.
+
+This remains a DOM naming fallback, not full accessible-name conformance. Browser
+AX integration and advanced custom-element semantics remain investigation items.
+No new dependency, permission, IPC channel or general code-execution tool was added.
+
+Validation: the four new real-Electron observation cases failed on the original
+implementation and passed after the changes and a test-loader correction. Visible
+and hidden pages cover naming precedence, same-origin frames/open shadow roots,
+password exclusion, approval labels, native/ARIA state before and after trusted
+input, and stale-reference rejection. Both existing automation-kernel E2E cases
+also passed (including HTTPS/Swarm/IPFS). Four focused unit suites passed 115 tests;
+lint and diff whitespace checks passed. No live model was used; this is source-tree
+Electron qualification, not signed-release or cross-platform qualification.
+
+Commands: `npm run test:e2e -- test-e2e/automation-observation.spec.js test-e2e/automation-kernel.spec.js`
+(the two label cases were rerun with `--grep 'associated labels'` after correcting
+the test's main-process module loader); `npm test -- src/main/automation/adapters/web-contents-page-adapter.test.js src/main/automation/automation-controller.test.js src/main/automation/origin-scoped-controller.test.js src/main/agent/pi-browser-tools.test.js`;
+`npm run lint`.
 
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119

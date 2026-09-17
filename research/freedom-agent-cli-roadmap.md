@@ -50,8 +50,12 @@ has passed live qualification.
   14 findings across observation, actions, recovery, agent loop, context,
   lifecycle, trust and evaluation. The upfront comparative benchmark is
   deferred by user decision; implementation retains focused regression and
-  manual acceptance checks. First-pass research is complete; behavior changes
-  and live qualification are pending.
+  manual acceptance checks. First-pass research and the first semantic slice
+  are complete: HTML labels, shared observation/approval naming and control
+  state pass four new real-Electron cases in visible/hidden pages, both existing
+  kernel E2E cases and 115 focused unit tests, with lint clean. No live model or
+  cross-platform/release qualification was run for this slice. Observation
+  coverage, richer actions, frames and visual targeting remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -76,9 +80,10 @@ finding identifies Freedom's current behavior, a reuse decision, expected
 benefit/effort and an acceptance case. No upstream dependency or replacement
 harness has been selected.
 
-1. **Semantic correctness:** associated HTML labels, role-appropriate control
-   state and real Chromium fixtures, including password exclusion and stale
-   references. Evaluate browser-computed AX where it earns its complexity.
+1. **Semantic correctness — first slice implemented:** associated HTML labels,
+   shared snapshot/approval naming, role-appropriate control state and real
+   Chromium fixtures, including password exclusion and stale references.
+   Browser-computed AX remains an option for more complex naming semantics.
 2. **Observation coverage:** separate text/control truncation and bounded
    retrieval/search for omitted content; specify document identity, freshness,
    field limits and traversal budgets before adding continuation.
