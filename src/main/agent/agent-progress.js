@@ -65,6 +65,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Reading the current page',
     completed: 'Read the current page',
   },
+  [OPERATIONS.TARGET_POINT]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Identifying a visual target',
+    completed: 'Identified a visual target',
+  },
   [OPERATIONS.SCREENSHOT]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Looking at the current page',

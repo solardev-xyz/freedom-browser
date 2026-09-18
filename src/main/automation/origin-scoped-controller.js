@@ -17,6 +17,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.SNAPSHOT,
   OPERATIONS.LIST_FRAMES,
   OPERATIONS.READ_FRAME,
+  OPERATIONS.TARGET_POINT,
   OPERATIONS.SCREENSHOT,
   OPERATIONS.NAVIGATE,
   OPERATIONS.CLICK,
@@ -88,6 +89,7 @@ function errorEnvelope(state, code, message, options = {}) {
 
 function actionDescriptor(element) {
   return Object.freeze({
+    ...(element?.visual === true && { visual: true }),
     effect: ['form_submission', 'file_download', 'file_upload'].includes(element?.effect)
       ? element.effect
       : '',
@@ -143,7 +145,7 @@ function interactionMayProceed(classification) {
 
 function sameActionDescriptor(left, right) {
   return (
-    left.frameRef === right.frameRef && left.origin === right.origin &&
+    left.visual === right.visual && left.frameRef === right.frameRef && left.origin === right.origin &&
     left.effect === right.effect &&
     left.label === right.label &&
     left.navigationTarget === right.navigationTarget &&
@@ -679,13 +681,17 @@ class OriginScopedAutomationController {
       this.approvalMode === AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS &&
       operation !== OPERATIONS.DOWNLOAD &&
       operation !== OPERATIONS.UPLOAD &&
-      !input.ref?.startsWith('frame_element_')
+      !input.ref?.startsWith('frame_element_') && !input.ref?.startsWith('visual_')
     ) {
       return null;
     }
     const inspected = await this.#inspectAction(operation, input);
     if (!inspected?.ok) return inspected;
     const element = actionDescriptor(inspected.result);
+    if (element.visual) {
+      execution.expectedVisualAction = element;
+      if (this.approvalMode === AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS) return null;
+    }
     if (element.frameRef) {
       if (!this.#acceptRequestedOrigin(element.origin)) return this.#originDenied(state);
       execution.expectedFrameAction = element;
@@ -720,7 +726,9 @@ class OriginScopedAutomationController {
       operation !== OPERATIONS.DOWNLOAD &&
       operation !== OPERATIONS.UPLOAD
     ) {
-      if (element.effect === 'form_submission') {
+      if (element.visual) {
+        interaction = uncertainInteractionClassification('visual_effect_unknown');
+      } else if (element.effect === 'form_submission') {
         interaction = Object.freeze({
           kind: 'consequential',
           confidence: 1,

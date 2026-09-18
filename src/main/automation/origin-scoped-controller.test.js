@@ -1520,3 +1520,20 @@ test('frame replacement during approval cannot reuse authorization even with ide
   expect(result.ok).toBe(false);
   expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.CLICK)).toBe(false);
 });
+
+test.each(['every_interaction', 'sensitive_actions', 'allow_website_interactions'])(
+  'visual references follow %s approval without classifier granting unknown effects', async approvalMode => {
+    const controller = createController();
+    const descriptor = { visual: true, label: 'Visual point (20%, 30%); effect unknown', effect: '', navigationTarget: '', formPayloadFingerprint: '' };
+    controller.inspectAction.mockResolvedValue({ ok: true, result: descriptor });
+    const requestApproval = jest.fn(async () => 'approved');
+    const classifyInteraction = jest.fn(async () => ({ kind: 'ordinary', confidence: 1 }));
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', approvalMode, requestApproval, classifyInteraction });
+    expect((await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'visual_owned' })).ok).toBe(true);
+    const execution = controller.execute.mock.calls.find(([operation]) => operation === OPERATIONS.CLICK)[2];
+    expect(execution.expectedVisualAction).toEqual(descriptor);
+    expect(classifyInteraction).not.toHaveBeenCalled();
+    if (approvalMode === 'allow_website_interactions') expect(requestApproval).not.toHaveBeenCalled();
+    else expect(requestApproval).toHaveBeenCalledTimes(1);
+  }
+);

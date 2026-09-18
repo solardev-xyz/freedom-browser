@@ -10,6 +10,7 @@ const OPERATIONS = Object.freeze({
   SNAPSHOT: 'browser_snapshot',
   LIST_FRAMES: 'browser_list_frames',
   READ_FRAME: 'browser_read_frame',
+  TARGET_POINT: 'browser_target_point',
   CLICK: 'browser_click',
   TYPE: 'browser_type',
   SELECT: 'browser_select',

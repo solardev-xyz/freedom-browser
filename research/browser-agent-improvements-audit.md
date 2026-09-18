@@ -653,6 +653,43 @@ Electron cases pass (28 in the final interaction/kernel/observation run, two
 frame-observation cases in the preceding run).
 
 
+## 2026-09-18 — Production visual targeting
+
+The vision-enabled tool catalog now includes `browser_target_point`. It accepts
+only a recent screenshot capture handle and normalized full-image coordinates;
+it observes/prepares a single-use reference for the existing click tool. The
+adapter stores at most four screenshot bindings and eight targets, for at most
+five minutes. Bindings retain hashes/metadata, not image pixels. An unstable
+capture remains usable as an ordinary screenshot without coordinate authority.
+
+Validation binds the owner/document, viewport/scroll, zoom, full PNG digest and
+DOM mutation revision, then binds the exact isolated-world hit node. It repeats
+these checks during inspection, after approval and before dispatch. Navigation,
+paint, layout, overlay (including transparent), resize, scroll, expiration and
+stop invalidate targets. Raw controller clicks cannot skip host authorization.
+Semantic/file/form controls, embedded frames and shadow targets require their
+normal reference paths. Unknown visual effects require explicit approval in
+sensitive/every-action modes; the user's allow-interactions mode still applies.
+No action classifier can label a visual target safe based on a guessed label.
+
+Twelve native Electron cases pass, including trusted canvas click receipts at
+100%/150% zoom and transparent overlay insertion before target preparation.
+Focused unit suites pass, including normalized-coordinate validation, foreign
+owner rejection, consumption, expiry, mutation and cancellation. Model-facing
+images retain capture metadata without putting pixels in receipts/history; both
+visual tools are omitted for nonvision models. Main-process ownership remains
+unchanged; the renderer receives no new privileged capability or IPC channel.
+
+Limits: full-image hashes deliberately reject animated/caret-changing pages.
+The browser can still change between final checks and input; this is not atomic.
+Arbitrary same-pixel script/style effects cannot be proven from a screenshot.
+The application passes the complete PNG and normalized coordinates avoid simple
+resize scaling errors, but provider/model cropping or visual accuracy has not
+been live-qualified. Native fixtures establish mechanics, not model reliability.
+Only click is enabled; no coordinate typing, drag or file operations. No new
+dependency, user-profile access or paid model run was used.
+
+
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119
 [h-root]: https://github.com/browser-use/browser-harness-js/tree/2d9a5ed37ed11f31b2622cd69c4b55f979cb905f

@@ -127,10 +127,18 @@ const TOOL_SPECS = Object.freeze([
     },
   },
   {
+    operation: OPERATIONS.TARGET_POINT,
+    cancellable: true,
+    label: 'Identify visual target',
+    requiresVision: true,
+    description: 'Fallback for canvas or controls absent from semantic observations. Use a fresh browser_screenshot captureRef and normalized x/y coordinates (0 to less than 1) relative to the entire displayed image, never a crop. This only prepares a single-use reference; use browser_click on it afterward. Changed screenshot, viewport, zoom or hit target invalidates it. Semantic controls and embedded frames require their normal references. The effect of a visual click is unknown and may require approval.',
+    parameters: { type: 'object', properties: { captureRef: { type: 'string' }, x: { type: 'number', minimum: 0, exclusiveMaximum: 1 }, y: { type: 'number', minimum: 0, exclusiveMaximum: 1 } }, required: ['captureRef', 'x', 'y'], additionalProperties: false },
+  },
+  {
     operation: OPERATIONS.SCREENSHOT,
     label: 'Look at page',
     description:
-      'Look at the visible viewport of the active task tab when visual layout or non-semantic content matters. This is observation only. Use a fresh page snapshot and its element references for every interaction; never derive click coordinates from the image.',
+      'Look at the visible viewport of the active task tab when visual layout or non-semantic content matters. This is observation only. Use a fresh page snapshot for semantic interaction. If it cannot describe a canvas or custom control, use browser_target_point with the returned captureRef and normalized coordinates from this complete image.',
     parameters: EMPTY_PARAMETERS,
     requiresVision: true,
   },
@@ -575,7 +583,8 @@ function imageContentFromEnvelope(envelope) {
 
   const safeEnvelope = {
     ...envelope,
-    result: { mediaType, bytes: image.byteLength },
+    result: { mediaType, bytes: image.byteLength,
+      ...(envelope.result.captureRef && { captureRef: envelope.result.captureRef, width: envelope.result.width, height: envelope.result.height }) },
   };
   return {
     content: [
@@ -584,7 +593,7 @@ function imageContentFromEnvelope(envelope) {
         text: JSON.stringify({
           ...safeEnvelope,
           instruction:
-            'This is the visible viewport only. Take a fresh semantic snapshot before interacting with any element.',
+            'This is the full visible viewport. Prefer a fresh semantic snapshot and its references. For canvas or controls missing from semantic observations, use browser_target_point with captureRef and normalized full-image coordinates; do not use coordinates from a crop.',
         }),
       },
       { type: 'image', data: base64, mimeType: mediaType },
@@ -654,7 +663,7 @@ async function executeBrowserTool(controller, tabId, spec, params, signal, execu
         : { ...params, tabId };
   let envelope;
   try {
-    envelope = spec.cancellable
+    envelope = (spec.cancellable || params.ref?.startsWith('visual_') || params.ref?.startsWith('frame_element_'))
       ? await executeCancellable(controller, spec.operation, input, signal, execution)
       : spec.operation === OPERATIONS.DOWNLOAD || spec.operation === OPERATIONS.UPLOAD
         ? await controller.execute(spec.operation, input, execution)

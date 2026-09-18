@@ -493,3 +493,10 @@ test('element waits accept named states without selectors or arbitrary predicate
     expect(() => validateOperationInput(OPERATIONS.WAIT, { tabId: 'tab_1', condition: 'element', ...input })).toThrow();
   }
 });
+
+test('visual targeting requires a capture handle and bounded full-image coordinates, without caller authorization', () => {
+  const input = { tabId: 'tab_1', captureRef: 'capture_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', x: 0.25, y: 0.75 };
+  expect(validateOperationInput(OPERATIONS.TARGET_POINT, { ...input, expectedVisualAction: { visual: true }, script: 'click()' })).toEqual(input);
+  for (const override of [{ x: -0.1 }, { x: 1 }, { y: NaN }, { y: Infinity }, { x: '0.5' }, { captureRef: 'guessed' }])
+    expect(() => validateOperationInput(OPERATIONS.TARGET_POINT, { ...input, ...override })).toThrow();
+});

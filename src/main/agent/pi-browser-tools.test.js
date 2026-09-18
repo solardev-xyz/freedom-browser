@@ -149,6 +149,9 @@ describe('Pi browser tool adapter', () => {
       parameters: { type: 'object', properties: {}, additionalProperties: false },
     });
     expect(screenshot.description).toContain('Use a fresh page snapshot');
+    expect(tools.find(tool => tool.name === OPERATIONS.TARGET_POINT)).toBeDefined();
+    const textTools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', visionEnabled: false });
+    expect(textTools.some(tool => tool.name === OPERATIONS.TARGET_POINT)).toBe(false);
   });
 
   test('returns a bounded page image to Pi without retaining pixels in receipts or details', async () => {
@@ -975,6 +978,16 @@ describe('Pi browser tool adapter', () => {
     const execution = tools.find((tool) => tool.name === operation).execute('frame_call', { frameRef: 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, abort.signal);
     abort.abort();
     await expect(execution).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
+    expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.STOP_LOADING, { tabId: 'tab_assigned' });
+  });
+
+  test.each(['frame_element_bound', 'visual_bound'])('cancels pending approval/input for %s', async ref => {
+    const controller = { execute: jest.fn(name => name === OPERATIONS.CLICK ? new Promise(() => {}) : Promise.resolve(successEnvelope({ stopped: true }))) };
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned' });
+    const abort = new AbortController();
+    const pending = tools.find(tool => tool.name === OPERATIONS.CLICK).execute('call', { ref }, abort.signal);
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
     expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.STOP_LOADING, { tabId: 'tab_assigned' });
   });
 

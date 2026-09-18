@@ -292,3 +292,12 @@ test('cancellation between frame preparation and native dispatch prevents input'
   expect(api.sendCommand.mock.calls.some(([method]) => method.startsWith('Input.'))).toBe(false);
   expect(api.isAttached()).toBe(false);
 });
+
+test('stop invalidates frame action references while approval is pending', async () => {
+  const { observer } = fixture({ inspect: () => 'fixed inspection' });
+  const read = await observer.read(await childRef(observer), {}, () => true);
+  observer.cancel();
+  const task = jest.fn();
+  await expect(observer.withReference(read.elements[0].ref, () => true, task)).rejects.toMatchObject({ code: ERROR_CODES.STALE_ELEMENT_REFERENCE });
+  expect(task).not.toHaveBeenCalled();
+});

@@ -70,7 +70,8 @@ has passed live qualification.
   five-approval case and 174 tests in 5 focused suites pass; hints cannot retry or
   grant authority. Cross-frame click/type/press/scroll now retain document, origin,
   approval, focus and ancestor hit checks; desktop/hidden native fixtures pass.
-  Broader forms/waits and production visual targeting remain pending.
+  A conservative production visual fallback now binds single-use click targets to
+  screenshots; broader forms/waits and long-task evidence recovery remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -125,12 +126,16 @@ harness has been selected.
    Cancellation and raw-controller authorization bypass have regression coverage.
    Unsupported transforms, cross-origin select/file transfer/element waits and
    debugger sharing remain deferred. No debugger is borrowed or displaced.
-5. **Visual fallback — test-only binding probe qualified:** 10 cases cover screenshot
-   pixel mapping at two zoom levels, actual trusted canvas clicks, single-use capture
-   binding, and rejection of viewport/document/layout/paint/overlay changes, including
-   transparent overlays. Production coordinates remain unavailable. Real approval
-   integration, provider image transforms, post-check races and platform qualification
-   remain open; no arbitrary JavaScript/CDP tool is implied.
+5. **Visual fallback — conservative production integration implemented:** a vision-only
+   `browser_target_point` prepares one click reference from a fresh screenshot and
+   normalized full-image coordinates. Bindings include owner/document, viewport,
+   zoom, PNG digest and observed DOM revision; target identity is rechecked across
+   approval. Unknown effects require approval in sensitive mode; allow-interactions
+   mode retains its explicit grant. Semantic controls, embedded frames and shadow
+   targets use normal references. Twelve native cases cover trusted canvas input,
+   scale, changed paint/geometry/transparent overlays, decline, stop and raw bypass.
+   Animated pages may reject conservatively; provider crop behavior, final dispatch
+   races and cross-platform qualification remain limits. No arbitrary JS/CDP tool.
 
 6. **Repetition recovery — advisory slice implemented:** bounded session-local
    fingerprints detect repeated unchanged observations, retryable attempts and

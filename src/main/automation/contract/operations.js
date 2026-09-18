@@ -26,6 +26,7 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.SNAPSHOT,
   OPERATIONS.LIST_FRAMES,
   OPERATIONS.READ_FRAME,
+  OPERATIONS.TARGET_POINT,
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
@@ -172,6 +173,17 @@ function validateOperationInput(operation, rawInput) {
 
   if (operation === OPERATIONS.NAVIGATE) {
     normalized.url = validateNavigationUrl(input.url);
+  }
+
+  if (operation === OPERATIONS.TARGET_POINT) {
+    normalized.captureRef = requireString(input.captureRef, 'captureRef');
+    if (!/^capture_[a-f0-9-]{36}$/.test(normalized.captureRef))
+      throw invalidArgument('captureRef must come from browser_screenshot');
+    for (const field of ['x', 'y']) {
+      if (!Number.isFinite(input[field]) || input[field] < 0 || input[field] >= 1)
+        throw invalidArgument(`${field} must be a normalized full-image coordinate from 0 up to 1`);
+      normalized[field] = input[field];
+    }
   }
 
   if (operation === OPERATIONS.READ_FRAME) {

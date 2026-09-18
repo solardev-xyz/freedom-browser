@@ -244,6 +244,7 @@ class OwnedFrameObserver {
 
   cancel() {
     this.generation += 1;
+    this.references.clear();
     this.cancelPending?.();
   }
 

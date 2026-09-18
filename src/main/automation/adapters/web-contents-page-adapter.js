@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { AutomationError, ERROR_CODES } = require('../contract/errors');
 const { OwnedFrameObserver } = require('./owned-frame-observer');
+const { VisualTargets } = require('./visual-targets');
 
 const AUTOMATION_WORLD_ID = 1001;
 const MAX_PAGE_TEXT_LENGTH = 12_000;
@@ -1081,6 +1082,27 @@ class WebContentsPageAdapter extends EventEmitter {
         viewport: () => buildInvocation(frameViewport, []),
       }
     );
+    this.visualTargets = new VisualTargets({
+      capture: async () => (await this.webContents.capturePage()).toPNG(),
+      evaluate: (fn, args) => this.#execute(fn, args, false),
+      identity: () => `${this.documentId}:${this.navigationId}`,
+      zoom: () => this.webContents.getZoomFactor?.() || 1,
+      dispatch: async (point) => {
+        this.#assertAvailable();
+        this.webContents.sendInputEvent({
+          type: 'mouseDown',
+          ...point,
+          button: 'left',
+          clickCount: 1,
+        });
+        this.webContents.sendInputEvent({
+          type: 'mouseUp',
+          ...point,
+          button: 'left',
+          clickCount: 1,
+        });
+      },
+    });
     this.listeners = {
       'did-start-navigation': (_event, _url, isInPlace, isMainFrame) => {
         if (isInPlace === true) return;
@@ -1774,11 +1796,27 @@ class WebContentsPageAdapter extends EventEmitter {
         'Screenshots are unavailable for this page'
       );
     }
-    const image = await this.webContents.capturePage();
-    return {
-      mediaType: 'image/png',
-      base64: image.toPNG().toString('base64'),
-    };
+    return this.visualTargets.screenshot();
+  }
+
+  async targetPoint(input) {
+    this.#assertAvailable();
+    return this.visualTargets.target(input);
+  }
+
+  async inspectVisualAction(ref, operation) {
+    if (operation !== 'browser_click')
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Visual references support one click only'
+      );
+    return this.visualTargets.inspect(ref);
+  }
+
+  async clickVisual(ref, authorization) {
+    this.#assertAvailable();
+    this.webContents.focus?.();
+    return this.visualTargets.click(ref, authorization);
   }
 
   async wait(options) {
@@ -1822,6 +1860,7 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#assertAvailable();
     const cancelledWaits = this.#cancelWaits();
     this.frameObserver.cancel();
+    this.visualTargets.clear();
     if (this.stopLoadingHandler) {
       await this.stopLoadingHandler();
     } else {
@@ -1832,6 +1871,7 @@ class WebContentsPageAdapter extends EventEmitter {
 
   dispose() {
     this.frameObserver.dispose();
+    this.visualTargets.clear();
     if (typeof this.webContents.off === 'function') {
       for (const [event, listener] of Object.entries(this.listeners)) {
         this.webContents.off(event, listener);

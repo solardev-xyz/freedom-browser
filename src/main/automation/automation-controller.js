@@ -251,6 +251,11 @@ class AutomationController {
           'Automation action inspection is unavailable for this page'
         );
       }
+      if (input.ref?.startsWith('visual_'))
+        return this.#successEnvelope(
+          entry,
+          await entry.adapter.inspectVisualAction(input.ref, operation)
+        );
       if (entry.adapter.isFrameReference?.(input.ref)) {
         const result = await entry.adapter.inspectFrameAction(
           input.ref,
@@ -272,6 +277,14 @@ class AutomationController {
   }
 
   async #dispatch(operation, input, entry, execution) {
+    if (input.ref?.startsWith('visual_')) {
+      if (operation !== OPERATIONS.CLICK)
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'Visual references support one click only'
+        );
+      return entry.adapter.clickVisual(input.ref, execution.expectedVisualAction);
+    }
     if (
       entry?.adapter.isFrameReference?.(input.ref) &&
       [
@@ -336,6 +349,8 @@ class AutomationController {
       }
       case OPERATIONS.NAVIGATE:
         return entry.adapter.navigate(input.url);
+      case OPERATIONS.TARGET_POINT:
+        return entry.adapter.targetPoint(input);
       case OPERATIONS.LIST_FRAMES:
         return entry.adapter.listFrames();
       case OPERATIONS.READ_FRAME:

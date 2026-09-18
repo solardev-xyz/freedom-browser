@@ -11,6 +11,7 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.SNAPSHOT]: 'observe',
   [OPERATIONS.LIST_FRAMES]: 'observe',
   [OPERATIONS.READ_FRAME]: 'observe',
+  [OPERATIONS.TARGET_POINT]: 'observe',
   [OPERATIONS.SCREENSHOT]: 'observe',
   [OPERATIONS.WAIT]: 'observe',
   [OPERATIONS.NAVIGATE]: 'navigate',
