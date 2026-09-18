@@ -24,13 +24,14 @@ function staleFrame() {
   );
 }
 
-// Owns a short-lived debugger connection to exactly one WebContents. It does
-// not borrow an existing debugger or accept script bodies from operation input.
+// Uses a short-lived connection or this adapter's native-dialog connection.
+// Never borrows an external debugger or accepts caller-supplied scripts.
 class OwnedFrameObserver {
-  constructor(webContents, snapshotSource, actionSources = {}) {
+  constructor(webContents, snapshotSource, actionSources = {}, debuggerOwner = null) {
     if (typeof snapshotSource !== 'function')
       throw new TypeError('A fixed snapshot source is required');
     this.webContents = webContents;
+    this.debuggerOwner = debuggerOwner;
     this.snapshotSource = snapshotSource;
     this.actionSources = actionSources;
     this.references = new Map();
@@ -107,7 +108,7 @@ class OwnedFrameObserver {
         })),
         frame: this.#publicFrame(frame, frameRef),
         readOnly: !actionable,
-        ...(actionable && { supportedActions: ['click', 'type', 'press', 'scroll'] }),
+        ...(actionable && { supportedActions: ['click', 'type', 'press', 'scroll', 'select'] }),
       };
     });
   }
@@ -339,7 +340,8 @@ class OwnedFrameObserver {
         if (this.disposed || this.webContents.isDestroyed?.()) throw unavailable();
         if (generation !== this.generation) throw cancelled();
         const api = this.webContents.debugger;
-        if (!api || api.isAttached())
+        const borrowed = this.debuggerOwner?.ownsConnection() === true;
+        if (!api || (api.isAttached() && !borrowed))
           throw unavailable(
             'Another debugger is using this page; frame operations cannot take it over'
           );
@@ -364,7 +366,7 @@ class OwnedFrameObserver {
           if (!attached) return;
           attached = false;
           try {
-            if (api.isAttached()) api.detach();
+            if (!borrowed && api.isAttached()) api.detach();
           } catch {
             /* The page may already have closed. */
           }
@@ -404,7 +406,7 @@ class OwnedFrameObserver {
         };
         let timer;
         try {
-          api.attach('1.3');
+          if (!borrowed) api.attach('1.3');
           attached = true;
           this.cancelPending = () => {
             expired = true;
@@ -418,12 +420,20 @@ class OwnedFrameObserver {
             rejectInterrupted(unavailable('Frame observation timed out'));
             detach();
           }, CONNECTION_TIMEOUT_MS);
-          return await Promise.race([task(connection), interruption]);
+          const run = async () => {
+            if (borrowed) await connection.send('Runtime.disable');
+            return task(connection);
+          };
+          return await Promise.race([run(), interruption]);
         } catch (error) {
           if (error instanceof AutomationError) throw error;
           throw unavailable(expired ? 'Frame observation timed out' : undefined);
         } finally {
           clearTimeout(timer);
+          if (borrowed && this.debuggerOwner.ownsConnection()) {
+            await api.sendCommand('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
+            await api.sendCommand('Runtime.disable').catch(() => {});
+          }
           api.removeListener('message', onMessage);
           api.removeListener('detach', onDetach);
           detach();

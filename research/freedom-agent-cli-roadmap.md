@@ -76,9 +76,12 @@ has passed live qualification.
   HTML/ARIA dialog context are implemented. Final combined validation passed
   **372 tests in 13 focused suites, 44 native Electron cases and two local Qwen
   tasks**. The user reported all six supplied manual smoke checks successful on
-  2026-09-18, including canvas interaction and cancellation. Native JavaScript
-  dialogs, broader form semantics and broader provider/vision and platform/release
-  qualification remain pending.
+  2026-09-18, including canvas interaction and cancellation. Follow-through now
+  adds native alert/confirm handling, explicit leave-page navigation decisions,
+  native multi-selects, cross-origin selection and form validation state. Ordinary
+  page `window.prompt()` is disabled by Electron; embedded/ambiguous-source
+  dialogs and broader provider/vision and platform/release qualification remain
+  pending. See the implementation/validation record below.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -118,7 +121,10 @@ harness has been selected.
    frames and RTL. Boundary/blocked/stale cases retain policy and approval gates.
    Literal rendered-text search and original-reference state waits now support
    delayed custom menus, native single-select listboxes and disabled option groups.
-   Remaining: broader form semantics, reverse-flow/complex scrolling geometry,
+   Native multi-selects now accept a complete bounded set of observed values;
+   disabled or ambiguous choices reject before any selection mutation. Snapshots
+   expose required/read-only and native validity flags. Choice changes invalidate
+   approval. Remaining: richer custom-widget/date controls, reverse-flow/complex scrolling geometry,
    and further cancellation/uncertain-effect coverage.
 4. **Frames — observation and core interaction implemented:** `browser_list_frames` and
    `browser_read_frame` use owner/document-bound handles, recursively owned child
@@ -131,8 +137,11 @@ harness has been selected.
    recheck approval descriptors, form payloads, focus and enclosing-frame hit tests;
    Chromium frame-session input produces trusted events at 100%/150% zoom.
    Cancellation and raw-controller authorization bypass have regression coverage.
-   Unsupported transforms, cross-origin select/file transfer/element waits and
-   debugger sharing remain deferred. No debugger is borrowed or displaced.
+   Native selection now works in cross-origin frames with the same origin,
+   descriptor and ancestor checks. Unsupported transforms, cross-origin file
+   transfer/element waits remain deferred. Frame/file operations can share this
+   adapter's owned native-dialog connection; no external debugger is borrowed or
+   displaced.
 5. **Visual fallback — conservative production integration implemented:** a vision-only
    `browser_target_point` prepares one click reference from a fresh screenshot and
    normalized full-image coordinates. Bindings include owner/document, viewport,
@@ -162,12 +171,18 @@ harness has been selected.
    retrieval. Native fixture verifies old text after a page change and rejection
    from a new tool session. Snapshots identify up to 16 visible HTML/ARIA dialogs
    and controls inside them; modal background blocking and ordinary approval are
-   tested. JavaScript alert/confirm/prompt and beforeunload handling remain open:
-   they require a document-bound dialog lifecycle and dedicated approval, not an
-   implicit accept/dismiss or a synthetic DOM override.
+   tested. Native alert/confirm observation now starts before task interactions
+   when a debugger is available, with explicit inspection/response tools. Every
+   response requires approval and a current dialog/document binding. Stop
+   invalidates approval without accepting/dismissing the website dialog. For
+   Electron-cancelled host navigation, leave explicitly retries the exact URL
+   with a single document-bound leave grant; stay keeps the cancelled navigation.
+   Electron disables ordinary `window.prompt()`; no page-world override was added.
+   Embedded/ambiguous-source dialogs and replaying page-triggered navigation or
+   window closure remain outside this initial native-dialog path.
 
 Follow-through opportunities include guarded batching, durable observation retrieval
-across rebuilt sessions, native JavaScript dialogs and lifecycle diagnostics. Deepen the relevant
+across rebuilt sessions, embedded-dialog support and lifecycle diagnostics. Deepen the relevant
 source/test/history review when selecting each for implementation. Retain
 Freedom's canonical controller and Pi's reasoning responsibilities.
 
@@ -180,7 +195,7 @@ canvas interaction, HTML modal cancellation, long-document retrieval, approval
 decline/Stop and historical recall after replacing the live document. The manual
 model/provider and individual receipts were not recorded. These are bounded
 samples; broader provider/vision and platform/release qualification remain open,
-as does native JavaScript dialog support. User acceptance completed the gate for
+and native-dialog/form follow-through is recorded separately below. User acceptance completed the gate for
 the local feature-branch integration.
 
 Use local synthetic browser fixtures plus a small manual task set to validate
@@ -189,6 +204,40 @@ regression verification. Upstream tests inspected during research have not
 been run. External filesystem grants, subagent capability and broader provider
 qualification remain on the roadmap; this browser improvement track is the
 current product priority.
+
+## 2026-09-18 — Native dialogs and broader forms
+
+Implemented on `feature/freedom-automation-kernel` after the accepted browser
+improvement integration. The main-process page adapter owns the native dialog
+connection and document bindings; the existing origin-scoped controller owns
+approval. Pi receives narrow tools, not scripts or raw debugger access. No IPC,
+package-boundary or dependency changes.
+
+- Alerts and confirmations: automatic monitoring before task interactions,
+  `browser_get_dialog` and `browser_handle_dialog`, approval even in the broad
+  website-interaction mode, stale/foreign/opaque-source rejection and Stop
+  invalidation. Renderer calls interrupted by a dialog return an explicit blocker
+  without replaying the action. Normal provider/wallet approval barriers remain.
+- Leave-page confirmation: Electron cancels beforeunload navigation immediately.
+  A captured **host-requested** navigation can be explicitly approved for one
+  retry to its exact URL, or kept cancelled. This is reported as a retry, not a
+  response to a still-open native dialog. Page-triggered navigations/window close
+  are not replayed. Destination and resulting origin checks remain enforced.
+- Forms: single or complete multiple selections, including cross-origin frames;
+  bounded distinct values, disabled-option/duplicate-value rejection before
+  mutation, changed-choice approval invalidation and explicit synthetic-event
+  receipts. Snapshots report required/read-only and validity failure categories.
+- Runtime limit: Electron's ordinary page `window.prompt()` throws an unsupported
+  error. The protocol response path is unit-tested for a native prompt event,
+  but this is not a claim that ordinary page prompts work. No prompt replacement
+  or runtime patch is installed. Embedded/ambiguous-source dialogs remain manual.
+
+Validation passed: **297 tests / 11 unit suites**, **56 combined native Electron
+cases**, a final **16-case affected-path rerun**, lint and whitespace checks.
+Details are recorded in the
+[audit follow-through](browser-agent-improvements-audit.md#native-dialog-and-form-follow-through-2026-09-18).
+User smoke acceptance of this follow-through remains separate from the earlier
+accepted six-check workflow. Cross-platform and packaged-release checks remain open.
 
 ## Executive decision
 

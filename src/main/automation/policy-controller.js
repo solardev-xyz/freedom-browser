@@ -18,6 +18,8 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.CLICK]: 'interact',
   [OPERATIONS.TYPE]: 'interact',
   [OPERATIONS.SELECT]: 'interact',
+  [OPERATIONS.GET_DIALOG]: 'observe',
+  [OPERATIONS.HANDLE_DIALOG]: 'interact',
   [OPERATIONS.PRESS]: 'interact',
   [OPERATIONS.SCROLL]: 'interact',
   [OPERATIONS.UPLOAD]: 'transfer',

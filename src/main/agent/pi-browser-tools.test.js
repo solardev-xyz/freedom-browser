@@ -52,6 +52,8 @@ describe('Pi browser tool adapter', () => {
     const tools = await createFreedomBrowserTools({ sdk, controller, tabId: 'tab_assigned' });
 
     expect(tools.map((tool) => tool.name)).toEqual([
+      OPERATIONS.GET_DIALOG,
+      OPERATIONS.HANDLE_DIALOG,
       OPERATIONS.LIST_TABS,
       OPERATIONS.CREATE_TAB,
       OPERATIONS.GET_TAB,

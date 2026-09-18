@@ -782,6 +782,63 @@ Native JavaScript dialog support and broader provider/vision and platform/releas
 qualification remain follow-through work.
 
 
+### Native dialog and form follow-through, 2026-09-18
+
+Implemented in the existing main-process automation boundary: the page adapter
+owns a native dialog observer, while the origin-scoped controller retains all
+ownership, URL scope and approval decisions. No new IPC or dependency. Task
+interactions arm observation automatically; explicit `browser_get_dialog` also
+supports timed-dialog observation. An unavailable/external debugger is never
+borrowed or displaced. This adapter's frame and file operations can reuse its
+own connection; stop without a pending dialog and page disposal release it.
+
+`browser_handle_dialog` requires the exact observed handle and approval in every
+mode, including dismissal. Source binding requires a unique top-level document,
+its effective nonopaque origin, process/frame token and navigation generation.
+Stop rotates the pending handle without accepting or dismissing the website's
+confirmation. Closed/replaced/navigated dialogs invalidate authorization. A
+renderer operation interrupted by a dialog returns a non-retryable blocker;
+no result is fabricated and the action is not repeated. Response callbacks retain
+provider/wallet approval barriers. Dialog strings are bounded untrusted data.
+
+Electron immediately cancels beforeunload navigation. For a host-requested URL
+only, the observer records the cancelled attempt. Staying clears that record;
+leaving requires approval for one retry to the exact URL with a document-bound
+`will-prevent-unload` grant. Receipts explicitly report `navigationRetried`.
+Neither page-triggered navigation nor window closure is replayed. Destination
+and post-retry origin checks remain in force.
+
+Ordinary page prompts cannot be qualified as working: [Electron v43 overrides
+`window.prompt()` to throw](https://github.com/electron/electron/blob/v43.0.0/lib/renderer/window-setup.ts#L13-L17).
+The fixture verifies this runtime behavior and the observation result reports
+`pagePromptSupported: false`. Unit tests cover explicit/empty prompt text for a
+native protocol event, not ordinary page prompt support. No page-world replacement
+was introduced. Embedded or ambiguous-source dialogs remain unsupported.
+
+Native selection now accepts one exact value or a complete set of up to 100
+unique values (2,000 characters each), including clearing a multiple selection.
+Controls are bounded to 1,000 options; approval fingerprints additionally bound
+choice metadata. Invalid, disabled or ambiguous duplicate-value choices reject
+before any mutation. Native option setters preserve form integration and dispatch
+input/change with explicit `trusted: false` receipts. Cross-origin selections
+retain document/origin/ancestor checks and choice fingerprints across approval.
+Snapshots add required/read-only status and native validity failure categories,
+without exposing input values or invoking `checkValidity`/submission handlers.
+
+Validation: **297 tests in 11 focused unit suites**, **56 combined Electron
+cases** (2.3 minutes), and a final rerun of the **16 affected native dialog/form/
+frame cases** (38 seconds) pass. `npm run lint` and `git diff --check` pass.
+The native cases cover desktop and hidden pages, automatic observation, both
+confirmation outcomes, stale/raw/declined/Stop rejection, leave/stay navigation,
+frame/file debugger coexistence, external-debugger refusal, atomic multi-selects,
+read-only/validity observation and choices changed during approval. Unit tests
+also cover opaque/ambiguous source rejection, bounded inputs, prompt protocol
+responses, the external approval barrier and post-retry origin checking.
+
+These are local macOS Electron 43.0.0 development-runtime fixtures; no live
+provider, model download, external website, packaged build or cross-platform
+qualification is claimed for this follow-through.
+
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119
 [h-root]: https://github.com/browser-use/browser-harness-js/tree/2d9a5ed37ed11f31b2622cd69c4b55f979cb905f

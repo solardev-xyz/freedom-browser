@@ -14,6 +14,8 @@ const OPERATIONS = Object.freeze({
   CLICK: 'browser_click',
   TYPE: 'browser_type',
   SELECT: 'browser_select',
+  GET_DIALOG: 'browser_get_dialog',
+  HANDLE_DIALOG: 'browser_handle_dialog',
   PRESS: 'browser_press',
   SCROLL: 'browser_scroll',
   UPLOAD: 'browser_upload',

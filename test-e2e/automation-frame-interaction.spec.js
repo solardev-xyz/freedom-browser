@@ -198,7 +198,7 @@ for (const [mode, zoom] of [
     expect(state.child.inputs).toEqual([true]);
     expect(state.child.keys).toContainEqual(['ArrowLeft', true]);
     expect(state.outside).toBe('');
-    expect(state.attached).toBe(false);
+    expect(state.attached).toBe(true);
     expect(state.approvals).toHaveLength(5);
     expect(
       state.approvals.every(
@@ -233,7 +233,7 @@ for (const mutation of ['overlay', 'payload', 'navigate', 'decline']) {
     ]).toContain(result.error.code);
     const state = await fixtureState(context.electronApp);
     if (state.child) expect(state.child.submits).toEqual([]);
-    expect(state.attached).toBe(false);
+    expect(state.attached).toBe(true);
   });
 }
 
@@ -305,4 +305,32 @@ test('frame references cannot bypass authorization or become file and scroll-onl
   const state = await fixtureState(electronApp);
   expect(state.approvals).toHaveLength(0);
   expect(state.child.inputs).toEqual([]);
+});
+
+
+test('cross-origin multiple selections retain approval and reject changed choices', async ({ electronApp, window, harness }) => {
+  await setup({ electronApp, window, harness });
+  await electronApp.evaluate(async (_e, url) => {
+    const state = globalThis.__FRAME_ACTION_TEST__;
+    const child = state.owner.mainFrame.framesInSubtree.find((f) => f.url === url);
+    await child.executeJavaScript(`document.body.innerHTML='<label>Choices<select multiple size="3"><option value="a">A</option><option value="b">B</option><option disabled value="c">C</option></select></label>';globalThis.events=[];document.querySelector('select').addEventListener('change',e=>events.push(e.isTrusted));`);
+  }, CHILD);
+  const read = await readChild(electronApp);
+  const ref = read.elements.find((e) => e.name === 'Choices').ref;
+  expect(read.supportedActions).toContain('select');
+  const selected = await execute(electronApp, 'browser_select', { ref, values: ['a', 'b'] });
+  expect(selected, JSON.stringify(selected)).toMatchObject({ ok: true, result: { selected: true, trusted: false } });
+  await electronApp.evaluate((_e, url) => {
+    const state = globalThis.__FRAME_ACTION_TEST__;
+    state.scoped.requestApproval = async () => {
+      const child = state.owner.mainFrame.framesInSubtree.find((f) => f.url === url);
+      await child.executeJavaScript("document.querySelector('option').textContent='Changed during approval'");
+      return 'approved';
+    };
+  }, CHILD);
+  expect((await execute(electronApp, 'browser_select', { ref, values: ['b'] })).error.code).toBe('STALE_ELEMENT_REFERENCE');
+  const after = await readChild(electronApp);
+  expect(after.elements.find((e) => e.name === 'Choices').options.filter((o) => o.selected).map((o) => o.value)).toEqual(['a', 'b']);
+  const events = await electronApp.evaluate((_e, url) => globalThis.__FRAME_ACTION_TEST__.owner.mainFrame.framesInSubtree.find((f) => f.url === url).executeJavaScript('globalThis.events'), CHILD);
+  expect(events).toEqual([false]);
 });

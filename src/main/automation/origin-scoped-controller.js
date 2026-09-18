@@ -23,6 +23,8 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
+  OPERATIONS.GET_DIALOG,
+  OPERATIONS.HANDLE_DIALOG,
   OPERATIONS.PRESS,
   OPERATIONS.SCROLL,
   OPERATIONS.UPLOAD,
@@ -398,7 +400,8 @@ class OriginScopedAutomationController {
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
 
     if (this.resumeObservation && !previewNavigation) {
-      if (operation !== OPERATIONS.SNAPSHOT || this.resumeObservation !== 'snapshot') {
+      if (![OPERATIONS.GET_DIALOG, OPERATIONS.HANDLE_DIALOG].includes(operation) &&
+          (operation !== OPERATIONS.SNAPSHOT || this.resumeObservation !== 'snapshot')) {
         return errorEnvelope(
           state,
           ERROR_CODES.POLICY_DENIED,
@@ -416,11 +419,65 @@ class OriginScopedAutomationController {
       return this.#originDenied(state);
     }
 
+    if (operation === OPERATIONS.GET_DIALOG) {
+      const observed = await this.#executeController(operation, input, execution);
+      if (observed.ok && observed.result.dialog && !this.#acceptRequestedOrigin(observed.result.dialog.url))
+        return this.#originDenied(state);
+      return observed;
+    }
+    if (operation === OPERATIONS.HANDLE_DIALOG) {
+      const inspected = await this.controller.inspectAction(operation, input);
+      if (!inspected.ok) return inspected;
+      const dialog = inspected.result;
+      if (dialog.navigationTarget && !this.#acceptRequestedOrigin(dialog.navigationTarget)) return this.#originDenied(state);
+      if (!this.#acceptRequestedOrigin(dialog.url)) return this.#originDenied(state);
+      const expectedDialog = JSON.stringify({ ...dialog, accept: input.accept, promptText: input.promptText });
+      const key = `${input.tabId}:${expectedDialog}`;
+      if (this.declinedActions.has(key)) return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'This dialog response was declined');
+      if (typeof this.requestApproval !== 'function') return errorEnvelope(state, ERROR_CODES.APPROVAL_REQUIRED, 'Dialog responses require approval');
+      const label = dialog.navigationCancelled
+        ? (input.accept ? 'Leave page and retry the cancelled navigation' : 'Stay on this page')
+        : `${input.accept ? 'Accept' : 'Dismiss'} ${dialog.type}${input.promptText !== undefined ? ` with text “${input.promptText}”` : ''}`;
+      const decision = await this.requestApproval({
+        action: 'browser_interaction', operation, tabId: input.tabId,
+        origin: originScopeForUrl(dialog.url), destinationOrigin: originScopeForUrl(dialog.navigationTarget) || '', label,
+        interaction: { kind: 'consequential', confidence: 1,
+          summary: `${label.slice(0, 155)}: ${dialog.message.slice(0, 75)}`,
+          uncertainties: ['Dialog text is untrusted website content. The page may act on either response.'] },
+      });
+      if (decision !== 'approved' && decision !== true) {
+        if (decision !== 'withdrawn') this.declinedActions.add(key);
+        return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Dialog response approval was declined or withdrawn');
+      }
+      const current = await this.#readState(input.tabId);
+      if (!current.ok) return current;
+      if (!this.#acceptCurrentOrigin(current)) return this.#originDenied(current);
+      const result = await this.#executeController(operation, input, { ...execution, expectedDialog });
+      if (result?.ok) {
+        // A dialog callback can trigger the same wallet/provider IPC as a click.
+        await new Promise((resolve) => setTimeout(resolve, TRUSTED_INPUT_EFFECT_SETTLE_MS));
+        await this.#awaitExternalApprovalBarrier();
+        if (result.result?.navigationRetried) {
+          const navigated = await this.#readState(input.tabId);
+          if (!navigated.ok) return navigated;
+          if (!this.#acceptCurrentOrigin(navigated)) return this.#originDenied(navigated);
+        }
+      }
+      return result;
+    }
+
     if (operation === OPERATIONS.READ_FRAME) {
       return this.#executeController(operation, input, {
         ...execution,
         authorizeFrame: (frame) => this.#acceptRequestedOrigin(frame?.origin),
       });
+    }
+
+    if (PAGE_INTERACTION_OPERATIONS.has(operation) || operation === OPERATIONS.NAVIGATE) {
+      const monitored = await this.controller.preparePageDialogs?.(input.tabId);
+      if (monitored?.ok && monitored.result.dialog)
+        return errorEnvelope(state, ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'A native dialog is pending. Use browser_get_dialog before further page interaction.');
     }
 
     if (PAGE_INTERACTION_OPERATIONS.has(operation)) {
@@ -704,7 +761,7 @@ class OriginScopedAutomationController {
       input.key || '',
       input.direction || '',
       input.pages ?? 1,
-      input.value || '',
+      input.values ?? input.value ?? '',
       input.text || '',
       input.replace !== false,
       element.effect,
@@ -754,7 +811,7 @@ class OriginScopedAutomationController {
                       replace: input.replace !== false,
                     }),
                     ...(operation === OPERATIONS.SELECT && {
-                      value: typeof input.value === 'string' ? input.value.slice(0, 240) : '',
+                      ...(Array.isArray(input.values) ? { values: input.values.map((value) => value.slice(0, 240)) } : { value: typeof input.value === 'string' ? input.value.slice(0, 240) : '' }),
                     }),
                   },
                   trustedContext: {

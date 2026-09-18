@@ -182,6 +182,14 @@ class AutomationController {
     }
   }
 
+  async preparePageDialogs(tabId) {
+    // Best effort: an external debugger must not prevent ordinary semantic
+    // browsing. Dialog tools report unavailable if monitoring cannot start.
+    const entry = this.pages.require(tabId);
+    if (typeof entry.adapter.getDialog !== 'function') return null;
+    return this.execute(OPERATIONS.GET_DIALOG, { tabId });
+  }
+
   async execute(operation, rawInput = {}, execution = {}) {
     let input;
     let entry;
@@ -232,6 +240,7 @@ class AutomationController {
           OPERATIONS.CLICK,
           OPERATIONS.TYPE,
           OPERATIONS.SELECT,
+          OPERATIONS.HANDLE_DIALOG,
           OPERATIONS.PRESS,
           OPERATIONS.SCROLL,
           OPERATIONS.UPLOAD,
@@ -245,6 +254,8 @@ class AutomationController {
         );
       }
       entry = this.pages.require(input.tabId);
+      if (operation === OPERATIONS.HANDLE_DIALOG)
+        return this.#successEnvelope(entry, entry.adapter.inspectDialog(input));
       if (typeof entry.adapter.inspectAction !== 'function') {
         throw new AutomationError(
           ERROR_CODES.CAPABILITY_UNAVAILABLE,
@@ -378,7 +389,11 @@ class AutomationController {
       case OPERATIONS.TYPE:
         return entry.adapter.type(input.ref, input.text, { replace: input.replace });
       case OPERATIONS.SELECT:
-        return entry.adapter.select(input.ref, input.value);
+        return entry.adapter.select(input.ref, input.values ?? input.value);
+      case OPERATIONS.GET_DIALOG:
+        return entry.adapter.getDialog();
+      case OPERATIONS.HANDLE_DIALOG:
+        return entry.adapter.handleDialog(input, execution);
       case OPERATIONS.SCROLL:
         return entry.adapter.scroll(input.ref, { direction: input.direction, pages: input.pages });
       case OPERATIONS.PRESS:

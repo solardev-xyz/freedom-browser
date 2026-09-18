@@ -17,6 +17,7 @@ const OMITTED_KEYS = new Set([
   'ref',
   'frameRef',
   'captureRef',
+  'dialogRef',
   'documentId',
   'tabId',
   'navigationId',

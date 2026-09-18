@@ -500,3 +500,18 @@ test('visual targeting requires a capture handle and bounded full-image coordina
   for (const override of [{ x: -0.1 }, { x: 1 }, { y: NaN }, { y: Infinity }, { x: '0.5' }, { captureRef: 'guessed' }])
     expect(() => validateOperationInput(OPERATIONS.TARGET_POINT, { ...input, ...override })).toThrow();
 });
+
+test('select accepts one value or a bounded distinct set, never ambiguous inputs', () => {
+  const base = { tabId: 'tab_1', ref: 'ref_select' };
+  for (const values of [[], ['a', 'b'], ['']])
+    expect(validateOperationInput(OPERATIONS.SELECT, { ...base, values })).toEqual({ ...base, values });
+  for (const input of [{}, { value: 'a', values: ['b'] }, { values: ['a', 'a'] }, { values: [null] }, { values: new Array(101).fill('x') }, { value: 'x'.repeat(2001) }])
+    expect(() => validateOperationInput(OPERATIONS.SELECT, { ...base, ...input })).toThrow();
+});
+
+test('dialog responses require an exact handle and explicit boolean; caller authorization is stripped', () => {
+  const base = { tabId: 'tab_1', dialogRef: 'dialog_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', accept: true };
+  expect(validateOperationInput(OPERATIONS.HANDLE_DIALOG, { ...base, expectedDialog: 'forged', promptText: '' })).toEqual({ ...base, promptText: '' });
+  for (const input of [{ accept: 'true' }, { dialogRef: 'current' }, { accept: false, promptText: 'secret' }, { promptText: 'x'.repeat(121) }, { promptText: '\n' }])
+    expect(() => validateOperationInput(OPERATIONS.HANDLE_DIALOG, { ...base, ...input })).toThrow();
+});

@@ -30,6 +30,8 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
+  OPERATIONS.GET_DIALOG,
+  OPERATIONS.HANDLE_DIALOG,
   OPERATIONS.PRESS,
   OPERATIONS.SCROLL,
   OPERATIONS.UPLOAD,
@@ -282,7 +284,30 @@ function validateOperationInput(operation, rawInput) {
   }
 
   if (operation === OPERATIONS.SELECT) {
-    normalized.value = requireString(input.value, 'value', { allowEmpty: true });
+    if ((input.value === undefined) === (input.values === undefined))
+      throw invalidArgument('Select requires exactly one value or values array');
+    if (input.values !== undefined) {
+      if (!Array.isArray(input.values) || input.values.length > 100 ||
+          input.values.some((value) => typeof value !== 'string' || value.length > 2000) ||
+          new Set(input.values).size !== input.values.length)
+        throw invalidArgument('values must contain up to 100 distinct option values of at most 2000 characters');
+      normalized.values = [...input.values];
+    } else {
+      normalized.value = requireString(input.value, 'value', { allowEmpty: true });
+      if (normalized.value.length > 2000) throw invalidArgument('Option value is too long');
+    }
+  }
+
+  if (operation === OPERATIONS.HANDLE_DIALOG) {
+    normalized.dialogRef = requireString(input.dialogRef, 'dialogRef');
+    if (!/^dialog_[a-f0-9-]{36}$/.test(normalized.dialogRef)) throw invalidArgument('Use an observed dialogRef');
+    if (typeof input.accept !== 'boolean') throw invalidArgument('accept must be a boolean');
+    normalized.accept = input.accept;
+    if (input.promptText !== undefined) {
+      normalized.promptText = requireString(input.promptText, 'promptText', { allowEmpty: true });
+      if (!input.accept || normalized.promptText.length > 120 || containsControlCharacters(normalized.promptText))
+        throw invalidArgument('Prompt text requires accept and must be at most 120 characters without control characters');
+    }
   }
 
   if (operation === OPERATIONS.SCROLL) {

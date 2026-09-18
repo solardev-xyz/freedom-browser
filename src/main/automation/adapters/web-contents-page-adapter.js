@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { AutomationError, ERROR_CODES } = require('../contract/errors');
 const { OwnedFrameObserver } = require('./owned-frame-observer');
+const { NativeDialogs } = require('./native-dialogs');
 const { VisualTargets } = require('./visual-targets');
 
 const AUTOMATION_WORLD_ID = 1001;
@@ -246,6 +247,16 @@ function readControlState(element, role) {
       checked === 'mixed' && ['radio', 'menuitemradio', 'switch'].includes(role) ? false : checked
     );
   }
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName)) {
+    result.required = element.required === true;
+    result.readOnly = element.readOnly === true;
+    if (element.willValidate && element.validity) {
+      result.valid = element.validity.valid;
+      result.validation = ['valueMissing', 'typeMismatch', 'patternMismatch', 'tooLong',
+        'tooShort', 'rangeUnderflow', 'rangeOverflow', 'stepMismatch', 'badInput', 'customError']
+        .filter((key) => element.validity[key]);
+    }
+  }
   if (role === 'button') add('pressed', ariaState('aria-pressed', true));
   if (selectedRoles.has(role)) add('selected', ariaState('aria-selected'));
   if (expandedRoles.has(role)) add('expanded', ariaState('aria-expanded'));
@@ -309,7 +320,7 @@ function collectPageSnapshot(
     frames.push(frame);
   };
   const selectState = (element) => {
-    const result = { ...exactField('value', element.value, 2_000), options: [] };
+    const result = { multiple: element.multiple, ...exactField('value', element.value, 2_000), options: [] };
     let bytes = 0;
     for (let index = 0; index < Math.min(element.options.length, maxSelectOptions); index += 1) {
       const option = element.options[index];
@@ -819,6 +830,16 @@ async function describeReferencedElement(ref, action, key) {
   let actionLabel = label;
   let navigationTarget = '';
   let formPayloadFingerprint = '';
+  if (action === 'select' && tag === 'select') {
+    if (element.options.length > 1000 || Array.from(element.options).some(
+      (option) => option.value.length > 2000 || option.label.length > 2000
+    )) return { ok: false, reason: 'not_interactable' };
+    const choices = JSON.stringify({ multiple: element.multiple, options: Array.from(element.options,
+      (option) => [option.value, option.label, option.selected, option.matches(':disabled')]) });
+    if (choices.length > 200000) return { ok: false, reason: 'not_interactable' };
+    const digest = await frameWindow.crypto.subtle.digest('SHA-256', new frameWindow.TextEncoder().encode(choices));
+    formPayloadFingerprint = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
   if (tag === 'a' && element.hasAttribute('href') && activatesElement) {
     navigationTarget = element.href;
   } else if (formSubmission) {
@@ -959,22 +980,32 @@ function selectOptionByValue(ref, value) {
   if (!inspected.ok) return inspected;
   const { element, frameWindow } =
     globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__.refs.get(ref);
-  if (element.tagName.toLowerCase() !== 'select' || element.multiple) {
-    return { ok: false, reason: 'unsupported_select' };
+  if (element.tagName.toLowerCase() !== 'select') return { ok: false, reason: 'unsupported_select' };
+  if (element.options.length > 1000) return { ok: false, reason: 'unsupported_select' };
+  const values = Array.isArray(value) ? value : [value];
+  if (!element.multiple && values.length !== 1) return { ok: false, reason: 'unsupported_select' };
+  const options = Array.from(element.options);
+  // Reject ambiguous duplicate values and validate the entire change before mutation.
+  if (values.some((entry) => options.filter((o) => o.value === entry).length !== 1))
+    return { ok: false, reason: 'option_unavailable' };
+  const selected = new Set(values);
+  if (element.multiple && options.some((o) => o.matches(':disabled') && o.selected !== selected.has(o.value)))
+    return { ok: false, reason: 'option_unavailable' };
+  if (options.some((o) => selected.has(o.value) && o.matches(':disabled')))
+    return { ok: false, reason: 'option_unavailable' };
+  if (element.multiple) {
+    const setter = Object.getOwnPropertyDescriptor(frameWindow.HTMLOptionElement.prototype, 'selected')?.set;
+    if (!setter) return { ok: false, reason: 'unsupported_select' };
+    for (const option of options) setter.call(option, selected.has(option.value));
+  } else {
+    const setter = Object.getOwnPropertyDescriptor(frameWindow.HTMLSelectElement.prototype, 'value')?.set;
+    if (!setter) return { ok: false, reason: 'unsupported_select' };
+    setter.call(element, values[0]);
   }
-  const option = Array.from(element.options).find(
-    (candidate) => candidate.value === value && !candidate.matches(':disabled')
-  );
-  if (!option) return { ok: false, reason: 'option_unavailable' };
-  const valueSetter = Object.getOwnPropertyDescriptor(
-    frameWindow.HTMLSelectElement.prototype,
-    'value'
-  )?.set;
-  if (typeof valueSetter !== 'function') return { ok: false, reason: 'unsupported_select' };
-  valueSetter.call(element, value);
   element.dispatchEvent(new frameWindow.Event('input', { bubbles: true }));
   element.dispatchEvent(new frameWindow.Event('change', { bubbles: true }));
-  return element.value === value
+  const actual = Array.from(element.selectedOptions, (o) => o.value);
+  return actual.length === values.length && actual.every((entry) => selected.has(entry))
     ? { ok: true, trusted: false }
     : { ok: false, reason: 'selection_not_applied' };
 }
@@ -1074,6 +1105,7 @@ class WebContentsPageAdapter extends EventEmitter {
     this.stopLoadingHandler = options.stopLoading || null;
     this.references = new Map();
     this.activeWaits = new Set();
+    this.nativeDialogs = new NativeDialogs(webContents);
     this.frameObserver = new OwnedFrameObserver(
       webContents,
       (snapshotOptions) =>
@@ -1106,7 +1138,9 @@ class WebContentsPageAdapter extends EventEmitter {
             [readScrollState]
           ),
         viewport: () => buildInvocation(frameViewport, []),
-      }
+        select: (ref, value) => buildInvocation(selectOptionByValue, [ref, value], [inspectReferencedElement]),
+      },
+      this.nativeDialogs
     );
     this.visualTargets = new VisualTargets({
       capture: async () => (await this.webContents.capturePage()).toPNG(),
@@ -1182,9 +1216,9 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#assertAvailable();
     try {
       if (this.navigateHandler) {
-        await this.navigateHandler(url);
+        await this.nativeDialogs.navigate(url, () => this.navigateHandler(url));
       } else {
-        await this.webContents.loadURL(url);
+        await this.nativeDialogs.navigate(url, () => this.webContents.loadURL(url));
       }
     } catch (error) {
       if (error instanceof AutomationError) throw error;
@@ -1195,6 +1229,16 @@ class WebContentsPageAdapter extends EventEmitter {
     }
     return { url: this.webContents.getURL?.() || url };
   }
+
+  async getDialog() {
+    this.#assertAvailable();
+    await this.nativeDialogs.start();
+    return { dialog: this.nativeDialogs.current(), monitoring: true, pagePromptSupported: false };
+  }
+
+  inspectDialog(input) { return this.nativeDialogs.inspect(input); }
+
+  handleDialog(input, execution) { return this.nativeDialogs.respond(input, execution); }
 
   async listFrames() {
     this.#assertAvailable();
@@ -1219,7 +1263,7 @@ class WebContentsPageAdapter extends EventEmitter {
 
   async #frameDescription(session, input) {
     if (
-      !['browser_click', 'browser_type', 'browser_press', 'browser_scroll'].includes(
+      !['browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_select'].includes(
         input.operation
       )
     )
@@ -1372,6 +1416,13 @@ class WebContentsPageAdapter extends EventEmitter {
         };
       }
       this.webContents.focus?.();
+      if (input.operation === 'browser_select') {
+        await point((await inspect('click')).point, { prepare: true });
+        await confirm();
+        const result = await session.evaluate('select', [input.values ?? input.value]);
+        this.#assertSelectResult(result);
+        return { selected: true, ref, trusted: false, ...(input.values ? { values: input.values } : { value: input.value }) };
+      }
       if (input.operation === 'browser_click') {
         const prepared = await inspect('click');
         const root = await point(prepared.point, { prepare: true });
@@ -1629,14 +1680,16 @@ class WebContentsPageAdapter extends EventEmitter {
     let attachedDebugger = false;
     let searchId = '';
     try {
-      if (debuggerApi.isAttached?.()) {
+      if (debuggerApi.isAttached?.() && !this.nativeDialogs.ownsConnection()) {
         throw new AutomationError(
           ERROR_CODES.CAPABILITY_UNAVAILABLE,
           'Close the page debugger before attaching a file'
         );
       }
-      debuggerApi.attach('1.3');
-      attachedDebugger = true;
+      if (!this.nativeDialogs.ownsConnection()) {
+        debuggerApi.attach('1.3');
+        attachedDebugger = true;
+      }
       await debuggerApi.sendCommand('DOM.enable');
       // Prime the DOM domain without serializing the page tree into main.
       await debuggerApi.sendCommand('DOM.getDocument', { depth: 0, pierce: true });
@@ -1798,7 +1851,7 @@ class WebContentsPageAdapter extends EventEmitter {
       inspectReferencedElement,
     ]);
     this.#assertSelectResult(result);
-    return { selected: true, ref, value, trusted: result.trusted === true };
+    return { selected: true, ref, ...(Array.isArray(value) ? { values: value } : { value }), trusted: result.trusted === true };
   }
 
   async press(ref, key) {
@@ -1886,6 +1939,7 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#assertAvailable();
     const cancelledWaits = this.#cancelWaits();
     this.frameObserver.cancel();
+    this.nativeDialogs.stop();
     this.visualTargets.clear();
     if (this.stopLoadingHandler) {
       await this.stopLoadingHandler();
@@ -1897,6 +1951,7 @@ class WebContentsPageAdapter extends EventEmitter {
 
   dispose() {
     this.frameObserver.dispose();
+    this.nativeDialogs.dispose();
     this.visualTargets.clear();
     if (typeof this.webContents.off === 'function') {
       for (const [event, listener] of Object.entries(this.listeners)) {
@@ -1915,11 +1970,12 @@ class WebContentsPageAdapter extends EventEmitter {
       );
     }
     const code = buildInvocation(fn, args, dependencies);
-    return this.webContents.executeJavaScriptInIsolatedWorld(
+    const execute = () => this.webContents.executeJavaScriptInIsolatedWorld(
       AUTOMATION_WORLD_ID,
       [{ code, url: 'freedom://automation' }],
       userGesture
     );
+    return this.nativeDialogs.ownsConnection() ? this.nativeDialogs.guard(execute) : execute();
   }
 
   #requireReference(ref, allowScrollOnly = false) {
@@ -1979,7 +2035,7 @@ class WebContentsPageAdapter extends EventEmitter {
     if (result?.reason === 'unsupported_select') {
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        'Only single-select controls are supported'
+        'Use a native select; single-select controls require exactly one value'
       );
     }
     if (result?.reason === 'option_unavailable') {

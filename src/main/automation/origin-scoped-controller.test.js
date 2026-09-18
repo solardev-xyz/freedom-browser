@@ -1537,3 +1537,65 @@ test.each(['every_interaction', 'sensitive_actions', 'allow_website_interactions
     else expect(requestApproval).toHaveBeenCalledTimes(1);
   }
 );
+
+test.each(['every_interaction', 'sensitive_actions', 'allow_website_interactions'])(
+  'native dialogs require approval even in %s mode', async (approvalMode) => {
+    const controller = createController();
+    const dialog = { dialogRef: 'dialog_test', type: 'confirm', url: 'https://trusted.example/start', message: 'Apply?' };
+    controller.inspectAction.mockResolvedValue({ ok: true, result: dialog });
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', approvalMode, requestApproval });
+    const result = await scoped.execute(OPERATIONS.HANDLE_DIALOG, { tabId: 'tab_assigned', dialogRef: dialog.dialogRef, accept: false });
+    expect(result.ok).toBe(true);
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ label: 'Dismiss confirm', origin: 'https://trusted.example' }));
+    const dispatch = controller.execute.mock.calls.find(([operation]) => operation === OPERATIONS.HANDLE_DIALOG);
+    expect(dispatch[2].expectedDialog).toBe(JSON.stringify({ ...dialog, accept: false }));
+  }
+);
+
+test('declining a native response never dispatches it or prompts again for the same response', async () => {
+  const controller = createController();
+  const dialog = { dialogRef: 'dialog_test', type: 'confirm', url: 'https://trusted.example/start', message: 'Apply?' };
+  controller.inspectAction.mockResolvedValue({ ok: true, result: dialog });
+  const requestApproval = jest.fn(async () => 'declined');
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval });
+  const input = { tabId: 'tab_assigned', dialogRef: dialog.dialogRef, accept: true };
+  for (let i = 0; i < 2; i++) expect((await scoped.execute(OPERATIONS.HANDLE_DIALOG, input)).error.code).toBe('USER_CANCELLED');
+  expect(requestApproval).toHaveBeenCalledTimes(1);
+  expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.HANDLE_DIALOG)).toBe(false);
+});
+
+test('native dialog callbacks retain the external approval barrier', async () => {
+  const controller = createController();
+  controller.inspectAction.mockResolvedValue({ ok: true, result: { dialogRef: 'dialog_test', type: 'confirm', url: 'https://trusted.example/start', message: 'Connect?' } });
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval: async () => 'approved' });
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const original = controller.execute.getMockImplementation();
+  controller.execute.mockImplementation(async (operation, input) => {
+    const result = await original(operation, input);
+    if (operation === OPERATIONS.HANDLE_DIALOG) scoped.setExternalApprovalBarrier(barrier);
+    return result;
+  });
+  let settled = false;
+  const response = scoped.execute(OPERATIONS.HANDLE_DIALOG, { tabId: 'tab_assigned', dialogRef: 'dialog_test', accept: true }).then(result => { settled = true; return result; });
+  await new Promise(resolve => setTimeout(resolve, 75));
+  expect(settled).toBe(false);
+  release();
+  await expect(response).resolves.toMatchObject({ ok: true });
+});
+
+test('approved leave-page retries still reject a resulting unsupported origin', async () => {
+  const controller = createController();
+  controller.inspectAction.mockResolvedValue({ ok: true, result: { dialogRef: 'dialog_test', type: 'beforeunload', url: 'https://trusted.example/start', message: '', navigationCancelled: true, navigationTarget: 'https://trusted.example/next' } });
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval: async () => 'approved' });
+  const original = controller.execute.getMockImplementation();
+  controller.execute.mockImplementation(async (operation, input) => {
+    if (operation === OPERATIONS.HANDLE_DIALOG) {
+      controller.setUrl('file:///private/unsupported');
+      return { ok: true, result: { handled: true, navigationRetried: true } };
+    }
+    return original(operation, input);
+  });
+  expect((await scoped.execute(OPERATIONS.HANDLE_DIALOG, { tabId: 'tab_assigned', dialogRef: 'dialog_test', accept: true })).error.code).toBe('POLICY_DENIED');
+});

@@ -90,6 +90,8 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Entering information on the current page',
     completed: 'Entered information on the current page',
   },
+  [OPERATIONS.GET_DIALOG]: { effect: ACTIVITY_EFFECTS.OBSERVED, intent: 'Checking a native dialog', completed: 'Checked a native dialog' },
+  [OPERATIONS.HANDLE_DIALOG]: { effect: ACTIVITY_EFFECTS.CHANGED, intent: 'Responding to a native dialog', completed: 'Responded to a native dialog' },
   [OPERATIONS.SELECT]: {
     effect: ACTIVITY_EFFECTS.CHANGED,
     intent: 'Changing a selection on the current page',

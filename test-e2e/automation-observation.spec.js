@@ -609,7 +609,8 @@ test('native dropdowns preserve disabled groups and support single-select listbo
       ref: named(first, 'Many').ref,
       value: 'two',
     })
-  ).toMatchObject({ ok: false, error: { code: 'CAPABILITY_UNAVAILABLE' } });
+  ).toMatchObject({ ok: true, result: { selected: true, trusted: false } });
+  expect(named(await snapshot(electronApp, tabId), 'Many').options.find((option) => option.value === 'two').selected).toBe(true);
 });
 
 for (const mode of ['desktop', 'hidden']) {
@@ -725,5 +726,32 @@ for (const mode of ['desktop', 'hidden']) {
       );
     }, FIXTURE_URL);
     expect(state).toEqual({ values: ['', ''], status: 'No key delivered' });
+  });
+}
+
+
+for (const mode of ['desktop', 'hidden']) {
+  test(`${mode} reads form constraints and applies complete multiple selections atomically`, async ({ electronApp, window, harness }) => {
+    const tabId = await openFixture({ electronApp, window, harness }, mode, `
+      <label>Email<input required type="email" value="bad"></label>
+      <label>Quantity<input type="number" min="2" max="10" step="2" value="1"></label>
+      <label>Read only<input readonly value="Keep"></label>
+      <label>Preferences<select multiple size="5"><option value="a">A</option><option value="b">B</option>
+      <optgroup disabled label="Locked"><option value="c">C</option></optgroup></select></label>
+      <label>Ambiguous<select><option value="same">First</option><option value="same">Second</option></select></label>`);
+    const first = await snapshot(electronApp, tabId);
+    expect(named(first, 'Email')).toMatchObject({ required: true, valid: false, validation: ['typeMismatch'] });
+    expect(named(first, 'Quantity').validation).toEqual(expect.arrayContaining(['rangeUnderflow', 'stepMismatch']));
+    expect(named(first, 'Read only').readOnly).toBe(true);
+    expect((await execute(electronApp, 'browser_type', { tabId, ref: named(first, 'Read only').ref, text: 'Changed' })).ok).toBe(false);
+    const ref = named(first, 'Preferences').ref;
+    expect(named(first, 'Preferences').multiple).toBe(true);
+    const selected = await execute(electronApp, 'browser_select', { tabId, ref, values: ['a', 'b'] });
+    expect(selected).toMatchObject({ ok: true, result: { values: ['a', 'b'], trusted: false } });
+    expect((await execute(electronApp, 'browser_select', { tabId, ref, values: ['a', 'c'] })).ok).toBe(false);
+    expect(named(await snapshot(electronApp, tabId), 'Preferences').options.filter((o) => o.selected).map((o) => o.value)).toEqual(['a', 'b']);
+    expect((await execute(electronApp, 'browser_select', { tabId, ref, values: [] })).ok).toBe(true);
+    expect(named(await snapshot(electronApp, tabId), 'Preferences').options.some((o) => o.selected)).toBe(false);
+    expect((await execute(electronApp, 'browser_select', { tabId, ref: named(first, 'Ambiguous').ref, value: 'same' })).ok).toBe(false);
   });
 }
