@@ -122,15 +122,15 @@ for (const mode of ['desktop', 'hidden']) {
       const read = await execute(electronApp, 'browser_read_frame', { frameRef: child.ref });
       expect(read.ok, JSON.stringify(read)).toBe(true);
       expect(read.result).toMatchObject({
-        readOnly: true,
+        readOnly: false,
         title: 'Embedded document',
         frame: { origin: 'https://frame-reader-content.test' },
         textTruncated: true,
       });
       expect(
         read.result.elements.find((element) => element.name === 'Framed name')
-      ).not.toHaveProperty('ref');
-      expect(read.result.frames.every((frame) => !frame.viewport?.ref)).toBe(true);
+      ).toHaveProperty('ref');
+      expect(read.result.frames.every((frame) => frame.viewport?.ref)).toBe(true);
       const found = await execute(electronApp, 'browser_read_frame', {
         frameRef: child.ref,
         textQuery: 'CHILD-RECEIPT-42',

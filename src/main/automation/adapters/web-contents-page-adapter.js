@@ -161,7 +161,7 @@ function inspectScrollReference(ref, direction, requirePoint = true) {
         if (nearest !== element) continue;
         let view = frameWindow;
         let usable = true;
-        while (view !== view.top) {
+        while (view !== window) {
           const frame = view.frameElement;
           if (!frame) return { ok: false, reason: 'changed' };
           // Coordinate conversion below supports ordinary same-origin frames.
@@ -666,7 +666,7 @@ function inspectReferencedElement(ref, action) {
   if (action === 'click') {
     element.scrollIntoView({ block: 'center', inline: 'center' });
     let ancestorWindow = frameWindow;
-    while (ancestorWindow !== ancestorWindow.top) {
+    while (ancestorWindow !== window) {
       const ancestorFrame = ancestorWindow.frameElement;
       if (!ancestorFrame) return { ok: false, reason: 'changed' };
       ancestorFrame.scrollIntoView({ block: 'center', inline: 'center' });
@@ -691,9 +691,23 @@ function inspectReferencedElement(ref, action) {
     }
 
     let currentWindow = frameWindow;
-    while (currentWindow !== currentWindow.top) {
+    while (currentWindow !== window) {
       const currentFrame = currentWindow.frameElement;
       if (!currentFrame) return { ok: false, reason: 'changed' };
+      for (
+        let ancestor = currentFrame;
+        ancestor;
+        ancestor = ancestor.parentElement || ancestor.getRootNode()?.host
+      ) {
+        const style = currentWindow.parent.getComputedStyle(ancestor);
+        if (
+          ['transform', 'translate', 'rotate', 'scale', 'perspective'].some(
+            (key) => style[key] && style[key] !== 'none'
+          ) ||
+          Number(style.zoom || 1) !== 1
+        )
+          return { ok: false, reason: 'not_interactable' };
+      }
       const frameRect = currentFrame.getBoundingClientRect();
       x += frameRect.left + currentFrame.clientLeft;
       y += frameRect.top + currentFrame.clientTop;
@@ -860,6 +874,27 @@ async function describeReferencedElement(ref, action, key) {
   };
 }
 
+async function describeFrameReference(ref, operation, key) {
+  const reference = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__?.refs?.get(ref);
+  if (!reference) return { ok: false, reason: 'changed' };
+  const element = reference.element;
+  if (element.tagName === 'INPUT' && element.type === 'file')
+    return { ok: true, effect: 'file_upload', label: readElementName(element) };
+  return describeReferencedElement(ref, operation.replace('browser_', ''), key);
+}
+
+function frameViewport() {
+  return {
+    ok:
+      !window.visualViewport ||
+      (visualViewport.scale === 1 &&
+        visualViewport.offsetLeft === 0 &&
+        visualViewport.offsetTop === 0),
+    width: innerWidth,
+    height: innerHeight,
+  };
+}
+
 function markReferencedFileInput(ref, marker) {
   const inspected = inspectReferencedElement(ref, 'upload');
   if (!inspected.ok) return inspected;
@@ -1012,19 +1047,39 @@ class WebContentsPageAdapter extends EventEmitter {
     this.stopLoadingHandler = options.stopLoading || null;
     this.references = new Map();
     this.activeWaits = new Set();
-    this.frameObserver = new OwnedFrameObserver(webContents, (snapshotOptions) =>
-      buildInvocation(
-        collectPageSnapshot,
-        [
-          MAX_PAGE_TEXT_LENGTH,
-          MAX_SNAPSHOT_ELEMENTS,
-          MAX_RETAINED_REFERENCES,
-          MAX_SELECT_OPTIONS,
-          this.referenceIdFactory(),
-          snapshotOptions,
-        ],
-        [readElementName, readScrollState, readControlState]
-      )
+    this.frameObserver = new OwnedFrameObserver(
+      webContents,
+      (snapshotOptions) =>
+        buildInvocation(
+          collectPageSnapshot,
+          [
+            MAX_PAGE_TEXT_LENGTH,
+            MAX_SNAPSHOT_ELEMENTS,
+            MAX_RETAINED_REFERENCES,
+            MAX_SELECT_OPTIONS,
+            this.referenceIdFactory(),
+            snapshotOptions,
+          ],
+          [readElementName, readScrollState, readControlState]
+        ),
+      {
+        describe: (ref, operation, key) =>
+          buildInvocation(
+            describeFrameReference,
+            [ref, operation, key],
+            [readElementName, describeReferencedElement]
+          ),
+        inspect: (ref, action) => buildInvocation(inspectReferencedElement, [ref, action]),
+        prepareText: (ref, replace) =>
+          buildInvocation(prepareTextInsertion, [ref, replace], [inspectReferencedElement]),
+        scroll: (ref, direction, requirePoint) =>
+          buildInvocation(
+            inspectScrollReference,
+            [ref, direction, requirePoint],
+            [readScrollState]
+          ),
+        viewport: () => buildInvocation(frameViewport, []),
+      }
     );
     this.listeners = {
       'did-start-navigation': (_event, _url, isInPlace, isMainFrame) => {
@@ -1101,6 +1156,233 @@ class WebContentsPageAdapter extends EventEmitter {
   async readFrame(frameRef, options, authorizeFrame) {
     this.#assertAvailable();
     return this.frameObserver.read(frameRef, options, authorizeFrame);
+  }
+
+  isFrameReference(ref) {
+    return this.frameObserver.isReference(ref);
+  }
+
+  async inspectFrameAction(ref, input, authorizeFrame) {
+    this.#assertAvailable();
+    return this.frameObserver.withReference(ref, authorizeFrame, (session) =>
+      this.#frameDescription(session, input)
+    );
+  }
+
+  async #frameDescription(session, input) {
+    if (
+      !['browser_click', 'browser_type', 'browser_press', 'browser_scroll'].includes(
+        input.operation
+      )
+    )
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'This interaction is not yet supported inside embedded frames'
+      );
+    if (session.reference.scrollOnly && input.operation !== 'browser_scroll')
+      throw new AutomationError(
+        ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
+        'This reference is only for scrolling'
+      );
+    let result;
+    if (input.operation === 'browser_scroll') {
+      result = await session.evaluate('scroll', [input.direction || 'down', false]);
+      this.#assertActionResult(result);
+      result = {
+        label: `Scroll ${input.direction || 'down'} by ${input.pages ?? 1} viewport(s) in the observed page or container`,
+      };
+    } else {
+      result = await session.evaluate('describe', [input.operation, input.key || '']);
+      this.#assertActionResult(result);
+      if (['file_upload', 'file_download'].includes(result.effect))
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'Use a task-owned top-level page and the dedicated file transfer tools for this control'
+        );
+    }
+    return {
+      label: (result.label || '').slice(0, 160),
+      effect: result.effect || '',
+      navigationTarget: result.navigationTarget || '',
+      formPayloadFingerprint: result.formPayloadFingerprint || '',
+      frameRef: session.frame.ref,
+      origin: session.frame.origin,
+    };
+  }
+
+  async frameAction(ref, input, execution = {}) {
+    this.#assertAvailable();
+    if (!execution.expectedFrameAction)
+      throw new AutomationError(
+        ERROR_CODES.POLICY_DENIED,
+        'Frame interaction requires current action authorization'
+      );
+    return this.frameObserver.withReference(ref, execution.authorizeFrame, async (session) => {
+      const zoom = this.webContents.getZoomFactor?.() || 1;
+      const confirm = async () => {
+        const current = await this.#frameDescription(session, input);
+        for (const key of [
+          'label',
+          'effect',
+          'navigationTarget',
+          'formPayloadFingerprint',
+          'frameRef',
+          'origin',
+        ])
+          if (current[key] !== (execution.expectedFrameAction[key] || ''))
+            throw this.#staleReferenceError();
+        if ((this.webContents.getZoomFactor?.() || 1) !== zoom) throw this.#staleReferenceError();
+        await session.assertCurrent();
+      };
+      const inspect = async (action) => {
+        const result = await session.evaluate('inspect', [action]);
+        this.#assertActionResult(result);
+        return result;
+      };
+      const point = async (local, options) => {
+        const viewport = await session.evaluate('viewport');
+        this.#assertActionResult(viewport);
+        return session.checkedInputPoint(local, viewport, options);
+      };
+      await confirm();
+      this.#requireTrustedKeyInput();
+      if (input.operation === 'browser_scroll') {
+        const read = async (withPoint) => {
+          const state = await session.evaluate('scroll', [input.direction, withPoint]);
+          this.#assertActionResult(state);
+          return state;
+        };
+        let state = await read(true);
+        if (state.boundary)
+          return {
+            ref,
+            direction: input.direction,
+            moved: false,
+            outcome: 'boundary',
+            before: state.scroll,
+            after: state.scroll,
+          };
+        this.webContents.focus?.();
+        await point(state.point, { prepare: true });
+        state = await read(true);
+        if (state.boundary)
+          return {
+            ref,
+            direction: input.direction,
+            moved: false,
+            outcome: 'boundary',
+            before: state.scroll,
+            after: state.scroll,
+          };
+        const root = await point(state.point);
+        await confirm();
+        const before = state.scroll;
+        const horizontal = ['left', 'right'].includes(input.direction);
+        const forward = ['down', 'right'].includes(input.direction);
+        const position = horizontal ? before.x : before.y;
+        const remaining = forward
+          ? (horizontal ? before.maxX : before.maxY) - position
+          : position - (horizontal ? before.minX : 0);
+        const distance = Math.max(
+          1,
+          Math.floor(
+            Math.min(remaining, (input.pages ?? 1) * (horizontal ? before.width : before.height))
+          )
+        );
+        const delta = (forward ? 1 : -1) * distance;
+        await session.mouse({
+          type: 'mouseWheel',
+          ...root,
+          deltaX: horizontal ? delta : 0,
+          deltaY: horizontal ? 0 : delta,
+        });
+        let after = before;
+        let changedAt = Date.now();
+        const started = changedAt;
+        let settled = false;
+        while (Date.now() - started < 1000) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const next = (await read(false)).scroll;
+          if (next.x !== after.x || next.y !== after.y) changedAt = Date.now();
+          after = next;
+          if (Date.now() - started >= 150 && Date.now() - changedAt >= 100) {
+            settled = true;
+            break;
+          }
+        }
+        const moved = after.x !== before.x || after.y !== before.y;
+        return {
+          ref,
+          direction: input.direction,
+          moved,
+          outcome: moved ? 'moved' : 'no_movement',
+          before,
+          after,
+          settled,
+          deltaX: after.x - before.x,
+          deltaY: after.y - before.y,
+        };
+      }
+      this.webContents.focus?.();
+      if (input.operation === 'browser_click') {
+        const prepared = await inspect('click');
+        const root = await point(prepared.point, { prepare: true });
+        await session.mouse({ type: 'mouseMoved', ...root });
+        const confirmed = await inspect('click');
+        const finalPoint = await point(confirmed.point);
+        await confirm();
+        await session.mouse({
+          type: 'mousePressed',
+          ...finalPoint,
+          button: 'left',
+          clickCount: 1,
+        });
+        await session.mouse({
+          type: 'mouseReleased',
+          ...finalPoint,
+          button: 'left',
+          clickCount: 1,
+        });
+        return { clicked: true, ref };
+      }
+      if (input.operation === 'browser_type') {
+        this.#assertActionResult(await session.evaluate('prepareText', [input.replace !== false]));
+      } else await inspect('press');
+      const positioned = await inspect('click');
+      await point(positioned.point, { prepare: true, requireFocus: true });
+      await inspect('verify_focus');
+      await confirm();
+      // Recheck the full focus chain after descriptor evaluation, without refocusing.
+      await point((await inspect('click')).point, { requireFocus: true });
+      await inspect('verify_focus');
+      if (input.operation === 'browser_type') {
+        await session.insertText(input.text);
+        return { typed: true, ref, characters: input.text.length };
+      }
+      const codes = {
+        Enter: 13,
+        Tab: 9,
+        Escape: 27,
+        ArrowUp: 38,
+        ArrowDown: 40,
+        ArrowLeft: 37,
+        ArrowRight: 39,
+        Home: 36,
+        End: 35,
+        PageUp: 33,
+        PageDown: 34,
+        Backspace: 8,
+        Delete: 46,
+        Space: 32,
+      };
+      const key = input.key === 'Space' ? ' ' : input.key;
+      const params = { key, code: input.key, windowsVirtualKeyCode: codes[input.key] };
+      await session.key({ type: 'rawKeyDown', ...params });
+      if (CHARACTER_KEYS.has(input.key))
+        await session.key({ type: 'char', ...params, text: input.key === 'Enter' ? '\r' : ' ' });
+      await session.key({ type: 'keyUp', ...params });
+      return { pressed: true, ref, key: input.key };
+    });
   }
 
   async snapshot(options = {}) {

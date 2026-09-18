@@ -1492,3 +1492,31 @@ describe('OriginScopedAutomationController', () => {
     );
   });
 });
+
+test.each(['every_interaction', 'allow_website_interactions'])(
+  'frame actions receive host origin and action binding in %s mode', async approvalMode => {
+    const controller = createController();
+    const descriptor = { effect: 'form_submission', label: 'Send', navigationTarget: 'https://child.test/send', formPayloadFingerprint: 'payload', frameRef: 'frame_owned', origin: 'https://child.test' };
+    controller.inspectAction.mockResolvedValue({ ok: true, result: descriptor });
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', approvalMode, requestApproval });
+    const result = await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'frame_element_owned' }, { authorizeFrame: () => true, expectedFrameAction: { label: 'caller spoof' } });
+    expect(result.ok).toBe(true);
+    const execution = controller.execute.mock.calls.find(([operation]) => operation === OPERATIONS.CLICK)[2];
+    expect(execution.expectedFrameAction).toEqual(descriptor);
+    expect(execution.authorizeFrame({ origin: 'file://' })).toBe(false);
+    expect(execution.authorizeFrame({ origin: 'https://child.test' })).toBe(true);
+    if (approvalMode === 'every_interaction') expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ origin: 'https://child.test', action: 'form_submission' }));
+    else expect(requestApproval).not.toHaveBeenCalled();
+  }
+);
+
+test('frame replacement during approval cannot reuse authorization even with identical labels and URL', async () => {
+  const controller = createController();
+  const descriptor = { effect: 'form_submission', label: 'Send', navigationTarget: 'https://child.test/send', frameRef: 'frame_first', origin: 'https://child.test' };
+  controller.inspectAction.mockResolvedValueOnce({ ok: true, result: descriptor }).mockResolvedValue({ ok: true, result: { ...descriptor, frameRef: 'frame_replacement' } });
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval: async () => 'approved' });
+  const result = await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'frame_element_owned' });
+  expect(result.ok).toBe(false);
+  expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.CLICK)).toBe(false);
+});

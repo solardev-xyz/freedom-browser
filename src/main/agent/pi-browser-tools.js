@@ -112,7 +112,7 @@ const TOOL_SPECS = Object.freeze([
     label: 'Read embedded frame',
     cancellable: true,
     description:
-      'Read a frame from browser_list_frames, subject to the task origin scope. Returns bounded text and control descriptions only; frame controls cannot be clicked or typed through this tool. Optional query filters control names; textQuery finds literal rendered text. Use continuation offsets with the same frameRef and query. Navigation/removal invalidates the frame reference. Opaque and unsupported origins are denied.',
+      'Read a frame from browser_list_frames, subject to the task origin scope. Returns bounded text and references usable with browser_click, browser_type, browser_press and browser_scroll. Use supportedActions from the result; select, file transfer and element waits in cross-origin frames are not yet supported. Frame actions retain normal approvals. Optional query filters control names; textQuery finds literal rendered text. Use continuation offsets with the same frameRef and query. Navigation/removal invalidates the frame reference. Opaque and unsupported origins are denied.',
     parameters: {
       type: 'object',
       properties: {

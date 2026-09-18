@@ -610,6 +610,49 @@ remain separate work. No paid model, public browsing, dependency or user profile
 was involved in this slice.
 
 
+## 2026-09-18 — Cross-frame interaction integration
+
+Frame observations now return bounded opaque action references usable by the
+existing click/type/press/scroll tools. The main-process adapter owns fixed
+isolated-world inspection and Chromium input dispatch; no model JavaScript,
+selectors, debugger session IDs or general CDP capability are exposed. This fits
+the existing adapter/controller boundaries without renderer or IPC changes.
+
+References bind the owned frame document and isolated context. Origin-scoped
+inspection supplies a host-only authorization descriptor, including actual frame
+origin, action effect, destination and form-payload fingerprint. Approval uses
+that origin and is reinspected afterward. Dispatch rechecks the descriptor,
+focus and enclosing iframe hit tests. Opaque/unsupported origins, unknown or
+foreign refs, navigation, overlays, changed form data, redirected focus and
+unsupported transforms reject. Scroll-only refs cannot become clicks. File
+inputs/download controls and cross-frame select/file transfer/element waits
+remain unsupported; their dedicated policies are not bypassed.
+
+Native qualification exposed an Electron limitation: top-level insertText stayed
+pending for an out-of-process iframe, and top-level mouse/key dispatch did not
+reach it. The implementation uses trusted Chromium input in the owned frame
+session instead. Ancestor geometry is still checked all the way to the owner;
+coordinates are expressed in the receiving session's viewport. Native fixtures
+check actual trusted input, key, submission and nested-click receipts, and
+measured scrolling, rather than treating a dispatch return as delivery proof.
+Hidden 100%/150% and desktop 150% paths pass. Production success means dispatch
+completed; application-level task success still requires observation.
+
+The final browser check/input boundary is not atomic. Complex transforms,
+pinch zoom, padded iframe owners and overly deep nesting reject conservatively.
+The bounded exclusive debugger lifecycle remains: active DevTools are never
+displaced, cancellation detaches and prevents subsequent dispatch. This is a
+source-tree Electron 43 qualification, not release/cross-platform or measured
+model-reliability evidence. No dependencies, user profile, paid model or public
+network fixture were involved. Further visual targeting and long-task evidence
+recovery remain next in the approved sequence.
+
+Validation: `npm run lint`; five focused unit suites (152 tests); native frame
+interaction/observation plus existing kernel/observation suites: 30 distinct
+Electron cases pass (28 in the final interaction/kernel/observation run, two
+frame-observation cases in the preceding run).
+
+
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119
 [h-root]: https://github.com/browser-use/browser-harness-js/tree/2d9a5ed37ed11f31b2622cd69c4b55f979cb905f

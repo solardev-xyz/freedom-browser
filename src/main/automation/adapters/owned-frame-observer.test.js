@@ -4,7 +4,7 @@ const { EventEmitter } = require('events');
 const { OwnedFrameObserver } = require('./owned-frame-observer');
 const { ERROR_CODES } = require('../contract/errors');
 
-function fixture() {
+function fixture(actionSources = {}) {
   const api = new EventEmitter();
   let attached = false;
   const root = {
@@ -77,7 +77,11 @@ function fixture() {
     return {};
   });
   const source = jest.fn(() => 'fixed host collector');
-  const observer = new OwnedFrameObserver({ debugger: api, isDestroyed: () => false }, source);
+  const observer = new OwnedFrameObserver(
+    { debugger: api, isDestroyed: () => false },
+    source,
+    actionSources
+  );
   return { observer, api, root, child, source };
 }
 
@@ -234,4 +238,57 @@ test('cancellation rejects active and queued reads without poisoning later obser
     expect(result.reason).toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
   expect(api.isAttached()).toBe(false);
   await expect(observer.list()).resolves.toHaveProperty('frames');
+});
+
+test('action references remain document-bound, host-authorized and isolated from other observers', async () => {
+  const inspect = jest.fn(() => 'fixed inspection');
+  const { observer, api, child } = fixture({ inspect });
+  const frameRef = await childRef(observer);
+  const read = await observer.read(frameRef, {}, () => true);
+  const ref = read.elements[0].ref;
+  expect(read.readOnly).toBe(false);
+  expect(ref).toMatch(/^frame_element_/);
+  expect(read.frames[0].viewport.scrollOnly).toBe(true);
+  const task = jest.fn((session) => session.evaluate('inspect'));
+  await expect(observer.withReference(ref, () => false, task)).rejects.toMatchObject({
+    code: ERROR_CODES.POLICY_DENIED,
+  });
+  expect(task).not.toHaveBeenCalled();
+  const foreign = fixture({ inspect }).observer;
+  await expect(foreign.withReference(ref, () => true, task)).rejects.toMatchObject({
+    code: ERROR_CODES.STALE_ELEMENT_REFERENCE,
+  });
+  await observer.withReference(ref, () => true, task);
+  expect(inspect).toHaveBeenCalledWith('ref_child');
+  expect(api.sendCommand).toHaveBeenCalledWith(
+    'Runtime.evaluate',
+    expect.objectContaining({
+      uniqueContextId: 'unique-child-context',
+      expression: 'fixed inspection',
+    }),
+    'child-session'
+  );
+  child.loaderId = 'replacement';
+  await expect(observer.withReference(ref, () => true, task)).rejects.toMatchObject({
+    code: ERROR_CODES.STALE_ELEMENT_REFERENCE,
+  });
+  expect(task).toHaveBeenCalledTimes(1);
+  expect(api.isAttached()).toBe(false);
+});
+
+test('cancellation between frame preparation and native dispatch prevents input', async () => {
+  const { observer, api } = fixture({ inspect: () => 'fixed inspection' });
+  const read = await observer.read(await childRef(observer), {}, () => true);
+  await expect(
+    observer.withReference(
+      read.elements[0].ref,
+      () => true,
+      async (session) => {
+        observer.cancel();
+        await session.insertText('must not dispatch');
+      }
+    )
+  ).rejects.toBeDefined();
+  expect(api.sendCommand.mock.calls.some(([method]) => method.startsWith('Input.'))).toBe(false);
+  expect(api.isAttached()).toBe(false);
 });

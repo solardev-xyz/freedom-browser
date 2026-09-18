@@ -222,7 +222,7 @@ class AutomationController {
     }
   }
 
-  async inspectAction(operation, rawInput = {}) {
+  async inspectAction(operation, rawInput = {}, execution = {}) {
     let input;
     let entry;
     try {
@@ -251,6 +251,14 @@ class AutomationController {
           'Automation action inspection is unavailable for this page'
         );
       }
+      if (entry.adapter.isFrameReference?.(input.ref)) {
+        const result = await entry.adapter.inspectFrameAction(
+          input.ref,
+          { ...input, operation },
+          execution.authorizeFrame
+        );
+        return this.#successEnvelope(entry, result);
+      }
       const result = await entry.adapter.inspectAction(input.ref, {
         operation,
         ...(input.key && { key: input.key }),
@@ -264,6 +272,22 @@ class AutomationController {
   }
 
   async #dispatch(operation, input, entry, execution) {
+    if (
+      entry?.adapter.isFrameReference?.(input.ref) &&
+      [
+        OPERATIONS.CLICK,
+        OPERATIONS.TYPE,
+        OPERATIONS.PRESS,
+        OPERATIONS.SCROLL,
+        OPERATIONS.SELECT,
+        OPERATIONS.UPLOAD,
+        OPERATIONS.DOWNLOAD,
+        OPERATIONS.WALLET_ACTION,
+      ].includes(operation)
+    ) {
+      return entry.adapter.frameAction(input.ref, { ...input, operation }, execution);
+    }
+
     switch (operation) {
       case OPERATIONS.LIST_TABS:
         return { tabs: this.pages.list() };

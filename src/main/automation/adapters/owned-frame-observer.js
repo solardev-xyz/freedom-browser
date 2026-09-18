@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { AutomationError, ERROR_CODES } = require('../contract/errors');
+const { inspectFrameOwner } = require('./frame-interaction-geometry');
 
 const MAX_FRAMES = 64;
 const MAX_HANDLES = 128;
@@ -26,11 +27,13 @@ function staleFrame() {
 // Owns a short-lived debugger connection to exactly one WebContents. It does
 // not borrow an existing debugger or accept script bodies from operation input.
 class OwnedFrameObserver {
-  constructor(webContents, snapshotSource) {
+  constructor(webContents, snapshotSource, actionSources = {}) {
     if (typeof snapshotSource !== 'function')
       throw new TypeError('A fixed snapshot source is required');
     this.webContents = webContents;
     this.snapshotSource = snapshotSource;
+    this.actionSources = actionSources;
+    this.references = new Map();
     this.worldName = `freedom-frame-${crypto.randomUUID()}`;
     this.handles = new Map();
     this.pending = Promise.resolve();
@@ -65,38 +68,9 @@ class OwnedFrameObserver {
 
   read(frameRef, options, authorizeFrame) {
     return this.#connected(async (connection) => {
-      const handle = this.handles.get(frameRef);
-      if (!handle) throw staleFrame();
-      const discovered = await this.#discover(connection);
-      const frame = discovered.frames.get(handle.id);
-      if (!frame || !this.#sameDocument(frame, handle)) throw staleFrame();
-      // The caller supplies policy from the trusted controller, never from tool
-      // arguments. Opaque/unsupported origins cannot be silently treated as the
-      // embedding page's origin.
-      if (
-        typeof authorizeFrame !== 'function' ||
-        (await authorizeFrame(this.#publicFrame(frame, frameRef))) !== true
-      ) {
-        throw new AutomationError(
-          ERROR_CODES.POLICY_DENIED,
-          'Reading this frame origin is not allowed'
-        );
-      }
+      const opened = await this.#openFrame(connection, frameRef, authorizeFrame);
+      const { frame, context, assertCurrent } = opened;
       const send = (method, params) => connection.send(method, params, frame.sessionId);
-      await send('Runtime.enable', {});
-      const world = await send('Page.createIsolatedWorld', {
-        frameId: frame.id,
-        worldName: this.worldName,
-        grantUniveralAccess: false,
-      });
-      const context = connection.contexts.find(
-        (context) =>
-          context.sessionId === frame.sessionId && context.id === world.executionContextId
-      );
-      if (!context?.uniqueId || context.origin !== frame.origin)
-        throw unavailable('The frame did not provide an isolated document context');
-      const beforeRead = (await this.#discover(connection)).frames.get(handle.id);
-      if (!beforeRead || !this.#sameDocument(beforeRead, handle)) throw staleFrame();
       const result = await send('Runtime.evaluate', {
         expression: this.snapshotSource(options),
         uniqueContextId: context.uniqueId,
@@ -105,28 +79,167 @@ class OwnedFrameObserver {
       });
       if (result.exceptionDetails || !Array.isArray(result.result?.value?.elements))
         throw unavailable();
-      const after = (await this.#discover(connection)).frames.get(handle.id);
-      if (!after || !this.#sameDocument(after, handle)) throw staleFrame();
+      await assertCurrent();
       const snapshot = result.result.value;
-      // Cross-frame interaction routing is not part of this read capability.
-      // Do not advertise child-world references as usable root-page controls.
-      const elements = snapshot.elements.map(
-        ({ ref: _ref, scrollOnly: _scrollOnly, ...element }) => element
-      );
-      const frames = snapshot.frames.map(({ viewport, ...entry }) => ({
-        ...entry,
-        ...(viewport && {
-          viewport: Object.fromEntries(Object.entries(viewport).filter(([key]) => key !== 'ref')),
-        }),
-      }));
+      const actionable = Object.keys(this.actionSources).length > 0;
+      const expose = (item) => {
+        if (!item?.ref) return item;
+        const { ref: localRef, ...description } = item;
+        if (!actionable) return description;
+        const ref = `frame_element_${crypto.randomUUID()}`;
+        this.references.set(ref, {
+          frameRef,
+          localRef,
+          contextId: context.uniqueId,
+          scrollOnly: item.scrollOnly === true,
+          effect: item.effect || '',
+        });
+        while (this.references.size > 1000)
+          this.references.delete(this.references.keys().next().value);
+        return { ...description, ref };
+      };
       return {
         ...snapshot,
-        elements,
-        frames,
-        frame: this.#publicFrame(after, frameRef),
-        readOnly: true,
+        elements: snapshot.elements.map(expose),
+        frames: snapshot.frames.map(({ viewport, ...entry }) => ({
+          ...entry,
+          ...(viewport && { viewport: expose({ ...viewport, scrollOnly: true }) }),
+        })),
+        frame: this.#publicFrame(frame, frameRef),
+        readOnly: !actionable,
+        ...(actionable && { supportedActions: ['click', 'type', 'press', 'scroll'] }),
       };
     });
+  }
+
+  isReference(ref) {
+    return typeof ref === 'string' && ref.startsWith('frame_element_');
+  }
+
+  withReference(ref, authorizeFrame, task) {
+    return this.#connected(async (connection) => {
+      const reference = this.references.get(ref);
+      if (!reference) throw staleFrame();
+      const opened = await this.#openFrame(connection, reference.frameRef, authorizeFrame);
+      if (opened.context.uniqueId !== reference.contextId) throw staleFrame();
+      const evaluate = async (kind, args = []) => {
+        const source = this.actionSources[kind];
+        if (typeof source !== 'function') throw unavailable('This frame action is unavailable');
+        await opened.assertCurrent();
+        const result = await connection.send(
+          'Runtime.evaluate',
+          {
+            expression: source(reference.localRef, ...args),
+            uniqueContextId: opened.context.uniqueId,
+            awaitPromise: true,
+            returnByValue: true,
+            timeout: 1000,
+          },
+          opened.frame.sessionId
+        );
+        if (result.exceptionDetails) throw unavailable();
+        await opened.assertCurrent();
+        return result.result?.value;
+      };
+      return task({
+        reference,
+        insertText: async (text) => {
+          await opened.assertCurrent();
+          return connection.send('Input.insertText', { text }, opened.frame.sessionId);
+        },
+        mouse: async (params) => {
+          await opened.assertCurrent();
+          return connection.send('Input.dispatchMouseEvent', params, opened.frame.sessionId);
+        },
+        key: async (params) => {
+          await opened.assertCurrent();
+          return connection.send('Input.dispatchKeyEvent', params, opened.frame.sessionId);
+        },
+        evaluate,
+        assertCurrent: opened.assertCurrent,
+        frame: this.#publicFrame(opened.frame, reference.frameRef),
+        checkedInputPoint: (point, viewport, options = {}) =>
+          this.#checkedInputPoint(connection, opened, point, viewport, authorizeFrame, options),
+      });
+    });
+  }
+
+  async #openFrame(connection, frameRef, authorizeFrame) {
+    const handle = this.handles.get(frameRef);
+    if (!handle) throw staleFrame();
+    const discovered = await this.#discover(connection);
+    const frame = discovered.frames.get(handle.id);
+    if (!frame || !this.#sameDocument(frame, handle)) throw staleFrame();
+    if (
+      typeof authorizeFrame !== 'function' ||
+      (await authorizeFrame(this.#publicFrame(frame, frameRef))) !== true
+    )
+      throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'This frame origin is not allowed');
+    const send = (method, params) => connection.send(method, params, frame.sessionId);
+    const world = await send('Page.createIsolatedWorld', {
+      frameId: frame.id,
+      worldName: this.worldName,
+      grantUniveralAccess: false,
+    });
+    const context = connection.contexts.findLast(
+      (entry) => entry.sessionId === frame.sessionId && entry.id === world.executionContextId
+    );
+    if (!context?.uniqueId || context.origin !== frame.origin)
+      throw unavailable('The frame did not provide an isolated document context');
+    const assertCurrent = async () => {
+      const live = (await this.#discover(connection)).frames.get(handle.id);
+      if (!live || !this.#sameDocument(live, handle)) throw staleFrame();
+    };
+    await assertCurrent();
+    return { frame, context, assertCurrent };
+  }
+
+  async #checkedInputPoint(connection, opened, point, viewport, authorizeFrame, options) {
+    let current = opened;
+    let inputPoint = point;
+    const lineage = [opened];
+    for (let depth = 0; current.frame.parentId; depth += 1) {
+      if (depth >= 16) throw unavailable('The frame nesting is too deep for interaction');
+      const discovered = await this.#discover(connection);
+      const parent = discovered.frames.get(current.frame.parentId);
+      if (!parent) throw staleFrame();
+      const owner = await this.#openFrame(connection, this.#handle(parent), authorizeFrame);
+      const send = (method, params) => connection.send(method, params, parent.sessionId);
+      const node = await send('DOM.getFrameOwner', { frameId: current.frame.id });
+      const resolved = await send('DOM.resolveNode', {
+        backendNodeId: node.backendNodeId,
+        executionContextId: owner.context.id,
+      });
+      const objectId = resolved.object?.objectId;
+      if (!objectId) throw staleFrame();
+      try {
+        await owner.assertCurrent();
+        const inspected = await send('Runtime.callFunctionOn', {
+          objectId,
+          functionDeclaration: inspectFrameOwner.toString(),
+          returnByValue: true,
+          arguments: [point, viewport, options.requireFocus === true, options.prepare === true].map(
+            (value) => ({ value })
+          ),
+        });
+        const result = inspected.result?.value;
+        if (inspected.exceptionDetails || !result?.ok)
+          throw new AutomationError(
+            ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
+            'The enclosing frame is covered, changed or has unsupported geometry',
+            { retryable: true }
+          );
+        point = result.point;
+        if (parent.sessionId === opened.frame.sessionId) inputPoint = point;
+        viewport = result.viewport;
+      } finally {
+        await send('Runtime.releaseObject', { objectId }).catch(() => {});
+      }
+      lineage.push(owner);
+      current = owner;
+    }
+    for (const frame of lineage) await frame.assertCurrent();
+    return inputPoint;
   }
 
   cancel() {
@@ -137,6 +250,7 @@ class OwnedFrameObserver {
   dispose() {
     this.disposed = true;
     this.handles.clear();
+    this.references.clear();
     this.cancel();
   }
 
@@ -217,7 +331,7 @@ class OwnedFrameObserver {
   #connected(task) {
     const generation = this.generation;
     const cancelled = () =>
-      new AutomationError(ERROR_CODES.USER_CANCELLED, 'Frame observation stopped');
+      new AutomationError(ERROR_CODES.USER_CANCELLED, 'Frame operation stopped');
     const operation = this.pending
       .catch(() => {})
       .then(async () => {
@@ -226,7 +340,7 @@ class OwnedFrameObserver {
         const api = this.webContents.debugger;
         if (!api || api.isAttached())
           throw unavailable(
-            'Another debugger is using this page; frame reading cannot take it over'
+            'Another debugger is using this page; frame operations cannot take it over'
           );
         const sessions = [''];
         const contexts = [];

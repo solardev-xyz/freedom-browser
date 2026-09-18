@@ -63,13 +63,14 @@ has passed live qualification.
   exact token beyond the initial text window (54.5s). This is not a reliability
   benchmark; cross-platform/release qualification remains outstanding.
   Native dropdown labels/disabled groups and delayed custom-menu flows are covered.
-  Read-only cross-origin frame listing/search now uses owned, document-bound
+  Cross-origin frame listing/search now uses owned, document-bound
   handles and effective execution-context origins; opaque origins are denied.
   Repetition recovery now gives bounded model-facing hints for unchanged
   observations, retryable failures and scroll boundaries. A native five-click/
   five-approval case and 174 tests in 5 focused suites pass; hints cannot retry or
-  grant authority. Broader forms/waits, cross-frame interaction and visual
-  targeting remain pending.
+  grant authority. Cross-frame click/type/press/scroll now retain document, origin,
+  approval, focus and ancestor hit checks; desktop/hidden native fixtures pass.
+  Broader forms/waits and production visual targeting remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -111,17 +112,19 @@ harness has been selected.
    delayed custom menus, native single-select listboxes and disabled option groups.
    Remaining: broader form semantics, reverse-flow/complex scrolling geometry,
    and further cancellation/uncertain-effect coverage.
-4. **Frames — read-only integration implemented:** `browser_list_frames` and
+4. **Frames — observation and core interaction implemented:** `browser_list_frames` and
    `browser_read_frame` use owner/document-bound handles, recursively owned child
    sessions, isolated-world collection and the existing task-origin policy. Browser
    default execution contexts supply effective origins: frame-tree `securityOrigin`
    alone incorrectly identifies opaque sandboxed frames by their URL origin.
    Duplicate URLs, nested cross-origin frames, unrelated tabs, sandbox denial,
    navigation/removal and debugger conflicts pass desktop/hidden fixtures. Reads
-   return descriptions without actionable child references; bounded lifecycle,
-   cancellation and host-only authorization have unit coverage. Next: cross-frame
-   action geometry/inspection/approval binding; debugger sharing remains deferred
-   (current reads never borrow or displace another debugger).
+   now return opaque document-bound click/type/press/scroll references. Actions
+   recheck approval descriptors, form payloads, focus and enclosing-frame hit tests;
+   Chromium frame-session input produces trusted events at 100%/150% zoom.
+   Cancellation and raw-controller authorization bypass have regression coverage.
+   Unsupported transforms, cross-origin select/file transfer/element waits and
+   debugger sharing remain deferred. No debugger is borrowed or displaced.
 5. **Visual fallback — test-only binding probe qualified:** 10 cases cover screenshot
    pixel mapping at two zoom levels, actual trusted canvas clicks, single-use capture
    binding, and rejection of viewport/document/layout/paint/overlay changes, including

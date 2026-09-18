@@ -93,6 +93,7 @@ function actionDescriptor(element) {
       : '',
     label: typeof element?.label === 'string' ? element.label.slice(0, 160) : '',
     navigationTarget: typeof element?.navigationTarget === 'string' ? element.navigationTarget : '',
+    ...(typeof element?.frameRef === 'string' && { frameRef: element.frameRef, origin: element.origin || '' }),
     formPayloadFingerprint:
       typeof element?.formPayloadFingerprint === 'string' ? element.formPayloadFingerprint : '',
   });
@@ -142,6 +143,7 @@ function interactionMayProceed(classification) {
 
 function sameActionDescriptor(left, right) {
   return (
+    left.frameRef === right.frameRef && left.origin === right.origin &&
     left.effect === right.effect &&
     left.label === right.label &&
     left.navigationTarget === right.navigationTarget &&
@@ -420,7 +422,10 @@ class OriginScopedAutomationController {
     }
 
     if (PAGE_INTERACTION_OPERATIONS.has(operation)) {
-      const approval = await this.#authorizeAction(operation, input, state);
+      if (typeof input.ref === 'string' && input.ref.startsWith('frame_element_')) {
+        execution = { ...execution, authorizeFrame: (frame) => this.#acceptRequestedOrigin(frame?.origin) };
+      }
+      const approval = await this.#authorizeAction(operation, input, state, execution);
       if (approval) return approval;
     }
 
@@ -663,17 +668,29 @@ class OriginScopedAutomationController {
     return decision;
   }
 
-  async #authorizeAction(operation, input, state) {
+  #inspectAction(operation, input) {
+    return typeof input.ref === 'string' && input.ref.startsWith('frame_element_')
+      ? this.controller.inspectAction(operation, input, { authorizeFrame: (frame) => this.#acceptRequestedOrigin(frame?.origin) })
+      : this.controller.inspectAction(operation, input);
+  }
+
+  async #authorizeAction(operation, input, state, execution) {
     if (
       this.approvalMode === AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS &&
       operation !== OPERATIONS.DOWNLOAD &&
-      operation !== OPERATIONS.UPLOAD
+      operation !== OPERATIONS.UPLOAD &&
+      !input.ref?.startsWith('frame_element_')
     ) {
       return null;
     }
-    const inspected = await this.controller.inspectAction(operation, input);
+    const inspected = await this.#inspectAction(operation, input);
     if (!inspected?.ok) return inspected;
     const element = actionDescriptor(inspected.result);
+    if (element.frameRef) {
+      if (!this.#acceptRequestedOrigin(element.origin)) return this.#originDenied(state);
+      execution.expectedFrameAction = element;
+      if (this.approvalMode === AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS) return null;
+    }
     const actionKey = JSON.stringify([
       operation,
       input.tabId,
@@ -688,6 +705,7 @@ class OriginScopedAutomationController {
       element.label,
       element.navigationTarget,
       element.formPayloadFingerprint,
+      element.frameRef || '', element.origin || '',
     ]);
     if (this.declinedActions.has(actionKey)) {
       return errorEnvelope(
@@ -732,7 +750,7 @@ class OriginScopedAutomationController {
                     }),
                   },
                   trustedContext: {
-                    origin: originScopeForUrl(state?.result?.tab?.url) || '',
+                    origin: element.origin || originScopeForUrl(state?.result?.tab?.url) || '',
                     mechanism: element.effect || 'generic_interaction',
                     destinationOrigin: originScopeForUrl(element.navigationTarget) || '',
                   },
@@ -766,7 +784,7 @@ class OriginScopedAutomationController {
               : 'browser_interaction',
       operation,
       tabId: input.tabId,
-      origin: originScopeForUrl(state?.result?.tab?.url) || '',
+      origin: element.origin || originScopeForUrl(state?.result?.tab?.url) || '',
       destinationOrigin:
         element.effect === 'file_upload'
           ? originScopeForUrl(state?.result?.tab?.url) || ''
@@ -793,7 +811,7 @@ class OriginScopedAutomationController {
     const currentState = await this.#readState(input.tabId);
     if (!currentState.ok) return currentState;
     if (!this.#acceptCurrentOrigin(currentState)) return this.#originDenied(currentState);
-    const reinspected = await this.controller.inspectAction(operation, input);
+    const reinspected = await this.#inspectAction(operation, input);
     if (!reinspected?.ok) return reinspected;
     const currentElement = actionDescriptor(reinspected.result);
     if (!sameActionDescriptor(element, currentElement)) {
