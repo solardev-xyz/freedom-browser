@@ -33,3 +33,9 @@ identity-data/
 research/
 playwright-report/
 test-results/
+
+# Devenv (https://devenv.sh) — local state & per-user overrides only.
+# devenv.nix, devenv.yaml, devenv.lock, and .envrc are committed.
+.devenv*
+devenv.local.nix
+devenv.local.yaml
