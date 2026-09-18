@@ -1,6 +1,7 @@
 'use strict';
 
 const { BrowserRecoveryTracker } = require('./browser-recovery-tracker');
+const { BrowserEvidenceStore } = require('./browser-evidence-store');
 const {
   OPERATIONS,
   MAX_WAIT_TIMEOUT_MS,
@@ -718,10 +719,11 @@ async function createFreedomBrowserTools(options = {}) {
   const pageOrigins = new Map();
   const pageDetails = new Map();
   const recovery = new BrowserRecoveryTracker();
+  const evidence = new BrowserEvidenceStore();
   const availableSpecs = TOOL_SPECS.filter(
     (spec) => spec.requiresVision !== true || options.visionEnabled === true
   );
-  return availableSpecs.map((spec) =>
+  const tools = availableSpecs.map((spec) =>
     sdk.defineTool({
       name: spec.operation,
       label: spec.label,
@@ -803,6 +805,13 @@ async function createFreedomBrowserTools(options = {}) {
             spec.operation, { ...params, tabId: targetTabId }, result.details.envelope
           );
           if (guidance) result.content.push({ type: 'text', text: guidance });
+          const evidenceId = evidence.record(spec.operation, result.details.envelope);
+          if (evidenceId) {
+            result.content.push({
+              type: 'text',
+              text: `Historical evidence saved as ${evidenceId}. Use browser_recall_evidence if this result leaves your context; reread the page for live actions.`,
+            });
+          }
           return result;
         } catch (error) {
           const receipt = createToolReceipt(spec.operation, {
@@ -830,6 +839,7 @@ async function createFreedomBrowserTools(options = {}) {
       },
     })
   );
+  return [...tools, evidence.tool(sdk)];
 }
 
 module.exports = {

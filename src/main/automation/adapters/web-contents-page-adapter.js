@@ -357,6 +357,7 @@ function collectPageSnapshot(
     if (tag === 'button') return 'button';
     if (tag === 'select') return element.multiple || element.size > 1 ? 'listbox' : 'combobox';
     if (tag === 'textarea') return 'textbox';
+    if (tag === 'dialog') return 'dialog';
     if (tag === 'input') {
       if (element.type === 'file') return 'button';
       if (['button', 'submit', 'reset'].includes(element.type)) return 'button';
@@ -368,7 +369,7 @@ function collectPageSnapshot(
     return element.isContentEditable ? 'textbox' : 'generic';
   };
   const semanticCandidateSelector =
-    'a[href],button,input:not([type="hidden"]),select,textarea,[role],[contenteditable="true"],[tabindex]:not([tabindex="-1"])';
+    'a[href],button,input:not([type="hidden"]),select,textarea,dialog[open],[role],[contenteditable="true"],[tabindex]:not([tabindex="-1"])';
   const isExplicitClickTarget = (element) =>
     element.hasAttribute('onclick') || typeof element.onclick === 'function';
   const isPointerBoundary = (element) => {
@@ -380,6 +381,8 @@ function collectPageSnapshot(
     return !parent || styleFor(parent).cursor !== 'pointer';
   };
   const elements = [];
+  const dialogs = [];
+  let dialogsTruncated = false;
   const frames = [];
   const pageText = [];
   const textSources = [];
@@ -465,6 +468,19 @@ function collectPageSnapshot(
         visitedNodes += 1;
         if (element.shadowRoot) shadowRoots.push(element.shadowRoot);
         if (element.matches('iframe,frame')) childFrames.push(element);
+        if (
+          element.matches('dialog[open],[role="dialog"],[role="alertdialog"]') &&
+          visible(element)
+        ) {
+          if (dialogs.length < 16)
+            dialogs.push({
+              frameId,
+              role: element.getAttribute('role') || 'dialog',
+              name: readElementName(element).slice(0, 240),
+              modal: element.matches(':modal') || element.getAttribute('aria-modal') === 'true',
+            });
+          else dialogsTruncated = true;
+        }
         if (element === frameDocument.scrollingElement) continue;
         const scroll = readScrollState(element);
         const scrollable = scroll.horizontal || scroll.vertical;
@@ -502,6 +518,9 @@ function collectPageSnapshot(
           ...displayField('role', role, 128),
           ...displayField('name', name),
           ...displayField('tag', tag, 128),
+          ...(element.closest('dialog[open],[role="dialog"],[role="alertdialog"]') && {
+            inDialog: true,
+          }),
           ...(inferred && { inferred: true }),
           disabled:
             element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
@@ -607,6 +626,8 @@ function collectPageSnapshot(
     text: fullText.slice(textStart, textEnd),
     frames,
     elements,
+    dialogs,
+    dialogsTruncated,
     elementOffset,
     textOffset: textStart,
     ...(query && { query }),
@@ -623,7 +644,12 @@ function collectPageSnapshot(
     textCollectionTruncated,
     fieldsTruncated,
     truncated:
-      moreElements || moreText || scanTruncated || textCollectionTruncated || fieldsTruncated,
+      moreElements ||
+      moreText ||
+      scanTruncated ||
+      textCollectionTruncated ||
+      fieldsTruncated ||
+      dialogsTruncated,
   };
 }
 

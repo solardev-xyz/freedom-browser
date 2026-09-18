@@ -110,6 +110,7 @@ class BrowserRecoveryTracker {
         observation: null,
         repeats: 0,
         attempts: [],
+        recent: [],
         references: new Map(),
       });
       if (this.#pages.size > MAX_PAGES) this.#pages.delete(this.#pages.keys().next().value);
@@ -133,6 +134,7 @@ class BrowserRecoveryTracker {
       page.observation = null;
       page.repeats = 0;
       page.attempts = [];
+      page.recent = [];
       if (operation === OPERATIONS.NAVIGATE) page.references.clear();
       return null;
     }
@@ -171,7 +173,21 @@ class BrowserRecoveryTracker {
       if (typeof frame.viewport?.ref !== 'string') continue;
       this.#remember(page, frame.viewport.ref, { scope, index, viewport: true, url: frame.url });
     }
-    return hint('observation', page.repeats);
+    page.recent.push({ scope, observation });
+    if (page.recent.length > 6) page.recent.shift();
+    const repeated = hint('observation', page.repeats);
+    if (repeated) return repeated;
+    const recent = page.recent;
+    if (
+      recent.length === 6 &&
+      recent.every((entry) => entry.scope === scope) &&
+      recent[0].observation !== recent[1].observation &&
+      recent.every((entry, index) => entry.observation === recent[index % 2].observation)
+    ) {
+      page.recent = [];
+      return 'Freedom browser recovery: The same two observed states have alternated three times. Check earlier evidence with browser_recall_evidence and confirm whether the requested outcome changed before repeating this cycle. This is advisory; previous interactions may have had side effects.';
+    }
+    return null;
   }
 
   #attempt(page, operation, input, outcome, kind) {

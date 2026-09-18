@@ -71,7 +71,9 @@ has passed live qualification.
   grant authority. Cross-frame click/type/press/scroll now retain document, origin,
   approval, focus and ancestor hit checks; desktop/hidden native fixtures pass.
   A conservative production visual fallback now binds single-use click targets to
-  screenshots; broader forms/waits and long-task evidence recovery remain pending.
+  screenshots. Bounded session-local evidence recall, two-state cycle advice and
+  HTML/ARIA dialog context are implemented. Native JavaScript dialogs, broader
+  form semantics and cross-platform/live-vision qualification remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -143,12 +145,33 @@ harness has been selected.
    retries, action vetoes or new authority. Document/control/focus/scroll progress,
    continuation scopes and original action outcomes remain distinct. A native
    five-click/five-approval fixture and 174 tests in 5 focused suites pass. Threshold
-   tuning against real tasks, broader cycles and stronger blocker policy remain open.
+   tuning against real tasks and stronger blocker policy remain open. Two-state
+   alternation now produces advice after three cycles within the same observation
+   scope, without vetoing actions or confusing pagination with a loop.
 
-Follow-through opportunities include guarded batching, exact observation retrieval
-after compaction, dialog handling and lifecycle diagnostics. Deepen the relevant
+7. **Long-task evidence and dialogs — first integration implemented:**
+   `browser_recall_evidence` searches/paginates up to 32 retained observations and
+   action results (512 KiB text budget, 64k characters per result). It survives
+   prompt-context loss within the same tool session, is marked historical and
+   untrusted, and removes action handles. No disk archive or cross-session
+   retrieval. Native fixture verifies old text after a page change and rejection
+   from a new tool session. Snapshots identify up to 16 visible HTML/ARIA dialogs
+   and controls inside them; modal background blocking and ordinary approval are
+   tested. JavaScript alert/confirm/prompt and beforeunload handling remain open:
+   they require a document-bound dialog lifecycle and dedicated approval, not an
+   implicit accept/dismiss or a synthetic DOM override.
+
+Follow-through opportunities include guarded batching, durable observation retrieval
+across rebuilt sessions, native JavaScript dialogs and lifecycle diagnostics. Deepen the relevant
 source/test/history review when selecting each for implementation. Retain
 Freedom's canonical controller and Pi's reasoning responsibilities.
+
+Qualification on 2026-09-18: 372 tests in 13 focused suites and 44 combined native
+Electron cases pass; lint is clean. Installed local
+`qwen3:8b` completed both long-document exact-fact retrieval and a cross-origin
+frame click through the normal composer (two cases, 2.6 minutes total). These
+are bounded samples; a live vision-model task, cross-platform/release builds,
+native JavaScript dialogs and user review remain open before integration.
 
 Use local synthetic browser fixtures plus a small manual task set to validate
 actual outcomes. The user deferred a cross-project comparative benchmark, not

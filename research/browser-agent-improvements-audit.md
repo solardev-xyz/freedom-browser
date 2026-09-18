@@ -690,6 +690,75 @@ Only click is enabled; no coordinate typing, drag or file operations. No new
 dependency, user-profile access or paid model run was used.
 
 
+## 2026-09-18 — Historical evidence, cycles and dialog context
+
+A conversation tool-session `BrowserEvidenceStore` retains successful semantic
+observations and ordinary browser action results, never submitted tool inputs,
+screenshots or wallet/node/file results. It stores at most 32 entries and 512 KiB
+of text, clips individual results at 64,000 characters and returns 8,000-character
+chunks with explicit truncation/eviction metadata. Literal search and an index
+make IDs recoverable after compaction. Historical content is explicitly untrusted,
+not live state; recursive action/capture/document handles are removed. The store
+is main-process agent memory, not a renderer/browser capability or disk archive.
+A rebuilt session cannot retrieve another store's IDs. SDK compaction keeps the
+same tool closures; no cross-restart recovery is claimed.
+
+The native five-click/five-approval recovery fixture additionally retrieves the
+original observed text after the live page changes, with action references
+removed and a new tool session denied. This simulates loss of prompt-visible
+results; it is not an actual long model compaction benchmark. Unit coverage
+checks immutable retention, foreign sessions, Unicode byte bounds, clipping,
+eviction, search and invalid inputs. The advisory tracker now recognizes three
+cycles of two alternating observations within one scope. Pagination/queries in
+different scopes and explicit progress do not trigger this hint. No automatic
+retry, stop or permission is introduced.
+
+Snapshots now describe visible HTML/ARIA dialogs (bounded to 16) and identify
+controls inside them. Native testing opens a modal, observes its accessible name
+and modal state, rejects an approved click on a background control, and closes
+it through its normal observed Cancel button. All three attempted interactions
+retain normal approval, and the background action has no receipt. The model is
+instructed to inspect the dialog and follow the task, never accept merely to
+clear a blocker.
+
+Native JavaScript alerts/confirms/prompts are not these DOM dialogs. Chromium
+[reports them through the Page domain](https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-javascriptDialogOpening),
+and Electron [exposes beforeunload separately](https://www.electronjs.org/docs/latest/api/web-contents#event-will-prevent-unload).
+A complete native-dialog path needs event capture before opening, document-bound
+identity, approval for the exact accept/dismiss and coexistence with the exclusive
+frame/file debugger leases. That path remains deferred; no unsafe blanket
+acceptance or page-world override was added. Cross-platform dialog qualification
+and stronger cycle/blocker semantics remain follow-through work.
+
+Validation so far: lint clean, 207 tests in seven focused agent/adapter suites,
+one native evidence/recovery case and one native modal-dialog case pass. Final
+combined regression and installed-local-model smoke results are recorded below.
+
+
+### Local-model task qualification, 2026-09-18
+
+Command: `FREEDOM_OLLAMA_TEST_MODEL=qwen3:8b npm run test:e2e -- test-e2e/agent-ollama-live.spec.js --grep 'cross-origin framed action|beyond the first observation'`.
+Both tasks passed in 2.6 minutes total using the already-installed Qwen3 8B
+Q4_K_M model through local Ollama and the normal Freedom composer/provider UI.
+No model download, paid provider or public website was needed; page responses
+were disposable harness fixtures.
+
+- Long document: exact `AUTUMN-48-KITE` beyond the initial observation window,
+  completed in approximately 1.1 minutes.
+- Cross-origin framed action: used `browser_read_frame`, clicked the requested
+  control, and reported `FRAME-READY-63`; the actual embedded document contained
+  `FRAME-READY-63 trusted=true`. Completed in approximately 1.5 minutes.
+
+These are two successful bounded samples, not a reliability benchmark. Qwen3:8b
+has no vision capability here, so no live-model visual localization is claimed.
+The native visual fixtures qualify image/coordinate/approval mechanics only.
+The final focused unit run passes 372 tests in 13 suites. The final combined
+native run passes 44 cases in 1.9 minutes: frame interaction/observation, visual
+interaction, recovery, modal dialogs, the existing kernel and observation suites.
+`npm run lint` and `git diff --check` pass. Experimental changes
+remain local for user review before feature-branch integration.
+
+
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d
 [pi-root]: https://github.com/browser-use/browser-use-pi/tree/fa838f3298673950923bdaf12bd3c1b6279cd119
 [h-root]: https://github.com/browser-use/browser-harness-js/tree/2d9a5ed37ed11f31b2622cd69c4b55f979cb905f

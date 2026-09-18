@@ -430,3 +430,41 @@ test('Ollama finds an exact fact beyond the first observation window', async ({ 
     if (response.state?.runId) await window.evaluate(id => window.electronAPI.stopAgent(id), response.state.runId);
   }
 });
+
+test('Ollama completes a cross-origin framed action through the normal composer', async ({ window, electronApp, harness }) => {
+  test.setTimeout(4 * 60_000);
+  const childUrl = 'https://ollama-framed-status.test/panel';
+  await harness.setContentFixture(childUrl, { body: `<!doctype html><title>Embedded status panel</title><button onclick="document.querySelector('p').textContent='FRAME-READY-63 trusted='+event.isTrusted">Confirm framed action</button><p>Pending</p>` });
+  await openFixture(window, harness, `${EVALUATION_ORIGIN}/ollama-cross-origin`, `<!doctype html><h1>Embedded status</h1><iframe title="Status panel" src="${childUrl}" style="width:500px;height:300px"></iframe>`);
+  await configureOllama(window);
+  await window.locator('#agent-prompt').fill('In the embedded status panel, click "Confirm framed action" once, then read and report its exact resulting status.');
+  await window.locator('#agent-run').click();
+  const response = await window.evaluate(() => window.electronAPI.getAgentState());
+  const runId = response.state?.runId || response.state?.transcript?.at(-1)?.runId;
+  expect(runId).toBeTruthy();
+  const started = Date.now();
+  let lastReport = 0;
+  try {
+    await expect.poll(async () => {
+      if (await window.locator('#agent-approval-approve').isVisible()) await window.locator('#agent-approval-approve').click();
+      const response = await window.evaluate(() => window.electronAPI.getAgentState());
+      const turn = response.state?.transcript?.find(item => item.runId === runId);
+      if (Date.now()-lastReport>30000) {console.log('[Ollama frame]',JSON.stringify({elapsedMs:Date.now()-started,status:turn?.status,actions:turn?.activity?.length||0}));lastReport=Date.now();}
+      return turn?.status;
+    }, { timeout: 3*60_000, intervals:[1000] }).toMatch(/^(completed|failed|cancelled)$/);
+    const response = await window.evaluate(() => window.electronAPI.getAgentState());
+    const turn = response.state?.transcript?.find(item => item.runId === runId);
+    await test.info().attach('ollama-cross-origin', {body:JSON.stringify({model:OLLAMA_MODEL,durationMs:Date.now()-started,turn},null,2),contentType:'application/json'});
+    expect(turn?.status).toBe('completed');
+    expect(turn?.assistantText).toContain('FRAME-READY-63');
+    expect(turn?.activity?.some(item=>item.operation==='browser_read_frame'&&item.status==='succeeded')).toBe(true);
+    const states = await electronApp.evaluate(async ({ webContents }, url) => {
+      const frames=webContents.getAllWebContents().flatMap(w=>w.mainFrame.framesInSubtree).filter(frame=>frame.url===url);
+      return Promise.all(frames.map(frame=>frame.executeJavaScript("document.querySelector('p').textContent")));
+    },childUrl);
+    expect(states).toContain('FRAME-READY-63 trusted=true');
+  } finally {
+    const response = await window.evaluate(() => window.electronAPI.getAgentState());
+    if (response.state?.runId) await window.evaluate(id=>window.electronAPI.stopAgent(id),response.state.runId);
+  }
+});

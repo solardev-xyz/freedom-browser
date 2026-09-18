@@ -239,3 +239,19 @@ test('unexpected observation shapes cannot turn successful operations into failu
   expect(read(tracker, 1, { frames: {} })).toBeNull();
   expect(read(tracker, 2)).toBeNull();
 });
+
+test('detects a two-state cycle only within the same observation scope, without repeating the action', () => {
+  const tracker = new BrowserRecoveryTracker();
+  for (let i = 0; i < 5; i++)
+    expect(read(tracker, i, { text: i % 2 ? 'State B' : 'State A' })).toBeNull();
+  expect(read(tracker, 5, { text: 'State B' })).toContain('alternated three times');
+  const paginated = new BrowserRecoveryTracker();
+  for (let i = 0; i < 8; i++)
+    expect(
+      read(paginated, i, { text: i % 2 ? 'State B' : 'State A' }, { textOffset: i % 2 ? 12000 : 0 })
+    ).toBeNull();
+  const progressed = new BrowserRecoveryTracker();
+  for (let i = 0; i < 5; i++) read(progressed, i, { text: i % 2 ? 'State B' : 'State A' });
+  progressed.record(OPERATIONS.NAVIGATE, { tabId: 'tab_one' }, { ok: true });
+  expect(read(progressed, 5, { text: 'State B' })).toBeNull();
+});

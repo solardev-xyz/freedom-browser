@@ -46,7 +46,7 @@ function successEnvelope(result = {}) {
 }
 
 describe('Pi browser tool adapter', () => {
-  test('defines only the supported canonical, sequential tools', async () => {
+  test('defines sequential canonical browser tools and session-local evidence retrieval', async () => {
     const sdk = createSdk();
     const controller = { execute: jest.fn() };
     const tools = await createFreedomBrowserTools({ sdk, controller, tabId: 'tab_assigned' });
@@ -80,6 +80,7 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.WALLET_TRANSFER,
       OPERATIONS.WAIT,
       OPERATIONS.STOP_LOADING,
+      'browser_recall_evidence',
     ]);
     expect(tools.every((tool) => tool.executionMode === 'sequential')).toBe(true);
     expect(tools.some((tool) => tool.name === OPERATIONS.SCREENSHOT)).toBe(false);
@@ -374,7 +375,7 @@ describe('Pi browser tool adapter', () => {
       ref: 'ref_7',
     });
     expect(result).toEqual({
-      content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      content: [{ type: 'text', text: JSON.stringify(envelope) }, { type: 'text', text: expect.stringContaining('Historical evidence saved as evidence_') }],
       details: { operation: OPERATIONS.CLICK, envelope },
     });
   });
@@ -854,7 +855,7 @@ describe('Pi browser tool adapter', () => {
     const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
     let result;
     for (let index = 0; index < 4; index += 1) result = await snapshot.execute(`read_${index}`, {});
-    expect(result.content).toHaveLength(2);
+    expect(result.content).toHaveLength(3);
     expect(JSON.parse(result.content[0].text)).toEqual(envelope);
     expect(result.content[1].text).toContain('same returned browser observation');
     expect(result.content[1].text).not.toContain('PRIVATE-PAGE-TEXT');

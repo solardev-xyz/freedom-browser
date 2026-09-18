@@ -82,13 +82,44 @@ test('repeated real clicks produce a recovery hint while retaining every approva
         }
         await stop.execute('stop', {});
         const afterStop = await read.execute('new_observation', {});
-        return { approvals, clicks, hints, afterStopContentCount: afterStop.content.length };
+        // Drop live tool results; recall remains independent of the prompt context.
+        const recall = tools.find((tool) => tool.name === 'browser_recall_evidence');
+        await owner.executeJavaScript(
+          "document.querySelector('p').textContent='Replacement content'"
+        );
+        const index = JSON.parse(
+          (await recall.execute('find_old', { query: 'Visible content stays unchanged' }))
+            .content[0].text
+        );
+        const historical = JSON.parse(
+          (await recall.execute('read_old', { id: index.entries[0].id })).content[0].text
+        );
+        const freshTools = await createFreedomBrowserTools({ controller: scoped, tabId });
+        const isolated = JSON.parse(
+          (
+            await freshTools
+              .find((tool) => tool.name === 'browser_recall_evidence')
+              .execute('foreign', { id: index.entries[0].id })
+          ).content[0].text
+        );
+        return {
+          approvals,
+          clicks,
+          hints,
+          afterStopContentCount: afterStop.content.length,
+          historical,
+          isolated,
+        };
       } finally {
         adapter.dispose();
       }
     },
     { url: FIXTURE_URL, mainPath: MAIN_PATH }
   );
+  expect(result.historical.text).toContain('Visible content stays unchanged');
+  expect(result.historical.text).not.toContain('ref_');
+  expect(result.historical.live).toBe(false);
+  expect(result.isolated.found).toBe(false);
   expect(result.approvals).toBe(5);
   expect(result.clicks).toEqual([true, true, true, true, true]);
   // The first click changes focus; the next four observations match.
@@ -97,5 +128,5 @@ test('repeated real clicks produce a recovery hint while retaining every approva
   expect(result.hints[4][0]).toContain(
     'does not establish whether an interaction had side effects'
   );
-  expect(result.afterStopContentCount).toBe(1);
+  expect(result.afterStopContentCount).toBe(2);
 });
