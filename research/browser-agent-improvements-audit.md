@@ -755,8 +755,31 @@ The native visual fixtures qualify image/coordinate/approval mechanics only.
 The final focused unit run passes 372 tests in 13 suites. The final combined
 native run passes 44 cases in 1.9 minutes: frame interaction/observation, visual
 interaction, recovery, modal dialogs, the existing kernel and observation suites.
-`npm run lint` and `git diff --check` pass. Experimental changes
-remain local for user review before feature-branch integration.
+`npm run lint` and `git diff --check` pass.
+
+### User smoke acceptance and integration, 2026-09-18
+
+The user reported that all supplied manual smoke tests succeeded against the
+disposable local pages:
+
+- Cross-origin embedded form: fill and save, checking a single save and trusted input.
+- Canvas-only target: activate the beacon, checking a single trusted activation.
+- HTML modal: open and cancel, leaving nothing applied.
+- Long document: retrieve the exact token beyond the initial observation window.
+- Cancellation: decline approval or press Stop before saving, leaving the form unsaved.
+- Historical evidence: recall the earlier token after replacing the live document
+  within the same conversation.
+
+This is user-reported acceptance of the supplied workflow; the model/provider,
+individual receipts and which cancellation alternative was exercised were not
+recorded. It supplements the automated results above and does not establish a
+broader provider, platform or reliability benchmark.
+
+`feature/freedom-automation-kernel` was fast-forwarded to experimental tip
+`ff2f2507`. The tested source tree is unchanged by that integration; this
+acceptance record is documentation only. The experimental branch is retained.
+Native JavaScript dialog support and broader provider/vision and platform/release
+qualification remain follow-through work.
 
 
 [py-root]: https://github.com/browser-use/browser-use/tree/d8110c5ff87ccba887aaa726cdb780f2f84bef8d

@@ -1,21 +1,22 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-17
+Last updated: 2026-09-18
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-17
+## Current working status — 2026-09-18
 
-The integration branch is `feature/freedom-automation-kernel` at
-`3438d498`, including the main merge `d3882e41` (main through `ee2d4147`)
+The integration branch is `feature/freedom-automation-kernel`, with browser
+improvements integrated through `ff2f2507`, including the main merge `d3882e41` (main through `ee2d4147`)
 and committed provider/browser-activity work. The UI experiment (`cf960030`
-plus `2829f028`) was accepted and fast-forwarded into that branch. Current
-browser-competence research is isolated on `experiment/browser-agent-improvements`,
-created from `3438d498`. The Agent feature remains
+plus `2829f028`) was accepted and fast-forwarded into that branch. The browser
+improvements developed on `experiment/browser-agent-improvements` from `3438d498`
+were accepted after user smoke testing and fast-forwarded on 2026-09-18.
+The experimental branch remains available for reference. The Agent feature remains
 **unreleased**. Earlier dated qualification results below describe their exact
 candidates; they are not claims that today's full checkout or every provider
 has passed live qualification.
@@ -45,7 +46,7 @@ has passed live qualification.
   expectations were not resolved by the provider commit. The pinned Myotis
   v0.1.10 / ABI 26 artifacts were subsequently installed and their hashes
   checked; that does not qualify chain sync or the rest of the dependency tree.
-- Browser competence is the next active improvement track. A
+- Browser competence improvements have completed their first integration round. A
   [source-linked Browser Use audit](browser-agent-improvements-audit.md) records
   14 findings across observation, actions, recovery, agent loop, context,
   lifecycle, trust and evaluation. The upfront comparative benchmark is
@@ -72,8 +73,12 @@ has passed live qualification.
   approval, focus and ancestor hit checks; desktop/hidden native fixtures pass.
   A conservative production visual fallback now binds single-use click targets to
   screenshots. Bounded session-local evidence recall, two-state cycle advice and
-  HTML/ARIA dialog context are implemented. Native JavaScript dialogs, broader
-  form semantics and cross-platform/live-vision qualification remain pending.
+  HTML/ARIA dialog context are implemented. Final combined validation passed
+  **372 tests in 13 focused suites, 44 native Electron cases and two local Qwen
+  tasks**. The user reported all six supplied manual smoke checks successful on
+  2026-09-18, including canvas interaction and cancellation. Native JavaScript
+  dialogs, broader form semantics and broader provider/vision and platform/release
+  qualification remain pending.
 - Existing platform work remains separate: widget platform on its own branch;
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
@@ -86,11 +91,11 @@ for provider privacy requirements and open qualification questions.
 
 ## 2026-09-17 — Browser competence improvement track
 
-Work on `experiment/browser-agent-improvements`, integrating validated slices
-back into the feature branch individually. Keep visual-targeting experiments
-isolated until their behavior and approval semantics are accepted. Work remains
-local and sequential; no remote delegation or subagent implementation is part
-of this track.
+Developed on `experiment/browser-agent-improvements` and integrated into
+`feature/freedom-automation-kernel` through `ff2f2507` on 2026-09-18 after automated
+validation and user smoke acceptance. The experimental branch is retained for
+reference. Work remains local and sequential; no remote delegation or subagent
+implementation is part of this track.
 
 The [reference audit](browser-agent-improvements-audit.md) pins the Python
 Browser Use, Browser Use Pi and Browser Harness JS sources separately. Each
@@ -169,9 +174,14 @@ Freedom's canonical controller and Pi's reasoning responsibilities.
 Qualification on 2026-09-18: 372 tests in 13 focused suites and 44 combined native
 Electron cases pass; lint is clean. Installed local
 `qwen3:8b` completed both long-document exact-fact retrieval and a cross-origin
-frame click through the normal composer (two cases, 2.6 minutes total). These
-are bounded samples; a live vision-model task, cross-platform/release builds,
-native JavaScript dialogs and user review remain open before integration.
+frame click through the normal composer (two cases, 2.6 minutes total). The user
+also reported all six supplied manual smoke checks successful: cross-origin form,
+canvas interaction, HTML modal cancellation, long-document retrieval, approval
+decline/Stop and historical recall after replacing the live document. The manual
+model/provider and individual receipts were not recorded. These are bounded
+samples; broader provider/vision and platform/release qualification remain open,
+as does native JavaScript dialog support. User acceptance completed the gate for
+the local feature-branch integration.
 
 Use local synthetic browser fixtures plus a small manual task set to validate
 actual outcomes. The user deferred a cross-project comparative benchmark, not
