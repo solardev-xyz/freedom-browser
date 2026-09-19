@@ -1,3 +1,4 @@
+import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
 import { isPrivateWindow } from './private-mode.js';
 import { homeUrl } from './page-urls.js';
@@ -74,6 +75,7 @@ const ATTACHMENT_ICON_MARKUP = Object.freeze({
 });
 
 let elements = {};
+let pageActions = null;
 let getActiveTab = () => null;
 let getOpenTabs = () => [];
 let isTabAgentOwned = () => false;
@@ -165,6 +167,16 @@ function isShareablePage(tab) {
   } catch {
     return false;
   }
+}
+
+function pageActionsTab() {
+  if (agentFirstMode) return workspacePages().find((entry) => entry.tab.isActive)?.tab || null;
+  return getActiveTab();
+}
+
+function pageActionsNeedNewChat(tab) {
+  return Boolean(currentConversationId && tab && conversationRendererTabId !== tab.id &&
+    !taskTabProjection.some((entry) => entry.rendererTabId === tab.id));
 }
 
 function pageContextTab() {
@@ -1334,6 +1346,7 @@ function setPanelOpen(nextOpen) {
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
   elements.toggle.setAttribute('aria-expanded', String(panelOpen));
+  pageActions?.render();
 }
 
 function focusComposer(options = {}) {
@@ -2031,6 +2044,7 @@ function setRunState(status, label) {
   const active = status !== 'idle';
   const acceptsComposerInput = ['idle', 'running', 'paused'].includes(status) && !pendingApproval;
   currentRunStatus = status;
+  pageActions?.render();
   setWorkspaceNavigationEditable(status === 'idle' || status === 'paused');
   elements.prompt.disabled = !acceptsComposerInput;
   elements.prompt.placeholder =
@@ -4234,6 +4248,38 @@ export function initAgentUi(options = {}) {
     onOpenViewer: () => { if (agentFirstMode) setWorkspaceSidebarOpen(true); },
   }, { compactHost: elements.workspaceInspectorCompact, refreshControl: elements.workspaceRefresh });
   setAgentTabClaimHandler(claimAgentOwnedTab);
+  pageActions?.dispose();
+  if (byId('agent-page-actions') && window.electronAPI.getAgentPageActions) {
+    pageActions = createPageActions({
+      host: byId('agent-page-actions'), hint: byId('agent-page-actions-hint'), toggle: elements.toggle,
+      getTab: pageActionsTab,
+      getState: () => ({
+        open: panelOpen,
+        suppressed: agentFirstMode || isSignatureInFlight() || isWalletSidebarVisible(),
+        busy: currentRunStatus !== 'idle' || Boolean(pendingApproval),
+        newChat: pageActionsNeedNewChat(pageActionsTab()),
+      }),
+      discover: (tabId) => window.electronAPI.getAgentPageActions(tabId),
+      openPanel,
+      onSelect: async (action, tab) => {
+        openPanel();
+        if (!panelOpen || currentRunStatus !== 'idle') return;
+        if (pageActionsNeedNewChat(tab)) {
+          await clearConversation();
+          if (currentConversationId) return;
+        }
+        if (getActiveTab()?.id !== tab.id || getActiveTab()?.url !== tab.url) return;
+        dismissedPageContextTabId = null;
+        const prompt = pageActionPrompt(action, tab.url);
+        if (!providerReady) {
+          elements.prompt.value = prompt;
+          showProviderSetup();
+          return;
+        }
+        await startRun({ prompt });
+      },
+    });
+  }
 
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
@@ -4489,6 +4535,7 @@ export function initAgentUi(options = {}) {
           ) {
             dismissedPageContextTabId = null;
           }
+          void pageActions?.refresh();
           renderPageContext();
           renderTaskPages();
           ensureWorkspacePageVisible();

@@ -319,3 +319,59 @@ test('SPA navigation preserves the native result but invalidates old tool refere
   ).toMatchObject({ ok: false, error: { code: 'STALE_ELEMENT_REFERENCE' } });
   expect(await script(electronApp, 'window.calls')).toBe(1);
 });
+
+test('page actions are discoverable from the toolbar and hand off to chat without execution', async ({ electronApp, window, harness }, testInfo) => {
+  await setup({ electronApp, window, harness }, 'desktop');
+  await window.evaluate(() => document.documentElement.dataset.theme = 'dark');
+  const hint = window.locator('#agent-page-actions-hint');
+  await expect(hint).toBeVisible({ timeout: 15000 });
+  await window.screenshot({ path: testInfo.outputPath('page-actions-hint-dark.png') });
+  await hint.locator('[data-page-actions-explore]').click();
+  await expect(hint).toBeHidden();
+  // Connect a test-only credential without making any inference request.
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await window.locator('#agent-provider-api').click();
+  await window.locator('#agent-api-key').fill('test-only-not-a-credential');
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  const actions = window.locator('#agent-page-actions');
+  await expect(actions).toBeVisible();
+  await expect(actions.locator('.agent-page-action')).toHaveCount(3);
+  await actions.getByRole('button', { name: /^Show all/ }).click();
+  await expect(actions.locator('.agent-page-action')).toHaveCount(7);
+  await window.screenshot({ path: testInfo.outputPath('page-actions-dark.png') });
+  await window.evaluate(() => document.documentElement.dataset.theme = 'light');
+  await window.screenshot({ path: testInfo.outputPath('page-actions-light.png') });
+  await window.locator('#agent-first-toggle').click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  await expect(actions).toBeVisible();
+  await window.screenshot({ path: testInfo.outputPath('page-actions-agent-first-light.png') });
+  await window.locator('#agent-mode-toggle').click();
+  await window.locator('#agent-mode-browser').click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  // Intercept the run at the IPC seam: this test must not contact a model.
+  await electronApp.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('agent:start');
+    ipcMain.handle('agent:start', (_event, payload) => {
+      globalThis.__PAGE_ACTION_HANDOFF__ = payload;
+      return { ok: false, error: { message: 'Captured test handoff' } };
+    });
+  });
+  await actions.getByRole('button', { name: 'Echo', exact: true }).click();
+  await expect.poll(() => electronApp.evaluate(() => globalThis.__PAGE_ACTION_HANDOFF__?.prompt)).toContain('"echo"');
+  const state = await electronApp.evaluate(async () => ({
+    calls: await globalThis.__PAGE_TOOLS_TEST__.owner.executeJavaScript('window.calls'),
+    handoff: globalThis.__PAGE_ACTION_HANDOFF__,
+  }));
+  expect(state.calls).toBe(0);
+  expect(state.handoff.prompt).toContain('Ask what');
+  expect(state.handoff.rendererTabId).toBeGreaterThan(0);
+  await window.locator('#agent-sidebar-close').click();
+  await expect(hint).toBeHidden();
+  await window.locator('#agent-toggle-btn').click();
+  await expect(actions).toBeVisible();
+  await electronApp.evaluate(async () => globalThis.__PAGE_TOOLS_TEST__.owner.loadURL('https://page-tools.test/next'));
+  await expect(actions).toBeHidden({ timeout: 15000 });
+});

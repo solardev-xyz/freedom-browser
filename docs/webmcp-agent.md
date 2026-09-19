@@ -2,6 +2,47 @@
 
 Freedom Agent can discover and invoke tools registered by the **currently loaded top-level page**. This includes JavaScript registrations and native declarative forms. Sites without usable WebMCP tools continue to work through semantic browser actions and visual fallback. No additional model provider, MCP server, extension or dependency is required.
 
+## Discovering page actions in the browser
+
+The selected page is checked for supported native tools locally, without a model
+request or tool invocation. A dismissible hint on the Agent sidebar button offers
+**Explore actions** on the first encounter with a site. Opening Agent directly
+also shows **Actions on this page** above the composer: three named buttons,
+with **Show all** for the remaining actions and the site identified in the header.
+Names and descriptions are website-provided text, not trusted instructions.
+
+Selecting a button rechecks availability and starts an ordinary conversation
+request. Agent discovers the current inputs and asks about the user's goal and
+missing details. Selection alone does not authorize execution; a sufficiently
+specified request still uses the normal per-call approval. Actions on a page
+outside the current conversation start a new chat, with that behavior noted in
+the action panel. Actions on a task's existing tabs continue that conversation.
+In Agent-first mode, discovery follows the selected workspace page.
+
+Discovery UI verification on 2026-09-19: 285 affected unit tests passed across
+11 suites; all ten WebMCP Electron cases passed, and the extended UI case passed
+again in browser-first and Agent-first layouts with dark/light screenshots.
+Lint and diff whitespace checks passed. The broader unit suite has the four
+baseline failures listed below; its final serial rerun exited with code 139
+before the aggregate summary, so full-suite success is not claimed. No live
+model request was used for the discovery/handoff tests.
+
+Preview uses a separate trusted-chrome IPC operation, bound to a tab in that
+window. It filters through the same bounded schema validator but does not issue
+or invalidate callable references, invoke tools, or consume pending results.
+Discovery polls the selected page every three seconds and refreshes on tab
+presentation changes; overlapping requests are bounded, hidden windows pause
+polling, and stale navigation results are discarded. Hint history is local to
+the profile, bounded to the last 256 origins; private windows do not enable this
+UI. Unsupported schemas remain omitted, and the list updates as tools change.
+
+Smoke test: restart Freedom, visit Pizza maker with Agent closed, then use
+**Explore actions**. Open the sidebar directly on a subsequent visit; buttons
+should still appear without a repeated hint. Select an action and check that
+Agent asks for the missing details before any invocation approval. Navigate to a
+page without tools and confirm the buttons disappear. No model request is made
+until selecting an action or sending a normal message.
+
 ## Runtime
 
 The implementation is qualified on Electron **44.3.0 / Chromium 152.0.7977.78**. Startup enables the targeted `WebMCP,WebMCPTesting` Blink features before creating pages; a running app must be restarted. The lockfile already pinned this Electron version; refreshing the local installation did not change package manifests or the lockfile.

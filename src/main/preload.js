@@ -193,6 +193,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   handleAgentWalletRequest: (rendererTabId, request) =>
     ipcRenderer.invoke('agent:wallet:request', { rendererTabId, request }),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
+  getAgentPageActions: (rendererTabId) => ipcRenderer.invoke('agent:page-actions', { rendererTabId }),
   clearAgentConversation: () => ipcRenderer.invoke('agent:clear-conversation'),
   listAgentSessions: () => ipcRenderer.invoke('agent:history:list'),
   openAgentSession: (conversationId) =>

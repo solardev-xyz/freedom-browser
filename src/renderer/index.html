@@ -951,6 +951,14 @@
           <path d="m5.5 13 .7 2.3 2.3.7-2.3.7L5.5 19l-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" />
         </svg>
       </button>
+      <div id="agent-page-actions-hint" class="agent-page-actions-hint chrome-popover" role="region" aria-label="Page automations" hidden>
+        <div class="agent-page-actions-hint-heading">
+          <strong>This page offers automations</strong>
+          <button type="button" data-page-actions-dismiss aria-label="Dismiss automation hint">×</button>
+        </div>
+        <p>Explore what you can do with Freedom Agent.</p>
+        <button type="button" class="agent-page-actions-explore" data-page-actions-explore>Explore actions</button>
+      </div>
       <button
         id="wallet-toggle-btn"
         class="wallet-toggle-btn"
@@ -1612,6 +1620,7 @@
             </div>
 
             <div id="agent-composer-wrap" class="agent-composer-wrap">
+              <section id="agent-page-actions" class="agent-page-actions" aria-label="Actions offered by this page" hidden></section>
               <div id="agent-process-compact" class="agent-process-compact" hidden>
                 <div class="agent-process-compact-header">
                   <button

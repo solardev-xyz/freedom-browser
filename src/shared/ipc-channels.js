@@ -191,6 +191,7 @@ module.exports = {
   AGENT_APPROVAL_DECIDE: 'agent:approval:decide',
   AGENT_WALLET_REQUEST: 'agent:wallet:request',
   AGENT_GET_STATE: 'agent:get-state',
+  AGENT_PAGE_ACTIONS: 'agent:page-actions',
   AGENT_CLEAR_CONVERSATION: 'agent:clear-conversation',
   AGENT_HISTORY_LIST: 'agent:history:list',
   AGENT_HISTORY_OPEN: 'agent:history:open',

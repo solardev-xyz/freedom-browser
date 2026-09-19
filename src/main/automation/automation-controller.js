@@ -169,6 +169,10 @@ class AutomationController {
     return this.pages.unregister(tabId);
   }
 
+  previewPageTools(tabId) {
+    return this.pages.require(tabId).adapter.pageTools?.preview() || { tools: [] };
+  }
+
   getPageState(tabId) {
     try {
       const entry = this.pages.require(tabId);

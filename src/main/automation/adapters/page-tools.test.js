@@ -181,3 +181,26 @@ test('large output is bounded and raw website exceptions are not propagated', as
     errorCategory: 'ToolError',
   });
 });
+
+test('chrome preview filters unsupported tools without invalidating agent approval references', async () => {
+  const { page, context, tool } = fixture();
+  const { input, execution } = await request(page);
+  context.getTools.mockResolvedValue([tool, { ...tool, name: 'unsupported', inputSchema: JSON.stringify({ $ref: '#/definitions/input' }) }]);
+  const preview = await page.preview();
+  expect(preview.tools).toEqual([{ name: tool.name, description: tool.description }]);
+  expect(preview.truncated).toBe(true);
+  expect(preview.tools[0]).not.toHaveProperty('toolRef');
+  expect(context.executeTool).not.toHaveBeenCalled();
+  expect(JSON.stringify(await page.inspect(input))).toBe(execution.expectedPageTool);
+  expect((await page.call(input, execution)).status).toBe('completed');
+});
+
+test('chrome preview rejects results from a replaced document', async () => {
+  const { page, context, navigate } = fixture();
+  let finish;
+  context.getTools.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const pending = page.preview();
+  navigate();
+  finish([]);
+  await expect(pending).rejects.toMatchObject({ code: 'STALE_ELEMENT_REFERENCE' });
+});

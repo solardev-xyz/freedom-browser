@@ -180,6 +180,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain,
     service,
     automationTabIdForRenderer,
+    previewPageTools,
     createAutomationPageForHost,
     desktopBindingForAutomationTab,
     resolveModel,
@@ -1182,6 +1183,28 @@ function registerFreedomAgentIpc(options = {}) {
       return { status: providerResolver.clear() };
     });
 
+  // Trusted chrome only; binding resolution confines discovery to this window.
+  const previewPending = new WeakSet();
+  ipcMain.handle(IPC.AGENT_PAGE_ACTIONS, async (event, payload) => {
+    if (!isTrustedSender(event?.sender) || event.sender.isDestroyed?.())
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The sender is not trusted browser chrome');
+    if (previewPending.has(event.sender)) return { ok: false };
+    try {
+      const { rendererTabId } = validateTabClaimPayload(payload);
+      const tabId = automationTabIdForRenderer(event.sender, rendererTabId);
+      if (!tabId) return errorEnvelope(AGENT_IPC_ERROR_CODES.TAB_NOT_BOUND, 'The page is not ready');
+      previewPending.add(event.sender);
+      const preview = await previewPageTools?.(tabId);
+      if (event.sender.isDestroyed?.() || automationTabIdForRenderer(event.sender, rendererTabId) !== tabId)
+        return { ok: false };
+      return { ok: true, ...preview };
+    } catch {
+      return { ok: false };
+    } finally {
+      previewPending.delete(event.sender);
+    }
+  });
+
   ipcMain.handle(IPC.AGENT_START, handleStart);
   ipcMain.handle(IPC.AGENT_STEER, handleSteer);
   ipcMain.handle(IPC.AGENT_PAUSE, handlePause);
@@ -1229,6 +1252,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_DECIDE);
     ipcMain.removeHandler?.(IPC.AGENT_WALLET_REQUEST);
     ipcMain.removeHandler?.(IPC.AGENT_GET_STATE);
+    ipcMain.removeHandler?.(IPC.AGENT_PAGE_ACTIONS);
     ipcMain.removeHandler?.(IPC.AGENT_CLEAR_CONVERSATION);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_LIST);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_OPEN);

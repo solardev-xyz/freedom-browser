@@ -99,6 +99,7 @@ function createFreedomAgentRuntime(options = {}) {
     service,
     providerResolver,
     resolveModel: () => providerResolver.resolveModel(),
+    previewPageTools: (tabId) => options.controller.previewPageTools(tabId),
     automationTabIdForRenderer: options.automationTabIdForRenderer,
     createAutomationPageForHost: options.createAutomationPageForHost,
     desktopBindingForAutomationTab: options.desktopBindingForAutomationTab,

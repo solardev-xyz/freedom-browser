@@ -1353,3 +1353,32 @@ describe('Freedom agent IPC', () => {
     expect(ctx.service.clearConversation).toHaveBeenCalledTimes(1);
   });
 });
+
+test('page-action previews require trusted chrome and a tab bound to that window, without a model', async () => {
+  const previewPageTools = jest.fn(async () => ({ url: 'https://example.test/', tools: [{ name: 'search', description: 'Search' }] }));
+  const { ipcMain, sender, otherSender, service, resolveModel, dispose } = register({ previewPageTools });
+  const handle = ipcMain.handlers.get(IPC.AGENT_PAGE_ACTIONS);
+  expect((await handle({ sender: otherSender }, { rendererTabId: 7 })).ok).toBe(false);
+  expect((await handle({ sender }, { rendererTabId: 8 })).ok).toBe(false);
+  expect((await handle({ sender }, { rendererTabId: '7' })).ok).toBe(false);
+  expect(previewPageTools).not.toHaveBeenCalled();
+  expect((await handle({ sender }, { rendererTabId: 7 })).tools).toHaveLength(1);
+  expect(previewPageTools).toHaveBeenCalledWith('tab_bound');
+  expect(resolveModel).not.toHaveBeenCalled();
+  expect(service.start).not.toHaveBeenCalled();
+  await dispose();
+  expect(ipcMain.handlers.has(IPC.AGENT_PAGE_ACTIONS)).toBe(false);
+});
+
+test('page-action previews are single-flight and discard a removed binding', async () => {
+  let finish;
+  const previewPageTools = jest.fn(() => new Promise((resolve) => { finish = resolve; }));
+  const { ipcMain, sender, automationTabIdForRenderer } = register({ previewPageTools });
+  const handle = ipcMain.handlers.get(IPC.AGENT_PAGE_ACTIONS);
+  const pending = handle({ sender }, { rendererTabId: 7 });
+  expect((await handle({ sender }, { rendererTabId: 7 })).ok).toBe(false);
+  automationTabIdForRenderer.mockReturnValue(null);
+  finish({ tools: [] });
+  expect((await pending).ok).toBe(false);
+  expect(previewPageTools).toHaveBeenCalledTimes(1);
+});

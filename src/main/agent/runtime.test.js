@@ -213,6 +213,7 @@ describe('Freedom agent runtime', () => {
       service,
       providerResolver,
       resolveModel: expect.any(Function),
+      previewPageTools: expect.any(Function),
       automationTabIdForRenderer: options.automationTabIdForRenderer,
       desktopBindingForAutomationTab: options.desktopBindingForAutomationTab,
       createAutomationPageForHost: options.createAutomationPageForHost,

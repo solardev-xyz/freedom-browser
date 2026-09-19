@@ -69,8 +69,8 @@ async function pageToolsBridge(action, input = {}) {
     };
   };
   const topLevelTools = nativeTools.slice(0, 1024).filter((tool) => tool.window === window);
-  if (action === 'list') {
-    state.tools.clear();
+  if (action === 'list' || action === 'preview') {
+    if (action === 'list') state.tools.clear();
     const tools = [];
     let size = 0;
     for (const tool of topLevelTools.slice(0, 64)) {
@@ -79,7 +79,7 @@ async function pageToolsBridge(action, input = {}) {
       size += JSON.stringify(descriptor).length;
       if (size > 65_536) break;
       const toolRef = `${input.prefix}_${tools.length}`;
-      state.tools.set(toolRef, { descriptor, revision });
+      if (action === 'list') state.tools.set(toolRef, { descriptor, revision });
       tools.push({ toolRef, ...descriptor });
     }
     return {
@@ -204,6 +204,21 @@ class PageTools {
       ERROR_CODES.STALE_ELEMENT_REFERENCE,
       'This page tool changed. Discover the tools again before requesting new approval.'
     );
+  }
+
+  // Chrome discovery must not invalidate agent references or consume job results.
+  async preview() {
+    const identity = this.identity();
+    const generation = this.generation;
+    const result = await this.bridge('preview', {});
+    if (identity !== this.identity() || generation !== this.generation || result?.stale)
+      throw this.stale();
+    const tools = (result?.tools || []).filter((tool) => supportedPageToolSchema(tool.inputSchema));
+    return {
+      url: this.url(),
+      tools: tools.map(({ name, description }) => ({ name, description })),
+      truncated: Boolean(result?.truncated || tools.length !== (result?.tools?.length || 0)),
+    };
   }
 
   async list() {
