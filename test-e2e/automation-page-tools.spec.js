@@ -374,4 +374,15 @@ test('page actions are discoverable from the toolbar and hand off to chat withou
   await expect(actions).toBeVisible();
   await electronApp.evaluate(async () => globalThis.__PAGE_TOOLS_TEST__.owner.loadURL('https://page-tools.test/next'));
   await expect(actions).toBeHidden({ timeout: 15000 });
+  // Another app on this same origin must get its own discovery hint.
+  await window.locator('#agent-sidebar-close').click();
+  await harness.setContentFixture(`${URL}second-demo/`, {
+    body: `<script>document.modelContext.registerTool({name:'search_flights', description:'Search flights', execute:()=>({found:true})});</script>`,
+  });
+  await electronApp.evaluate(async () => globalThis.__PAGE_TOOLS_TEST__.owner.loadURL('https://page-tools.test/second-demo/'));
+  await expect(hint).toBeVisible({ timeout: 15000 });
+  await hint.locator('[data-page-actions-dismiss]').click();
+  await electronApp.evaluate(async () => globalThis.__PAGE_TOOLS_TEST__.owner.executeJavaScript("history.pushState({}, '', '?from=LHR#results')"));
+  await window.waitForTimeout(3500);
+  await expect(hint).toBeHidden();
 });

@@ -7,7 +7,7 @@ let views;
 beforeEach(() => { jest.useFakeTimers(); views = []; });
 afterEach(() => { views.forEach((view) => view.dispose()); jest.useRealTimers(); delete global.document; delete global.window; });
 
-function setup() {
+function setup(saved = []) {
   const element = (tag) => {
     const el = createElement(tag);
     el.append = (...children) => children.forEach((child) => el.appendChild(child));
@@ -30,14 +30,14 @@ function setup() {
   const discover = jest.fn(async () => ({ ok: true, url: tab.url, tools }));
   const onSelect = jest.fn();
   const openPanel = jest.fn(() => { state.open = true; });
-  const storage = { getItem: jest.fn(() => '[]'), setItem: jest.fn() };
+  const storage = { getItem: jest.fn(() => JSON.stringify(saved)), setItem: jest.fn() };
   const view = createPageActions({ host, hint, toggle, getTab: () => tab, getState: () => state, discover, onSelect, openPanel, storage });
   views.push(view);
   return { view, host, hint, explore, dismiss, discover, tools, onSelect, storage, state,
     setTab: (value) => { tab = value; }, buttons: () => host.children[1].children };
 }
 
-test('discovery offers three actions, expands, and shows the hint only once per site', async () => {
+test('discovery offers three actions, expands, and shows the hint only once per page', async () => {
   const s = setup();
   await flush();
   expect(s.hint.hidden).toBe(false);
@@ -121,4 +121,48 @@ test('click during background discovery waits before revalidating instead of los
   await poll;
   await flush();
   expect(s.onSelect).toHaveBeenCalledTimes(1);
+});
+
+
+test('different applications on one origin each get a hint, without repeats for filters or anchors', async () => {
+  const s = setup(['https://googlechromelabs.github.io']);
+  s.setTab({ id: 7, url: 'https://googlechromelabs.github.io/webmcp-tools/demos/pizza-maker/' });
+  await flush();
+  await s.view.refresh();
+  expect(s.hint.hidden).toBe(false);
+  s.dismiss.dispatch('click');
+  s.setTab({ id: 7, url: 'https://googlechromelabs.github.io/webmcp-tools/demos/react-flightsearch/' });
+  await s.view.refresh();
+  expect(s.hint.hidden).toBe(false);
+  s.dismiss.dispatch('click');
+  s.setTab({ id: 7, url: 'https://googlechromelabs.github.io/webmcp-tools/demos/react-flightsearch/?from=LHR#results' });
+  await s.view.refresh();
+  expect(s.hint.hidden).toBe(true);
+  s.setTab({ id: 7, url: 'https://googlechromelabs.github.io/webmcp-tools/demos/pizza-maker/' });
+  await s.view.refresh();
+  expect(s.hint.hidden).toBe(true);
+  const saved = JSON.parse(s.storage.setItem.mock.calls.at(-1)[1]);
+  expect(saved).toContain('https://googlechromelabs.github.io/webmcp-tools/demos/pizza-maker/');
+  expect(saved).toContain('https://googlechromelabs.github.io/webmcp-tools/demos/react-flightsearch/');
+});
+
+test('opening the sidebar does not mark an unseen hint as shown', async () => {
+  const s = setup();
+  s.state.open = true;
+  await flush();
+  expect(s.hint.hidden).toBe(true);
+  expect(s.storage.setItem).not.toHaveBeenCalled();
+  s.state.open = false;
+  s.view.render();
+  expect(s.hint.hidden).toBe(false);
+  s.dismiss.dispatch('click');
+  s.view.render();
+  expect(s.hint.hidden).toBe(true);
+});
+
+test('page hint history survives reopening the browser UI', async () => {
+  const s = setup(['https://example.test/']);
+  await flush();
+  expect(s.hint.hidden).toBe(true);
+  expect(s.host.hidden).toBe(false);
 });

@@ -2307,7 +2307,7 @@ scope remain to be selected.
 
 - **User smoke acceptance — 2026-09-19:** the Pizza maker workflow through Freedom Agent was manually tested and reported working successfully.
 - **Implemented on Electron 44.3.0 / Chromium 152.0.7977.78.** Refreshed the installed runtime to the existing lockfile, without adding or upgrading dependencies. The targeted native WebMCP features are enabled before page creation. This uses the live document API; it is independent of the deferred external MCP server.
-- **Page-action discovery UI — 2026-09-19:** supported native tools trigger a once-per-site hint anchored to the Agent button. The sidebar independently shows three action buttons with Show all, following the selected page in either layout. Selection revalidates the action and starts a goal/missing-details conversation, retaining execution approval. Background preview is local, does not contact a model, and does not invalidate agent references or consume pending invocation results. Private windows are excluded.
+- **Page-action discovery UI — 2026-09-19:** supported native tools trigger a once-per-page-path hint anchored to the Agent button (separate apps on one origin get independent hints; query strings and fragments do not repeat it). The sidebar independently shows three action buttons with Show all, following the selected page in either layout. Selection revalidates the action and starts a goal/missing-details conversation, retaining execution approval. Background preview is local, does not contact a model, and does not invalidate agent references or consume pending invocation results. Private windows are excluded.
 - **Agent integration:** `browser_list_page_tools` and `browser_call_page_tool` use the canonical controller, current task custody/origin boundaries, exact per-call approval, Stop and existing wallet/provider approval barriers. Native JavaScript registrations and declarative forms work in top-level visible and hidden pages. DOM/visual browsing remains the fallback.
 - **Untrusted content and freshness:** bounded descriptions/schemas/arguments/results; interpreted schema validation with explicit unsupported-schema omission; read-only annotations grant no authority. References expire across registration changes, rediscovery, navigation and Stop. SPA transitions preserve an existing invocation's result while invalidating references. Cross-document results remain unknown until inspected; no automatic invocation retry.
 - **Manual forms and cancellation:** manual-submit forms return `awaiting_user`; discovery polls the latest execution without re-invoking. Stop requests native cancellation but cannot undo effects. The pinned browser acknowledges cancellation without supplying the website callback an abort signal; do not claim callback termination.
@@ -3808,6 +3808,26 @@ Wikipedia article URLs in real Electron tabs. This is one successful local-model
 regression run, not a broader reliability claim. Reproduce with
 `FREEDOM_OLLAMA_TEST_MODEL=qwen3:8b FREEDOM_OLLAMA_WIKIPEDIA_TEST=1 npx playwright test --project=harness test-e2e/agent-ollama-live.spec.js --grep 'identifies its runtime'`.
 Lint and whitespace checks passed. No dependency changes or user-profile changes.
+
+### Live date and timezone context — 2026-09-19
+
+Every outgoing Agent model request now receives the device's current local
+Gregorian date, weekday, time, IANA timezone, current UTC offset and UTC timestamp
+in its system context. The snapshot is refreshed at the model-request boundary,
+including follow-ups, resumed runs and continuations after tool/approval waits;
+it is not a session-start constant and does not accumulate in the visible
+transcript. Relative dates use this context unless the user specifies another
+timezone or a historical reference. Timezone is not treated as location or
+language. If timezone detection fails, the prompt explicitly reports UTC and
+asks for a timezone when local dates matter. No network clock request or new
+provider is needed; configured model/provider identity remains available.
+
+Validation: 90 tests passed across the Pi session factory and Agent service,
+including midnight, daylight-saving transitions, fractional offsets, missing
+zone fallback and successive requests without mutating stored history. Lint and
+whitespace checks passed. Live model answer quality remains a manual smoke test:
+restart Freedom and ask for today's local date, weekday and timezone, then ask
+for a date relative to today in a follow-up.
 
 ### Browser activity presentation — 2026-09-17
 

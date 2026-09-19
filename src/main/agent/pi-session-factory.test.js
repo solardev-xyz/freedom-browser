@@ -6,6 +6,7 @@ const {
   DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT,
   VIRTUAL_AGENT_CWD,
   createDiagnosticModelRuntime,
+  currentTimeContext,
   createIsolatedPiSession,
   createNoDiscoveryResourceLoader,
   createProviderDiagnosticFetch,
@@ -408,5 +409,63 @@ describe('isolated Pi session factory', () => {
     expect(result.prompt).toContain('swarm-postage');
     expect(result.prompt).toContain('/freedom-agent/skills/swarm-postage/SKILL.md');
     expect(result.prompt).toContain(DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT);
+  });
+});
+
+
+describe('live device clock context', () => {
+  test('uses the local calendar date rather than UTC across midnight', () => {
+    const context = currentTimeContext(Date.parse('2026-09-19T22:30:00Z'), 'Europe/Berlin');
+    expect(context).toContain('"localDate":"2026-09-20"');
+    expect(context).toContain('"weekday":"Sunday"');
+    expect(context).toContain('"localTime":"00:30:00"');
+    expect(context).toContain('"timeZone":"Europe/Berlin"');
+    expect(context).toContain('"utcOffset":"UTC+02:00"');
+    expect(context).toContain('2026-09-19T22:30:00.000Z');
+  });
+
+  test.each([
+    ['2026-10-25T00:30:00Z', 'Europe/Berlin', '02:30:00', 'UTC+02:00'],
+    ['2026-10-25T01:30:00Z', 'Europe/Berlin', '02:30:00', 'UTC+01:00'],
+    ['2026-09-19T20:00:00Z', 'Asia/Kathmandu', '01:45:00', 'UTC+05:45'],
+    ['2026-09-19T02:00:00Z', 'America/Los_Angeles', '19:00:00', 'UTC-07:00'],
+  ])('handles daylight saving and non-hour offsets: %s %s', (utc, zone, localTime, offset) => {
+    const context = currentTimeContext(Date.parse(utc), zone);
+    expect(context).toContain(`"localTime":"${localTime}"`);
+    expect(context).toContain(`"utcOffset":"${offset}"`);
+  });
+
+  test('unavailable timezone explicitly falls back to UTC without claiming it is local time', () => {
+    const context = currentTimeContext(Date.parse('2026-09-19T12:00:00Z'), 'invalid-zone');
+    expect(context).toContain('2026-09-19T12:00:00.000Z');
+    expect(context).toContain('device timezone is unavailable');
+    expect(context).not.toContain('localDate');
+  });
+
+  test('session wiring refreshes the outgoing system context on each request without rewriting history', async () => {
+    const sdk = createSdk();
+    const stream = { stream: true };
+    const modelRuntime = { streamSimple: jest.fn(() => stream) };
+    let now = Date.parse('2026-09-19T12:00:00Z');
+    const model = { id: 'test', provider: 'ollama' };
+    const created = await createIsolatedPiSession({ sdk, model, modelRuntime, now: () => now });
+    const wrapped = sdk.createAgentSession.mock.calls[0][0].modelRuntime;
+    const messages = [{ role: 'user', content: 'What is today?' }];
+    const context = { systemPrompt: created.resourceLoader.getSystemPrompt(), messages };
+    const initialSystemPrompt = context.systemPrompt;
+    expect(wrapped.streamSimple(model, context, {})).toBe(stream);
+    now = Date.parse('2026-09-20T12:00:00Z');
+    expect(wrapped.streamSimple(model, context, {})).toBe(stream);
+    const first = modelRuntime.streamSimple.mock.calls[0][1];
+    const second = modelRuntime.streamSimple.mock.calls[1][1];
+    expect(first.systemPrompt).toContain('2026-09-19T12:00:00.000Z');
+    expect(second.systemPrompt).toContain('2026-09-20T12:00:00.000Z');
+    expect(second.systemPrompt).not.toContain('2026-09-19T12:00:00.000Z');
+    expect(second.systemPrompt.match(/Current time from Freedom/g)).toHaveLength(1);
+    expect(context.systemPrompt).toBe(initialSystemPrompt);
+    expect(first.messages).toBe(messages);
+    expect(second.messages).toBe(messages);
+    expect(context.systemPrompt).toContain('Configured model runtime');
+    expect(context.systemPrompt).not.toContain('Current time from Freedom');
   });
 });

@@ -169,7 +169,34 @@ function createProviderDiagnosticFetch(fetchImpl = globalThis.fetch, record = ()
   };
 }
 
-function createDiagnosticModelRuntime(modelRuntime, createDiagnostic) {
+function currentTimeContext(now = Date.now(), timeZone) {
+  const date = new Date(now);
+  const utc = date.toISOString();
+  try {
+    const zone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!zone) throw new Error('Timezone unavailable');
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone, calendar: 'gregory', numberingSystem: 'latn',
+      year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+      timeZoneName: 'longOffset',
+    });
+    const parts = Object.fromEntries(formatter.formatToParts(date).map(({ type, value }) => [type, value]));
+    return `Current time from Freedom's device clock (refreshed for this model request): ${JSON.stringify({
+      localDate: `${parts.year}-${parts.month}-${parts.day}`,
+      weekday: parts.weekday,
+      localTime: `${parts.hour}:${parts.minute}:${parts.second}`,
+      timeZone: formatter.resolvedOptions().timeZone,
+      utcOffset: parts.timeZoneName.replace('GMT', 'UTC'),
+      utc,
+    })}
+Resolve "today", "tomorrow" and other relative dates in the current request using this local date and timezone, unless the user specifies another timezone or historical context. This current clock supersedes older clock snapshots in the conversation. A timezone does not establish the user's physical location, language, or departure airport. It is a device-clock snapshot, not independently verified network time.`;
+  } catch {
+    return `Current time from Freedom's device clock: ${utc}. The device timezone is unavailable; this timestamp is UTC, not necessarily the user's local time. Ask which timezone to use when a local date or time matters.`;
+  }
+}
+
+function createDiagnosticModelRuntime(modelRuntime, createDiagnostic, getTimeContext) {
   if (!modelRuntime || typeof modelRuntime.streamSimple !== 'function') return modelRuntime;
   const methods = new Map();
   let requestSequence = 0;
@@ -202,7 +229,14 @@ function createDiagnosticModelRuntime(modelRuntime, createDiagnostic) {
               typeof options.fetch === 'function' ? options.fetch : globalThis.fetch;
             record('model_request_started');
             try {
-              return target.streamSimple(model, context, {
+              // Enrich the outgoing system context, not the stored transcript or
+              // Pi's cached prompt. Every continuation gets a fresh clock, and
+              // repeated requests never accumulate stale clock blocks.
+              const requestContext = getTimeContext ? {
+                ...context,
+                systemPrompt: `${context?.systemPrompt || ''}\n\n${getTimeContext()}`,
+              } : context;
+              return target.streamSimple(model, requestContext, {
                 ...options,
                 fetch: createProviderDiagnosticFetch(fetchImpl, record),
               });
@@ -263,7 +297,8 @@ When asked which model or provider you are using, report these configured identi
   hydrateVisibleTranscript(sessionManager, options.restoredTranscript, options.model);
   const modelRuntime = createDiagnosticModelRuntime(
     options.modelRuntime,
-    options.createModelDiagnostic
+    options.createModelDiagnostic,
+    () => currentTimeContext(options.now ? options.now() : Date.now())
   );
 
   const result = await sdk.createAgentSession({
@@ -294,6 +329,7 @@ module.exports = {
   DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT,
   VIRTUAL_AGENT_CWD,
   createDiagnosticModelRuntime,
+  currentTimeContext,
   createIsolatedPiSession,
   createNoDiscoveryResourceLoader,
   createProviderDiagnosticFetch,

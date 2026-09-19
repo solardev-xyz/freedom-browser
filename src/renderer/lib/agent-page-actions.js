@@ -16,6 +16,13 @@ function siteLabel(url) {
   return `${parsed.protocol}//${parsed.host}`;
 }
 
+function hintKey(url) {
+  const parsed = new URL(url);
+  // Separate applications can share an origin (for example hosted demos).
+  // Query/filter changes and in-page anchors do not warrant another hint.
+  return `${siteLabel(url)}${parsed.pathname || '/'}`;
+}
+
 export function pageActionPrompt(action, url) {
   return `Help me use the ${JSON.stringify(action.name)} action on ${url}. Ask what I'd like to accomplish and what details you need, using anything I've already told you.`;
 }
@@ -30,7 +37,7 @@ export function createPageActions({ host, hint, toggle, getTab, getState, discov
   let pendingRequest = null;
   let selecting = false;
   let disposed = false;
-  let hintSite = null;
+  let hintPage = null;
   let signature = '';
   let seen = [];
   try {
@@ -38,13 +45,13 @@ export function createPageActions({ host, hint, toggle, getTab, getState, discov
     if (Array.isArray(saved)) seen = saved.filter((site) => typeof site === 'string').slice(-256);
   } catch { /* Storage can be unavailable; keep the window-local list. */ }
 
-  function remember(site) {
-    if (!seen.includes(site)) seen.push(site);
+  function remember(page) {
+    if (!seen.includes(page)) seen.push(page);
     seen = seen.slice(-256);
     try { storage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch { /* Best effort. */ }
   }
 
-  function hideHint() { hint.hidden = true; hintSite = null; }
+  function hideHint() { hint.hidden = true; hintPage = null; }
 
   function render() {
     if (disposed) return;
@@ -56,13 +63,13 @@ export function createPageActions({ host, hint, toggle, getTab, getState, discov
     if (!tools.length) { hideHint(); return; }
     const site = siteLabel(tab.url);
     if (state.open || state.suppressed) hideHint();
-    if (state.open && !seen.includes(site)) remember(site);
-    if (!state.open && !state.suppressed && !seen.includes(site) && !hintSite) {
+    const page = hintKey(tab.url);
+    if (!state.open && !state.suppressed && !seen.includes(page) && !hintPage) {
       const bounds = toggle.getBoundingClientRect();
       if (bounds.width > 0 && bounds.height > 0) {
         hint.hidden = false;
-        hintSite = site;
-        remember(site);
+        hintPage = page;
+        remember(page);
         placePopoverAtPoint(hint, bounds.right - 300, bounds.bottom + 8);
       }
     }
