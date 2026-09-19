@@ -44,6 +44,7 @@ function gitRead(args, acceptedCodes = [0]) {
 }
 
 function gitChanges() {
+  if (!fs.existsSync(path.join(root, '.git'))) return { available: false, noRepository: true, message: 'This project has no Git repository.' };
   try {
     const records = gitRead(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules=all']).split('\0').filter(Boolean);
     const changes = [];

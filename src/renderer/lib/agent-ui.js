@@ -915,8 +915,8 @@ function applyWorkspaceProjection(state) {
       )
     : [];
   setAgentTabCustody(Array.isArray(state?.agentTabs) ? state.agentTabs : []);
-  workspaceInspectionConversationId = state?.workspace?.enabled ? state.conversationId : null;
-  workspaceInspector?.setWorkspace(workspaceInspectionConversationId);
+  workspaceInspectionConversationId = state?.workspace?.enabled || state?.workspace?.project ? state.conversationId : null;
+  workspaceInspector?.setWorkspace(workspaceInspectionConversationId, state?.workspace?.project);
   renderWorkspaceProcesses(state?.workspace?.processes, state?.workspace?.servers);
   renderTaskPages();
   ensureWorkspacePageVisible();
@@ -2465,8 +2465,8 @@ function renderPublicationApproval(request) {
     'Content',
     publication.workspacePath
       ? publication.kind === 'folder'
-        ? 'Managed project folder'
-        : 'Managed project file'
+        ? 'Project folder'
+        : 'Project file'
       : publication.kind === 'folder'
         ? 'Attached folder · current contents'
         : publication.kind === 'file'
@@ -3353,6 +3353,26 @@ function applyReadyConversationState(state) {
   return true;
 }
 
+async function changeProjectAccess(action) {
+  if (currentRunStatus !== 'idle') return;
+  closeComposerPopovers();
+  try {
+    const response = await window.electronAPI.agentProjectAccess(action, currentConversationId);
+    if (response?.cancelled) return;
+    if (!response?.ok || !applyReadyConversationState(response.state)) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not change project access'), true);
+      return;
+    }
+    await refreshSessionHistory();
+    const stoppedAccess = action === 'remove' || action === 'read';
+    const message = action === 'open' ? 'Project opened with read-only access.' : action === 'remove'
+      ? 'Project disconnected. Reconnect it here when you need it again.' : action === 'read'
+        ? 'Project is now read-only.' : 'Project access updated.';
+    setMessage(elements.runMessage, message + (stoppedAccess && response.state.workspace?.commands?.length
+      ? ' Previously launched processes may keep access until they exit.' : ''));
+  } catch { setMessage(elements.runMessage, 'Could not change project access', true); }
+}
+
 async function openSavedSession(conversationId) {
   if (currentRunStatus !== 'idle' || conversationId === currentConversationId) return;
   setMessage(elements.runMessage, 'Opening saved session…');
@@ -4211,6 +4231,7 @@ export function initAgentUi(options = {}) {
     attachmentMenu: byId('agent-attachment-menu'),
     attachFiles: byId('agent-attach-files'),
     attachFolder: byId('agent-attach-folder'),
+    openProject: byId('agent-open-project'),
     attachmentContexts: byId('agent-attachment-contexts'),
   };
   if (Object.values(elements).some((element) => !element)) return;
@@ -4246,7 +4267,7 @@ export function initAgentUi(options = {}) {
     openTab: options.createWorkspaceViewerTab,
     closeTab: options.closeViewerTab,
     onOpenViewer: () => { if (agentFirstMode) setWorkspaceSidebarOpen(true); },
-  }, { compactHost: elements.workspaceInspectorCompact, refreshControl: elements.workspaceRefresh });
+  }, { compactHost: elements.workspaceInspectorCompact, refreshControl: elements.workspaceRefresh, onProjectAccess: changeProjectAccess });
   setAgentTabClaimHandler(claimAgentOwnedTab);
   pageActions?.dispose();
   if (byId('agent-page-actions') && window.electronAPI.getAgentPageActions) {
@@ -4373,6 +4394,7 @@ export function initAgentUi(options = {}) {
   });
   elements.attachFiles.addEventListener('click', () => addAttachments('files'));
   elements.attachFolder.addEventListener('click', () => addAttachments('folder'));
+  elements.openProject.addEventListener('click', () => void changeProjectAccess('open'));
   elements.pageContext.addEventListener('click', () => {
     if (currentConversationId || currentRunStatus !== 'idle') return;
     dismissedPageContextTabId = getActiveTab()?.id || null;

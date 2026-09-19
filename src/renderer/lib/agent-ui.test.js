@@ -159,6 +159,7 @@ function createAgentElements() {
     'agent-attachment-menu',
     'agent-attach-files',
     'agent-attach-folder',
+    'agent-open-project',
     'agent-attachment-contexts',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
@@ -3696,7 +3697,7 @@ describe('Agent UI', () => {
     const summaryText = ctx.elements['agent-publication-summary'].children
       .map((child) => child.textContent)
       .join(' ');
-    expect(summaryText).toContain('Managed project folder');
+    expect(summaryText).toContain('Project folder');
     expect(summaryText).toContain('apps/site/dist');
     expect(summaryText).not.toContain('/Users/');
   });

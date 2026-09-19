@@ -112,6 +112,25 @@ function createHistoryStore(overrides = {}) {
 }
 
 describe('FreedomAgentService', () => {
+  test('opening a project creates a ready project-bound chat without a model request', async () => {
+    let stored;
+    const workspace = { workspaceId: 'workspace_test', enabled: true, project: { name: 'My project', mode: 'read', connected: true } };
+    const workspaceController = {
+      store: { attachProject: jest.fn(async () => workspace), deleteConversation: jest.fn(async () => true) },
+      getWorkspace: jest.fn(() => workspace),
+      disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(), dispose: jest.fn(),
+    };
+    const historyStore = createHistoryStore({
+      createSession: jest.fn((entry) => { stored = { ...entry, transcript: [] }; }),
+      getSession: jest.fn(() => stored),
+    });
+    const { service, dependencies } = createService(createFakeSession(), { historyStore, workspaceController });
+    const state = await service.openProject('/native/project');
+    expect(state).toMatchObject({ status: 'ready', title: 'My project', workspace, transcript: [] });
+    expect(historyStore.createSession).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready', approvalMode: 'every_interaction' }));
+    expect(dependencies.createSession).not.toHaveBeenCalled();
+  });
   test('traces approval continuation without logging tool arguments or assistant content', async () => {
     const log = require('../logger');
     const logging = jest.spyOn(log, 'info').mockImplementation(() => {});

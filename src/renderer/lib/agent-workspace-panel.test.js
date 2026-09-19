@@ -37,6 +37,27 @@ describe('workspace summary and popovers', () => {
     expect(panel.querySelector('.agent-workspace-refresh')).not.toBeNull();
   });
 
+  test('shows attached project access in both layouts and reconnects without stale file reads', async () => {
+    const onProjectAccess = jest.fn();
+    inspector = createWorkspaceInspector([panel, compact], {}, { compactHost: compact, onProjectAccess });
+    inspector.setWorkspace('one', { name: 'My project', mode: 'read', connected: true });
+    jest.advanceTimersByTime(250); await flush();
+    for (const host of [panel, compact]) {
+      const row = host.querySelectorAll('.agent-workspace-summary')[0];
+      expect(row.children[0].textContent).toBe('My project');
+      expect(row.children[1].textContent).toBe('Read only');
+    }
+    panel.querySelectorAll('.agent-workspace-summary')[0].dispatch('click');
+    find(popup(), 'Allow editing').dispatch('click');
+    expect(onProjectAccess).toHaveBeenCalledWith('write');
+    inspector.setWorkspace('one', { name: 'My project', mode: 'read', connected: false });
+    api.mockClear(); jest.advanceTimersByTime(250); await flush();
+    expect(api).not.toHaveBeenCalled();
+    panel.querySelectorAll('.agent-workspace-summary')[0].dispatch('click');
+    find(popup(), 'Reconnect project…').dispatch('click');
+    expect(onProjectAccess).toHaveBeenCalledWith('reconnect');
+  });
+
   test('refreshes directly from either header without opening or collapsing content', async () => {
     await start();
     expect(refreshControl.hidden).toBe(false);

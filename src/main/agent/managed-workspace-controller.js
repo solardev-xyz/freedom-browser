@@ -73,7 +73,7 @@ const SCAN_BYTE_LIMIT = 16777216;
 const OUTPUT_LIMIT = 51200;
 const PATTERN_LIMIT = 1000;
 const LINE_LIMIT = 500;
-const [operation, relative, encoded = ''] = process.argv.slice(1);
+const [operation, relative, encoded = '', expected = '', identity = ''] = process.argv.slice(1);
 const root = fs.realpathSync(process.cwd());
 
 function fail(code) {
@@ -273,14 +273,22 @@ function ensureDirectory(relativeDirectory) {
 
 function writablePath(value) {
   const safe = checkedRelative(value);
-  if (safe === '.git' || safe.startsWith('.git/')) fail('WORKSPACE_PROTECTED_PATH');
+  if (safe.split('/').some((part) => part.toLowerCase() === '.git')) fail('WORKSPACE_PROTECTED_PATH');
   return safe;
+}
+
+function fileVersion(stats, bytes) {
+  return require('crypto').createHash('sha256').update([stats.dev, stats.ino, stats.mode, stats.mtimeMs, stats.ctimeMs].join(':')).update(bytes).digest('hex');
 }
 
 ${WORKSPACE_INSPECTION_HELPER}
 ${WORKSPACE_HISTORY_HELPER}
 
 try {
+  if (identity) {
+    const stats = fs.statSync(root);
+    if (identity !== String(stats.dev) + ':' + String(stats.ino)) fail('WORKSPACE_FILE_UNSAFE');
+  }
   if (operation === 'history_snapshot') {
     writeJson(historySnapshot());
   } else if (operation === 'history_restore') {
@@ -289,11 +297,24 @@ try {
     historyValidateRestore();
   } else if (operation === 'workspace_inspect') {
     writeJson(inspectWorkspace(optionsPayload()));
-  } else if (operation === 'access' || operation === 'read') {
+  } else if (operation === 'access' || operation === 'read' || operation === 'read_version') {
     const { target } = targetPath(relative);
     const stats = regularFile(target);
     if (stats.size > READ_LIMIT) fail('WORKSPACE_FILE_TOO_LARGE');
-    if (operation === 'read') process.stdout.write(fs.readFileSync(target));
+    if (operation !== 'access') {
+      const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const opened = fs.fstatSync(fd);
+        if (!opened.isFile() || opened.nlink !== 1 || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > READ_LIMIT) fail('WORKSPACE_FILE_UNSAFE');
+        const bytes = Buffer.alloc(opened.size + 1);
+        const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+        const after = fs.fstatSync(fd);
+        if (count !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) fail('WORKSPACE_HISTORY_CHANGED');
+        const content = bytes.subarray(0, count);
+        if (operation === 'read_version') process.stdout.write(JSON.stringify({ content: content.toString('base64'), version: fileVersion(after, content) }));
+        else process.stdout.write(content);
+      } finally { fs.closeSync(fd); }
+    }
   } else if (operation === 'list') {
     const requested = optionsPayload();
     const limit = boundedInteger(requested.limit, DIRECTORY_LIMIT, DIRECTORY_LIMIT);
@@ -400,10 +421,18 @@ try {
     } catch (error) {
       if (!error || error.code !== 'ENOENT') throw error;
     }
-    const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW || 0), 0o600);
+    const flags = expected ? fs.constants.O_RDWR : fs.constants.O_WRONLY | fs.constants.O_CREAT;
+    const fd = fs.openSync(target, flags | (expected === 'missing' ? fs.constants.O_CREAT | fs.constants.O_EXCL : 0) | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW || 0), 0o600);
     try {
       const stats = fs.fstatSync(fd);
       if (!stats.isFile() || stats.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
+      if (expected && expected !== 'missing') {
+        if (stats.size > READ_LIMIT) fail('WORKSPACE_HISTORY_CHANGED');
+        const previous = Buffer.alloc(stats.size + 1);
+        const count = fs.readSync(fd, previous, 0, previous.length, 0);
+        const after = fs.fstatSync(fd);
+        if (count !== stats.size || after.mtimeMs !== stats.mtimeMs || after.ctimeMs !== stats.ctimeMs || fileVersion(after, previous.subarray(0, count)) !== expected) fail('WORKSPACE_HISTORY_CHANGED');
+      }
       fs.ftruncateSync(fd, 0);
       fs.writeFileSync(fd, content);
     } finally {
@@ -418,8 +447,9 @@ try {
     ['ENOENT', 'WORKSPACE_PATH_NOT_FOUND'],
     ['ENOTDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
     ['EISDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
+    ['EEXIST', 'WORKSPACE_HISTORY_CHANGED'],
   ]);
-  const readOnly = new Set(['read', 'access', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
+  const readOnly = new Set(['read', 'read_version', 'access', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
   const fallback = readOnly.has(operation) ? 'WORKSPACE_FILE_UNAVAILABLE' : 'WORKSPACE_WRITE_FAILED';
   const code = allowed.has(error && error.code) ? error.code : native.get(error && error.code) || fallback;
   process.stderr.write('FREEDOM_FILE_ERROR:' + code);
@@ -487,6 +517,7 @@ function workspaceFileErrorMessage(code) {
       WORKSPACE_PATH_TYPE_MISMATCH: 'The requested workspace path has the wrong file type',
       WORKSPACE_PROTECTED_PATH: 'The requested workspace path is protected',
       WORKSPACE_WRITE_FAILED: 'Freedom could not write the requested workspace file',
+      WORKSPACE_HISTORY_CHANGED: 'The file changed or has not been read yet. Read it again before writing.',
     }[code] || 'Freedom could not complete the workspace file operation'
   );
 }
@@ -579,7 +610,7 @@ function validateWorkspacePath(value, options = {}) {
 
 function assertWritableWorkspacePath(value) {
   const relative = validateWorkspacePath(value);
-  if (relative === '.git' || relative.startsWith('.git/')) {
+  if (relative.split('/').some((part) => part.toLowerCase() === '.git')) {
     throw new ManagedWorkspaceError(
       'WORKSPACE_PROTECTED_PATH',
       'Git metadata is read-only inside the managed workspace'
@@ -720,6 +751,7 @@ class ManagedWorkspaceController {
     this.historyNotices = new Map();
     this.restorePlans = new Map();
     this.historyReviews = new Map();
+    this.projectReads = new Map();
     this.processManager =
       options.processManager ||
       new ManagedWorkspaceProcessManager({
@@ -780,8 +812,9 @@ class ManagedWorkspaceController {
     return workspace
       ? Object.freeze({
           workspaceId: workspace.workspaceId,
-          enabled: workspace.enabled,
+          enabled: workspace.enabled && (!workspace.project || workspace.project.connected),
           backend: workspace.backend,
+          ...(workspace.project && { project: workspace.project }),
           processes: this.listProcesses(conversationId),
           ...(this.store.listServers && { servers: this.listServers(conversationId) }),
           commands: this.store.listCommands(conversationId, 50).map((command) => {
@@ -902,6 +935,10 @@ class ManagedWorkspaceController {
 
   async #lease(workspace, request = {}) {
     throwIfWorkspaceAborted(request.signal);
+    if (workspace.project) {
+      await this.store.projectAccess.resolve(workspace.workspaceId);
+      return this.#createLease(workspace);
+    }
     const existing = this.leases.get(workspace.workspaceId);
     if (existing) return existing;
     let pending = this.leasePromises.get(workspace.workspaceId);
@@ -926,6 +963,7 @@ class ManagedWorkspaceController {
     try {
       const basePolicy = await this.createPolicy({
         workspaceRoot,
+        ...(workspace.project && { allowMissingGitMetadata: true }),
         electronRuntime: runtime,
         network,
         environment: {
@@ -962,7 +1000,7 @@ class ManagedWorkspaceController {
       );
     }
     const lease = Object.freeze({ workspaceRoot, runtime, ...policy });
-    this.leases.set(workspace.workspaceId, lease);
+    if (!workspace.project) this.leases.set(workspace.workspaceId, lease);
     return lease;
   }
 
@@ -1011,7 +1049,21 @@ class ManagedWorkspaceController {
         'The managed workspace has not been enabled for this conversation'
       );
     }
-    return { workspace, lease: await this.#lease(workspace, request) };
+    const grant = workspace.project ? await this.store.projectAccess.resolve(workspace.workspaceId) : null;
+    const lease = await this.#lease(workspace, request);
+    if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) {
+      throw new ManagedWorkspaceError('PROJECT_RECONNECT_REQUIRED', 'Project access changed. Try again.');
+    }
+    return { workspace, lease, grant };
+  }
+
+  async setProjectAccess(conversationId, mode, selectedPath = null) {
+    const workspace = this.store.getForConversation(conversationId);
+    this.cancelConversation(conversationId);
+    if (workspace) this.leases.delete(workspace.workspaceId);
+    this.capabilityGrants.deleteConversation(conversationId);
+    this.projectReads.delete(conversationId);
+    return this.store.setProjectAccess(conversationId, mode, selectedPath);
   }
 
   async prepareCommandPermissions(conversationId, permissions = {}, request = {}) {
@@ -1025,7 +1077,8 @@ class ManagedWorkspaceController {
       if (!capabilities.available) {
         throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
       }
-      const { lease } = await this.#enabledLease(conversationId, request);
+      const { lease, workspace } = await this.#enabledLease(conversationId, request);
+      if (workspace.project) await this.store.projectAccess.resolve(workspace.workspaceId, { write: true });
       const workingDirectory = await this.#workingDirectory(
         lease,
         request.workingDirectory || '.',
@@ -1267,7 +1320,7 @@ class ManagedWorkspaceController {
       throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
     }
     if (operation.startsWith('history_') && this.historyControllers.get(conversationId)?.signal.aborted) throw new WorkspaceHistoryError('Workspace history was stopped');
-    const readOnlyOperations = new Set(['access', 'read', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
+    const readOnlyOperations = new Set(['access', 'read', 'read_version', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
     const rootOperations = new Set(['list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
     const relative =
       operation === 'mkdir'
@@ -1281,7 +1334,10 @@ class ManagedWorkspaceController {
     if (!capabilities.available) {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
-    const { lease } = await this.#enabledLease(conversationId, request);
+    const { lease, workspace, grant } = await this.#enabledLease(conversationId, request);
+    if (workspace.project && !readOnlyOperations.has(operation)) {
+      await this.store.projectAccess.resolve(workspace.workspaceId, { write: true });
+    }
     throwIfWorkspaceAborted(request.signal);
     reportWorkspacePhase(request, 'executing_operation');
     const executionRoot =
@@ -1296,11 +1352,12 @@ class ManagedWorkspaceController {
     this.activeCommands.set(activeToken, { conversationId, controller });
     let receipt;
     try {
+      if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) throw new Error('Project access changed');
       receipt = await this.executor.execute(lease.helperPolicy, {
         command: '/bin/sh',
         args: [
           '-c',
-          'cd "$1" && exec "$2" -e "$3" "$4" "$5" "$6"',
+          'cd "$1" && exec "$2" -e "$3" "$4" "$5" "$6" "$7" "$8"',
           'freedom-workspace-file',
           executionRoot,
           lease.runtime.sandboxExecutablePath,
@@ -1308,6 +1365,8 @@ class ManagedWorkspaceController {
           operation,
           relative,
           content ? content.toString('base64') : '',
+          workspace.project && operation === 'write' ? this.projectReads.get(conversationId)?.get(relative) || 'missing' : '',
+          grant ? `${grant.dev}:${grant.ino}` : '',
         ],
         signal: controller.signal,
       });
@@ -1396,7 +1455,9 @@ class ManagedWorkspaceController {
     if (signal?.aborted) abort();
     try {
       const { lease } = await this.#enabledLease(conversationId);
-      return await action(new ManagedWorkspaceHistory(lease.workspaceRoot, { signal: cancellation.signal }));
+      const workspace = this.store.getForConversation(conversationId);
+      const historyRoot = workspace.project ? await this.store.resolveHistoryPath(workspace.workspaceId) : lease.workspaceRoot;
+      return await action(new ManagedWorkspaceHistory(historyRoot, { signal: cancellation.signal }));
     } finally { signal?.removeEventListener('abort', abort); this.historyLocks.delete(conversationId); this.historyControllers.delete(conversationId); }
   }
 
@@ -1537,7 +1598,8 @@ class ManagedWorkspaceController {
     };
     if (['list', 'files', 'file'].includes(request.action)) {
       const { lease } = await this.#enabledLease(conversationId);
-      return perform(new ManagedWorkspaceHistory(lease.workspaceRoot));
+      const workspace = this.store.getForConversation(conversationId);
+      return perform(new ManagedWorkspaceHistory(workspace.project ? await this.store.resolveHistoryPath(workspace.workspaceId) : lease.workspaceRoot));
     }
     return this.#withHistory(conversationId, perform);
   }
@@ -1552,10 +1614,19 @@ class ManagedWorkspaceController {
     if (relativePath.split('/').some((part) => part.toLowerCase() === '.git')) {
       throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'Git metadata is private');
     }
-    return this.#structuredFileOperation(conversationId, 'workspace_inspect', relativePath, {
+    const result = await this.#structuredFileOperation(conversationId, 'workspace_inspect', relativePath, {
       kind: options.kind,
       showGenerated: options.showGenerated === true,
     });
+    const workspace = this.store.getForConversation(conversationId);
+    if (workspace?.project && options.kind === 'changes') {
+      const recorded = this.store.projectEdits(workspace.workspaceId);
+      if (result.noRepository) return { available: true, project: true, recordedEditsOnly: true,
+        changes: recorded.slice(0, 500).map((file) => ({ path: file, agentEdited: true, status: 'edited', preview: 'file' })), limitReached: recorded.length > 500 };
+      return { ...result, project: true,
+        ...(result.changes && { changes: result.changes.map((entry) => ({ ...entry, agentEdited: recorded.includes(entry.path) })) }) };
+    }
+    return result;
   }
 
   async accessFile(conversationId, relativePath, request = {}) {
@@ -1563,7 +1634,18 @@ class ManagedWorkspaceController {
   }
 
   async readFile(conversationId, relativePath, request = {}) {
-    return this.#fileOperation(conversationId, 'read', relativePath, null, request);
+    const project = this.store.getForConversation(conversationId)?.project;
+    const bytes = await this.#fileOperation(conversationId, project ? 'read_version' : 'read', relativePath, null, request);
+    if (project) {
+      const result = JSON.parse(bytes.toString('utf8'));
+      if (!/^[a-f0-9]{64}$/.test(result.version) || typeof result.content !== 'string') throw new ManagedWorkspaceError('WORKSPACE_FILE_UNAVAILABLE', 'Invalid project read');
+      if (!this.projectReads.has(conversationId)) this.projectReads.set(conversationId, new Map());
+      const reads = this.projectReads.get(conversationId);
+      if (reads.size >= 500) reads.delete(reads.keys().next().value);
+      reads.set(relativePath, result.version);
+      return Buffer.from(result.content, 'base64');
+    }
+    return bytes;
   }
 
   async createDirectory(conversationId, relativePath, request = {}) {
@@ -1573,6 +1655,9 @@ class ManagedWorkspaceController {
   async writeFile(conversationId, relativePath, content, request = {}) {
     const buffer = validateWorkspaceContent(content);
     await this.#fileOperation(conversationId, 'write', relativePath, buffer, request);
+    this.projectReads.get(conversationId)?.delete(relativePath);
+    const workspace = this.store.getForConversation(conversationId);
+    if (workspace?.project) this.store.recordProjectEdit(workspace.workspaceId, relativePath);
   }
 
   async listDirectory(conversationId, relativePath = '.', options = {}) {
@@ -1688,7 +1773,10 @@ class ManagedWorkspaceController {
 
   async #executeCommand(conversationId, request) {
     if (this.historyLocks.has(conversationId)) throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
-    const { workspace, lease } = await this.#enabledLease(conversationId, request);
+    const { workspace, lease, grant } = await this.#enabledLease(conversationId, request);
+    if (workspace.project) {
+      await this.store.projectAccess.resolve(workspace.workspaceId, { write: true });
+    }
     const command = validateCommand(request.command);
     const capabilities = await this.getCapabilities(request);
     if (!capabilities.available) {
@@ -1729,6 +1817,9 @@ class ManagedWorkspaceController {
       command,
       workingDirectory.relative
     );
+    if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) {
+      throw new ManagedWorkspaceError('PROJECT_RECONNECT_REQUIRED', 'Project access changed. Try again.');
+    }
     const controller = new AbortController();
     const externalSignal = request.signal;
     const abort = () => controller.abort();

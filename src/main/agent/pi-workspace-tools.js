@@ -48,6 +48,10 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
   'WORKSPACE_SANDBOX_DENIED',
 ]);
 const WORKSPACE_ERROR_MESSAGES = Object.freeze({
+  PROJECT_RECONNECT_REQUIRED: 'Reconnect the project from its menu before using project tools.',
+  PROJECT_READ_ONLY: 'The project is read-only. Ask the user to allow editing from its menu.',
+  PROJECT_CHANGED: 'The project folder changed or became unavailable. Reconnect it before continuing.',
+  WORKSPACE_HISTORY_CHANGED: 'The file changed or has not been read yet. Read its current contents and reconsider the edit before writing.',
   INVALID_WORKSPACE_REQUEST: 'The workspace request is invalid',
   EXECUTABLE_ACCESS_DECLINED: 'The user did not grant access to the requested executables',
   EXECUTABLE_ACCESS_PLATFORM_UNAVAILABLE:
@@ -110,6 +114,10 @@ function safeWorkspaceError(error, options = {}) {
     'INVALID_COMMAND_PERMISSION_GRANT',
     'INVALID_EXECUTABLE_GRANT',
     'INVALID_EXECUTABLE_REQUEST',
+    'PROJECT_RECONNECT_REQUIRED',
+    'PROJECT_READ_ONLY',
+    'PROJECT_CHANGED',
+    'WORKSPACE_HISTORY_CHANGED',
     'WORKSPACE_CAPABILITY_DETECTION_FAILED',
     'WORKSPACE_DIRECTORY_UNAVAILABLE',
     'WORKSPACE_EXECUTION_FAILED',
@@ -644,6 +652,9 @@ async function ensureWorkspaceEnabled(options, operation, toolCallId, signal) {
       phase,
     });
   let workspace = options.controller.getWorkspace(options.conversationId);
+  if (workspace?.project && !workspace.project.connected) {
+    throw Object.assign(new Error(WORKSPACE_ERROR_MESSAGES.PROJECT_RECONNECT_REQUIRED), { code: 'PROJECT_RECONNECT_REQUIRED' });
+  }
   if (workspace?.enabled) return workspace;
   const capabilities = await options.controller.disclosure(options.conversationId, {
     signal,

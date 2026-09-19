@@ -503,6 +503,10 @@ class WorkspacePreviewController {
   }
 
   async handleSocketRequest(request, url, preview) {
+    if (this.workspaceController.getWorkspace(preview.conversationId)?.project) {
+      try { await this.workspaceController.resolveWorkspacePath(preview.conversationId); }
+      catch { return new Response('Project access unavailable', { status: 403, headers: responseHeaders() }); }
+    }
     if (request.method !== 'POST' || !this.isProcessPreviewLive(preview)) {
       return new Response('Preview socket unavailable', { status: 403, headers: responseHeaders() });
     }
@@ -686,6 +690,7 @@ class WorkspacePreviewController {
         });
       }
       const workspace = this.workspaceController.getWorkspace(preview.conversationId);
+      if (workspace?.project) await this.workspaceController.resolveWorkspacePath(preview.conversationId);
       if (!workspace?.enabled || workspace.workspaceId !== preview.workspaceId) {
         this.previews.delete(url.hostname);
         return new Response('Preview unavailable', {

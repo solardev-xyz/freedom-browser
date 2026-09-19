@@ -490,6 +490,9 @@ describe('workspace execution policy', () => {
     await expect(
       createWorkspaceExecutionPolicy({ workspaceRoot: missing.workspaceRoot })
     ).rejects.toMatchObject({ code: 'PROTECTED_PATH_MISSING' });
+    const external = await createWorkspaceExecutionPolicy({ workspaceRoot: missing.workspaceRoot, allowMissingGitMetadata: true });
+    expect(external.filesystem.protectedPaths).toContainEqual(expect.objectContaining({ relativePath: '.git', kind: 'absent', access: 'read_only' }));
+    expect(fs.existsSync(path.join(missing.workspaceRoot, '.git'))).toBe(false);
 
     await fs.promises.symlink(
       path.join(missing.fixtureRoot, 'outside-git'),

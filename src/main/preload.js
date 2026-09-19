@@ -204,6 +204,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:history:delete', { conversationId }),
   pickAgentFiles: () => ipcRenderer.invoke('agent:attachments:pick-files'),
   pickAgentFolder: () => ipcRenderer.invoke('agent:attachments:pick-folder'),
+  agentProjectAccess: (action, conversationId = null) => ipcRenderer.invoke('agent:project:access', { action, conversationId }),
   removeAgentAttachment: (selectionId) =>
     ipcRenderer.invoke('agent:attachments:remove', { selectionId }),
   revokeAgentAttachment: (conversationId, resourceId) =>

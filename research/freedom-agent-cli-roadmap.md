@@ -1,14 +1,53 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-18
+## Current working status — 2026-09-19
+
+### Existing projects experiment — 2026-09-19
+
+Active development is on `experiment/agent-existing-projects`, branched from
+`feature/freedom-automation-kernel` at `69a7643c`. The feature branch includes
+WebMCP discovery, per-page automation hints, and refreshed date/timezone context.
+The project-access experiment has **not been merged back**.
+
+The first implementation connects one native-picker-selected project to a new
+conversation, initially read-only, with an explicit Allow editing action for
+in-place changes. Existing file/folder attachments remain read-only reference
+material. Project association survives restart; authority does not, and a native
+Reconnect project action is required. Project file tools use relative paths,
+revalidate folder identity, and reject stale direct writes. Commands reuse the
+existing executable/network permission path. Freedom checkpoint metadata lives
+outside the selected project; existing Git metadata is never initialized or
+replaced. Conversation deletion removes Freedom-owned data only.
+
+Qualification on the designated Mac mini has passed bounded production
+file/history/reconnection checks, six absent-Git creation-denial probes, four
+selected Seatbelt integration cases, and the development-server/preview workflow.
+The v2 snapshot passed 11 production checkpoints, 332 targeted unit tests, lint,
+and the native UI flow in both layouts/themes. The final v3 lifecycle/error-copy
+pass repeated all 11 production checkpoints, passed 292 focused tests across
+nine suites, lint, and the native UI flow. Exact source manifests, logs, watchdog
+results, intact canaries, and screenshots are preserved on the Mac mini under
+`/private/tmp/freedom-existing-projects-test-20260919/evidence/`. User smoke
+acceptance is pending; no broader platform or live-model acceptance is claimed.
+See [project access notes](../docs/agent-existing-projects.md).
+
+Remaining scope includes individual in-place file grants, multiple writable
+projects in a conversation, linked Git worktrees/external Git metadata,
+cross-profile writer coordination, and broader platform qualification. The
+unified Agent authority selector remains a separate UX track. Revocation blocks
+new operations and requests cancellation; it does not establish complete
+termination of previously launched detached descendants. Same-user concurrent
+filesystem races and the existing checkpoint size/restore limits remain explicit.
+
+### Previous integration checkpoint — 2026-09-18
 
 The integration branch is `feature/freedom-automation-kernel`, with browser
 improvements integrated through `ff2f2507`, including the main merge `d3882e41` (main through `ee2d4147`)

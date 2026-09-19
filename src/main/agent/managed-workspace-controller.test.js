@@ -1121,4 +1121,41 @@ describe('ManagedWorkspaceController', () => {
     expect(() => validateWorkspacePath('../outside')).toThrow('inside the managed workspace');
     expect(() => validateWorkspacePath('/absolute')).toThrow('workspace-relative');
   });
+
+  test('versioned helper writes reject unread, externally changed, and replaced files', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-versioned-file-'));
+    const file = path.join(directory, 'file.txt');
+    const run = (operation, content = '', expected = '') => execFileSync(process.execPath,
+      ['-e', WORKSPACE_FILE_HELPER, operation, 'file.txt', Buffer.from(content).toString('base64'), expected],
+      { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+    try {
+      fs.writeFileSync(file, 'original');
+      expect(() => run('write', 'overwrite', 'missing')).toThrow();
+      let version = JSON.parse(run('read_version')).version;
+      fs.writeFileSync(file, 'external');
+      expect(() => run('write', 'overwrite', version)).toThrow();
+      expect(fs.readFileSync(file, 'utf8')).toBe('external');
+      version = JSON.parse(run('read_version')).version;
+      fs.renameSync(file, path.join(directory, 'old.txt'));
+      fs.writeFileSync(file, 'external');
+      expect(() => run('write', 'overwrite', version)).toThrow();
+      version = JSON.parse(run('read_version')).version;
+      run('write', 'accepted', version);
+      expect(fs.readFileSync(file, 'utf8')).toBe('accepted');
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  test('revocation while an external policy is being prepared prevents launch', async () => {
+    const { controller, dependencies, workspace } = createController();
+    workspace.project = { connected: true, mode: 'write' };
+    const grant = { root: '/managed', dev: '1', ino: '2', mode: 'write' };
+    dependencies.store.projectAccess = { grants: new Map([[workspace.workspaceId, grant]]), resolve: jest.fn(async () => grant) };
+    dependencies.createPolicy.mockImplementation(async () => {
+      dependencies.store.projectAccess.grants.delete(workspace.workspaceId);
+      return {};
+    });
+    await expect(controller.execute('conversation_one', { command: 'echo should-not-run' })).rejects.toMatchObject({ code: 'PROJECT_RECONNECT_REQUIRED' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(controller.leases.size).toBe(0);
+  });
 });

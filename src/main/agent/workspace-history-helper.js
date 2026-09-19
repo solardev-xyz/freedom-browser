@@ -32,7 +32,15 @@ function historyReadFile(relativePath) {
 function historySnapshot() {
   const requested = encoded ? JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')).paths : null;
   if (requested && (!Array.isArray(requested) || requested.length > 400 || requested.some((value) => historyPathReason(value)))) fail('WORKSPACE_FILE_UNSAFE');
-  const candidates = [...new Set(gitRead(['ls-files', '--cached', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean))].filter((value) => !requested || requested.includes(value)).sort();
+  let discovered;
+  if (requested && identity) discovered = requested;
+  else if (fs.existsSync(path.join(root, '.git'))) discovered = gitRead(['ls-files', '--cached', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean);
+  else {
+    discovered = [];
+    const scan = walkFiles('.', (_target, relativePath) => { discovered.push(relativePath); return discovered.length <= 2000; });
+    if (scan.scanLimitReached) fail('WORKSPACE_HISTORY_TOO_LARGE');
+  }
+  const candidates = [...new Set(discovered)].filter((value) => !requested || requested.includes(value)).sort();
   if (candidates.length > 2000) fail('WORKSPACE_HISTORY_TOO_LARGE');
   const files = [];
   const excluded = [];

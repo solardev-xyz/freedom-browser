@@ -53,7 +53,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
     try {
       const result = session.version
         ? await history(session, 'file', { versionId: session.version.id, path: entry.path })
-        : await inspect(session, 'diff', entry.path);
+        : await inspect(session, entry.preview === 'file' ? 'file' : 'diff', entry.path);
       if (!result || !ui.valid() || readSequence !== session.readSequence) return;
       note.textContent = result.message || (result.binary ? 'Binary file — text preview unavailable.'
         : result.truncated ? 'Limited preview — file content was truncated.' : '');
@@ -82,13 +82,14 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
       button.appendChild(node('span', 'workspace-viewer-path', entry.path));
       if (entry.status) button.appendChild(node('span', `agent-workspace-file-status ${entry.status}`,
         { added: 'Added', modified: 'Modified', deleted: 'Deleted', conflicted: 'Conflict' }[entry.status] || 'Changed'));
+      if (entry.agentEdited) button.appendChild(node('span', 'workspace-viewer-caption', 'Agent edited'));
       buttons.push(button);
       list.appendChild(button);
     }
     ui.body.appendChild(list);
     ui.body.appendChild(content);
     if (entries.length) void readFile(session, ui, entries[0], content, buttons);
-    else content.appendChild(node('p', 'workspace-viewer-message', session.version ? 'No files in this checkpoint' : 'No changes since the latest checkpoint'));
+    else content.appendChild(node('p', 'workspace-viewer-message', session.version ? 'No files in this checkpoint' : session.project ? 'No changes to show' : 'No changes since the latest checkpoint'));
   }
 
   async function show(session) {
@@ -108,7 +109,11 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
         const changes = await inspect(session, 'changes');
         if (!changes || !ui.valid()) return;
         if (!changes.available) { ui.message.textContent = changes.message; return; }
-        ui.message.textContent = changes.limitReached ? 'Showing the first 500 changes. Ignored files are excluded.' : '';
+        session.project = changes.project === true;
+        ui.message.textContent = changes.project
+          ? changes.recordedEditsOnly ? 'No Git baseline. Showing direct file edits recorded in this chat; commands and outside edits may change other files.'
+            : 'Project changes include work from before this chat. “Agent edited” marks files directly edited in this chat; commands may change other files.'
+          : changes.limitReached ? 'Showing the first 500 changes. Ignored files are excluded.' : '';
         fileList(session, ui, changes.changes);
       }
     } catch (cause) {

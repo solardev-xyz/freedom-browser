@@ -1090,6 +1090,38 @@ class FreedomAgentService {
     return this.historyStore ? this.historyStore.listSessions() : [];
   }
 
+  async openProject(selectedPath) {
+    if (this.disposed || this.activeRun || this.workspaceHistoryMutation || !this.historyStore) {
+      throw new FreedomAgentError(AGENT_ERROR_CODES.BUSY, 'Finish the current task before opening a project.');
+    }
+    const conversationId = this.conversationIdFactory();
+    const pending = this.workspaceController.store.attachProject(conversationId, selectedPath);
+    this.workspaceHistoryMutation = pending;
+    try {
+      const workspace = await pending;
+      if (this.disposed) throw new FreedomAgentError(AGENT_ERROR_CODES.DISPOSED, 'Freedom Agent closed while opening this project.');
+      this.historyStore.createSession({ conversationId, title: workspace.project.name,
+        approvalMode: 'every_interaction', status: 'ready', createdAt: this.now() });
+    } catch (error) {
+      await this.workspaceController.store.deleteConversation(conversationId);
+      throw error;
+    } finally { this.workspaceHistoryMutation = null; }
+    return this.openConversation(conversationId);
+  }
+
+  async setProjectAccess(conversationId, mode, selectedPath = null) {
+    if (this.disposed || this.conversation?.conversationId !== conversationId || this.workspaceHistoryMutation) {
+      throw new FreedomAgentError(AGENT_ERROR_CODES.BUSY, 'Project access cannot be changed right now.');
+    }
+    if (this.activeRun) {
+      throw new FreedomAgentError(AGENT_ERROR_CODES.BUSY, 'Stop the agent before changing project access.');
+    }
+    const pending = this.workspaceController.setProjectAccess(conversationId, mode, selectedPath);
+    this.workspaceHistoryMutation = pending;
+    try { await pending; return this.getState(); }
+    finally { this.workspaceHistoryMutation = null; }
+  }
+
   listAgentTabs() {
     return [...this.agentTabs.values()]
       .filter((record) => record.custody === 'agent')
@@ -1650,6 +1682,9 @@ class FreedomAgentService {
           }
         }
         if (!tabId) systemPrompt = `${systemPrompt}\n\n${EMPTY_WORKSPACE_SYSTEM_PROMPT}`;
+        if (this.workspaceController?.getWorkspace(run.conversationId)?.project) {
+          systemPrompt += '\n\nThis conversation is attached to an existing user project. Workspace tools address its real files using relative paths; do not create a replacement managed project or ask for absolute paths. Access begins read-only and may require reconnection after restart. Only the user can reconnect or allow editing from the project menu. Read existing files before changing them; if a file changed externally, read it again and reconsider the edit. Freedom checkpoints are separate from the project Git repository. Never modify its Git metadata through shell commands.';
+        }
         if (existingConversation?.restored) {
           systemPrompt = `${systemPrompt}\n\n${RESTORED_SESSION_PROMPT}`;
         }
@@ -1730,6 +1765,9 @@ class FreedomAgentService {
           conversation.activeRun = run;
           conversation.restored = false;
           conversation.visionEnabled = visionEnabled;
+          conversation.providerId = run.providerId;
+          conversation.providerLabel = run.providerLabel;
+          conversation.modelId = run.modelId;
         }
         if (run.attachments.length) {
           const known = new Map(

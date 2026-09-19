@@ -189,6 +189,7 @@ function registerFreedomAgentIpc(options = {}) {
     openExternal,
     attachmentStore,
     getOwnerWindow,
+    dialog,
   } = options;
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new TypeError('Freedom agent IPC requires ipcMain');
@@ -839,6 +840,55 @@ function registerFreedomAgentIpc(options = {}) {
           );
     });
 
+  let projectSelectionPending = false;
+  const handleProjectAccess = async (event, payload = {}) => {
+    if (!isTrustedSender(event?.sender) || event.sender.isDestroyed?.() ||
+        (owner && owner.sender !== event.sender)) {
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'This window does not own the project.');
+    }
+    const action = payload?.action;
+    if (!['open', 'reconnect', 'read', 'write', 'remove'].includes(action) ||
+        (action !== 'open' && (!owner || payload.conversationId !== owner.conversationId))) {
+      return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid project request.');
+    }
+    if (projectSelectionPending || owner?.runId || owner?.starting) {
+      return errorEnvelope(AGENT_ERROR_CODES.BUSY, 'Finish the current task before changing project access.');
+    }
+    const ownerAtStart = owner;
+    const conversationAtStart = owner?.conversationId;
+    projectSelectionPending = true;
+    try {
+      let selectedPath = null;
+      if (['open', 'reconnect'].includes(action)) {
+        const options = { title: action === 'open' ? 'Open project — read-only access' : 'Reconnect project',
+          buttonLabel: action === 'open' ? 'Open project' : 'Reconnect', properties: ['openDirectory', 'dontAddToRecent'] };
+        const window = getOwnerWindow?.(event.sender);
+        const selection = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+        if (selection.canceled || !selection.filePaths?.[0]) return { ok: true, cancelled: true };
+        selectedPath = selection.filePaths[0];
+      }
+      if (event.sender.isDestroyed?.() || owner !== ownerAtStart || owner?.conversationId !== conversationAtStart || owner?.runId || owner?.starting) {
+        return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The conversation changed. Select the project again.');
+      }
+      const state = action === 'open' ? await service.openProject(selectedPath)
+        : await service.setProjectAccess(payload.conversationId, action, selectedPath);
+      if (!state?.conversationId) throw new Error('The project could not be opened.');
+      if (event.sender.isDestroyed?.() || owner !== ownerAtStart || owner?.conversationId !== conversationAtStart) {
+        await service.setProjectAccess(state.conversationId, 'remove');
+        return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The project window changed. Reconnect to continue.');
+      }
+      if (!owner) {
+        owner = { sender: event.sender, rendererTabId: null, conversationId: state.conversationId,
+          runId: null, buffer: [], starting: false, stopping: false, onDestroyed: () => stopOwnedConversation() };
+        event.sender.once?.('destroyed', owner.onDestroyed);
+      } else { owner.conversationId = state.conversationId; owner.rendererTabId = null; }
+      return { ok: true, state: handleGetState(event).state };
+    } catch (error) {
+      return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        /^PROJECT_/.test(error?.code || '') ? error.message : 'Project access could not be changed.');
+    } finally { projectSelectionPending = false; }
+  };
+
   const handleHistoryDelete = async (event, payload) => {
     const trusted = trustedHistoryRequest(event, () => ({ ok: true }));
     if (!trusted.ok) return trusted;
@@ -1227,6 +1277,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
   ipcMain.handle(IPC.AGENT_WORKSPACE_HISTORY, handleWorkspaceHistory);
   ipcMain.handle(IPC.AGENT_WORKSPACE_INSPECT, handleWorkspaceInspect);
+  ipcMain.handle(IPC.AGENT_PROJECT_ACCESS, handleProjectAccess);
   ipcMain.handle(IPC.AGENT_PROCESS_STOP, handleProcessStop);
   ipcMain.handle(IPC.AGENT_PROCESS_PREVIEW_OPEN, handleProcessPreviewOpen);
   ipcMain.handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
@@ -1267,6 +1318,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
     ipcMain.removeHandler?.(IPC.AGENT_WORKSPACE_HISTORY);
     ipcMain.removeHandler?.(IPC.AGENT_WORKSPACE_INSPECT);
+    ipcMain.removeHandler?.(IPC.AGENT_PROJECT_ACCESS);
     ipcMain.removeHandler?.(IPC.AGENT_PROCESS_STOP);
     ipcMain.removeHandler?.(IPC.AGENT_PROCESS_PREVIEW_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_PUBLICATION_OPEN);

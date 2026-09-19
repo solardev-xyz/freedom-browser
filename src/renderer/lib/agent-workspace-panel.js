@@ -15,8 +15,9 @@ function button(text, action, className = 'agent-workspace-item') {
   return node;
 }
 
-export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHost = null, refreshControl = null } = {}) {
+export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHost = null, refreshControl = null, onProjectAccess = null } = {}) {
   let conversationId = null;
+  let project = null;
   let generation = 0;
   let refreshTimer = null;
   let loading = false;
@@ -170,6 +171,20 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
     ui.finish();
   }
 
+  function showProject(anchor) {
+    const ui = popover(project.name, anchor);
+    ui.body.appendChild(element('p', 'agent-workspace-note', project.connected
+      ? project.mode === 'write' ? 'Agent can edit files and run commands in this folder. Changes are made in place.' : 'Agent can read this folder. Allow editing to change files and run project commands.'
+      : 'Reconnect this folder to give Agent access again.'));
+    const actions = project.connected
+      ? [[project.mode === 'write' ? 'Read only' : 'Allow editing', project.mode === 'write' ? 'read' : 'write'], ['Remove access', 'remove']]
+      : [['Reconnect project…', 'reconnect']];
+    for (const [label, action] of actions) ui.body.appendChild(button(label, () => {
+      closePopup(false); void onProjectAccess?.(action);
+    }));
+    ui.finish();
+  }
+
   function render() {
     if (refreshControl) {
       refreshControl.hidden = !conversationId;
@@ -202,7 +217,9 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
         body.appendChild(row);
       };
       const count = changes?.changes?.length || 0;
-      summary('Changes', changes?.available ? `${count}${changes.limitReached ? '+' : ''} ${count === 1 ? 'file' : 'files'}` : loading ? 'Loading…' : 'Unavailable', 'changes', () => openViewer());
+      if (project) summary(project.name, project.connected ? project.mode === 'write' ? 'Can edit' : 'Read only' : 'Reconnect', 'project', showProject);
+      if (project && !project.connected) { host.appendChild(body); continue; }
+      summary(changes?.recordedEditsOnly ? 'Recorded edits' : 'Changes', changes?.available ? `${count}${changes.limitReached ? '+' : ''} ${count === 1 ? 'file' : 'files'}` : loading ? 'Loading…' : 'Unavailable', 'changes', () => openViewer());
       summary('Checkpoints', history ? `${history.versions.length}${history.limitReached ? '+' : ''}` : loading ? 'Loading…' : 'Unavailable', 'checkpoints', showCheckpoints);
       if (error) body.appendChild(element('p', 'agent-workspace-note', error));
       host.appendChild(body);
@@ -213,7 +230,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
 
   async function refresh() {
     clearTimeout(refreshTimer);
-    if (!conversationId) return;
+    if (!conversationId || (project && !project.connected)) return;
     if (loading) { refreshQueued = true; return; }
     const version = generation;
     const expected = conversationId;
@@ -234,7 +251,9 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
 
   return {
     dismissPopover: () => closePopup(false),
-    setWorkspace(next) {
+    setWorkspace(next, nextProject = null) {
+      const projectChanged = JSON.stringify(project) !== JSON.stringify(nextProject);
+      project = nextProject || null;
       if (next !== conversationId) {
         generation += 1;
         closePopup(false);
@@ -243,6 +262,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
         changes = null; history = null; historyLoadFailed = false; error = ''; loading = false; refreshQueued = false;
         render();
       }
+      if (projectChanged) { generation += 1; loading = false; closePopup(false); render(); }
       clearTimeout(refreshTimer);
       if (conversationId) refreshTimer = setTimeout(() => void refresh(), 250);
     },

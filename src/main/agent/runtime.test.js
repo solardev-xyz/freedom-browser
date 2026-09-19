@@ -221,6 +221,7 @@ describe('Freedom agent runtime', () => {
       openExternal: options.openExternal,
       attachmentStore,
       getOwnerWindow: options.getOwnerWindow,
+      dialog: options.dialog,
     });
 
     const resolveModel = registerFreedomAgentIpc.mock.calls[0][0].resolveModel;

@@ -887,9 +887,13 @@ async function createWorkspaceExecutionPolicy(options = {}) {
   }
   const protectedPaths = [];
   for (const relativePath of protectedWorkspacePaths) {
-    protectedPaths.push(
-      await resolveProtectedPath(workspaceRoot, relativePath, authorizedGitMetadataPaths)
-    );
+    try {
+      protectedPaths.push(await resolveProtectedPath(workspaceRoot, relativePath, authorizedGitMetadataPaths));
+    } catch (error) {
+      if (relativePath !== '.git' || options.allowMissingGitMetadata !== true || error.code !== 'PROTECTED_PATH_MISSING') throw error;
+      protectedPaths.push(Object.freeze({ relativePath, access: 'read_only', kind: 'absent',
+        sourcePath: path.join(workspaceRoot, relativePath), mountPath: '/workspace/.git' }));
+    }
   }
   await validateWorkspaceHardlinks(workspaceRoot, protectedWorkspacePaths);
 

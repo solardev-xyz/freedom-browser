@@ -315,6 +315,8 @@ describe('preload', () => {
         [{ conversationId: 'conversation_one', action: 'save', label: 'Working', versionId: undefined, path: undefined, token: undefined }]],
       [exposures.electronAPI, 'inspectAgentWorkspace', ['conversation_one', 'tree'], IPC.AGENT_WORKSPACE_INSPECT,
         [{ conversationId: 'conversation_one', kind: 'tree', path: '.', showGenerated: false }]],
+      [exposures.electronAPI, 'agentProjectAccess', ['reconnect', 'conversation_one'], IPC.AGENT_PROJECT_ACCESS,
+        [{ action: 'reconnect', conversationId: 'conversation_one' }]],
       [
         exposures.electronAPI,
         'stopAgentProcess',

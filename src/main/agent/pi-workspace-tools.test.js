@@ -924,6 +924,13 @@ describe('Pi managed workspace tools', () => {
     }).message).not.toContain('/private');
   });
 
+  test.each(['PROJECT_RECONNECT_REQUIRED', 'PROJECT_READ_ONLY', 'PROJECT_CHANGED', 'WORKSPACE_HISTORY_CHANGED'])('preserves actionable %s without leaking host paths', (code) => {
+    const result = safeWorkspaceError({ code, message: '/private/user/project secret' });
+    expect(result.code).toBe(code);
+    expect(result.message).not.toContain('/private');
+    expect(result.message).not.toContain('secret');
+  });
+
   test('returns bounded failed-command diagnostics to Pi without persisting output in activity', async () => {
     const controller = createController();
     const onToolOutcome = jest.fn();

@@ -375,7 +375,7 @@ class AgentSessionHistoryStore {
       optionalString(entry.providerId, MAX_MODEL_FIELD_LENGTH),
       optionalString(entry.modelId, MAX_MODEL_FIELD_LENGTH),
       optionalString(entry.thinkingLevel, 80),
-      'running',
+      entry.status === 'ready' ? 'ready' : 'running',
       createdAt,
       createdAt
     );
