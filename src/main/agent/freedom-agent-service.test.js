@@ -1599,6 +1599,27 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('projects exact page-tool approval arguments without exposing internal document tokens', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const pageTool = { name: 'echo', argumentsJSON: '{"value":"test"}', manualSubmit: false, internalToken: 'must not leak' };
+    const decision = requestApproval({ action: 'browser_interaction', operation: 'browser_call_page_tool',
+      origin: 'https://example.test/', pageTool });
+    const approval = events.at(-1);
+    expect(approval).toMatchObject({ type: 'approval_requested', pageTool: {
+      name: 'echo', argumentsJSON: pageTool.argumentsJSON, manualSubmit: false,
+    } });
+    expect(approval.pageTool).not.toHaveProperty('internalToken');
+    await service.decideApproval('run_test', approval.approvalId, { approved: true });
+    expect(await decision).toEqual({ status: 'approved' });
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
   test('projects exact executable authority and returns a conversation-scoped grant', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);

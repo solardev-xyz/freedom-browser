@@ -6,6 +6,7 @@ const { AutomationError, ERROR_CODES } = require('../contract/errors');
 const { OwnedFrameObserver } = require('./owned-frame-observer');
 const { NativeDialogs } = require('./native-dialogs');
 const { VisualTargets } = require('./visual-targets');
+const { PageTools } = require('./page-tools');
 
 const AUTOMATION_WORLD_ID = 1001;
 const MAX_PAGE_TEXT_LENGTH = 12_000;
@@ -635,6 +636,7 @@ function collectPageSnapshot(
     ...exactField('url', window.location.href, 8_192),
     ...displayField('title', document.title),
     text: fullText.slice(textStart, textEnd),
+    pageToolsAvailable: typeof document.modelContext?.getTools === 'function',
     frames,
     elements,
     dialogs,
@@ -1106,6 +1108,11 @@ class WebContentsPageAdapter extends EventEmitter {
     this.references = new Map();
     this.activeWaits = new Set();
     this.nativeDialogs = new NativeDialogs(webContents);
+    this.pageTools = new PageTools({
+      evaluate: (fn, args) => this.#execute(fn, args, false),
+      identity: () => `${this.documentId}:${this.navigationId}`,
+      url: () => this.getState().url,
+    });
     this.frameObserver = new OwnedFrameObserver(
       webContents,
       (snapshotOptions) =>
@@ -1169,6 +1176,7 @@ class WebContentsPageAdapter extends EventEmitter {
         if (isMainFrame !== false) this.navigationInProgress = true;
         this.navigationId += 1;
         this.documentId = `document_${crypto.randomUUID()}`;
+        this.pageTools.invalidate();
         this.#pruneReferences();
         if (isMainFrame !== false) this.emit('navigation-started', this.getState());
       },
@@ -1179,6 +1187,7 @@ class WebContentsPageAdapter extends EventEmitter {
       'did-navigate-in-page': (_event, _url, isMainFrame) => {
         this.navigationId += 1;
         this.documentId = `document_${crypto.randomUUID()}`;
+        this.pageTools.invalidate(isMainFrame !== false);
         this.#pruneReferences();
         if (isMainFrame !== false) this.emit('navigation-committed', this.getState());
       },
@@ -1187,6 +1196,7 @@ class WebContentsPageAdapter extends EventEmitter {
         this.emit('navigation-finished', this.getState());
       },
       destroyed: () => {
+        this.pageTools.invalidate();
         this.destroyed = true;
         this.#cancelWaits();
         this.references.clear();
@@ -1939,6 +1949,7 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#assertAvailable();
     const cancelledWaits = this.#cancelWaits();
     this.frameObserver.cancel();
+    this.pageTools.cancel();
     this.nativeDialogs.stop();
     this.visualTargets.clear();
     if (this.stopLoadingHandler) {
@@ -1950,6 +1961,8 @@ class WebContentsPageAdapter extends EventEmitter {
   }
 
   dispose() {
+    this.pageTools.cancel();
+    this.pageTools.invalidate();
     this.frameObserver.dispose();
     this.nativeDialogs.dispose();
     this.visualTargets.clear();

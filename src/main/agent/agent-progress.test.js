@@ -14,6 +14,20 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('page tool results remain website claims, and pending manual submissions stay explicit', () => {
+    const progress = (operation, result) => activityProgress(operation,
+      createToolReceipt(operation, { envelope: { ok: true, tabId: 'tab_page', result } }));
+    const entry = (operation, result) => ({ operation, status: 'succeeded', ...progress(operation, result) });
+    const waiting = { executionRef: 'page_execution_example', status: 'awaiting_user' };
+    const completed = { ...waiting, status: 'completed' };
+    const invoked = entry(OPERATIONS.CALL_PAGE_TOOL, waiting);
+    expect(invoked.label).toBe('Waiting for manual form submission');
+    expect(buildAgentOutcome([invoked], 'completed')).toMatchObject({ verification: 'page_tool_unresolved', headline: 'Form waiting for you' });
+    const discovery = entry(OPERATIONS.LIST_PAGE_TOOLS, { execution: completed });
+    expect(buildAgentOutcome([invoked, discovery], 'completed')).toMatchObject({ verification: 'actions_recorded' });
+    expect(progress(OPERATIONS.CALL_PAGE_TOOL, { status: 'failed' }).label).toBe('Website tool failed');
+  });
+
   test('frame-read receipts identify the embedded page without implying a browser change', () => {
     const receipt = createToolReceipt(OPERATIONS.READ_FRAME, { envelope: {
       ok: true, tabId: 'tab_owner', result: { title: 'Embedded document', url: 'https://child.example/private/path?secret=hidden' },

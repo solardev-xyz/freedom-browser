@@ -3,6 +3,14 @@
 const { OPERATIONS, validateOperationInput } = require('./operations');
 
 describe('automation operation contract', () => {
+  test('page tools accept only bounded JSON arguments and observed references, never caller authority', () => {
+    const input = { tabId: 'tab_1', toolRef: 'page_tool_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee_0', arguments: { x: 1 } };
+    expect(validateOperationInput(OPERATIONS.CALL_PAGE_TOOL, { ...input, expectedPageTool: 'forged', script: 'run()' })).toEqual(input);
+    const cyclic = {}; cyclic.self = cyclic;
+    for (const argumentsValue of [[], null, cyclic, { value: undefined }, { value: Infinity }, { value: 'a'.repeat(8193) }])
+      expect(() => validateOperationInput(OPERATIONS.CALL_PAGE_TOOL, { ...input, arguments: argumentsValue })).toThrow();
+    expect(() => validateOperationInput(OPERATIONS.CALL_PAGE_TOOL, { ...input, toolRef: 'tool_name' })).toThrow();
+  });
   test('frame reads accept bounded windows but no caller authority or script', () => {
     const frameRef = 'frame_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     expect(validateOperationInput(OPERATIONS.LIST_FRAMES, { tabId: 'tab_1' })).toEqual({ tabId: 'tab_1' });

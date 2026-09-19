@@ -1,6 +1,7 @@
 'use strict';
 
 const { invalidArgument } = require('./errors');
+const { boundedJsonStructure } = require('./page-tool-schema');
 const {
   DEFAULT_DIAGNOSTIC_MAX_BYTES,
   DEFAULT_DIAGNOSTIC_MAX_LINES,
@@ -30,6 +31,8 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
+  OPERATIONS.LIST_PAGE_TOOLS,
+  OPERATIONS.CALL_PAGE_TOOL,
   OPERATIONS.GET_DIALOG,
   OPERATIONS.HANDLE_DIALOG,
   OPERATIONS.PRESS,
@@ -296,6 +299,25 @@ function validateOperationInput(operation, rawInput) {
       normalized.value = requireString(input.value, 'value', { allowEmpty: true });
       if (normalized.value.length > 2000) throw invalidArgument('Option value is too long');
     }
+  }
+
+  if (operation === OPERATIONS.CALL_PAGE_TOOL) {
+    normalized.toolRef = requireString(input.toolRef, 'toolRef');
+    if (!/^page_tool_[a-f0-9-]{36}_\d{1,2}$/.test(normalized.toolRef))
+      throw invalidArgument('Use a toolRef from browser_list_page_tools');
+    const args = requireObject(input.arguments);
+    if (!boundedJsonStructure(args)) throw invalidArgument('Page tool arguments are too deeply nested or contain too many values');
+    let encoded;
+    try {
+      encoded = JSON.stringify(args, (_key, value) => {
+        if (typeof value === 'function' || typeof value === 'symbol' ||
+            typeof value === 'undefined' || (typeof value === 'number' && !Number.isFinite(value)))
+          throw new Error('Non-JSON argument');
+        return value;
+      });
+    } catch { throw invalidArgument('Page tool arguments must be a JSON object'); }
+    if (encoded.length > 8192) throw invalidArgument('Page tool arguments exceed 8192 characters');
+    normalized.arguments = JSON.parse(encoded);
   }
 
   if (operation === OPERATIONS.HANDLE_DIALOG) {

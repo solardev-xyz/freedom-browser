@@ -23,6 +23,8 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
+  OPERATIONS.LIST_PAGE_TOOLS,
+  OPERATIONS.CALL_PAGE_TOOL,
   OPERATIONS.GET_DIALOG,
   OPERATIONS.HANDLE_DIALOG,
   OPERATIONS.PRESS,
@@ -424,6 +426,45 @@ class OriginScopedAutomationController {
       if (observed.ok && observed.result.dialog && !this.#acceptRequestedOrigin(observed.result.dialog.url))
         return this.#originDenied(state);
       return observed;
+    }
+    if (operation === OPERATIONS.CALL_PAGE_TOOL) {
+      const inspected = await this.controller.inspectAction(operation, input);
+      if (!inspected.ok) return inspected;
+      const tool = inspected.result;
+      if (!this.#acceptRequestedOrigin(tool.url) ||
+          (tool.formAction && !this.#acceptRequestedOrigin(tool.formAction))) return this.#originDenied(state);
+      const expectedPageTool = JSON.stringify(tool);
+      const { toolRef: _toolRef, ...decisionTool } = tool;
+      const key = `${input.tabId}:${JSON.stringify(decisionTool)}`;
+      if (this.declinedActions.has(key)) return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'This page tool invocation was declined');
+      if (typeof this.requestApproval !== 'function') return errorEnvelope(state, ERROR_CODES.APPROVAL_REQUIRED, 'Page tool invocations require approval');
+      const monitored = await this.controller.preparePageDialogs?.(input.tabId);
+      if (monitored?.ok && monitored.result.dialog)
+        return errorEnvelope(state, ERROR_CODES.CAPABILITY_UNAVAILABLE, 'Handle the pending native dialog before invoking a page tool');
+      const decision = await this.requestApproval({
+        action: 'browser_interaction', operation, tabId: input.tabId,
+        origin: originScopeForUrl(tool.url), destinationOrigin: originScopeForUrl(tool.formAction) || '',
+        label: tool.name,
+        pageTool: { name: tool.name, argumentsJSON: JSON.stringify(tool.arguments), manualSubmit: tool.manualSubmit },
+      });
+      const decisionStatus = typeof decision === 'object' ? decision?.status : decision;
+      if (decisionStatus !== 'approved' && decisionStatus !== true) {
+        if (decisionStatus !== 'withdrawn') this.declinedActions.add(key);
+        return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Page tool approval was declined or withdrawn');
+      }
+      const current = await this.#readState(input.tabId);
+      if (!current.ok) return current;
+      if (!this.#acceptCurrentOrigin(current)) return this.#originDenied(current);
+      if (!this.ownedTabs.has(input.tabId))
+        return errorEnvelope(current, ERROR_CODES.POLICY_DENIED, 'This task no longer controls the page');
+      const result = await this.#executeController(operation, input, { ...execution, expectedPageTool });
+      // A tool can trigger the same provider/wallet requests as DOM input.
+      await new Promise((resolve) => setTimeout(resolve, TRUSTED_INPUT_EFFECT_SETTLE_MS));
+      await this.#awaitExternalApprovalBarrier();
+      const after = await this.#readState(input.tabId);
+      if (!after.ok) return after;
+      if (!this.#acceptCurrentOrigin(after)) return this.#originDenied(after);
+      return result;
     }
     if (operation === OPERATIONS.HANDLE_DIALOG) {
       const inspected = await this.controller.inspectAction(operation, input);

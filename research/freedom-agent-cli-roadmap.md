@@ -86,6 +86,12 @@ has passed live qualification.
   Windows workspace containment, external filesystem grants, tool distribution,
   richer checkpoint/history recovery and additional viewer formats remain
   backlog items. Embedded `llama.cpp` is deferred; Ollama remains the local path.
+- Jev research is preserved in the [deferred browser accelerator proposal](#2026-09-18--jev-browser-acceleration-research-deferred).
+  The user deferred implementation: core Agent browsing must work with the user's
+  single supported model connection. A specialist model must remain optional,
+  with no mandatory second account or silent cloud dependency for local users.
+  Cross-platform qualification is also on the backburner by user decision;
+  its outstanding coverage is retained, not represented as completed.
 
 See [the browser improvement plan](#2026-09-17--browser-competence-improvement-track)
 for the next implementation slices and
@@ -238,6 +244,115 @@ Details are recorded in the
 [audit follow-through](browser-agent-improvements-audit.md#native-dialog-and-form-follow-through-2026-09-18).
 User smoke acceptance of this follow-through remains separate from the earlier
 accepted six-check workflow. Cross-platform and packaged-release checks remain open.
+
+## 2026-09-18 — Jev browser acceleration research (deferred)
+
+**Decision:** preserve the research; do not start the experiment now. Requiring
+users who already connected a ChatGPT subscription, Ollama, or another supported
+model to obtain a second specialist API connection would undermine the product's
+setup simplicity. The ordinary Agent/browser path must remain usable with that
+one supported connection. This is a product dependency constraint, not a claim
+that all models have equal capabilities or reliability.
+
+Jev could later be an explicitly enabled accelerator. An existing OpenRouter
+account may avoid another credential, but still adds another model dependency,
+usage cost, and data recipient. An Ollama-only setup must not silently send page
+content to a cloud classifier. Missing access, provider failure, unsuitable
+privacy routing, or disabling acceleration must leave the ordinary path usable.
+Revisit when the access, billing, privacy, and fallback experience can be made
+simple, and measured benefit justifies the additional runtime complexity.
+
+### Research findings and evidence
+
+- **Programming model:** TypeSafe's Jev makes typed decisions over supplied
+  state: Choice selects an offered option, Noul returns a yes probability, and
+  Score evaluates ordered criteria. It does not generate prose. Independent
+  questions can share one state/request and execute in parallel. Choice/Score
+  confidence summarizes the probability distribution; it is not proof of truth,
+  successful execution, or permission. See the [HTTP API](https://docs.typesafe.ai/api),
+  [confidence guidance](https://docs.typesafe.ai/confidence), and
+  [function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling).
+- **Browser Use example:** [jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
+  constructs a fresh indexed control table. One request chooses an operation
+  (click/type/select/scroll/wait/done/blocked) and speculative compatible targets;
+  only the target corresponding to the chosen operation is consumed. A separate
+  generative model supplies field text. The inspected
+  [model code](https://github.com/browser-use/jev-ultrafast/blob/main/jev_ultrafast/model.py)
+  calls TypeSafe directly for Jev and uses an OpenAI-compatible text helper;
+  the documented demo uses Mercury through OpenRouter. The
+  [loop](https://github.com/browser-use/jev-ultrafast/blob/main/jev_ultrafast/agent.py)
+  consumes decisions once, checks freshness, bounds steps/model calls, and tracks
+  progress. It records confidence but does not implement the proposed general
+  confidence-based handoff to a reasoning model.
+- **Speed evidence:** the repository reports a 7.073-second Flights run with
+  17 Jev requests (178 ms median latency) and two text-helper calls. Timing
+  excludes setup, initial navigation, and independent final verification.
+  Six alternating runs compare earlier versus optimized **Jev runtimes with the
+  same models**, not Jev versus a conventional agent. Each arm passed 3/3;
+  median task time fell 9.450 to 7.092 seconds and browser protocol calls fell
+  1,092 to 101. Atomic observations, targeted freshness checks, and useful waits
+  contribute to the result. Wikipedia and local hotel tasks are additional
+  smokes, not a broad reliability benchmark. Helper-only reported cost is not
+  total task cost. [Measurement boundaries and retained failures](https://github.com/browser-use/jev-ultrafast/blob/main/docs/performance.md).
+- **Coverage and limitations:** the demo excludes frames, shadow roots, canvas,
+  uploads, popup tabs, nested scrolling, and arbitrary keyboard widgets. Jev
+  itself is text-only. TypeSafe documents weaknesses with arithmetic/date
+  comparisons, indirection, irrelevant context, and adversarial state. It cannot
+  choose a missing candidate. Keep exact calculations in code, provide a
+  no-match/more-information path, and retain the vision model for visual tasks.
+  A DONE decision needs outcome verification. See
+  [demo limits](https://github.com/browser-use/jev-ultrafast#evidence-and-limits),
+  [model capabilities](https://docs.typesafe.ai/models), and
+  [Jev 1.13 limitations](https://docs.typesafe.ai/model-jaggedness/jev-1.13).
+- **OpenRouter:** the [model listing](https://openrouter.ai/typesafe/jev-1.13)
+  identifies `typesafe/jev-1.13`; the documented
+  [alpha Decisions API](https://openrouter.ai/docs/client-sdks/typescript/sdks/decisions/README)
+  accepts `model`, `state`, and `questions`. This is a distinct interface from
+  chat completions/tool calling. Our current provider resolver and Pi session
+  consume generative responses, and catalog discovery excludes explicitly
+  non-text output modalities. Merely exposing Jev in the composer is insufficient.
+  A dedicated adapter would need to preserve connection/privacy settings,
+  cancellation, timeouts, bounded responses, and diagnostics. Account access and
+  privacy-compatible routing were not exercised. Published input pricing was
+  $0.042 per million tokens, with no output-token charge; recheck API, model,
+  prices, and limits before implementation.
+
+### Possible later experiment — not scheduled
+
+**Sequencing clarification:** build the planned
+[subagent capability](#todo--subagents-and-parallel-delegation) with existing
+supported models first, then revisit Jev as an optional specialized browser
+worker. Share the delegation contract for goals, scoped permissions, budgets,
+progress, cancellation, and attributed results; allow worker implementations to
+use different internal decision loops. A Pi tool can expose delegation to the
+parent without requiring a separate user-facing Jev workflow. Jev is neither a
+dependency nor an acceptance gate for the initial subagent delivery. Whether
+field text comes from parent-supplied values or a bounded generative helper
+remains a later design decision.
+
+Keep the chosen main model for conversation, planning, text generation, and
+difficult recovery. Let it hand a bounded browser subtask to a Jev loop that
+selects supported actions and observed targets. Reuse Freedom's existing
+controller, element/document references, origin scope, approvals, receipts,
+Stop/steering, and freshness checks; do not import the demo's separate browser
+executor. Return to the main model on unsupported controls, insufficient evidence,
+uncertainty, repeated lack of progress, or exhausted budgets, reconciling any
+already executed actions before fallback. Never blindly replay an uncertain
+mutation. Confidence cannot bypass approval or other deterministic boundaries.
+
+If resumed, start on an experimental branch with an opt-in Decisions adapter and
+click/type/select/scroll/wait coverage. Compare the same small set of tasks with
+the ordinary loop, measuring verified completion, end-to-end latency, all model
+costs, incorrect actions, recovery, and fallback frequency. Test changing pages,
+missing candidates, ambiguous controls, cancellation, and service failure as well
+as successful paths. No broad comparative benchmark is a prerequisite to current
+Agent work. Consider our existing generative interaction-intent classifier as a
+separate later application, with its own error/threshold evaluation; do not change
+approval policy as part of the initial action-selection experiment.
+
+Research was read-only: no implementation, dependency installation, credential
+access, or paid model calls. Upstream source links reflect the research date and
+are not an immutable implementation baseline; pin and recheck them when resumed.
 
 ## Executive decision
 
@@ -2171,6 +2286,7 @@ Added 2026-09-17. Future capability; implementation priority and first delivery
 scope remain to be selected.
 
 - Let the main Agent delegate bounded subtasks to specialized child agents, run independent work in parallel, and incorporate their results into the parent conversation. Initial use cases include parallel research, code review, and independent project tasks.
+- First support workers using existing model connections. Keep the delegation contract independent of the worker's internal decision loop so the [deferred Jev proposal](#2026-09-18--jev-browser-acceleration-research-deferred) can later become an optional specialized browser worker using the same permissions, budgets, progress, cancellation, and result handling. A Pi delegation tool may invoke it; no second provider is required for core Agent or initial subagent functionality. This records the intended fit, not authorization to start either implementation now.
 - Give each child an explicit task, selected context and accountable result. Define parent/child messaging, follow-up work, result attribution and history persistence; avoid copying the entire conversation or unrelated private data by default.
 - Keep every child behind Freedom's existing automation and approval boundaries. Delegation may narrow the parent's permissions, never expand them. Define exclusive tab-control leases and coordinated workspace writes so agents cannot race on the same page or overwrite each other's work. Sensitive actions retain their existing approval requirements.
 - Show delegated tasks, status, results and failures in the parent conversation, with details available on demand. Support stopping an individual child; stopping the parent must cancel its descendants, pending model/tool requests and approvals, and reconcile any effects already performed.
@@ -2187,18 +2303,21 @@ scope remain to be selected.
 - Support persistent widget placement and configuration, further edits through conversation, and enable/disable, removal, versioning, and rollback. Reuse the existing project/build/preview foundation with a separately defined widget installation boundary.
 - Define an isolated widget runtime and explicit data/network capabilities before implementation. Generated widgets must not inherit the internal start page's trusted privileges or the creating Agent session's authority. See the creation direction below for the shared lifecycle.
 
-#### TODO — WebMCP page-tool support
+#### WebMCP page-tool support — initial implementation, 2026-09-18
 
-- Track and qualify the emerging [WebMCP](https://webmachinelearning.github.io/webmcp/) browser API, which lets a loaded web application expose structured JavaScript tools to a browser-provided Agent. This is distinct from Freedom's deferred external MCP server: WebMCP is a page capability available inside an ordinary browsing context, and the current Community Group report does not require the browser to expose those tools to its Agent through the Model Context Protocol.
-- When Freedom's Electron/Chromium baseline provides a usable implementation—or a narrow compatibility layer can be justified without forking the evolving specification—include the active document's WebMCP tool definitions in the Agent's page observation. Keep semantic DOM/visual observation and ordinary browser interaction as the fallback for sites without WebMCP.
-- Execute every WebMCP call through Freedom's canonical controller, current tab custody/run lease, approval posture, cancellation, progress, and evidence pipeline. Preserve tool origin and document identity, re-observe registrations across navigation and SPA lifecycle changes, validate schemas and bounded arguments/results, and treat page-provided names, descriptions, annotations, implementations, and outputs as untrusted web content rather than trusted authority or permission declarations.
-- Build qualification around the upstream Web Platform Tests and local hostile fixtures covering tool poisoning, misleading intent, oversized schemas/results, cross-origin frames, stale registrations, navigation during execution, cancellation, private windows, and calls whose declared read-only hint conflicts with an observable consequential effect. Do not let WebMCP annotations weaken deterministic wallet, node, file, publication, identity, payment, or native form gates.
+- **User smoke acceptance — 2026-09-19:** the Pizza maker workflow through Freedom Agent was manually tested and reported working successfully.
+- **Implemented on Electron 44.3.0 / Chromium 152.0.7977.78.** Refreshed the installed runtime to the existing lockfile, without adding or upgrading dependencies. The targeted native WebMCP features are enabled before page creation. This uses the live document API; it is independent of the deferred external MCP server.
+- **Agent integration:** `browser_list_page_tools` and `browser_call_page_tool` use the canonical controller, current task custody/origin boundaries, exact per-call approval, Stop and existing wallet/provider approval barriers. Native JavaScript registrations and declarative forms work in top-level visible and hidden pages. DOM/visual browsing remains the fallback.
+- **Untrusted content and freshness:** bounded descriptions/schemas/arguments/results; interpreted schema validation with explicit unsupported-schema omission; read-only annotations grant no authority. References expire across registration changes, rediscovery, navigation and Stop. SPA transitions preserve an existing invocation's result while invalidating references. Cross-document results remain unknown until inspected; no automatic invocation retry.
+- **Manual forms and cancellation:** manual-submit forms return `awaiting_user`; discovery polls the latest execution without re-invoking. Stop requests native cancellation but cannot undo effects. The pinned browser acknowledges cancellation without supplying the website callback an abort signal; do not claim callback termination.
+- **Qualification:** native Electron fixtures cover imperative/declarative execution, exact approval/denial, cancellation, document replacement, same-definition registration replacement, isolated-world discovery, iframe exclusion and SPA results. Google pizza, flight-search, bistro and doors demos were exercised with disposable profiles and fictitious inputs, without a model account. See [implementation contract and smoke instructions](../docs/webmcp-agent.md).
+- **Still deferred:** frame-scoped WebMCP execution; additional JSON Schema constraints/dialects; Windows/Linux qualification; continued native API and upstream WPT compatibility checks. Current Electron takes JSON text where the evolving specification describes object arguments, so runtime upgrades require requalification. Website code remains live and untrusted; approval is not an atomic implementation pin or behavioral audit.
 
 #### Deferred until evidence changes the priority
 
 - Moving Pi from main into an Electron utility process remains an evidence-driven reliability hardening decision based on crash, memory, shutdown, and provider behavior.
 - `freedom-cli` remains repository-local as a regression and architecture oracle. Packaging and distribution resume only for a concrete external-agent or CI use case.
-- External MCP remains deferred and, if justified later, must expose the same canonical controller over stdio rather than becoming a separate automation implementation. It is independent of the WebMCP page-tool TODO above.
+- External MCP remains deferred and, if justified later, must expose the same canonical controller over stdio rather than becoming a separate automation implementation. It is independent of the WebMCP page-tool integration above.
 - Commercial embedding and distribution policy for ChatGPT/Codex subscription reuse remains an external release question even though technical qualification passes.
 
 ### Alpha product promise

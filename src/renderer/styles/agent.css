@@ -2504,6 +2504,15 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   white-space: pre-line;
 }
 
+#agent-page-tool-arguments {
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: var(--text);
+}
+
 .agent-wallet-approval-details,
 .agent-approval-details {
   margin-top: 13px;

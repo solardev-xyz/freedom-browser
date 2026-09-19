@@ -2671,6 +2671,7 @@ function renderApproval(request) {
   const nodeRequest = request.nodeRequest;
   const nodeLifecycle = request.nodeLifecycle;
   const interaction = request.interaction;
+  const pageTool = request.pageTool;
   const publication = request.publication;
   const workspace = request.workspace;
   const workspacePermission = request.workspacePermission;
@@ -2689,7 +2690,9 @@ function renderApproval(request) {
     'myotis-ethereum': 'Myotis Ethereum',
     'myotis-gnosis': 'Myotis Gnosis',
   };
-  elements.approvalAction.textContent = workspacePermission
+  elements.approvalAction.textContent = pageTool
+    ? `Run website tool “${pageTool.name}”?`
+    : workspacePermission
     ? `Run “${workspacePermission.command}”?`
     : workspace
       ? 'Enable a managed project workspace for this conversation?'
@@ -2724,7 +2727,9 @@ function renderApproval(request) {
                                 : `${interaction.summary.replace(/[.?!]+$/, '')}?`
                               : interactionCopy[request.operation] ||
                                 `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = workspacePermission
+  elements.approvalOrigin.textContent = pageTool
+    ? `${approvalOriginSummary(request)} · This website tool runs using your current site session. Its claimed behavior is not verified.${pageTool.manualSubmit ? ' You will still need to submit the form yourself.' : ''}`
+    : workspacePermission
     ? workspaceCommandPermissionSummary(workspacePermission, request.label)
     : workspace
       ? 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
@@ -2753,6 +2758,9 @@ function renderApproval(request) {
                       ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
                       : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
                     : approvalOriginSummary(request);
+  elements.pageToolDetails.hidden = !pageTool;
+  elements.pageToolDetails.open = Boolean(pageTool);
+  elements.pageToolArguments.textContent = pageTool?.argumentsJSON || '';
   elements.approvalApprove.textContent = workspacePermission
     ? 'Allow once'
     : workspace
@@ -4152,6 +4160,8 @@ export function initAgentUi(options = {}) {
     approval: byId('agent-approval'),
     approvalAction: byId('agent-approval-action'),
     approvalOrigin: byId('agent-approval-origin'),
+    pageToolDetails: byId('agent-page-tool-details'),
+    pageToolArguments: byId('agent-page-tool-arguments'),
     workspacePermissionDetails: byId('agent-workspace-permission-details'),
     workspacePermissionSummary: byId('agent-workspace-permission-summary'),
     approvalApprove: byId('agent-approval-approve'),

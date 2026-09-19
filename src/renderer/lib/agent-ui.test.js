@@ -122,6 +122,8 @@ function createAgentElements() {
     'agent-approval',
     'agent-approval-action',
     'agent-approval-origin',
+    'agent-page-tool-details',
+    'agent-page-tool-arguments',
     'agent-workspace-permission-details',
     'agent-workspace-permission-summary',
     'agent-approval-approve',
@@ -1068,6 +1070,23 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-approval-origin'].textContent).toContain(
       'Freedom has not audited the page’s hidden behavior.'
     );
+  });
+
+  test('shows exact website tool arguments as text, separate from unverified website claims', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Use a website tool';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const argumentsJSON = '{"value":"<script>website()</script>"}';
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_tool',
+      action: 'browser_interaction', operation: 'browser_call_page_tool', origin: 'https://example.test/',
+      pageTool: { name: 'submit_feedback', argumentsJSON, manualSubmit: true } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Run website tool “submit_feedback”?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('not verified');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('submit the form yourself');
+    expect(ctx.elements['agent-page-tool-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-tool-arguments'].textContent).toBe(argumentsJSON);
   });
 
   test('disconnects a provider through the management view and returns to setup', async () => {

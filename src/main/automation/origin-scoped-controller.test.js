@@ -1599,3 +1599,67 @@ test('approved leave-page retries still reject a resulting unsupported origin', 
   });
   expect((await scoped.execute(OPERATIONS.HANDLE_DIALOG, { tabId: 'tab_assigned', dialogRef: 'dialog_test', accept: true })).error.code).toBe('POLICY_DENIED');
 });
+
+
+test.each(['every_interaction', 'sensitive_actions', 'allow_website_interactions'])(
+  'page tools require exact approval regardless of read-only hints in %s mode', async (approvalMode) => {
+    const controller = createController();
+    const tool = { name: 'looks_safe', url: 'https://trusted.example/start',
+      toolRef: 'page_tool_first', documentIdentity: 'doc_one', arguments: { value: 'approved value' },
+      annotations: { readOnlyHint: true } };
+    controller.inspectAction.mockResolvedValue({ ok: true, result: tool });
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', approvalMode, requestApproval });
+    expect((await scoped.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId: 'tab_assigned', toolRef: tool.toolRef, arguments: tool.arguments })).ok).toBe(true);
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({
+      pageTool: { name: 'looks_safe', argumentsJSON: '{"value":"approved value"}', manualSubmit: undefined },
+    }));
+    const dispatch = controller.execute.mock.calls.find(([operation]) => operation === OPERATIONS.CALL_PAGE_TOOL);
+    expect(dispatch[2].expectedPageTool).toBe(JSON.stringify(tool));
+  }
+);
+
+test('rediscovery cannot bypass a declined tool invocation in the same run', async () => {
+  const controller = createController();
+  const tool = { name: 'submit', url: 'https://trusted.example/start', documentIdentity: 'doc_one', arguments: {} };
+  controller.inspectAction.mockResolvedValue({ ok: true, result: { ...tool, toolRef: 'first' } });
+  const requestApproval = jest.fn(async () => 'declined');
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval });
+  const call = () => scoped.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId: 'tab_assigned', arguments: {} });
+  expect((await call()).error.code).toBe('USER_CANCELLED');
+  controller.inspectAction.mockResolvedValue({ ok: true, result: { ...tool, toolRef: 'second' } });
+  expect((await call()).error.code).toBe('USER_CANCELLED');
+  expect(requestApproval).toHaveBeenCalledTimes(1);
+  expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.CALL_PAGE_TOOL)).toBe(false);
+});
+
+test('page tool completion waits for the existing wallet/provider approval barrier', async () => {
+  const controller = createController();
+  controller.inspectAction.mockResolvedValue({ ok: true, result: { name: 'connect', url: 'https://trusted.example/start', arguments: {} } });
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned', requestApproval: async () => 'approved' });
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const original = controller.execute.getMockImplementation();
+  controller.execute.mockImplementation(async (operation, input) => {
+    const result = await original(operation, input);
+    if (operation === OPERATIONS.CALL_PAGE_TOOL) scoped.setExternalApprovalBarrier(barrier);
+    return result;
+  });
+  let settled = false;
+  const pending = scoped.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId: 'tab_assigned', arguments: {} })
+    .then(result => { settled = true; return result; });
+  await new Promise(resolve => setTimeout(resolve, 75));
+  expect(settled).toBe(false);
+  release();
+  expect((await pending).ok).toBe(true);
+});
+
+test('a page tool cannot dispatch after task custody is released during approval', async () => {
+  const controller = createController();
+  controller.inspectAction.mockResolvedValue({ ok: true, result: { name: 'change', url: 'https://trusted.example/start', arguments: {} } });
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned',
+    requestApproval: async () => { scoped.releaseTab('tab_assigned'); return 'approved'; } });
+  expect(await scoped.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId: 'tab_assigned', arguments: {} }))
+    .toMatchObject({ ok: false, error: { code: 'POLICY_DENIED' } });
+  expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.CALL_PAGE_TOOL)).toBe(false);
+});

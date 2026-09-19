@@ -90,6 +90,8 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Entering information on the current page',
     completed: 'Entered information on the current page',
   },
+  [OPERATIONS.LIST_PAGE_TOOLS]: { effect: ACTIVITY_EFFECTS.OBSERVED, intent: 'Discovering page tools', completed: 'Discovered page tools' },
+  [OPERATIONS.CALL_PAGE_TOOL]: { effect: ACTIVITY_EFFECTS.CHANGED, intent: 'Invoking a page tool', completed: 'Invoked a page tool' },
   [OPERATIONS.GET_DIALOG]: { effect: ACTIVITY_EFFECTS.OBSERVED, intent: 'Checking a native dialog', completed: 'Checked a native dialog' },
   [OPERATIONS.HANDLE_DIALOG]: { effect: ACTIVITY_EFFECTS.CHANGED, intent: 'Responding to a native dialog', completed: 'Responded to a native dialog' },
   [OPERATIONS.SELECT]: {
@@ -710,6 +712,7 @@ function normalizeAttachmentReceipt(value, operation) {
 }
 
 function activityProgress(operation, receipt = {}) {
+  const pageTool = [OPERATIONS.CALL_PAGE_TOOL, OPERATIONS.LIST_PAGE_TOOLS].includes(operation) && receipt.pageTool;
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
     intent: 'Working in the browser',
@@ -721,6 +724,14 @@ function activityProgress(operation, receipt = {}) {
     Number.isSafeInteger(receipt.pageCount) && receipt.pageCount >= 0 ? receipt.pageCount : null;
   let intent = copy.intent;
   let label = copy.completed;
+  if (pageTool && operation === OPERATIONS.CALL_PAGE_TOOL) {
+    const outcome = {
+      completed: 'Website tool returned', awaiting_user: 'Waiting for manual form submission',
+      failed: 'Website tool failed', cancelled: 'Website tool cancelled; effects may remain',
+      timed_out: 'Website tool timed out; outcome unknown', outcome_unknown: 'Website tool outcome unknown',
+    }[pageTool.status];
+    if (outcome) label = outcome;
+  }
   const artifact = availableArtifact(receipt.artifact);
   const upload = normalizeUpload(receipt.upload);
   const wallet = normalizeWalletReceipt(receipt.wallet);
@@ -920,6 +931,7 @@ function activityProgress(operation, receipt = {}) {
     intent,
     label,
     effect,
+    ...(pageTool && { pageTool }),
     ...(origin && { origin }),
     ...(boundedString(receipt.pageTitle, 240) && { pageTitle: boundedString(receipt.pageTitle, 240) }),
     ...(boundedString(receipt.pageId, 160) && { pageId: receipt.pageId.slice(0, 160) }),
@@ -941,6 +953,8 @@ function createToolReceipt(operation, options = {}) {
   const envelope = options.envelope;
   const result = envelope?.result;
   const resultTab = result?.tab;
+  const pageToolResult = operation === OPERATIONS.CALL_PAGE_TOOL ? result
+    : operation === OPERATIONS.LIST_PAGE_TOOLS ? result?.execution : null;
   const rawTitle = resultTab?.title ?? result?.title ?? options.pageTitle;
   const pageTitle = typeof rawTitle === 'string'
     ? rawTitle.replace(/\p{Cc}/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 240)
@@ -976,6 +990,8 @@ function createToolReceipt(operation, options = {}) {
     : [];
 
   return Object.freeze({
+    ...(['completed', 'awaiting_user', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(pageToolResult?.status) &&
+      { pageTool: { status: pageToolResult.status, executionRef: boundedString(pageToolResult.executionRef, 80) } }),
     ...(operation === OPERATIONS.SCROLL &&
       ['moved', 'boundary', 'no_movement'].includes(result?.outcome) && { scrollOutcome: result.outcome }),
     ...(pageId && { pageId }),
@@ -1133,6 +1149,7 @@ function buildAgentOutcome(activity, status, error) {
       if (item?.status !== 'succeeded' || normalizedEffect(item) !== ACTIVITY_EFFECTS.OBSERVED) {
         return false;
       }
+      if (item.operation === OPERATIONS.LIST_PAGE_TOOLS) return false;
       if (item.operation === OPERATIONS.LIST_TABS || !changedPageId) return true;
       return (item.pageId || item.origin) === changedPageId;
     });
@@ -1442,6 +1459,19 @@ function buildAgentOutcome(activity, status, error) {
         counts,
       });
     }
+    const unresolvedPageTool = items.filter((item) => item.operation === OPERATIONS.CALL_PAGE_TOOL && item.pageTool)
+      .map((item) => item.pageTool.executionRef
+        ? items.findLast((later) => later.pageTool?.executionRef === item.pageTool.executionRef) : item)
+      .findLast((item) => item.pageTool.status !== 'completed');
+    if (unresolvedPageTool) return Object.freeze({
+      kind: 'completed', verification: 'page_tool_unresolved', tone: 'caution',
+      headline: unresolvedPageTool.pageTool.status === 'awaiting_user'
+        ? 'Form waiting for you' : 'Website tool outcome needs checking',
+      detail: unresolvedPageTool.pageTool.status === 'awaiting_user'
+        ? 'The website form still requires manual submission. Agent has not submitted it.'
+        : 'The website tool did not return a confirmed result. Effects may remain; inspect the page before retrying.',
+      destinations, counts,
+    });
     if (resultObserved) {
       return Object.freeze({
         kind: 'completed',

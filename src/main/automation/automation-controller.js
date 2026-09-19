@@ -241,6 +241,7 @@ class AutomationController {
           OPERATIONS.TYPE,
           OPERATIONS.SELECT,
           OPERATIONS.HANDLE_DIALOG,
+          OPERATIONS.CALL_PAGE_TOOL,
           OPERATIONS.PRESS,
           OPERATIONS.SCROLL,
           OPERATIONS.UPLOAD,
@@ -254,6 +255,8 @@ class AutomationController {
         );
       }
       entry = this.pages.require(input.tabId);
+      if (operation === OPERATIONS.CALL_PAGE_TOOL)
+        return this.#successEnvelope(entry, await entry.adapter.pageTools.inspect(input));
       if (operation === OPERATIONS.HANDLE_DIALOG)
         return this.#successEnvelope(entry, entry.adapter.inspectDialog(input));
       if (typeof entry.adapter.inspectAction !== 'function') {
@@ -390,6 +393,10 @@ class AutomationController {
         return entry.adapter.type(input.ref, input.text, { replace: input.replace });
       case OPERATIONS.SELECT:
         return entry.adapter.select(input.ref, input.values ?? input.value);
+      case OPERATIONS.LIST_PAGE_TOOLS:
+        return entry.adapter.pageTools.list();
+      case OPERATIONS.CALL_PAGE_TOOL:
+        return entry.adapter.pageTools.call(input, execution);
       case OPERATIONS.GET_DIALOG:
         return entry.adapter.getDialog();
       case OPERATIONS.HANDLE_DIALOG:

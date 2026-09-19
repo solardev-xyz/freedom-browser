@@ -382,6 +382,8 @@ function hasRuntimeNodeTransition() {
 }
 
 app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
+// Native WebMCP is experimental in the pinned Electron runtime.
+app.commandLine.appendSwitch('enable-blink-features', 'WebMCP,WebMCPTesting');
 log.info('[profile] Active profile:', {
   id: activeProfile.id,
   source: activeProfile.source,
