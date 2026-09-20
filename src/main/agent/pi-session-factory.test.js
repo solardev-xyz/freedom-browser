@@ -360,12 +360,12 @@ describe('isolated Pi session factory', () => {
         globalThis.fetch = async (_url, init) => {
           requests.push(JSON.parse(init.body));
           const index = requests.length;
-          const delta = index < 3 ? { tool_calls: [{ index: 0, id: 'probe-' + index,
+          const delta = index < 4 ? { tool_calls: [{ index: 0, id: 'probe-' + index,
             type: 'function', function: { name: 'probe', arguments: '{"value":"test"}' } }] }
             : { content: 'Done' };
           const chunk = { id: 'response-' + index, object: 'chat.completion.chunk',
             created: 1, model: 'test', choices: [{ index: 0, delta,
-              finish_reason: index < 3 ? 'tool_calls' : 'stop' }] };
+              finish_reason: index < 4 ? 'tool_calls' : 'stop' }] };
           return new Response('data: ' + JSON.stringify(chunk) + '\\n\\ndata: [DONE]\\n\\n', {
             headers: { 'content-type': 'text/event-stream' },
           });
@@ -397,13 +397,14 @@ describe('isolated Pi session factory', () => {
               executions++;
               now = Date.parse('2026-09-20T12:00:00Z');
               if (executions === 1) throw Object.assign(new Error('Stale reference'), { code: 'STALE_ELEMENT_REFERENCE' });
+              if (executions === 2) return { isError: true, content: [{ type: 'text', text: 'Unconfirmed result' }], details: { evidence: 'retained' } };
               return { content: [{ type: 'text', text: 'Checked' }], details: { checked: true, items: ['test'] } };
             } }],
         });
         try {
           await created.session.prompt('Run the probe');
-          assert.equal(requests.length, 3);
-          assert.equal(executions, 2);
+          assert.equal(requests.length, 4);
+          assert.equal(executions, 3);
           for (const [index, request] of requests.entries()) {
             const instructions = request.messages.filter(m => m.role === 'system').map(m => m.content).join(' ');
             assert.ok(instructions.includes('Preserve Freedom instructions.'));
@@ -420,7 +421,10 @@ describe('isolated Pi session factory', () => {
           assert.ok(error.content.includes('Recovery:'));
           const results = created.session.agent.state.messages.filter(m => m.role === 'toolResult');
           assert.equal(results[0].isError, true);
-          assert.deepEqual(results[1].details, { checked: true, items: ['test'] });
+          assert.equal(results[1].isError, true);
+          assert.deepEqual(results[1].details, { evidence: 'retained' });
+          assert.ok(results[1].content.at(-1).text.includes('Recovery:'));
+          assert.deepEqual(results[2].details, { checked: true, items: ['test'] });
           assert.equal(created.settingsManager.getCacheWarmingMode(), 'off');
           assert.ok(!JSON.stringify(created.session.agent.state.messages).includes('Current time from Freedom'));
           process.stdout.write('passed');

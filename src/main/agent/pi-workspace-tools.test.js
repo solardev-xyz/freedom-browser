@@ -1273,3 +1273,78 @@ describe('reviewed workspace history tool', () => {
     expect(scopedController.openWorkspacePreview).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe('structured workspace failure recovery', () => {
+  test('a read-only shell refusal directs the model to read tools or an editing request', async () => {
+    const controller = createController();
+    controller.startProcess.mockRejectedValueOnce(Object.assign(new Error('/private/project'), { code: 'PROJECT_READ_ONLY' }));
+    const tools = await createWorkspaceTools({ sdk: createSdk(), controller, conversationId: 'test', requestApproval: jest.fn() });
+    await expect(tools.find(tool => tool.name === 'bash').execute('id', { command: 'git diff HEAD -- README.md' }))
+      .rejects.toMatchObject({ code: 'PROJECT_READ_ONLY', recovery: { tool: 'request_permissions' },
+        message: expect.stringContaining('workspace_history (status/diff/review)') });
+  });
+
+  test.each([
+    ['failed', 127, 'WORKSPACE_COMMAND_NOT_FOUND', 'request_permission'],
+    ['failed', 1, 'WORKSPACE_COMMAND_FAILED', 'inspect_outcome'],
+    ['timed_out', null, 'WORKSPACE_COMMAND_TIMED_OUT', 'inspect_outcome'],
+    ['cancelled', null, 'WORKSPACE_COMMAND_CANCELLED', 'stop'],
+    ['sandbox_denied', null, 'WORKSPACE_SANDBOX_DENIED', 'stop'],
+  ])('process polling propagates %s/%s with guidance and bounded output', async (state, exitCode, code, action) => {
+    const controller = createController();
+    controller.interactProcess = jest.fn(async () => ({ state, output: 'diagnostic output',
+      workspace: { state, exitCode, kind: 'command', command: 'test', workingDirectory: '.' } }));
+    const onToolOutcome = jest.fn();
+    const tools = await createWorkspaceTools({ sdk: createSdk(), controller, conversationId: 'test', requestApproval: jest.fn(), onToolOutcome });
+    await expect(tools.find(tool => tool.name === 'write_stdin').execute('id', { session_id: 'workspace_process_' + 'a'.repeat(24) }))
+      .rejects.toMatchObject({ code, recovery: { action } });
+    expect(onToolOutcome).toHaveBeenCalledTimes(1);
+    expect(onToolOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorCode: code }));
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('diagnostic output');
+  });
+
+  test('preserves a structured refusal carried by a terminal receipt', () => {
+    expect(safeWorkspaceError(new Error('SDK failure'), { operation: 'bash',
+      receipt: { state: 'failed', exitCode: null, error: { code: 'PROJECT_READ_ONLY' } } }))
+      .toMatchObject({ code: 'PROJECT_READ_ONLY' });
+  });
+});
+
+
+test('installed Pi preserves project recovery through its real bash and edit adapters', () => {
+  const { execFileSync } = require('child_process');
+  const script = `
+    (async () => {
+      const assert = require('node:assert/strict');
+      const { loadPiSdk } = require('./src/main/agent/pi-sdk');
+      const { createWorkspaceTools } = require('./src/main/agent/pi-workspace-tools');
+      const failure = code => { throw Object.assign(new Error('/private/project'), { code }); };
+      const controller = Object.fromEntries([
+        'execute', 'accessFile', 'readFile', 'createDirectory', 'writeFile', 'listDirectory',
+        'findFiles', 'grepFiles', 'prepareCommandPermissions', 'grantCommandPermissions', 'startProcess', 'interactProcess',
+      ].map(name => [name, async () => failure('PROJECT_READ_ONLY')]));
+      controller.getWorkspace = () => ({ enabled: true });
+      controller.accessFile = async () => failure('PROJECT_RECONNECT_REQUIRED');
+      const tools = await createWorkspaceTools({ sdk: await loadPiSdk(), controller, conversationId: 'test',
+        requestApproval: async () => { throw new Error('Must not request permission automatically'); } });
+      await assert.rejects(tools.find(t => t.name === 'bash').execute('id', { command: 'git diff HEAD -- README.md' }), error => {
+        assert.equal(error.code, 'PROJECT_READ_ONLY');
+        assert.equal(error.recovery.tool, 'request_permissions');
+        assert.ok(error.message.includes('workspace_history (status/diff/review)'));
+        assert.ok(!error.message.includes('/private'));
+        return true;
+      });
+      await assert.rejects(tools.find(t => t.name === 'edit').execute('id', { path: 'README.md', edits: [{ oldText: 'a', newText: 'b' }] }), error => {
+        assert.equal(error.code, 'PROJECT_RECONNECT_REQUIRED');
+        assert.equal(error.recovery.action, 'ask_user');
+        assert.ok(!error.message.includes('/private'));
+        return true;
+      });
+      process.stdout.write('passed');
+    })().catch(error => { console.error(error); process.exit(1); });
+  `;
+  expect(execFileSync(process.execPath, ['-e', script], {
+    cwd: require('path').resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 15000,
+  })).toBe('passed');
+});

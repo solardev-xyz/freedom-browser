@@ -10,6 +10,27 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-09-20
 
+### Tool recovery follow-up — 2026-09-20
+
+The second audit covers returned failures as well as exceptions: process polling,
+WebMCP unsuccessful/uncertain outcomes, future `isError` results, Pi edit error
+rewriting, and cancellation. Read-only project summaries now have a bounded
+`workspace_history` `diff` action, with exclusions and secret checks, so they do
+not need editing access or shell Git. Project error copy and mixed failure
+summaries are corrected. See [the audit matrix](../docs/agent-tool-errors.md).
+Validation: lint clean; 741 tests passed across 41 suites, with 34 gated
+external-project tests skipped. The Pi session/workspace adapter suites also
+passed all 71 tests under Electron's Node runtime using isolated fake transports.
+Native UI and live-model smoke testing of this follow-up remain outstanding.
+
+The composer now defaults to **Ask when needed**, retaining saved conversation
+modes. **Unified Agent authority profiles remain open**: the current three modes
+control browser interactions; project edits, commands/network, wallet/node and
+publication capabilities still have their own enforcement. Rewording those modes
+must accompany an explicit cross-capability behavior design, including what an
+independent reviewer may approve. Merely labeling the current options **Approve
+for me** or **Full access** would promise behavior that is not implemented.
+
 ### Pi 0.86.0 integration — 2026-09-20
 
 The existing-projects experiment now pins Pi `0.86.0` (previously `0.84.2`).

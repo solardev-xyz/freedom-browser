@@ -56,6 +56,7 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
   PROJECT_ACCESS_INVALID: 'The project access request is invalid or expired.',
   PROJECT_IN_USE: 'This project overlaps another conversation open for editing.',
   PROJECT_CHANGED: 'The project folder changed or became unavailable. Reconnect it before continuing.',
+  WORKSPACE_DIFF_UNAVAILABLE: 'A bounded text diff is unavailable. Read accessible file contents and explain this limitation, or ask the user to review the diff in their Git client. Editing access does not solve this limitation.',
   WORKSPACE_HISTORY_CHANGED: 'The file changed or has not been read yet. Read its current contents and reconsider the edit before writing.',
   INVALID_WORKSPACE_REQUEST: 'The workspace request is invalid',
   EXECUTABLE_ACCESS_DECLINED: 'The user did not grant access to the requested executables',
@@ -127,6 +128,8 @@ function safeWorkspaceError(error, options = {}) {
     'PROJECT_IN_USE',
     'PROJECT_CHANGED',
     'WORKSPACE_HISTORY_CHANGED',
+    'WORKSPACE_DIFF_UNAVAILABLE',
+    'WORKSPACE_HISTORY_BUSY',
     'WORKSPACE_CAPABILITY_DETECTION_FAILED',
     'WORKSPACE_DIRECTORY_UNAVAILABLE',
     'WORKSPACE_EXECUTION_FAILED',
@@ -170,13 +173,13 @@ function safeWorkspaceError(error, options = {}) {
   ]);
   let code = safeCodes.has(error?.code) ? error.code : 'WORKSPACE_EXECUTION_FAILED';
   const receipt = options.receipt;
-  if (options.operation === 'bash' && receipt) {
-    if (receipt.state === 'sandbox_denied') code = 'WORKSPACE_SANDBOX_DENIED';
+  if (['bash', 'write_stdin'].includes(options.operation) && receipt) {
+    if (safeCodes.has(error?.code)) code = error.code;
+    else if (safeCodes.has(receipt.error?.code)) code = receipt.error.code;
+    else if (receipt.state === 'sandbox_denied') code = 'WORKSPACE_SANDBOX_DENIED';
     else if (receipt.state === 'timed_out') code = 'WORKSPACE_COMMAND_TIMED_OUT';
     else if (receipt.state === 'cancelled') code = 'WORKSPACE_COMMAND_CANCELLED';
-    else if (receipt.state === 'failed' && receipt.error?.code === 'WORKSPACE_EXECUTION_FAILED') {
-      code = 'WORKSPACE_EXECUTION_FAILED';
-    } else if (receipt.state === 'failed' && receipt.exitCode === 127) {
+    else if (receipt.state === 'failed' && receipt.exitCode === 127) {
       code = 'WORKSPACE_COMMAND_NOT_FOUND';
     } else if (receipt.state === 'failed') code = 'WORKSPACE_COMMAND_FAILED';
   }
@@ -191,7 +194,7 @@ function safeWorkspaceError(error, options = {}) {
   // Only captured command output may accompany an execution failure. Infrastructure
   // exceptions still use the fixed safe message; never forward their raw messages.
   const output =
-    options.operation === 'bash' &&
+    ['bash', 'write_stdin'].includes(options.operation) &&
     [
       'WORKSPACE_COMMAND_FAILED',
       'WORKSPACE_COMMAND_NOT_FOUND',
@@ -343,11 +346,11 @@ function assertBrowserEnvelope(envelope) {
 function createWorkspaceHistoryTool(sdk, options) {
   return sdk.defineTool({
     name: 'workspace_history', label: 'Review project history',
-    description: 'Inspect project Git history, review exact file revisions, and commit selected review tokens in the project repository when authorized. Load the workspace-history skill first. No automatic commits or remote operations.',
+    description: 'Inspect project Git history, read bounded diffs with action diff and a path, review exact file revisions, and commit selected review tokens in the project repository when authorized. Status, diff and review work with read-only project access; use these instead of shell Git for inspection. Load the workspace-history skill first. No automatic commits or remote operations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['status', 'review', 'exclude', 'include', 'commit', 'checkpoint'] },
+        action: { type: 'string', enum: ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint'] },
         path: { type: 'string', minLength: 1, maxLength: 1024 },
         reason: { type: 'string', minLength: 1, maxLength: 160 },
         label: { type: 'string', minLength: 1, maxLength: 80 },
@@ -542,7 +545,8 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
     stdoutTruncated: false,
     stderrTruncated: false,
     terminationGuarantee: 'not_applicable',
-    sideEffects: workspaceOperationIsReadOnly(operation) ? 'none' : 'unknown',
+    sideEffects: workspaceOperationIsReadOnly(operation) ||
+      (operation === 'workspace_history' && ['status', 'diff', 'review'].includes(params.action)) ? 'none' : 'unknown',
     survivorsPossible: false,
     completeDescendantTermination: true,
     ...(result.history && { history: result.history }),
@@ -766,7 +770,10 @@ function editOperations(options) {
   return Object.freeze({
     readFile: reads.readFile,
     writeFile: writes.writeFile,
-    access: reads.access,
+    access: async (...args) => {
+      try { return await reads.access(...args); }
+      catch (error) { options.captureError?.(error); throw error; }
+    },
   });
 }
 
@@ -1296,6 +1303,7 @@ function createWriteStdinTool(sdk, options) {
       async execute(toolCallId, params = {}, signal) {
         const operation = 'write_stdin';
         let receipt;
+        let commandOutput = '';
         try {
           if (signal?.aborted) {
             const cancelled = new Error('The workspace operation was stopped');
@@ -1323,12 +1331,14 @@ function createWriteStdinTool(sdk, options) {
           const output = boundedBashOutput({ stdout: process.output || '', stderr: '' }).toString(
             'utf8'
           );
+          commandOutput = output;
+          if (['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(process.state)) {
+            throw safeWorkspaceError({}, { operation, receipt, commandOutput });
+          }
           notify(options.onToolOutcome, {
             toolCallId,
             operation,
-            status: ['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(process.state)
-              ? 'failed'
-              : 'succeeded',
+            status: 'succeeded',
             workspace: receipt,
           });
           return {
@@ -1348,7 +1358,7 @@ function createWriteStdinTool(sdk, options) {
             },
           };
         } catch (error) {
-          const safe = safeWorkspaceError(error, { operation, receipt });
+          const safe = safeWorkspaceError(error, { operation, receipt, commandOutput });
           notify(options.onToolOutcome, {
             toolCallId,
             operation,
@@ -1381,6 +1391,8 @@ function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
       };
       let receipt = null;
       let commandOutput = '';
+      let operationError;
+      executionOptions.captureError = (error) => { operationError = error; };
       try {
         if (!skillRead) {
           await ensureWorkspaceEnabled(options, operation, toolCallId, operationSignal);
@@ -1419,7 +1431,7 @@ function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
         return result;
       } catch (error) {
         if (skillRead) throw error;
-        const safe = safeWorkspaceError(error, { operation, receipt, commandOutput });
+        const safe = safeWorkspaceError(operationSignal?.aborted ? { code: 'WORKSPACE_OPERATION_CANCELLED' } : operationError || error, { operation, receipt, commandOutput });
         receipt = failedWorkspaceReceipt(
           options.controller,
           options.conversationId,

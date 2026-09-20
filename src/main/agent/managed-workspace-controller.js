@@ -1510,6 +1510,21 @@ class ManagedWorkspaceController {
 
   async reviewWorkspaceHistory(conversationId, request = {}, options = {}) {
     return this.#withHistory(conversationId, async (history) => {
+      if (request.action === 'diff') {
+        const excluded = history instanceof ExternalProjectGit ? [] : await history.exclusions();
+        if (historyPathReason(request.path) || excluded.some(entry => entry.path === request.path)) {
+          throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'This file is excluded from model-visible history.');
+        }
+        const result = await this.inspectWorkspace(conversationId, { kind: 'diff', path: request.path, signal: history.signal });
+        if (historyContainsSecret((result.text || '').replace(/^[ +\-]/gm, ''))) {
+          throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'This diff may contain credentials.');
+        }
+        if (result.available === false || result.binary) {
+          throw new ManagedWorkspaceError('WORKSPACE_DIFF_UNAVAILABLE', 'A bounded text diff is unavailable.');
+        }
+        return { ...result, source: history instanceof ExternalProjectGit ? 'repository' : 'managed',
+          comparison: 'Current working files versus HEAD; untracked files appear as additions. Staged-only differences are not shown separately.' };
+      }
       if (history instanceof ExternalProjectGit) return this.#reviewProjectGit(conversationId, history, request);
       const exclusions = await history.exclusions();
       if (request.action === 'status') {
@@ -1700,7 +1715,7 @@ class ManagedWorkspaceController {
     const result = await this.#structuredFileOperation(conversationId, 'workspace_inspect', relativePath, {
       kind: options.kind,
       showGenerated: options.showGenerated === true,
-    });
+    }, { signal: options.signal });
     const workspace = this.store.getForConversation(conversationId);
     if (workspace?.project && options.kind === 'changes') {
       const recorded = this.store.projectEdits(workspace.workspaceId);

@@ -9,6 +9,8 @@ Use `workspace_history` for bounded Git operations. Commits belong to the projec
 
 Before changing a project, call `action: status`. Inspect relevant files and repository instructions. Treat existing uncommitted and staged changes as the user's work. Editing a file is not an instruction to commit: commit when the user asks or the task and applicable repository instructions authorize it. Do not automatically commit at each milestone or turn boundary.
 
+To summarize uncommitted changes, use `action: status`, then `action: diff` with each relevant project-relative `path`. These inspection actions and `review` work with read-only access. Diff compares current working files with HEAD and includes untracked files as additions; it does not separately summarize staged-only differences. Respect truncation and exclusions; explain unavailable diffs. Do not request editing or use shell Git merely to inspect changes. `review` returns the current file revision for a later commit, not its diff.
+
 When authorized to commit:
 
 1. Inspect status and the relevant file changes in context. Select only files belonging to the task. Preserve unrelated edits and staging. Do not include private notes, exports, credentials, generated files or temporary downloads merely because they changed.

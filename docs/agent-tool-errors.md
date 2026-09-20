@@ -18,7 +18,7 @@ to inspect current state or ask for help, never an invented repair.
 
 | Failure | Recovery |
 | --- | --- |
-| Read-only attached project | Call `request_permissions` with `project: "write"` and a task-specific `reason`. |
+| Read-only attached project | Prefer read-only inspection tools, including `workspace_history` `diff`, for inspection. When the task needs changes or shell execution, call `request_permissions` with `project: "write"` and a task-specific `reason`. |
 | Missing executable access | Request the exact executable/command/directory through the same permission tool. |
 | Disconnected or replaced project | Ask the user to reconnect the original folder using the native project menu. |
 | Stale file revision | Read again, reconsider the edit, then retry against current contents. |
@@ -60,8 +60,16 @@ The boundary audit covered the Pi browser adapter (including page tools, frames,
 wallet/node/publication operations and evidence recall), workspace adapters
 (files, processes, previews, history and permissions), attachment/PDF adapters,
 and session assembly including built-in skill reads. Browser error envelopes are
-converted to exceptions before the wrapper. These adapters do not return a
-separate unhandled `isError` result path. Attachment error codes previously lost
+converted to exceptions before the wrapper. The September 20 follow-up audit
+also covers non-throwing failure results: terminal process polling now throws a
+sanitized error with bounded diagnostics; unsuccessful/uncertain WebMCP results
+retain their evidence and receive `isError` plus recovery text. Future canonical
+`isError` results receive generic guidance without interpreting codes or proposed
+recovery inside untrusted result data. Successful results stay unchanged.
+Pi's result hook carries these adapter-marked failures into the model transcript
+as errors while retaining the SDK's existing hook and the original evidence.
+Pi's edit preflight can rewrite errors, so the adapter retains the original
+controller failure separately. Untyped cancellation receives stop guidance. Attachment error codes previously lost
 by sanitization are retained from a fixed allowlist.
 
 This contract covers failures delivered to a running model through tool
@@ -77,3 +85,36 @@ grant rejection. The external-project production qualification includes the
 read-only-commit → permission request → fresh review → real commit flow. Native
 sheet presentation tests use synthetic main-process events and are explicitly
 separate from authority validation. Remote results are recorded in the roadmap.
+
+
+## September 20 follow-up audit
+
+The earlier thrown-error audit missed returned failure states and upstream error
+rewriting. The regression corpus now checks the real installed Pi bash/edit
+adapters, terminal process failures/timeouts/cancellation, returned `isError`
+results, and WebMCP failed/cancelled/timed-out/unknown outcomes. Read-only shell
+refusals already carried model-facing recovery in the current build; the visible
+project-menu advice was a separate stale UI mapping. A model is not guaranteed
+to follow guidance, and older running app instances may have older code.
+
+`workspace_history` now exposes `action: diff` and an exact project-relative path
+through the existing bounded, sandboxed inspection helper. It requires no editing
+grant, applies history exclusions and checks removed as well as added text for
+secrets, and returns no commit review token. It compares working files with HEAD,
+including untracked additions, rather than separately reporting index-only edits.
+The history skill and project prompt direct change summaries to this path.
+
+| Boundary | Handling |
+| --- | --- |
+| Browser/controller error envelopes | Sanitized exception plus shared recovery. |
+| WebMCP failed or uncertain execution result | Preserve receipt; mark error; inspect outcome before replay. Cancellation says stop. |
+| Workspace controller exceptions, including Pi edit preflight | Preserve trusted code through SDK rewriting, sanitize infrastructure details, then add recovery. |
+| Shell exit and terminal process polling | Classify trusted receipt state/code; bound diagnostics; no parsing stdout into permission authority. |
+| Attachment/PDF and built-in skill tools | Shared exception/result wrapper; missing-resource and bounds guidance; untyped cancellation says stop. |
+| Unknown or future tool failure | Generic read-only inspection/help guidance; no fabricated repair or automatic retry. |
+| Pi argument validation before execution | SDK schema diagnostics and system instructions; outside the execute wrapper. |
+| Provider inference failure and user-facing IPC/UI errors | Separate from model-facing tool recovery; no claim that an unavailable model can act on guidance. |
+
+Activity summaries no longer say a project command completed when the latest
+project operation failed. User-facing project errors mention the agent's editing
+request flow; they do not imply that read-only inspection needs editing access.

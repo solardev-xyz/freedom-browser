@@ -609,7 +609,7 @@ function normalizeWorkspaceReceipt(value) {
     ].includes(kind)
       ? kind
       : 'command',
-    ...(kind === 'history' && ['status', 'review', 'exclude', 'include', 'commit', 'checkpoint'].includes(value.history?.action) && {
+    ...(kind === 'history' && ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint'].includes(value.history?.action) && {
       history: Object.freeze({
         action: value.history.action,
         ...(value.history.source === 'repository' && { source: 'repository' }),
@@ -647,6 +647,7 @@ function checkpointProgress(workspace) {
   const repository = workspace?.history?.source === 'repository' || workspace?.history?.action === 'commit';
   const copy = {
     status: ['Checking checkpoints', 'Checked checkpoints', 'Freedom checked project changes and checkpoint exclusions.'],
+    diff: ['Reading file changes', 'Read file changes', 'Freedom returned a bounded diff against HEAD. This does not change files or create a commit.'],
     review: ['Reviewing file changes', 'Reviewed file changes', 'Freedom returned a file revision for review. This does not save a checkpoint.'],
     exclude: ['Updating checkpoint exclusions', 'Updated checkpoint exclusions', 'Freedom excluded the selected file from future checkpoints.'],
     include: ['Updating checkpoint exclusions', 'Updated checkpoint exclusions', 'Freedom removed the selected file from checkpoint exclusions. Its contents still require review.'],
@@ -1499,9 +1500,11 @@ function buildAgentOutcome(activity, status, error) {
       return Object.freeze({
         kind: 'completed',
         verification: previewOpened ? 'workspace_preview_opened' : 'workspace_execution_recorded',
-        tone: lastHistory && ['failed', 'cancelled'].includes(lastHistory.state) ? 'caution'
+        tone: ['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(lastOperation.state) ? 'caution'
           : completedOperations.length ? 'success' : 'neutral',
-        headline: historyOnly ? historyCopy.label : previewOpened
+        headline: ['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(lastOperation.state)
+          ? historyOnly ? historyCopy.label : 'Project operation did not complete'
+          : historyOnly ? historyCopy.label : previewOpened
           ? serverPreviewOpened
             ? 'Server preview opened'
             : 'Static preview opened'

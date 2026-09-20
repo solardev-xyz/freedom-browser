@@ -666,7 +666,9 @@ describe('FreedomAgentService', () => {
     await service.start(startOptions());
     const prompt = dependencies.createSession.mock.calls[0][0].systemPrompt;
     expect(prompt).toContain('Both file edits and Git commits require editing access');
-    expect(prompt).toContain('If a tool reports PROJECT_READ_ONLY, call request_permissions');
+    expect(prompt).toContain('If a tool reports PROJECT_READ_ONLY and the task needs editing, commits or shell execution, call request_permissions');
+    expect(prompt).toContain('use workspace_history status and diff with a project-relative path');
+    expect(prompt).toContain('Do not request editing or use shell Git merely to inspect changes');
     expect(prompt).toContain('authorized commits in the project repository itself');
     expect(prompt).not.toContain('Freedom checkpoints are separate');
     fake.prompt.resolve();

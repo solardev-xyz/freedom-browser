@@ -3,7 +3,8 @@
 const { workspaceGitCommand } = require('./workspace-git-command');
 
 // Appended to the existing sandboxed file helper. These operations are exposed
-// only to trusted chrome; file bodies and diffs never enter Agent state/history.
+// to trusted chrome and the bounded model-facing history diff tool. The tool
+// applies history exclusions and secret checks before returning text to the model.
 const WORKSPACE_INSPECTION_HELPER = String.raw`
 ${workspaceGitCommand.toString()}
 function inspectPath(value, allowRoot = false) {

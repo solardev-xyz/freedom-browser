@@ -1,5 +1,5 @@
 'use strict';
-const { withToolErrorRecovery } = require('./tool-error-recovery');
+const { withToolErrorRecovery, isRecoveredToolResult } = require('./tool-error-recovery');
 
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 const { createBuiltInSkillReadTool, getBuiltInSkills } = require('./builtin-skills');
@@ -321,6 +321,17 @@ When asked which model or provider you are using, report these configured identi
     sessionManager,
     settingsManager,
   });
+
+  // Pi marks returned results successful unless its after-tool hook says otherwise.
+  // Preserve Pi's hook and carry only our adapter-owned failure marker through it.
+  const agent = result.session?.agent;
+  if (agent) {
+    const afterToolCall = agent.afterToolCall;
+    agent.afterToolCall = async (event, signal) => {
+      const outcome = await afterToolCall?.call(agent, event, signal);
+      return isRecoveredToolResult(event.result) ? { ...outcome, isError: true } : outcome;
+    };
+  }
 
   return {
     ...result,

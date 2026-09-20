@@ -4,6 +4,7 @@ const { isTrustedBuiltInToolOverride, trustBuiltInToolOverride } = require('./pi
 
 const wrappedTools = new WeakSet();
 const decoratedErrors = new WeakSet();
+const decoratedResults = new WeakSet();
 const step = (action, instruction, extra = {}) => Object.freeze({ action, instruction, ...extra });
 
 // Main-owned guidance only. Never interpret page content, error prose or a model's
@@ -12,7 +13,7 @@ function recoveryForToolError(code, operation) {
   if (/DECLINED|CANCELLED|ABORT_ERR/.test(code)) return step('stop',
     'Stop this action. Do not retry, request the same permission again, or use a workaround unless the user gives a new instruction. Earlier effects may remain.');
   if (code === 'PROJECT_READ_ONLY') return step('request_permission',
-    'Call request_permissions with project: "write" and a concise reason for the intended change. Omit command, workingDirectory, executables and network. If approved, re-read affected files and obtain fresh Git review tokens before retrying. If declined, stop.',
+    'For read-only inspection, use read, ls, find, grep or workspace_history (status/diff/review); do not request editing just to inspect changes. If the task requires edits, commits or shell execution, call request_permissions with project: "write" and a concise reason for the intended change. Omit command, workingDirectory, executables and network. If approved, re-read affected files and obtain fresh Git review tokens before retrying. If declined, stop.',
     { tool: 'request_permissions', arguments: { project: 'write' } });
   if (['PROJECT_RECONNECT_REQUIRED', 'PROJECT_CHANGED'].includes(code)) return step('ask_user',
     'Ask the user to reconnect the original project from the project menu. After reconnection, read current state again. Reconnection starts read-only. Do not guess a replacement path.');
@@ -26,6 +27,8 @@ function recoveryForToolError(code, operation) {
     'Call request_permissions with the exact executable names, intended command and workingDirectory before retrying. Exit 127 does not prove software is absent. Do not substitute an installer or download method.', { tool: 'request_permissions' });
   if (code === 'WORKSPACE_PREVIEW_NETWORK_REQUIRED') return step('request_permission',
     'Request network: "full" through request_permissions for the exact server launch command and workingDirectory. Only launch after approval; then preview its returned processId.', { tool: 'request_permissions' });
+  if (code === 'WORKSPACE_DIFF_UNAVAILABLE') return step('inspect_state',
+    'Read accessible current files and explain that an exact bounded diff is unavailable, or ask the user to inspect it in their Git client. Editing access does not fix this limitation; do not bypass the diff limits with shell Git.', { tool: 'read' });
   if (code === 'WORKSPACE_HISTORY_CHANGED') return step('refresh_state',
     'Read the file again, reassess the intended change against its current contents, then retry only if still appropriate.', { tool: 'read' });
   if (code === 'WORKSPACE_HISTORY_UNAVAILABLE') return step('inspect_outcome',
@@ -41,11 +44,17 @@ function recoveryForToolError(code, operation) {
     'Read browser_get_tab and a fresh browser_snapshot to determine what loaded or changed. Correct the URL or wait condition if needed; do not repeat a potentially completed action.', { tool: 'browser_get_tab' });
   if (code === 'APPROVAL_REQUIRED') return step('ask_user',
     'The action still requires user approval. Use the supported tool approval flow or ask the user to complete it. Do not bypass or assume approval.');
+  if (['UNTRUSTED_CAPABILITY_AUTHORITY', 'EXECUTABLE_SCOPE_TOO_BROAD'].includes(code)) return step('stop',
+    'Explain the refused authority or executable scope and stop. Do not broaden the request or select another execution path to bypass this boundary.');
+  if (['WORKSPACE_HISTORY_BUSY', 'WORKSPACE_PROCESS_LIMIT_REACHED'].includes(code)) return step('inspect_state',
+    'Wait for the active operation to finish or inspect the known process sessions with write_stdin. Do not start duplicate operations or terminate unrelated work.');
+  if (['WORKSPACE_PROCESS_NOT_FOUND', 'WORKSPACE_PROCESS_INPUT_UNAVAILABLE'].includes(code)) return step('inspect_outcome',
+    'Inspect the previous process result and current project state. The session may have finished or expired; do not reuse its ID or restart a possibly completed command blindly.');
   if (code === 'POLICY_DENIED' || /PROTECTED|UNSAFE|PATH_DENIED|SANDBOX_DENIED|POLICY_FAILED/.test(code)) return step('stop',
     'Explain the enforced boundary and stop this action. Do not bypass it using another tool, path, command or permission request. Offer a supported alternative only if it preserves the same boundary.');
   if (/INVALID.*(?:ARGUMENT|REQUEST|GRANT)|PDF_PAGE_OUT_OF_RANGE/.test(code)) return step('correct_input',
     'Read this tool’s parameter schema and the validation error. Correct the supplied arguments using observed state, then retry only the corrected authorized operation. Do not invent IDs or paths.');
-  if (/UNSUPPORTED|PLATFORM_UNAVAILABLE|CAPABILITY_UNAVAILABLE|PDF_PASSWORD_REQUIRED/.test(code)) return step('unsupported',
+  if (/UNSUPPORTED|PLATFORM_UNAVAILABLE|CAPABILITY_UNAVAILABLE|RUNTIME_UNAVAILABLE|NETWORK_PERMISSION_UNAVAILABLE|PDF_PASSWORD_REQUIRED/.test(code)) return step('unsupported',
     'Explain the unavailable capability. Use a supported alternative only if it preserves user intent and permissions; otherwise ask the user to perform this step. Retry only after the indicated capability or setup has changed.');
   if (code === 'ENOENT' && operation.startsWith('attachment_')) return step('refresh_state',
     'Use attachment_list to check current resource IDs and paths. If the source is no longer available, ask the user to attach it again.', { tool: 'attachment_list' });
@@ -61,14 +70,33 @@ function recoveryForToolError(code, operation) {
     'The cause is not established. Inspect current state with the relevant read-only tools before deciding whether a corrected retry is safe. Do not assume failure means no effects. If the cause remains unclear, explain it and ask the user how to proceed; do not loop or invent a workaround.');
 }
 
+// Call only for adapter-owned failure states, never infer a code from page prose
+// or shell output. Preserve the result/evidence while adding main-owned guidance.
+function withToolResultRecovery(result, code, operation) {
+  if (decoratedResults.has(result)) return result;
+  const recovery = recoveryForToolError(code, operation);
+  const wrapped = { ...result, isError: true, content: [...(result.content || []), {
+    type: 'text', text: `Freedom tool failure [${code}]\nRecovery: ${JSON.stringify(recovery)}`,
+  }] };
+  decoratedResults.add(wrapped);
+  return wrapped;
+}
+
+function isRecoveredToolResult(result) {
+  return decoratedResults.has(result);
+}
+
 function withToolErrorRecovery(tool) {
   if (wrappedTools.has(tool)) return tool;
   const wrapped = { ...tool, execute: async function (...args) {
-    try { return await tool.execute.apply(tool, args); }
+    try {
+      const result = await tool.execute.apply(tool, args);
+      return result?.isError === true ? withToolResultRecovery(result, args[2]?.aborted ? 'ABORT_ERR' : 'TOOL_OPERATION_FAILED', tool.name) : result;
+    }
     catch (failure) {
       const error = failure instanceof Error ? failure : new Error('The tool failed without a usable error report.');
       if (!decoratedErrors.has(error)) {
-        const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : 'TOOL_OPERATION_FAILED';
+        const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : args[2]?.aborted ? 'ABORT_ERR' : 'TOOL_OPERATION_FAILED';
         error.code = code;
         error.recovery = recoveryForToolError(code, tool.name);
         if (!error.message.startsWith(`[${code}]`)) error.message = `[${code}] ${error.message}`;
@@ -88,4 +116,4 @@ function withToolErrorRecovery(tool) {
   return wrapped;
 }
 
-module.exports = { recoveryForToolError, withToolErrorRecovery };
+module.exports = { recoveryForToolError, withToolErrorRecovery, withToolResultRecovery, isRecoveredToolResult };

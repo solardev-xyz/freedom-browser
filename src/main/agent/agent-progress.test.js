@@ -1389,3 +1389,20 @@ test.each([
   const receipt = createToolReceipt(OPERATIONS.SCROLL, { envelope: { ok: true, result: { outcome } } });
   expect(activityProgress(OPERATIONS.SCROLL, receipt)).toMatchObject({ label, effect });
 });
+
+
+test('mixed successful inspections and a failed command do not claim command completion', () => {
+  const activity = [
+    { operation: 'workspace_history', status: 'succeeded', workspace: {
+      kind: 'history', command: 'Project history: diff', workingDirectory: '.', backend: 'freedom-workspace-files',
+      state: 'completed', history: { action: 'diff', source: 'repository' }, sideEffects: 'none',
+    } },
+    { operation: 'bash', status: 'failed', workspace: {
+      kind: 'command', command: 'git diff', workingDirectory: '.', backend: 'unavailable', state: 'failed', sideEffects: 'unknown',
+    } },
+  ];
+  expect(activityProgress('workspace_history', { workspace: activity[0].workspace }).label).toBe('Read file changes');
+  expect(buildAgentOutcome(activity, 'completed')).toMatchObject({
+    tone: 'caution', headline: 'Project operation did not complete',
+  });
+});

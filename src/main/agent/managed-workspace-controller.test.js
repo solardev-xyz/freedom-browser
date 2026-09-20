@@ -117,6 +117,29 @@ describe('ManagedWorkspaceController', () => {
     jest.restoreAllMocks();
   });
 
+  test('model diff inspection is read-only, cancellable and does not mint a commit review', async () => {
+    const { ManagedWorkspaceHistory } = require('./managed-workspace-history');
+    jest.spyOn(ManagedWorkspaceHistory.prototype, 'exclusions').mockResolvedValue([]);
+    const { controller } = createController();
+    const inspect = jest.spyOn(controller, 'inspectWorkspace').mockResolvedValue({ available: true, text: '-old\n+new' });
+    const result = await controller.reviewWorkspaceHistory('conversation_one', { action: 'diff', path: 'README.md' });
+    expect(result).toMatchObject({ text: '-old\n+new', comparison: expect.stringContaining('HEAD') });
+    expect(inspect).toHaveBeenCalledWith('conversation_one', { kind: 'diff', path: 'README.md', signal: expect.any(AbortSignal) });
+    expect(controller.historyReviews.size).toBe(0);
+  });
+
+  test.each(['.env', '.git/config', '../outside', 'notes.md', 'README.md'])(
+    'model diffs enforce mandatory/custom exclusions and removed-secret checks: %s', async (file) => {
+      const { ManagedWorkspaceHistory } = require('./managed-workspace-history');
+      jest.spyOn(ManagedWorkspaceHistory.prototype, 'exclusions').mockResolvedValue([{ path: 'notes.md' }]);
+      const { controller } = createController();
+      const inspect = jest.spyOn(controller, 'inspectWorkspace').mockResolvedValue({ available: true, text: '-password=notpublic12345\n+removed' });
+      await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'diff', path: file }))
+        .rejects.toMatchObject({ code: 'WORKSPACE_PROTECTED_PATH' });
+      expect(inspect).toHaveBeenCalledTimes(file === 'README.md' ? 1 : 0);
+    }
+  );
+
   test('discloses only public enforcement properties and establishes one policy lease', async () => {
     const { controller, dependencies, helperPolicy } = createController();
 
