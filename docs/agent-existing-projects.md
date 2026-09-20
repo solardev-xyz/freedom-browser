@@ -153,3 +153,11 @@ ask for a small edit, then ask “commit this.” Confirm the returned hash with
 staged file to confirm it remains staged rather than entering the Agent commit.
 The Commits popover should show the same new commit and the repository’s earlier
 history. A plain folder should stay without `.git` after reading/editing.
+
+The follow-up user smoke test exposed a reporting defect: committing while the
+project was read-only produced a generic Git failure and a misleading browser
+error. History tools now preserve actionable project-access errors for both the
+model and activity UI. Reconnection still starts read-only; choose **Allow
+editing** before requesting a commit. The attached-project prompt now agrees
+with repository-native history. This reporting-only follow-up passed 255 focused
+tests across four suites and lint; it does not change Git mutation or access rules.

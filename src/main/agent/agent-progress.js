@@ -656,6 +656,7 @@ function checkpointProgress(workspace) {
   let [intent, label, detail] = copy;
   if (repository) {
     [intent, label, detail] = copy.map(text => text.replaceAll('checkpoints', 'commits').replaceAll('checkpoint', 'commit'));
+    if (workspace.history.action === 'status') detail = 'Freedom checked project changes and Git history.';
     if (workspace?.state === 'failed' || workspace?.state === 'cancelled') return {
       intent, label: workspace.state === 'failed' ? 'Git operation failed' : 'Git operation stopped',
       detail: 'The Git operation did not return a confirmed result. Inspect repository state before retrying.',

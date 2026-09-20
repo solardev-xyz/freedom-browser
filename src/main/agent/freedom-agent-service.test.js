@@ -655,6 +655,24 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('explains attached repository commits and their editing-access requirement', async () => {
+    const fake = createFakeSession();
+    const workspaceController = {
+      getWorkspace: () => ({ enabled: true, project: { mode: 'read' } }),
+      disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(),
+      cancelConversation: jest.fn(), deleteConversation: jest.fn(), dispose: jest.fn(),
+    };
+    const { service, dependencies } = createService(fake, { workspaceController, createWorkspaceTools: jest.fn(async () => []) });
+    await service.start(startOptions());
+    const prompt = dependencies.createSession.mock.calls[0][0].systemPrompt;
+    expect(prompt).toContain('Both file edits and Git commits require editing access');
+    expect(prompt).toContain('If a tool reports PROJECT_READ_ONLY, ask the user to choose Allow editing');
+    expect(prompt).toContain('authorized commits in the project repository itself');
+    expect(prompt).not.toContain('Freedom checkpoints are separate');
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
   test('does not checkpoint automatically at turn boundaries and routes history judgment to the skill', async () => {
     const fake = createFakeSession();
     const workspaceController = {

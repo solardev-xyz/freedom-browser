@@ -363,13 +363,18 @@ function createWorkspaceHistoryTool(sdk, options) {
         notify(options.onToolOutcome, { toolCallId, operation, status: 'succeeded', workspace: receipt });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (error) {
+        // Preserve commit recovery instructions even if cancellation also arrived.
+        let safe;
+        if (error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE') safe = error;
+        else if (abort.signal?.aborted) safe = safeWorkspaceError({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+        else if (WORKSPACE_ERROR_MESSAGES[error?.code]) safe = safeWorkspaceError(error);
+        else safe = Object.assign(new Error('Project Git operation unavailable or stopped. Check repository state before retrying; no automatic retry was attempted.'),
+          { code: 'WORKSPACE_HISTORY_UNAVAILABLE' });
         receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params,
           abort.signal?.aborted ? 'cancelled' : 'failed', {
             kind: 'history', command: `Project history: ${params.action}`, history: { action: params.action, source: 'repository' },
           });
-        notify(options.onToolOutcome, { toolCallId, operation, status: 'failed', errorCode: 'WORKSPACE_HISTORY_UNAVAILABLE', workspace: receipt });
-        const safe = new Error(error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE' ? error.message : 'Project Git operation unavailable or stopped. Check repository state before retrying; no automatic retry was attempted.');
-        safe.code = 'WORKSPACE_HISTORY_UNAVAILABLE';
+        notify(options.onToolOutcome, { toolCallId, operation, status: 'failed', errorCode: safe.code, workspace: receipt });
         throw safe;
       } finally { abort.dispose(); }
     },

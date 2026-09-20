@@ -2950,6 +2950,10 @@ function formatToolError(code, operation) {
     WALLET_REQUEST_CANCELLED_BY_USER: 'Wallet request declined by you',
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
+    PROJECT_READ_ONLY: 'Project is read-only. Choose Allow editing in the project menu',
+    PROJECT_RECONNECT_REQUIRED: 'Reconnect the project from its menu to continue',
+    PROJECT_CHANGED: 'Project moved or became unavailable. Reconnect it to continue',
+    WORKSPACE_HISTORY_UNAVAILABLE: 'Git operation unavailable. Inspect repository state before retrying',
     INVALID_WORKSPACE_REQUEST: 'Workspace request is invalid',
     WORKSPACE_COMMAND_CANCELLED: 'Workspace command was stopped',
     WORKSPACE_OPERATION_CANCELLED: 'Project operation was stopped',
@@ -2975,6 +2979,7 @@ function formatToolError(code, operation) {
   };
   if (operation === 'attachment_list') return 'Attached sources could not be listed';
   if (operation === 'attachment_read') return 'Attached source could not be read';
+  if (operation === 'workspace_history') return code === 'INTERNAL_ERROR' ? 'Git operation failed unexpectedly' : labels[code] || 'Git operation failed';
   if (
     ['bash', 'read', 'write', 'edit', 'grep', 'find', 'ls', 'workspace_preview',
       'write_stdin', 'request_permissions'].includes(operation)

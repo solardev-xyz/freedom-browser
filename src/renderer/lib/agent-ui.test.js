@@ -3952,6 +3952,12 @@ describe('Agent UI', () => {
   });
 
   test.each([
+    ['workspace_history', 'PROJECT_READ_ONLY', 'Project is read-only. Choose Allow editing in the project menu'],
+    ['workspace_history', 'PROJECT_RECONNECT_REQUIRED', 'Reconnect the project from its menu to continue'],
+    ['workspace_history', 'PROJECT_CHANGED', 'Project moved or became unavailable. Reconnect it to continue'],
+    ['workspace_history', 'WORKSPACE_HISTORY_UNAVAILABLE', 'Git operation unavailable. Inspect repository state before retrying'],
+    ['workspace_history', 'INTERNAL_ERROR', 'Git operation failed unexpectedly'],
+    ['workspace_history', 'UNKNOWN_GIT_ERROR', 'Git operation failed'],
     ['bash', 'WORKSPACE_COMMAND_NOT_FOUND', 'Command unavailable in this workspace; check installed-tool access before retrying'],
     ['request_permissions', 'WORKSPACE_OPERATION_CANCELLED', 'Project operation was stopped'],
     ['request_permissions', 'UNKNOWN_PERMISSION_ERROR', 'Workspace operation failed'],

@@ -34,6 +34,11 @@ describe('Agent progress projection', () => {
       ...activityProgress('workspace_history', { workspace }) };
   };
 
+  test('describes repository status without private checkpoint exclusions', () => {
+    const result = buildAgentOutcome([historyItem('status', { source: 'repository' })], 'completed');
+    expect(result).toMatchObject({ headline: 'Checked commits', detail: 'Freedom checked project changes and Git history.' });
+  });
+
   test.each([
     ['status', {}, 'Checked checkpoints'],
     ['review', {}, 'Reviewed file changes'],

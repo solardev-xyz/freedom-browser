@@ -8,6 +8,8 @@ const {
   virtualPathToWorkspaceRelative,
 } = require('./pi-workspace-tools');
 const { skillVirtualPath } = require('./builtin-skills');
+const { ExternalProjectAccess } = require('./external-project-access');
+const { WorkspaceHistoryError } = require('./managed-workspace-history');
 
 function createSdk() {
   const base = {
@@ -1114,6 +1116,46 @@ describe('Pi managed workspace tools', () => {
 
 
 describe('reviewed workspace history tool', () => {
+  test('reports the real read-only access refusal to the model and activity', async () => {
+    const access = new ExternalProjectAccess({ userDataDir: '/unused-profile' });
+    const workspaceId = 'workspace_aaaaaaaaaaaaaaaaaaaa';
+    access.grant(workspaceId, { root: '/unused-project', dev: '1', ino: '2' }, 'read');
+    const controller = createController();
+    controller.reviewWorkspaceHistory = jest.fn(() => access.resolve(workspaceId, { write: true }));
+    const outcome = jest.fn();
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn(), onToolOutcome: outcome });
+    const tool = tools.find(entry => entry.name === 'workspace_history');
+    await expect(tool.execute('commit_read_only', { action: 'commit', reviewIds: ['review_one'], label: 'Update cookbook' })).rejects.toMatchObject({
+      code: 'PROJECT_READ_ONLY', message: expect.stringContaining('allow editing from its menu'),
+    });
+    expect(outcome).toHaveBeenLastCalledWith(expect.objectContaining({
+      errorCode: 'PROJECT_READ_ONLY', status: 'failed', workspace: expect.objectContaining({ state: 'failed' }),
+    }));
+    expect(access.grants.get(workspaceId).mode).toBe('read');
+    expect(controller.reviewWorkspaceHistory).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['PROJECT_RECONNECT_REQUIRED', 'PROJECT_CHANGED'])('preserves %s during history operations without leaking host paths', async (code) => {
+    const controller = createController();
+    controller.reviewWorkspaceHistory = jest.fn().mockRejectedValue(Object.assign(new Error('/private/project sensitive'), { code }));
+    const outcome = jest.fn();
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn(), onToolOutcome: outcome });
+    const tool = tools.find(entry => entry.name === 'workspace_history');
+    await expect(tool.execute('history_access', { action: 'status' })).rejects.toMatchObject({ code, message: expect.stringContaining('Reconnect') });
+    expect(outcome).toHaveBeenLastCalledWith(expect.objectContaining({ errorCode: code }));
+    expect(JSON.stringify(outcome.mock.calls)).not.toMatch(/private|sensitive/);
+  });
+
+  test('retains uncertain commit recovery instructions even when cancelled', async () => {
+    const stopped = new AbortController();
+    const controller = createController();
+    const message = `The outcome of commit ${'c'.repeat(40)} is uncertain. Inspect Git history and the retained recovery record before retrying.`;
+    controller.reviewWorkspaceHistory = jest.fn(async () => { stopped.abort(); throw new WorkspaceHistoryError(message); });
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn() });
+    await expect(tools.find(entry => entry.name === 'workspace_history').execute('uncertain_commit', { action: 'commit' }, stopped.signal))
+      .rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_UNAVAILABLE', message });
+  });
+
   test.each([true, false])('records the actual checkpoint result (saved=%s)', async (saved) => {
     const controller = createController();
     controller.getWorkspace.mockReturnValue({ enabled: true, workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' });
