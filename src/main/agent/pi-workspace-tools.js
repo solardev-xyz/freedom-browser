@@ -355,11 +355,19 @@ function createWorkspaceHistoryTool(sdk, options) {
         notify(options.onToolPhase, { toolCallId, operation, phase: 'executing_operation' });
         const result = await options.controller.reviewWorkspaceHistory(options.conversationId, params, { signal: abort.signal });
         if (abort.signal?.aborted) throw new Error('Stopped');
-        receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, { path: params.path || '.' }, 'completed', { kind: 'history', command: `Project history: ${params.action}` });
+        receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params, 'completed', {
+          kind: 'history', command: `Project history: ${params.action}`,
+          history: { action: params.action,
+            ...(params.action === 'checkpoint' && { saved: result.saved, checkpointId: result.id }) },
+        });
         notify(options.onToolOutcome, { toolCallId, operation, status: 'succeeded', workspace: receipt });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (error) {
-        notify(options.onToolOutcome, { toolCallId, operation, status: 'failed', errorCode: 'WORKSPACE_HISTORY_UNAVAILABLE' });
+        receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params,
+          abort.signal?.aborted ? 'cancelled' : 'failed', {
+            kind: 'history', command: `Project history: ${params.action}`, history: { action: params.action },
+          });
+        notify(options.onToolOutcome, { toolCallId, operation, status: 'failed', errorCode: 'WORKSPACE_HISTORY_UNAVAILABLE', workspace: receipt });
         const safe = new Error(error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE' ? error.message : 'Project history operation unavailable or stopped. No unreviewed changes were automatically checkpointed.');
         safe.code = 'WORKSPACE_HISTORY_UNAVAILABLE';
         throw safe;
@@ -522,6 +530,7 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
     sideEffects: workspaceOperationIsReadOnly(operation) ? 'none' : 'unknown',
     survivorsPossible: false,
     completeDescendantTermination: true,
+    ...(result.history && { history: result.history }),
     ...(Number.isSafeInteger(result.entryCount) && result.entryCount >= 0
       ? { entryCount: result.entryCount }
       : {}),

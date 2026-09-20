@@ -1114,6 +1114,17 @@ describe('Pi managed workspace tools', () => {
 
 
 describe('reviewed workspace history tool', () => {
+  test.each([true, false])('records the actual checkpoint result (saved=%s)', async (saved) => {
+    const controller = createController();
+    controller.getWorkspace.mockReturnValue({ enabled: true, workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' });
+    controller.reviewWorkspaceHistory = jest.fn(async () => ({ saved, id: 'b'.repeat(40), label: 'Private label' }));
+    const outcome = jest.fn();
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn(), onToolOutcome: outcome });
+    await tools.find(entry => entry.name === 'workspace_history').execute('save', { action: 'checkpoint', reviewIds: ['review_' + 'a'.repeat(32)] });
+    expect(outcome.mock.calls[0][0].workspace.history).toEqual({ action: 'checkpoint', saved, checkpointId: 'b'.repeat(40) });
+    expect(JSON.stringify(outcome.mock.calls)).not.toContain('Private label');
+  });
+
   test('binds history to its conversation and never exposes restore or arbitrary Git commands', async () => {
     const controller = createController();
     controller.getWorkspace.mockReturnValue({ enabled: true, workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' });
@@ -1128,10 +1139,16 @@ describe('reviewed workspace history tool', () => {
     expect(outcome).toHaveBeenCalledWith(expect.objectContaining({ workspace: expect.objectContaining({ kind: 'history', networkPosture: 'none' }) }));
     controller.reviewWorkspaceHistory.mockRejectedValueOnce(new Error('/private/host/secret'));
     await expect(tool.execute('call_two', { action: 'status' })).rejects.toThrow('unavailable or stopped');
+    expect(outcome).toHaveBeenLastCalledWith(expect.objectContaining({ workspace: expect.objectContaining({
+      state: 'failed', history: { action: 'status' },
+    }) }));
     const stopped = new AbortController(); stopped.abort();
     const calls = controller.reviewWorkspaceHistory.mock.calls.length;
     await expect(tool.execute('call_three', { action: 'checkpoint', reviewIds: [] }, stopped.signal)).rejects.toThrow('stopped');
     expect(controller.reviewWorkspaceHistory).toHaveBeenCalledTimes(calls);
+    expect(outcome).toHaveBeenLastCalledWith(expect.objectContaining({ workspace: expect.objectContaining({
+      state: 'cancelled', history: { action: 'checkpoint' },
+    }) }));
   });
 
   test('restarts an exact saved command through bash and reattaches in a separate observed action', async () => {

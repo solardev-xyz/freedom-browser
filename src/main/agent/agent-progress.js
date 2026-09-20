@@ -31,10 +31,16 @@ const WORKSPACE_OPERATIONS = Object.freeze({
   PROCESS: 'write_stdin',
   PREVIEW: 'workspace_preview',
   PERMISSIONS: 'request_permissions',
+  HISTORY: 'workspace_history',
 });
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
 const OPERATION_PROGRESS = Object.freeze({
+  [WORKSPACE_OPERATIONS.HISTORY]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Checking project history',
+    completed: 'Checked project history',
+  },
   [OPERATIONS.LIST_TABS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Checking Agent tabs',
@@ -603,6 +609,15 @@ function normalizeWorkspaceReceipt(value) {
     ].includes(kind)
       ? kind
       : 'command',
+    ...(kind === 'history' && ['status', 'review', 'exclude', 'include', 'checkpoint'].includes(value.history?.action) && {
+      history: Object.freeze({
+        action: value.history.action,
+        ...(state === 'completed' && value.history.action === 'checkpoint' &&
+          typeof value.history.saved === 'boolean' && /^[a-f0-9]{40}$/.test(value.history.checkpointId) && {
+          saved: value.history.saved, checkpointId: value.history.checkpointId,
+        }),
+      }),
+    }),
     command,
     workingDirectory,
     backend,
@@ -625,6 +640,27 @@ function normalizeWorkspaceReceipt(value) {
     ...(resultCount !== null && { resultCount }),
     ...(matchCount !== null && { matchCount }),
   });
+}
+
+function checkpointProgress(workspace) {
+  const copy = {
+    status: ['Checking checkpoints', 'Checked checkpoints', 'Freedom checked project changes and checkpoint exclusions.'],
+    review: ['Reviewing file changes', 'Reviewed file changes', 'Freedom returned a file revision for review. This does not save a checkpoint.'],
+    exclude: ['Updating checkpoint exclusions', 'Updated checkpoint exclusions', 'Freedom excluded the selected file from future checkpoints.'],
+    include: ['Updating checkpoint exclusions', 'Updated checkpoint exclusions', 'Freedom removed the selected file from checkpoint exclusions. Its contents still require review.'],
+    checkpoint: ['Saving checkpoint', 'Checked project history', 'Freedom recorded a checkpoint operation, but no confirmed save result is available.'],
+  }[workspace?.history?.action] || ['Checking project history', 'Checked project history', 'Freedom recorded a project history operation.'];
+  const [intent, label, detail] = copy;
+  if (workspace?.state === 'failed') return { intent, label: 'Checkpoint operation failed', detail: 'Freedom could not complete the checkpoint operation. No successful result was recorded.' };
+  if (workspace?.state === 'cancelled') return { intent, label: 'Checkpoint operation stopped', detail: 'The checkpoint operation was stopped. Its outcome is not confirmed.' };
+  if (workspace?.history?.saved !== undefined) {
+    const id = workspace.history.checkpointId.slice(0, 7);
+    return { intent, label: workspace.history.saved ? 'Saved checkpoint' : 'Checkpoint already up to date',
+      detail: workspace.history.saved
+        ? `Freedom saved selected reviewed file revisions in local checkpoint ${id}. Other changes may remain uncheckpointed. This is not a project Git commit.`
+        : `No new checkpoint was created; the selected revisions already match local checkpoint ${id}. Other changes may remain uncheckpointed. This is not a project Git commit.` };
+  }
+  return { intent, label, detail };
 }
 
 function publicationSubject(publication) {
@@ -837,6 +873,8 @@ function activityProgress(operation, receipt = {}) {
         : receipt.status === 'failed' || ['failed', 'sandbox_denied', 'timed_out'].includes(workspace?.state)
           ? 'Project permission request failed'
           : 'Checked project permissions';
+  } else if (operation === WORKSPACE_OPERATIONS.HISTORY) {
+    ({ intent, label } = checkpointProgress(workspace));
   } else if (WORKSPACE_OPERATION_SET.has(operation) && workspace) {
     const action = workspace.command;
     const activeLabels = {
@@ -1430,6 +1468,13 @@ function buildAgentOutcome(activity, status, error) {
       );
       const shellCommands = workspaceShellCommands;
       const lastOperation = workspaceCommands.at(-1);
+      const historyOperations = workspaceCommands.filter((item) => item.kind === 'history');
+      const lastHistory = historyOperations.at(-1);
+      const lastCheckpoint = historyOperations.findLast((item) => item.history?.action === 'checkpoint');
+      const historyCopy = lastHistory && checkpointProgress(
+        lastHistory.state === 'completed' && lastCheckpoint?.state === 'completed' ? lastCheckpoint : lastHistory
+      );
+      const historyOnly = historyOperations.length === workspaceCommands.length;
       const previewOpened =
         ['static_preview', 'server_preview'].includes(lastOperation.kind) &&
         lastOperation.state === 'completed';
@@ -1437,8 +1482,9 @@ function buildAgentOutcome(activity, status, error) {
       return Object.freeze({
         kind: 'completed',
         verification: previewOpened ? 'workspace_preview_opened' : 'workspace_execution_recorded',
-        tone: completedOperations.length ? 'success' : 'neutral',
-        headline: previewOpened
+        tone: lastHistory && ['failed', 'cancelled'].includes(lastHistory.state) ? 'caution'
+          : completedOperations.length ? 'success' : 'neutral',
+        headline: historyOnly ? historyCopy.label : previewOpened
           ? serverPreviewOpened
             ? 'Server preview opened'
             : 'Static preview opened'
@@ -1451,9 +1497,9 @@ function buildAgentOutcome(activity, status, error) {
                 ? 'Project command completed'
                 : 'Project commands completed'
               : 'Project files inspected',
-        detail: previewOpened
+        detail: historyOnly ? historyCopy.detail : previewOpened
           ? `Freedom opened ${serverPreviewOpened ? 'a managed workspace server' : 'the current workspace HTML'} in an isolated Agent tab${serverPreviewOpened ? ' through its approved localhost port' : ' without network access'}.${workspaceCommands.length > 1 ? ` ${workspaceCommands.length - 1} earlier project ${workspaceCommands.length === 2 ? 'operation was' : 'operations were'} also recorded.` : ''}`
-          : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`,
+          : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}${historyCopy ? ` ${historyCopy.detail}` : ''}`,
         workspace: lastOperation,
         destinations,
         counts,
