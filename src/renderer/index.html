@@ -1948,6 +1948,8 @@
                 id="agent-approval-mode-popover"
                 class="agent-popover agent-approval-mode-popover"
                 role="dialog"
+                aria-label="Agent approvals"
+                aria-describedby="agent-approval-mode-help"
                 hidden
               >
                 <div
@@ -1962,8 +1964,8 @@
                     aria-pressed="false"
                   >
                     <span>
-                      <strong>Ask before every interaction</strong>
-                      <small>Review clicks, typing, selections, and key presses</small>
+                      <strong>Ask frequently</strong>
+                      <small>Review each page interaction. Project work continues within permissions you have granted.</small>
                     </span>
                     <span class="agent-approval-mode-check" aria-hidden="true"></span>
                   </button>
@@ -1974,8 +1976,8 @@
                     aria-pressed="true"
                   >
                     <span>
-                      <strong>Ask for consequential actions</strong>
-                      <small>Work normally and review meaningful commitments</small>
+                      <strong>Ask when needed</strong>
+                      <small>Let routine browsing proceed. Ask before consequential or uncertain page actions.</small>
                     </span>
                     <span class="agent-approval-mode-check" aria-hidden="true">✓</span>
                   </button>
@@ -1986,12 +1988,17 @@
                     aria-pressed="false"
                   >
                     <span>
-                      <strong>Allow website interactions</strong>
-                      <small>Let Agent interact with websites without asking</small>
+                      <strong>Fewer interruptions</strong>
+                      <small>Let page interactions proceed without review, including form submissions.</small>
                     </span>
                     <span class="agent-approval-mode-check" aria-hidden="true"></span>
                   </button>
                 </div>
+                <p id="agent-approval-mode-help" class="agent-approval-mode-help">
+                  In every mode, Agent works within your granted project, command, and network
+                  permissions and asks before expanding access. Downloads, uploads, website
+                  automations, wallet actions, node changes, and publishing keep their own approvals.
+                </p>
               </div>
             </div>
           </div>

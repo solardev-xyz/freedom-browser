@@ -2419,6 +2419,15 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   font-size: 11px;
 }
 
+.agent-approval-mode-help {
+  margin: 6px 8px 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .agent-approval-mode-option:disabled {
   cursor: default;
   opacity: 0.48;

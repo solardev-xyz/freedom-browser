@@ -24,10 +24,16 @@ passed all 71 tests under Electron's Node runtime using isolated fake transports
 Native UI and live-model smoke testing of this follow-up remain outstanding.
 
 The composer now defaults to **Ask when needed**, retaining saved conversation
-modes. **Unified Agent authority profiles remain open**: the current three modes
+modes. The permission menu wording is updated to **Ask frequently**, **Ask when
+needed**, and **Fewer interruptions**, with matching composer labels. Descriptions
+explain page interaction review and a shared note covers existing project,
+command, network, and sensitive-operation approvals. This is a wording change;
+it does not change grants or enforcement.
+
+**Unified Agent authority profiles remain open**: the current three modes
 control browser interactions; project edits, commands/network, wallet/node and
-publication capabilities still have their own enforcement. Rewording those modes
-must accompany an explicit cross-capability behavior design, including what an
+publication capabilities still have their own enforcement. Replacing those modes
+with broader authority profiles needs a cross-capability behavior design, including what an
 independent reviewer may approve. Merely labeling the current options **Approve
 for me** or **Full access** would promise behavior that is not implemented.
 

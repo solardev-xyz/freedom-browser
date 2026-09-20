@@ -256,7 +256,7 @@ function createAgentElements() {
   elements['agent-manage-providers'] = createElement('button');
   elements['agent-approval-mode-button'] = createElement('button');
   elements['agent-active-approval-mode-label'] = createElement('span', {
-    textContent: 'Ask every action',
+    textContent: 'Ask when needed',
   });
   elements['agent-approval-mode-popover'] = createElement('div');
   elements['agent-approval-mode-popover'].hidden = true;
@@ -1028,7 +1028,7 @@ describe('Agent UI', () => {
     ctx.elements['agent-approval-mode-allow'].dispatch('click');
 
     expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
-      'Allow website actions'
+      'Fewer interruptions'
     );
     expect(ctx.elements['agent-approval-mode-allow'].getAttribute('aria-pressed')).toBe('true');
     expect(ctx.elements['agent-approval-mode-sensitive'].disabled).toBe(false);
@@ -1440,7 +1440,7 @@ describe('Agent UI', () => {
       'allow_website_interactions'
     );
     expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
-      'Allow website actions'
+      'Fewer interruptions'
     );
     expect(ctx.elements['agent-run-message'].textContent).toBe(
       'Approval setting updated for the next message.'
@@ -2165,7 +2165,7 @@ describe('Agent UI', () => {
       'What is on this page?'
     );
     expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
-      'Allow website actions'
+      'Fewer interruptions'
     );
     expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
