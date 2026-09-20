@@ -1,14 +1,14 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-19
+Last updated: 2026-09-20
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-19
+## Current working status — 2026-09-20
 
 ### Existing projects experiment — 2026-09-19
 
@@ -23,9 +23,10 @@ in-place changes. Existing file/folder attachments remain read-only reference
 material. Project association survives restart; authority does not, and a native
 Reconnect project action is required. Project file tools use relative paths,
 revalidate folder identity, and reject stale direct writes. Commands reuse the
-existing executable/network permission path. Freedom checkpoint metadata lives
-outside the selected project; existing Git metadata is never initialized or
-replaced. Conversation deletion removes Freedom-owned data only.
+existing executable/network permission path. The initial private-checkpoint behavior was rejected in user smoke testing.
+The September 20 revision uses the external repository’s own Git history and
+explicit selected-file commits; no new hidden checkpoint repositories are
+created. Ordinary external folders are not initialized automatically. Conversation deletion removes Freedom-owned data only.
 
 Qualification on the designated Mac mini has passed bounded production
 file/history/reconnection checks, six absent-Git creation-denial probes, four
@@ -36,8 +37,41 @@ pass repeated all 11 production checkpoints, passed 292 focused tests across
 nine suites, lint, and the native UI flow. Exact source manifests, logs, watchdog
 results, intact canaries, and screenshots are preserved on the Mac mini under
 `/private/tmp/freedom-existing-projects-test-20260919/evidence/`. User smoke
-acceptance is pending; no broader platform or live-model acceptance is claimed.
+testing confirmed project reads and edits. The revised real-repository commit
+workflow passed separate September 20 qualification below and needs another user smoke test; no broader platform
+acceptance is claimed.
 See [project access notes](../docs/agent-existing-projects.md).
+
+
+### Repository-native commits revision — 2026-09-20
+
+The experimental branch now exposes actual repository commits through the existing
+history tool. Commits are task-authorized, never automatic per-edit saves. The
+panel and file viewers use Commits terminology; external repository history has
+no private exclusion settings or destructive restore action. Old experimental
+private archives are retained untouched. Non-Git folders remain ordinary folders.
+
+The privileged implementation remains in the main-process Agent service. It binds
+reviewed files to HEAD/index state, preserves unrelated staging, rejects differing
+selected staging, and refuses unsupported hooks/signing/conversion/configuration
+instead of bypassing them. It leaves normal shell `.git` protection intact.
+A durable pending record and prepared index survive uncertain ref/index updates;
+no automatic retry, branch rollback, or stale-lock removal is attempted. See
+[project access notes](../docs/agent-existing-projects.md) for supported scope and
+manual recovery. The exact Git v3 source passed 265 tests across 11 suites, all
+11 production checks, lint, and nine supplemental regression probes on the Mac
+mini (macOS 15.6 arm64, Electron 44.3.0 / Chromium 152, Apple Git 2.39.5).
+The probes cover preserved staging, literal filenames, metadata/lock replacement,
+configuration requirements, pre-dispatch branch changes and uncertain commit
+recovery retained across conversation deletion. Successful Git v2 native UI
+evidence is reused after verifying identical renderer/preload/shared IPC/E2E
+source hashes; no new v3 UI run is claimed. No watchdog or canary failed and no
+disposable app/server remained. Only documentation changed after qualification.
+Exact 40-file source manifests, runtime identity, logs and probe traces remain
+under `/private/tmp/freedom-external-git-test-20260920/evidence/` on the Mac mini
+(`project-git-v3-*`; v2 UI screenshots). User smoke testing of actual commits is
+the next acceptance step; during-child ref changes can still require manual
+recovery, and broader platform qualification is not claimed.
 
 Remaining scope includes individual in-place file grants, multiple writable
 projects in a conversation, linked Git worktrees/external Git metadata,

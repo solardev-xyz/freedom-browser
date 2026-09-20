@@ -14,6 +14,19 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('reports real repository commits without checkpoint terminology', () => {
+    const workspace = { kind: 'history', command: 'Project history: commit', workingDirectory: '.',
+      backend: 'freedom-workspace-files', state: 'completed',
+      history: { action: 'commit', source: 'repository', saved: true, checkpointId: 'c'.repeat(40) } };
+    const item = { operation: 'workspace_history', status: 'succeeded', ...activityProgress('workspace_history', { workspace }) };
+    expect(item.label).toBe('Created commit');
+    const result = buildAgentOutcome([item], 'completed');
+    expect(result.headline).toBe('Created commit');
+    expect(result.detail).toContain('commit ccccccc in the project repository');
+    expect(result.detail).not.toContain('checkpoint');
+    workspace.history.saved = false;
+    expect(activityProgress('workspace_history', { workspace }).label).toBe('No new commit needed');
+  });
   const historyItem = (action, result = {}, state = 'completed') => {
     const workspace = { kind: 'history', command: `Project history: ${action}`,
       workingDirectory: '.', backend: 'freedom-workspace-files', state, history: { action, ...result } };

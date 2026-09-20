@@ -24,6 +24,8 @@ async function main() {
   fs.writeFileSync(path.join(project, 'source.txt'), 'before\n');
   fs.writeFileSync(path.join(outside, 'canary.txt'), 'untouched\n');
   execFileSync('/usr/bin/git', ['init', '--quiet', project]);
+  execFileSync('/usr/bin/git', ['-C', project, 'config', 'user.name', 'Qualification']);
+  execFileSync('/usr/bin/git', ['-C', project, 'config', 'user.email', 'qualification@example.test']);
   const configBefore = fs.readFileSync(path.join(project, '.git', 'config'));
   let store = new AgentManagedWorkspaceStore({ userDataDir: profile });
   let controller = new ManagedWorkspaceController({ store });
@@ -70,12 +72,14 @@ async function main() {
     pass('commands write selected project while Git and outside canary stay intact');
 
     const review = await controller.reviewWorkspaceHistory('project_one', { action: 'review', path: 'source.txt' });
-    await controller.reviewWorkspaceHistory('project_one', { action: 'checkpoint', reviewIds: [review.reviewId], label: 'Qualified edit' });
+    await controller.reviewWorkspaceHistory('project_one', { action: 'commit', reviewIds: [review.reviewId], label: 'Qualified edit' });
     const history = await controller.workspaceHistory('project_one', { action: 'list' });
     assert.equal(history.versions.length, 1);
     assert.equal(fs.existsSync(path.join(project, '.git', 'freedom-history')), false);
     assert.deepEqual(fs.readFileSync(path.join(project, '.git', 'config')), configBefore);
-    pass('checkpoints live in private metadata, outside project Git');
+    assert.equal(execFileSync('/usr/bin/git', ['-C', project, 'show', 'HEAD:source.txt'], { encoding: 'utf8' }), 'accepted\n');
+    assert.equal(fs.existsSync(path.join(await store.resolveHistoryPath(attached.workspaceId), '.git')), false);
+    pass('commits appear in project Git, without private checkpoint metadata');
 
     await controller.writeFile('project_one', 'index.html', '<h1>Existing project preview</h1>');
     const previews = new WorkspacePreviewController({ workspaceController: controller });

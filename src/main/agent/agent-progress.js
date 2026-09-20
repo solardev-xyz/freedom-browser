@@ -609,10 +609,11 @@ function normalizeWorkspaceReceipt(value) {
     ].includes(kind)
       ? kind
       : 'command',
-    ...(kind === 'history' && ['status', 'review', 'exclude', 'include', 'checkpoint'].includes(value.history?.action) && {
+    ...(kind === 'history' && ['status', 'review', 'exclude', 'include', 'commit', 'checkpoint'].includes(value.history?.action) && {
       history: Object.freeze({
         action: value.history.action,
-        ...(state === 'completed' && value.history.action === 'checkpoint' &&
+        ...(value.history.source === 'repository' && { source: 'repository' }),
+        ...(state === 'completed' && ['commit', 'checkpoint'].includes(value.history.action) &&
           typeof value.history.saved === 'boolean' && /^[a-f0-9]{40}$/.test(value.history.checkpointId) && {
           saved: value.history.saved, checkpointId: value.history.checkpointId,
         }),
@@ -643,14 +644,29 @@ function normalizeWorkspaceReceipt(value) {
 }
 
 function checkpointProgress(workspace) {
+  const repository = workspace?.history?.source === 'repository' || workspace?.history?.action === 'commit';
   const copy = {
     status: ['Checking checkpoints', 'Checked checkpoints', 'Freedom checked project changes and checkpoint exclusions.'],
     review: ['Reviewing file changes', 'Reviewed file changes', 'Freedom returned a file revision for review. This does not save a checkpoint.'],
     exclude: ['Updating checkpoint exclusions', 'Updated checkpoint exclusions', 'Freedom excluded the selected file from future checkpoints.'],
     include: ['Updating checkpoint exclusions', 'Updated checkpoint exclusions', 'Freedom removed the selected file from checkpoint exclusions. Its contents still require review.'],
     checkpoint: ['Saving checkpoint', 'Checked project history', 'Freedom recorded a checkpoint operation, but no confirmed save result is available.'],
+    commit: ['Creating commit', 'Checked project history', 'Freedom recorded a Git operation, but no confirmed commit result is available.'],
   }[workspace?.history?.action] || ['Checking project history', 'Checked project history', 'Freedom recorded a project history operation.'];
-  const [intent, label, detail] = copy;
+  let [intent, label, detail] = copy;
+  if (repository) {
+    [intent, label, detail] = copy.map(text => text.replaceAll('checkpoints', 'commits').replaceAll('checkpoint', 'commit'));
+    if (workspace?.state === 'failed' || workspace?.state === 'cancelled') return {
+      intent, label: workspace.state === 'failed' ? 'Git operation failed' : 'Git operation stopped',
+      detail: 'The Git operation did not return a confirmed result. Inspect repository state before retrying.',
+    };
+    if (workspace?.history?.saved !== undefined) return {
+      intent, label: workspace.history.saved ? 'Created commit' : 'No new commit needed',
+      detail: workspace.history.saved
+        ? `Freedom created commit ${workspace.history.checkpointId.slice(0, 7)} in the project repository from selected reviewed revisions. Other changes may remain uncommitted.`
+        : `Selected revisions already match commit ${workspace.history.checkpointId.slice(0, 7)}. No new commit was created; other changes may remain uncommitted.`,
+    };
+  }
   if (workspace?.state === 'failed') return { intent, label: 'Checkpoint operation failed', detail: 'Freedom could not complete the checkpoint operation. No successful result was recorded.' };
   if (workspace?.state === 'cancelled') return { intent, label: 'Checkpoint operation stopped', detail: 'The checkpoint operation was stopped. Its outcome is not confirmed.' };
   if (workspace?.history?.saved !== undefined) {
@@ -1470,7 +1486,7 @@ function buildAgentOutcome(activity, status, error) {
       const lastOperation = workspaceCommands.at(-1);
       const historyOperations = workspaceCommands.filter((item) => item.kind === 'history');
       const lastHistory = historyOperations.at(-1);
-      const lastCheckpoint = historyOperations.findLast((item) => item.history?.action === 'checkpoint');
+      const lastCheckpoint = historyOperations.findLast((item) => ['commit', 'checkpoint'].includes(item.history?.action));
       const historyCopy = lastHistory && checkpointProgress(
         lastHistory.state === 'completed' && lastCheckpoint?.state === 'completed' ? lastCheckpoint : lastHistory
       );

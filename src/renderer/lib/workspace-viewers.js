@@ -72,7 +72,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
 
   function fileList(session, ui, entries) {
     const list = node('nav', 'workspace-viewer-files');
-    list.setAttribute('aria-label', session.version ? 'Checkpoint files' : 'Changed files');
+    list.setAttribute('aria-label', session.version ? 'Commit files' : 'Changed files');
     const content = node('div', 'workspace-viewer-document');
     const buttons = [];
     for (const entry of entries) {
@@ -89,11 +89,11 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
     ui.body.appendChild(list);
     ui.body.appendChild(content);
     if (entries.length) void readFile(session, ui, entries[0], content, buttons);
-    else content.appendChild(node('p', 'workspace-viewer-message', session.version ? 'No files in this checkpoint' : session.project ? 'No changes to show' : 'No changes since the latest checkpoint'));
+    else content.appendChild(node('p', 'workspace-viewer-message', session.version ? 'No files in this commit' : session.project ? 'No changes to show' : 'No changes since the latest commit'));
   }
 
   async function show(session) {
-    const ui = shell(session, session.version ? `Read-only checkpoint · ${new Date(session.version.createdAt).toLocaleString()}` : 'Read-only · Changes since the latest checkpoint');
+    const ui = shell(session, session.version ? `Read-only commit · ${new Date(session.version.createdAt).toLocaleString()}` : 'Read-only · Changes since the latest commit');
     ui.header.insertBefore(action('Refresh', () => void show(session)), ui.header.lastChild);
     try {
       if (session.version) {
@@ -103,7 +103,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
         const restore = action('Restore…', () => void reviewRestore(session));
         restore.disabled = state.running || session.version.reviewed === false;
         restore.title = state.running ? 'Stop running processes before restoring' : session.version.reviewed === false ? 'This older snapshot must be reviewed before restoring' : 'Review the affected files before confirming';
-        ui.header.insertBefore(restore, ui.header.lastChild);
+        if (state.restorable !== false) ui.header.insertBefore(restore, ui.header.lastChild);
         fileList(session, ui, files.files);
       } else {
         const changes = await inspect(session, 'changes');
@@ -143,7 +143,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
         }
       }, 'workspace-viewer-action workspace-viewer-restore-confirm');
       confirm.disabled = !plan.changes.length;
-      if (!plan.changes.length) review.appendChild(node('p', '', 'The eligible files already match this checkpoint.'));
+      if (!plan.changes.length) review.appendChild(node('p', '', 'The eligible files already match this commit.'));
       review.appendChild(confirm);
       ui.body.appendChild(review);
     } catch (cause) {
@@ -158,7 +158,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
     },
     open(conversationId, version = null, onChanged = null) {
       if (conversationId !== conversation || !conversationId || typeof openTab !== 'function') throw new Error('Workspace viewers are unavailable.');
-      const key = version ? `checkpoint:${version.id}` : 'changes';
+      const key = version ? `commit:${version.id}` : 'changes';
       let session = sessions.get(key);
       if (!session) {
         session = { key, conversationId, version, title: version ? version.label : 'Changes', content: node('section', 'workspace-viewer'), sequence: 0, readSequence: 0, closed: false, onChanged };

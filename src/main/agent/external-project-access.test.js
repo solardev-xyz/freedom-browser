@@ -64,6 +64,7 @@ describe('external project authority', () => {
     store = new AgentManagedWorkspaceStore({ userDataDir, Database: SqliteAdapter });
     const before = fs.statSync(project).mode;
     const workspace = await store.attachProject('conversation_one', project);
+    expect(fs.readdirSync(await store.resolveHistoryPath(workspace.workspaceId))).toEqual([]);
     expect(workspace.project).toEqual({ name: path.basename(project), mode: 'read', connected: true });
     expect(JSON.stringify(workspace)).not.toContain(temporary);
     expect(await store.resolvePath(workspace.workspaceId)).toBe(fs.realpathSync(project));
@@ -98,5 +99,16 @@ describe('external project authority', () => {
     expect(store.getForConversation('second')).toBeNull();
     expect(store.getForConversation('first').project.connected).toBe(true);
     expect(fs.readFileSync(path.join(project, 'existing.txt'), 'utf8')).toBe('pre-existing changes');
+  });
+
+  test('conversation deletion preserves pending external commit recovery evidence', async () => {
+    store = new AgentManagedWorkspaceStore({ userDataDir, Database: SqliteAdapter });
+    const workspace = await store.attachProject('recovery', project);
+    const privatePath = await store.resolveHistoryPath(workspace.workspaceId);
+    fs.writeFileSync(path.join(privatePath, 'git-commit-pending.json'), '{"candidate":"retained"}');
+    await store.deleteConversation('recovery');
+    expect(store.getForConversation('recovery')).toBeNull();
+    expect(fs.readFileSync(path.join(privatePath, 'git-commit-pending.json'), 'utf8')).toContain('retained');
+    expect(store.projectAccess.grants.has(workspace.workspaceId)).toBe(false);
   });
 });

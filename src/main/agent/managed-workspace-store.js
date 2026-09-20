@@ -306,9 +306,9 @@ class AgentManagedWorkspaceStore {
   async attachProject(conversationId, selectedPath) {
     if (this.getForConversation(conversationId)) throw projectError('PROJECT_IN_USE', 'Open this project in a new conversation.');
     const identity = await this.projectAccess.identify(selectedPath);
-    // This directory contains only Freedom-owned history. The selected project
+    // This directory contains only Freedom-owned metadata/temporary state. The selected project
     // is never initialized, chmodded, copied, or deleted by the store.
-    const workspace = await this.ensureForConversation(conversationId);
+    const workspace = await this.ensureForConversation(conversationId, { initializeGit: false });
     try {
       this.projectAccess.grant(workspace.workspaceId, identity, 'read');
       this.getDb().prepare(`UPDATE agent_workspaces SET project_path = ?, project_name = ?,
@@ -357,7 +357,7 @@ class AgentManagedWorkspaceStore {
       .all(workspaceId).map((entry) => entry.path);
   }
 
-  async ensureForConversation(conversationId) {
+  async ensureForConversation(conversationId, { initializeGit = true } = {}) {
     const ownerId = requiredString(conversationId, 'Conversation ID', 160);
     const existing = this.getForConversation(ownerId);
     if (existing) {
@@ -376,8 +376,10 @@ class AgentManagedWorkspaceStore {
         throw error;
       }
       try {
-        await fs.promises.mkdir(path.join(workspacePath, '.git'), { mode: 0o700 });
-        await initializeWorkspaceGit(workspacePath);
+        if (initializeGit) {
+          await fs.promises.mkdir(path.join(workspacePath, '.git'), { mode: 0o700 });
+          await initializeWorkspaceGit(workspacePath);
+        }
         const createdAt = this.now();
         this.#getStatements().insertWorkspace.run(workspaceId, ownerId, createdAt, createdAt);
         return this.get(workspaceId);
@@ -518,7 +520,10 @@ class AgentManagedWorkspaceStore {
     if (!workspace) return false;
     this.projectAccess.revoke(workspace.workspaceId);
     const workspacePath = await this.#validateWorkspaceDirectory(workspace.workspaceId);
-    await fs.promises.rm(workspacePath, { recursive: true, force: false });
+    // An ambiguous external commit can leave a repository index lock. Preserve
+    // its reconciliation evidence even when the conversation itself is deleted.
+    const pendingCommit = workspace.project && fs.existsSync(path.join(workspacePath, 'git-commit-pending.json'));
+    if (!pendingCommit) await fs.promises.rm(workspacePath, { recursive: true, force: false });
     return this.#getStatements().deleteWorkspace.run(workspace.workspaceId, ownerId).changes > 0;
   }
 }

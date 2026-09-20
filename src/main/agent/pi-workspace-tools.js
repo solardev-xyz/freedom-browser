@@ -333,11 +333,11 @@ function assertBrowserEnvelope(envelope) {
 function createWorkspaceHistoryTool(sdk, options) {
   return sdk.defineTool({
     name: 'workspace_history', label: 'Review project history',
-    description: 'Review exact project file revisions, record contextual exclusions, and checkpoint only selected review tokens. Load the workspace-history skill first. No automatic commits or remote operations.',
+    description: 'Inspect project Git history, review exact file revisions, and commit selected review tokens in the project repository when authorized. Load the workspace-history skill first. No automatic commits or remote operations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['status', 'review', 'exclude', 'include', 'checkpoint'] },
+        action: { type: 'string', enum: ['status', 'review', 'exclude', 'include', 'commit', 'checkpoint'] },
         path: { type: 'string', minLength: 1, maxLength: 1024 },
         reason: { type: 'string', minLength: 1, maxLength: 160 },
         label: { type: 'string', minLength: 1, maxLength: 80 },
@@ -357,18 +357,18 @@ function createWorkspaceHistoryTool(sdk, options) {
         if (abort.signal?.aborted) throw new Error('Stopped');
         receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params, 'completed', {
           kind: 'history', command: `Project history: ${params.action}`,
-          history: { action: params.action,
-            ...(params.action === 'checkpoint' && { saved: result.saved, checkpointId: result.id }) },
+          history: { action: params.action, source: 'repository',
+            ...(['commit', 'checkpoint'].includes(params.action) && { saved: result.saved, checkpointId: result.id }) },
         });
         notify(options.onToolOutcome, { toolCallId, operation, status: 'succeeded', workspace: receipt });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (error) {
         receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params,
           abort.signal?.aborted ? 'cancelled' : 'failed', {
-            kind: 'history', command: `Project history: ${params.action}`, history: { action: params.action },
+            kind: 'history', command: `Project history: ${params.action}`, history: { action: params.action, source: 'repository' },
           });
         notify(options.onToolOutcome, { toolCallId, operation, status: 'failed', errorCode: 'WORKSPACE_HISTORY_UNAVAILABLE', workspace: receipt });
-        const safe = new Error(error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE' ? error.message : 'Project history operation unavailable or stopped. No unreviewed changes were automatically checkpointed.');
+        const safe = new Error(error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE' ? error.message : 'Project Git operation unavailable or stopped. Check repository state before retrying; no automatic retry was attempted.');
         safe.code = 'WORKSPACE_HISTORY_UNAVAILABLE';
         throw safe;
       } finally { abort.dispose(); }

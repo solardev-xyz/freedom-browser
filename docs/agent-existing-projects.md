@@ -52,13 +52,37 @@ it does not add an editor or individual writable-file grants.
   new-file writes use exclusive creation. Arbitrary approved shell commands do
   not provide this optimistic-write protection. These checks are not an atomic
   compare-and-swap against a concurrently malicious same-user host process.
-- Freedom’s reviewed checkpoints use private managed metadata under profile
-  storage. The selected project’s Git index, configuration, refs, and objects are
-  not used for Freedom checkpoint writes. Existing review, exclusion, size,
-  backup, and partial-restore limitations still apply.
-- Supported Git inspection uses bounded fixed commands with hooks, external
-  diffs, text conversion, and optional locks disabled. Unsafe/external Git layouts
-  fail closed. Git commits, branches, remotes, and pushes remain outside this UI.
+- Existing repositories are the source of truth: Commits reads their real Git
+  history and `workspace_history` with `action: commit` writes selected reviewed
+  revisions to the current branch. File-edit permission enables this capability;
+  the agent commits only when requested or authorized by the task/repository
+  instructions. Unrelated edits and staging remain intact. Different staged
+  revisions in a selected file must be resolved first.
+- New external projects allocate no private Git repository. Plain folders stay
+  plain: Git initialization requires an explicit choice in the user's Git client.
+  Previously created experimental checkpoint archives are retained under profile
+  storage, receive no new writes, and are not displayed as repository commits.
+- Managed workspaces retain their own existing Git history and reviewed restore
+  mechanism, now described as commits in the UI. External commits are view-only
+  in that UI; it cannot restore, reset, switch branches, merge, rebase or push.
+- The main-owned Git service runs fixed, bounded commands with a constructed
+  environment and disabled execution/network features. Ordinary shell commands
+  still cannot write `.git`. It requires normal SHA-1 Git directories and refuses
+  unsafe metadata, linked worktrees, active hooks, signing requirements, content
+  conversion, global ignore rules, includes, advanced indexes and partial/shallow repositories rather
+  than bypassing their requirements. Local/global Git identity is read without
+  changing configuration. Review limits still apply: 200 files, 64 KiB per file,
+  512 KiB total. Unsupported repositories remain editable; commit with a Git
+  client when the tool explains a limitation.
+- Commit preparation uses exact reviewed bytes, a separate temporary index for
+  the commit tree and another preserving unrelated staging. It locks the real
+  index, rechecks file/grant/HEAD/index state and performs a branch CAS using
+  Git’s own ref locks. HEAD is checked again before reporting success. Direct
+  concurrent ref edits by another host process can still require recovery.
+  Branch and index updates are not one atomic filesystem transaction. An uncertain
+  update retains `git-commit-pending.json`, its temporary indexes and an owned lock
+  under/alongside the affected repository. Further commits refuse until inspected;
+  there is no automatic retry or rollback. Recovery details are below.
 - Previews validate current project access. Removing access blocks new static,
   server, and preview-socket requests; it does not erase already rendered content.
 
@@ -71,13 +95,13 @@ retains its existing unavailable behavior. Linked Git worktrees, external gitdir
 authorization, and cross-platform release qualification remain follow-up work.
 
 `scripts/qualify-agent-existing-projects.js` exercises the production controller,
-store, sandbox, checkpoints, and previews using synthetic external folders. Run
+store, sandbox, repository commits, and previews using synthetic external folders. Run
 it with the matching Electron binary in Node mode on the designated disposable
 testing machine, with an independent watchdog and external canary. It never uses
 a real user project. The bounded server has its own exit deadline. Hostile
 detached-process and application-exit experiments are separate qualifications.
 
-The Mac mini’s final v3 snapshot passed 11 production checkpoints, 292 focused
+The September 19 Mac mini project-access v3 snapshot passed 11 production checkpoints, 292 focused
 unit tests across nine suites, lint, and the native picker/access/reconnect UI
 flow in both layouts and themes. The preceding v2 pass covered 332 tests across
 13 suites. Six absent-`.git` creation-denial probes and four selected Seatbelt
@@ -85,10 +109,47 @@ integration tests passed on the unchanged OS boundary. Runtime: macOS 15.6 arm64
 Electron 44.3.0 / Chromium 152.0.7977.78. No watchdog fired, external canaries
 remained intact, and the final process check found no disposable app/server
 processes. Exact manifests and logs are preserved in the Mac mini evidence
-directory recorded in the roadmap. Only documentation changed after v3 testing.
+directory recorded in the roadmap. Only documentation changed after that
+September 19 v3 pass, before the separate September 20 Git revision below.
 
-User smoke testing with a configured model is still pending. These results do
+The user successfully smoke-tested reading and editing an external README with a configured model. That test exposed the separate-history mismatch; the repository-commit revision requires a fresh smoke test. These results do
 not establish full descendant termination, aggregate resource limits, or absence
 of same-user filesystem races. The UI screenshots demonstrate access controls;
 background Changes/Checkpoints rows can still be loading when a screenshot is
 captured.
+
+## Interrupted commit recovery
+
+A failed operation before the branch update cleans up only its own temporary
+files and locks. Once a ref update is attempted, an uncertain response preserves
+recovery evidence in `<profile>/agent-workspaces/<workspace-id>/git-commit-pending.json`
+and its referenced temporary directory. The record contains the original branch,
+HEAD/index fingerprint, candidate commit and prepared index fingerprint. The
+project's `index.lock` may contain the prepared index; never blindly delete it or
+retry the commit. Inspect actual HEAD, log, status, index and candidate tree in a
+Git client. Repair staging deliberately without overwriting newer user changes.
+Only after reconciliation should the user archive the recovery record and remove
+confirmed stale owned locks. This experimental version has no automatic repair
+UI. Deleting its conversation waits for its active history operation to settle and
+preserves private pending recovery evidence at the original path. It removes the
+conversation association and access grant, not that unresolved recovery record. Existing same-user filesystem races remain a
+limitation; this is not isolation from a malicious host process.
+
+The September 20 Git v3 revision passed 265 tests across 11 suites, all 11
+production checks, lint, and nine supplemental regression probes on the Mac mini.
+These cover actual commits, preserved unrelated staging, unusual filenames,
+configuration refusals, changed metadata/locks, branch changes and uncertain
+commit recovery across conversation deletion. The successful Git v2 native UI
+run is reused: renderer, preload, shared IPC and E2E sources are byte-identical;
+this was not a new v3 UI run. No watchdog or canary failed, and no disposable
+app/server remained. Exact source manifests and results are preserved under
+`/private/tmp/freedom-external-git-test-20260920/evidence/` on the Mac mini.
+Only documentation changed after this Git v3 qualification. The earlier
+September 19 results do not certify the new Git writer.
+
+For a user smoke test, open a disposable normal Git repository, allow editing,
+ask for a small edit, then ask “commit this.” Confirm the returned hash with
+`git log -1` in that repository and inspect `git status`. Include an unrelated
+staged file to confirm it remains staged rather than entering the Agent commit.
+The Commits popover should show the same new commit and the repository’s earlier
+history. A plain folder should stay without `.git` after reading/editing.

@@ -59,6 +59,14 @@ describe('read-only workspace viewers', () => {
     expect(find(tabs[0].content, 'Restore…').disabled).toBe(true);
   });
 
+  test('external repository commits are viewable without a restore action', async () => {
+    history.mockImplementation(async (conversationId, type) => ({ ok: true, conversationId,
+      result: type === 'list' ? { restorable: false, source: 'repository' } : type === 'files' ? { files: [] } : {} }));
+    viewers.open('one', { ...version, source: 'repository' }); await flush();
+    expect(find(tabs[0].content, 'Restore…')).toBeUndefined();
+    expect(tabs[0].content.querySelector('.workspace-viewer-caption').textContent).toContain('Read-only commit');
+  });
+
   test('closing a tab or changing conversations discards pending reads and all viewer content', async () => {
     let resolve;
     inspect.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));

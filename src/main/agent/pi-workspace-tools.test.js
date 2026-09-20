@@ -1121,7 +1121,7 @@ describe('reviewed workspace history tool', () => {
     const outcome = jest.fn();
     const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn(), onToolOutcome: outcome });
     await tools.find(entry => entry.name === 'workspace_history').execute('save', { action: 'checkpoint', reviewIds: ['review_' + 'a'.repeat(32)] });
-    expect(outcome.mock.calls[0][0].workspace.history).toEqual({ action: 'checkpoint', saved, checkpointId: 'b'.repeat(40) });
+    expect(outcome.mock.calls[0][0].workspace.history).toEqual({ action: 'checkpoint', source: 'repository', saved, checkpointId: 'b'.repeat(40) });
     expect(JSON.stringify(outcome.mock.calls)).not.toContain('Private label');
   });
 
@@ -1140,14 +1140,14 @@ describe('reviewed workspace history tool', () => {
     controller.reviewWorkspaceHistory.mockRejectedValueOnce(new Error('/private/host/secret'));
     await expect(tool.execute('call_two', { action: 'status' })).rejects.toThrow('unavailable or stopped');
     expect(outcome).toHaveBeenLastCalledWith(expect.objectContaining({ workspace: expect.objectContaining({
-      state: 'failed', history: { action: 'status' },
+      state: 'failed', history: { action: 'status', source: 'repository' },
     }) }));
     const stopped = new AbortController(); stopped.abort();
     const calls = controller.reviewWorkspaceHistory.mock.calls.length;
     await expect(tool.execute('call_three', { action: 'checkpoint', reviewIds: [] }, stopped.signal)).rejects.toThrow('stopped');
     expect(controller.reviewWorkspaceHistory).toHaveBeenCalledTimes(calls);
     expect(outcome).toHaveBeenLastCalledWith(expect.objectContaining({ workspace: expect.objectContaining({
-      state: 'cancelled', history: { action: 'checkpoint' },
+      state: 'cancelled', history: { action: 'checkpoint', source: 'repository' },
     }) }));
   });
 
