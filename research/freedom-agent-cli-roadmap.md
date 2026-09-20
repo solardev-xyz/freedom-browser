@@ -10,6 +10,24 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-09-20
 
+### Pi 0.86.0 integration — 2026-09-20
+
+The existing-projects experiment now pins Pi `0.86.0` (previously `0.84.2`).
+The date/timezone snapshot travels in a request-only transcript system section,
+preserving instructions and tool declarations through Pi's new transcript format.
+Each continuation receives a fresh clock without persisting clock messages.
+Cache warming is explicitly off; this upgrade adds no cache-maintenance requests.
+The provider adapters and privacy controls remain in Freedom's main process.
+
+Validation: 609 tests passed across 39 agent/WebMCP suites, with the 34 opt-in
+external-Git qualification tests intentionally skipped; lint passed. Another
+32 SDK/session/provider tests passed under Electron's embedded Node runtime.
+Real Pi tests use simulated HTTP responses and cover custom-provider policy,
+OpenAI/Codex transports, tool registration, error recovery, JSON tool results,
+and clock serialization through OpenAI and Anthropic adapters. No live account
+requests or native UI smoke test were performed for this upgrade. Per-model
+compaction tuning and optional cache warming remain future work.
+
 ### Existing projects experiment — 2026-09-19
 
 Active development is on `experiment/agent-existing-projects`, branched from

@@ -158,6 +158,7 @@ describe('isolated Pi session factory', () => {
     expect(sdk.SessionManager.inMemory).toHaveBeenCalledWith(VIRTUAL_AGENT_CWD);
     expect(sdk.SettingsManager.inMemory).toHaveBeenCalledWith({
       compaction: { enabled: true },
+      cacheWarming: 'off',
       retry: {
         enabled: true,
         maxRetries: 2,
@@ -335,6 +336,102 @@ describe('isolated Pi session factory', () => {
     expect(VIRTUAL_AGENT_CWD).not.toContain(repositoryRoot);
   });
 
+  test('real Pi tool loop preserves instructions, clock, recovery text and JSON results', () => {
+    const script = `
+      (async () => {
+        const assert = require('node:assert/strict');
+        const { loadPiSdk } = require('./src/main/agent/pi-sdk');
+        const { createIsolatedPiSession } = require('./src/main/agent/pi-session-factory');
+        const sdk = await loadPiSdk();
+        const runtime = await sdk.ModelRuntime.create({
+          credentials: { read: async () => undefined, list: async () => [] },
+          modelsPath: null, modelsStorePath: null, refreshOnCreate: false,
+          allowModelNetwork: false,
+        });
+        runtime.registerProvider('freedom-test', {
+          baseUrl: 'https://provider.invalid/v1', api: 'openai-completions',
+          models: [{ id: 'test', name: 'Test', reasoning: false, input: ['text'],
+            contextWindow: 128000, maxTokens: 1024,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            compat: { supportsDeveloperRole: false } }],
+        });
+        await runtime.setRuntimeApiKey('freedom-test', 'test-not-a-credential');
+        const requests = [];
+        globalThis.fetch = async (_url, init) => {
+          requests.push(JSON.parse(init.body));
+          const index = requests.length;
+          const delta = index < 3 ? { tool_calls: [{ index: 0, id: 'probe-' + index,
+            type: 'function', function: { name: 'probe', arguments: '{"value":"test"}' } }] }
+            : { content: 'Done' };
+          const chunk = { id: 'response-' + index, object: 'chat.completion.chunk',
+            created: 1, model: 'test', choices: [{ index: 0, delta,
+              finish_reason: index < 3 ? 'tool_calls' : 'stop' }] };
+          return new Response('data: ' + JSON.stringify(chunk) + '\\n\\ndata: [DONE]\\n\\n', {
+            headers: { 'content-type': 'text/event-stream' },
+          });
+        };
+        const { createFreedomBrowserTools } = require('./src/main/agent/pi-browser-tools');
+        const { createWorkspaceTools } = require('./src/main/agent/pi-workspace-tools');
+        const { createConversationAttachmentTools } = require('./src/main/agent/pi-attachment-tools');
+        const unexpected = () => { throw new Error('Unexpected real tool execution'); };
+        const controller = Object.fromEntries([
+          'execute', 'accessFile', 'readFile', 'createDirectory', 'writeFile', 'listDirectory',
+          'findFiles', 'grepFiles', 'prepareCommandPermissions', 'grantCommandPermissions',
+          'startProcess', 'interactProcess', 'reviewWorkspaceHistory',
+        ].map(name => [name, unexpected]));
+        const productionTools = [
+          ...await createFreedomBrowserTools({ sdk, controller, tabId: 'test-tab' }),
+          ...await createWorkspaceTools({ sdk, controller, conversationId: 'test', requestApproval: unexpected }),
+          ...await createConversationAttachmentTools({ sdk, conversationId: 'test',
+            store: { listResources: unexpected, read: unexpected, renderPdfPage: unexpected } }),
+        ];
+        let now = Date.parse('2026-09-19T12:00:00Z');
+        let executions = 0;
+        const created = await createIsolatedPiSession({ sdk, modelRuntime: runtime,
+          model: runtime.getModel('freedom-test', 'test'), now: () => now,
+          systemPrompt: 'Preserve Freedom instructions.',
+          customTools: [...productionTools, { name: 'probe', label: 'Probe', description: 'A test-only probe.',
+            parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+            execute: async (_id, args) => {
+              assert.equal(args.value, 'test');
+              executions++;
+              now = Date.parse('2026-09-20T12:00:00Z');
+              if (executions === 1) throw Object.assign(new Error('Stale reference'), { code: 'STALE_ELEMENT_REFERENCE' });
+              return { content: [{ type: 'text', text: 'Checked' }], details: { checked: true, items: ['test'] } };
+            } }],
+        });
+        try {
+          await created.session.prompt('Run the probe');
+          assert.equal(requests.length, 3);
+          assert.equal(executions, 2);
+          for (const [index, request] of requests.entries()) {
+            const instructions = request.messages.filter(m => m.role === 'system').map(m => m.content).join(' ');
+            assert.ok(instructions.includes('Preserve Freedom instructions.'));
+            assert.ok(instructions.includes('Configured model runtime'));
+            assert.equal(instructions.split('Current time from Freedom').length - 1, 1);
+            assert.ok(instructions.includes(index === 0 ? '2026-09-19T12:00:00.000Z' : '2026-09-20T12:00:00.000Z'));
+            const names = request.tools.map(tool => tool.function.name);
+            for (const name of ['probe', 'browser_call_page_tool', 'request_permissions', 'workspace_history', 'read', 'write', 'bash', 'attachment_list']) {
+              assert.ok(names.includes(name), name + ' must remain registered');
+            }
+          }
+          const error = requests[1].messages.find(m => m.role === 'tool');
+          assert.ok(error.content.includes('STALE_ELEMENT_REFERENCE'));
+          assert.ok(error.content.includes('Recovery:'));
+          const results = created.session.agent.state.messages.filter(m => m.role === 'toolResult');
+          assert.equal(results[0].isError, true);
+          assert.deepEqual(results[1].details, { checked: true, items: ['test'] });
+          assert.equal(created.settingsManager.getCacheWarmingMode(), 'off');
+          assert.ok(!JSON.stringify(created.session.agent.state.messages).includes('Current time from Freedom'));
+          process.stdout.write('passed');
+        } finally { created.session.dispose(); }
+      })().catch(error => { console.error(error); process.exit(1); });
+    `;
+    expect(execFileSync(process.execPath, ['-e', script], {
+      cwd: repositoryRoot, encoding: 'utf8', timeout: 15000,
+    })).toBe('passed');
+  });
+
   test('creates a real Pi session with restored visible context and no hidden persistence', () => {
     const script = `
       (async () => {
@@ -367,7 +464,7 @@ describe('isolated Pi session factory', () => {
         });
         const result = {
           tools: created.session.agent.state.tools.map((tool) => tool.name),
-          prompt: created.session.agent.state.systemPrompt,
+          prompt: created.session.systemPrompt,
           messages: created.session.agent.state.messages.map((message) => ({
             role: message.role,
             content: message.content,
@@ -442,6 +539,54 @@ describe('live device clock context', () => {
     expect(context).not.toContain('localDate');
   });
 
+  test.each(['openai-completions', 'openai-responses', 'anthropic-messages'])(
+    '%s serializes the request-only clock alongside system instructions and tools', (api) => {
+      const script = `
+        (async () => {
+          const assert = require('node:assert/strict');
+          const { loadPiSdk } = require('./src/main/agent/pi-sdk');
+          const { createDiagnosticModelRuntime } = require('./src/main/agent/pi-session-factory');
+          const sdk = await loadPiSdk();
+          const runtime = await sdk.ModelRuntime.create({
+            credentials: { read: async () => undefined, list: async () => [] },
+            modelsPath: null, refreshOnCreate: false, allowModelNetwork: false,
+          });
+          runtime.registerProvider('freedom-test', {
+            baseUrl: 'https://provider.invalid/v1', api: ${JSON.stringify(api)},
+            models: [{ id: 'test', name: 'Test', reasoning: false, input: ['text'],
+              contextWindow: 128000, maxTokens: 1024,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+          });
+          await runtime.setRuntimeApiKey('freedom-test', 'test-not-a-credential');
+          let body;
+          const fetch = async (_url, init) => {
+            body = JSON.parse(init.body);
+            return new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: 'Test capture complete' } }),
+              { status: 400, headers: { 'content-type': 'application/json' } });
+          };
+          const context = { messages: [
+            { role: 'system', content: 'Original instructions', timestamp: 0,
+              toolsAdded: [{ name: 'probe', description: 'Test', parameters: { type: 'object', properties: {} } }] },
+            { role: 'user', content: 'Test', timestamp: 1 },
+            { role: 'system', content: 'Later instructions', timestamp: 2 },
+          ] };
+          const wrapped = createDiagnosticModelRuntime(runtime, null, () => 'Fresh device clock');
+          await wrapped.streamSimple(runtime.getModel('freedom-test', 'test'), context,
+            { fetch, maxRetries: 0 }).result();
+          assert.ok(body, 'the real provider adapter must reach the fake transport');
+          for (const text of ['Original instructions', 'Later instructions', 'Fresh device clock', 'probe']) {
+            assert.ok(JSON.stringify(body).includes(text), text + ' missing from serialized provider request');
+          }
+          assert.equal(context.messages.length, 3);
+          process.stdout.write('passed');
+        })().catch(error => { console.error(error); process.exit(1); });
+      `;
+      expect(execFileSync(process.execPath, ['-e', script], {
+        cwd: repositoryRoot, encoding: 'utf8', timeout: 15000,
+      })).toBe('passed');
+    }
+  );
+
   test('session wiring refreshes the outgoing system context on each request without rewriting history', async () => {
     const sdk = createSdk();
     const stream = { stream: true };
@@ -450,22 +595,26 @@ describe('live device clock context', () => {
     const model = { id: 'test', provider: 'ollama' };
     const created = await createIsolatedPiSession({ sdk, model, modelRuntime, now: () => now });
     const wrapped = sdk.createAgentSession.mock.calls[0][0].modelRuntime;
-    const messages = [{ role: 'user', content: 'What is today?' }];
-    const context = { systemPrompt: created.resourceLoader.getSystemPrompt(), messages };
-    const initialSystemPrompt = context.systemPrompt;
+    const messages = Object.freeze([
+      Object.freeze({ role: 'system', content: created.resourceLoader.getSystemPrompt(), timestamp: 0 }),
+      Object.freeze({ role: 'user', content: 'What is today?', timestamp: 1 }),
+      Object.freeze({ role: 'system', content: 'Updated instructions', toolsAdded: [{ name: 'example' }], timestamp: 2 }),
+    ]);
+    const context = Object.freeze({ messages });
     expect(wrapped.streamSimple(model, context, {})).toBe(stream);
     now = Date.parse('2026-09-20T12:00:00Z');
     expect(wrapped.streamSimple(model, context, {})).toBe(stream);
     const first = modelRuntime.streamSimple.mock.calls[0][1];
     const second = modelRuntime.streamSimple.mock.calls[1][1];
-    expect(first.systemPrompt).toContain('2026-09-19T12:00:00.000Z');
-    expect(second.systemPrompt).toContain('2026-09-20T12:00:00.000Z');
-    expect(second.systemPrompt).not.toContain('2026-09-19T12:00:00.000Z');
-    expect(second.systemPrompt.match(/Current time from Freedom/g)).toHaveLength(1);
-    expect(context.systemPrompt).toBe(initialSystemPrompt);
-    expect(first.messages).toBe(messages);
-    expect(second.messages).toBe(messages);
-    expect(context.systemPrompt).toContain('Configured model runtime');
-    expect(context.systemPrompt).not.toContain('Current time from Freedom');
+    expect(first.messages.at(-1).sections.freedom_current_time).toContain('2026-09-19T12:00:00.000Z');
+    expect(second.messages.at(-1).sections.freedom_current_time).toContain('2026-09-20T12:00:00.000Z');
+    expect(JSON.stringify(second)).not.toContain('2026-09-19T12:00:00.000Z');
+    expect(JSON.stringify(second).match(/Current time from Freedom/g)).toHaveLength(1);
+    expect(first.messages.slice(0, -1)).toEqual(messages);
+    expect(second.messages.slice(0, -1)).toEqual(messages);
+    expect(first.messages[2]).toBe(messages[2]);
+    expect(context.messages).toBe(messages);
+    expect(messages[0].content).toContain('Configured model runtime');
+    expect(JSON.stringify(context)).not.toContain('Current time from Freedom');
   });
 });

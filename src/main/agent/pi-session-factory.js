@@ -230,12 +230,17 @@ function createDiagnosticModelRuntime(modelRuntime, createDiagnostic, getTimeCon
               typeof options.fetch === 'function' ? options.fetch : globalThis.fetch;
             record('model_request_started');
             try {
-              // Enrich the outgoing system context, not the stored transcript or
-              // Pi's cached prompt. Every continuation gets a fresh clock, and
-              // repeated requests never accumulate stale clock blocks.
+              // Pi 0.86 carries instructions and tools in transcript messages.
+              // Append a request-only clock section, preserving the cached prefix,
+              // instruction updates and tool declarations without rewriting history.
               const requestContext = getTimeContext ? {
                 ...context,
-                systemPrompt: `${context?.systemPrompt || ''}\n\n${getTimeContext()}`,
+                messages: [...context.messages, {
+                  role: 'system',
+                  content: '',
+                  sections: { freedom_current_time: getTimeContext() },
+                  timestamp: Date.now(),
+                }],
               } : context;
               return target.streamSimple(model, requestContext, {
                 ...options,
@@ -287,6 +292,7 @@ When asked which model or provider you are using, report these configured identi
   });
   const settingsManager = sdk.SettingsManager.inMemory({
     compaction: { enabled: true },
+    cacheWarming: 'off',
     retry: {
       enabled: true,
       maxRetries: 2,

@@ -37,10 +37,10 @@ describe('Pi SDK loader', () => {
         'utf8'
       )
     );
-    expect(rootPackage.dependencies[PI_SDK_PACKAGE]).toBe('0.84.2');
+    expect(rootPackage.dependencies[PI_SDK_PACKAGE]).toBe('0.86.0');
     expect(packageMetadata).toMatchObject({
       name: PI_SDK_PACKAGE,
-      version: '0.84.2',
+      version: '0.86.0',
       type: 'module',
       license: 'MIT',
       engines: { node: '>=22.19.0' },
