@@ -321,7 +321,7 @@ class AgentManagedWorkspaceStore {
     }
   }
 
-  async setProjectAccess(conversationId, mode, selectedPath = null) {
+  async setProjectAccess(conversationId, mode, selectedPath = null, options = {}) {
     const workspace = this.getForConversation(conversationId);
     if (!workspace?.project) throw projectError('PROJECT_UNAVAILABLE', 'This conversation has no attached project.');
     if (mode === 'remove') {
@@ -337,6 +337,10 @@ class AgentManagedWorkspaceStore {
         .run(identity.root, workspace.workspaceId);
     } else {
       const identity = await this.projectAccess.resolve(workspace.workspaceId);
+      if (options.signal?.aborted) throw projectError('WORKSPACE_OPERATION_CANCELLED', 'Project permission request was stopped.');
+      if (options.expectedGrant && identity !== options.expectedGrant) {
+        throw projectError('PROJECT_CHANGED', 'Project access changed while approval was pending.');
+      }
       this.projectAccess.grant(workspace.workspaceId, identity, mode);
       this.getDb().prepare('UPDATE agent_workspaces SET project_mode = ? WHERE id = ?').run(mode, workspace.workspaceId);
     }

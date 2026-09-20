@@ -666,7 +666,7 @@ describe('FreedomAgentService', () => {
     await service.start(startOptions());
     const prompt = dependencies.createSession.mock.calls[0][0].systemPrompt;
     expect(prompt).toContain('Both file edits and Git commits require editing access');
-    expect(prompt).toContain('If a tool reports PROJECT_READ_ONLY, ask the user to choose Allow editing');
+    expect(prompt).toContain('If a tool reports PROJECT_READ_ONLY, call request_permissions');
     expect(prompt).toContain('authorized commits in the project repository itself');
     expect(prompt).not.toContain('Freedom checkpoints are separate');
     fake.prompt.resolve();
@@ -1655,6 +1655,24 @@ describe('FreedomAgentService', () => {
     expect(await decision).toEqual({ status: 'approved' });
     await service.stop('run_test');
     await service.waitForIdle();
+  });
+
+  test('shows a project-editing approval with bounded metadata and explicit user decision', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({ action: 'project_write', operation: 'request_permissions', label: 'Commit changes',
+      projectAccess: { name: 'Cookbook', mode: 'write', scope: 'conversation', root: '/private/project', grant: 'private-token' } });
+    const event = events.at(-1);
+    expect(event).toMatchObject({ type: 'approval_requested', action: 'project_write', projectAccess: { name: 'Cookbook', mode: 'write', scope: 'conversation' } });
+    expect(JSON.stringify(event)).not.toMatch(/private|grant/);
+    await expect(service.decideApproval('wrong_run', event.approvalId, true)).resolves.toBe(false);
+    await service.decideApproval('run_test', event.approvalId, true);
+    expect(await decision).toBe('approved');
+    await service.stop('run_test'); await service.waitForIdle();
   });
 
   test('projects exact executable authority and returns a conversation-scoped grant', async () => {

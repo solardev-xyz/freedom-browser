@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const { ExternalProjectAccess } = require('./external-project-access');
 const { AgentManagedWorkspaceStore } = require('./managed-workspace-store');
+const { ManagedWorkspaceController } = require('./managed-workspace-controller');
 
 class SqliteAdapter {
   constructor(filename) { this.db = new (require('node:sqlite').DatabaseSync)(filename); }
@@ -42,6 +43,51 @@ describe('external project authority', () => {
     await expect(access.resolve('one', { write: true })).resolves.toMatchObject({ mode: 'write' });
     access.revoke('one');
     await expect(access.resolve('one')).rejects.toMatchObject({ code: 'PROJECT_RECONNECT_REQUIRED' });
+  });
+
+  test('binds an editing approval to the exact project and consumes it once', async () => {
+    store = new AgentManagedWorkspaceStore({ userDataDir, Database: SqliteAdapter });
+    const workspace = await store.attachProject('one', project);
+    const controller = new ManagedWorkspaceController({ store });
+    const request = await controller.prepareProjectWriteAccess('one');
+    expect(request).toMatchObject({ approvalRequired: true, publicRequest: { name: path.basename(project), mode: 'write', scope: 'conversation' } });
+    expect(JSON.stringify(request)).not.toContain(temporary);
+    await expect(store.projectAccess.resolve(workspace.workspaceId, { write: true })).rejects.toMatchObject({ code: 'PROJECT_READ_ONLY' });
+    await controller.grantProjectWriteAccess('one', request.prepared);
+    expect(store.getForConversation('one').project.mode).toBe('write');
+    expect((await controller.prepareProjectWriteAccess('one')).approvalRequired).toBe(false);
+    await expect(controller.grantProjectWriteAccess('one', request.prepared)).rejects.toMatchObject({ code: 'PROJECT_ACCESS_INVALID' });
+    expect(fs.readdirSync(project)).toEqual(['existing.txt']);
+  });
+
+  test.each(['revoked', 'changed', 'cancelled', 'expired', 'foreign', 'forged'])('refuses %s pending editing approval', async (condition) => {
+    store = new AgentManagedWorkspaceStore({ userDataDir, Database: SqliteAdapter });
+    await store.attachProject('one', project);
+    let now = 1000;
+    const controller = new ManagedWorkspaceController({ store, now: () => now });
+    const request = await controller.prepareProjectWriteAccess('one');
+    const abort = new AbortController();
+    if (condition === 'revoked') await controller.setProjectAccess('one', 'remove');
+    if (condition === 'changed') await controller.setProjectAccess('one', 'read');
+    if (condition === 'cancelled') abort.abort();
+    if (condition === 'expired') now += 600001;
+    await expect(controller.grantProjectWriteAccess(condition === 'foreign' ? 'other' : 'one',
+      condition === 'forged' ? {} : request.prepared, { signal: abort.signal })).rejects.toThrow();
+    expect(store.getForConversation('one').project.mode).toBe('read');
+  });
+
+  test('rechecks approval cancellation after asynchronous project identity validation', async () => {
+    store = new AgentManagedWorkspaceStore({ userDataDir, Database: SqliteAdapter });
+    await store.attachProject('one', project);
+    const controller = new ManagedWorkspaceController({ store });
+    const request = await controller.prepareProjectWriteAccess('one');
+    const abort = new AbortController();
+    const resolve = store.projectAccess.resolve.bind(store.projectAccess);
+    jest.spyOn(store.projectAccess, 'resolve').mockImplementation(async (...args) => {
+      const result = await resolve(...args); abort.abort(); return result;
+    });
+    await expect(controller.grantProjectWriteAccess('one', request.prepared, { signal: abort.signal })).rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    expect(store.getForConversation('one').project.mode).toBe('read');
   });
 
   test('rejects overlapping writer grants and profile ancestors', async () => {

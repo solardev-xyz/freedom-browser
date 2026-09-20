@@ -3757,6 +3757,21 @@ describe('Agent UI', () => {
     );
   });
 
+  test('renders a project editing sheet with its scope and no allow-once ambiguity', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_project',
+      action: 'project_write', operation: 'request_permissions', label: 'Commit cookbook changes',
+      projectAccess: { name: 'Cookbook', mode: 'write', scope: 'conversation' } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Allow editing “Cookbook”?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('local Git commits');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('revoke it or restart Freedom');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Allow editing');
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+    ctx.elements['agent-approval-approve'].dispatch('click'); await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_project', true);
+  });
+
   test('renders exact executable access and can grant it for the conversation', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test' });

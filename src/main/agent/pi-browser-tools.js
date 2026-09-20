@@ -1,6 +1,7 @@
 'use strict';
 
 const { BrowserRecoveryTracker } = require('./browser-recovery-tracker');
+const { withToolErrorRecovery } = require('./tool-error-recovery');
 const { BrowserEvidenceStore } = require('./browser-evidence-store');
 const {
   OPERATIONS,
@@ -885,7 +886,7 @@ async function createFreedomBrowserTools(options = {}) {
       },
     })
   );
-  return [...tools, evidence.tool(sdk)];
+  return [...tools, evidence.tool(sdk)].map(withToolErrorRecovery);
 }
 
 module.exports = {

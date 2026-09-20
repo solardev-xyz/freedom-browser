@@ -2689,6 +2689,7 @@ function renderApproval(request) {
   const publication = request.publication;
   const workspace = request.workspace;
   const workspacePermission = request.workspacePermission;
+  const projectAccess = request.projectAccess;
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   elements.approval.classList.toggle(
     'conversation-approval',
@@ -2704,7 +2705,9 @@ function renderApproval(request) {
     'myotis-ethereum': 'Myotis Ethereum',
     'myotis-gnosis': 'Myotis Gnosis',
   };
-  elements.approvalAction.textContent = pageTool
+  elements.approvalAction.textContent = projectAccess
+    ? `Allow editing “${projectAccess.name}”?`
+    : pageTool
     ? `Run website tool “${pageTool.name}”?`
     : workspacePermission
     ? `Run “${workspacePermission.command}”?`
@@ -2741,7 +2744,9 @@ function renderApproval(request) {
                                 : `${interaction.summary.replace(/[.?!]+$/, '')}?`
                               : interactionCopy[request.operation] ||
                                 `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = pageTool
+  elements.approvalOrigin.textContent = projectAccess
+    ? `Agent can modify files and create local Git commits in this project. Access lasts for this conversation until you revoke it or restart Freedom. Change it anytime in the project menu.${request.label ? `\n\nAgent request: ${request.label}` : ''}`
+    : pageTool
     ? `${approvalOriginSummary(request)} · This website tool runs using your current site session. Its claimed behavior is not verified.${pageTool.manualSubmit ? ' You will still need to submit the form yourself.' : ''}`
     : workspacePermission
     ? workspaceCommandPermissionSummary(workspacePermission, request.label)
@@ -2775,7 +2780,9 @@ function renderApproval(request) {
   elements.pageToolDetails.hidden = !pageTool;
   elements.pageToolDetails.open = Boolean(pageTool);
   elements.pageToolArguments.textContent = pageTool?.argumentsJSON || '';
-  elements.approvalApprove.textContent = workspacePermission
+  elements.approvalApprove.textContent = projectAccess
+    ? 'Allow editing'
+    : workspacePermission
     ? 'Allow once'
     : workspace
       ? 'Enable workspace'
@@ -2951,6 +2958,10 @@ function formatToolError(code, operation) {
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
     PROJECT_READ_ONLY: 'Project is read-only. Choose Allow editing in the project menu',
+    PROJECT_WRITE_DECLINED: 'Project editing access was declined',
+    PROJECT_ACCESS_INVALID: 'Project access request expired or is invalid',
+    PROJECT_UNAVAILABLE: 'No project is attached to this conversation',
+    PROJECT_IN_USE: 'Project is already open for editing in another conversation',
     PROJECT_RECONNECT_REQUIRED: 'Reconnect the project from its menu to continue',
     PROJECT_CHANGED: 'Project moved or became unavailable. Reconnect it to continue',
     WORKSPACE_HISTORY_UNAVAILABLE: 'Git operation unavailable. Inspect repository state before retrying',

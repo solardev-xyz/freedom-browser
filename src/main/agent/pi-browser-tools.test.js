@@ -879,7 +879,7 @@ describe('Pi browser tool adapter', () => {
     for (let index = 0; index < 4; index += 1) {
       const checked = expect(click.execute(`click_${index}`, { ref: 'same' }));
       await checked.rejects.toMatchObject({ code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE, retryable: true, suggestedAction: 'Read the page again',
-        message: index === 3 ? expect.stringContaining('same retryable error 4 times') : '[ELEMENT_NOT_INTERACTABLE] Covered' });
+        message: index === 3 ? expect.stringContaining('same retryable error 4 times') : expect.stringContaining('[ELEMENT_NOT_INTERACTABLE] Covered') });
     }
     expect(controller.execute).toHaveBeenCalledTimes(4);
   });

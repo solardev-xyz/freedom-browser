@@ -12,6 +12,8 @@ const { execFileSync } = require('child_process');
 const { AgentManagedWorkspaceStore } = require('../src/main/agent/managed-workspace-store');
 const { ManagedWorkspaceController } = require('../src/main/agent/managed-workspace-controller');
 const { WorkspacePreviewController } = require('../src/main/agent/workspace-preview-controller');
+const { createRequestPermissionsTool, createWorkspaceHistoryTool } = require('../src/main/agent/pi-workspace-tools');
+const { withToolErrorRecovery } = require('../src/main/agent/tool-error-recovery');
 
 async function main() {
   assert.equal(process.platform, 'darwin');
@@ -39,7 +41,29 @@ async function main() {
     await assert.rejects(controller.execute('project_one', { command: 'printf denied > source.txt', timeoutMs: 3000 }), { code: 'PROJECT_READ_ONLY' });
     pass('read-only project reads successfully and refuses edits/commands');
 
-    await controller.setProjectAccess('project_one', 'write');
+    let approvalDecision = 'declined';
+    const approvals = [];
+    const toolOptions = { controller, conversationId: 'project_one', requestApproval: async request => {
+      approvals.push(request); return approvalDecision;
+    } };
+    const sdk = { defineTool: tool => tool };
+    const historyTool = withToolErrorRecovery(createWorkspaceHistoryTool(sdk, toolOptions));
+    const permissionsTool = withToolErrorRecovery(createRequestPermissionsTool(sdk, toolOptions));
+    const reviewed = await controller.reviewWorkspaceHistory('project_one', { action: 'review', path: 'source.txt' });
+    await assert.rejects(historyTool.execute('read_only_commit', { action: 'commit', reviewIds: [reviewed.reviewId], label: 'Attempt while read-only' }), error => {
+      assert.equal(error.code, 'PROJECT_READ_ONLY');
+      assert.equal(error.recovery.tool, 'request_permissions'); return true;
+    });
+    await assert.rejects(permissionsTool.execute('denied_access', { project: 'write', reason: 'Commit the project changes' }), { code: 'PROJECT_WRITE_DECLINED' });
+    assert.equal(store.getForConversation('project_one').project.mode, 'read');
+    approvalDecision = 'approved'; // Simulate a new explicit user request after declining.
+    await permissionsTool.execute('approved_access', { project: 'write', reason: 'Commit the project changes' });
+    assert.equal(store.getForConversation('project_one').project.mode, 'write');
+    assert.equal(approvals.length, 2);
+    assert.equal(approvals[1].action, 'project_write');
+    assert.equal(JSON.stringify(approvals).includes(project), false);
+    await assert.rejects(controller.reviewWorkspaceHistory('project_one', { action: 'commit', reviewIds: [reviewed.reviewId], label: 'Stale review' }));
+    pass('read-only commit returns permission recovery; decline preserves access; approval grants editing and invalidates old reviews');
     await controller.readFile('project_one', 'source.txt');
     fs.writeFileSync(path.join(project, 'source.txt'), 'changed outside Freedom\n');
     await assert.rejects(controller.writeFile('project_one', 'source.txt', 'stale'), { code: 'WORKSPACE_HISTORY_CHANGED' });

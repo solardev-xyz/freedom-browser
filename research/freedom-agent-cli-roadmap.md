@@ -45,6 +45,19 @@ See [project access notes](../docs/agent-existing-projects.md).
 
 ### Repository-native commits revision — 2026-09-20
 
+Follow-up: the user smoke test found that read-only commit errors lost their
+access explanation. `650b6751` fixed reporting. The current follow-up adds a
+`request_permissions` project-write approval sheet and a shared model-facing
+tool-error recovery contract across browser, workspace, attachment and session
+tool boundaries. Approval binds the exact current project grant; it cannot be
+reused after revocation, replacement, cancellation or expiry. Recovery tells the
+agent what to do without retrying automatically. See
+[tool errors and recovery](../docs/agent-tool-errors.md). Local validation passed
+402 tests across 12 suites and lint. Mac mini approval-flow/native presentation
+qualification is pending explicit source-transfer approval after automatic
+approval review rejected the prepared archive copy. No remote qualification is
+claimed for this revision yet.
+
 The experimental branch now exposes actual repository commits through the existing
 history tool. Commits are task-authorized, never automatic per-edit saves. The
 panel and file viewers use Commits terminology; external repository history has

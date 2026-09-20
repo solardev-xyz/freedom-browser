@@ -476,8 +476,8 @@ describe('Pi managed workspace tools', () => {
     const permissionTool = tools.find((tool) => tool.name === 'request_permissions');
 
     expect(permissionTool.parameters).toMatchObject({
-      required: ['reason', 'command', 'workingDirectory'],
-      anyOf: [{ required: ['executables'] }, { required: ['network'] }],
+      required: ['reason'],
+      oneOf: [expect.objectContaining({ required: ['project'] }), expect.objectContaining({ required: ['command', 'workingDirectory'], anyOf: [{ required: ['executables'] }, { required: ['network'] }] })],
       properties: { network: { enum: ['full'] } },
     });
     await expect(
@@ -1116,6 +1116,43 @@ describe('Pi managed workspace tools', () => {
 
 
 describe('reviewed workspace history tool', () => {
+  test.each(['approved', 'declined', 'cancelled', 'already_available'])('project write permission: %s', async (decision) => {
+    const controller = createController();
+    const prepared = Object.freeze({});
+    controller.prepareProjectWriteAccess = jest.fn(async () => ({ prepared,
+      approvalRequired: decision !== 'already_available', publicRequest: { name: 'Cookbook', mode: 'write', scope: 'conversation' } }));
+    controller.grantProjectWriteAccess = jest.fn(async () => {});
+    const abort = new AbortController();
+    const requestApproval = jest.fn(async () => {
+      if (decision === 'cancelled') abort.abort();
+      return decision === 'declined' ? 'declined' : 'approved';
+    });
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval });
+    const tool = tools.find(entry => entry.name === 'request_permissions');
+    const result = tool.execute('access', { project: 'write', reason: 'Commit the reviewed cookbook changes' }, abort.signal);
+    if (['approved', 'already_available'].includes(decision)) {
+      expect((await result).content[0].text).toContain('Re-read affected files');
+    } else {
+      await expect(result).rejects.toMatchObject({ code: decision === 'declined' ? 'PROJECT_WRITE_DECLINED' : 'WORKSPACE_OPERATION_CANCELLED', recovery: { action: 'stop' } });
+    }
+    expect(controller.grantProjectWriteAccess).toHaveBeenCalledTimes(decision === 'approved' ? 1 : 0);
+    if (decision !== 'already_available') expect(requestApproval).toHaveBeenCalledWith({ action: 'project_write', operation: 'request_permissions',
+      label: 'Commit the reviewed cookbook changes', projectAccess: { name: 'Cookbook', mode: 'write', scope: 'conversation' } });
+    else expect(requestApproval).not.toHaveBeenCalled();
+    expect(controller.prepareCommandPermissions).not.toHaveBeenCalled();
+    expect(controller.grantCommandPermissions).not.toHaveBeenCalled();
+  });
+
+  test('rejects mixing project access with command permissions before approval', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn();
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval });
+    await expect(tools.find(entry => entry.name === 'request_permissions').execute('mixed', { project: 'write', reason: 'Edit', command: 'run something' }))
+      .rejects.toMatchObject({ code: 'INVALID_WORKSPACE_REQUEST', recovery: { action: 'correct_input' } });
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(controller.prepareCommandPermissions).not.toHaveBeenCalled();
+  });
+
   test('reports the real read-only access refusal to the model and activity', async () => {
     const access = new ExternalProjectAccess({ userDataDir: '/unused-profile' });
     const workspaceId = 'workspace_aaaaaaaaaaaaaaaaaaaa';
@@ -1126,7 +1163,7 @@ describe('reviewed workspace history tool', () => {
     const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn(), onToolOutcome: outcome });
     const tool = tools.find(entry => entry.name === 'workspace_history');
     await expect(tool.execute('commit_read_only', { action: 'commit', reviewIds: ['review_one'], label: 'Update cookbook' })).rejects.toMatchObject({
-      code: 'PROJECT_READ_ONLY', message: expect.stringContaining('allow editing from its menu'),
+      code: 'PROJECT_READ_ONLY', message: expect.stringContaining('request_permissions'),
     });
     expect(outcome).toHaveBeenLastCalledWith(expect.objectContaining({
       errorCode: 'PROJECT_READ_ONLY', status: 'failed', workspace: expect.objectContaining({ state: 'failed' }),
@@ -1153,7 +1190,7 @@ describe('reviewed workspace history tool', () => {
     controller.reviewWorkspaceHistory = jest.fn(async () => { stopped.abort(); throw new WorkspaceHistoryError(message); });
     const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn() });
     await expect(tools.find(entry => entry.name === 'workspace_history').execute('uncertain_commit', { action: 'commit' }, stopped.signal))
-      .rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_UNAVAILABLE', message });
+      .rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_UNAVAILABLE', message: expect.stringContaining(message) });
   });
 
   test.each([true, false])('records the actual checkpoint result (saved=%s)', async (saved) => {

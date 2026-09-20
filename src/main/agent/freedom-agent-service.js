@@ -669,6 +669,14 @@ function normalizeApprovalRequest(request, recipient) {
   const publication = normalizePublicationApproval(request?.publication);
   const workspace = normalizeWorkspaceApproval(request?.workspace);
   const workspacePermission = normalizeWorkspacePermissionApproval(request?.workspacePermission);
+  const projectAccess = request?.action === 'project_write' && request?.operation === 'request_permissions' &&
+    !request.workspace && !request.workspacePermission &&
+    typeof request.projectAccess?.name === 'string' && request.projectAccess.name.trim() && request.projectAccess.name.length <= 240 &&
+    request.projectAccess.mode === 'write' && request.projectAccess.scope === 'conversation'
+    ? Object.freeze({ name: request.projectAccess.name, mode: 'write', scope: 'conversation' }) : null;
+  if (request?.action === 'project_write' && !projectAccess) {
+    throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid project editing permission request');
+  }
   if (request?.action === 'workspace_permission' && !workspacePermission) {
     throw new FreedomAgentError(
       AGENT_ERROR_CODES.INVALID_ARGUMENT,
@@ -679,7 +687,7 @@ function normalizeApprovalRequest(request, recipient) {
     ? getPermissionKey(request?.origin) || ''
     : originScopeForUrl(request?.origin) || '';
   return Object.freeze({
-    action: workspacePermission
+    action: projectAccess ? 'project_write' : workspacePermission
       ? 'workspace_permission'
       : workspace
         ? 'workspace_execution'
@@ -720,6 +728,7 @@ function normalizeApprovalRequest(request, recipient) {
     ...(publication && { publication }),
     ...(workspace && { workspace }),
     ...(workspacePermission && { workspacePermission }),
+    ...(projectAccess && { projectAccess }),
   });
 }
 
@@ -1683,7 +1692,7 @@ class FreedomAgentService {
         }
         if (!tabId) systemPrompt = `${systemPrompt}\n\n${EMPTY_WORKSPACE_SYSTEM_PROMPT}`;
         if (this.workspaceController?.getWorkspace(run.conversationId)?.project) {
-          systemPrompt += '\n\nThis conversation is attached to an existing user project. Workspace tools address its real files using relative paths; do not create a replacement managed project or ask for absolute paths. Access begins read-only, including after reconnection following restart. Only the user can reconnect or choose Allow editing from the project menu. Both file edits and Git commits require editing access. If a tool reports PROJECT_READ_ONLY, ask the user to choose Allow editing before continuing; do not retry or bypass the access restriction. Read existing files before changing them; if a file changed externally, read it again and reconsider the edit. Use workspace_history for authorized commits in the project repository itself; there is no separate checkpoint repository. Never modify its Git metadata through shell commands.';
+          systemPrompt += '\n\nThis conversation is attached to an existing user project. Workspace tools address its real files using relative paths; do not create a replacement managed project or ask for absolute paths. Access begins read-only, including after reconnection following restart. Only the user can reconnect or approve editing access. Both file edits and Git commits require editing access. If a tool reports PROJECT_READ_ONLY, call request_permissions with project: "write" and a reason to show the approval sheet. After approval, re-read files and obtain fresh Git review tokens before retrying. If declined, stop; do not ask again without a new user instruction or bypass the restriction. Read existing files before changing them; if a file changed externally, read it again and reconsider the edit. Use workspace_history for authorized commits in the project repository itself; there is no separate checkpoint repository. Never modify its Git metadata through shell commands.';
         }
         if (existingConversation?.restored) {
           systemPrompt = `${systemPrompt}\n\n${RESTORED_SESSION_PROMPT}`;

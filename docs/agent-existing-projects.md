@@ -12,6 +12,11 @@ This feature is unreleased and has not been merged into the Agent feature branch
 3. In Workspace, click the project row and choose **Allow editing** when you want
    changes. Edits affect the original files. Commands also require editing
    access; installed executables and networking retain their separate permits.
+   Alternatively, after a read-only error Agent can call `request_permissions`
+   with `project: "write"` to show an **Allow editing** approval sheet. Approval
+   applies to this conversation's attached folder until revoked or Freedom
+   restarts. Agent then re-reads/reviews before retrying; declining leaves the
+   project read-only. See [tool recovery](agent-tool-errors.md).
 4. Review **Changes** and open read-only file/diff tabs. For Git projects this
    includes changes that predate the conversation. “Agent edited” identifies
    direct file writes recorded by this chat, not exclusive authorship of all
@@ -160,4 +165,6 @@ error. History tools now preserve actionable project-access errors for both the
 model and activity UI. Reconnection still starts read-only; choose **Allow
 editing** before requesting a commit. The attached-project prompt now agrees
 with repository-native history. This reporting-only follow-up passed 255 focused
-tests across four suites and lint; it does not change Git mutation or access rules.
+tests across four suites and lint; it did not change Git mutation or access rules.
+The subsequent approval-sheet flow adds an in-turn request for the same editing
+grant. The main process validates the exact grant again after the user decides.

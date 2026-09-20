@@ -726,6 +726,7 @@ class ManagedWorkspaceController {
       throw new TypeError('ManagedWorkspaceController requires a workspace store');
     }
     this.store = options.store;
+    this.projectWriteRequests = new WeakMap();
     this.executor = options.executor || createWorkspaceExecutor();
     this.detectRuntime = options.detectRuntime || detectElectronJavaScriptRuntime;
     this.createPolicy = options.createPolicy || createWorkspaceExecutionPolicy;
@@ -1059,14 +1060,37 @@ class ManagedWorkspaceController {
     return { workspace, lease, grant };
   }
 
-  async setProjectAccess(conversationId, mode, selectedPath = null) {
+  async prepareProjectWriteAccess(conversationId, { signal } = {}) {
+    throwIfWorkspaceAborted(signal);
+    const workspace = this.store.getForConversation(conversationId);
+    if (!workspace?.project) throw new ManagedWorkspaceError('PROJECT_UNAVAILABLE', 'Open a project before requesting editing access.');
+    const grant = await this.store.projectAccess.resolve(workspace.workspaceId);
+    throwIfWorkspaceAborted(signal);
+    const prepared = Object.freeze({});
+    this.projectWriteRequests.set(prepared, { conversationId, grant, expires: this.now() + 600000 });
+    return { prepared, approvalRequired: grant.mode !== 'write',
+      publicRequest: Object.freeze({ name: grant.name.slice(0, 240), mode: 'write', scope: 'conversation' }) };
+  }
+
+  async grantProjectWriteAccess(conversationId, prepared, { signal } = {}) {
+    const request = this.projectWriteRequests.get(prepared);
+    this.projectWriteRequests.delete(prepared);
+    throwIfWorkspaceAborted(signal);
+    if (!request || request.conversationId !== conversationId || request.expires < this.now()) {
+      throw new ManagedWorkspaceError('PROJECT_ACCESS_INVALID', 'Project permission request expired or is invalid.');
+    }
+    // The store revalidates the exact live grant after asynchronous identity checks.
+    return this.setProjectAccess(conversationId, 'write', null, { expectedGrant: request.grant, signal });
+  }
+
+  async setProjectAccess(conversationId, mode, selectedPath = null, options = {}) {
     const workspace = this.store.getForConversation(conversationId);
     this.cancelConversation(conversationId);
     if (workspace) this.leases.delete(workspace.workspaceId);
     this.capabilityGrants.deleteConversation(conversationId);
     this.projectReads.delete(conversationId);
     for (const [id, review] of this.historyReviews) if (review.conversationId === conversationId) this.historyReviews.delete(id);
-    return this.store.setProjectAccess(conversationId, mode, selectedPath);
+    return this.store.setProjectAccess(conversationId, mode, selectedPath, options);
   }
 
   async prepareCommandPermissions(conversationId, permissions = {}, request = {}) {

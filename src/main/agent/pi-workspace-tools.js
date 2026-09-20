@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const { withToolErrorRecovery } = require('./tool-error-recovery');
 const { getBuiltInSkillResource, isBuiltInSkillResourcePath } = require('./builtin-skills');
 const {
   MAX_WORKSPACE_DIRECTORY_ENTRIES,
@@ -49,7 +50,11 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
 ]);
 const WORKSPACE_ERROR_MESSAGES = Object.freeze({
   PROJECT_RECONNECT_REQUIRED: 'Reconnect the project from its menu before using project tools.',
-  PROJECT_READ_ONLY: 'The project is read-only. Ask the user to allow editing from its menu.',
+  PROJECT_READ_ONLY: 'The project is read-only. Request editing access through request_permissions before retrying.',
+  PROJECT_WRITE_DECLINED: 'The user declined project editing access. Leave the project read-only.',
+  PROJECT_UNAVAILABLE: 'This conversation has no attached project.',
+  PROJECT_ACCESS_INVALID: 'The project access request is invalid or expired.',
+  PROJECT_IN_USE: 'This project overlaps another conversation open for editing.',
   PROJECT_CHANGED: 'The project folder changed or became unavailable. Reconnect it before continuing.',
   WORKSPACE_HISTORY_CHANGED: 'The file changed or has not been read yet. Read its current contents and reconsider the edit before writing.',
   INVALID_WORKSPACE_REQUEST: 'The workspace request is invalid',
@@ -116,6 +121,10 @@ function safeWorkspaceError(error, options = {}) {
     'INVALID_EXECUTABLE_REQUEST',
     'PROJECT_RECONNECT_REQUIRED',
     'PROJECT_READ_ONLY',
+    'PROJECT_WRITE_DECLINED',
+    'PROJECT_UNAVAILABLE',
+    'PROJECT_ACCESS_INVALID',
+    'PROJECT_IN_USE',
     'PROJECT_CHANGED',
     'WORKSPACE_HISTORY_CHANGED',
     'WORKSPACE_CAPABILITY_DETECTION_FAILED',
@@ -293,6 +302,7 @@ function workspaceAction(operation, params = {}) {
   }
   if (operation === 'ls') return `List ${target}`;
   if (operation === 'request_permissions') {
+    if (params.project === 'write') return 'Allow editing this project';
     const names = Array.isArray(params.executables) ? params.executables.slice(0, 16) : [];
     return `Use ${names.join(', ') || 'requested executables'}`;
   }
@@ -1002,6 +1012,7 @@ function createStandardGrepTool(template, options) {
 function createRequestPermissionsTool(sdk, options) {
   const networkPermissionsEnabled = options.controller.fullNetworkPermissionsEnabled?.() === true;
   const properties = {
+    project: { type: 'string', enum: ['write'], description: 'Request editing access to this conversation’s attached project, including local Git commits. Use separately from command permissions.' },
     executables: {
       type: 'array',
       minItems: 1,
@@ -1025,10 +1036,10 @@ function createRequestPermissionsTool(sdk, options) {
   };
   return sdk.defineTool({
     name: 'request_permissions',
-    label: 'Request command access',
-    description: networkPermissionsEnabled
+    label: 'Request project access',
+    description: 'For PROJECT_READ_ONLY, call with project: "write" and reason to show a project-editing approval sheet. Do not include command, executables, network or workingDirectory in that request. After approval, re-read/review before retrying the original action. ' + (networkPermissionsEnabled
       ? 'Resolve installed executable access before retrying a command unavailable in the workspace shell or changing download methods. Request the exact executable and/or full direct-network access needed for one intended command. Full networking includes public internet, host localhost, and private/LAN addresses. Never guess host paths.'
-      : 'Resolve named executables from the user’s installed command-line environment and request the exact access needed to run one intended workspace command. Use this before retrying an unavailable command, or when you know a required executable is outside the current workspace shell. Never guess host paths.',
+      : 'Resolve named executables from the user’s installed command-line environment and request the exact access needed to run one intended workspace command. Use this before retrying an unavailable command, or when you know a required executable is outside the current workspace shell. Never guess host paths.'),
     promptSnippet: 'Request access for an exact workspace command',
     promptGuidelines: [
       'When requesting executable access, include only the exact executable names needed for the task.',
@@ -1046,12 +1057,13 @@ function createRequestPermissionsTool(sdk, options) {
     parameters: {
       type: 'object',
       properties,
-      required: networkPermissionsEnabled
-        ? ['reason', 'command', 'workingDirectory']
-        : ['executables', 'reason', 'command', 'workingDirectory'],
-      ...(networkPermissionsEnabled && {
-        anyOf: [{ required: ['executables'] }, { required: ['network'] }],
-      }),
+      required: ['reason'],
+      oneOf: [
+        { required: ['project'], not: { anyOf: ['command', 'workingDirectory', 'executables', 'network'].map(key => ({ required: [key] })) } },
+        { required: networkPermissionsEnabled ? ['command', 'workingDirectory'] : ['executables', 'command', 'workingDirectory'],
+          not: { required: ['project'] },
+          ...(networkPermissionsEnabled && { anyOf: [{ required: ['executables'] }, { required: ['network'] }] }) },
+      ],
       additionalProperties: false,
     },
     executionMode: 'sequential',
@@ -1061,6 +1073,24 @@ function createRequestPermissionsTool(sdk, options) {
       const operationSignal = operationAbort.signal;
       let receipt;
       try {
+        if (params.project !== undefined) {
+          if (params.project !== 'write' || typeof params.reason !== 'string' || !params.reason.trim() || params.reason.length > 240 ||
+              ['executables', 'command', 'network', 'workingDirectory'].some(key => params[key] !== undefined)) {
+            throw Object.assign(new Error('Request project editing separately from command permissions.'), { code: 'INVALID_WORKSPACE_REQUEST' });
+          }
+          const resolved = await options.controller.prepareProjectWriteAccess(options.conversationId, { signal: operationSignal });
+          if (resolved.approvalRequired) {
+            const decision = await options.requestApproval({ action: 'project_write', operation,
+              label: params.reason, projectAccess: resolved.publicRequest });
+            if (operationSignal?.aborted) throw Object.assign(new Error('Stopped'), { code: 'WORKSPACE_OPERATION_CANCELLED' });
+            if (!decisionApproved(decision)) throw Object.assign(new Error('Declined'), { code: 'PROJECT_WRITE_DECLINED' });
+            await options.controller.grantProjectWriteAccess(options.conversationId, resolved.prepared, { signal: operationSignal });
+          }
+          receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params, 'completed');
+          notify(options.onToolOutcome, { toolCallId, operation, status: 'succeeded', workspace: receipt });
+          return { content: [{ type: 'text', text: 'Project editing access is available for this conversation until revoked or Freedom restarts. Re-read affected files and review Git changes before retrying the original action. This grants no additional executable, network or push permission.' }],
+            details: { project: 'write', scope: 'conversation' } };
+        }
         await ensureWorkspaceEnabled(options, operation, toolCallId, operationSignal);
         const resolved = await options.controller.prepareCommandPermissions(
           options.conversationId,
@@ -1563,7 +1593,7 @@ async function createWorkspaceTools(options = {}) {
       },
     }));
   }
-  return tools;
+  return tools.map(withToolErrorRecovery);
 }
 
 module.exports = {

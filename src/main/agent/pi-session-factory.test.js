@@ -174,7 +174,7 @@ describe('isolated Pi session factory', () => {
         modelRuntime,
         noTools: 'builtin',
         tools: ['browser_snapshot'],
-        customTools: [browserTool],
+        customTools: [expect.objectContaining({ name: browserTool.name, execute: expect.any(Function) })],
         resourceLoader: created.resourceLoader,
         sessionManager: created.sessionManager,
         settingsManager: created.settingsManager,
@@ -222,7 +222,7 @@ describe('isolated Pi session factory', () => {
     expect(sdk.createAgentSession).toHaveBeenCalledWith(
       expect.objectContaining({
         tools: ['node_request', 'read'],
-        customTools: [browserTool, expect.objectContaining({ name: 'read' })],
+        customTools: [expect.objectContaining({ name: browserTool.name }), expect.objectContaining({ name: 'read' })],
       })
     );
   });
@@ -241,7 +241,7 @@ describe('isolated Pi session factory', () => {
 
     expect(created.toolNames).toEqual(['read']);
     expect(sdk.createAgentSession).toHaveBeenCalledWith(
-      expect.objectContaining({ customTools: [readOverride], tools: ['read'] })
+      expect.objectContaining({ customTools: [expect.objectContaining({ name: 'read' })], tools: ['read'] })
     );
     expect(sdk.createReadTool).not.toHaveBeenCalled();
     expect(created.resourceLoader.getSkills().skills).toHaveLength(3);
