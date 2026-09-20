@@ -574,6 +574,9 @@ describe('Agent UI', () => {
 
   test('submits a configured task with Enter while Shift+Enter remains multiline', async () => {
     const ctx = await loadAgentUi();
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe('Ask when needed');
+    expect(ctx.elements['agent-approval-mode-sensitive'].getAttribute('aria-pressed')).toBe('true');
+    expect(ctx.elements['agent-approval-mode-every'].getAttribute('aria-pressed')).toBe('false');
     ctx.elements['agent-prompt'].value = 'Summarize this page';
     ctx.elements['agent-prompt'].dispatch('input');
     expect(ctx.elements['agent-run'].disabled).toBe(false);
@@ -590,7 +593,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       7,
       'Summarize this page',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -648,7 +651,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       7,
       'Review these resources',
-      'every_interaction',
+      'sensitive_actions',
       [fileSelectionId, folderSelectionId]
     );
 
@@ -858,7 +861,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       null,
       'Continue this work in a new chat',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -881,7 +884,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       null,
       'Research five sources',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -941,7 +944,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       null,
       'Review these',
-      'every_interaction',
+      'sensitive_actions',
       [fileSelectionId, folderSelectionId]
     );
   });
@@ -961,7 +964,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       null,
       'Research independently',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -1275,7 +1278,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       7,
       'Summarize this page',
-      'every_interaction'
+      'sensitive_actions'
     );
 
     ctx.emit({ type: 'run_started', runId: 'run_test' });
@@ -1402,7 +1405,7 @@ describe('Agent UI', () => {
       2,
       7,
       'Now enable notifications',
-      'every_interaction'
+      'sensitive_actions'
     );
     expect(ctx.elements['agent-transcript'].children).toHaveLength(2);
     expect(
@@ -1969,7 +1972,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
       7,
       'Continue the task',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 

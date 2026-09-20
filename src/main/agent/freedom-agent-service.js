@@ -1110,7 +1110,7 @@ class FreedomAgentService {
       const workspace = await pending;
       if (this.disposed) throw new FreedomAgentError(AGENT_ERROR_CODES.DISPOSED, 'Freedom Agent closed while opening this project.');
       this.historyStore.createSession({ conversationId, title: workspace.project.name,
-        approvalMode: 'every_interaction', status: 'ready', createdAt: this.now() });
+        approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS, status: 'ready', createdAt: this.now() });
     } catch (error) {
       await this.workspaceController.store.deleteConversation(conversationId);
       throw error;

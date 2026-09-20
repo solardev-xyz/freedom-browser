@@ -1761,7 +1761,7 @@
                         <path d="M12 3 5 6.5v5.2c0 4.3 2.8 7.7 7 9.3 4.2-1.6 7-5 7-9.3V6.5L12 3Z" />
                         <circle cx="12" cy="12" r="2.2" />
                       </svg>
-                      <span id="agent-active-approval-mode-label">Ask every action</span>
+                      <span id="agent-active-approval-mode-label">Ask when needed</span>
                     </button>
                   </div>
                   <div class="agent-composer-actions">
@@ -1957,27 +1957,27 @@
                 >
                   <button
                     id="agent-approval-mode-every"
-                    class="agent-approval-mode-option active"
-                    type="button"
-                    aria-pressed="true"
-                  >
-                    <span>
-                      <strong>Ask before every interaction</strong>
-                      <small>Review clicks, typing, selections, and key presses</small>
-                    </span>
-                    <span class="agent-approval-mode-check" aria-hidden="true">✓</span>
-                  </button>
-                  <button
-                    id="agent-approval-mode-sensitive"
                     class="agent-approval-mode-option"
                     type="button"
                     aria-pressed="false"
                   >
                     <span>
+                      <strong>Ask before every interaction</strong>
+                      <small>Review clicks, typing, selections, and key presses</small>
+                    </span>
+                    <span class="agent-approval-mode-check" aria-hidden="true"></span>
+                  </button>
+                  <button
+                    id="agent-approval-mode-sensitive"
+                    class="agent-approval-mode-option active"
+                    type="button"
+                    aria-pressed="true"
+                  >
+                    <span>
                       <strong>Ask for consequential actions</strong>
                       <small>Work normally and review meaningful commitments</small>
                     </span>
-                    <span class="agent-approval-mode-check" aria-hidden="true"></span>
+                    <span class="agent-approval-mode-check" aria-hidden="true">✓</span>
                   </button>
                   <button
                     id="agent-approval-mode-allow"

@@ -128,7 +128,7 @@ describe('FreedomAgentService', () => {
     const { service, dependencies } = createService(createFakeSession(), { historyStore, workspaceController });
     const state = await service.openProject('/native/project');
     expect(state).toMatchObject({ status: 'ready', title: 'My project', workspace, transcript: [] });
-    expect(historyStore.createSession).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready', approvalMode: 'every_interaction' }));
+    expect(historyStore.createSession).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready', approvalMode: 'sensitive_actions' }));
     expect(dependencies.createSession).not.toHaveBeenCalled();
   });
   test('traces approval continuation without logging tool arguments or assistant content', async () => {

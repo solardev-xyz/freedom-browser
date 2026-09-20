@@ -105,7 +105,7 @@ let stopRequestedRunId = null;
 let pendingApproval = null;
 let panelOpen = false;
 let agentView = 'loading';
-let approvalMode = APPROVAL_MODES.EVERY_INTERACTION;
+let approvalMode = APPROVAL_MODES.SENSITIVE_ACTIONS;
 let approvalModeMutationPending = false;
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
@@ -4587,6 +4587,7 @@ export function initAgentUi(options = {}) {
   setConversationTitle('New task');
   setAgentFirstMode(false);
   setAgentView('loading');
+  setApprovalMode(approvalMode);
   renderProviderFields();
   updateSendAvailability();
   setWorkspaceNavigationEditable(true);
