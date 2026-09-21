@@ -26,8 +26,8 @@ Native UI and live-model smoke testing of this follow-up remain outstanding.
 The composer now defaults to **Ask when needed**, retaining saved conversation
 modes. The permission menu wording is updated to **Ask frequently**, **Ask when
 needed**, and **Fewer interruptions**, with matching composer labels. Descriptions
-explain page interaction review and a shared note covers existing project,
-command, network, and sensitive-operation approvals. This is a wording change;
+explain page interaction review. The shared explanatory footer was removed on
+September 21 to keep the menu compact. This is a wording change;
 it does not change grants or enforcement.
 
 **Unified Agent authority profiles remain open**: the current three modes
