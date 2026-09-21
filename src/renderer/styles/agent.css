@@ -3473,7 +3473,7 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
   container-type: inline-size;
 }
 .workspace-viewer-surface.hidden { display: none; }
-.workspace-viewer-heading { display: flex; align-items: center; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.workspace-viewer-heading { display: flex; align-items: center; gap: 8px; padding: 12px; background: var(--agent-browser-chrome, var(--toolbar)); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .workspace-viewer-identity { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 100px; overflow: hidden; }
 .workspace-viewer-identity strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-viewer-caption, .workspace-viewer-message { color: var(--muted); }
