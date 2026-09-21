@@ -24,7 +24,7 @@ const SESSION_STATUSES = new Set(['running', 'ready', 'interrupted', 'failed', '
 const TURN_STATUSES = new Set(['running', 'completed', 'interrupted', 'failed', 'cancelled']);
 const GUIDANCE_STATUSES = new Set(['queued', 'applying', 'applied', 'cancelled']);
 const ACTIVITY_EFFECTS = new Set(['observed', 'changed', 'managed']);
-const ACTIVITY_APPROVALS = new Set(['requested', 'approved', 'declined', 'withdrawn']);
+const ACTIVITY_APPROVALS = new Set(['requested', 'approved', 'declined', 'withdrawn', 'reviewer_approved']);
 
 function requiredString(value, label, maxLength) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -375,7 +375,7 @@ class AgentSessionHistoryStore {
       optionalString(entry.providerId, MAX_MODEL_FIELD_LENGTH),
       optionalString(entry.modelId, MAX_MODEL_FIELD_LENGTH),
       optionalString(entry.thinkingLevel, 80),
-      'running',
+      entry.status === 'ready' ? 'ready' : 'running',
       createdAt,
       createdAt
     );

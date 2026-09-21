@@ -1,9 +1,11 @@
 'use strict';
 
 const fs = require('fs');
+const { collectCommandReviewEvidence } = require('./command-review-evidence');
 const { ManagedWorkspaceServers } = require('./managed-workspace-servers');
 const { WORKSPACE_HISTORY_HELPER } = require('./workspace-history-helper');
 const { ManagedWorkspaceHistory, WorkspaceHistoryError, fingerprint } = require('./managed-workspace-history');
+const { ExternalProjectGit } = require('./external-project-git');
 const crypto = require('crypto');
 const { historyPathReason, historyContainsSecret } = require('./workspace-history-policy');
 const { WORKSPACE_INSPECTION_HELPER } = require('./workspace-inspection-helper');
@@ -73,7 +75,7 @@ const SCAN_BYTE_LIMIT = 16777216;
 const OUTPUT_LIMIT = 51200;
 const PATTERN_LIMIT = 1000;
 const LINE_LIMIT = 500;
-const [operation, relative, encoded = ''] = process.argv.slice(1);
+const [operation, relative, encoded = '', expected = '', identity = ''] = process.argv.slice(1);
 const root = fs.realpathSync(process.cwd());
 
 function fail(code) {
@@ -273,14 +275,22 @@ function ensureDirectory(relativeDirectory) {
 
 function writablePath(value) {
   const safe = checkedRelative(value);
-  if (safe === '.git' || safe.startsWith('.git/')) fail('WORKSPACE_PROTECTED_PATH');
+  if (safe.split('/').some((part) => part.toLowerCase() === '.git')) fail('WORKSPACE_PROTECTED_PATH');
   return safe;
+}
+
+function fileVersion(stats, bytes) {
+  return require('crypto').createHash('sha256').update([stats.dev, stats.ino, stats.mode, stats.mtimeMs, stats.ctimeMs].join(':')).update(bytes).digest('hex');
 }
 
 ${WORKSPACE_INSPECTION_HELPER}
 ${WORKSPACE_HISTORY_HELPER}
 
 try {
+  if (identity) {
+    const stats = fs.statSync(root);
+    if (identity !== String(stats.dev) + ':' + String(stats.ino)) fail('WORKSPACE_FILE_UNSAFE');
+  }
   if (operation === 'history_snapshot') {
     writeJson(historySnapshot());
   } else if (operation === 'history_restore') {
@@ -289,11 +299,24 @@ try {
     historyValidateRestore();
   } else if (operation === 'workspace_inspect') {
     writeJson(inspectWorkspace(optionsPayload()));
-  } else if (operation === 'access' || operation === 'read') {
+  } else if (operation === 'access' || operation === 'read' || operation === 'read_version') {
     const { target } = targetPath(relative);
     const stats = regularFile(target);
     if (stats.size > READ_LIMIT) fail('WORKSPACE_FILE_TOO_LARGE');
-    if (operation === 'read') process.stdout.write(fs.readFileSync(target));
+    if (operation !== 'access') {
+      const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const opened = fs.fstatSync(fd);
+        if (!opened.isFile() || opened.nlink !== 1 || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > READ_LIMIT) fail('WORKSPACE_FILE_UNSAFE');
+        const bytes = Buffer.alloc(opened.size + 1);
+        const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+        const after = fs.fstatSync(fd);
+        if (count !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) fail('WORKSPACE_HISTORY_CHANGED');
+        const content = bytes.subarray(0, count);
+        if (operation === 'read_version') process.stdout.write(JSON.stringify({ content: content.toString('base64'), version: fileVersion(after, content) }));
+        else process.stdout.write(content);
+      } finally { fs.closeSync(fd); }
+    }
   } else if (operation === 'list') {
     const requested = optionsPayload();
     const limit = boundedInteger(requested.limit, DIRECTORY_LIMIT, DIRECTORY_LIMIT);
@@ -400,10 +423,18 @@ try {
     } catch (error) {
       if (!error || error.code !== 'ENOENT') throw error;
     }
-    const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW || 0), 0o600);
+    const flags = expected ? fs.constants.O_RDWR : fs.constants.O_WRONLY | fs.constants.O_CREAT;
+    const fd = fs.openSync(target, flags | (expected === 'missing' ? fs.constants.O_CREAT | fs.constants.O_EXCL : 0) | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW || 0), 0o600);
     try {
       const stats = fs.fstatSync(fd);
       if (!stats.isFile() || stats.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
+      if (expected && expected !== 'missing') {
+        if (stats.size > READ_LIMIT) fail('WORKSPACE_HISTORY_CHANGED');
+        const previous = Buffer.alloc(stats.size + 1);
+        const count = fs.readSync(fd, previous, 0, previous.length, 0);
+        const after = fs.fstatSync(fd);
+        if (count !== stats.size || after.mtimeMs !== stats.mtimeMs || after.ctimeMs !== stats.ctimeMs || fileVersion(after, previous.subarray(0, count)) !== expected) fail('WORKSPACE_HISTORY_CHANGED');
+      }
       fs.ftruncateSync(fd, 0);
       fs.writeFileSync(fd, content);
     } finally {
@@ -418,8 +449,9 @@ try {
     ['ENOENT', 'WORKSPACE_PATH_NOT_FOUND'],
     ['ENOTDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
     ['EISDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
+    ['EEXIST', 'WORKSPACE_HISTORY_CHANGED'],
   ]);
-  const readOnly = new Set(['read', 'access', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
+  const readOnly = new Set(['read', 'read_version', 'access', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
   const fallback = readOnly.has(operation) ? 'WORKSPACE_FILE_UNAVAILABLE' : 'WORKSPACE_WRITE_FAILED';
   const code = allowed.has(error && error.code) ? error.code : native.get(error && error.code) || fallback;
   process.stderr.write('FREEDOM_FILE_ERROR:' + code);
@@ -487,6 +519,7 @@ function workspaceFileErrorMessage(code) {
       WORKSPACE_PATH_TYPE_MISMATCH: 'The requested workspace path has the wrong file type',
       WORKSPACE_PROTECTED_PATH: 'The requested workspace path is protected',
       WORKSPACE_WRITE_FAILED: 'Freedom could not write the requested workspace file',
+      WORKSPACE_HISTORY_CHANGED: 'The file changed or has not been read yet. Read it again before writing.',
     }[code] || 'Freedom could not complete the workspace file operation'
   );
 }
@@ -579,7 +612,7 @@ function validateWorkspacePath(value, options = {}) {
 
 function assertWritableWorkspacePath(value) {
   const relative = validateWorkspacePath(value);
-  if (relative === '.git' || relative.startsWith('.git/')) {
+  if (relative.split('/').some((part) => part.toLowerCase() === '.git')) {
     throw new ManagedWorkspaceError(
       'WORKSPACE_PROTECTED_PATH',
       'Git metadata is read-only inside the managed workspace'
@@ -694,6 +727,7 @@ class ManagedWorkspaceController {
       throw new TypeError('ManagedWorkspaceController requires a workspace store');
     }
     this.store = options.store;
+    this.projectWriteRequests = new WeakMap();
     this.executor = options.executor || createWorkspaceExecutor();
     this.detectRuntime = options.detectRuntime || detectElectronJavaScriptRuntime;
     this.createPolicy = options.createPolicy || createWorkspaceExecutionPolicy;
@@ -717,9 +751,12 @@ class ManagedWorkspaceController {
     this.shutdownFinished = false;
     this.historyLocks = new Set();
     this.historyControllers = new Map();
+    this.historySettlements = new Map();
     this.historyNotices = new Map();
     this.restorePlans = new Map();
     this.historyReviews = new Map();
+    this.projectReads = new Map();
+    this.commandReviewEvidence = new Map();
     this.processManager =
       options.processManager ||
       new ManagedWorkspaceProcessManager({
@@ -780,8 +817,9 @@ class ManagedWorkspaceController {
     return workspace
       ? Object.freeze({
           workspaceId: workspace.workspaceId,
-          enabled: workspace.enabled,
+          enabled: workspace.enabled && (!workspace.project || workspace.project.connected),
           backend: workspace.backend,
+          ...(workspace.project && { project: workspace.project }),
           processes: this.listProcesses(conversationId),
           ...(this.store.listServers && { servers: this.listServers(conversationId) }),
           commands: this.store.listCommands(conversationId, 50).map((command) => {
@@ -902,6 +940,10 @@ class ManagedWorkspaceController {
 
   async #lease(workspace, request = {}) {
     throwIfWorkspaceAborted(request.signal);
+    if (workspace.project) {
+      await this.store.projectAccess.resolve(workspace.workspaceId);
+      return this.#createLease(workspace);
+    }
     const existing = this.leases.get(workspace.workspaceId);
     if (existing) return existing;
     let pending = this.leasePromises.get(workspace.workspaceId);
@@ -926,6 +968,7 @@ class ManagedWorkspaceController {
     try {
       const basePolicy = await this.createPolicy({
         workspaceRoot,
+        ...(workspace.project && { allowMissingGitMetadata: true }),
         electronRuntime: runtime,
         network,
         environment: {
@@ -962,7 +1005,7 @@ class ManagedWorkspaceController {
       );
     }
     const lease = Object.freeze({ workspaceRoot, runtime, ...policy });
-    this.leases.set(workspace.workspaceId, lease);
+    if (!workspace.project) this.leases.set(workspace.workspaceId, lease);
     return lease;
   }
 
@@ -1011,7 +1054,46 @@ class ManagedWorkspaceController {
         'The managed workspace has not been enabled for this conversation'
       );
     }
-    return { workspace, lease: await this.#lease(workspace, request) };
+    const grant = workspace.project ? await this.store.projectAccess.resolve(workspace.workspaceId) : null;
+    const lease = await this.#lease(workspace, request);
+    if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) {
+      throw new ManagedWorkspaceError('PROJECT_RECONNECT_REQUIRED', 'Project access changed. Try again.');
+    }
+    return { workspace, lease, grant };
+  }
+
+  async prepareProjectWriteAccess(conversationId, { signal } = {}) {
+    throwIfWorkspaceAborted(signal);
+    const workspace = this.store.getForConversation(conversationId);
+    if (!workspace?.project) throw new ManagedWorkspaceError('PROJECT_UNAVAILABLE', 'Open a project before requesting editing access.');
+    const grant = await this.store.projectAccess.resolve(workspace.workspaceId);
+    throwIfWorkspaceAborted(signal);
+    const prepared = Object.freeze({});
+    this.projectWriteRequests.set(prepared, { conversationId, grant, expires: this.now() + 600000 });
+    return { prepared, approvalRequired: grant.mode !== 'write',
+      publicRequest: Object.freeze({ name: grant.name.slice(0, 240), mode: 'write', scope: 'conversation' }) };
+  }
+
+  async grantProjectWriteAccess(conversationId, prepared, { signal } = {}) {
+    const request = this.projectWriteRequests.get(prepared);
+    this.projectWriteRequests.delete(prepared);
+    throwIfWorkspaceAborted(signal);
+    if (!request || request.conversationId !== conversationId || request.expires < this.now()) {
+      throw new ManagedWorkspaceError('PROJECT_ACCESS_INVALID', 'Project permission request expired or is invalid.');
+    }
+    // The store revalidates the exact live grant after asynchronous identity checks.
+    return this.setProjectAccess(conversationId, 'write', null, { expectedGrant: request.grant, signal });
+  }
+
+  async setProjectAccess(conversationId, mode, selectedPath = null, options = {}) {
+    const workspace = this.store.getForConversation(conversationId);
+    this.cancelConversation(conversationId);
+    this.commandReviewEvidence.delete(conversationId);
+    if (workspace) this.leases.delete(workspace.workspaceId);
+    this.capabilityGrants.deleteConversation(conversationId);
+    this.projectReads.delete(conversationId);
+    for (const [id, review] of this.historyReviews) if (review.conversationId === conversationId) this.historyReviews.delete(id);
+    return this.store.setProjectAccess(conversationId, mode, selectedPath, options);
   }
 
   async prepareCommandPermissions(conversationId, permissions = {}, request = {}) {
@@ -1025,7 +1107,8 @@ class ManagedWorkspaceController {
       if (!capabilities.available) {
         throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
       }
-      const { lease } = await this.#enabledLease(conversationId, request);
+      const { lease, workspace } = await this.#enabledLease(conversationId, request);
+      if (workspace.project) await this.store.projectAccess.resolve(workspace.workspaceId, { write: true });
       const workingDirectory = await this.#workingDirectory(
         lease,
         request.workingDirectory || '.',
@@ -1150,7 +1233,11 @@ class ManagedWorkspaceController {
     return this.prepareCommandPermissions(conversationId, { executables }, request);
   }
 
-  grantCommandPermissions(conversationId, prepared, scope = 'once') {
+  collectCommandReviewEvidence(conversationId, permission, options) {
+    return collectCommandReviewEvidence(this, conversationId, permission, options);
+  }
+
+  grantCommandPermissions(conversationId, prepared, scope = 'once', reviewEvidence = null) {
     const workspace = this.store.getForConversation(conversationId);
     const executableAccess = prepared?.executableAccess;
     if (
@@ -1172,6 +1259,10 @@ class ManagedWorkspaceController {
     }
     try {
       this.capabilityGrants.grant(conversationId, prepared.capabilityRequest, scope);
+      if (scope === 'once' && typeof reviewEvidence === 'string') {
+        if (!this.commandReviewEvidence.has(conversationId)) this.commandReviewEvidence.set(conversationId, new Map());
+        this.commandReviewEvidence.get(conversationId).set(JSON.stringify([prepared.command, prepared.workingDirectory]), reviewEvidence);
+      }
     } catch {
       throw new ManagedWorkspaceError(
         'INVALID_COMMAND_PERMISSION_GRANT',
@@ -1196,6 +1287,7 @@ class ManagedWorkspaceController {
   }
 
   clearTurnPermissions(conversationId) {
+    this.commandReviewEvidence.delete(conversationId);
     return this.capabilityGrants.clearOnce(conversationId);
   }
 
@@ -1267,7 +1359,7 @@ class ManagedWorkspaceController {
       throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
     }
     if (operation.startsWith('history_') && this.historyControllers.get(conversationId)?.signal.aborted) throw new WorkspaceHistoryError('Workspace history was stopped');
-    const readOnlyOperations = new Set(['access', 'read', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
+    const readOnlyOperations = new Set(['access', 'read', 'read_version', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
     const rootOperations = new Set(['list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
     const relative =
       operation === 'mkdir'
@@ -1281,7 +1373,10 @@ class ManagedWorkspaceController {
     if (!capabilities.available) {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
-    const { lease } = await this.#enabledLease(conversationId, request);
+    const { lease, workspace, grant } = await this.#enabledLease(conversationId, request);
+    if (workspace.project && !readOnlyOperations.has(operation)) {
+      await this.store.projectAccess.resolve(workspace.workspaceId, { write: true });
+    }
     throwIfWorkspaceAborted(request.signal);
     reportWorkspacePhase(request, 'executing_operation');
     const executionRoot =
@@ -1296,11 +1391,12 @@ class ManagedWorkspaceController {
     this.activeCommands.set(activeToken, { conversationId, controller });
     let receipt;
     try {
+      if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) throw new Error('Project access changed');
       receipt = await this.executor.execute(lease.helperPolicy, {
         command: '/bin/sh',
         args: [
           '-c',
-          'cd "$1" && exec "$2" -e "$3" "$4" "$5" "$6"',
+          'cd "$1" && exec "$2" -e "$3" "$4" "$5" "$6" "$7" "$8"',
           'freedom-workspace-file',
           executionRoot,
           lease.runtime.sandboxExecutablePath,
@@ -1308,6 +1404,8 @@ class ManagedWorkspaceController {
           operation,
           relative,
           content ? content.toString('base64') : '',
+          workspace.project && operation === 'write' ? this.projectReads.get(conversationId)?.get(relative) || 'missing' : '',
+          grant ? `${grant.dev}:${grant.ino}` : '',
         ],
         signal: controller.signal,
       });
@@ -1391,25 +1489,59 @@ class ManagedWorkspaceController {
     this.historyLocks.add(conversationId);
     const cancellation = new AbortController();
     this.historyControllers.set(conversationId, cancellation);
+    let settle;
+    this.historySettlements.set(conversationId, new Promise(resolve => { settle = resolve; }));
     const abort = () => cancellation.abort();
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     try {
-      const { lease } = await this.#enabledLease(conversationId);
-      return await action(new ManagedWorkspaceHistory(lease.workspaceRoot, { signal: cancellation.signal }));
-    } finally { signal?.removeEventListener('abort', abort); this.historyLocks.delete(conversationId); this.historyControllers.delete(conversationId); }
+      const { lease, grant } = await this.#enabledLease(conversationId);
+      const workspace = this.store.getForConversation(conversationId);
+      return await action(workspace.project
+        ? await this.#projectGit(workspace, lease, grant, cancellation.signal)
+        : new ManagedWorkspaceHistory(lease.workspaceRoot, { signal: cancellation.signal }));
+    } finally {
+      signal?.removeEventListener('abort', abort); this.historyLocks.delete(conversationId); this.historyControllers.delete(conversationId);
+      this.historySettlements.delete(conversationId); settle();
+    }
+  }
+
+  async #projectGit(workspace, lease, grant, signal) {
+    return new ExternalProjectGit(lease.workspaceRoot, { signal,
+      temporaryRoot: await this.store.resolveHistoryPath(workspace.workspaceId),
+      authorize: async (write) => {
+        const current = await this.store.projectAccess.resolve(workspace.workspaceId, { write });
+        if (current !== grant) throw new WorkspaceHistoryError('Project access changed. Review the files again.');
+        return current;
+      } });
   }
 
   async markWorkspaceHistoryUnreviewed(conversationId) {
-    this.historyNotices.set(conversationId, 'Only explicitly reviewed file versions are checkpointed. Later edits and unselected files remain outside saved history.');
+    this.historyNotices.set(conversationId, 'Only explicitly reviewed file versions are committed. Later edits and unselected files remain uncommitted.');
   }
 
   async reviewWorkspaceHistory(conversationId, request = {}, options = {}) {
     return this.#withHistory(conversationId, async (history) => {
+      if (request.action === 'diff') {
+        const excluded = history instanceof ExternalProjectGit ? [] : await history.exclusions();
+        if (historyPathReason(request.path) || excluded.some(entry => entry.path === request.path)) {
+          throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'This file is excluded from model-visible history.');
+        }
+        const result = await this.inspectWorkspace(conversationId, { kind: 'diff', path: request.path, signal: history.signal });
+        if (historyContainsSecret((result.text || '').replace(/^[ +\-]/gm, ''))) {
+          throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'This diff may contain credentials.');
+        }
+        if (result.available === false || result.binary) {
+          throw new ManagedWorkspaceError('WORKSPACE_DIFF_UNAVAILABLE', 'A bounded text diff is unavailable.');
+        }
+        return { ...result, source: history instanceof ExternalProjectGit ? 'repository' : 'managed',
+          comparison: 'Current working files versus HEAD; untracked files appear as additions. Staged-only differences are not shown separately.' };
+      }
+      if (history instanceof ExternalProjectGit) return this.#reviewProjectGit(conversationId, history, request);
       const exclusions = await history.exclusions();
       if (request.action === 'status') {
-        return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })), exclusions,
-          message: 'Review file contents before checkpointing. Unselected changes are never saved automatically.' };
+        return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })), exclusions, workspaceKind: 'managed',
+          message: 'This is a Freedom-owned workspace. Proactively save reviewed checkpoints at meaningful milestones unless the user asks otherwise. No separate commit request is needed. Unselected changes are never saved automatically.' };
       }
       if (request.action === 'exclude' || request.action === 'include') {
         if (historyPathReason(request.path) || typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 160 || historyContainsSecret(request.reason)) throw new WorkspaceHistoryError('Use an eligible exact file path and a short reason without private data');
@@ -1425,7 +1557,7 @@ class ManagedWorkspaceController {
         if (snapshot.excludedCount) throw new WorkspaceHistoryError('This file is excluded, unsafe, or oversized');
         const file = snapshot.files[0] || null;
         const head = await history.currentSnapshot();
-        if (!file && !head.files.some((entry) => entry.path === request.path)) throw new WorkspaceHistoryError('No current or previously checkpointed file at this path');
+        if (!file && !head.files.some((entry) => entry.path === request.path)) throw new WorkspaceHistoryError('No current or previously committed file at this path');
         const reviewId = 'review_' + crypto.randomBytes(16).toString('hex');
         for (const [id, review] of this.historyReviews) if (review.expires < Date.now()) this.historyReviews.delete(id);
         if (this.historyReviews.size >= 400) throw new WorkspaceHistoryError('Too many pending reviews');
@@ -1435,7 +1567,7 @@ class ManagedWorkspaceController {
           text: bytes && !bytes.includes(0) ? bytes.toString('utf8') : '', bytes: bytes?.length || 0,
           message: 'Assess this exact revision in context. Binary content requires appropriate separate inspection; a token alone does not establish suitability.' };
       }
-      if (request.action !== 'checkpoint' || !Array.isArray(request.reviewIds) || !request.reviewIds.length || request.reviewIds.length > 200 || new Set(request.reviewIds).size !== request.reviewIds.length) throw new WorkspaceHistoryError('Select explicit file review tokens for this checkpoint');
+      if (!['commit', 'checkpoint'].includes(request.action) || !Array.isArray(request.reviewIds) || !request.reviewIds.length || request.reviewIds.length > 200 || new Set(request.reviewIds).size !== request.reviewIds.length) throw new WorkspaceHistoryError('Select explicit file review tokens for this commit');
       const reviews = request.reviewIds.map((id) => this.historyReviews.get(id));
       if (reviews.some((review) => !review || review.conversationId !== conversationId || review.expires < Date.now() || exclusions.some((entry) => entry.path === review.path)) || new Set(reviews.map((review) => review.path)).size !== reviews.length) throw new WorkspaceHistoryError('Review expired, excluded, or belongs to another conversation');
       const current = await this.#stableHistorySnapshot(conversationId, reviews.map((review) => review.path));
@@ -1450,11 +1582,51 @@ class ManagedWorkspaceController {
       const result = await history.save(snapshot, { label: request.label, kind: 'reviewed', onlyIfChanged: true, reviewed: true });
       for (const id of request.reviewIds) this.historyReviews.delete(id);
       this.historyNotices.delete(conversationId);
-      return { ...result, reviewedPaths: reviews.map((review) => review.path), message: 'Only selected revisions were updated. Other changes remain uncheckpointed. This does not certify testing.' };
+      return { ...result, source: 'repository', reviewedPaths: reviews.map((review) => review.path), message: 'Committed only selected revisions. Other changes remain uncommitted. This does not certify testing.' };
     }, options);
   }
 
+  async #reviewProjectGit(conversationId, history, request) {
+    if (request.action === 'status') return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })),
+      ...(await history.list()), workspaceKind: 'external', message: 'This is the project repository. Commit only when requested or authorized by the task and repository instructions. No separate checkpoint history is written.' };
+    if (!await history.validate()) throw new WorkspaceHistoryError('This folder has no Git repository. Files can be edited, but no history is created. Initialize Git explicitly with your Git client if wanted.');
+    if (['include', 'exclude'].includes(request.action)) throw new WorkspaceHistoryError('Use repository ignore rules and select the intended files for each commit. Freedom has no separate exclusion history for this project.');
+    if (request.action === 'review') {
+      if (historyPathReason(request.path)) throw new WorkspaceHistoryError('This file is excluded from commit review.');
+      const baseline = await history.baseline();
+      const snapshot = await this.#stableHistorySnapshot(conversationId, [request.path]);
+      if (snapshot.excludedCount) throw new WorkspaceHistoryError('This file is unsafe, excluded, or oversized.');
+      const file = snapshot.files[0] || null;
+      if (!file && !(baseline.id && (await history.entries(baseline.id)).some(entry => entry.path === request.path))) throw new WorkspaceHistoryError('No current or tracked file at this path.');
+      for (const [id, review] of this.historyReviews) if (review.expires < Date.now()) this.historyReviews.delete(id);
+      if (this.historyReviews.size >= 400) throw new WorkspaceHistoryError('Too many pending reviews.');
+      const reviewId = `review_${crypto.randomBytes(16).toString('hex')}`;
+      this.historyReviews.set(reviewId, { conversationId, path: request.path, file, baseline, expires: Date.now() + 600000 });
+      const bytes = file ? Buffer.from(file.content, 'base64') : null;
+      return { reviewId, path: request.path, deleted: !file, binary: bytes?.includes(0) || false,
+        text: bytes && !bytes.includes(0) ? bytes.toString() : '', bytes: bytes?.length || 0, source: 'repository' };
+    }
+    if (!['commit', 'checkpoint'].includes(request.action) || !Array.isArray(request.reviewIds) || !request.reviewIds.length || request.reviewIds.length > 200) throw new WorkspaceHistoryError('Select reviewed files and provide a commit message.');
+    const reviews = request.reviewIds.map(id => this.historyReviews.get(id));
+    if (reviews.some(review => !review || !review.baseline || review.conversationId !== conversationId || review.expires < Date.now()) || new Set(reviews.map(review => review.path)).size !== reviews.length ||
+        reviews.some(review => JSON.stringify(review.baseline) !== JSON.stringify(reviews[0].baseline))) throw new WorkspaceHistoryError('Reviews expired or Git changed. Review the files again.');
+    if (this.listProcesses(conversationId).length || [...this.activeCommands.values()].some(command => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Stop project commands before committing.');
+    const recheck = async () => {
+      const snapshot = await this.#stableHistorySnapshot(conversationId, reviews.map(review => review.path));
+      if (snapshot.excludedCount || reviews.some(review => JSON.stringify(review.file) !== JSON.stringify(snapshot.files.find(file => file.path === review.path) || null))) throw new WorkspaceHistoryError('Files changed since review. Review their current contents.');
+    };
+    await recheck();
+    const result = await history.commit(reviews, reviews[0].baseline, request.label, recheck);
+    for (const id of request.reviewIds) this.historyReviews.delete(id);
+    return { ...result, message: result.saved ? 'Created a commit in the project repository. Unselected edits and staging are preserved.' : 'Selected revisions already match the current commit. Other changes may remain uncommitted.' };
+  }
+
   async workspaceHistory(conversationId, request = {}) {
+    if (this.store.getForConversation(conversationId)?.project) {
+      if (!['list', 'files', 'file'].includes(request.action)) throw new WorkspaceHistoryError('Use your Git client to restore or configure external repository history.');
+      const { workspace, lease, grant } = await this.#enabledLease(conversationId);
+      return (await this.#projectGit(workspace, lease, grant)).inspect(request);
+    }
     if (['exclude', 'include'].includes(request.action)) return this.reviewWorkspaceHistory(conversationId, request);
     const perform = async (history) => {
       if (request.action === 'list') {
@@ -1476,7 +1648,7 @@ class ManagedWorkspaceController {
         const exclusions = await history.exclusions();
         snapshot.files = snapshot.files.filter((file) => !exclusions.some((entry) => entry.path === file.path));
         const currentId = await history.currentId();
-        if (!currentId || (await history.record(currentId)).reviewed !== true) throw new WorkspaceHistoryError('Ask the agent to review and create a checkpoint first');
+        if (!currentId || (await history.record(currentId)).reviewed !== true) throw new WorkspaceHistoryError('Ask the agent to review and create a commit first');
         const result = await history.save(snapshot, { label: request.label, kind: 'named', reviewed: true });
         this.historyNotices.delete(conversationId);
         return result;
@@ -1485,14 +1657,14 @@ class ManagedWorkspaceController {
       if (this.listProcesses(conversationId).length || [...this.activeCommands.values()].some((command) => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Stop workspace processes before restoring');
       if (request.action === 'prepare_restore') {
         const latest = await history.currentSnapshot();
-        if ((await history.ownedRecord(request.versionId)).reviewed !== true) throw new WorkspaceHistoryError('This older automatic version was not reviewed. Inspect its files and create a reviewed checkpoint before restoring');
+        if ((await history.ownedRecord(request.versionId)).reviewed !== true) throw new WorkspaceHistoryError('This older automatic version was not reviewed. Inspect its files and create a reviewed commit before restoring');
         const target = await history.snapshot(request.versionId);
         const exclusions = await history.exclusions();
         latest.files = latest.files.filter((file) => !exclusions.some((entry) => entry.path === file.path));
         if (target.files.some((file) => exclusions.some((entry) => entry.path === file.path))) throw new WorkspaceHistoryError('This version contains a currently excluded file; review exclusions first');
         const paths = [...new Set([...latest.files, ...target.files].map((file) => file.path))];
         const current = await this.#stableHistorySnapshot(conversationId, paths);
-        if (current.excludedCount || fingerprint(current) !== fingerprint(latest)) throw new WorkspaceHistoryError('Review and checkpoint current changes before restoring. Unreviewed files cannot be backed up or overwritten');
+        if (current.excludedCount || fingerprint(current) !== fingerprint(latest)) throw new WorkspaceHistoryError('Review and commit current changes before restoring. Unreviewed files cannot be backed up or overwritten');
         const byPath = new Map(current.files.map((file) => [file.path, file]));
         const desired = new Map(target.files.map((file) => [file.path, file]));
         const operations = [];
@@ -1552,10 +1724,19 @@ class ManagedWorkspaceController {
     if (relativePath.split('/').some((part) => part.toLowerCase() === '.git')) {
       throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'Git metadata is private');
     }
-    return this.#structuredFileOperation(conversationId, 'workspace_inspect', relativePath, {
+    const result = await this.#structuredFileOperation(conversationId, 'workspace_inspect', relativePath, {
       kind: options.kind,
       showGenerated: options.showGenerated === true,
-    });
+    }, { signal: options.signal });
+    const workspace = this.store.getForConversation(conversationId);
+    if (workspace?.project && options.kind === 'changes') {
+      const recorded = this.store.projectEdits(workspace.workspaceId);
+      if (result.noRepository) return { available: true, project: true, recordedEditsOnly: true,
+        changes: recorded.slice(0, 500).map((file) => ({ path: file, agentEdited: true, status: 'edited', preview: 'file' })), limitReached: recorded.length > 500 };
+      return { ...result, project: true,
+        ...(result.changes && { changes: result.changes.map((entry) => ({ ...entry, agentEdited: recorded.includes(entry.path) })) }) };
+    }
+    return result;
   }
 
   async accessFile(conversationId, relativePath, request = {}) {
@@ -1563,7 +1744,18 @@ class ManagedWorkspaceController {
   }
 
   async readFile(conversationId, relativePath, request = {}) {
-    return this.#fileOperation(conversationId, 'read', relativePath, null, request);
+    const project = this.store.getForConversation(conversationId)?.project;
+    const bytes = await this.#fileOperation(conversationId, project ? 'read_version' : 'read', relativePath, null, request);
+    if (project) {
+      const result = JSON.parse(bytes.toString('utf8'));
+      if (!/^[a-f0-9]{64}$/.test(result.version) || typeof result.content !== 'string') throw new ManagedWorkspaceError('WORKSPACE_FILE_UNAVAILABLE', 'Invalid project read');
+      if (!this.projectReads.has(conversationId)) this.projectReads.set(conversationId, new Map());
+      const reads = this.projectReads.get(conversationId);
+      if (reads.size >= 500) reads.delete(reads.keys().next().value);
+      reads.set(relativePath, result.version);
+      return Buffer.from(result.content, 'base64');
+    }
+    return bytes;
   }
 
   async createDirectory(conversationId, relativePath, request = {}) {
@@ -1573,6 +1765,9 @@ class ManagedWorkspaceController {
   async writeFile(conversationId, relativePath, content, request = {}) {
     const buffer = validateWorkspaceContent(content);
     await this.#fileOperation(conversationId, 'write', relativePath, buffer, request);
+    this.projectReads.get(conversationId)?.delete(relativePath);
+    const workspace = this.store.getForConversation(conversationId);
+    if (workspace?.project) this.store.recordProjectEdit(workspace.workspaceId, relativePath);
   }
 
   async listDirectory(conversationId, relativePath = '.', options = {}) {
@@ -1688,7 +1883,10 @@ class ManagedWorkspaceController {
 
   async #executeCommand(conversationId, request) {
     if (this.historyLocks.has(conversationId)) throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
-    const { workspace, lease } = await this.#enabledLease(conversationId, request);
+    const { workspace, lease, grant } = await this.#enabledLease(conversationId, request);
+    if (workspace.project) {
+      await this.store.projectAccess.resolve(workspace.workspaceId, { write: true });
+    }
     const command = validateCommand(request.command);
     const capabilities = await this.getCapabilities(request);
     if (!capabilities.available) {
@@ -1701,6 +1899,22 @@ class ManagedWorkspaceController {
     );
     throwIfWorkspaceAborted(request.signal);
     const previewPort = validatePreviewPort(request.previewPort);
+    const reviewKey = JSON.stringify([command, workingDirectory.relative]);
+    const evidence = this.commandReviewEvidence.get(conversationId)?.get(reviewKey);
+    if (evidence) {
+      let current;
+      try {
+        current = await this.collectCommandReviewEvidence(conversationId, { command, workingDirectory: workingDirectory.relative }, request);
+      } catch {
+        // An unreadable file cannot leave an unchecked permit for a later retry.
+      }
+      if (current?.fingerprint !== evidence) {
+        this.clearTurnPermissions(conversationId);
+        throw new ManagedWorkspaceError('COMMAND_REVIEW_STALE', 'Project evidence changed after command approval. Call request_permissions again for this exact command and directory.');
+      }
+      this.commandReviewEvidence.get(conversationId)?.delete(reviewKey);
+      throwIfWorkspaceAborted(request.signal);
+    }
     if (previewPort) {
       let previewNetworkPosture;
       try {
@@ -1729,6 +1943,9 @@ class ManagedWorkspaceController {
       command,
       workingDirectory.relative
     );
+    if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) {
+      throw new ManagedWorkspaceError('PROJECT_RECONNECT_REQUIRED', 'Project access changed. Try again.');
+    }
     const controller = new AbortController();
     const externalSignal = request.signal;
     const abort = () => controller.abort();
@@ -1966,6 +2183,7 @@ class ManagedWorkspaceController {
 
   async deleteConversation(conversationId) {
     this.cancelConversation(conversationId);
+    await this.historySettlements.get(conversationId);
     this.servers.deleteConversation(conversationId);
     this.processManager.deleteConversation(conversationId);
     const workspace = this.store.getForConversation(conversationId);
@@ -1973,6 +2191,7 @@ class ManagedWorkspaceController {
     this.leases.delete(workspace.workspaceId);
     this.leasePromises.delete(workspace.workspaceId);
     this.capabilityGrants.deleteConversation(conversationId);
+    this.commandReviewEvidence.delete(conversationId);
     return this.store.deleteConversation(conversationId);
   }
 
@@ -2002,6 +2221,7 @@ class ManagedWorkspaceController {
     this.leases.clear();
     this.leasePromises.clear();
     this.capabilityGrants.clear();
+    this.commandReviewEvidence.clear();
     return Object.freeze({ drained: drained && processResult?.drained !== false });
   }
 }

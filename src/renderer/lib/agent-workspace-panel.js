@@ -15,8 +15,9 @@ function button(text, action, className = 'agent-workspace-item') {
   return node;
 }
 
-export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHost = null, refreshControl = null } = {}) {
+export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHost = null, refreshControl = null, onProjectAccess = null } = {}) {
   let conversationId = null;
+  let project = null;
   let generation = 0;
   let refreshTimer = null;
   let loading = false;
@@ -109,7 +110,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
     const version = generation;
     const response = await window.electronAPI.agentWorkspaceHistory(expected, action, options);
     if (version !== generation || expected !== conversationId) return null;
-    if (!response?.ok || response.conversationId !== expected) throw new Error(response?.error?.message || 'Checkpoints are unavailable.');
+    if (!response?.ok || response.conversationId !== expected) throw new Error(response?.error?.message || 'Commits are unavailable.');
     return response.result;
   }
 
@@ -119,12 +120,13 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
     catch (cause) { error = cause.message; render(); }
   }
 
-  function showCheckpoints(anchor = null) {
-    const ui = popover('Checkpoints', anchor);
-    if (historyLoadFailed) ui.fail('Checkpoints could not be refreshed. Try again.');
-    else if (!history) ui.fail('Loading checkpoints…');
+  function showCommits(anchor = null) {
+    const ui = popover('Commits', anchor);
+    if (historyLoadFailed) ui.fail('Commits could not be refreshed. Try again.');
+    else if (!history) ui.fail('Loading commits…');
+    else if (history.noRepository) ui.fail('This folder has no Git repository. No history is created automatically.');
     else if (history.notice) ui.fail(history.notice);
-    else if (!history.versions.length) ui.fail('No checkpoints yet');
+    else if (!history.versions.length) ui.fail('No commits yet');
     for (const version of history?.versions || []) {
       const row = button('', () => openViewer(version), 'agent-workspace-item agent-workspace-checkpoint');
       row.appendChild(element('span', 'agent-workspace-file-name', version.label));
@@ -134,15 +136,17 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
       row.appendChild(time);
       ui.body.appendChild(row);
     }
-    if (history?.limitReached) ui.fail('Showing the latest 100 checkpoints.');
-    const actions = element('div', 'agent-workspace-checkpoint-actions');
-    actions.appendChild(button('Checkpoint settings', showSettings));
-    ui.body.appendChild(actions);
+    if (history?.limitReached) ui.fail('Showing the latest 100 commits.');
+    if (!project) {
+      const actions = element('div', 'agent-workspace-checkpoint-actions');
+      actions.appendChild(button('Commit settings', showSettings));
+      ui.body.appendChild(actions);
+    }
     ui.finish();
   }
 
   function showSettings() {
-    const ui = popover('Checkpoint settings', null, () => showCheckpoints());
+    const ui = popover('Commit settings', null, () => showCommits());
     ui.fail('Only Agent-reviewed revisions are saved. Limits: 200 files, 64 KiB per file, 512 KiB total.');
     const form = element('form', 'agent-workspace-version-save');
     const path = element('input', ''); path.placeholder = 'Project-relative file path'; path.maxLength = 1024; path.setAttribute('aria-label', 'Excluded file path');
@@ -160,13 +164,27 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
     }
     form.addEventListener('submit', (event) => { event.preventDefault(); exclude.click(); });
     form.appendChild(path); form.appendChild(reason); form.appendChild(exclude); ui.body.appendChild(form);
-    ui.body.appendChild(element('p', 'agent-workspace-note', 'Exclusions do not erase copies in earlier checkpoints.'));
+    ui.body.appendChild(element('p', 'agent-workspace-note', 'Exclusions do not erase copies in earlier commits.'));
     for (const entry of history?.exclusions || []) {
       const row = element('div', 'agent-workspace-version');
       row.appendChild(element('p', 'agent-workspace-note', `${entry.path} · ${entry.reason}`));
-      const allow = button('Allow review', () => void change('include', { path: entry.path, reason: 'User removed the additional exclusion in Checkpoint settings' }, allow), 'agent-text-button');
+      const allow = button('Allow review', () => void change('include', { path: entry.path, reason: 'User removed the additional exclusion in Commit settings' }, allow), 'agent-text-button');
       row.appendChild(allow); ui.body.appendChild(row);
     }
+    ui.finish();
+  }
+
+  function showProject(anchor) {
+    const ui = popover(project.name, anchor);
+    ui.body.appendChild(element('p', 'agent-workspace-note', project.connected
+      ? project.mode === 'write' ? 'Agent can edit files and run commands in this folder. Changes are made in place.' : 'Agent can read this folder. Allow editing to change files and run project commands.'
+      : 'Reconnect this folder to give Agent access again.'));
+    const actions = project.connected
+      ? [[project.mode === 'write' ? 'Read only' : 'Allow editing', project.mode === 'write' ? 'read' : 'write'], ['Remove access', 'remove']]
+      : [['Reconnect project…', 'reconnect']];
+    for (const [label, action] of actions) ui.body.appendChild(button(label, () => {
+      closePopup(false); void onProjectAccess?.(action);
+    }));
     ui.finish();
   }
 
@@ -202,8 +220,10 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
         body.appendChild(row);
       };
       const count = changes?.changes?.length || 0;
-      summary('Changes', changes?.available ? `${count}${changes.limitReached ? '+' : ''} ${count === 1 ? 'file' : 'files'}` : loading ? 'Loading…' : 'Unavailable', 'changes', () => openViewer());
-      summary('Checkpoints', history ? `${history.versions.length}${history.limitReached ? '+' : ''}` : loading ? 'Loading…' : 'Unavailable', 'checkpoints', showCheckpoints);
+      if (project) summary(project.name, project.connected ? project.mode === 'write' ? 'Can edit' : 'Read only' : 'Reconnect', 'project', showProject);
+      if (project && !project.connected) { host.appendChild(body); continue; }
+      summary(changes?.recordedEditsOnly ? 'Recorded edits' : 'Changes', changes?.available ? `${count}${changes.limitReached ? '+' : ''} ${count === 1 ? 'file' : 'files'}` : loading ? 'Loading…' : 'Unavailable', 'changes', () => openViewer());
+      summary('Commits', history ? `${history.versions.length}${history.limitReached ? '+' : ''}` : loading ? 'Loading…' : 'Unavailable', 'commits', showCommits);
       if (error) body.appendChild(element('p', 'agent-workspace-note', error));
       host.appendChild(body);
       if (activeKey) [...host.querySelectorAll('[data-workspace-focus]')].find((node) => node.dataset.workspaceFocus === activeKey)?.focus();
@@ -213,7 +233,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
 
   async function refresh() {
     clearTimeout(refreshTimer);
-    if (!conversationId) return;
+    if (!conversationId || (project && !project.connected)) return;
     if (loading) { refreshQueued = true; return; }
     const version = generation;
     const expected = conversationId;
@@ -234,7 +254,9 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
 
   return {
     dismissPopover: () => closePopup(false),
-    setWorkspace(next) {
+    setWorkspace(next, nextProject = null) {
+      const projectChanged = JSON.stringify(project) !== JSON.stringify(nextProject);
+      project = nextProject || null;
       if (next !== conversationId) {
         generation += 1;
         closePopup(false);
@@ -243,6 +265,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
         changes = null; history = null; historyLoadFailed = false; error = ''; loading = false; refreshQueued = false;
         render();
       }
+      if (projectChanged) { generation += 1; loading = false; closePopup(false); render(); }
       clearTimeout(refreshTimer);
       if (conversationId) refreshTimer = setTimeout(() => void refresh(), 250);
     },

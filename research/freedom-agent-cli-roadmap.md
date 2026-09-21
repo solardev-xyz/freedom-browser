@@ -1,14 +1,207 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-18
+Last updated: 2026-09-21
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-18
+## Current working status — 2026-09-21
+
+### Existing-projects integration — 2026-09-21
+
+Development has returned to `feature/freedom-automation-kernel`. The
+`experiment/agent-existing-projects` work through `f5aecb9b` is merged, including
+scoped existing-project access, repository-native commits, Pi 0.86.0, actionable
+error recovery, command access review, and proactive managed-workspace milestones.
+The experiment branch is retained.
+
+The user confirmed the three integration smoke tests: routine development without
+excessive prompts, a saved checkpoint after a managed-workspace milestone, and
+external repository commits after granting editing access. Native workspaces save
+reviewed milestones proactively; external commits remain task-authorized.
+
+The final approval follow-up supplies bounded project evidence, rejects stale
+reviewed grants, records fallback categories, and accepts valid approvals whose
+explanations exceed the editorial length target. Live GPT-6 Astra evaluation
+approved six synthetic routine commands and escalated both explicit-restriction
+cases; the evaluation executed no commands. Diagnostic approval can be requested
+again after new user input. Swarm failures now distinguish missing stamps from
+insufficient effective capacity; postage planning uses effective rather than
+nominal capacity. Audit, process, server, and preview reporting are corrected.
+
+Merge validation: lint and diff checks passed. The full test run outside the
+restricted execution sandbox passed 6,488 tests across 332 suites, with 106 tests
+skipped. Four failures across three suites were reproduced on the pre-merge
+feature revision `69a7643c`: two shortcut-remapping expectations on macOS, one
+Linux-owner availability expectation on macOS, and the Safe fork test attempting
+a send on Base despite the Gnosis-only account policy. These are existing failures,
+not resolved by this integration. The initial restricted run additionally failed
+socket/native integration tests; those failures cleared in the unrestricted run.
+
+Earlier Mac mini qualification below applies to its recorded revisions. This
+integration does not claim new destructive testing or Windows/Linux qualification;
+those remain deferred. See the access-review and existing-projects documentation
+for current limitations.
+
+### Independent command access review — 2026-09-21
+
+**Ask when needed** now extends beyond page interaction classification to eligible
+executable/network requests for one exact project command. A fresh, tool-free
+session using the selected provider/model reviews task relevance and the complete
+requested scope. Strict high-confidence approval uses the existing single-use
+permit; uncertainty, provider failures, and unavailable context use the human
+sheet. Stop, pause, changed requests, and new steering invalidate pending review;
+steering clears unused one-shot permits. Reviewer decisions appear separately
+from human approvals in activity and stored history.
+
+Follow-up from user smoke testing: private offline workspace creation now proceeds
+automatically in **Ask when needed**, after the existing sandbox/runtime checks,
+without a reviewer call. Attached external project access and conversation-wide
+command grants remain human decisions. Dedicated wallet, node, publishing, upload/download, diagnostic
+disclosure, and WebMCP boundaries remain in force. The reviewer does not certify
+arbitrary scripts or dependencies. This is the first bounded extension of access
+review, not a complete replacement of every capability's approval policy.
+**Full access is deferred by user direction and may not be desirable.**
+See [the contract and limits](../docs/agent-access-review.md).
+Validation: lint clean; 918 tests passed across 45 suites (34 gated external-project
+tests skipped). Reviewer/service/workspace-tool/capability suites also passed
+166 tests under Electron's Node runtime. The installed Pi SDK was exercised with
+fake provider transport, proving the review has no tools and uses an isolated
+request. At that revision, live-model judgment and native approval-sheet smoke
+testing remained outstanding; the integration update above records subsequent
+validation. No destructive sandbox or remote-machine qualification was run for
+this review change.
+
+### Tool recovery follow-up — 2026-09-20
+
+The second audit covers returned failures as well as exceptions: process polling,
+WebMCP unsuccessful/uncertain outcomes, future `isError` results, Pi edit error
+rewriting, and cancellation. Read-only project summaries now have a bounded
+`workspace_history` `diff` action, with exclusions and secret checks, so they do
+not need editing access or shell Git. Project error copy and mixed failure
+summaries are corrected. See [the audit matrix](../docs/agent-tool-errors.md).
+Validation: lint clean; 741 tests passed across 41 suites, with 34 gated
+external-project tests skipped. The Pi session/workspace adapter suites also
+passed all 71 tests under Electron's Node runtime using isolated fake transports.
+Native UI and live-model smoke testing of this follow-up remain outstanding.
+
+The composer now defaults to **Ask when needed**, retaining saved conversation
+modes. The permission menu wording is updated to **Ask frequently**, **Ask when
+needed**, and **Fewer interruptions**, with matching composer labels. Descriptions
+explain page interaction review. The shared explanatory footer was removed on
+September 21 to keep the menu compact. This is a wording change;
+it does not change grants or enforcement.
+
+The later September 21 command-review implementation above extends this menu's
+behavior. Broader capability classes remain separate follow-ups; no **Full access**
+mode is implemented or currently selected for development.
+
+### Pi 0.86.0 integration — 2026-09-20
+
+The existing-projects experiment now pins Pi `0.86.0` (previously `0.84.2`).
+The date/timezone snapshot travels in a request-only transcript system section,
+preserving instructions and tool declarations through Pi's new transcript format.
+Each continuation receives a fresh clock without persisting clock messages.
+Cache warming is explicitly off; this upgrade adds no cache-maintenance requests.
+The provider adapters and privacy controls remain in Freedom's main process.
+
+Validation: 609 tests passed across 39 agent/WebMCP suites, with the 34 opt-in
+external-Git qualification tests intentionally skipped; lint passed. Another
+32 SDK/session/provider tests passed under Electron's embedded Node runtime.
+Real Pi tests use simulated HTTP responses and cover custom-provider policy,
+OpenAI/Codex transports, tool registration, error recovery, JSON tool results,
+and clock serialization through OpenAI and Anthropic adapters. No live account
+requests or native UI smoke test were performed for this upgrade. Per-model
+compaction tuning and optional cache warming remain future work.
+
+### Existing projects experiment — 2026-09-19
+
+The experiment branched from `feature/freedom-automation-kernel` at `69a7643c`,
+which included WebMCP discovery, per-page automation hints, and refreshed
+date/timezone context. It was merged back on September 21; the current integration
+and user smoke-test results are recorded above.
+
+The first implementation connects one native-picker-selected project to a new
+conversation, initially read-only, with an explicit Allow editing action for
+in-place changes. Existing file/folder attachments remain read-only reference
+material. Project association survives restart; authority does not, and a native
+Reconnect project action is required. Project file tools use relative paths,
+revalidate folder identity, and reject stale direct writes. Commands reuse the
+existing executable/network permission path. The initial private-checkpoint behavior was rejected in user smoke testing.
+The September 20 revision uses the external repository’s own Git history and
+explicit selected-file commits; no new hidden checkpoint repositories are
+created. Ordinary external folders are not initialized automatically. Conversation deletion removes Freedom-owned data only.
+
+Qualification on the designated Mac mini has passed bounded production
+file/history/reconnection checks, six absent-Git creation-denial probes, four
+selected Seatbelt integration cases, and the development-server/preview workflow.
+The v2 snapshot passed 11 production checkpoints, 332 targeted unit tests, lint,
+and the native UI flow in both layouts/themes. The final v3 lifecycle/error-copy
+pass repeated all 11 production checkpoints, passed 292 focused tests across
+nine suites, lint, and the native UI flow. Exact source manifests, logs, watchdog
+results, intact canaries, and screenshots are preserved on the Mac mini under
+`/private/tmp/freedom-existing-projects-test-20260919/evidence/`. User smoke
+testing confirmed project reads and edits. The revised real-repository commit
+workflow passed separate September 20 qualification below and the September 21 user smoke test; no broader platform
+acceptance is claimed.
+See [project access notes](../docs/agent-existing-projects.md).
+
+
+### Repository-native commits revision — 2026-09-20
+
+Follow-up: the user smoke test found that read-only commit errors lost their
+access explanation. `650b6751` fixed reporting. The current follow-up adds a
+`request_permissions` project-write approval sheet and a shared model-facing
+tool-error recovery contract across browser, workspace, attachment and session
+tool boundaries. Approval binds the exact current project grant; it cannot be
+reused after revocation, replacement, cancellation or expiry. Recovery tells the
+agent what to do without retrying automatically. See
+[tool errors and recovery](../docs/agent-tool-errors.md). Local validation passed
+402 tests across 12 suites and lint. Mac mini approval-flow/native presentation
+qualification is pending explicit source-transfer approval after automatic
+approval review rejected the prepared archive copy. No remote qualification is
+claimed for this revision yet.
+
+The experimental branch now exposes actual repository commits through the existing
+history tool. External commits are task-authorized. Managed workspaces proactively save reviewed milestones; neither path takes unconditional per-edit snapshots. The
+panel and file viewers use Commits terminology; external repository history has
+no private exclusion settings or destructive restore action. Old experimental
+private archives are retained untouched. Non-Git folders remain ordinary folders.
+
+The privileged implementation remains in the main-process Agent service. It binds
+reviewed files to HEAD/index state, preserves unrelated staging, rejects differing
+selected staging, and refuses unsupported hooks/signing/conversion/configuration
+instead of bypassing them. It leaves normal shell `.git` protection intact.
+A durable pending record and prepared index survive uncertain ref/index updates;
+no automatic retry, branch rollback, or stale-lock removal is attempted. See
+[project access notes](../docs/agent-existing-projects.md) for supported scope and
+manual recovery. The exact Git v3 source passed 265 tests across 11 suites, all
+11 production checks, lint, and nine supplemental regression probes on the Mac
+mini (macOS 15.6 arm64, Electron 44.3.0 / Chromium 152, Apple Git 2.39.5).
+The probes cover preserved staging, literal filenames, metadata/lock replacement,
+configuration requirements, pre-dispatch branch changes and uncertain commit
+recovery retained across conversation deletion. Successful Git v2 native UI
+evidence is reused after verifying identical renderer/preload/shared IPC/E2E
+source hashes; no new v3 UI run is claimed. No watchdog or canary failed and no
+disposable app/server remained. Only documentation changed after qualification.
+Exact 40-file source manifests, runtime identity, logs and probe traces remain
+under `/private/tmp/freedom-external-git-test-20260920/evidence/` on the Mac mini
+(`project-git-v3-*`; v2 UI screenshots). User smoke testing of actual commits is
+the next acceptance step; during-child ref changes can still require manual
+recovery, and broader platform qualification is not claimed.
+
+Remaining scope includes individual in-place file grants, multiple writable
+projects in a conversation, linked Git worktrees/external Git metadata,
+cross-profile writer coordination, and broader platform qualification. The
+unified Agent authority selector remains a separate UX track. Revocation blocks
+new operations and requests cancellation; it does not establish complete
+termination of previously launched detached descendants. Same-user concurrent
+filesystem races and the existing checkpoint size/restore limits remain explicit.
+
+### Previous integration checkpoint — 2026-09-18
 
 The integration branch is `feature/freedom-automation-kernel`, with browser
 improvements integrated through `ff2f2507`, including the main merge `d3882e41` (main through `ee2d4147`)
@@ -2267,7 +2460,7 @@ The numbered inventory below records completed foundations and remaining capabil
 5. **Implemented foundation — Define one composable capability vocabulary before adding more prompts.** The trusted main-process contract now distinguishes canonical executable roots, external filesystem reads, external filesystem writes, outbound public internet, host loopback, private/LAN connectivity, and host IPC. Each kind has explicit resource/access semantics and an implementation status; executable roots and the indivisible full-network bundle now have authority factories and qualified macOS/Linux enforcement adapters. Capabilities and prepared requests carry non-serializable provenance, expose no host path when serialized, bind invisibly to the owning conversation, and support exact-command/directory one-shot or deduplicated conversation grants. The existing executable and experimental networking flows use this generic permit store instead of bespoke maps. Reuse, cross-conversation replay, forged/serialized capability objects, invalid scopes, partial network bundles, and any capability without a qualified policy adapter fail closed.
 6. **Implemented; Linux and deterministic macOS product paths qualified — Grant one honest direct-network posture on both sandbox backends.** The capability is advertised by default when the active workspace sandbox supports it, but every ordinary command still starts with `network: none`; there is no startup flag and no ambient network grant. `request_permissions` can ask for `network: full` alone or alongside executable roots for one exact command and canonical working directory. Managed `bash` exposes that same workspace-relative directory directly. **Allow once** is consumed only by that matching call; **Allow for conversation** retains the bundle. The approval discloses public internet, host localhost, private/LAN connectivity, and Linux host abstract-Unix-socket reachability behind **More details**. Freedom constructs one validated full-capability base lease only on a supporting backend, derives the fixed helper/file policy and ordinary Agent policy back to no-network, and selects the full policy only after resolving a trusted complete grant; helper reads/writes/searches therefore remain offline. Consequential consent for publication, payments, signing, messages, and account actions remains independent. Every command receipt records the selected `none` or `full` posture through the live result, SQLite command ledger, and durable Agent activity. The execution contract recognizes `full` as indivisible while keeping `brokered` reserved. Seatbelt grants IP inbound/outbound plus narrowly named DNS/routing/TLS platform services and no general Unix-socket rule. Bubblewrap uses `--share-net`; receipts disclose that host abstract Unix sockets become reachable. Exact candidate `147f99429614a66163fd132048ac2948dfb76aed` passed the integrated Linux product gate on 2026-09-04 from a fresh `npm ci`: unavailable-capability 12/12 with only `none` postures, enabled 26/26 with zero findings, sandbox 92/92, qualification 4/4, destructive 1/1, lint clean, and full suite 3,966/3,966. The corpus used the real Pi `bash` tool and canonical working directory, proved that stopped full-network commands persist terminal `cancelled`/`full`/`SIGKILL` activity before run completion, and observed no surviving namespace descendants. Root postinstall also materialized Electron 43 and rebuilt native modules without a manual workaround. The Linux host had its distribution Bubblewrap AppArmor profile preloaded and no reachable off-host LAN peer, so stock-host portability and remote-LAN evidence remain release follow-ups. The disposable-Mac deterministic product path now passes at the checkpoint above; live-provider and exact-release-candidate qualification remain outstanding. Partial direct-network requests continue to fail closed; finer separation requires a broker/proxy rather than command classification. npm 11's remaining `allowScripts` warnings deserve deliberate release review but did not affect this gate.
 7. **Add external filesystem grants through the same permit contract.** Exact user-selected files or directories may become read-only or writable roots for one command or the conversation. Canonicalization, link/hardlink handling, protected metadata, race behavior, receipts, and revocation stay runtime-owned. A model-supplied host path is never authority by itself, and generic filesystem access must not bypass the existing attachment, publication, wallet, identity, or browser-profile boundaries.
-8. **Replace browser-specific approval wording with unified Agent authority profiles.** Browser interactions, workspace execution, filesystem scope, networking, node access, wallet operations, publication, and future extension installation should be presented through one coherent posture rather than an increasingly quaint website-only selector. The target modes are: **Ask for approval**, where the human reviews boundary crossings; **Approve for me**, where an independent reviewer may approve eligible crossings while the same sandbox remains in force; and **Full access**, where filesystem/network authority is deliberately expanded with prominent disclosure. The acting model and classifier never become the security boundary.
+8. **Implemented first slice — Extend Ask when needed to bounded command access.** An independent tool-free reviewer can approve eligible executable/network requests once for the exact project command and directory. Uncertainty falls back to the human; the sandbox and dedicated consent gates remain in force. Activity distinguishes reviewer approvals. See the September 21 status and [access-review contract](../docs/agent-access-review.md). Further capability classes need their own eligibility and scope design. The earlier three-profile proposal is superseded for now: **Full access is deferred and may not be desirable**, and no separate Approve for me mode is needed for this first extension.
 9. **Keep personal-consent operations outside generic shell auto-approval.** Wallet signing and spending, purchases, public publishing or private-data disclosure, external communications, and legal/account submissions continue to use exact human-visible gates unless the user creates an explicit narrowly scoped standing authorization. Full shell or network access must not silently imply consent to these actions.
 10. **Implemented with manual acceptance — Dependency acquisition through generic capability escalation.** A missing tool or dependency may lead Agent to propose an ordinary package-manager command with its exact executable, filesystem, and network requirements. Installs should default to the project or a Freedom-managed private, versioned, checksummed tool/cache location. Silent global host installation is not an acceptable fallback; a user-requested global change requires exact human approval.
 11. **Implemented; Linux and deterministic macOS substrate qualified — Preserve ordinary shell UX for managed long-lived processes.** The standard `bash` tool now waits up to ten seconds by default (or a bounded caller-selected yield interval) and returns an opaque conversation-owned process session when the sandboxed command remains active. The trusted `write_stdin` continuation tool can poll incremental output, send at most 16 KiB of input, or terminate that exact session; the model is instructed to continue rather than duplicate a yielded server. Each process retains the immutable executable and network policy selected at launch, a 30-minute wall-time ceiling, a 256 KiB tail buffer, and the existing backend output bounds. At most four active sessions may exist per conversation; terminal handles expire after five minutes. Conversation Stop, deletion, and controller disposal cancel retained processes through the platform backend, so receipts continue to disclose Linux namespace-scoped teardown versus macOS best-effort process-group teardown, including the exact `pid_namespace` or `original_process_group` termination scope in live results, durable activity, and the workspace ledger. A yielded process now also has a trusted one-shot terminal observer: natural completion, ordinary failure, timeout, or cancellation updates the original `bash` activity row in memory and durable history even when Pi never polls `write_stdin`. The observer carries only the normalized bounded receipt, cannot affect execution or cleanup, and a late original `running` result cannot overwrite the terminal state. Real non-destructive Seatbelt coverage proves post-readiness streaming and stdin without exposing the trusted readiness marker. Exact commit `1d5f057599ebe1b0050c5f1638a226ca9c28250e` passed the full Linux no-poll reconciliation gate on 2026-09-04: the external product harness passed 17/17 with zero findings, focused suites 178/178, sandbox 96/96, qualification 4/4, destructive 1/1, network capability-disabled 12/12 and enabled 26/26, lint clean, and full suite 3,982/3,982. Natural completion, ordinary failure, timeout, explicit termination, Stop, observer failure, concurrent identical commands, and terminal expiry all reached authoritative durable terminal activity without model polling; no namespace descendant survived. Visible process controls are now implemented and covered by the Linux checkpoint above. Remaining lifecycle work is deliberately separate: richer process inspection, restart semantics, and restart reattachment or honest stale-session recovery. Static preview remains the default whenever a server is unnecessary. The disposable-Mac deterministic process-session and native Quit cases now pass at the checkpoint above with explicitly best-effort teardown; live-provider qualification and stronger detached-process cleanup remain outstanding.

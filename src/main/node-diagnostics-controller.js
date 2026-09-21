@@ -43,7 +43,7 @@ async function requireDiagnosticApproval(requestApproval, request) {
   if (!diagnosticDecisionApproved(decision)) {
     throw new AutomationError(
       ERROR_CODES.USER_CANCELLED,
-      'The user declined sharing raw diagnostics'
+      'The user declined sharing raw diagnostics. Do not retry in this turn. If the user explicitly asks again, request approval again; a new user turn can show a fresh prompt.'
     );
   }
 }

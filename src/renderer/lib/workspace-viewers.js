@@ -53,7 +53,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
     try {
       const result = session.version
         ? await history(session, 'file', { versionId: session.version.id, path: entry.path })
-        : await inspect(session, 'diff', entry.path);
+        : await inspect(session, entry.preview === 'file' ? 'file' : 'diff', entry.path);
       if (!result || !ui.valid() || readSequence !== session.readSequence) return;
       note.textContent = result.message || (result.binary ? 'Binary file — text preview unavailable.'
         : result.truncated ? 'Limited preview — file content was truncated.' : '');
@@ -72,7 +72,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
 
   function fileList(session, ui, entries) {
     const list = node('nav', 'workspace-viewer-files');
-    list.setAttribute('aria-label', session.version ? 'Checkpoint files' : 'Changed files');
+    list.setAttribute('aria-label', session.version ? 'Commit files' : 'Changed files');
     const content = node('div', 'workspace-viewer-document');
     const buttons = [];
     for (const entry of entries) {
@@ -82,17 +82,18 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
       button.appendChild(node('span', 'workspace-viewer-path', entry.path));
       if (entry.status) button.appendChild(node('span', `agent-workspace-file-status ${entry.status}`,
         { added: 'Added', modified: 'Modified', deleted: 'Deleted', conflicted: 'Conflict' }[entry.status] || 'Changed'));
+      if (entry.agentEdited) button.appendChild(node('span', 'workspace-viewer-caption', 'Agent edited'));
       buttons.push(button);
       list.appendChild(button);
     }
     ui.body.appendChild(list);
     ui.body.appendChild(content);
     if (entries.length) void readFile(session, ui, entries[0], content, buttons);
-    else content.appendChild(node('p', 'workspace-viewer-message', session.version ? 'No files in this checkpoint' : 'No changes since the latest checkpoint'));
+    else content.appendChild(node('p', 'workspace-viewer-message', session.version ? 'No files in this commit' : session.project ? 'No changes to show' : 'No changes since the latest commit'));
   }
 
   async function show(session) {
-    const ui = shell(session, session.version ? `Read-only checkpoint · ${new Date(session.version.createdAt).toLocaleString()}` : 'Read-only · Changes since the latest checkpoint');
+    const ui = shell(session, session.version ? `Read-only commit · ${new Date(session.version.createdAt).toLocaleString()}` : 'Read-only · Changes since the latest commit');
     ui.header.insertBefore(action('Refresh', () => void show(session)), ui.header.lastChild);
     try {
       if (session.version) {
@@ -102,13 +103,17 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
         const restore = action('Restore…', () => void reviewRestore(session));
         restore.disabled = state.running || session.version.reviewed === false;
         restore.title = state.running ? 'Stop running processes before restoring' : session.version.reviewed === false ? 'This older snapshot must be reviewed before restoring' : 'Review the affected files before confirming';
-        ui.header.insertBefore(restore, ui.header.lastChild);
+        if (state.restorable !== false) ui.header.insertBefore(restore, ui.header.lastChild);
         fileList(session, ui, files.files);
       } else {
         const changes = await inspect(session, 'changes');
         if (!changes || !ui.valid()) return;
         if (!changes.available) { ui.message.textContent = changes.message; return; }
-        ui.message.textContent = changes.limitReached ? 'Showing the first 500 changes. Ignored files are excluded.' : '';
+        session.project = changes.project === true;
+        ui.message.textContent = changes.project
+          ? changes.recordedEditsOnly ? 'No Git baseline. Showing direct file edits recorded in this chat; commands and outside edits may change other files.'
+            : 'Project changes include work from before this chat. “Agent edited” marks files directly edited in this chat; commands may change other files.'
+          : changes.limitReached ? 'Showing the first 500 changes. Ignored files are excluded.' : '';
         fileList(session, ui, changes.changes);
       }
     } catch (cause) {
@@ -138,7 +143,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
         }
       }, 'workspace-viewer-action workspace-viewer-restore-confirm');
       confirm.disabled = !plan.changes.length;
-      if (!plan.changes.length) review.appendChild(node('p', '', 'The eligible files already match this checkpoint.'));
+      if (!plan.changes.length) review.appendChild(node('p', '', 'The eligible files already match this commit.'));
       review.appendChild(confirm);
       ui.body.appendChild(review);
     } catch (cause) {
@@ -153,7 +158,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
     },
     open(conversationId, version = null, onChanged = null) {
       if (conversationId !== conversation || !conversationId || typeof openTab !== 'function') throw new Error('Workspace viewers are unavailable.');
-      const key = version ? `checkpoint:${version.id}` : 'changes';
+      const key = version ? `commit:${version.id}` : 'changes';
       let session = sessions.get(key);
       if (!session) {
         session = { key, conversationId, version, title: version ? version.label : 'Changes', content: node('section', 'workspace-viewer'), sequence: 0, readSequence: 0, closed: false, onChanged };

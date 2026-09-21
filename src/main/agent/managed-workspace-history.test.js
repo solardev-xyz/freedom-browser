@@ -93,6 +93,16 @@ describe('managed workspace checkpoints and restore', () => {
     return review({ action: 'checkpoint', reviewIds, label });
   };
 
+  test('identifies managed history for proactive milestones without saving unreviewed files', async () => {
+    write('game.js', 'first version');
+    expect(await review({ action: 'status' })).toMatchObject({ workspaceKind: 'managed' });
+    expect((await history({ action: 'list' })).versions).toHaveLength(0);
+    const saved = await checkpoint(['game.js'], 'Working first version');
+    expect(saved.saved).toBe(true);
+    expect(git('show', 'HEAD:game.js')).toBe('first version');
+    expect((await checkpoint(['game.js'], 'Unchanged milestone')).saved).toBe(false);
+  });
+
   test('saves only reviewed revisions and retains prior versions of unselected changes', async () => {
     write('game.js', 'one');
     write('style.css', 'first');

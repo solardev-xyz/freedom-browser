@@ -2,6 +2,8 @@ const { test: baseTest, expect } = require('./fixtures');
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
 const http = require('http');
+const fs = require('fs');
+const os = require('os');
 
 const test = baseTest.extend({
   ollamaServer: async ({ electronApp: _electronApp }, use) => {
@@ -25,6 +27,87 @@ const test = baseTest.extend({
 });
 
 const repositoryRoot = path.resolve(__dirname, '..');
+
+// Presentation coverage only: a main-process fixture emits the same bounded
+// events as the service. Authority/grant application is covered by production
+// qualification and unit tests; this test does not grant project access.
+test('project editing approval sheet is clear in both layouts and themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
+  await window.locator('#agent-ollama-url').fill(ollamaServer);
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    window.webContents.send('agent:event', { type: 'run_started', runId: 'run_project_approval_ui' });
+    window.webContents.send('agent:event', { type: 'approval_requested', runId: 'run_project_approval_ui',
+      approvalId: 'approval_project_ui', action: 'project_write', operation: 'request_permissions',
+      label: 'Commit the reviewed cookbook changes',
+      projectAccess: { name: 'Vegan cookbook', mode: 'write', scope: 'conversation' } });
+  });
+  await expect(window.locator('#agent-approval-action')).toHaveText('Allow editing “Vegan cookbook”?');
+  await expect(window.locator('#agent-approval-origin')).toContainText('local Git commits');
+  await expect(window.locator('#agent-approval-approve')).toHaveText('Allow editing');
+  await expect(window.locator('#agent-approval-allow-conversation')).toBeHidden();
+  for (const layout of ['browser', 'agent']) {
+    if (layout === 'agent') await window.locator('[data-test="agent-first-toggle"]').click();
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+      await expect(window.locator('#agent-approval-approve')).toBeVisible();
+      await window.screenshot({ path: testInfo.outputPath(`project-approval-${layout}-${theme}.png`) });
+    }
+  }
+});
+
+test('existing project picker and access controls work in both layouts and themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-project-ui-'));
+  const project = path.join(root, 'Existing project'); fs.mkdirSync(project);
+  fs.writeFileSync(path.join(project, 'README.md'), '# Existing project\n');
+  try {
+    await electronApp.evaluate(({ dialog }, selected) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] });
+    }, project);
+    await window.locator('[data-test="agent-toggle-btn"]').click();
+    await window.locator('#agent-provider-add').click();
+    await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+    await window.locator('#agent-provider-advanced > summary').click();
+    await window.locator('#agent-ollama-url').fill(ollamaServer);
+    await window.locator('#agent-provider-save').click();
+    await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+    await window.locator('#agent-sidebar-back').click();
+    await window.locator('#agent-attachment-button').click();
+    await window.locator('#agent-open-project').click();
+    await expect(window.locator('#agent-run-message')).toContainText('Project opened');
+    await window.locator('#agent-process-compact-toggle').click();
+    const row = window.locator('[data-workspace-focus="project"]:visible');
+    await expect(row).toContainText('Existing project');
+    await expect(row).toContainText('Read only');
+    await row.click();
+    await window.locator('.agent-workspace-popover').getByRole('button', { name: 'Allow editing', exact: true }).click();
+    await expect(row).toContainText('Can edit');
+    for (const layout of ['browser', 'agent']) {
+      if (layout === 'agent') await window.locator('[data-test="agent-first-toggle"]').click();
+      for (const theme of ['dark', 'light']) {
+        await window.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
+        await row.click();
+        await expect(window.locator('.agent-workspace-popover')).toBeVisible();
+        await window.screenshot({ path: testInfo.outputPath(`project-${layout}-${theme}.png`) });
+        await window.locator('.agent-workspace-popover').getByRole('button', { name: 'Close', exact: true }).click();
+      }
+    }
+    await row.click();
+    await window.locator('.agent-workspace-popover').getByRole('button', { name: 'Remove access', exact: true }).click();
+    await expect(row).toContainText('Reconnect');
+    await row.click();
+    await window.locator('.agent-workspace-popover').getByRole('button', { name: 'Reconnect project…', exact: true }).click();
+    await expect(row).toContainText('Read only');
+    expect(fs.readFileSync(path.join(project, 'README.md'), 'utf8')).toBe('# Existing project\n');
+    expect(fs.existsSync(path.join(project, '.git'))).toBe(false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test('Agent, wallet, and menu actions remain on the address-bar row', async ({ window }) => {
   const geometry = await window.evaluate(() => {

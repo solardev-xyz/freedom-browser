@@ -22,9 +22,9 @@ const APPROVAL_MODES = Object.freeze({
   ALLOW_WEBSITE_INTERACTIONS: 'allow_website_interactions',
 });
 const APPROVAL_MODE_LABELS = Object.freeze({
-  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask every action',
+  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask frequently',
   [APPROVAL_MODES.SENSITIVE_ACTIONS]: 'Ask when needed',
-  [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS]: 'Allow website actions',
+  [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS]: 'Fewer interruptions',
 });
 const PANE_RESIZE_CONFIG = Object.freeze({
   session: Object.freeze({
@@ -105,7 +105,7 @@ let stopRequestedRunId = null;
 let pendingApproval = null;
 let panelOpen = false;
 let agentView = 'loading';
-let approvalMode = APPROVAL_MODES.EVERY_INTERACTION;
+let approvalMode = APPROVAL_MODES.SENSITIVE_ACTIONS;
 let approvalModeMutationPending = false;
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
@@ -128,6 +128,7 @@ let sessionHistoryLoading = false;
 const paneWidths = { session: null, workspace: null };
 const toolRows = new Map();
 const attachmentDisplayRows = new Map();
+const processDisplayRows = new Map();
 const turnViews = new Map();
 const guidanceViews = new Map();
 const attachmentPreviewLoaders = new WeakMap();
@@ -915,8 +916,8 @@ function applyWorkspaceProjection(state) {
       )
     : [];
   setAgentTabCustody(Array.isArray(state?.agentTabs) ? state.agentTabs : []);
-  workspaceInspectionConversationId = state?.workspace?.enabled ? state.conversationId : null;
-  workspaceInspector?.setWorkspace(workspaceInspectionConversationId);
+  workspaceInspectionConversationId = state?.workspace?.enabled || state?.workspace?.project ? state.conversationId : null;
+  workspaceInspector?.setWorkspace(workspaceInspectionConversationId, state?.workspace?.project);
   renderWorkspaceProcesses(state?.workspace?.processes, state?.workspace?.servers);
   renderTaskPages();
   ensureWorkspacePageVisible();
@@ -2091,6 +2092,7 @@ function updateSendAvailability() {
 function resetConversationUi() {
   toolRows.clear();
   attachmentDisplayRows.clear();
+  processDisplayRows.clear();
   turnViews.clear();
   guidanceViews.clear();
   attachmentPreviewObserver?.disconnect();
@@ -2465,8 +2467,8 @@ function renderPublicationApproval(request) {
     'Content',
     publication.workspacePath
       ? publication.kind === 'folder'
-        ? 'Managed project folder'
-        : 'Managed project file'
+        ? 'Project folder'
+        : 'Project file'
       : publication.kind === 'folder'
         ? 'Attached folder · current contents'
         : publication.kind === 'file'
@@ -2689,6 +2691,7 @@ function renderApproval(request) {
   const publication = request.publication;
   const workspace = request.workspace;
   const workspacePermission = request.workspacePermission;
+  const projectAccess = request.projectAccess;
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   elements.approval.classList.toggle(
     'conversation-approval',
@@ -2704,7 +2707,9 @@ function renderApproval(request) {
     'myotis-ethereum': 'Myotis Ethereum',
     'myotis-gnosis': 'Myotis Gnosis',
   };
-  elements.approvalAction.textContent = pageTool
+  elements.approvalAction.textContent = projectAccess
+    ? `Allow editing “${projectAccess.name}”?`
+    : pageTool
     ? `Run website tool “${pageTool.name}”?`
     : workspacePermission
     ? `Run “${workspacePermission.command}”?`
@@ -2719,7 +2724,7 @@ function renderApproval(request) {
           : nodeLifecycle
             ? `${nodeLifecycle.action[0].toUpperCase()}${nodeLifecycle.action.slice(1)} the ${nodeLabels[nodeLifecycle.service] || nodeLifecycle.service} node?`
             : diagnostic
-              ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
+              ? `Let Agent inspect recent ${diagnosticSubject} logs?`
               : request.action === 'form_submission'
                 ? `Submit this form using “${label}”?`
                 : request.action === 'file_download'
@@ -2741,7 +2746,9 @@ function renderApproval(request) {
                                 : `${interaction.summary.replace(/[.?!]+$/, '')}?`
                               : interactionCopy[request.operation] ||
                                 `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = pageTool
+  elements.approvalOrigin.textContent = projectAccess
+    ? `Agent can modify files and create local Git commits in this project. Access lasts for this conversation until you revoke it or restart Freedom. Change it anytime in the project menu.${request.label ? `\n\nAgent request: ${request.label}` : ''}`
+    : pageTool
     ? `${approvalOriginSummary(request)} · This website tool runs using your current site session. Its claimed behavior is not verified.${pageTool.manualSubmit ? ' You will still need to submit the form yourself.' : ''}`
     : workspacePermission
     ? workspaceCommandPermissionSummary(workspacePermission, request.label)
@@ -2760,7 +2767,7 @@ function renderApproval(request) {
             : diagnostic
               ? diagnostic.local
                 ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
-                : `This sends raw diagnostic logs to ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They may include peer IDs, network or wallet addresses, local paths, and requested resources.`
+                : `A bounded excerpt is added to this conversation and sent to your selected model at ${diagnostic.providerLabel}${diagnostic.modelId ? ` (${diagnostic.modelId})` : ''} to troubleshoot this problem. This is not a feedback report. Logs may include peer IDs, network or wallet addresses, local paths, and requested resources.`
               : request.action === 'file_upload'
                 ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
                 : request.wallet
@@ -2775,7 +2782,9 @@ function renderApproval(request) {
   elements.pageToolDetails.hidden = !pageTool;
   elements.pageToolDetails.open = Boolean(pageTool);
   elements.pageToolArguments.textContent = pageTool?.argumentsJSON || '';
-  elements.approvalApprove.textContent = workspacePermission
+  elements.approvalApprove.textContent = projectAccess
+    ? 'Allow editing'
+    : workspacePermission
     ? 'Allow once'
     : workspace
       ? 'Enable workspace'
@@ -2948,8 +2957,20 @@ function formatToolError(code, operation) {
     FILE_UPLOAD_CANCELLED_BY_USER: 'File selection cancelled by you',
     DOWNLOAD_CANCELLED_BY_USER: 'Download cancelled by you',
     WALLET_REQUEST_CANCELLED_BY_USER: 'Wallet request declined by you',
+    POSTAGE_CAPACITY_INSUFFICIENT: 'Postage capacity is too small for this upload',
+    POSTAGE_UNAVAILABLE: 'No usable postage batch is available',
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
+    PROJECT_READ_ONLY: 'Project is read-only. Agent can request editing access if needed',
+    PROJECT_WRITE_DECLINED: 'Project editing access was declined',
+    PROJECT_ACCESS_INVALID: 'Project access request expired or is invalid',
+    PROJECT_UNAVAILABLE: 'No project is attached to this conversation',
+    PROJECT_IN_USE: 'Project is already open for editing in another conversation',
+    PROJECT_RECONNECT_REQUIRED: 'Reconnect the project from its menu to continue',
+    PROJECT_CHANGED: 'Project moved or became unavailable. Reconnect it to continue',
+    WORKSPACE_DIFF_UNAVAILABLE: 'Text diff unavailable. Inspect accessible files or review it in your Git client',
+    PAGE_TOOL_OUTCOME_UNCONFIRMED: 'Website action did not confirm success. Inspect its result before retrying',
+    WORKSPACE_HISTORY_UNAVAILABLE: 'Git operation unavailable. Inspect repository state before retrying',
     INVALID_WORKSPACE_REQUEST: 'Workspace request is invalid',
     WORKSPACE_COMMAND_CANCELLED: 'Workspace command was stopped',
     WORKSPACE_OPERATION_CANCELLED: 'Project operation was stopped',
@@ -2958,6 +2979,8 @@ function formatToolError(code, operation) {
     EXECUTABLE_INTERPRETER_UNAVAILABLE: 'A required script interpreter is unavailable',
     EXECUTABLE_INTERPRETER_UNSUPPORTED: 'The script launcher could not be resolved safely',
     WORKSPACE_COMMAND_FAILED: 'Workspace command exited unsuccessfully',
+    WORKSPACE_AUDIT_FINDINGS: 'Dependency audit found vulnerabilities',
+    COMMAND_REVIEW_STALE: 'Project files changed; command access needs a fresh review',
     WORKSPACE_COMMAND_NOT_FOUND: 'Command unavailable in this workspace; check installed-tool access before retrying',
     WORKSPACE_COMMAND_TIMED_OUT: 'Workspace command timed out',
     WORKSPACE_DIRECTORY_UNAVAILABLE: 'Workspace directory does not exist',
@@ -2975,6 +2998,7 @@ function formatToolError(code, operation) {
   };
   if (operation === 'attachment_list') return 'Attached sources could not be listed';
   if (operation === 'attachment_read') return 'Attached source could not be read';
+  if (operation === 'workspace_history') return code === 'INTERNAL_ERROR' ? 'Git operation failed unexpectedly' : labels[code] || 'Git operation failed';
   if (
     ['bash', 'read', 'write', 'edit', 'grep', 'find', 'ls', 'workspace_preview',
       'write_stdin', 'request_permissions'].includes(operation)
@@ -3230,6 +3254,7 @@ function updateToolApproval(runId, toolCallId, decision) {
   const labels = {
     requested: 'Approval needed',
     approved: 'Approved',
+    reviewer_approved: 'Approved by reviewer',
     declined: 'Declined',
     withdrawn: 'Withdrawn',
   };
@@ -3250,6 +3275,20 @@ function attachmentDisplayKey(event) {
 function finishToolRow(event) {
   let record = toolRows.get(`${event.runId}:${event.toolCallId}`);
   if (!record) return;
+  const processId = event.workspace?.processId;
+  if (['bash', 'write_stdin'].includes(event.operation) && /^workspace_process_[a-f0-9]{24}$/.test(processId || '')) {
+    const key = `${event.runId}:${processId}`;
+    const existing = processDisplayRows.get(key);
+    if (existing && existing !== record) {
+      record.row.remove();
+      record = existing;
+      toolRows.set(`${event.runId}:${event.toolCallId}`, record);
+    }
+    // A late poll must not turn a finished process back into a running one.
+    if (record.processTerminal && event.workspace.state === 'running') return;
+    record.processTerminal = event.workspace.state !== 'running';
+    processDisplayRows.set(key, record);
+  }
   const displayKey = attachmentDisplayKey(event);
   const existingAttachmentRow = displayKey ? attachmentDisplayRows.get(displayKey) : null;
   if (existingAttachmentRow && existingAttachmentRow !== record) {
@@ -3267,6 +3306,7 @@ function finishToolRow(event) {
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
+  record.row.title = '';
   if (event.status === 'failed') {
     record.row.title = formatToolError(event.errorCode, event.operation);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
@@ -3351,6 +3391,26 @@ function applyReadyConversationState(state) {
   renderSessionSidebar();
   renderPageContext();
   return true;
+}
+
+async function changeProjectAccess(action) {
+  if (currentRunStatus !== 'idle') return;
+  closeComposerPopovers();
+  try {
+    const response = await window.electronAPI.agentProjectAccess(action, currentConversationId);
+    if (response?.cancelled) return;
+    if (!response?.ok || !applyReadyConversationState(response.state)) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not change project access'), true);
+      return;
+    }
+    await refreshSessionHistory();
+    const stoppedAccess = action === 'remove' || action === 'read';
+    const message = action === 'open' ? 'Project opened with read-only access.' : action === 'remove'
+      ? 'Project disconnected. Reconnect it here when you need it again.' : action === 'read'
+        ? 'Project is now read-only.' : 'Project access updated.';
+    setMessage(elements.runMessage, message + (stoppedAccess && response.state.workspace?.commands?.length
+      ? ' Previously launched processes may keep access until they exit.' : ''));
+  } catch { setMessage(elements.runMessage, 'Could not change project access', true); }
 }
 
 async function openSavedSession(conversationId) {
@@ -4211,6 +4271,7 @@ export function initAgentUi(options = {}) {
     attachmentMenu: byId('agent-attachment-menu'),
     attachFiles: byId('agent-attach-files'),
     attachFolder: byId('agent-attach-folder'),
+    openProject: byId('agent-open-project'),
     attachmentContexts: byId('agent-attachment-contexts'),
   };
   if (Object.values(elements).some((element) => !element)) return;
@@ -4246,7 +4307,7 @@ export function initAgentUi(options = {}) {
     openTab: options.createWorkspaceViewerTab,
     closeTab: options.closeViewerTab,
     onOpenViewer: () => { if (agentFirstMode) setWorkspaceSidebarOpen(true); },
-  }, { compactHost: elements.workspaceInspectorCompact, refreshControl: elements.workspaceRefresh });
+  }, { compactHost: elements.workspaceInspectorCompact, refreshControl: elements.workspaceRefresh, onProjectAccess: changeProjectAccess });
   setAgentTabClaimHandler(claimAgentOwnedTab);
   pageActions?.dispose();
   if (byId('agent-page-actions') && window.electronAPI.getAgentPageActions) {
@@ -4373,6 +4434,7 @@ export function initAgentUi(options = {}) {
   });
   elements.attachFiles.addEventListener('click', () => addAttachments('files'));
   elements.attachFolder.addEventListener('click', () => addAttachments('folder'));
+  elements.openProject.addEventListener('click', () => void changeProjectAccess('open'));
   elements.pageContext.addEventListener('click', () => {
     if (currentConversationId || currentRunStatus !== 'idle') return;
     dismissedPageContextTabId = getActiveTab()?.id || null;
@@ -4549,6 +4611,7 @@ export function initAgentUi(options = {}) {
   setConversationTitle('New task');
   setAgentFirstMode(false);
   setAgentView('loading');
+  setApprovalMode(approvalMode);
   renderProviderFields();
   updateSendAvailability();
   setWorkspaceNavigationEditable(true);

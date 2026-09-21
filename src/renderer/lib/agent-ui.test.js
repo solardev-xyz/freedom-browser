@@ -159,6 +159,7 @@ function createAgentElements() {
     'agent-attachment-menu',
     'agent-attach-files',
     'agent-attach-folder',
+    'agent-open-project',
     'agent-attachment-contexts',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
@@ -255,7 +256,7 @@ function createAgentElements() {
   elements['agent-manage-providers'] = createElement('button');
   elements['agent-approval-mode-button'] = createElement('button');
   elements['agent-active-approval-mode-label'] = createElement('span', {
-    textContent: 'Ask every action',
+    textContent: 'Ask when needed',
   });
   elements['agent-approval-mode-popover'] = createElement('div');
   elements['agent-approval-mode-popover'].hidden = true;
@@ -573,6 +574,9 @@ describe('Agent UI', () => {
 
   test('submits a configured task with Enter while Shift+Enter remains multiline', async () => {
     const ctx = await loadAgentUi();
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe('Ask when needed');
+    expect(ctx.elements['agent-approval-mode-sensitive'].getAttribute('aria-pressed')).toBe('true');
+    expect(ctx.elements['agent-approval-mode-every'].getAttribute('aria-pressed')).toBe('false');
     ctx.elements['agent-prompt'].value = 'Summarize this page';
     ctx.elements['agent-prompt'].dispatch('input');
     expect(ctx.elements['agent-run'].disabled).toBe(false);
@@ -589,7 +593,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       7,
       'Summarize this page',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -647,7 +651,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       7,
       'Review these resources',
-      'every_interaction',
+      'sensitive_actions',
       [fileSelectionId, folderSelectionId]
     );
 
@@ -857,7 +861,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       null,
       'Continue this work in a new chat',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -880,7 +884,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       null,
       'Research five sources',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -940,7 +944,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       null,
       'Review these',
-      'every_interaction',
+      'sensitive_actions',
       [fileSelectionId, folderSelectionId]
     );
   });
@@ -960,7 +964,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       null,
       'Research independently',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -1024,7 +1028,7 @@ describe('Agent UI', () => {
     ctx.elements['agent-approval-mode-allow'].dispatch('click');
 
     expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
-      'Allow website actions'
+      'Fewer interruptions'
     );
     expect(ctx.elements['agent-approval-mode-allow'].getAttribute('aria-pressed')).toBe('true');
     expect(ctx.elements['agent-approval-mode-sensitive'].disabled).toBe(false);
@@ -1039,6 +1043,18 @@ describe('Agent UI', () => {
       'allow_website_interactions'
     );
     expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
+  });
+
+  test('shows reviewer provenance on a completed access request without opening an approval sheet', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Run tests';
+    ctx.elements['agent-run'].dispatch('click'); await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'permission', operation: 'request_permissions' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'permission', operation: 'request_permissions',
+      status: 'succeeded', approval: 'reviewer_approved', label: 'Command access granted' });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent).toBe('Approved by reviewer');
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
   });
 
   test('explains an intent-classified consequential website approval honestly', async () => {
@@ -1274,7 +1290,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       7,
       'Summarize this page',
-      'every_interaction'
+      'sensitive_actions'
     );
 
     ctx.emit({ type: 'run_started', runId: 'run_test' });
@@ -1401,7 +1417,7 @@ describe('Agent UI', () => {
       2,
       7,
       'Now enable notifications',
-      'every_interaction'
+      'sensitive_actions'
     );
     expect(ctx.elements['agent-transcript'].children).toHaveLength(2);
     expect(
@@ -1436,7 +1452,7 @@ describe('Agent UI', () => {
       'allow_website_interactions'
     );
     expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
-      'Allow website actions'
+      'Fewer interruptions'
     );
     expect(ctx.elements['agent-run-message'].textContent).toBe(
       'Approval setting updated for the next message.'
@@ -1968,7 +1984,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
       7,
       'Continue the task',
-      'every_interaction'
+      'sensitive_actions'
     );
   });
 
@@ -2161,7 +2177,7 @@ describe('Agent UI', () => {
       'What is on this page?'
     );
     expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
-      'Allow website actions'
+      'Fewer interruptions'
     );
     expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
@@ -3178,10 +3194,10 @@ describe('Agent UI', () => {
     });
 
     expect(ctx.elements['agent-approval-action'].textContent).toBe(
-      'Share recent ipfs node diagnostics with OpenAI?'
+      'Let Agent inspect recent ipfs node logs?'
     );
     expect(ctx.elements['agent-approval-origin'].textContent).toContain(
-      'This sends raw diagnostic logs to OpenAI using gpt-5.6-sol.'
+      'A bounded excerpt is added to this conversation and sent to your selected model at OpenAI (gpt-5.6-sol) to troubleshoot this problem.'
     );
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('local paths');
     expect(ctx.elements['agent-approval-approve'].textContent).toBe('Share once');
@@ -3696,7 +3712,7 @@ describe('Agent UI', () => {
     const summaryText = ctx.elements['agent-publication-summary'].children
       .map((child) => child.textContent)
       .join(' ');
-    expect(summaryText).toContain('Managed project folder');
+    expect(summaryText).toContain('Project folder');
     expect(summaryText).toContain('apps/site/dist');
     expect(summaryText).not.toContain('/Users/');
   });
@@ -3754,6 +3770,21 @@ describe('Agent UI', () => {
       'approval_workspace',
       true
     );
+  });
+
+  test('renders a project editing sheet with its scope and no allow-once ambiguity', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_project',
+      action: 'project_write', operation: 'request_permissions', label: 'Commit cookbook changes',
+      projectAccess: { name: 'Cookbook', mode: 'write', scope: 'conversation' } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Allow editing “Cookbook”?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('local Git commits');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('revoke it or restart Freedom');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Allow editing');
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+    ctx.elements['agent-approval-approve'].dispatch('click'); await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith('run_test', 'approval_project', true);
   });
 
   test('renders exact executable access and can grant it for the conversation', async () => {
@@ -3951,6 +3982,12 @@ describe('Agent UI', () => {
   });
 
   test.each([
+    ['workspace_history', 'PROJECT_READ_ONLY', 'Project is read-only. Agent can request editing access if needed'],
+    ['workspace_history', 'PROJECT_RECONNECT_REQUIRED', 'Reconnect the project from its menu to continue'],
+    ['workspace_history', 'PROJECT_CHANGED', 'Project moved or became unavailable. Reconnect it to continue'],
+    ['workspace_history', 'WORKSPACE_HISTORY_UNAVAILABLE', 'Git operation unavailable. Inspect repository state before retrying'],
+    ['workspace_history', 'INTERNAL_ERROR', 'Git operation failed unexpectedly'],
+    ['workspace_history', 'UNKNOWN_GIT_ERROR', 'Git operation failed'],
     ['bash', 'WORKSPACE_COMMAND_NOT_FOUND', 'Command unavailable in this workspace; check installed-tool access before retrying'],
     ['request_permissions', 'WORKSPACE_OPERATION_CANCELLED', 'Project operation was stopped'],
     ['request_permissions', 'UNKNOWN_PERMISSION_ERROR', 'Workspace operation failed'],
@@ -4178,4 +4215,18 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run'].disabled).toBe(true);
     expect(ctx.elements['agent-run'].dataset.action).toBe('send');
   });
+});
+
+test('consolidates process polls by owned process ID, preserving separate executions', async () => {
+  const ctx = await loadAgentUi();
+  ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Build the app' });
+  for (const [index, id, state] of [[0, 'a', 'running'], [1, 'a', 'running'], [2, 'a', 'completed'], [3, 'a', 'running'], [4, 'b', 'running']]) {
+    const event = { runId: 'run_test', toolCallId: `process_${index}`, operation: index === 0 ? 'bash' : 'write_stdin' };
+    ctx.emit({ ...event, type: 'tool_started', intent: 'Checking process' });
+    ctx.emit({ ...event, type: 'tool_finished', status: 'succeeded', label: `${id}: ${state}`, workspace: { processId: `workspace_process_${id.repeat(24)}`, state } });
+  }
+  const list = ctx.elements['agent-transcript'].children[0].querySelector('.agent-tool-list');
+  expect(list.children).toHaveLength(2);
+  expect(list.children[0].children[1].textContent).toBe('a: completed');
+  expect(list.children[1].children[1].textContent).toBe('b: running');
 });

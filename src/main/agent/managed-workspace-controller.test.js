@@ -117,6 +117,29 @@ describe('ManagedWorkspaceController', () => {
     jest.restoreAllMocks();
   });
 
+  test('model diff inspection is read-only, cancellable and does not mint a commit review', async () => {
+    const { ManagedWorkspaceHistory } = require('./managed-workspace-history');
+    jest.spyOn(ManagedWorkspaceHistory.prototype, 'exclusions').mockResolvedValue([]);
+    const { controller } = createController();
+    const inspect = jest.spyOn(controller, 'inspectWorkspace').mockResolvedValue({ available: true, text: '-old\n+new' });
+    const result = await controller.reviewWorkspaceHistory('conversation_one', { action: 'diff', path: 'README.md' });
+    expect(result).toMatchObject({ text: '-old\n+new', comparison: expect.stringContaining('HEAD') });
+    expect(inspect).toHaveBeenCalledWith('conversation_one', { kind: 'diff', path: 'README.md', signal: expect.any(AbortSignal) });
+    expect(controller.historyReviews.size).toBe(0);
+  });
+
+  test.each(['.env', '.git/config', '../outside', 'notes.md', 'README.md'])(
+    'model diffs enforce mandatory/custom exclusions and removed-secret checks: %s', async (file) => {
+      const { ManagedWorkspaceHistory } = require('./managed-workspace-history');
+      jest.spyOn(ManagedWorkspaceHistory.prototype, 'exclusions').mockResolvedValue([{ path: 'notes.md' }]);
+      const { controller } = createController();
+      const inspect = jest.spyOn(controller, 'inspectWorkspace').mockResolvedValue({ available: true, text: '-password=notpublic12345\n+removed' });
+      await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'diff', path: file }))
+        .rejects.toMatchObject({ code: 'WORKSPACE_PROTECTED_PATH' });
+      expect(inspect).toHaveBeenCalledTimes(file === 'README.md' ? 1 : 0);
+    }
+  );
+
   test('discloses only public enforcement properties and establishes one policy lease', async () => {
     const { controller, dependencies, helperPolicy } = createController();
 
@@ -1121,4 +1144,53 @@ describe('ManagedWorkspaceController', () => {
     expect(() => validateWorkspacePath('../outside')).toThrow('inside the managed workspace');
     expect(() => validateWorkspacePath('/absolute')).toThrow('workspace-relative');
   });
+
+  test('versioned helper writes reject unread, externally changed, and replaced files', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-versioned-file-'));
+    const file = path.join(directory, 'file.txt');
+    const run = (operation, content = '', expected = '') => execFileSync(process.execPath,
+      ['-e', WORKSPACE_FILE_HELPER, operation, 'file.txt', Buffer.from(content).toString('base64'), expected],
+      { cwd: directory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+    try {
+      fs.writeFileSync(file, 'original');
+      expect(() => run('write', 'overwrite', 'missing')).toThrow();
+      let version = JSON.parse(run('read_version')).version;
+      fs.writeFileSync(file, 'external');
+      expect(() => run('write', 'overwrite', version)).toThrow();
+      expect(fs.readFileSync(file, 'utf8')).toBe('external');
+      version = JSON.parse(run('read_version')).version;
+      fs.renameSync(file, path.join(directory, 'old.txt'));
+      fs.writeFileSync(file, 'external');
+      expect(() => run('write', 'overwrite', version)).toThrow();
+      version = JSON.parse(run('read_version')).version;
+      run('write', 'accepted', version);
+      expect(fs.readFileSync(file, 'utf8')).toBe('accepted');
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  test('revocation while an external policy is being prepared prevents launch', async () => {
+    const { controller, dependencies, workspace } = createController();
+    workspace.project = { connected: true, mode: 'write' };
+    const grant = { root: '/managed', dev: '1', ino: '2', mode: 'write' };
+    dependencies.store.projectAccess = { grants: new Map([[workspace.workspaceId, grant]]), resolve: jest.fn(async () => grant) };
+    dependencies.createPolicy.mockImplementation(async () => {
+      dependencies.store.projectAccess.grants.delete(workspace.workspaceId);
+      return {};
+    });
+    await expect(controller.execute('conversation_one', { command: 'echo should-not-run' })).rejects.toMatchObject({ code: 'PROJECT_RECONNECT_REQUIRED' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(controller.leases.size).toBe(0);
+  });
+});
+
+test('changed project evidence invalidates a reviewed command before shell execution', async () => {
+  jest.spyOn(fs.promises, 'realpath').mockImplementation(async value => path.resolve(String(value)));
+  jest.spyOn(fs.promises, 'stat').mockResolvedValue({ isDirectory: () => true });
+  const { controller, dependencies } = createController();
+  controller.commandReviewEvidence.set('conversation_one', new Map([[JSON.stringify(['npm run dev', '.']), 'before']]));
+  controller.collectCommandReviewEvidence = jest.fn().mockResolvedValue({ fingerprint: 'after' });
+  await expect(controller.execute('conversation_one', { command: 'npm run dev' })).rejects.toMatchObject({ code: 'COMMAND_REVIEW_STALE' });
+  expect(dependencies.executor.execute.mock.calls.some(([, request]) => request.command === '/bin/sh')).toBe(false);
+  expect(controller.commandReviewEvidence.has('conversation_one')).toBe(false);
+  jest.restoreAllMocks();
 });

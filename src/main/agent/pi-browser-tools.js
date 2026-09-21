@@ -1,6 +1,7 @@
 'use strict';
 
 const { BrowserRecoveryTracker } = require('./browser-recovery-tracker');
+const { withToolErrorRecovery, withToolResultRecovery } = require('./tool-error-recovery');
 const { BrowserEvidenceStore } = require('./browser-evidence-store');
 const {
   OPERATIONS,
@@ -836,10 +837,13 @@ async function createFreedomBrowserTools(options = {}) {
           }
           if (receipt.pageId && receipt.origin && spec.operation !== OPERATIONS.READ_FRAME)
             pageOrigins.set(receipt.pageId, receipt.origin);
+          const pageToolFailure = spec.operation === OPERATIONS.CALL_PAGE_TOOL &&
+            ['failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(receipt.pageTool?.status);
           notifyToolOutcome(options.onToolOutcome, {
             toolCallId,
             operation: spec.operation,
-            status: 'succeeded',
+            status: pageToolFailure ? 'failed' : 'succeeded',
+            ...(pageToolFailure && { errorCode: receipt.pageTool.status === 'cancelled' ? 'USER_CANCELLED' : 'PAGE_TOOL_OUTCOME_UNCONFIRMED' }),
             ...(typeof targetTabId === 'string' && { tabId: targetTabId }),
             ...receipt,
           });
@@ -858,7 +862,8 @@ async function createFreedomBrowserTools(options = {}) {
               text: `Historical evidence saved as ${evidenceId}. Use browser_recall_evidence if this result leaves your context; reread the page for live actions.`,
             });
           }
-          return result;
+          return pageToolFailure ? withToolResultRecovery(result,
+            receipt.pageTool.status === 'cancelled' ? 'USER_CANCELLED' : 'PAGE_TOOL_OUTCOME_UNCONFIRMED', spec.operation) : result;
         } catch (error) {
           const receipt = createToolReceipt(spec.operation, {
             pageId: targetTabId,
@@ -885,7 +890,7 @@ async function createFreedomBrowserTools(options = {}) {
       },
     })
   );
-  return [...tools, evidence.tool(sdk)];
+  return [...tools, evidence.tool(sdk)].map(withToolErrorRecovery);
 }
 
 module.exports = {

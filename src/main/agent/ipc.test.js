@@ -172,6 +172,35 @@ function register(overrides = {}) {
 }
 
 describe('Freedom agent IPC', () => {
+  test('project access trusts the native picker, not a caller-provided path', async () => {
+    const dialog = { showOpenDialog: jest.fn(async () => ({ canceled: false, filePaths: ['/native/project'] })) };
+    const service = createService();
+    service.openProject = jest.fn(async () => ({ conversationId: 'conversation_test', status: 'ready' }));
+    const ctx = register({ dialog, service });
+    const handler = ctx.ipcMain.handlers.get(IPC.AGENT_PROJECT_ACCESS);
+    expect((await handler({ sender: ctx.otherSender }, { action: 'open' })).ok).toBe(false);
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+    expect((await handler({ sender: ctx.sender }, { action: 'open', path: '/forged/path' })).ok).toBe(true);
+    expect(service.openProject).toHaveBeenCalledWith('/native/project');
+    expect((await handler({ sender: ctx.sender }, { action: 'write', conversationId: 'another' })).ok).toBe(false);
+    await ctx.dispose();
+    expect(ctx.ipcMain.handlers.has(IPC.AGENT_PROJECT_ACCESS)).toBe(false);
+  });
+
+  test('cancelled or destroyed-window project selection grants no access', async () => {
+    const service = createService(); service.openProject = jest.fn();
+    let finish;
+    const dialog = { showOpenDialog: jest.fn(() => new Promise((resolve) => { finish = resolve; })) };
+    const ctx = register({ dialog, service });
+    const handler = ctx.ipcMain.handlers.get(IPC.AGENT_PROJECT_ACCESS);
+    const pending = handler({ sender: ctx.sender }, { action: 'open' });
+    expect((await handler({ sender: ctx.sender }, { action: 'open' })).ok).toBe(false);
+    ctx.sender.isDestroyed.mockReturnValue(true);
+    finish({ canceled: false, filePaths: ['/native/project'] });
+    expect((await pending).ok).toBe(false);
+    expect(service.openProject).not.toHaveBeenCalled();
+    await ctx.dispose();
+  });
   test.each([
     [IPC.AGENT_PROVIDER_REFRESH_MODELS, 'refreshModels', { providerId: 'venice', apiKey: 'test-key' }],
     [IPC.AGENT_PROVIDER_SET_PREFERENCES, 'setPreferences', { providerId: 'openrouter', privacyPolicy: 'zdr' }],

@@ -1672,6 +1672,12 @@
                   </svg>
                   <span><strong>Add folder…</strong><small>Read-only for this conversation</small></span>
                 </button>
+                <button id="agent-open-project" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                  </svg>
+                  <span><strong>Open project…</strong><small>Start a chat with an existing project</small></span>
+                </button>
               </div>
               <div id="agent-composer" class="agent-composer">
                 <div id="agent-page-contexts" class="agent-composer-contexts" hidden>
@@ -1755,7 +1761,7 @@
                         <path d="M12 3 5 6.5v5.2c0 4.3 2.8 7.7 7 9.3 4.2-1.6 7-5 7-9.3V6.5L12 3Z" />
                         <circle cx="12" cy="12" r="2.2" />
                       </svg>
-                      <span id="agent-active-approval-mode-label">Ask every action</span>
+                      <span id="agent-active-approval-mode-label">Ask when needed</span>
                     </button>
                   </div>
                   <div class="agent-composer-actions">
@@ -1942,6 +1948,7 @@
                 id="agent-approval-mode-popover"
                 class="agent-popover agent-approval-mode-popover"
                 role="dialog"
+                aria-label="Agent approvals"
                 hidden
               >
                 <div
@@ -1951,27 +1958,27 @@
                 >
                   <button
                     id="agent-approval-mode-every"
-                    class="agent-approval-mode-option active"
-                    type="button"
-                    aria-pressed="true"
-                  >
-                    <span>
-                      <strong>Ask before every interaction</strong>
-                      <small>Review clicks, typing, selections, and key presses</small>
-                    </span>
-                    <span class="agent-approval-mode-check" aria-hidden="true">✓</span>
-                  </button>
-                  <button
-                    id="agent-approval-mode-sensitive"
                     class="agent-approval-mode-option"
                     type="button"
                     aria-pressed="false"
                   >
                     <span>
-                      <strong>Ask for consequential actions</strong>
-                      <small>Work normally and review meaningful commitments</small>
+                      <strong>Ask frequently</strong>
+                      <small>Review each page interaction. Project work continues within permissions you have granted.</small>
                     </span>
                     <span class="agent-approval-mode-check" aria-hidden="true"></span>
+                  </button>
+                  <button
+                    id="agent-approval-mode-sensitive"
+                    class="agent-approval-mode-option active"
+                    type="button"
+                    aria-pressed="true"
+                  >
+                    <span>
+                      <strong>Ask when needed</strong>
+                      <small>Let routine browsing and reviewed command access proceed. Ask when a decision needs you.</small>
+                    </span>
+                    <span class="agent-approval-mode-check" aria-hidden="true">✓</span>
                   </button>
                   <button
                     id="agent-approval-mode-allow"
@@ -1980,8 +1987,8 @@
                     aria-pressed="false"
                   >
                     <span>
-                      <strong>Allow website interactions</strong>
-                      <small>Let Agent interact with websites without asking</small>
+                      <strong>Fewer interruptions</strong>
+                      <small>Let page interactions proceed without review, including form submissions.</small>
                     </span>
                     <span class="agent-approval-mode-check" aria-hidden="true"></span>
                   </button>

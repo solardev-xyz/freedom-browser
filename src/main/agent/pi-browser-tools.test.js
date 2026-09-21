@@ -879,7 +879,7 @@ describe('Pi browser tool adapter', () => {
     for (let index = 0; index < 4; index += 1) {
       const checked = expect(click.execute(`click_${index}`, { ref: 'same' }));
       await checked.rejects.toMatchObject({ code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE, retryable: true, suggestedAction: 'Read the page again',
-        message: index === 3 ? expect.stringContaining('same retryable error 4 times') : '[ELEMENT_NOT_INTERACTABLE] Covered' });
+        message: index === 3 ? expect.stringContaining('same retryable error 4 times') : expect.stringContaining('[ELEMENT_NOT_INTERACTABLE] Covered') });
     }
     expect(controller.execute).toHaveBeenCalledTimes(4);
   });
@@ -1083,3 +1083,19 @@ describe('Pi browser tool adapter', () => {
     ).rejects.toThrow('vision capability must be a boolean');
   });
 });
+
+
+test.each(['failed', 'timed_out', 'outcome_unknown', 'cancelled'])(
+  'page-tool %s results retain evidence and receive actionable recovery', async (status) => {
+    const envelope = successEnvelope({ status, name: 'submit', executionRef: 'page_execution_test', mayHaveChanged: true });
+    const controller = { execute: jest.fn(async () => envelope) };
+    const onToolOutcome = jest.fn();
+    const tools = await createFreedomBrowserTools({ sdk: createSdk(), controller, tabId: 'tab_assigned', onToolOutcome });
+    const result = await tools.find(tool => tool.name === OPERATIONS.CALL_PAGE_TOOL).execute('id', { toolRef: 'test', arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result.details.envelope).toBe(envelope);
+    expect(result.content.at(-1).text).toContain(status === 'cancelled' ? '"action":"stop"' : 'browser_list_page_tools');
+    expect(onToolOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    expect(controller.execute).toHaveBeenCalledTimes(1);
+  }
+);

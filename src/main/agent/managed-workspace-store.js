@@ -6,9 +6,10 @@ const { initializeWorkspaceGit } = require('./managed-workspace-git');
 const path = require('path');
 const Database = require('better-sqlite3');
 const log = require('../logger');
+const { ExternalProjectAccess, projectError } = require('./external-project-access');
 
 const DB_FILE = 'agent-workspaces.sqlite';
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const WORKSPACE_DIRECTORY = 'agent-workspaces';
 const MAX_RETAINED_COMMANDS = 1_000;
 const COMMAND_STATES = new Set([
@@ -67,6 +68,7 @@ function rowToWorkspace(row) {
     conversationId: row.conversation_id,
     enabled: row.enabled === 1,
     backend: row.backend || '',
+    ...(row.project_path && { project: Object.freeze({ name: row.project_name, mode: row.project_mode }) }),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -120,6 +122,7 @@ class AgentManagedWorkspaceStore {
     this.db = null;
     this.statements = null;
     this.gitInitializations = new Map();
+    this.projectAccess = new ExternalProjectAccess({ userDataDir: this.userDataDir });
   }
 
   getDb() {
@@ -134,6 +137,7 @@ class AgentManagedWorkspaceStore {
   }
 
   close() {
+    this.projectAccess.clear();
     if (!this.db) return;
     log.info('[AgentWorkspaces] Closing database');
     this.db.close();
@@ -196,6 +200,17 @@ class AgentManagedWorkspaceStore {
         preview_token TEXT NOT NULL UNIQUE,
         UNIQUE(workspace_id, command_text, working_directory, port)
       );`);
+    }
+    if (version < 5) {
+      this.db.exec(`ALTER TABLE agent_workspaces ADD COLUMN project_path TEXT;
+        ALTER TABLE agent_workspaces ADD COLUMN project_name TEXT;
+        ALTER TABLE agent_workspaces ADD COLUMN project_mode TEXT;
+        ALTER TABLE agent_workspaces ADD COLUMN project_dev TEXT;
+        ALTER TABLE agent_workspaces ADD COLUMN project_ino TEXT;
+        CREATE TABLE agent_project_edits (
+          workspace_id TEXT NOT NULL REFERENCES agent_workspaces(id) ON DELETE CASCADE,
+          path TEXT NOT NULL, PRIMARY KEY(workspace_id, path)
+        );`);
     }
     if (version < SCHEMA_VERSION) this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
@@ -267,7 +282,7 @@ class AgentManagedWorkspaceStore {
   }
 
   getForConversation(conversationId) {
-    return rowToWorkspace(
+    return this.#publicWorkspace(
       this.#getStatements().getConversationWorkspace.get(
         requiredString(conversationId, 'Conversation ID', 160)
       )
@@ -275,12 +290,78 @@ class AgentManagedWorkspaceStore {
   }
 
   get(workspaceId) {
-    return rowToWorkspace(
+    return this.#publicWorkspace(
       this.#getStatements().getWorkspace.get(requiredString(workspaceId, 'Workspace ID', 160))
     );
   }
 
-  async ensureForConversation(conversationId) {
+  #publicWorkspace(row) {
+    const workspace = rowToWorkspace(row);
+    if (!workspace?.project) return workspace;
+    const grant = this.projectAccess.grants.get(workspace.workspaceId);
+    return Object.freeze({ ...workspace, project: Object.freeze({ ...workspace.project,
+      connected: Boolean(grant), mode: grant?.mode || workspace.project.mode }) });
+  }
+
+  async attachProject(conversationId, selectedPath) {
+    if (this.getForConversation(conversationId)) throw projectError('PROJECT_IN_USE', 'Open this project in a new conversation.');
+    const identity = await this.projectAccess.identify(selectedPath);
+    // This directory contains only Freedom-owned metadata/temporary state. The selected project
+    // is never initialized, chmodded, copied, or deleted by the store.
+    const workspace = await this.ensureForConversation(conversationId, { initializeGit: false });
+    try {
+      this.projectAccess.grant(workspace.workspaceId, identity, 'read');
+      this.getDb().prepare(`UPDATE agent_workspaces SET project_path = ?, project_name = ?,
+        project_mode = 'read', project_dev = ?, project_ino = ?, enabled = 1 WHERE id = ?`)
+        .run(identity.root, identity.name, identity.dev, identity.ino, workspace.workspaceId);
+      return this.get(workspace.workspaceId);
+    } catch (error) {
+      await this.deleteConversation(conversationId);
+      throw error;
+    }
+  }
+
+  async setProjectAccess(conversationId, mode, selectedPath = null, options = {}) {
+    const workspace = this.getForConversation(conversationId);
+    if (!workspace?.project) throw projectError('PROJECT_UNAVAILABLE', 'This conversation has no attached project.');
+    if (mode === 'remove') {
+      this.projectAccess.revoke(workspace.workspaceId);
+    } else if (mode === 'reconnect') {
+      const identity = await this.projectAccess.identify(selectedPath);
+      const row = this.#getStatements().getWorkspace.get(workspace.workspaceId);
+      if (identity.dev !== row.project_dev || identity.ino !== row.project_ino) {
+        throw projectError('PROJECT_CHANGED', 'Choose the original project folder. Open a replacement as a new project.');
+      }
+      this.projectAccess.grant(workspace.workspaceId, identity, 'read');
+      this.getDb().prepare(`UPDATE agent_workspaces SET project_path = ?, project_mode = 'read' WHERE id = ?`)
+        .run(identity.root, workspace.workspaceId);
+    } else {
+      const identity = await this.projectAccess.resolve(workspace.workspaceId);
+      if (options.signal?.aborted) throw projectError('WORKSPACE_OPERATION_CANCELLED', 'Project permission request was stopped.');
+      if (options.expectedGrant && identity !== options.expectedGrant) {
+        throw projectError('PROJECT_CHANGED', 'Project access changed while approval was pending.');
+      }
+      this.projectAccess.grant(workspace.workspaceId, identity, mode);
+      this.getDb().prepare('UPDATE agent_workspaces SET project_mode = ? WHERE id = ?').run(mode, workspace.workspaceId);
+    }
+    return this.get(workspace.workspaceId);
+  }
+
+  async resolveHistoryPath(workspaceId) {
+    return this.#validateWorkspaceDirectory(workspaceId);
+  }
+
+  recordProjectEdit(workspaceId, relativePath) {
+    this.getDb().prepare('INSERT OR IGNORE INTO agent_project_edits (workspace_id, path) VALUES (?, ?)')
+      .run(workspaceId, relativePath);
+  }
+
+  projectEdits(workspaceId) {
+    return this.getDb().prepare('SELECT path FROM agent_project_edits WHERE workspace_id = ? ORDER BY path LIMIT 501')
+      .all(workspaceId).map((entry) => entry.path);
+  }
+
+  async ensureForConversation(conversationId, { initializeGit = true } = {}) {
     const ownerId = requiredString(conversationId, 'Conversation ID', 160);
     const existing = this.getForConversation(ownerId);
     if (existing) {
@@ -299,8 +380,10 @@ class AgentManagedWorkspaceStore {
         throw error;
       }
       try {
-        await fs.promises.mkdir(path.join(workspacePath, '.git'), { mode: 0o700 });
-        await initializeWorkspaceGit(workspacePath);
+        if (initializeGit) {
+          await fs.promises.mkdir(path.join(workspacePath, '.git'), { mode: 0o700 });
+          await initializeWorkspaceGit(workspacePath);
+        }
         const createdAt = this.now();
         this.#getStatements().insertWorkspace.run(workspaceId, ownerId, createdAt, createdAt);
         return this.get(workspaceId);
@@ -334,6 +417,7 @@ class AgentManagedWorkspaceStore {
   }
 
   async resolvePath(workspaceId) {
+    if (this.get(workspaceId)?.project) return (await this.projectAccess.resolve(workspaceId)).root;
     const workspaceRoot = await this.#validateWorkspaceDirectory(workspaceId);
     let pending = this.gitInitializations.get(workspaceId);
     if (!pending) {
@@ -438,8 +522,12 @@ class AgentManagedWorkspaceStore {
     const ownerId = requiredString(conversationId, 'Conversation ID', 160);
     const workspace = this.getForConversation(ownerId);
     if (!workspace) return false;
+    this.projectAccess.revoke(workspace.workspaceId);
     const workspacePath = await this.#validateWorkspaceDirectory(workspace.workspaceId);
-    await fs.promises.rm(workspacePath, { recursive: true, force: false });
+    // An ambiguous external commit can leave a repository index lock. Preserve
+    // its reconciliation evidence even when the conversation itself is deleted.
+    const pendingCommit = workspace.project && fs.existsSync(path.join(workspacePath, 'git-commit-pending.json'));
+    if (!pendingCommit) await fs.promises.rm(workspacePath, { recursive: true, force: false });
     return this.#getStatements().deleteWorkspace.run(workspace.workspaceId, ownerId).changes > 0;
   }
 }

@@ -3,7 +3,8 @@
 const { workspaceGitCommand } = require('./workspace-git-command');
 
 // Appended to the existing sandboxed file helper. These operations are exposed
-// only to trusted chrome; file bodies and diffs never enter Agent state/history.
+// to trusted chrome and the bounded model-facing history diff tool. The tool
+// applies history exclusions and secret checks before returning text to the model.
 const WORKSPACE_INSPECTION_HELPER = String.raw`
 ${workspaceGitCommand.toString()}
 function inspectPath(value, allowRoot = false) {
@@ -44,6 +45,7 @@ function gitRead(args, acceptedCodes = [0]) {
 }
 
 function gitChanges() {
+  if (!fs.existsSync(path.join(root, '.git'))) return { available: false, noRepository: true, message: 'This project has no Git repository.' };
   try {
     const records = gitRead(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames', '--ignore-submodules=all']).split('\0').filter(Boolean);
     const changes = [];

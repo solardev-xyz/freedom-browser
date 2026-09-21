@@ -376,6 +376,9 @@ function addReadOnlyMount(args, sourcePath, mountPath) {
 async function addProtectedMounts(args, policy, stagingDirectory) {
   let gitIndex = 0;
   for (const protectedPath of policy.filesystem.protectedPaths) {
+    if (protectedPath.kind === 'absent') {
+      throw new Error('Projects without Git metadata are not yet supported by the Linux sandbox');
+    }
     if (protectedPath.kind !== 'git_pointer') {
       addReadOnlyMount(args, protectedPath.sourcePath, protectedPath.mountPath);
       continue;

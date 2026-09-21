@@ -1,6 +1,7 @@
 'use strict';
 
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
+const { withToolErrorRecovery } = require('./tool-error-recovery');
 
 const EMPTY_PARAMETERS = Object.freeze({
   type: 'object',
@@ -8,7 +9,7 @@ const EMPTY_PARAMETERS = Object.freeze({
   additionalProperties: false,
 });
 
-function safeAttachmentError(error) {
+function attachmentErrorMessage(error) {
   if (typeof error?.code === 'string') {
     if (error.code === 'ENOENT') return new Error('The requested attachment path is unavailable');
     if (error.code === 'EACCES' || error.code === 'EPERM') {
@@ -29,6 +30,14 @@ function safeAttachmentError(error) {
     return new Error(message.slice(0, 240));
   }
   return new Error('The attachment could not be read safely');
+}
+
+function safeAttachmentError(error) {
+  const safe = attachmentErrorMessage(error);
+  const codes = ['ENOENT', 'EACCES', 'EPERM', 'ABORT_ERR', 'PDF_PASSWORD_REQUIRED', 'PDF_PAGE_LIMIT',
+    'PDF_PAGE_OUT_OF_RANGE', 'PDF_INVALID', 'PDF_PROCESSING_TIMEOUT'];
+  safe.code = codes.includes(error?.code) ? error.code : 'ATTACHMENT_UNAVAILABLE';
+  return safe;
 }
 
 async function createConversationAttachmentTools(options = {}) {
@@ -255,7 +264,7 @@ async function createConversationAttachmentTools(options = {}) {
       })
     );
   }
-  return tools;
+  return tools.map(withToolErrorRecovery);
 }
 
 module.exports = { EMPTY_PARAMETERS, createConversationAttachmentTools, safeAttachmentError };

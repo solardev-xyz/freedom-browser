@@ -10,6 +10,14 @@ const checkpoint = { id: 'a'.repeat(40), label: 'Working game', createdAt: 1000,
 describe('workspace summary and popovers', () => {
   let panel, compact, refreshControl, inspector, api, historyApi;
   const start = async () => { inspector.setWorkspace('one'); jest.advanceTimersByTime(250); await flush(); };
+  test('external project history shows commits without private checkpoint settings', async () => {
+    inspector.setWorkspace('one', { name: 'Project', connected: true, mode: 'write' });
+    jest.advanceTimersByTime(250); await flush();
+    const rows = panel.querySelectorAll('.agent-workspace-summary');
+    expect(rows[2].children[0].textContent).toBe('Commits');
+    rows[2].dispatch('click');
+    expect(find(popup(), 'Commit settings')).toBeUndefined();
+  });
   beforeEach(() => {
     jest.useFakeTimers(); jest.clearAllMocks();
     panel = createElement('div'); compact = createElement('div'); refreshControl = createElement('button');
@@ -37,6 +45,27 @@ describe('workspace summary and popovers', () => {
     expect(panel.querySelector('.agent-workspace-refresh')).not.toBeNull();
   });
 
+  test('shows attached project access in both layouts and reconnects without stale file reads', async () => {
+    const onProjectAccess = jest.fn();
+    inspector = createWorkspaceInspector([panel, compact], {}, { compactHost: compact, onProjectAccess });
+    inspector.setWorkspace('one', { name: 'My project', mode: 'read', connected: true });
+    jest.advanceTimersByTime(250); await flush();
+    for (const host of [panel, compact]) {
+      const row = host.querySelectorAll('.agent-workspace-summary')[0];
+      expect(row.children[0].textContent).toBe('My project');
+      expect(row.children[1].textContent).toBe('Read only');
+    }
+    panel.querySelectorAll('.agent-workspace-summary')[0].dispatch('click');
+    find(popup(), 'Allow editing').dispatch('click');
+    expect(onProjectAccess).toHaveBeenCalledWith('write');
+    inspector.setWorkspace('one', { name: 'My project', mode: 'read', connected: false });
+    api.mockClear(); jest.advanceTimersByTime(250); await flush();
+    expect(api).not.toHaveBeenCalled();
+    panel.querySelectorAll('.agent-workspace-summary')[0].dispatch('click');
+    find(popup(), 'Reconnect project…').dispatch('click');
+    expect(onProjectAccess).toHaveBeenCalledWith('reconnect');
+  });
+
   test('refreshes directly from either header without opening or collapsing content', async () => {
     await start();
     expect(refreshControl.hidden).toBe(false);
@@ -54,13 +83,13 @@ describe('workspace summary and popovers', () => {
     expect(refreshControl.hidden).toBe(true);
   });
 
-  test('opens changes as a viewer and checkpoints as a non-modal anchored list', async () => {
+  test('opens changes as a viewer and commits as a non-modal anchored list', async () => {
     await start();
     panel.querySelectorAll('.agent-workspace-summary')[0].dispatch('click');
     expect(mockViewers.open).toHaveBeenCalledWith('one', null, expect.any(Function));
     compact.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
     expect(popup().attributes['aria-modal']).toBeUndefined();
-    expect(popup().attributes['aria-label']).toBe('Checkpoints');
+    expect(popup().attributes['aria-label']).toBe('Commits');
     expect(popup().querySelectorAll('.agent-workspace-checkpoint')).toHaveLength(1);
     popup().querySelector('.agent-workspace-checkpoint').dispatch('click');
     expect(mockViewers.open).toHaveBeenLastCalledWith('one', checkpoint, expect.any(Function));
@@ -75,7 +104,7 @@ describe('workspace summary and popovers', () => {
       return { ok: true, conversationId, result: { versions: [checkpoint], exclusions } };
     });
     await start(); panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
-    find(popup(), 'Checkpoint settings').dispatch('click');
+    find(popup(), 'Commit settings').dispatch('click');
     const form = popup().querySelector('.agent-workspace-version-save');
     form.children[0].value = 'private.csv'; form.children[1].value = 'Private data'; form.children[2].dispatch('click'); await flush();
     expect(historyApi).toHaveBeenCalledWith('one', 'exclude', { path: 'private.csv', reason: 'Private data' });
@@ -98,7 +127,7 @@ describe('workspace summary and popovers', () => {
     expect(panel.querySelectorAll('.agent-workspace-summary')[0].children[1].textContent).toBe('Unavailable');
   });
 
-  test.each([false, true])('counts available checkpoints with a history notice (limit reached: %s)', async (limitReached) => {
+  test.each([false, true])('counts available commits with a history notice (limit reached: %s)', async (limitReached) => {
     const notice = 'Only explicitly reviewed file versions are checkpointed. Later edits and unselected files remain outside saved history.';
     historyApi.mockImplementation(async (conversationId) => ({ ok: true, conversationId, result: { versions: [checkpoint], notice, limitReached } }));
     await start();
@@ -115,7 +144,7 @@ describe('workspace summary and popovers', () => {
     await start();
     expect(panel.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe('Unavailable');
     panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
-    expect(popup().querySelector('.agent-workspace-note').textContent).toBe('Checkpoints could not be refreshed. Try again.');
+    expect(popup().querySelector('.agent-workspace-note').textContent).toBe('Commits could not be refreshed. Try again.');
     historyApi.mockImplementation(async (conversationId) => ({ ok: true, conversationId, result: { versions: [], notice: 'Later edits remain outside saved history.' } }));
     await start();
     expect(panel.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe('0');

@@ -14,6 +14,81 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('reports real repository commits without checkpoint terminology', () => {
+    const workspace = { kind: 'history', command: 'Project history: commit', workingDirectory: '.',
+      backend: 'freedom-workspace-files', state: 'completed',
+      history: { action: 'commit', source: 'repository', saved: true, checkpointId: 'c'.repeat(40) } };
+    const item = { operation: 'workspace_history', status: 'succeeded', ...activityProgress('workspace_history', { workspace }) };
+    expect(item.label).toBe('Created commit');
+    const result = buildAgentOutcome([item], 'completed');
+    expect(result.headline).toBe('Created commit');
+    expect(result.detail).toContain('commit ccccccc in the project repository');
+    expect(result.detail).not.toContain('checkpoint');
+    workspace.history.saved = false;
+    expect(activityProgress('workspace_history', { workspace }).label).toBe('No new commit needed');
+  });
+  const historyItem = (action, result = {}, state = 'completed') => {
+    const workspace = { kind: 'history', command: `Project history: ${action}`,
+      workingDirectory: '.', backend: 'freedom-workspace-files', state, history: { action, ...result } };
+    return { operation: 'workspace_history', status: state === 'completed' ? 'succeeded' : 'failed',
+      ...activityProgress('workspace_history', { workspace }) };
+  };
+
+  test('describes repository status without private checkpoint exclusions', () => {
+    const result = buildAgentOutcome([historyItem('status', { source: 'repository' })], 'completed');
+    expect(result).toMatchObject({ headline: 'Checked commits', detail: 'Freedom checked project changes and Git history.' });
+  });
+
+  test.each([
+    ['status', {}, 'Checked checkpoints'],
+    ['review', {}, 'Reviewed file changes'],
+    ['exclude', {}, 'Updated checkpoint exclusions'],
+    ['include', {}, 'Updated checkpoint exclusions'],
+    ['checkpoint', { saved: true, checkpointId: 'a'.repeat(40) }, 'Saved checkpoint'],
+    ['checkpoint', { saved: false, checkpointId: 'a'.repeat(40) }, 'Checkpoint already up to date'],
+  ])('reports %s from project receipts without browser claims', (action, result, label) => {
+    const item = historyItem(action, result);
+    expect(item.label).toBe(label);
+    const outcome = buildAgentOutcome([item], 'completed');
+    expect(outcome).toMatchObject({ headline: label, verification: 'workspace_execution_recorded',
+      counts: { workspaceCommands: 1 } });
+    expect(JSON.stringify(outcome)).not.toMatch(/browser|Agent-reported/);
+    if (action === 'checkpoint') expect(outcome.detail).toContain('not a project Git commit');
+  });
+
+  test('preserves checkpoint evidence after a status check and alongside file edits', () => {
+    const saved = historyItem('checkpoint', { saved: true, checkpointId: 'b'.repeat(40) });
+    const status = historyItem('status');
+    expect(buildAgentOutcome([saved, status], 'completed')).toMatchObject({
+      headline: 'Saved checkpoint', detail: expect.stringContaining('bbbbbbb'),
+    });
+    const write = { operation: 'write', status: 'succeeded', workspace: {
+      ...saved.workspace, kind: 'file_write', command: 'Write README.md',
+    } };
+    expect(buildAgentOutcome([write, saved, status], 'completed')).toMatchObject({
+      headline: 'Project file updated', detail: expect.stringContaining('local checkpoint bbbbbbb'),
+    });
+  });
+
+  test.each(['failed', 'cancelled'])('does not claim a checkpoint was saved after %s', (state) => {
+    const item = historyItem('checkpoint', { saved: true, checkpointId: 'a'.repeat(40) }, state);
+    expect(item.workspace.history).toEqual({ action: 'checkpoint' });
+    expect(item.label).toMatch(/failed|stopped/);
+    expect(buildAgentOutcome([historyItem('review'), item], 'completed')).toMatchObject({
+      tone: 'caution', headline: item.label,
+    });
+    expect(buildAgentOutcome([item], 'cancelled').detail).not.toMatch(/browser/i);
+  });
+
+  test('requires a valid save receipt and strips untrusted extra history fields', () => {
+    const item = historyItem('checkpoint', { saved: true, checkpointId: '/private/secret', text: 'secret' });
+    expect(item.workspace.history).toEqual({ action: 'checkpoint' });
+    expect(item.label).toBe('Checked project history');
+    expect(buildAgentOutcome([item], 'completed').detail).toContain('no confirmed save result');
+    const legacy = { ...item.workspace }; delete legacy.history;
+    expect(activityProgress('workspace_history', { workspace: legacy }).label).toBe('Checked project history');
+  });
+
   test('page tool results remain website claims, and pending manual submissions stay explicit', () => {
     const progress = (operation, result) => activityProgress(operation,
       createToolReceipt(operation, { envelope: { ok: true, tabId: 'tab_page', result } }));
@@ -863,7 +938,7 @@ describe('Agent progress projection', () => {
         changed: 0,
         observed: 0,
         pages: 0,
-        approvals: { requested: 0, approved: 0, declined: 0, withdrawn: 0 },
+        approvals: { requested: 0, approved: 0, reviewerApproved: 0, declined: 0, withdrawn: 0 },
       },
     });
   });
@@ -1044,6 +1119,7 @@ describe('Agent progress projection', () => {
     expect(outcome.counts.approvals).toEqual({
       requested: 1,
       approved: 1,
+      reviewerApproved: 0,
       declined: 0,
       withdrawn: 0,
     });
@@ -1051,6 +1127,12 @@ describe('Agent progress projection', () => {
     expect(outcome.detail).toContain('Approved destination: https://submit.example');
     expect(outcome.destinations).toEqual(['https://submit.example']);
     expect(JSON.stringify(outcome)).not.toMatch(/token|secret|private|form|payload/);
+  });
+
+  test('reviewer approvals are never described as approvals by the user', () => {
+    const outcome = buildAgentOutcome([{ operation: OPERATIONS.CLICK, status: 'succeeded', effect: 'changed', pageId: 'tab_1', approval: 'reviewer_approved' }], 'completed');
+    expect(outcome.counts.approvals).toMatchObject({ approved: 0, reviewerApproved: 1 });
+    expect(outcome.detail).not.toContain('approved by the user');
   });
 
   test('requires review when an interrupted change has an uncertain outcome', () => {
@@ -1313,4 +1395,25 @@ test.each([
 ])('scroll receipts describe %s without inventing movement', (outcome, label, effect) => {
   const receipt = createToolReceipt(OPERATIONS.SCROLL, { envelope: { ok: true, result: { outcome } } });
   expect(activityProgress(OPERATIONS.SCROLL, receipt)).toMatchObject({ label, effect });
+});
+
+
+test('mixed successful inspections and a failed command do not claim command completion', () => {
+  const activity = [
+    { operation: 'workspace_history', status: 'succeeded', workspace: {
+      kind: 'history', command: 'Project history: diff', workingDirectory: '.', backend: 'freedom-workspace-files',
+      state: 'completed', history: { action: 'diff', source: 'repository' }, sideEffects: 'none',
+    } },
+    { operation: 'bash', status: 'failed', workspace: {
+      kind: 'command', command: 'git diff', workingDirectory: '.', backend: 'unavailable', state: 'failed', sideEffects: 'unknown',
+    } },
+  ];
+  expect(activityProgress('workspace_history', { workspace: activity[0].workspace }).label).toBe('Read file changes');
+  expect(buildAgentOutcome(activity, 'completed')).toMatchObject({
+    tone: 'caution', headline: 'Project operation did not complete',
+  });
+});
+
+test('listing saved servers reports project work, not browser use', () => {
+  expect(activityProgress('workspace_server', { workspace: { kind: 'process', command: 'List saved development servers', workingDirectory: '.', backend: 'freedom-workspace-servers', state: 'completed', sideEffects: 'none' } })).toMatchObject({ label: 'Checked saved project servers' });
 });

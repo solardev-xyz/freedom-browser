@@ -371,8 +371,9 @@ class SwarmPublicationController {
       this.#emitProgress(operation, onProgress);
       throw error instanceof AutomationError
         ? error
-        : new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE, operation.error, {
-            suggestedAction: 'Check Swarm node readiness and postage, then try again.',
+        : new AutomationError([ERROR_CODES.POSTAGE_CAPACITY_INSUFFICIENT, ERROR_CODES.POSTAGE_UNAVAILABLE].includes(error?.code)
+          ? error.code : ERROR_CODES.CAPABILITY_UNAVAILABLE, operation.error, {
+            suggestedAction: 'Check existing stamps and compare effective remaining capacity with the upload requirement. Obtain approval before purchasing or changing a batch. Do not repeat a completed purchase.',
           });
     }
   }

@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const { withToolErrorRecovery } = require('./tool-error-recovery');
 const { getBuiltInSkillResource, isBuiltInSkillResourcePath } = require('./builtin-skills');
 const {
   MAX_WORKSPACE_DIRECTORY_ENTRIES,
@@ -48,6 +49,15 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
   'WORKSPACE_SANDBOX_DENIED',
 ]);
 const WORKSPACE_ERROR_MESSAGES = Object.freeze({
+  PROJECT_RECONNECT_REQUIRED: 'Reconnect the project from its menu before using project tools.',
+  PROJECT_READ_ONLY: 'The project is read-only. Request editing access through request_permissions before retrying.',
+  PROJECT_WRITE_DECLINED: 'The user declined project editing access. Leave the project read-only.',
+  PROJECT_UNAVAILABLE: 'This conversation has no attached project.',
+  PROJECT_ACCESS_INVALID: 'The project access request is invalid or expired.',
+  PROJECT_IN_USE: 'This project overlaps another conversation open for editing.',
+  PROJECT_CHANGED: 'The project folder changed or became unavailable. Reconnect it before continuing.',
+  WORKSPACE_DIFF_UNAVAILABLE: 'A bounded text diff is unavailable. Read accessible file contents and explain this limitation, or ask the user to review the diff in their Git client. Editing access does not solve this limitation.',
+  WORKSPACE_HISTORY_CHANGED: 'The file changed or has not been read yet. Read its current contents and reconsider the edit before writing.',
   INVALID_WORKSPACE_REQUEST: 'The workspace request is invalid',
   EXECUTABLE_ACCESS_DECLINED: 'The user did not grant access to the requested executables',
   EXECUTABLE_ACCESS_PLATFORM_UNAVAILABLE:
@@ -69,6 +79,8 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
   UNTRUSTED_CAPABILITY_AUTHORITY: 'Freedom refused untrusted workspace authority',
   WORKSPACE_COMMAND_CANCELLED: 'The workspace command was stopped',
   WORKSPACE_COMMAND_FAILED: 'The workspace command exited unsuccessfully',
+  WORKSPACE_AUDIT_FINDINGS: 'The npm audit completed with reported vulnerabilities. Inspect the advisory output and propose compatible project-local fixes. A nonzero audit exit status can indicate findings rather than an execution failure.',
+  COMMAND_REVIEW_STALE: 'Project evidence changed after approval. Call request_permissions again for this exact command and directory before retrying.',
   WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in this workspace shell; it may be installed but not exposed here',
   WORKSPACE_COMMAND_TIMED_OUT: 'The workspace command timed out',
   WORKSPACE_PROCESS_INPUT_UNAVAILABLE: 'The workspace process is not accepting input',
@@ -110,6 +122,16 @@ function safeWorkspaceError(error, options = {}) {
     'INVALID_COMMAND_PERMISSION_GRANT',
     'INVALID_EXECUTABLE_GRANT',
     'INVALID_EXECUTABLE_REQUEST',
+    'PROJECT_RECONNECT_REQUIRED',
+    'PROJECT_READ_ONLY',
+    'PROJECT_WRITE_DECLINED',
+    'PROJECT_UNAVAILABLE',
+    'PROJECT_ACCESS_INVALID',
+    'PROJECT_IN_USE',
+    'PROJECT_CHANGED',
+    'WORKSPACE_HISTORY_CHANGED',
+    'WORKSPACE_DIFF_UNAVAILABLE',
+    'WORKSPACE_HISTORY_BUSY',
     'WORKSPACE_CAPABILITY_DETECTION_FAILED',
     'WORKSPACE_DIRECTORY_UNAVAILABLE',
     'WORKSPACE_EXECUTION_FAILED',
@@ -119,6 +141,8 @@ function safeWorkspaceError(error, options = {}) {
     'WORKSPACE_ENABLE_FAILED',
     'WORKSPACE_COMMAND_CANCELLED',
     'WORKSPACE_COMMAND_FAILED',
+    'WORKSPACE_AUDIT_FINDINGS',
+    'COMMAND_REVIEW_STALE',
     'WORKSPACE_COMMAND_NOT_FOUND',
     'WORKSPACE_COMMAND_TIMED_OUT',
     'WORKSPACE_PROCESS_INPUT_UNAVAILABLE',
@@ -153,15 +177,21 @@ function safeWorkspaceError(error, options = {}) {
   ]);
   let code = safeCodes.has(error?.code) ? error.code : 'WORKSPACE_EXECUTION_FAILED';
   const receipt = options.receipt;
-  if (options.operation === 'bash' && receipt) {
-    if (receipt.state === 'sandbox_denied') code = 'WORKSPACE_SANDBOX_DENIED';
+  if (['bash', 'write_stdin'].includes(options.operation) && receipt) {
+    if (safeCodes.has(error?.code)) code = error.code;
+    else if (safeCodes.has(receipt.error?.code)) code = receipt.error.code;
+    else if (receipt.state === 'sandbox_denied') code = 'WORKSPACE_SANDBOX_DENIED';
     else if (receipt.state === 'timed_out') code = 'WORKSPACE_COMMAND_TIMED_OUT';
     else if (receipt.state === 'cancelled') code = 'WORKSPACE_COMMAND_CANCELLED';
-    else if (receipt.state === 'failed' && receipt.error?.code === 'WORKSPACE_EXECUTION_FAILED') {
-      code = 'WORKSPACE_EXECUTION_FAILED';
-    } else if (receipt.state === 'failed' && receipt.exitCode === 127) {
+    else if (receipt.state === 'failed' && receipt.exitCode === 127) {
       code = 'WORKSPACE_COMMAND_NOT_FOUND';
     } else if (receipt.state === 'failed') code = 'WORKSPACE_COMMAND_FAILED';
+  }
+  if (code === 'WORKSPACE_COMMAND_FAILED' && receipt?.exitCode === 1 && /^npm audit --json$/.test(receipt.command || '')) {
+    try {
+      const report = JSON.parse(options.commandOutput || '');
+      if (!report.error && Number.isInteger(report.metadata?.vulnerabilities?.total) && report.metadata.vulnerabilities.total > 0) code = 'WORKSPACE_AUDIT_FINDINGS';
+    } catch { /* Incomplete or non-audit output remains an execution failure. */ }
   }
   const message =
     WORKSPACE_ERROR_MESSAGES[code] ||
@@ -174,9 +204,10 @@ function safeWorkspaceError(error, options = {}) {
   // Only captured command output may accompany an execution failure. Infrastructure
   // exceptions still use the fixed safe message; never forward their raw messages.
   const output =
-    options.operation === 'bash' &&
+    ['bash', 'write_stdin'].includes(options.operation) &&
     [
       'WORKSPACE_COMMAND_FAILED',
+      'WORKSPACE_AUDIT_FINDINGS',
       'WORKSPACE_COMMAND_NOT_FOUND',
       'WORKSPACE_COMMAND_TIMED_OUT',
       'WORKSPACE_COMMAND_CANCELLED',
@@ -285,6 +316,7 @@ function workspaceAction(operation, params = {}) {
   }
   if (operation === 'ls') return `List ${target}`;
   if (operation === 'request_permissions') {
+    if (params.project === 'write') return 'Allow editing this project';
     const names = Array.isArray(params.executables) ? params.executables.slice(0, 16) : [];
     return `Use ${names.join(', ') || 'requested executables'}`;
   }
@@ -325,11 +357,11 @@ function assertBrowserEnvelope(envelope) {
 function createWorkspaceHistoryTool(sdk, options) {
   return sdk.defineTool({
     name: 'workspace_history', label: 'Review project history',
-    description: 'Review exact project file revisions, record contextual exclusions, and checkpoint only selected review tokens. Load the workspace-history skill first. No automatic commits or remote operations.',
+    description: 'Inspect project Git history and read bounded diffs with action diff and a path. Status reports workspaceKind: managed or external. Proactively checkpoint reviewed meaningful milestones in managed workspaces; commit external repository changes only when authorized. Review exact file revisions and save only selected review tokens. Status, diff and review work with read-only project access; use these instead of shell Git for inspection. Load the workspace-history skill first. No unreviewed snapshots or remote operations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['status', 'review', 'exclude', 'include', 'checkpoint'] },
+        action: { type: 'string', enum: ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint'] },
         path: { type: 'string', minLength: 1, maxLength: 1024 },
         reason: { type: 'string', minLength: 1, maxLength: 160 },
         label: { type: 'string', minLength: 1, maxLength: 80 },
@@ -347,13 +379,26 @@ function createWorkspaceHistoryTool(sdk, options) {
         notify(options.onToolPhase, { toolCallId, operation, phase: 'executing_operation' });
         const result = await options.controller.reviewWorkspaceHistory(options.conversationId, params, { signal: abort.signal });
         if (abort.signal?.aborted) throw new Error('Stopped');
-        receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, { path: params.path || '.' }, 'completed', { kind: 'history', command: `Project history: ${params.action}` });
+        receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params, 'completed', {
+          kind: 'history', command: `Project history: ${params.action}`,
+          history: { action: params.action, source: 'repository',
+            ...(['commit', 'checkpoint'].includes(params.action) && { saved: result.saved, checkpointId: result.id }) },
+        });
         notify(options.onToolOutcome, { toolCallId, operation, status: 'succeeded', workspace: receipt });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (error) {
-        notify(options.onToolOutcome, { toolCallId, operation, status: 'failed', errorCode: 'WORKSPACE_HISTORY_UNAVAILABLE' });
-        const safe = new Error(error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE' ? error.message : 'Project history operation unavailable or stopped. No unreviewed changes were automatically checkpointed.');
-        safe.code = 'WORKSPACE_HISTORY_UNAVAILABLE';
+        // Preserve commit recovery instructions even if cancellation also arrived.
+        let safe;
+        if (error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE') safe = error;
+        else if (abort.signal?.aborted) safe = safeWorkspaceError({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+        else if (WORKSPACE_ERROR_MESSAGES[error?.code]) safe = safeWorkspaceError(error);
+        else safe = Object.assign(new Error('Project Git operation unavailable or stopped. Check repository state before retrying; no automatic retry was attempted.'),
+          { code: 'WORKSPACE_HISTORY_UNAVAILABLE' });
+        receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params,
+          abort.signal?.aborted ? 'cancelled' : 'failed', {
+            kind: 'history', command: `Project history: ${params.action}`, history: { action: params.action, source: 'repository' },
+          });
+        notify(options.onToolOutcome, { toolCallId, operation, status: 'failed', errorCode: safe.code, workspace: receipt });
         throw safe;
       } finally { abort.dispose(); }
     },
@@ -511,9 +556,11 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
     stdoutTruncated: false,
     stderrTruncated: false,
     terminationGuarantee: 'not_applicable',
-    sideEffects: workspaceOperationIsReadOnly(operation) ? 'none' : 'unknown',
+    sideEffects: workspaceOperationIsReadOnly(operation) ||
+      (operation === 'workspace_history' && ['status', 'diff', 'review'].includes(params.action)) ? 'none' : 'unknown',
     survivorsPossible: false,
     completeDescendantTermination: true,
+    ...(result.history && { history: result.history }),
     ...(Number.isSafeInteger(result.entryCount) && result.entryCount >= 0
       ? { entryCount: result.entryCount }
       : {}),
@@ -644,6 +691,9 @@ async function ensureWorkspaceEnabled(options, operation, toolCallId, signal) {
       phase,
     });
   let workspace = options.controller.getWorkspace(options.conversationId);
+  if (workspace?.project && !workspace.project.connected) {
+    throw Object.assign(new Error(WORKSPACE_ERROR_MESSAGES.PROJECT_RECONNECT_REQUIRED), { code: 'PROJECT_RECONNECT_REQUIRED' });
+  }
   if (workspace?.enabled) return workspace;
   const capabilities = await options.controller.disclosure(options.conversationId, {
     signal,
@@ -655,7 +705,7 @@ async function ensureWorkspaceEnabled(options, operation, toolCallId, signal) {
     operation,
     workspace: capabilities,
   });
-  if (signal?.aborted) {
+  if (signal?.aborted || (typeof decision?.isCurrent === 'function' && !decision.isCurrent())) {
     const cancelled = new Error('The workspace operation was stopped');
     cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
     throw cancelled;
@@ -731,7 +781,10 @@ function editOperations(options) {
   return Object.freeze({
     readFile: reads.readFile,
     writeFile: writes.writeFile,
-    access: reads.access,
+    access: async (...args) => {
+      try { return await reads.access(...args); }
+      catch (error) { options.captureError?.(error); throw error; }
+    },
   });
 }
 
@@ -977,6 +1030,7 @@ function createStandardGrepTool(template, options) {
 function createRequestPermissionsTool(sdk, options) {
   const networkPermissionsEnabled = options.controller.fullNetworkPermissionsEnabled?.() === true;
   const properties = {
+    project: { type: 'string', enum: ['write'], description: 'Request editing access to this conversation’s attached project, including local Git commits. Use separately from command permissions.' },
     executables: {
       type: 'array',
       minItems: 1,
@@ -1000,10 +1054,10 @@ function createRequestPermissionsTool(sdk, options) {
   };
   return sdk.defineTool({
     name: 'request_permissions',
-    label: 'Request command access',
-    description: networkPermissionsEnabled
+    label: 'Request project access',
+    description: 'For PROJECT_READ_ONLY, call with project: "write" and reason to show a project-editing approval sheet. Do not include command, executables, network or workingDirectory in that request. After approval, re-read/review before retrying the original action. ' + (networkPermissionsEnabled
       ? 'Resolve installed executable access before retrying a command unavailable in the workspace shell or changing download methods. Request the exact executable and/or full direct-network access needed for one intended command. Full networking includes public internet, host localhost, and private/LAN addresses. Never guess host paths.'
-      : 'Resolve named executables from the user’s installed command-line environment and request the exact access needed to run one intended workspace command. Use this before retrying an unavailable command, or when you know a required executable is outside the current workspace shell. Never guess host paths.',
+      : 'Resolve named executables from the user’s installed command-line environment and request the exact access needed to run one intended workspace command. Use this before retrying an unavailable command, or when you know a required executable is outside the current workspace shell. Never guess host paths.'),
     promptSnippet: 'Request access for an exact workspace command',
     promptGuidelines: [
       'When requesting executable access, include only the exact executable names needed for the task.',
@@ -1021,12 +1075,13 @@ function createRequestPermissionsTool(sdk, options) {
     parameters: {
       type: 'object',
       properties,
-      required: networkPermissionsEnabled
-        ? ['reason', 'command', 'workingDirectory']
-        : ['executables', 'reason', 'command', 'workingDirectory'],
-      ...(networkPermissionsEnabled && {
-        anyOf: [{ required: ['executables'] }, { required: ['network'] }],
-      }),
+      required: ['reason'],
+      oneOf: [
+        { required: ['project'], not: { anyOf: ['command', 'workingDirectory', 'executables', 'network'].map(key => ({ required: [key] })) } },
+        { required: networkPermissionsEnabled ? ['command', 'workingDirectory'] : ['executables', 'command', 'workingDirectory'],
+          not: { required: ['project'] },
+          ...(networkPermissionsEnabled && { anyOf: [{ required: ['executables'] }, { required: ['network'] }] }) },
+      ],
       additionalProperties: false,
     },
     executionMode: 'sequential',
@@ -1036,6 +1091,24 @@ function createRequestPermissionsTool(sdk, options) {
       const operationSignal = operationAbort.signal;
       let receipt;
       try {
+        if (params.project !== undefined) {
+          if (params.project !== 'write' || typeof params.reason !== 'string' || !params.reason.trim() || params.reason.length > 240 ||
+              ['executables', 'command', 'network', 'workingDirectory'].some(key => params[key] !== undefined)) {
+            throw Object.assign(new Error('Request project editing separately from command permissions.'), { code: 'INVALID_WORKSPACE_REQUEST' });
+          }
+          const resolved = await options.controller.prepareProjectWriteAccess(options.conversationId, { signal: operationSignal });
+          if (resolved.approvalRequired) {
+            const decision = await options.requestApproval({ action: 'project_write', operation,
+              label: params.reason, projectAccess: resolved.publicRequest });
+            if (operationSignal?.aborted) throw Object.assign(new Error('Stopped'), { code: 'WORKSPACE_OPERATION_CANCELLED' });
+            if (!decisionApproved(decision)) throw Object.assign(new Error('Declined'), { code: 'PROJECT_WRITE_DECLINED' });
+            await options.controller.grantProjectWriteAccess(options.conversationId, resolved.prepared, { signal: operationSignal });
+          }
+          receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params, 'completed');
+          notify(options.onToolOutcome, { toolCallId, operation, status: 'succeeded', workspace: receipt });
+          return { content: [{ type: 'text', text: 'Project editing access is available for this conversation until revoked or Freedom restarts. Re-read affected files and review Git changes before retrying the original action. This grants no additional executable, network or push permission.' }],
+            details: { project: 'write', scope: 'conversation' } };
+        }
         await ensureWorkspaceEnabled(options, operation, toolCallId, operationSignal);
         const resolved = await options.controller.prepareCommandPermissions(
           options.conversationId,
@@ -1057,7 +1130,7 @@ function createRequestPermissionsTool(sdk, options) {
             label: params.reason,
             workspacePermission: resolved.publicRequest,
           });
-          if (operationSignal?.aborted) {
+          if (operationSignal?.aborted || (typeof decision?.isCurrent === 'function' && !decision.isCurrent())) {
             const cancelled = new Error('The workspace permission request was stopped');
             cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
             throw cancelled;
@@ -1071,7 +1144,8 @@ function createRequestPermissionsTool(sdk, options) {
           options.controller.grantCommandPermissions(
             options.conversationId,
             resolved.prepared,
-            scope
+            scope,
+            ...(decision?.reviewEvidence ? [decision.reviewEvidence] : [])
           );
         }
         receipt = fileWorkspaceReceipt(
@@ -1241,6 +1315,7 @@ function createWriteStdinTool(sdk, options) {
       async execute(toolCallId, params = {}, signal) {
         const operation = 'write_stdin';
         let receipt;
+        let commandOutput = '';
         try {
           if (signal?.aborted) {
             const cancelled = new Error('The workspace operation was stopped');
@@ -1268,12 +1343,14 @@ function createWriteStdinTool(sdk, options) {
           const output = boundedBashOutput({ stdout: process.output || '', stderr: '' }).toString(
             'utf8'
           );
+          commandOutput = output;
+          if (['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(process.state)) {
+            throw safeWorkspaceError({}, { operation, receipt, commandOutput });
+          }
           notify(options.onToolOutcome, {
             toolCallId,
             operation,
-            status: ['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(process.state)
-              ? 'failed'
-              : 'succeeded',
+            status: 'succeeded',
             workspace: receipt,
           });
           return {
@@ -1293,7 +1370,7 @@ function createWriteStdinTool(sdk, options) {
             },
           };
         } catch (error) {
-          const safe = safeWorkspaceError(error, { operation, receipt });
+          const safe = safeWorkspaceError(error, { operation, receipt, commandOutput });
           notify(options.onToolOutcome, {
             toolCallId,
             operation,
@@ -1326,6 +1403,8 @@ function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
       };
       let receipt = null;
       let commandOutput = '';
+      let operationError;
+      executionOptions.captureError = (error) => { operationError = error; };
       try {
         if (!skillRead) {
           await ensureWorkspaceEnabled(options, operation, toolCallId, operationSignal);
@@ -1364,7 +1443,7 @@ function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
         return result;
       } catch (error) {
         if (skillRead) throw error;
-        const safe = safeWorkspaceError(error, { operation, receipt, commandOutput });
+        const safe = safeWorkspaceError(operationSignal?.aborted ? { code: 'WORKSPACE_OPERATION_CANCELLED' } : operationError || error, { operation, receipt, commandOutput });
         receipt = failedWorkspaceReceipt(
           options.controller,
           options.conversationId,
@@ -1538,7 +1617,7 @@ async function createWorkspaceTools(options = {}) {
       },
     }));
   }
-  return tools;
+  return tools.map(withToolErrorRecovery);
 }
 
 module.exports = {

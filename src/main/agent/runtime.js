@@ -107,6 +107,7 @@ function createFreedomAgentRuntime(options = {}) {
     openExternal: options.openExternal,
     attachmentStore,
     getOwnerWindow: options.getOwnerWindow,
+    dialog: options.dialog,
   });
 
   return {

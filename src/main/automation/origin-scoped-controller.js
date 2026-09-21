@@ -211,6 +211,12 @@ class OriginScopedAutomationController {
     return { ok: true, activeTabId: this.activeTabId, workspaceEmpty: false };
   }
 
+  // Only the host calls this for new user input, never for an agent retry or
+  // automatic resume. A refusal suppresses repeat prompts within that turn.
+  beginUserTurn() {
+    this.declinedDiagnostics.clear();
+  }
+
   getActiveTabId() {
     return this.activeTabId;
   }

@@ -67,7 +67,7 @@ function normalizeTag(tag) {
 async function publishData(data, options = {}) {
   const bee = getBee();
   const sizeEstimate = Buffer.byteLength(data);
-  const batchId = options.batchId || (await selectBestBatch(sizeEstimate));
+  const batchId = options.batchId || (await selectBestBatch(sizeEstimate, { requireCapacity: true }));
 
   if (!batchId) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
@@ -90,7 +90,7 @@ async function publishData(data, options = {}) {
 async function publishFile(filePath, options = {}) {
   const bee = getBee();
   const stat = fs.statSync(filePath);
-  const batchId = options.batchId || (await selectBestBatch(stat.size));
+  const batchId = options.batchId || (await selectBestBatch(stat.size, { requireCapacity: true }));
 
   if (!batchId) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
@@ -121,7 +121,7 @@ async function publishDirectory(dirPath, options = {}) {
   // Estimate total size (async to avoid blocking the event loop)
   const totalSize = await estimateDirSize(dirPath);
 
-  const batchId = options.batchId || (await selectBestBatch(totalSize));
+  const batchId = options.batchId || (await selectBestBatch(totalSize, { requireCapacity: true }));
 
   if (!batchId) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
@@ -152,7 +152,7 @@ async function publishDirectory(dirPath, options = {}) {
 async function publishCollection(files, options = {}) {
   const bee = getBee();
   const totalSize = files.reduce((total, item) => total + item.bytes.byteLength, 0);
-  const batchId = options.batchId || (await selectBestBatch(totalSize));
+  const batchId = options.batchId || (await selectBestBatch(totalSize, { requireCapacity: true }));
 
   if (!batchId) {
     throw new Error('No usable postage batch available. Purchase stamps first.');

@@ -578,3 +578,10 @@ describe('AutomationController', () => {
     });
   });
 });
+
+test('page tool discovery handles an adapter without WebMCP, including workspace previews', async () => {
+  const { controller } = createController();
+  const tabId = controller.registerPage(new FakePageAdapter());
+  const result = await controller.execute(OPERATIONS.LIST_PAGE_TOOLS, { tabId });
+  expect(result).toMatchObject({ ok: true, result: { available: false, tools: [] } });
+});

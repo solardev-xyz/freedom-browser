@@ -398,8 +398,10 @@ class AutomationController {
       case OPERATIONS.SELECT:
         return entry.adapter.select(input.ref, input.values ?? input.value);
       case OPERATIONS.LIST_PAGE_TOOLS:
-        return entry.adapter.pageTools.list();
+        return entry.adapter.pageTools?.list() || { available: false, tools: [] };
       case OPERATIONS.CALL_PAGE_TOOL:
+        if (!entry.adapter.pageTools) throw new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'This page has no website automation tools. Use a fresh page snapshot and ordinary browser interactions instead.');
         return entry.adapter.pageTools.call(input, execution);
       case OPERATIONS.GET_DIALOG:
         return entry.adapter.getDialog();

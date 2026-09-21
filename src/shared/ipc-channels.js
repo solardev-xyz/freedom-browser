@@ -206,6 +206,7 @@ module.exports = {
   AGENT_TAB_CLAIM: 'agent:tab:claim',
   AGENT_WORKSPACE_HISTORY: 'agent:workspace:history',
   AGENT_WORKSPACE_INSPECT: 'agent:workspace:inspect',
+  AGENT_PROJECT_ACCESS: 'agent:project:access',
   AGENT_PROCESS_STOP: 'agent:process:stop',
   AGENT_PROCESS_PREVIEW_OPEN: 'agent:process:preview-open',
   AGENT_PUBLICATION_OPEN: 'agent:publication:open',
