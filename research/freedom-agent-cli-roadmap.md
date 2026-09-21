@@ -10,6 +10,66 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-09-21
 
+### Current backlog and next decision — 2026-09-21
+
+This section is the current planning index. Dated implementation and qualification
+records below remain historical evidence, not a queue of unfinished work.
+The feature remains unreleased. Merge `30167ed7` is pushed to
+`feature/freedom-automation-kernel`; the accepted viewer-header follow-up is
+committed as `4b20cfbc` (lint and 17 relevant tests passed).
+
+**Completed for the accepted development workflow:** provider-manager redesign
+and adapters; browser competence improvements; native WebMCP execution and page
+action discovery; managed project creation/build/preview/publication; existing
+project access with repository-native commits; proactive managed-workspace
+checkpoints; actionable tool recovery; and bounded command access review in
+**Ask when needed**. This does not imply every provider, platform or edge case
+has been qualified. Saved-server restart/reattachment and the accepted Vite HMR
+workflow are also implemented, not a new capability to build.
+
+**Current focus:** hands-on UI refinement. Files, Changes and Commits viewer
+headers now continue the active tab's background in both layouts and themes.
+Further viewer changes should follow the user's concrete feedback; additional
+formats, richer comparisons and history recovery are separate scope decisions.
+
+**Open product candidates (not yet selected for implementation):**
+
+- **Subagents:** bounded workers using existing model connections, attributable
+  results, coordinated tab/file ownership, shared budgets and descendant Stop.
+  The optional Jev worker remains a later extension, not a prerequisite.
+- **Project/history and preview refinements:** broader history limits, pagination,
+  richer comparisons, recovery after partial restores or uncertain external Git
+  updates; saved-server editing/removal, SSE and separate HMR ports where real
+  projects need them. Branch/remotes/push workflows and automatic crash restart
+  remain separate from the implemented local commits and explicit server restart.
+- **Browser/WebMCP coverage:** remaining embedded/ambiguous-source dialog cases,
+  frame-scoped page tools and additional JSON Schema support. A WebMCP-facing
+  `window.swarm` integration is an exploratory product direction, not implemented
+  or a reason to bypass existing wallet/publication approval boundaries.
+- **Provider/privacy qualification:** real-account authentication, streaming, long
+  tool conversations, rate limits and Stop across added providers; independent
+  attestation and full payload encryption remain distinct unfinished protections.
+- **Privileged integrations:** bounded embedded Radicle requests, Agent support
+  for Safe signing/transfers, and an evidence-based node-effect evaluation corpus.
+  Widget creation depends on the separately owned widget platform and its
+  authoring/install contract.
+
+**Maintenance and release gates:** four existing full-suite failures are recorded
+in the integration result below. Retain macOS detached-descendant/resource limits,
+exact-candidate native lifecycle and packaged-release checks, provider/vision
+coverage and Windows containment as explicit limitations. The user's deferred
+Windows/Linux qualification work is not being restarted by this roadmap update.
+
+**Explicitly deferred:** Full access, Jev acceleration, bundled developer tools,
+embedded `llama.cpp`, packaged CLI/external MCP, and evidence-free expansion of
+the runtime architecture. Core Agent work must remain usable with one supported
+model connection.
+
+Recommendation for discussion: finish the observed viewer/UI issues, then choose
+one substantial product slice. Subagents are a candidate if parallel work is the
+next user need; project/history refinement is the smaller continuation of the
+workflow just accepted. Neither is selected merely by being listed here.
+
 ### Existing-projects integration — 2026-09-21
 
 Development has returned to `feature/freedom-automation-kernel`. The
@@ -1970,10 +2030,12 @@ Mitigation: exact decoded intent, always-ask defaults, explicit budgets, time/va
 
 ## Immediate next iteration
 
-Current priority (2026-09-17): model-manager UX and provider expansion. The
-numbered capability record below retains its dated implementation evidence;
-see the [current provider plan](#2026-09-17--model-manager-and-provider-expansion-plan)
-for the work to pick up next.
+Current priority (2026-09-21): observed UI refinements after integrating existing
+project access and approval improvements. See the
+[current backlog and next decision](#current-backlog-and-next-decision--2026-09-21).
+The numbered capability record below retains dated implementation evidence;
+provider implementation is complete, with its remaining qualification tracked
+separately.
 
 The embedded Pi product path is live in Freedom. The product now has durable multi-turn sessions, Agent-first and browser-first views of the same task, browser-wide Agent-tab custody, in-flight steering, a trusted resumable page-takeover interlock, fresh semantic and visual observation, reasoning-derived live progress with verified activity precedence, evidence-based completion/recovery receipts, bounded conversation attachments with local PDF processing, verified downloads and user-authorized page uploads, Agent-native dApp wallet approval, direct Freedom wallet transfers, read-only node intelligence, explicitly disclosed raw node/application diagnostics, independently classified direct node requests, durable recovery for long-running node mutations, native progressively disclosed operational skills, safe specific provider failure/recovery UX, a fail-closed **Ask when needed** website-interaction posture, Agent-native Swarm publication, and a gated private coding workspace with sandboxed shell/file tools, isolated static and declared managed-server preview, and exact managed-workspace publication to Swarm. All twenty-one deterministic browser/privileged product qualifications remain green alongside the newer workspace, preview, and publication qualification suites.
 
@@ -1987,9 +2049,11 @@ The wallet package is alpha-complete as the first privileged Freedom capability.
 
 Keep `freedom-cli` working as a regression oracle, but do not package, install, or expand it unless agent evaluation exposes a specific diagnostic need. Do not begin MCP.
 
-### Current product roadmap — 2026-09-03
+### Product capability record — 2026-09-03 foundation with dated follow-ups
 
-The embedded foundation is complete enough that current priorities should be read from this section rather than inferred from the historical work-package numbering or implementation checkpoints below.
+This section preserves the foundation and subsequent capability-specific records.
+Use the current planning index at the top for today's priorities; historical
+"next" statements describe their original checkpoint unless explicitly updated.
 
 #### Completed foundation
 
@@ -2437,7 +2501,7 @@ The user chose contextual judgment about checkpoint contents. This supersedes th
 - Versions supports historical inspection and naming the latest checkpoint without ingesting current edits. Restore requires an idle Agent, stopped managed processes, and already-reviewed current versions for affected paths. It refuses unreviewed edits/collisions, leaves unrelated files alone, saves a backup only of reviewed current files, and then applies exact sandboxed changes. Failed restoration retains that backup and reports partial completion rather than claiming transactional rollback.
 - Main owns fixed Git plumbing; project reads/writes stay in the offline helper and metadata remains protected from the model. History uses installed Git within the existing system-toolchain boundary. Missing/inaccessible Git disables history with a clear message while project file operations remain usable. macOS's installer-launching `/usr/bin/git` shim is not invoked. No private Git runtime is bundled in this slice.
 - Verification covers exact-selection preservation, contextual and mandatory exclusions, stale/replayed/foreign reviews, unreviewed restore rejection, reviewed backups, additions/deletions/collisions, native Seatbelt execution, skill/tool routing, IPC ownership, and UI behavior. Native Linux qualification remains batched at the next relevant milestone.
-- Follow-ons: broader/configurable snapshot limits, pagination beyond the latest 100 versions, richer comparisons, process restart after restoration, safe recovery from partially applied restores, and existing/external repository workflows. Conventional branches/remotes/push remain separate.
+- Follow-ons: broader/configurable snapshot limits, pagination beyond the latest 100 versions, richer comparisons, process restart after restoration, and safe recovery from partially applied restores. Existing/external repository access and local commits were implemented and accepted September 19–21; conventional branches/remotes/push remain separate.
 
 #### Outstanding — bundled developer-tool review (Git, Node/npm, and other runtimes)
 
@@ -3634,9 +3698,9 @@ platform coverage, and native descendant/resource limits remain unchanged.
 The core HMR/server-continuity milestone is complete for the accepted macOS
 workflow. Further preview features (separate HMR ports, SSE, automatic crash
 restart, saved-server editing/removal) remain demand-driven follow-ons. The
-recommended next product milestone is external filesystem grants through the
-existing permit contract, with unified read/write, scope and revocation disclosure;
-selection and implementation are still to be discussed with the user. Widget
+then-recommended next product milestone was external filesystem grants through
+the existing permit contract. That work, including scoped access and real local
+Git commits, was implemented and integrated September 21. Widget
 platform work stays on its separate project track, and bundled developer-tool
 distribution remains explicitly deferred.
 
@@ -4053,8 +4117,9 @@ Direct Google/Gemini could later extend the major-lab list; it is not silently
 added to this request. Additional subscription logins, wallet/x402 provider
 billing, arbitrary custom endpoints and media-generation tools are also separate
 work. BYOK API connections are the first delivery. Research initially changed
-only this roadmap. The subsequent implementation is described below; Free Pi
-removal and provider work remain uncommitted in the same working tree.
+only this roadmap. The subsequent implementation is described above; Free Pi
+removal and provider work were committed in `3438d498` and integrated into the
+feature branch. Live-provider qualification remains separate.
 
 ## Final target statement
 
