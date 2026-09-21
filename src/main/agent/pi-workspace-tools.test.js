@@ -848,6 +848,17 @@ describe('Pi managed workspace tools', () => {
     expect(controller.execute).not.toHaveBeenCalled();
   });
 
+  test('does not create a workspace after an automatic decision becomes stale', async () => {
+    const controller = createController();
+    controller.getWorkspace.mockReturnValue(null);
+    const tools = await createWorkspaceTools({ sdk: createSdk(), controller, conversationId: 'conversation_one',
+      requestApproval: jest.fn(async () => ({ status: 'approved', isCurrent: () => false })) });
+    await expect(tools[0].execute('call_one', { command: 'pwd' })).rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    expect(controller.disclosure).toHaveBeenCalled();
+    expect(controller.enable).not.toHaveBeenCalled();
+    expect(controller.execute).not.toHaveBeenCalled();
+  });
+
   test('cancels workspace startup independently of Pi tool cancellation', async () => {
     const controller = createController();
     controller.getWorkspace.mockReturnValue(null);

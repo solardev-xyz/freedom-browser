@@ -132,6 +132,38 @@ describe('independent command access review', () => {
   }
   async function stop(ctx) { await ctx.service.stop('run_test'); await ctx.service.waitForIdle(); }
 
+  const workspaceRequest = () => ({ action: 'workspace_execution', operation: 'write', workspace: {
+    available: true, backend: 'macos-seatbelt', network: 'disabled', filesystem: 'managed_workspace_only',
+  } });
+
+  test('Ask when needed allows a private workspace without a sheet or model review', async () => {
+    const ctx = await setup();
+    ctx.workspaceController.getWorkspace.mockReturnValue(null);
+    const decision = await ctx.request(workspaceRequest());
+    expect(decision.status).toBe('approved');
+    expect(decision.isCurrent()).toBe(true);
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
+    await ctx.service.steer('run_test', 'Never mind, just answer my question');
+    expect(decision.isCurrent()).toBe(false);
+    await stop(ctx);
+  });
+
+  test.each(['every_interaction', 'allow_website_interactions', 'external', 'network', 'filesystem', 'browser'])(
+    'workspace automatic approval does not apply to %s', async scenario => {
+      const ctx = await setup(['every_interaction', 'allow_website_interactions'].includes(scenario) ? scenario : 'sensitive_actions');
+      ctx.workspaceController.getWorkspace.mockReturnValue(scenario === 'external' ? { project: { connected: true } } : null);
+      const request = workspaceRequest();
+      if (scenario === 'network') request.workspace.network = 'full';
+      if (scenario === 'filesystem') request.workspace.filesystem = 'external_project';
+      const pending = scenario === 'browser'
+        ? ctx.dependencies.createControllerScope.mock.calls[0][0].requestApproval(request) : ctx.request(request);
+      expect(ctx.events.at(-1).type).toBe('approval_requested');
+      expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+      await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+      expect(await pending).toBe('declined'); await stop(ctx);
+    });
+
   test('reviews exact access without host paths and records reviewer provenance instead of user approval', async () => {
     const ctx = await setup();
     ctx.fake.emit({ type: 'tool_execution_start', toolCallId: 'access', toolName: 'request_permissions', args: {} });

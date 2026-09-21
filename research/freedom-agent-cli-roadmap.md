@@ -21,8 +21,10 @@ sheet. Stop, pause, changed requests, and new steering invalidate pending review
 steering clears unused one-shot permits. Reviewer decisions appear separately
 from human approvals in activity and stored history.
 
-Initial workspace/project editing access and conversation-wide grants remain
-human decisions. Dedicated wallet, node, publishing, upload/download, diagnostic
+Follow-up from user smoke testing: private offline workspace creation now proceeds
+automatically in **Ask when needed**, after the existing sandbox/runtime checks,
+without a reviewer call. Attached external project access and conversation-wide
+command grants remain human decisions. Dedicated wallet, node, publishing, upload/download, diagnostic
 disclosure, and WebMCP boundaries remain in force. The reviewer does not certify
 arbitrary scripts or dependencies. This is the first bounded extension of access
 review, not a complete replacement of every capability's approval policy.

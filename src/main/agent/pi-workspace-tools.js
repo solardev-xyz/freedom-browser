@@ -694,7 +694,7 @@ async function ensureWorkspaceEnabled(options, operation, toolCallId, signal) {
     operation,
     workspace: capabilities,
   });
-  if (signal?.aborted) {
+  if (signal?.aborted || (typeof decision?.isCurrent === 'function' && !decision.isCurrent())) {
     const cancelled = new Error('The workspace operation was stopped');
     cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
     throw cancelled;

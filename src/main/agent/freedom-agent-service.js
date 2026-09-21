@@ -212,7 +212,7 @@ function approvalPolicyPrompt(prompt, approvalMode) {
   } else if (approvalMode === AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS) {
     policy =
       'Freedom will independently classify the intended consequence of each website interaction. Ordinary browsing may proceed, while consequential or uncertain interactions ask the user. For every browser_click, browser_type, browser_select, browser_press, and browser_scroll call, include a brief literal intent describing what you expect that exact interaction to accomplish. Downloads, uploads, wallet actions, node mutations, and other privileged capabilities keep their separate Freedom approval boundaries.';
-    policy += ' Eligible request_permissions calls for executable or network access are independently reviewed for one exact project command and directory. Uncertain or consequential requests go to the user. Initial project/workspace access and conversation-wide grants require the user. A reviewer approval does not expand the sandbox or authorize publishing, messages, payments, signing, destructive changes, or bypassing an earlier refusal. Continue to use request_permissions; never claim that the user personally approved an automatic decision.';
+    policy += ' Eligible request_permissions calls for executable or network access are independently reviewed for one exact project command and directory. Uncertain or consequential requests go to the user. Creating Freedom’s private offline workspace proceeds automatically. Access to an existing project and conversation-wide command grants require the user. A reviewer approval does not expand the sandbox or authorize publishing, messages, payments, signing, destructive changes, or bypassing an earlier refusal. Continue to use request_permissions; never claim that the user personally approved an automatic decision.';
   } else {
     policy =
       'Freedom allows ordinary website interactions without asking each time. Downloads, uploads, wallet actions, node mutations, and other privileged capabilities keep their separate Freedom approval boundaries.';
@@ -2759,6 +2759,21 @@ class FreedomAgentService {
     const permission = publicRequest.workspacePermission;
     const accessKey = permission ? JSON.stringify(permission) : null;
     if (accessKey && run.declinedAccessRequests.has(accessKey)) return 'declined';
+    // Creating Freedom's own offline workspace is implied by a project task in
+    // Ask when needed. This never grants access to an attached external folder.
+    if (reviewerRuntime && run.approvalMode === AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS &&
+        request.action === 'workspace_execution' && publicRequest.action === 'workspace_execution' &&
+        WORKSPACE_TOOL_NAME_SET.has(publicRequest.operation) && publicRequest.workspace &&
+        request.workspace.network === 'disabled' && request.workspace.filesystem === 'managed_workspace_only' &&
+        !publicRequest.wallet && !publicRequest.publication && !publicRequest.nodeRequest &&
+        !publicRequest.nodeLifecycle && !publicRequest.diagnostic && !publicRequest.pageTool &&
+        !this.workspaceController.getWorkspace(run.conversationId)?.project) {
+      const guidanceCount = run.guidance.length;
+      return { status: 'approved', isCurrent: () =>
+        this.activeRun === run && !run.finished && !run.stopRequested && !run.pauseRequested &&
+        run.status === 'running' && run.guidance.length === guidanceCount &&
+        !this.workspaceController.getWorkspace(run.conversationId)?.project };
+    }
     // Only the workspace adapter supplies this runtime. Other approval producers
     // cannot opt themselves into automatic review through request payload fields.
     if (reviewerRuntime && run.approvalMode === AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS &&

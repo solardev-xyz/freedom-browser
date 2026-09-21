@@ -41,7 +41,14 @@ or certify packages; when missing evidence matters it must ask the user.
 
 ## Decisions that remain human
 
-Initial workspace enablement, selecting/reconnecting a project, granting project
+In **Ask when needed**, creating Freedom's private offline workspace is automatic
+when a project tool first needs it. This is a deterministic mode policy, not a
+model-review decision. Sandbox availability, runtime attestation, filesystem
+validation, and cancellation checks still run before enabling the workspace.
+It grants no additional executable or network access and never applies to an
+attached external project. The other two modes retain the workspace prompt.
+
+Selecting/reconnecting an existing project, granting its
 editing, and broader conversation grants retain their explicit human flows.
 Existing authorized file edits and commands already run within their grants.
 Downloads, uploads, WebMCP calls, wallet operations, node changes, diagnostics
@@ -74,8 +81,9 @@ copy. The installed Pi SDK is exercised with a fake provider transport; this
 checks integration, not the model's judgment quality. Native UI and live-model
 acceptance remain to be smoke-tested.
 
-For a non-destructive smoke test, start a fresh project conversation, enable its
-workspace explicitly, and select **Ask when needed**. Ask Agent to request the
+For a non-destructive smoke test, start a fresh project conversation and select
+**Ask when needed**. Its private workspace should start without a permission
+sheet when needed. Ask Agent to request the
 installed `npm` executable for the exact command `npm --version` in `.` and run
 it without networking. If executable access is not already available, a confident
 review should show **Approved by reviewer** in activity; uncertain review should
