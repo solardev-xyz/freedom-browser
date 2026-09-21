@@ -3248,6 +3248,7 @@ function updateToolApproval(runId, toolCallId, decision) {
   const labels = {
     requested: 'Approval needed',
     approved: 'Approved',
+    reviewer_approved: 'Approved by reviewer',
     declined: 'Declined',
     withdrawn: 'Withdrawn',
   };

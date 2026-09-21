@@ -1045,6 +1045,18 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
   });
 
+  test('shows reviewer provenance on a completed access request without opening an approval sheet', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Run tests';
+    ctx.elements['agent-run'].dispatch('click'); await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'permission', operation: 'request_permissions' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'permission', operation: 'request_permissions',
+      status: 'succeeded', approval: 'reviewer_approved', label: 'Command access granted' });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent).toBe('Approved by reviewer');
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+  });
+
   test('explains an intent-classified consequential website approval honestly', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Publish my response';

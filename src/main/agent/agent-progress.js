@@ -1183,6 +1183,7 @@ function buildAgentOutcome(activity, status, error) {
   const approvals = Object.freeze({
     requested: items.filter((item) => item?.approval).length,
     approved: items.filter((item) => item?.approval === 'approved').length,
+    reviewerApproved: items.filter((item) => item?.approval === 'reviewer_approved').length,
     declined: items.filter((item) => item?.approval === 'declined').length,
     withdrawn: items.filter((item) => item?.approval === 'withdrawn').length,
   });

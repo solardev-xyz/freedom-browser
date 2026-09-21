@@ -9,7 +9,14 @@ jest.mock('better-sqlite3', () =>
   require('../../../test/helpers/fake-better-sqlite3-agent-history')
 );
 
-const { AgentSessionHistoryStore, DB_FILE } = require('./session-history-store');
+const { AgentSessionHistoryStore, DB_FILE, normalizeActivity } = require('./session-history-store');
+
+test('reviewer approval provenance survives history normalization without its private decision data', () => {
+  const [item] = normalizeActivity([{ operation: 'request_permissions', approval: 'reviewer_approved',
+    status: 'succeeded', reviewer: { reason: 'private review', root: '/private/path' }, isCurrent: () => true }]);
+  expect(item.approval).toBe('reviewer_approved');
+  expect(JSON.stringify(item)).not.toMatch(/private|isCurrent/);
+});
 
 describe('AgentSessionHistoryStore', () => {
   let userDataDir;

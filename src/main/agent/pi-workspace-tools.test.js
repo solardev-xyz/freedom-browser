@@ -1276,6 +1276,20 @@ describe('reviewed workspace history tool', () => {
 
 
 describe('structured workspace failure recovery', () => {
+  test.each([true, false])('a reviewer decision must still be current immediately before granting: %s', async current => {
+    const controller = createController();
+    const tools = await createWorkspaceTools({ sdk: createSdk(), controller, conversationId: 'test',
+      requestApproval: jest.fn(async () => ({ status: 'approved', workspacePermissionScope: 'once', isCurrent: () => current })) });
+    const pending = tools.find(tool => tool.name === 'request_permissions').execute('permission', {
+      command: 'node validate.js', workingDirectory: '.', executables: ['node'], reason: 'Validate the project' });
+    if (current) {
+      await expect(pending).resolves.toMatchObject({ details: { scope: 'once' } });
+      expect(controller.grantCommandPermissions).toHaveBeenCalledWith('test', { kind: 'trusted-test-request' }, 'once');
+    } else {
+      await expect(pending).rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+      expect(controller.grantCommandPermissions).not.toHaveBeenCalled();
+    }
+  });
   test('a read-only shell refusal directs the model to read tools or an editing request', async () => {
     const controller = createController();
     controller.startProcess.mockRejectedValueOnce(Object.assign(new Error('/private/project'), { code: 'PROJECT_READ_ONLY' }));

@@ -24,7 +24,7 @@ const SESSION_STATUSES = new Set(['running', 'ready', 'interrupted', 'failed', '
 const TURN_STATUSES = new Set(['running', 'completed', 'interrupted', 'failed', 'cancelled']);
 const GUIDANCE_STATUSES = new Set(['queued', 'applying', 'applied', 'cancelled']);
 const ACTIVITY_EFFECTS = new Set(['observed', 'changed', 'managed']);
-const ACTIVITY_APPROVALS = new Set(['requested', 'approved', 'declined', 'withdrawn']);
+const ACTIVITY_APPROVALS = new Set(['requested', 'approved', 'declined', 'withdrawn', 'reviewer_approved']);
 
 function requiredString(value, label, maxLength) {
   if (typeof value !== 'string' || !value.trim()) {

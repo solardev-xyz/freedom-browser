@@ -1119,7 +1119,7 @@ function createRequestPermissionsTool(sdk, options) {
             label: params.reason,
             workspacePermission: resolved.publicRequest,
           });
-          if (operationSignal?.aborted) {
+          if (operationSignal?.aborted || (typeof decision?.isCurrent === 'function' && !decision.isCurrent())) {
             const cancelled = new Error('The workspace permission request was stopped');
             cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
             throw cancelled;

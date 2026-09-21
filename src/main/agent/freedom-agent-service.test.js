@@ -68,6 +68,7 @@ function createService(fakeSession, overrides = {}) {
     createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
     createSession: jest.fn(async () => ({ session: fakeSession.session })),
     effectClassifier: { classify: jest.fn(async () => ({ effect: 'read', confidence: 1 })) },
+    accessReviewer: { review: jest.fn(async () => ({ decision: 'ask_user' })) },
     interactionClassifier: {
       classify: jest.fn(async () => ({
         kind: 'ordinary',
@@ -110,6 +111,141 @@ function createHistoryStore(overrides = {}) {
     ...overrides,
   };
 }
+
+describe('independent command access review', () => {
+  const permissionRequest = () => ({ action: 'workspace_permission', operation: 'request_permissions', label: 'Run the task',
+    workspacePermission: { kind: 'command_access', command: 'node --version', workingDirectory: '.',
+      commands: [{ name: 'node', status: 'requires_permission', executablePath: '/private/tools/node/bin/node', rootPath: '/private/tools/node' }],
+      network: { posture: 'full', publicInternet: true, hostLoopback: true, privateLan: true, hostAbstractUnixSockets: 'reachable' } } });
+  async function setup(mode = 'sensitive_actions', review = async () => ({ decision: 'approve_once' }), prompt = 'Check the installed Node version') {
+    const fake = createFakeSession();
+    const workspaceController = { getWorkspace: jest.fn(() => ({ enabled: true })), disclosure: jest.fn(),
+      enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(), deleteConversation: jest.fn(), dispose: jest.fn(),
+      clearTurnPermissions: jest.fn() };
+    const accessReviewer = { review: jest.fn(review) };
+    const ctx = createService(fake, { accessReviewer, workspaceController, createWorkspaceTools: jest.fn(async () => []), historyStore: createHistoryStore() });
+    const events = [];
+    ctx.service.subscribe(event => events.push(event));
+    await ctx.service.start(startOptions({ prompt, approvalMode: mode }));
+    return { ...ctx, fake, events, accessReviewer, workspaceController,
+      request: ctx.dependencies.createWorkspaceTools.mock.calls[0][0].requestApproval };
+  }
+  async function stop(ctx) { await ctx.service.stop('run_test'); await ctx.service.waitForIdle(); }
+
+  test('reviews exact access without host paths and records reviewer provenance instead of user approval', async () => {
+    const ctx = await setup();
+    ctx.fake.emit({ type: 'tool_execution_start', toolCallId: 'access', toolName: 'request_permissions', args: {} });
+    const result = await ctx.request(permissionRequest());
+    expect(result).toMatchObject({ status: 'approved', workspacePermissionScope: 'once' });
+    expect(result.isCurrent()).toBe(true);
+    const [input, runtime] = ctx.accessReviewer.review.mock.calls[0];
+    expect(input.proposedAccess).toMatchObject({ command: 'node --version', workingDirectory: '.', scope: 'once',
+      network: { privateLan: true, hostAbstractUnixSockets: 'reachable' } });
+    expect(JSON.stringify(input)).not.toContain('/private/tools');
+    expect(runtime.model.id).toBe('model_test');
+    expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
+    ctx.fake.emit({ type: 'tool_execution_end', toolCallId: 'access', toolName: 'request_permissions', isError: false });
+    expect(ctx.events.at(-1)).toMatchObject({ type: 'tool_finished', approval: 'reviewer_approved' });
+    await stop(ctx);
+    expect(result.isCurrent()).toBe(false);
+    expect(ctx.dependencies.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({
+      activity: expect.arrayContaining([expect.objectContaining({ approval: 'reviewer_approved' })]),
+    }));
+  });
+
+  test.each(['every_interaction', 'allow_website_interactions'])('%s retains human command approvals', async mode => {
+    const ctx = await setup(mode);
+    const pending = ctx.request(permissionRequest());
+    const event = ctx.events.at(-1);
+    expect(event.type).toBe('approval_requested');
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    await ctx.service.decideApproval('run_test', event.approvalId, false);
+    expect(await pending).toBe('declined'); await stop(ctx);
+  });
+
+  test.each(['uncertain', 'error'])('review %s falls back to the original human approval and a decline cannot be auto-overridden', async failure => {
+    const ctx = await setup('sensitive_actions', async () => {
+      if (failure === 'error') throw new Error('provider failed');
+      return { decision: 'ask_user' };
+    });
+    const pending = ctx.request(permissionRequest());
+    await new Promise(setImmediate);
+    const event = ctx.events.at(-1);
+    expect(event).toMatchObject({ type: 'approval_requested', workspacePermission: permissionRequest().workspacePermission });
+    await ctx.service.decideApproval('run_test', event.approvalId, false);
+    expect(await pending).toBe('declined');
+    ctx.accessReviewer.review.mockResolvedValue({ decision: 'approve_once' });
+    const second = ctx.request({ ...permissionRequest(), label: 'A better excuse' });
+    expect(ctx.accessReviewer.review).toHaveBeenCalledTimes(1);
+    expect(await second).toBe('declined');
+    const changed = permissionRequest(); changed.workspacePermission.command += ' ';
+    const changedDecision = ctx.request(changed);
+    expect(ctx.accessReviewer.review).toHaveBeenCalledTimes(1);
+    expect(ctx.events.at(-1).type).toBe('approval_requested');
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await changedDecision; await stop(ctx);
+  });
+
+  test.each(['stop', 'pause', 'steer', 'mutate'])('%s invalidates an in-flight review and cannot leave a new human prompt', async change => {
+    const deferred = createDeferred();
+    const ctx = await setup('sensitive_actions', () => deferred.promise);
+    const request = permissionRequest();
+    const pending = ctx.request(request);
+    expect(await ctx.request(permissionRequest())).toBe('declined');
+    if (change === 'stop') await stop(ctx);
+    if (change === 'pause') await ctx.service.pause('run_test');
+    if (change === 'steer') await ctx.service.steer('run_test', 'Stop installing; inspect files only');
+    if (change === 'mutate') request.workspacePermission.command = 'node other.js';
+    deferred.resolve({ decision: 'approve_once' });
+    expect(await pending).toBe('declined');
+    expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
+    if (change !== 'stop') await stop(ctx);
+  });
+
+  test('new instructions clear unused single-use grants and invalidate returned decisions', async () => {
+    const ctx = await setup();
+    const decision = await ctx.request(permissionRequest());
+    await ctx.service.steer('run_test', 'Only read files now');
+    expect(decision.isCurrent()).toBe(false);
+    expect(ctx.workspaceController.clearTurnPermissions).toHaveBeenCalledWith('conversation_test');
+    await stop(ctx);
+  });
+
+  test('later turns retain the original model runtime and earlier user constraints in the independent review', async () => {
+    const ctx = await setup('sensitive_actions', undefined, 'Keep this project offline. Do not grant networking.');
+    ctx.fake.prompt.resolve(); await ctx.service.waitForIdle();
+    await ctx.service.start({ prompt: 'Now check the installed Node version', approvalMode: 'sensitive_actions' });
+    await ctx.request(permissionRequest());
+    const [input, runtime] = ctx.accessReviewer.review.mock.calls[0];
+    expect(input.priorUserRequests).toEqual([{ text: 'Keep this project offline. Do not grant networking.', guidance: [] }]);
+    expect(input.userRequest).toBe('Now check the installed Node version');
+    expect(runtime.model.id).toBe('model_test');
+    await stop(ctx);
+  });
+
+  test.each([
+    { action: 'project_write', operation: 'request_permissions', projectAccess: { name: 'Project', mode: 'write', scope: 'conversation' } },
+    { action: 'wallet_signature', operation: 'wallet_action' },
+    { action: 'form_submission', operation: 'browser_click' },
+    { action: 'file_upload', operation: 'browser_upload' },
+    { action: 'browser_interaction', operation: 'browser_call_page_tool', pageTool: { name: 'publish', argumentsJSON: '{}' } },
+  ])('$action keeps human consent even when the reviewer would approve', async request => {
+    const ctx = await setup();
+    const pending = ctx.request(request);
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    expect(ctx.events.at(-1).type).toBe('approval_requested');
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await pending; await stop(ctx);
+  });
+
+  test('a request from a browser producer cannot opt into automatic command review', async () => {
+    const ctx = await setup();
+    const pending = ctx.dependencies.createControllerScope.mock.calls[0][0].requestApproval(permissionRequest());
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await pending; await stop(ctx);
+  });
+});
 
 describe('FreedomAgentService', () => {
   test('opening a project creates a ready project-bound chat without a model request', async () => {
@@ -321,7 +457,7 @@ describe('FreedomAgentService', () => {
             changed: 0,
             observed: 1,
             pages: 0,
-            approvals: { requested: 0, approved: 0, declined: 0, withdrawn: 0 },
+            approvals: { requested: 0, approved: 0, reviewerApproved: 0, declined: 0, withdrawn: 0 },
           },
         },
       },

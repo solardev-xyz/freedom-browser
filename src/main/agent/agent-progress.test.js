@@ -938,7 +938,7 @@ describe('Agent progress projection', () => {
         changed: 0,
         observed: 0,
         pages: 0,
-        approvals: { requested: 0, approved: 0, declined: 0, withdrawn: 0 },
+        approvals: { requested: 0, approved: 0, reviewerApproved: 0, declined: 0, withdrawn: 0 },
       },
     });
   });
@@ -1119,6 +1119,7 @@ describe('Agent progress projection', () => {
     expect(outcome.counts.approvals).toEqual({
       requested: 1,
       approved: 1,
+      reviewerApproved: 0,
       declined: 0,
       withdrawn: 0,
     });
@@ -1126,6 +1127,12 @@ describe('Agent progress projection', () => {
     expect(outcome.detail).toContain('Approved destination: https://submit.example');
     expect(outcome.destinations).toEqual(['https://submit.example']);
     expect(JSON.stringify(outcome)).not.toMatch(/token|secret|private|form|payload/);
+  });
+
+  test('reviewer approvals are never described as approvals by the user', () => {
+    const outcome = buildAgentOutcome([{ operation: OPERATIONS.CLICK, status: 'succeeded', effect: 'changed', pageId: 'tab_1', approval: 'reviewer_approved' }], 'completed');
+    expect(outcome.counts.approvals).toMatchObject({ approved: 0, reviewerApproved: 1 });
+    expect(outcome.detail).not.toContain('approved by the user');
   });
 
   test('requires review when an interrupted change has an uncertain outcome', () => {
