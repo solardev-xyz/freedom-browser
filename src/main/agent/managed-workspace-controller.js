@@ -1540,8 +1540,8 @@ class ManagedWorkspaceController {
       if (history instanceof ExternalProjectGit) return this.#reviewProjectGit(conversationId, history, request);
       const exclusions = await history.exclusions();
       if (request.action === 'status') {
-        return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })), exclusions,
-          message: 'Review file contents before committing. Unselected changes are never committed automatically.' };
+        return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })), exclusions, workspaceKind: 'managed',
+          message: 'This is a Freedom-owned workspace. Proactively save reviewed checkpoints at meaningful milestones unless the user asks otherwise. No separate commit request is needed. Unselected changes are never saved automatically.' };
       }
       if (request.action === 'exclude' || request.action === 'include') {
         if (historyPathReason(request.path) || typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 160 || historyContainsSecret(request.reason)) throw new WorkspaceHistoryError('Use an eligible exact file path and a short reason without private data');
@@ -1588,7 +1588,7 @@ class ManagedWorkspaceController {
 
   async #reviewProjectGit(conversationId, history, request) {
     if (request.action === 'status') return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })),
-      ...(await history.list()), message: 'This is the project repository. Commit only when requested or authorized by the task and repository instructions. No separate checkpoint history is written.' };
+      ...(await history.list()), workspaceKind: 'external', message: 'This is the project repository. Commit only when requested or authorized by the task and repository instructions. No separate checkpoint history is written.' };
     if (!await history.validate()) throw new WorkspaceHistoryError('This folder has no Git repository. Files can be edited, but no history is created. Initialize Git explicitly with your Git client if wanted.');
     if (['include', 'exclude'].includes(request.action)) throw new WorkspaceHistoryError('Use repository ignore rules and select the intended files for each commit. Freedom has no separate exclusion history for this project.');
     if (request.action === 'review') {

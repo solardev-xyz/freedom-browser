@@ -357,7 +357,7 @@ function assertBrowserEnvelope(envelope) {
 function createWorkspaceHistoryTool(sdk, options) {
   return sdk.defineTool({
     name: 'workspace_history', label: 'Review project history',
-    description: 'Inspect project Git history, read bounded diffs with action diff and a path, review exact file revisions, and commit selected review tokens in the project repository when authorized. Status, diff and review work with read-only project access; use these instead of shell Git for inspection. Load the workspace-history skill first. No automatic commits or remote operations.',
+    description: 'Inspect project Git history and read bounded diffs with action diff and a path. Status reports workspaceKind: managed or external. Proactively checkpoint reviewed meaningful milestones in managed workspaces; commit external repository changes only when authorized. Review exact file revisions and save only selected review tokens. Status, diff and review work with read-only project access; use these instead of shell Git for inspection. Load the workspace-history skill first. No unreviewed snapshots or remote operations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {

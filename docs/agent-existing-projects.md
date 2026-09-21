@@ -68,7 +68,10 @@ it does not add an editor or individual writable-file grants.
   Previously created experimental checkpoint archives are retained under profile
   storage, receive no new writes, and are not displayed as repository commits.
 - Managed workspaces retain their own existing Git history and reviewed restore
-  mechanism, now described as commits in the UI. External commits are view-only
+  mechanism, now described as commits in the UI. Agent proactively saves reviewed
+  milestones after meaningful changes (unless the user declines history), without
+  a separate commit request. It does not snapshot every write or save generated
+  output. History status explicitly distinguishes managed and external workspaces. External commits are view-only
   in that UI; it cannot restore, reset, switch branches, merge, rebase or push.
 - The main-owned Git service runs fixed, bounded commands with a constructed
   environment and disabled execution/network features. Ordinary shell commands

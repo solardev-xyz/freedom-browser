@@ -863,7 +863,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
-  test('does not checkpoint automatically at turn boundaries and routes history judgment to the skill', async () => {
+  test('instructs reviewed managed milestones without unconditional turn-boundary snapshots', async () => {
     const fake = createFakeSession();
     const workspaceController = {
       getWorkspace: () => ({ enabled: true }), disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(),
@@ -872,7 +872,11 @@ describe('FreedomAgentService', () => {
     };
     const { service, dependencies } = createService(fake, { workspaceController, createWorkspaceTools: jest.fn(async () => []) });
     await service.start(startOptions());
-    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain('workspace-history skill');
+    const prompt = dependencies.createSession.mock.calls[0][0].systemPrompt;
+    expect(prompt).toContain('workspace-history skill');
+    expect(prompt).toContain('In a managed workspace, proactively review selected file revisions and save a checkpoint at meaningful milestones');
+    expect(prompt).toContain('In an external repository, commit selected review tokens only when requested or authorized');
+    expect(prompt).toContain('unless the user asked not to save history');
     fake.prompt.resolve();
     await service.waitForIdle();
     expect(workspaceController.prepareWorkspaceHistory).not.toHaveBeenCalled();
