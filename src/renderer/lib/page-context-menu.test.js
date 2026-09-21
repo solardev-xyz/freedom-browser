@@ -484,14 +484,23 @@ describe('page-context-menu', () => {
       linkUrl: 'https://example.com/link',
     };
 
+    // Back/Forward here traverse through the same shared helpers the
+    // toolbar buttons use, so the commit they produce carries the mark that
+    // drives the post-traversal ENS trust refresh (#86). A bare
+    // `webview.goBack()` would still satisfy the spy below, which is why
+    // the mark is asserted alongside it.
+    const { consumeHistoryTraversal } = await import('./history-traversal.js');
+
     mod.showPageContextMenu(20, 30, context);
     await triggerMenuAction(pageContextMenu, 'back');
     expect(activeWebview.goBack).toHaveBeenCalled();
+    expect(consumeHistoryTraversal(activeWebview)).toBe(true);
 
     mod.showPageContextMenu(20, 30, context);
     activeWebview.canGoForward.mockReturnValue(true);
     await triggerMenuAction(pageContextMenu, 'forward');
     expect(activeWebview.goForward).toHaveBeenCalled();
+    expect(consumeHistoryTraversal(activeWebview)).toBe(true);
 
     mod.showPageContextMenu(20, 30, context);
     await triggerMenuAction(pageContextMenu, 'reload');

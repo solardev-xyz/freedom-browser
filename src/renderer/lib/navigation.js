@@ -73,6 +73,7 @@ import {
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
+import { goBackInHistory, goForwardInHistory } from './history-traversal.js';
 import { isTezosDomainHost } from './origin-utils.js';
 import {
   shouldRecordHistory,
@@ -189,6 +190,41 @@ const invalidateContentName = (input) => {
     pushDebug(`[ENS] invalidateEnsContent failed: ${err?.message || err}`);
   });
 };
+
+// Record what a name resolution says about a name, for every surface that
+// reads it later: the address-bar trust shield, the trust popover's
+// "Resolves to" row, and the `freedom://settings` diagnostics. Shared by the
+// resolve-then-navigate path in `loadTarget` and by the resolve-only refresh
+// that follows a back/forward traversal (#86), so the two can never drift on
+// which fields a result writes.
+const storeNameResolutionTrust = (name, result) => {
+  if (result?.trust) {
+    state.ensTrustByName.set(name, result.trust);
+  }
+  if (result?.uri) {
+    state.ensUriByName.set(name, result.uri);
+  }
+};
+
+// The two blocking verdicts render the same interstitials wherever they are
+// reached from. Builders (not navigations) so the caller decides which
+// webview to load them into.
+const buildNameConflictPageUrl = (name, result) => {
+  // Defensive cap: the resolver already bounds groups by K (≤9), but a
+  // malformed payload shouldn't be able to explode the URL.
+  const groups = (result?.groups || []).slice(0, 10);
+  return {
+    url: buildInternalPageUrl('ens-conflict.html', {
+      name,
+      block: JSON.stringify(result?.trust?.block || {}),
+      groups: JSON.stringify(groups),
+    }),
+    groups,
+  };
+};
+
+const buildNameUnverifiedPageUrl = (name, uri) =>
+  buildInternalPageUrl('ens-unverified.html', { name, uri });
 
 // Favicon fetching (#75). A favicon fetch needs two things that arrive on
 // separate webview events, in either order:
@@ -1538,28 +1574,17 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           return;
         }
 
-        if (result.trust) {
-          state.ensTrustByName.set(ens.name, result.trust);
-        }
-        if (result.uri) {
-          state.ensUriByName.set(ens.name, result.uri);
-        }
+        storeNameResolutionTrust(ens.name, result);
 
         // Conflict = hard block. Render the interstitial with the disputed
         // groups so the user can see which providers claimed what; no
         // attempt to load the resolved URI.
         if (result.type === 'conflict') {
-          // Defensive cap: the resolver already bounds groups by K (≤9),
-          // but a malformed payload shouldn't be able to explode the URL.
-          const groups = (result.groups || []).slice(0, 10);
-          pushDebug(`${systemLabel} conflict for ${ens.name}: ${groups.length} groups`);
-          capturedWebview.loadURL(
-            buildInternalPageUrl('ens-conflict.html', {
-              name: ens.name,
-              block: JSON.stringify(result.trust?.block || {}),
-              groups: JSON.stringify(groups),
-            })
+          const conflictPage = buildNameConflictPageUrl(ens.name, result);
+          pushDebug(
+            `${systemLabel} conflict for ${ens.name}: ${conflictPage.groups.length} groups`
           );
+          capturedWebview.loadURL(conflictPage.url);
           return;
         }
 
@@ -1590,9 +1615,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
             state.blockUnverifiedEns &&
             !options.allowUnverifiedOnce
           ) {
-            capturedWebview.loadURL(
-              buildInternalPageUrl('ens-unverified.html', { name: ens.name, uri: targetUri })
-            );
+            capturedWebview.loadURL(buildNameUnverifiedPageUrl(ens.name, targetUri));
             return;
           }
           pushDebug(`${systemLabel} resolved: ${ens.name} -> ${targetUri}`);
@@ -1636,9 +1659,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           !options.allowUnverifiedOnce
         ) {
           pushDebug(`${systemLabel} unverified for ${ens.name} → interstitial`);
-          capturedWebview.loadURL(
-            buildInternalPageUrl('ens-unverified.html', { name: ens.name, uri: targetUri })
-          );
+          capturedWebview.loadURL(buildNameUnverifiedPageUrl(ens.name, targetUri));
           return;
         }
 
@@ -1979,6 +2000,151 @@ export const loadHomePage = () => {
     updateTabFavicon(activeTab.id, null);
   }
   pushDebug('Loading home page');
+};
+
+// Back/forward restore a history entry through Chromium's own session
+// history, so none of the renderer's name-resolution path runs: the restored
+// page keeps whatever trust object its *first* load wrote into
+// `state.ensTrustByName`, and the address-bar shield keeps painting the
+// verification method that was configured back then (#86).
+//
+// Reload fixes the same staleness by re-navigating through `loadTarget`
+// (#82 / PR #84). Traversal deliberately does not re-navigate: `loadTarget`
+// would push a fresh entry over the restored one and drop the forward
+// history, and the point of Back is to restore the historical entry — never
+// to load unsubmitted address-bar text. So this re-runs only the resolution
+// half of that path: the same resolver `loadTarget` calls, under today's
+// verification settings, with the result applied through the same shared
+// `storeNameResolutionTrust` helper and the badge repainted from it.
+//
+// Traversal is not a hard reload, so the ENS contenthash cache is left alone
+// (no `invalidateContentName` call). The main process drops `ensResultCache`
+// whenever verification settings change, which is exactly the case this
+// refresh exists for; when nothing changed the re-resolution is a cache hit.
+//
+// Blocking verdicts route to the interstitials the app already has rather
+// than to a new surface: `conflict` → `ens-conflict.html`, unverified while
+// `blockUnverifiedEns` is on → `ens-unverified.html` (the same pair a reload
+// of that page would raise — a "continue anyway" click has always been a
+// one-shot here), with one exception. Raising an interstitial is a real
+// navigation, so it appends an entry: pressing Back *out of* it lands on the
+// blocked entry again, which would re-raise it and trap the user one entry
+// deep with no way back but the address bar (verified in a real run before
+// this guard existed). When the entry this traversal just left is the
+// name-block interstitial for this same name, the restored page therefore
+// keeps displaying and the refreshed badge — `conflict` / `unverified`, with
+// the popover's own explanation behind it — carries the verdict instead.
+//
+// A resolution that fails outright drops the stored trust object so the
+// shield goes quiet instead of vouching for a name we can no longer verify;
+// the restored page itself stays put, and the failure is logged rather than
+// alerted — a modal over a page the user navigated *back* to is noise, not
+// information.
+const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
+  const navState = getTabById(tabId)?.navigationState;
+  if (!navState) return;
+  // Same keying as reload: `committedDisplayUrl` is written only by
+  // navigation commits, so it is the restored entry's own identity — never
+  // an unsubmitted address-bar draft (`addressBarSnapshot`, the live input)
+  // and never an in-flight destination.
+  const committedDisplay = (navState.committedDisplayUrl || '').trim();
+  const ens = committedDisplay ? parseEnsInput(committedDisplay) : null;
+  const resolveName = resolverForNameInput(ens);
+  // Non-name entries keep today's behaviour exactly: nothing runs here.
+  if (!ens || !resolveName) return;
+  const systemLabel = nameSystemLabelForName(ens.name);
+  // Stale-result guard. `committedNavigationSequence` is bumped by every
+  // commit on this tab, so it distinguishes "still on the restored entry"
+  // from "navigated away and back onto the same URL" — which a comparison
+  // of `committedDisplayUrl` alone cannot. A refresh that settles after the
+  // tab moved on must not repaint the badge for, or raise an interstitial
+  // over, a page that is no longer there.
+  const sequence = navState.committedNavigationSequence;
+  const isStillCurrent = () =>
+    getTabById(tabId)?.navigationState?.committedNavigationSequence === sequence;
+  const repaintBadge = () => {
+    // Background tabs repaint from the refreshed map when they are switched
+    // back to; only the foreground shield needs redrawing now.
+    if (isActiveTab(tabId)) updateProtocolIcon();
+  };
+  // Anchored interstitial check (#243), never a substring test: a remote page
+  // is free to serve a path that reads like `pages/ens-conflict.html`, and
+  // letting one pass here would let a site switch off the block for its own
+  // name by linking through such a path.
+  const leftThisNamesInterstitial =
+    isInterstitialPageUrl(previousUrl) &&
+    (getInterstitialDisplayName(previousUrl) || '').trim().toLowerCase() === ens.name;
+  // Raise a block interstitial over the restored entry, unless doing so would
+  // bounce the user straight back into the one they are leaving.
+  const blockWithInterstitial = (url, logLine) => {
+    if (leftThisNamesInterstitial) {
+      pushDebug(
+        `${systemLabel} ${ens.name} still blocked, but the user is backing out of its interstitial — keeping the restored entry with its badge`
+      );
+      return;
+    }
+    pushDebug(logLine);
+    getTabById(tabId)?.webview?.loadURL(url);
+  };
+  pushDebug(`History traversal re-verifying ${systemLabel} name: ${ens.name}`);
+  resolveName(ens.name)
+    .then((result) => {
+      if (!isStillCurrent()) {
+        pushDebug(`${systemLabel} traversal refresh for ${ens.name} dropped: tab moved on`);
+        return;
+      }
+      if (!result) {
+        state.ensTrustByName.delete(ens.name);
+        repaintBadge();
+        pushDebug(`${systemLabel} traversal refresh failed for ${ens.name}: no response`);
+        return;
+      }
+
+      if (result.type === 'conflict') {
+        storeNameResolutionTrust(ens.name, result);
+        repaintBadge();
+        const conflictPage = buildNameConflictPageUrl(ens.name, result);
+        blockWithInterstitial(
+          conflictPage.url,
+          `${systemLabel} conflict for ${ens.name} on history traversal: ${conflictPage.groups.length} groups`
+        );
+        return;
+      }
+
+      if (result.type !== 'ok') {
+        state.ensTrustByName.delete(ens.name);
+        repaintBadge();
+        pushDebug(
+          `${systemLabel} traversal refresh failed for ${ens.name}: ${result.reason || 'Unknown error'}`
+        );
+        return;
+      }
+
+      storeNameResolutionTrust(ens.name, result);
+      repaintBadge();
+
+      if (result.trust?.level === 'unverified' && state.blockUnverifiedEns) {
+        // Same target-URI derivation as `loadTarget`, so the interstitial's
+        // "continue" button lands on the identical URL either path raised it.
+        const isExternalTezosWebsite =
+          ens.system === 'tezos' && (result.protocol === 'http' || result.protocol === 'https');
+        const targetUri = isExternalTezosWebsite
+          ? result.redirect
+            ? result.uri
+            : appendPublishedWebsiteSuffix(result.uri, ens.suffix)
+          : applyEnsSuffix(result.uri, ens.suffix);
+        blockWithInterstitial(
+          buildNameUnverifiedPageUrl(ens.name, targetUri),
+          `${systemLabel} unverified for ${ens.name} on history traversal → interstitial`
+        );
+      }
+    })
+    .catch((err) => {
+      if (!isStillCurrent()) return;
+      state.ensTrustByName.delete(ens.name);
+      repaintBadge();
+      pushDebug(`${systemLabel} traversal refresh error for ${ens.name}: ${err?.message || err}`);
+    });
 };
 
 // Hard-reload (Cmd/Ctrl+Shift+R) bypasses Chromium's HTTP cache; the ENS
@@ -2510,14 +2676,17 @@ export const initNavigation = () => {
   });
 
   // Navigation buttons
+  // Both buttons traverse Chromium's own session history — the restored
+  // entry, never the address bar's current (possibly unsubmitted) text. The
+  // shared helpers additionally mark the commit that follows so an
+  // ENS-backed restored entry gets its trust metadata re-verified under
+  // today's settings (#86).
   backBtn.addEventListener('click', () => {
-    const webview = getActiveWebview();
-    if (webview?.canGoBack()) webview.goBack();
+    goBackInHistory(getActiveWebview());
   });
 
   forwardBtn.addEventListener('click', () => {
-    const webview = getActiveWebview();
-    if (webview?.canGoForward()) webview.goForward();
+    goForwardInHistory(getActiveWebview());
   });
 
   reloadBtn.addEventListener('click', (e) => {
@@ -2727,6 +2896,13 @@ export const initNavigation = () => {
         if (data.event) handleNavigationEvent(data.event);
         // Notify other modules that navigation completed (for dApp connection banner)
         document.dispatchEvent(new CustomEvent('navigation-completed'));
+        break;
+
+      // Chromium committed a back/forward traversal (tabs.js reports it for
+      // background tabs too). Re-verify an ENS-backed restored entry under
+      // today's settings; anything else is left exactly as it was. #86.
+      case 'history-traversal-committed':
+        refreshNameTrustAfterTraversal(data.tabId, data.previousUrl);
         break;
 
       case 'dom-ready':

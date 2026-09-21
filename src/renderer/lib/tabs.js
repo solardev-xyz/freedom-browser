@@ -23,6 +23,7 @@ import {
   notifyFindBarTabClosed,
   notifyFindBarTabSwitched,
 } from './find-bar.js';
+import { consumeHistoryTraversal } from './history-traversal.js';
 import { matchesShortcut } from './shortcuts.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
@@ -130,6 +131,27 @@ let onHardReload = null;
 
 export const setWebviewEventHandler = (handler) => {
   onWebviewEvent = handler;
+};
+
+// Report a commit that Chromium produced for a back/forward traversal, so
+// navigation.js can re-verify an ENS-backed restored entry under today's
+// verification settings (#86). Reported for background tabs too — the regular
+// `did-navigate` forward above is active-tab-only, and a user who switches
+// tabs between pressing Back and the commit landing would otherwise keep the
+// stale trust object for the restored entry.
+//
+// `consumeHistoryTraversal` is called unconditionally (even with no handler
+// registered) so the mark can never outlive the commit it belongs to.
+//
+// `previousUrl` — the URL this tab was on before the restored entry
+// committed — rides along because the refresh needs it to tell "the user
+// pressed Back onto a blocked name" from "the user pressed Back *out of* the
+// interstitial we raised over that name". Re-raising it in the second case
+// puts the user in a loop they can only leave through the address bar.
+const reportHistoryTraversalCommit = (webview, tabId, previousUrl) => {
+  const traversed = consumeHistoryTraversal(webview);
+  if (!traversed || !onWebviewEvent) return;
+  onWebviewEvent('history-traversal-committed', { tabId, previousUrl: previousUrl || '' });
 };
 
 export const setOnchainProvenanceChangeHandler = (handler) => {
@@ -599,11 +621,15 @@ const createWebview = (tabId, initialUrl) => {
     },
     'did-navigate': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
+      // Hoisted out of the block below so the traversal report at the tail
+      // can name the page this commit replaced.
+      let previousCommittedUrl = null;
       if (tab) {
         // Use webview.getURL() for full URL (includes view-source: prefix)
         // event.url doesn't include the view-source: prefix
         const webviewUrl = webview.getURL();
         const previousUrl = tab.url;
+        previousCommittedUrl = previousUrl;
         tab.url = webviewUrl;
         tab.hasCertError = false; // Reset cert error on new navigation
         // Track view-source state directly on tab for reliable detection in page-title-updated
@@ -689,6 +715,7 @@ const createWebview = (tabId, initialUrl) => {
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate', { tabId, event });
       }
+      reportHistoryTraversalCommit(webview, tabId, previousCommittedUrl);
     },
     'did-navigate-in-page': (event) => {
       // A same-document navigation (an in-page anchor, a history.pushState
@@ -698,6 +725,16 @@ const createWebview = (tabId, initialUrl) => {
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate-in-page', { tabId, event });
       }
+      // Same-document traversal (an in-page anchor entry, a popstate route)
+      // commits here and nowhere else, so the mark has to be consumed on
+      // this path too — both to refresh the restored entry's trust metadata
+      // and so a mark can never survive into a later navigation. The
+      // document is unchanged, so the page this commit "replaced" is itself.
+      reportHistoryTraversalCommit(
+        webview,
+        tabId,
+        tabState.tabs.find((t) => t.id === tabId)?.url || null
+      );
     },
     'page-favicon-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
