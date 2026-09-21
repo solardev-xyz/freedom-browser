@@ -3194,10 +3194,10 @@ describe('Agent UI', () => {
     });
 
     expect(ctx.elements['agent-approval-action'].textContent).toBe(
-      'Share recent ipfs node diagnostics with OpenAI?'
+      'Let Agent inspect recent ipfs node logs?'
     );
     expect(ctx.elements['agent-approval-origin'].textContent).toContain(
-      'This sends raw diagnostic logs to OpenAI using gpt-5.6-sol.'
+      'A bounded excerpt is added to this conversation and sent to your selected model at OpenAI (gpt-5.6-sol) to troubleshoot this problem.'
     );
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('local paths');
     expect(ctx.elements['agent-approval-approve'].textContent).toBe('Share once');
@@ -4215,4 +4215,18 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run'].disabled).toBe(true);
     expect(ctx.elements['agent-run'].dataset.action).toBe('send');
   });
+});
+
+test('consolidates process polls by owned process ID, preserving separate executions', async () => {
+  const ctx = await loadAgentUi();
+  ctx.emit({ type: 'run_started', conversationId: 'conversation_test', runId: 'run_test', userText: 'Build the app' });
+  for (const [index, id, state] of [[0, 'a', 'running'], [1, 'a', 'running'], [2, 'a', 'completed'], [3, 'a', 'running'], [4, 'b', 'running']]) {
+    const event = { runId: 'run_test', toolCallId: `process_${index}`, operation: index === 0 ? 'bash' : 'write_stdin' };
+    ctx.emit({ ...event, type: 'tool_started', intent: 'Checking process' });
+    ctx.emit({ ...event, type: 'tool_finished', status: 'succeeded', label: `${id}: ${state}`, workspace: { processId: `workspace_process_${id.repeat(24)}`, state } });
+  }
+  const list = ctx.elements['agent-transcript'].children[0].querySelector('.agent-tool-list');
+  expect(list.children).toHaveLength(2);
+  expect(list.children[0].children[1].textContent).toBe('a: completed');
+  expect(list.children[1].children[1].textContent).toBe('b: running');
 });

@@ -350,3 +350,8 @@ test('verifies publication through the default Bee v13 data adapter', async () =
     jest.dontMock('../swarm/swarm-service');
   }
 });
+
+test('preserves postage capacity errors and actionable recovery instead of blaming browser capability', async () => {
+  const { controller } = createController({ publishCollection: jest.fn(async () => { throw Object.assign(new Error('Upload needs 1500000 bytes; batch has 40890 bytes effective capacity.'), { code: 'POSTAGE_CAPACITY_INSUFFICIENT' }); }) });
+  await expect(controller.publish({ workspacePath: 'out' }, { conversationId: 'conversation_test', requestApproval: async () => 'approved' })).rejects.toMatchObject({ code: 'POSTAGE_CAPACITY_INSUFFICIENT', suggestedAction: expect.stringContaining('effective remaining capacity') });
+});

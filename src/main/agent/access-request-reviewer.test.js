@@ -112,3 +112,20 @@ test('installed Pi sends an independent review with no tool or skill access', ()
     cwd: require('node:path').resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 20000,
   })).toBe('passed');
 });
+
+test.each([
+  ['not json', 'invalid_response'],
+  [approved.replace('approve_once', 'ask_user'), 'model_requested_user'],
+  [approved.replace('0.99', '0.9'), 'low_confidence'],
+  [approved.replace('[]', '["missing script"]'), 'uncertainties'],
+  [approved, 'approved'],
+])('records a bounded outcome without model prose: %s', (answer, outcome) => {
+  const report = jest.fn();
+  parseAccessReview(answer, report);
+  expect(report).toHaveBeenCalledWith(outcome);
+});
+
+test('a valid approval is not rejected just because its explanation exceeds the editorial length target', () => {
+  const text = JSON.stringify({ decision: 'approve_once', confidence: 0.97, reason: 'This project-local install is within the task. '.repeat(8), uncertainties: [] });
+  expect(parseAccessReview(text)).toEqual({ decision: 'approve_once' });
+});

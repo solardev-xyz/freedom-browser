@@ -79,6 +79,8 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
   UNTRUSTED_CAPABILITY_AUTHORITY: 'Freedom refused untrusted workspace authority',
   WORKSPACE_COMMAND_CANCELLED: 'The workspace command was stopped',
   WORKSPACE_COMMAND_FAILED: 'The workspace command exited unsuccessfully',
+  WORKSPACE_AUDIT_FINDINGS: 'The npm audit completed with reported vulnerabilities. Inspect the advisory output and propose compatible project-local fixes. A nonzero audit exit status can indicate findings rather than an execution failure.',
+  COMMAND_REVIEW_STALE: 'Project evidence changed after approval. Call request_permissions again for this exact command and directory before retrying.',
   WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in this workspace shell; it may be installed but not exposed here',
   WORKSPACE_COMMAND_TIMED_OUT: 'The workspace command timed out',
   WORKSPACE_PROCESS_INPUT_UNAVAILABLE: 'The workspace process is not accepting input',
@@ -139,6 +141,8 @@ function safeWorkspaceError(error, options = {}) {
     'WORKSPACE_ENABLE_FAILED',
     'WORKSPACE_COMMAND_CANCELLED',
     'WORKSPACE_COMMAND_FAILED',
+    'WORKSPACE_AUDIT_FINDINGS',
+    'COMMAND_REVIEW_STALE',
     'WORKSPACE_COMMAND_NOT_FOUND',
     'WORKSPACE_COMMAND_TIMED_OUT',
     'WORKSPACE_PROCESS_INPUT_UNAVAILABLE',
@@ -183,6 +187,12 @@ function safeWorkspaceError(error, options = {}) {
       code = 'WORKSPACE_COMMAND_NOT_FOUND';
     } else if (receipt.state === 'failed') code = 'WORKSPACE_COMMAND_FAILED';
   }
+  if (code === 'WORKSPACE_COMMAND_FAILED' && receipt?.exitCode === 1 && /^npm audit --json$/.test(receipt.command || '')) {
+    try {
+      const report = JSON.parse(options.commandOutput || '');
+      if (!report.error && Number.isInteger(report.metadata?.vulnerabilities?.total) && report.metadata.vulnerabilities.total > 0) code = 'WORKSPACE_AUDIT_FINDINGS';
+    } catch { /* Incomplete or non-audit output remains an execution failure. */ }
+  }
   const message =
     WORKSPACE_ERROR_MESSAGES[code] ||
     (typeof error?.message === 'string' &&
@@ -197,6 +207,7 @@ function safeWorkspaceError(error, options = {}) {
     ['bash', 'write_stdin'].includes(options.operation) &&
     [
       'WORKSPACE_COMMAND_FAILED',
+      'WORKSPACE_AUDIT_FINDINGS',
       'WORKSPACE_COMMAND_NOT_FOUND',
       'WORKSPACE_COMMAND_TIMED_OUT',
       'WORKSPACE_COMMAND_CANCELLED',
@@ -1133,7 +1144,8 @@ function createRequestPermissionsTool(sdk, options) {
           options.controller.grantCommandPermissions(
             options.conversationId,
             resolved.prepared,
-            scope
+            scope,
+            ...(decision?.reviewEvidence ? [decision.reviewEvidence] : [])
           );
         }
         receipt = fileWorkspaceReceipt(

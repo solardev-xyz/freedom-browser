@@ -14,7 +14,7 @@ Use this skill when the user wants to inspect, price, buy, top up, dilute, or tr
 - Postage purchases spend xBZZ and require xDAI for Gnosis Chain gas. Do not submit a purchase until the user has selected or accepted concrete `amount` and `depth` values.
 - Use decimal-integer arithmetic. One xBZZ is `10000000000000000` PLUR (10^16). Do not infer the decimal position by eyeballing a raw balance.
 - A new batch's nominal xBZZ cost is `amount * 2^depth / 10^16`. Keep calculations in integers until formatting the final xBZZ value.
-- `depth` is the base-2 logarithm of the theoretical chunk capacity. The theoretical capacity is `2^depth` chunks at 4096 bytes per chunk. Real usable capacity can be lower because of batch utilisation, encryption, and redundancy.
+- `depth` is the base-2 logarithm of the theoretical chunk capacity. The theoretical capacity is `2^depth` chunks at 4096 bytes per chunk. Theoretical capacity must never be used to size a purchase. Effective capacity is much lower at small depths because stamp buckets fill unevenly. A depth-17 batch has 512 MiB theoretical capacity but only roughly 40–45 kB effective capacity for unencrypted content without redundancy; it is normally unsuitable for a bundled web app. Encryption and redundancy lower effective capacity further.
 - `amount` is the value per chunk in PLUR and largely determines lifetime. Storage price changes, so TTL estimates are estimates. Prefer the node's reported `batchTTL` after purchase.
 
 ## Preflight
@@ -23,11 +23,12 @@ Use this skill when the user wants to inspect, price, buy, top up, dilute, or tr
 2. Read the Ant wallet with `node_request` using `GET /wallet`. Confirm sufficient xBZZ and xDAI; keep a reasonable gas and balance buffer.
 3. Read `GET /chainstate`. Use `currentPrice` only as current point-in-time pricing evidence and check that the node's chain state is not obviously stale.
 4. Read `GET /stamps`. If a usable existing batch already meets the user's goal, tell them before proposing another purchase.
-5. If the request states only a budget, explain the capacity-versus-duration tradeoff and propose concrete values. If the user explicitly says they do not care and merely want a test, choose a conservative valid depth and an amount whose computed nominal cost stays below the stated budget with a buffer.
+5. Before recommending a purchase for publication, use the publisher’s measured upload requirement (including its safety margin) and compare it with effective capacity from the Swarm utilisation tables or calculator. `usable: true` means the batch can stamp chunks, not that it can hold this upload. If a purchased batch is visible but too small, explain that and compare increasing its depth (which reduces lifetime unless topped up) against a new batch. Never automatically buy a second batch.
+6. If the request states only a budget, explain the capacity-versus-duration tradeoff and propose concrete values. If the user explicitly says they do not care and merely want a test, choose a conservative valid depth and an amount whose computed nominal cost stays below the stated budget with a buffer.
 
 ## Purchase
 
-1. Restate the exact proposed depth, amount in PLUR, nominal xBZZ cost, theoretical capacity, and why the choice fits the request.
+1. Restate the exact proposed depth, amount in PLUR, nominal xBZZ cost, effective capacity and its source, expected lifetime, and why the choice fits the request.
 2. After the user accepts those values, call `node_request` with:
    - `service: "ant"`
    - `transport: "http"`

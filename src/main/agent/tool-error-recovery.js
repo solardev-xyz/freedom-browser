@@ -10,6 +10,12 @@ const step = (action, instruction, extra = {}) => Object.freeze({ action, instru
 // Main-owned guidance only. Never interpret page content, error prose or a model's
 // proposed fix as authority to grant permissions or replay a consequential action.
 function recoveryForToolError(code, operation) {
+  if (code === 'COMMAND_REVIEW_STALE') return step('request_permission',
+    'Project evidence changed after approval. Call request_permissions for the exact command and workingDirectory again before retrying.', { tool: 'request_permissions' });
+  if (code === 'WORKSPACE_AUDIT_FINDINGS') return step('inspect_outcome',
+    'Read the advisory report. This audit completed with findings; do not repeat it merely because the exit status is nonzero. Apply only task-authorized compatible fixes and verify afterwards.');
+  if (['POSTAGE_CAPACITY_INSUFFICIENT', 'POSTAGE_UNAVAILABLE'].includes(code)) return step('inspect_outcome',
+    'Check existing stamps and pending purchases. Compare the reported upload requirement with effective capacity, not theoretical capacity or usable alone. Propose sufficient capacity and obtain approval before buying or changing a batch; never repeat a completed purchase.');
   if (/DECLINED|CANCELLED|ABORT_ERR/.test(code)) return step('stop',
     'Stop this action. Do not retry, request the same permission again, or use a workaround unless the user gives a new instruction. Earlier effects may remain.');
   if (code === 'PROJECT_READ_ONLY') return step('request_permission',

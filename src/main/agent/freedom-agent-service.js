@@ -1810,6 +1810,7 @@ class FreedomAgentService {
           );
         }
       }
+      conversation.scopedController?.beginUserTurn?.();
       conversation.turns.push(run);
       this.#persistHistory('startTurn', {
         conversationId: conversation.conversationId,
@@ -1957,6 +1958,7 @@ class FreedomAgentService {
     this.workspaceController?.clearTurnPermissions?.(run.conversationId);
     try {
       await run.session.steer(guidance.text);
+      run.scopedController?.beginUserTurn?.();
     } catch {
       this.#setGuidanceStatus(run, guidance, 'cancelled');
       throw new FreedomAgentError(
@@ -2001,7 +2003,10 @@ class FreedomAgentService {
     }
     run.status = 'resuming';
     run.lastAssistant = null;
-    if (guidanceText) this.#createGuidance(run, guidanceText, 'queued');
+    if (guidanceText) {
+      this.#createGuidance(run, guidanceText, 'queued');
+      run.scopedController?.beginUserTurn?.();
+    }
     const queuedGuidance = run.guidance.filter((item) => item.status === 'queued');
     this.#emit(run, { type: 'run_resuming' });
     run.status = 'running';
@@ -2795,7 +2800,11 @@ class FreedomAgentService {
         run.guidance.length === guidanceCount && run.approvalMode === AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS &&
         JSON.stringify(normalizeWorkspacePermissionApproval(request.workspacePermission)) === accessKey;
       let reviewed;
+      let evidence;
+      let reviewDiagnostic = { outcome: 'review_failed' };
       try {
+        evidence = await this.workspaceController.collectCommandReviewEvidence?.(run.conversationId, permission, { signal: reviewAbort.signal });
+        if (!isCurrent()) return 'declined';
         reviewed = await this.accessReviewer.review({
           userRequest: run.userText,
           priorUserRequests: (this.conversation?.turns || []).filter(turn => turn !== run).map(turn => ({
@@ -2807,9 +2816,18 @@ class FreedomAgentService {
             network: permission.network || { posture: 'none' }, scope: 'once',
             filesystem: 'Existing sandbox and user-granted project access only; installed executable roots are read/execute-only.' },
           agentReason: publicRequest.label,
-        }, { ...reviewerRuntime, signal: reviewAbort.signal });
+          projectEvidence: evidence?.data || { status: 'unavailable' },
+        }, { ...reviewerRuntime, signal: reviewAbort.signal, onDiagnostic: value => { reviewDiagnostic = value; } });
+        if (reviewed?.decision === 'approve_once' && evidence?.fingerprint) {
+          const current = await this.workspaceController.collectCommandReviewEvidence(run.conversationId, permission, { signal: reviewAbort.signal });
+          if (current.fingerprint !== evidence.fingerprint) {
+            reviewed = { decision: 'ask_user' };
+            reviewDiagnostic = { outcome: 'evidence_changed' };
+          }
+        }
       } catch {
         // Reviewer failures always fall back to the human approval below.
+        reviewed = { decision: 'ask_user' };
       } finally {
         run.workspaceAbortController.signal.removeEventListener('abort', cancelReview);
         if (run.pendingAccessReview === reviewAbort) run.pendingAccessReview = null;
@@ -2817,10 +2835,11 @@ class FreedomAgentService {
       if (!isCurrent()) return 'declined';
       if (reviewed?.decision === 'approve_once') {
         if (activityItem) activityItem.approval = 'reviewer_approved';
-        this.#diagnostic(run, 'access_review_completed', { decision: 'approve_once' });
-        return { status: 'approved', workspacePermissionScope: 'once', isCurrent };
+        this.#diagnostic(run, 'access_review_completed', { decision: 'approve_once', ...reviewDiagnostic });
+        return { status: 'approved', workspacePermissionScope: 'once', isCurrent,
+          ...(evidence?.fingerprint && { reviewEvidence: evidence.fingerprint }) };
       }
-      this.#diagnostic(run, 'access_review_completed', { decision: 'ask_user' });
+      this.#diagnostic(run, 'access_review_completed', { decision: 'ask_user', ...reviewDiagnostic });
     }
     if (activityItem) {
       activityItem.approval = 'requested';

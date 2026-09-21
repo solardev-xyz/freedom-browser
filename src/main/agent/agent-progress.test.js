@@ -1413,3 +1413,7 @@ test('mixed successful inspections and a failed command do not claim command com
     tone: 'caution', headline: 'Project operation did not complete',
   });
 });
+
+test('listing saved servers reports project work, not browser use', () => {
+  expect(activityProgress('workspace_server', { workspace: { kind: 'process', command: 'List saved development servers', workingDirectory: '.', backend: 'freedom-workspace-servers', state: 'completed', sideEffects: 'none' } })).toMatchObject({ label: 'Checked saved project servers' });
+});

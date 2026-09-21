@@ -1373,3 +1373,12 @@ test('installed Pi preserves project recovery through its real bash and edit ada
     cwd: require('path').resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 15000,
   })).toBe('passed');
 });
+
+test('npm audit findings preserve advisory output and do not disguise execution failures', () => {
+  const options = { operation: 'bash', receipt: { command: 'npm audit --json', state: 'failed', exitCode: 1 }, commandOutput: JSON.stringify({ metadata: { vulnerabilities: { total: 2 } } }) };
+  expect(safeWorkspaceError({}, options)).toMatchObject({ code: 'WORKSPACE_AUDIT_FINDINGS' });
+  expect(safeWorkspaceError({}, { ...options, commandOutput: '{"error":{"code":"ENOAUDIT"}}' }).code).toBe('WORKSPACE_COMMAND_FAILED');
+  expect(safeWorkspaceError({}, { ...options, commandOutput: '{"metadata":' }).code).toBe('WORKSPACE_COMMAND_FAILED');
+  expect(safeWorkspaceError({}, { ...options, receipt: { ...options.receipt, command: 'npm audit fix' } }).code).toBe('WORKSPACE_COMMAND_FAILED');
+  expect(safeWorkspaceError({ code: 'COMMAND_REVIEW_STALE' }).message).toContain('request_permissions');
+});

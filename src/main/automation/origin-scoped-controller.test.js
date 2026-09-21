@@ -1663,3 +1663,17 @@ test('a page tool cannot dispatch after task custody is released during approval
     .toMatchObject({ ok: false, error: { code: 'POLICY_DENIED' } });
   expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.CALL_PAGE_TOOL)).toBe(false);
 });
+
+test('diagnostic refusal suppresses agent retries but new user input can request a fresh sheet', async () => {
+  const controller = createController();
+  const requestApproval = jest.fn().mockResolvedValueOnce('declined').mockResolvedValueOnce('approved');
+  const scoped = await createOriginScopedAutomationController({ controller, tabId: null, requestApproval });
+  controller.execute.mockImplementation(async (_operation, _input, execution) => ({ decision: await execution.requestApproval({ operation: OPERATIONS.APP_DIAGNOSTICS, diagnostic: { scope: 'app' } }) }));
+  expect(await scoped.execute(OPERATIONS.APP_DIAGNOSTICS, {})).toMatchObject({ decision: 'declined' });
+  await scoped.prepareResume();
+  expect(await scoped.execute(OPERATIONS.APP_DIAGNOSTICS, {})).toMatchObject({ decision: 'declined' });
+  expect(requestApproval).toHaveBeenCalledTimes(1);
+  scoped.beginUserTurn();
+  expect(await scoped.execute(OPERATIONS.APP_DIAGNOSTICS, {})).toMatchObject({ decision: 'approved' });
+  expect(requestApproval).toHaveBeenCalledTimes(2);
+});

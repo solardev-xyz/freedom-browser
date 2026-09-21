@@ -1182,3 +1182,15 @@ describe('ManagedWorkspaceController', () => {
     expect(controller.leases.size).toBe(0);
   });
 });
+
+test('changed project evidence invalidates a reviewed command before shell execution', async () => {
+  jest.spyOn(fs.promises, 'realpath').mockImplementation(async value => path.resolve(String(value)));
+  jest.spyOn(fs.promises, 'stat').mockResolvedValue({ isDirectory: () => true });
+  const { controller, dependencies } = createController();
+  controller.commandReviewEvidence.set('conversation_one', new Map([[JSON.stringify(['npm run dev', '.']), 'before']]));
+  controller.collectCommandReviewEvidence = jest.fn().mockResolvedValue({ fingerprint: 'after' });
+  await expect(controller.execute('conversation_one', { command: 'npm run dev' })).rejects.toMatchObject({ code: 'COMMAND_REVIEW_STALE' });
+  expect(dependencies.executor.execute.mock.calls.some(([, request]) => request.command === '/bin/sh')).toBe(false);
+  expect(controller.commandReviewEvidence.has('conversation_one')).toBe(false);
+  jest.restoreAllMocks();
+});

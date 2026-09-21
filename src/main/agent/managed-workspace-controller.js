@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { collectCommandReviewEvidence } = require('./command-review-evidence');
 const { ManagedWorkspaceServers } = require('./managed-workspace-servers');
 const { WORKSPACE_HISTORY_HELPER } = require('./workspace-history-helper');
 const { ManagedWorkspaceHistory, WorkspaceHistoryError, fingerprint } = require('./managed-workspace-history');
@@ -755,6 +756,7 @@ class ManagedWorkspaceController {
     this.restorePlans = new Map();
     this.historyReviews = new Map();
     this.projectReads = new Map();
+    this.commandReviewEvidence = new Map();
     this.processManager =
       options.processManager ||
       new ManagedWorkspaceProcessManager({
@@ -1086,6 +1088,7 @@ class ManagedWorkspaceController {
   async setProjectAccess(conversationId, mode, selectedPath = null, options = {}) {
     const workspace = this.store.getForConversation(conversationId);
     this.cancelConversation(conversationId);
+    this.commandReviewEvidence.delete(conversationId);
     if (workspace) this.leases.delete(workspace.workspaceId);
     this.capabilityGrants.deleteConversation(conversationId);
     this.projectReads.delete(conversationId);
@@ -1230,7 +1233,11 @@ class ManagedWorkspaceController {
     return this.prepareCommandPermissions(conversationId, { executables }, request);
   }
 
-  grantCommandPermissions(conversationId, prepared, scope = 'once') {
+  collectCommandReviewEvidence(conversationId, permission, options) {
+    return collectCommandReviewEvidence(this, conversationId, permission, options);
+  }
+
+  grantCommandPermissions(conversationId, prepared, scope = 'once', reviewEvidence = null) {
     const workspace = this.store.getForConversation(conversationId);
     const executableAccess = prepared?.executableAccess;
     if (
@@ -1252,6 +1259,10 @@ class ManagedWorkspaceController {
     }
     try {
       this.capabilityGrants.grant(conversationId, prepared.capabilityRequest, scope);
+      if (scope === 'once' && typeof reviewEvidence === 'string') {
+        if (!this.commandReviewEvidence.has(conversationId)) this.commandReviewEvidence.set(conversationId, new Map());
+        this.commandReviewEvidence.get(conversationId).set(JSON.stringify([prepared.command, prepared.workingDirectory]), reviewEvidence);
+      }
     } catch {
       throw new ManagedWorkspaceError(
         'INVALID_COMMAND_PERMISSION_GRANT',
@@ -1276,6 +1287,7 @@ class ManagedWorkspaceController {
   }
 
   clearTurnPermissions(conversationId) {
+    this.commandReviewEvidence.delete(conversationId);
     return this.capabilityGrants.clearOnce(conversationId);
   }
 
@@ -1887,6 +1899,22 @@ class ManagedWorkspaceController {
     );
     throwIfWorkspaceAborted(request.signal);
     const previewPort = validatePreviewPort(request.previewPort);
+    const reviewKey = JSON.stringify([command, workingDirectory.relative]);
+    const evidence = this.commandReviewEvidence.get(conversationId)?.get(reviewKey);
+    if (evidence) {
+      let current;
+      try {
+        current = await this.collectCommandReviewEvidence(conversationId, { command, workingDirectory: workingDirectory.relative }, request);
+      } catch {
+        // An unreadable file cannot leave an unchecked permit for a later retry.
+      }
+      if (current?.fingerprint !== evidence) {
+        this.clearTurnPermissions(conversationId);
+        throw new ManagedWorkspaceError('COMMAND_REVIEW_STALE', 'Project evidence changed after command approval. Call request_permissions again for this exact command and directory.');
+      }
+      this.commandReviewEvidence.get(conversationId)?.delete(reviewKey);
+      throwIfWorkspaceAborted(request.signal);
+    }
     if (previewPort) {
       let previewNetworkPosture;
       try {
@@ -2163,6 +2191,7 @@ class ManagedWorkspaceController {
     this.leases.delete(workspace.workspaceId);
     this.leasePromises.delete(workspace.workspaceId);
     this.capabilityGrants.deleteConversation(conversationId);
+    this.commandReviewEvidence.delete(conversationId);
     return this.store.deleteConversation(conversationId);
   }
 
@@ -2192,6 +2221,7 @@ class ManagedWorkspaceController {
     this.leases.clear();
     this.leasePromises.clear();
     this.capabilityGrants.clear();
+    this.commandReviewEvidence.clear();
     return Object.freeze({ drained: drained && processResult?.drained !== false });
   }
 }

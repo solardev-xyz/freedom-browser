@@ -30,6 +30,7 @@ const WORKSPACE_OPERATIONS = Object.freeze({
   LS: 'ls',
   PROCESS: 'write_stdin',
   PREVIEW: 'workspace_preview',
+  SERVER: 'workspace_server',
   PERMISSIONS: 'request_permissions',
   HISTORY: 'workspace_history',
 });
@@ -265,6 +266,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Opening a static preview',
     completed: 'Opened a static preview',
   },
+  [WORKSPACE_OPERATIONS.SERVER]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Managing project servers',
+    completed: 'Managed project servers',
+  },
 });
 
 const ERROR_LABELS = Object.freeze({
@@ -282,6 +288,8 @@ const ERROR_LABELS = Object.freeze({
   [ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER]: 'The user cancelled the download.',
   [ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER]: 'The user declined the wallet request.',
   [ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER]: 'The user declined the Swarm publication.',
+  [ERROR_CODES.POSTAGE_CAPACITY_INSUFFICIENT]: 'The postage batch is too small for this upload.',
+  [ERROR_CODES.POSTAGE_UNAVAILABLE]: 'No usable postage batch is available.',
   [ERROR_CODES.CAPABILITY_UNAVAILABLE]: 'This browser capability is unavailable.',
   [ERROR_CODES.INTERNAL_ERROR]: 'The browser action failed unexpectedly.',
   SESSION_START_FAILED: 'The agent session could not start.',
@@ -304,6 +312,8 @@ const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
   ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
   ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
   ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER,
+  ERROR_CODES.POSTAGE_CAPACITY_INSUFFICIENT,
+  ERROR_CODES.POSTAGE_UNAVAILABLE,
   ERROR_CODES.CAPABILITY_UNAVAILABLE,
 ]);
 
@@ -907,6 +917,7 @@ function activityProgress(operation, receipt = {}) {
         ? action
         : `Checking ${action.replace(/^Check /, '')}`,
       [WORKSPACE_OPERATIONS.PREVIEW]: `Opening ${action.replace(/^Preview /, '')}`,
+      [WORKSPACE_OPERATIONS.SERVER]: action.startsWith('List ') ? 'Checking saved project servers' : action,
     };
     const completedLabels = {
       [WORKSPACE_OPERATIONS.BASH]: `Ran ${action}`,
@@ -926,6 +937,7 @@ function activityProgress(operation, receipt = {}) {
           ? `${action.replace(/^List /, 'Listed ')} — empty`
           : action.replace(/^List /, 'Listed '),
       [WORKSPACE_OPERATIONS.PREVIEW]: action.replace(/^Preview /, 'Opened preview for '),
+      [WORKSPACE_OPERATIONS.SERVER]: action.startsWith('List ') ? 'Checked saved project servers' : action,
       [WORKSPACE_OPERATIONS.PROCESS]: `Process finished — ${action.replace(/^(?:Check|Stop) /, '')}`,
     };
     intent = activeLabels[operation];
@@ -945,7 +957,9 @@ function activityProgress(operation, receipt = {}) {
                 : `Command stopped — ${action}`
               : workspace.state === 'sandbox_denied'
                 ? `Workspace operation blocked — ${action}`
-                : `Workspace operation failed — ${action}`;
+                : receipt.errorCode === 'WORKSPACE_AUDIT_FINDINGS'
+                  ? 'Dependency audit found vulnerabilities'
+                  : `Workspace operation failed — ${action}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],

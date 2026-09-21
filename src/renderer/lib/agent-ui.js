@@ -128,6 +128,7 @@ let sessionHistoryLoading = false;
 const paneWidths = { session: null, workspace: null };
 const toolRows = new Map();
 const attachmentDisplayRows = new Map();
+const processDisplayRows = new Map();
 const turnViews = new Map();
 const guidanceViews = new Map();
 const attachmentPreviewLoaders = new WeakMap();
@@ -2091,6 +2092,7 @@ function updateSendAvailability() {
 function resetConversationUi() {
   toolRows.clear();
   attachmentDisplayRows.clear();
+  processDisplayRows.clear();
   turnViews.clear();
   guidanceViews.clear();
   attachmentPreviewObserver?.disconnect();
@@ -2722,7 +2724,7 @@ function renderApproval(request) {
           : nodeLifecycle
             ? `${nodeLifecycle.action[0].toUpperCase()}${nodeLifecycle.action.slice(1)} the ${nodeLabels[nodeLifecycle.service] || nodeLifecycle.service} node?`
             : diagnostic
-              ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
+              ? `Let Agent inspect recent ${diagnosticSubject} logs?`
               : request.action === 'form_submission'
                 ? `Submit this form using “${label}”?`
                 : request.action === 'file_download'
@@ -2765,7 +2767,7 @@ function renderApproval(request) {
             : diagnostic
               ? diagnostic.local
                 ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
-                : `This sends raw diagnostic logs to ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They may include peer IDs, network or wallet addresses, local paths, and requested resources.`
+                : `A bounded excerpt is added to this conversation and sent to your selected model at ${diagnostic.providerLabel}${diagnostic.modelId ? ` (${diagnostic.modelId})` : ''} to troubleshoot this problem. This is not a feedback report. Logs may include peer IDs, network or wallet addresses, local paths, and requested resources.`
               : request.action === 'file_upload'
                 ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
                 : request.wallet
@@ -2955,6 +2957,8 @@ function formatToolError(code, operation) {
     FILE_UPLOAD_CANCELLED_BY_USER: 'File selection cancelled by you',
     DOWNLOAD_CANCELLED_BY_USER: 'Download cancelled by you',
     WALLET_REQUEST_CANCELLED_BY_USER: 'Wallet request declined by you',
+    POSTAGE_CAPACITY_INSUFFICIENT: 'Postage capacity is too small for this upload',
+    POSTAGE_UNAVAILABLE: 'No usable postage batch is available',
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
     PROJECT_READ_ONLY: 'Project is read-only. Agent can request editing access if needed',
@@ -2975,6 +2979,8 @@ function formatToolError(code, operation) {
     EXECUTABLE_INTERPRETER_UNAVAILABLE: 'A required script interpreter is unavailable',
     EXECUTABLE_INTERPRETER_UNSUPPORTED: 'The script launcher could not be resolved safely',
     WORKSPACE_COMMAND_FAILED: 'Workspace command exited unsuccessfully',
+    WORKSPACE_AUDIT_FINDINGS: 'Dependency audit found vulnerabilities',
+    COMMAND_REVIEW_STALE: 'Project files changed; command access needs a fresh review',
     WORKSPACE_COMMAND_NOT_FOUND: 'Command unavailable in this workspace; check installed-tool access before retrying',
     WORKSPACE_COMMAND_TIMED_OUT: 'Workspace command timed out',
     WORKSPACE_DIRECTORY_UNAVAILABLE: 'Workspace directory does not exist',
@@ -3269,6 +3275,20 @@ function attachmentDisplayKey(event) {
 function finishToolRow(event) {
   let record = toolRows.get(`${event.runId}:${event.toolCallId}`);
   if (!record) return;
+  const processId = event.workspace?.processId;
+  if (['bash', 'write_stdin'].includes(event.operation) && /^workspace_process_[a-f0-9]{24}$/.test(processId || '')) {
+    const key = `${event.runId}:${processId}`;
+    const existing = processDisplayRows.get(key);
+    if (existing && existing !== record) {
+      record.row.remove();
+      record = existing;
+      toolRows.set(`${event.runId}:${event.toolCallId}`, record);
+    }
+    // A late poll must not turn a finished process back into a running one.
+    if (record.processTerminal && event.workspace.state === 'running') return;
+    record.processTerminal = event.workspace.state !== 'running';
+    processDisplayRows.set(key, record);
+  }
   const displayKey = attachmentDisplayKey(event);
   const existingAttachmentRow = displayKey ? attachmentDisplayRows.get(displayKey) : null;
   if (existingAttachmentRow && existingAttachmentRow !== record) {
@@ -3286,6 +3306,7 @@ function finishToolRow(event) {
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
+  record.row.title = '';
   if (event.status === 'failed') {
     record.row.title = formatToolError(event.errorCode, event.operation);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;

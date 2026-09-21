@@ -185,6 +185,26 @@ describe('independent command access review', () => {
     }));
   });
 
+  test('main-owned project evidence reaches the reviewer and changed evidence falls back to a sheet', async () => {
+    const ctx = await setup();
+    ctx.workspaceController.collectCommandReviewEvidence = jest.fn()
+      .mockResolvedValueOnce({ data: { status: 'collected', records: [{ path: 'package.json', content: { scripts: { dev: 'next dev' } } }] }, fingerprint: 'before' })
+      .mockResolvedValueOnce({ data: {}, fingerprint: 'after' });
+    const pending = ctx.request(permissionRequest());
+    await new Promise(setImmediate);
+    expect(ctx.accessReviewer.review.mock.calls[0][0].projectEvidence.records[0].path).toBe('package.json');
+    expect(ctx.events.at(-1).type).toBe('approval_requested');
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    expect(await pending).toBe('declined'); await stop(ctx);
+  });
+
+  test('unchanged evidence is bound to the one-shot command grant', async () => {
+    const ctx = await setup();
+    ctx.workspaceController.collectCommandReviewEvidence = jest.fn().mockResolvedValue({ data: { status: 'collected' }, fingerprint: 'same' });
+    expect(await ctx.request(permissionRequest())).toMatchObject({ status: 'approved', reviewEvidence: 'same', workspacePermissionScope: 'once' });
+    await stop(ctx);
+  });
+
   test.each(['every_interaction', 'allow_website_interactions'])('%s retains human command approvals', async mode => {
     const ctx = await setup(mode);
     const pending = ctx.request(permissionRequest());
