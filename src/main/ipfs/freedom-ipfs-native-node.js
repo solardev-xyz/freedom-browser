@@ -6,6 +6,12 @@ const { loadNativeBinding, isNativeBindingAvailable } = require('./freedom-ipfs-
 const BUFFER_SIZE = 64 * 1024;
 const ATTEMPT_TIMEOUT_MS = 30_000;
 const REQUEST_QUEUE_TIMEOUT_MS = 15_000;
+// How long stopDispatcher() waits for the worker to acknowledge a stop before
+// resorting to terminate(), and how long it then waits for the thread to end
+// once it has acknowledged. The acknowledgement is what proves no
+// gatewayWaitNextEvent is in flight, so the exit after it is a formality.
+const DISPATCHER_STOP_TIMEOUT_MS = 2000;
+const DISPATCHER_EXIT_GRACE_MS = 500;
 
 let native = null;
 
@@ -324,44 +330,89 @@ class FreedomIpfsNativeNode {
 
   startDispatcher() {
     if (this.dispatcher || this.nodeHandle === '0') return;
-    this.dispatcher = new Worker(path.join(__dirname, 'freedom-ipfs-event-worker.js'), {
+    const dispatcher = new Worker(path.join(__dirname, 'freedom-ipfs-event-worker.js'), {
       workerData: {
         nodeHandle: this.nodeHandle,
         timeoutMs: 100,
       },
     });
-    this.dispatcher.on('message', (message) => this.onDispatcherMessage(message));
-    this.dispatcher.on('error', (err) => {
+    this.dispatcher = dispatcher;
+    dispatcher.on('message', (message) => this.onDispatcherMessage(message));
+    dispatcher.on('error', (err) => {
+      // A worker stopDispatcher() already detached is on its way out; its
+      // errors say nothing about this node's health, but still deserve a line.
+      if (this.dispatcher !== dispatcher) {
+        log.warn('[IPFS] detached native dispatcher errored:', err.message);
+        return;
+      }
       log.error('[IPFS] native dispatcher error:', err.message);
       this.markFailed(`Native event dispatcher failed: ${err.message}`);
     });
-    this.dispatcher.on('exit', (code) => {
-      const expectedStop = this.stoppingDispatcher;
-      if (!expectedStop) {
-        log.warn('[IPFS] native dispatcher exited with code', code);
-      }
-      this.stoppingDispatcher = false;
+    dispatcher.on('exit', (code) => {
+      // stopDispatcher() detaches the worker before asking it to stop, and can
+      // resolve on the `stopped` acknowledgement before this `exit` lands — by
+      // which point a restart may already have installed a newer worker here.
+      // Only an exit from the worker this node is still using is a failure.
+      if (this.dispatcher !== dispatcher) return;
       this.dispatcher = null;
-      if (!expectedStop) {
-        this.markFailed(`Native event dispatcher exited with code ${code}`);
-      }
+      log.warn('[IPFS] native dispatcher exited with code', code);
+      this.markFailed(`Native event dispatcher exited with code ${code}`);
     });
   }
 
+  // Wind the dispatcher down before stop() touches the native gateway. The
+  // worker acknowledges with `stopped` from the top of its loop — i.e. with no
+  // gatewayWaitNextEvent in flight — and then closes its port and exits on its
+  // own, so waiting for that acknowledgement is what makes the
+  // nodeStopGateway/nodeFree below safe. terminate() stays as a backstop only,
+  // for a worker that never answers: quit-time callers should not have to fall
+  // all the way through to the shutdown watchdog in src/main/index.js.
   stopDispatcher() {
     const dispatcher = this.dispatcher;
     this.dispatcher = null;
     if (!dispatcher) return Promise.resolve();
     this.stoppingDispatcher = true;
     return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        dispatcher.terminate().finally(resolve);
-      }, 2000);
-      timeout.unref?.();
-      dispatcher.once('exit', () => {
-        clearTimeout(timeout);
+      let settled = false;
+      let terminateTimer = null;
+      let exitTimer = null;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(terminateTimer);
+        clearTimeout(exitTimer);
+        dispatcher.off('message', onAcknowledged);
+        dispatcher.off('exit', finish);
+        this.stoppingDispatcher = false;
         resolve();
-      });
+      };
+
+      const onAcknowledged = (message) => {
+        if (message?.type !== 'stopped') return;
+        // Acknowledged: no native call can be in flight any more. The thread
+        // exit that follows is a formality, so give it a short grace instead
+        // of holding the quit open for the full terminate budget. If it does
+        // not exit within the grace, terminate it: the acknowledgement is
+        // exactly the point where that is safe (no gatewayWaitNextEvent in
+        // flight), and resolving without it would drop the one `exit` listener
+        // that could have reported the thread, leaking it silently per stop.
+        clearTimeout(terminateTimer);
+        exitTimer = setTimeout(() => {
+          log.warn('[IPFS] native dispatcher acknowledged stop but did not exit; terminating');
+          dispatcher.terminate().finally(finish);
+        }, DISPATCHER_EXIT_GRACE_MS);
+        exitTimer.unref?.();
+      };
+
+      terminateTimer = setTimeout(() => {
+        log.warn('[IPFS] native dispatcher did not acknowledge stop; terminating');
+        dispatcher.terminate().finally(finish);
+      }, DISPATCHER_STOP_TIMEOUT_MS);
+      terminateTimer.unref?.();
+
+      dispatcher.on('exit', finish);
+      dispatcher.on('message', onAcknowledged);
       dispatcher.postMessage({ type: 'stop' });
     });
   }
@@ -462,4 +513,6 @@ module.exports = {
   NativeGatewayController,
   ATTEMPT_TIMEOUT_MS,
   REQUEST_QUEUE_TIMEOUT_MS,
+  DISPATCHER_STOP_TIMEOUT_MS,
+  DISPATCHER_EXIT_GRACE_MS,
 };

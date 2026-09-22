@@ -45,6 +45,10 @@ All notable changes to Freedom will be documented in this file.
   - The File menu carried the shortcut twice — on Close Tab, and invisibly on Close Window — and Windows and Linux gave it to Close Window, so one keystroke closed every tab in the window at once. It only looked right with a single tab open, where closing the tab closes the window anyway
   - Closing the last tab still closes the window, and `Cmd+W` on macOS is unchanged
   - Close Window keeps its place in the File menu and no longer advertises a shortcut of its own; `Ctrl+F4` still closes a tab on Windows and Linux
+- Address-bar popovers no longer stay open over the page after you press somewhere to put them away
+  - With the trust shield's popover, the permission indicator's popover or the "Seed to Radicle" panel open, and the address-bar suggestions showing, a press that started on the page outside the suggestions left the popover hanging over the page — no suggestions, no highlight on the button it came from, and nothing left under the pointer to close it
+  - It happened with an ordinary mouse: press outside the suggestions and release over the page content, and the press was never completed anywhere the browser could see it
+  - All three now close along with the suggestions, and they also close when you open any menu. The shield, the indicator and the bridge button themselves stay where they are
 - Removing a site permission from the address-bar indicator no longer reaches into another window's own decisions
   - "Remove" in a private window lifts what that window is running on; it used to also clear the same site's this-session decision in your normal windows, with no sign of it in the window you were looking at
   - "Remove" in a normal window likewise no longer reaches into an open private window's own decisions

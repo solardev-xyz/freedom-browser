@@ -833,6 +833,60 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Issue #345 — quitting with the bundled native IPFS node running aborted the
+  # main process (SIGABRT, `Error::ThrowAsJavaScriptException napi_throw`) on
+  # most quits. Live, because FREEDOM_TEST_MODE stubs the node managers away:
+  # under `harness` or `packaged` no freedom-ipfs event dispatcher worker
+  # exists at all, so the quit path this guards is never taken and the bug
+  # would ship green. No network is needed — the spec starts the node, waits
+  # for it to report running, and quits — so this job only downloads the addon.
+  e2e-ipfs-quit:
+    needs: code-changed
+    if: needs.code-changed.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Download freedom-ipfs native addon
+        # Version pinned in scripts/fetch-freedom-ipfs-native.js so CI tests
+        # exactly what releases ship.
+        run: npm run ipfs:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run the IPFS clean-quit E2E (headless)
+        run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/ipfs-quit.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ipfs-quit-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Standalone Ant live E2E: prove the bundled antd node starts, connects to the
   # Swarm network (peer count climbs), and serves real content the browser
   # requests — `meinhard.eth` is a Swarm-hosted (bzz://) site. This is the
@@ -1268,6 +1322,7 @@ jobs:
         e2e-ant,
         e2e-chrome-webstore,
         e2e-close-tab-shortcut,
+        e2e-ipfs-quit,
         e2e-onboarding-identity,
         e2e-profiles,
         e2e-renderer-screenshots,

@@ -57,11 +57,15 @@ import {
   refreshCache as refreshAutocompleteCache,
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
-import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.js';
+import {
+  initGithubBridgeUi,
+  setOnOpenRadicleUrl,
+  closeGithubBridgePanel,
+} from './lib/github-bridge-ui.js';
 import { initDownloadsUi, setOnOpenDownloadsPage } from './lib/downloads-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
-import { initSitePermissionsUi } from './lib/site-permissions-ui.js';
+import { initSitePermissionsUi, closePermissionPopover } from './lib/site-permissions-ui.js';
 import { initFindBar } from './lib/find-bar.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import {
@@ -156,11 +160,24 @@ setOnOpenDownloadsPage(openDownloadsPage);
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
 // When any popover/menu opens, dismiss other transient surfaces so we
-// don't end up with the autocomplete dropdown or the ENS trust popover
-// stacked on top of the nodes/main menu.
+// don't end up with the autocomplete dropdown or any of the address bar's
+// three no-backdrop surfaces -- the ENS trust popover, the permission
+// indicator's popover and the GitHub-bridge panel -- stacked on top of the
+// nodes/main menu.
+//
+// Every module that raises the backdrop for a menu chains this: the
+// hamburger and Nodes menus, the tab and bookmark context menus, the chrome
+// input menu, and the page context menu -- that last one raised from inside
+// the guest rather than from the chrome, which is how it was the one raiser
+// left off the chain (#67). The autocomplete dropdown is the deliberate
+// exception: it is the address bar's own surface and sits alongside the
+// three, so the backdrop *it* raises resets them on `mousedown` instead
+// (`closeAllOverlays`).
 const onAnyMenuOpening = () => {
   hideAutocomplete();
   closeTrustPopover();
+  closePermissionPopover();
+  closeGithubBridgePanel();
 };
 setOnMenuOpening(onAnyMenuOpening);
 setOnTabContextMenuOpening(onAnyMenuOpening);
@@ -701,10 +718,29 @@ const closeAllMenus = () => {
   hideChromeInputContextMenu();
 };
 
-// Close everything including autocomplete (used by backdrop)
+// Close everything including autocomplete and the address bar's three
+// no-backdrop surfaces (used by backdrop). The backdrop is the neutral surface:
+// a press on it resets every transient overlay, the mirror of
+// `onAnyMenuOpening` chaining the same set.
+//
+// None of the three -- the trust popover, the permission indicator's popover
+// and the GitHub-bridge panel -- raises a backdrop of its own, so any of them
+// can still be open under one another surface raised. Autocomplete is the
+// reachable case, since its `show()` closes the menus but, unlike every other
+// raiser, none of these. Closing them here, on the backdrop's `mousedown`, is
+// also what stops their dismissal depending on the document `click` listeners
+// (navigation.js for the trust popover, site-permissions-ui.js for the
+// permission one, github-bridge-ui.js for the panel): a press on the backdrop
+// released inside the guest produces no `click` in this document at all (the
+// pointer moves into the `<webview>`'s own frame, so the embedder never sees
+// the `mouseup`), which left the surface stranded with no menu, no dropdown and
+// no highlight on the control it hangs off. #67
 const closeAllOverlays = () => {
   closeAllMenus();
   hideAutocomplete();
+  closeTrustPopover();
+  closePermissionPopover();
+  closeGithubBridgePanel();
 };
 
 // Listen for close menus from main process (e.g., system menu clicked)
@@ -815,7 +851,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
   initAutocomplete(); // Address bar autocomplete
-  initPageContextMenu(); // Page context menu for webviews
+  initPageContextMenu({ onOpening: onAnyMenuOpening }); // Page context menu for webviews
   // Cut/Copy/Paste/Select All for every editable chrome text field — the
   // address bar, the find bar and the bookmark-edit dialog (#316). Passed in
   // explicitly rather than left to the module's fallback so the list of chrome

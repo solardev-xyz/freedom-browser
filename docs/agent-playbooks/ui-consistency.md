@@ -139,7 +139,18 @@ swallow the click on its way (#328). A surface that raises `#menu-backdrop`
 (so a click into the page is already caught in the chrome) dismisses through
 `onWindowDeactivated`, never a raw `blur` listener. The trust and permission
 popovers are the two documented exceptions: they raise no backdrop, so the
-guest-focus blur is what closes them on a click into page content. This is a
+guest-focus blur is what closes them on a click into page content. They are not
+the only surfaces that raise no backdrop, though — the GitHub-bridge panel is a
+third, and it dismisses on focus loss not at all, only on a document `click` and
+Escape. All three are reset from the *backdrop* another surface raises, through
+`closeAllOverlays`/`onAnyMenuOpening` in `index.js`, because a press on that
+backdrop released inside the guest dispatches no `click` in this document and
+would otherwise strand them (#67). `onAnyMenuOpening` is chained by every
+backdrop-raising *menu*, the page context menu included — it is raised from
+inside the guest rather than from the chrome, which is how it was missed — so
+the autocomplete dropdown is the one raiser that deliberately does not chain
+it: it is the address bar's own surface and sits alongside the three rather
+than over them. This is a
 claim about every surface, so it is checked as one: `window-deactivation.test.js`
 sweeps `lib/` for the modules that call `showMenuBackdrop()` and fails any that
 does not also register `onWindowDeactivated` — six today, including both
