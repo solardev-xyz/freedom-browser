@@ -125,18 +125,27 @@ This is the sequence [#387](https://github.com/solardev-xyz/freedom-browser/pull
    (`gh api repos/freedom-hq/ant/contents?ref=<tag>` — `LICENSE-MIT` and
    `LICENSE-APACHE` are what `MIT OR Apache-2.0` rests on).
 
-7. **Add a `CHANGELOG.md` entry** under `## [Unreleased]`, in the form this
-   repo already uses:
+7. **Add a changelog fragment**, not a `CHANGELOG.md` edit: one new file,
+   `changelog.d/security--ant-<new-version>.md`, whose body is the entry as it
+   should read under that heading. Pull requests no longer touch
+   `CHANGELOG.md` — that is what keeps two of them from conflicting over it —
+   and the release assembles the fragments (see `changelog-process.md` and
+   `changelog.d/README.md`).
 
    ```
-   ### Security
-
+   # changelog.d/security--ant-0.5.45.md
    - Updated bundled nodes:
      - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45 — <what changes for a user>
    ```
 
-   `Security` vs `Changed` follows `changelog-process.md`: a hardening fix to
-   code that shipped in a _previous tagged release_ is `Security`.
+   Writing the same `- Updated bundled nodes:` lead as the last bump is
+   correct, not a duplicate: the assembler folds the sub-bullets under the one
+   lead, whether it comes from another fragment or is already under
+   `## [Unreleased]`.
+
+   The file name's `<section>--` prefix is what picks the heading. `security`
+   vs `changed` follows `changelog-process.md`: a hardening fix to code that
+   shipped in a _previous tagged release_ is `security`.
 
 8. **Grep the tree for the old tag and the old digest**, so no stale pin
    survives:
@@ -148,15 +157,18 @@ This is the sequence [#387](https://github.com/solardev-xyz/freedom-browser/pull
    The check is "no stale **pin** survives", not "zero hits" — several hits are
    expected and must be left alone:
 
-   - `CHANGELOG.md` — the "from" version in the new entry, plus older released
-     sections.
+   - `changelog.d/security--ant-<new-version>.md` — the fragment you just
+     wrote in step 7 names the "from" version. It is your own new entry, not a
+     stale pin.
+   - `CHANGELOG.md` — the "from" version in any entry already assembled there,
+     plus older released sections.
    - **This playbook** — the worked example named at the top of this section
-     and the sample changelog entry in step 7 both carry a concrete version pair.
+     and the sample fragment in step 7 both carry a concrete version pair.
      They are a record of one past bump, not a pin; do not rewrite them to make
      the grep look clean. (Re-word them only when you are deliberately
      re-basing this checklist onto a newer bump.)
 
-   Anything outside those two files is a real stale pin. The old digest should
+   Anything outside those three is a real stale pin. The old digest should
    be gone entirely — zero hits.
 
 9. **Run the checks.** All of these, not a subset:

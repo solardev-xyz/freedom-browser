@@ -23,6 +23,7 @@ Before executing task-specific work, read the corresponding playbook:
 - Architecture-sensitive changes _(adding files to `src/main/` or `src/renderer/`, creating new IPC channels, moving logic between processes)_: `docs/agent-playbooks/architecture-boundaries.md`
 - Renderer/UI changes _(anything under `src/renderer/`: chrome, sidebar, settings, internal pages; and reviewing such changes)_: `docs/agent-playbooks/ui-consistency.md`
 - Commit message conventions _(any git commit)_: `docs/agent-playbooks/commit-messages.md`
+- Merging approved pull requests _(landing one or a batch on `main`)_: `docs/agent-playbooks/merge-process.md`
 - Changelog updates _(version bumps, release prep)_: `docs/agent-playbooks/changelog-process.md`
 - Cutting a release _(release branch, version bump, tag, build, publish)_: `docs/agent-playbooks/release-process.md`
 - Bundled node binaries (Ant, freedom-ipfs, Radicle, Arti) _(bumping a pinned release, debugging a download/checksum failure, or anything a task calls "ant"/"antd")_: `docs/agent-playbooks/bundled-binaries.md`
