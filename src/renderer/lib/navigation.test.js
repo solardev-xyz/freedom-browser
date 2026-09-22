@@ -2674,6 +2674,57 @@ describe('navigation', () => {
       expect(global.alert).not.toHaveBeenCalled();
     });
 
+    test.each([
+      ['not_found', { type: 'not_found', reason: 'NO_CONTENTHASH', error: 'CCIP revert' }],
+      ['unsupported', { type: 'unsupported', reason: 'UNSUPPORTED_CONTENTHASH_FORMAT' }],
+    ])('a %s verdict keeps the URI of the page the user is still on', async (_label, verdict) => {
+      // `not_found` and `unsupported` carry a `trust` object with no `uri`,
+      // same shape as a conflict, but they are not the conflict's assertion
+      // that nothing resolved: `loadTarget` records them and then aborts,
+      // leaving the user on the page they were already on — and a
+      // `NO_CONTENTHASH` with an error is explicitly transient (the resolver
+      // refuses to cache it). Dropping the stored URI here would blank the
+      // trust popover's "Resolves to" row for a page still on screen, on
+      // nothing worse than a failed re-type.
+      const ctx = await setupEnsDispatch();
+
+      ctx.state.ensUriByName.set('vitalik.eth', 'ipfs://QmStillOnScreen');
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        name: 'vitalik.eth',
+        trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+        ...verdict,
+      });
+
+      ctx.mod.loadTarget('bzz://vitalik.eth');
+      await flushMicrotasks();
+
+      expect(ctx.state.ensUriByName.get('vitalik.eth')).toBe('ipfs://QmStillOnScreen');
+    });
+
+    test('a conflict verdict on the typed path drops the URI it contradicts', async () => {
+      // The other half of the pair above, on this path: a conflict *is* the
+      // assertion that nothing resolved, so the previous load's CID goes with
+      // the verdict it belonged to rather than being printed under
+      // "Verification failed: RPCs disagree".
+      const ctx = await setupEnsDispatch();
+
+      ctx.state.ensUriByName.set('vitalik.eth', 'ipfs://QmStillOnScreen');
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [
+          { value: '0xaa', sources: ['a'] },
+          { value: '0xbb', sources: ['b'] },
+        ],
+      });
+
+      ctx.mod.loadTarget('bzz://vitalik.eth');
+      await flushMicrotasks();
+
+      expect(ctx.state.ensUriByName.has('vitalik.eth')).toBe(false);
+    });
+
     test('legacy ens:// dispatch shows the input in the address bar during resolution', async () => {
       // For `ens://vitalik.eth` clicks and bookmarks, the address bar
       // should show the URL immediately rather than staying blank for the

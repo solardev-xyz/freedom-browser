@@ -291,6 +291,33 @@ describe('back/forward traversal marking (tabs.js + history-traversal.js)', () =
     expect(ctx.traversalReports()).toHaveLength(0);
   });
 
+  test('two traversals issued before either commits are both reported', async () => {
+    // Two Back presses in quick succession. Chromium queues the second
+    // history navigation behind the first once that one is commit-pending
+    // rather than cancelling it, so both traversals commit and the embedder
+    // sees two `did-navigate` events — but only after both presses have
+    // already been made. A boolean mark cannot count that high: the first
+    // commit consumed it and the second restored entry kept the trust object
+    // its *first* load wrote, which is the #86 symptom on that entry. The
+    // mark is a per-guest pending count so each requested traversal is
+    // matched by exactly one commit.
+    const ctx = await loadModules();
+
+    ctx.traversal.goBackInHistory(ctx.webview);
+    ctx.traversal.goBackInHistory(ctx.webview);
+    expect(ctx.webview.goBack).toHaveBeenCalledTimes(2);
+
+    ctx.webview.dispatch('did-navigate', { url: ENS_URL });
+    ctx.webview.dispatch('did-navigate', { url: 'bzz://other.eth/' });
+
+    expect(ctx.traversalReports()).toHaveLength(2);
+
+    // Same bound as a single mark, one per requested traversal: the count is
+    // spent, so the next unrelated commit is not a traversal.
+    ctx.webview.dispatch('did-navigate', { url: 'https://example.com/' });
+    expect(ctx.traversalReports()).toHaveLength(2);
+  });
+
   test('clearHistoryTraversal drops a mark no commit will consume', async () => {
     // A traversal superseded by a navigation the user asked for, and the
     // subframe-only restored entry (Chromium navigates that frame alone, so
@@ -303,6 +330,17 @@ describe('back/forward traversal marking (tabs.js + history-traversal.js)', () =
     ctx.traversal.clearHistoryTraversal(ctx.webview);
 
     ctx.webview.dispatch('did-navigate', { url: ENS_URL });
+    expect(ctx.traversalReports()).toHaveLength(0);
+
+    // It drops *every* pending traversal, not one of them: the navigation the
+    // user asked for supersedes the whole queue, and a leftover count would
+    // hand the commit it produces to the refresh as a traversal.
+    ctx.traversal.goBackInHistory(ctx.webview);
+    ctx.traversal.goBackInHistory(ctx.webview);
+    ctx.traversal.clearHistoryTraversal(ctx.webview);
+
+    ctx.webview.dispatch('did-navigate', { url: ENS_URL });
+    ctx.webview.dispatch('did-navigate', { url: 'https://example.com/' });
     expect(ctx.traversalReports()).toHaveLength(0);
   });
 

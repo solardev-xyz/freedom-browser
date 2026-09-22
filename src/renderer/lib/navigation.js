@@ -203,16 +203,28 @@ const storeNameResolutionTrust = (name, result) => {
   }
   if (result?.uri) {
     state.ensUriByName.set(name, result.uri);
-  } else if (result?.trust) {
-    // A verdict with no URI is a `conflict`: the RPCs disagreed, so there is
-    // no answer to record. Leaving the previous load's URI in place would
-    // make the popover print "Resolves to: <that CID>" directly under
-    // "Verification failed: RPCs disagree" — a resolution this verdict never
-    // produced, now reachable on the restored-page conflict badge the
-    // traversal refresh paints. Trust and URI are one verdict, so they are
-    // replaced together. Results that carry no verdict at all (a resolver
-    // error, no response) are left alone, exactly as before: the caller
-    // either drops the trust object itself or keeps the page it is on.
+  } else if (result?.type === 'conflict') {
+    // A `conflict` is the one verdict that asserts there is no answer: the
+    // RPCs disagreed, so nothing resolved. Leaving the previous load's URI in
+    // place would make the popover print "Resolves to: <that CID>" directly
+    // under "Verification failed: RPCs disagree" — a resolution this verdict
+    // never produced, now reachable on the restored-page conflict badge the
+    // traversal refresh paints. For a conflict, trust and URI are one verdict,
+    // so they are replaced together.
+    //
+    // Deliberately *not* extended to the other URI-less verdicts. `not_found`
+    // and `unsupported` also carry a `trust` object with no `uri`
+    // (`ens-resolver.js`), but they are not assertions that the name has no
+    // answer for the page in hand: `loadTarget` calls this helper before its
+    // `type !== 'ok'` check and then aborts, leaving the user on the page they
+    // were already on, and a `not_found` can be transient — the resolver
+    // refuses to cache the `NO_CONTENTHASH`-with-error case for exactly that
+    // reason. Dropping the URI there would blank the "Resolves to" row of the
+    // page still on screen on a failed re-type or replayed in-site link, a
+    // change to the reload/typed path with nothing to do with #86. The
+    // traversal refresh never reaches this helper with them at all: it drops
+    // the trust object itself and returns. Results that carry no verdict at
+    // all (a resolver error, no response) are likewise left alone.
     state.ensUriByName.delete(name);
   }
 };

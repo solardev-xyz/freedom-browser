@@ -15,11 +15,25 @@
 // guest off the DOM), and `tabs.js` already imports `page-context-menu.js`, so
 // putting the setter there would close an import cycle.
 //
-// A `WeakSet` keyed by the `<webview>` element needs no teardown when a tab
+// A `WeakMap` keyed by the `<webview>` element needs no teardown when a tab
 // closes, and keeps the mark attached to the guest that was actually asked to
 // traverse rather than to "the active tab", which can change before the commit
 // lands.
-const pendingTraversals = new WeakSet();
+//
+// The mark is a *count*, not a boolean: more than one traversal can be in
+// flight on the same guest at once. Chromium queues a history navigation
+// behind one that is already commit-pending rather than cancelling it, so two
+// Back presses made before the embedder sees the first `did-navigate` produce
+// two commits — and with a single boolean the first would consume the mark and
+// leave the second restored entry on the trust object its own first load
+// wrote, the exact #86 symptom on that entry. Counting keeps the same bound as
+// the boolean did, one consumed commit per requested traversal, instead of one
+// in total.
+const pendingTraversals = new WeakMap();
+
+const markTraversalPending = (webview) => {
+  pendingTraversals.set(webview, (pendingTraversals.get(webview) || 0) + 1);
+};
 
 /**
  * Restore the previous history entry for `webview`, marking the commit it
@@ -30,7 +44,7 @@ const pendingTraversals = new WeakSet();
  */
 export const goBackInHistory = (webview) => {
   if (!webview?.canGoBack?.()) return false;
-  pendingTraversals.add(webview);
+  markTraversalPending(webview);
   webview.goBack();
   return true;
 };
@@ -44,19 +58,19 @@ export const goBackInHistory = (webview) => {
  */
 export const goForwardInHistory = (webview) => {
   if (!webview?.canGoForward?.()) return false;
-  pendingTraversals.add(webview);
+  markTraversalPending(webview);
   webview.goForward();
   return true;
 };
 
 /**
- * Read *and clear* the traversal mark for `webview`.
+ * Spend one pending traversal for `webview`.
  *
  * Call this on every *cross-document* commit, not just the ones the caller
  * cares about: a traversal that never commits (a restored entry that turns out
  * to be a download, a `stop()` mid-flight) would otherwise leave its mark
  * standing and let the *next*, unrelated navigation be taken for a traversal.
- * Consuming unconditionally bounds a stale mark to a single commit.
+ * Consuming unconditionally bounds each stale mark to a single commit.
  *
  * Same-document commits (`did-navigate-in-page`) deliberately do not call
  * this. Chromium reports a page's own `pushState`/`replaceState` through the
@@ -70,20 +84,24 @@ export const goForwardInHistory = (webview) => {
  * @returns {boolean} true when this commit is the one a traversal asked for
  */
 export const consumeHistoryTraversal = (webview) => {
-  if (!webview || !pendingTraversals.has(webview)) return false;
-  pendingTraversals.delete(webview);
+  const pending = webview ? pendingTraversals.get(webview) || 0 : 0;
+  if (pending <= 0) return false;
+  if (pending === 1) pendingTraversals.delete(webview);
+  else pendingTraversals.set(webview, pending - 1);
   return true;
 };
 
 /**
- * Drop any traversal mark for `webview` without reporting a commit.
+ * Drop *every* pending traversal for `webview` without reporting a commit.
  *
  * Called by every shell-initiated navigation (`loadTarget`). Two cases need
  * it, and neither can be recognised from a commit alone:
  *
  *   * the user asks for something else before the traversal commits (types a
  *     URL, picks a bookmark) — the traversal is superseded, so the commit
- *     that eventually lands belongs to the new navigation, not to it;
+ *     that eventually lands belongs to the new navigation, not to it. That
+ *     supersedes the whole queue, however many traversals are pending, which
+ *     is why the count is zeroed rather than decremented;
  *   * the traversal restores an entry Chromium can serve without a
  *     cross-document commit — one that differs only in a *subframe*, or one
  *     in the same document (an in-page anchor, an SPA route). Nothing then
