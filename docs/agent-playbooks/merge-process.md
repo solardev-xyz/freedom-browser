@@ -16,8 +16,14 @@ Two things keep that train short:
    update-branch is a fast-forward rather than a conflict to resolve by hand.
    See `changelog-process.md`.
 2. **The `code-changed` gate.** A pull request that touches only prose skips the
-   suites, so the update-branch commit that a train forces onto the next branch
-   costs about a minute instead of a full run.
+   Playwright, native-addon and cross-platform suites, so the update-branch
+   commit that a train forces onto the next branch costs about two minutes
+   instead of a full run. Lint and the jest suite (the `test` job) still run:
+   prose is an input there — `shortcuts.test.js` and `settings-search.test.js`
+   read `docs/features.md`, `renderer-copy.test.js` reads
+   `ui-consistency.md`, and two `*.test.js` files live under `docs/` — so a
+   docs edit can genuinely break it. `scripts/ci/ci-gate.test.js` keeps that
+   job ungated, and keeps `ci-ok` waiting on every job in the workflow.
 
 ## Procedure
 

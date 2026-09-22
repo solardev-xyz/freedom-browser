@@ -20,12 +20,27 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # Is there anything in this pull request that the suites below could
+  # Is there anything in this pull request that the *gated* suites below could
   # possibly be testing? A changelog fragment, a playbook or a doc cannot
-  # change what the app does, and re-running 41 jobs to prove that costs
-  # 10-14 minutes per push — the cost that made a four-PR merge train an hour
-  # long. Anything else, including an unrecognised path, runs the full suite:
-  # the filter defaults to "code changed", never the other way round.
+  # change what the app does, and re-running 40 Playwright, native-addon and
+  # cross-platform jobs to prove that costs 10-14 minutes per push — the cost
+  # that made a four-PR merge train an hour long. Anything else, including an
+  # unrecognised path, runs the full suite: the filter defaults to "code
+  # changed", never the other way round.
+  #
+  # The `test` job is deliberately *not* gated on this one, because prose is
+  # not inert here — it is an input to the jest suite. This repo's doc<->code
+  # guards read the very files this filter calls prose: `docs/features.md`
+  # (`src/shared/shortcuts.test.js`'s shortcut-registry guard and
+  # `settings-search.test.js`), `CHANGELOG.md` (`settings-search.test.js`),
+  # `docs/agent-playbooks/ui-consistency.md` (`renderer-copy.test.js`),
+  # `docs/audits/evidence/` (`checkpoint-verifier-worker.test.js`) — and two
+  # `*.test.js` files live under `docs/` outright, where jest's `**/*.test.js`
+  # picks them up and `eslint .` lints them. Skipping `test` on a docs-only
+  # pull request would let exactly the drift those guards exist to catch merge
+  # green and leave `main` red for the next PR. It is the cheap job anyway
+  # (~100s against 10-14 minutes), and `scripts/ci/ci-gate.test.js` pins that
+  # it stays ungated for as long as the jest suite reads prose.
   code-changed:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -61,9 +76,9 @@ jobs:
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # Lint plus the whole jest suite, doc<->code guards included — which is why
+  # this is the one suite `code-changed` does not gate. See the note there.
   test:
-    needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
