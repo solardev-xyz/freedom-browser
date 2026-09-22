@@ -30,8 +30,9 @@ All notable changes to Freedom will be documented in this file.
 
 - The address-bar trust badge now reflects your current ENS verification settings when you go Back or Forward onto a name
   - Going back onto an ENS-backed page used to keep whatever method was in effect when that page first loaded — switch the method under Settings > Name Resolution, press Back, and the shield still said "Resolved with your configured RPC" until you reloaded or re-typed the name
-  - Back and Forward still restore the historical entry rather than re-navigating, so the forward history and the page you return to are unchanged; only the name is re-checked
-  - A name that your new settings block is sent to the same _RPC servers disagreed_ or _unverified_ page a fresh visit would show — except when you are backing out of that name's own block page, where the restored page stays put and carries the verdict on its badge instead of putting the block page back up
+  - Back and Forward still restore the historical entry rather than re-navigating, so the page you return to and the rest of your history are unchanged; only the name is re-checked
+  - A name that your new settings block is sent to the same _RPC servers disagreed_ or _unverified_ page a fresh visit would show. Putting that page up is a real navigation, so it takes the place of anything that was ahead of the entry you just returned to — the same as opening any other page from there would
+  - The one exception is stepping off that name's own block page, in either direction: the restored page stays put and carries the verdict on its badge instead of putting the block page straight back up
   - `.tez`, `.wei` and `.gwei` names published to Swarm or IPFS are refreshed the same way. A `.tez` name pointing at an ordinary website is not: what the browser has on screen there is the website's own address, with no name left in it to re-check — the same limit a reload has
 
 - Opening a Chrome Web Store page no longer crashes Freedom

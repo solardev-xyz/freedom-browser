@@ -203,6 +203,17 @@ const storeNameResolutionTrust = (name, result) => {
   }
   if (result?.uri) {
     state.ensUriByName.set(name, result.uri);
+  } else if (result?.trust) {
+    // A verdict with no URI is a `conflict`: the RPCs disagreed, so there is
+    // no answer to record. Leaving the previous load's URI in place would
+    // make the popover print "Resolves to: <that CID>" directly under
+    // "Verification failed: RPCs disagree" — a resolution this verdict never
+    // produced, now reachable on the restored-page conflict badge the
+    // traversal refresh paints. Trust and URI are one verdict, so they are
+    // replaced together. Results that carry no verdict at all (a resolver
+    // error, no response) are left alone, exactly as before: the caller
+    // either drops the trust object itself or keeps the page it is on.
+    state.ensUriByName.delete(name);
   }
 };
 
@@ -2042,6 +2053,16 @@ export const loadHomePage = () => {
 // name-block interstitial for this same name, the restored page therefore
 // keeps displaying and the refreshed badge — `conflict` / `unverified`, with
 // the popover's own explanation behind it — carries the verdict instead.
+//
+// That check is on the entry left behind, not on the direction, and is
+// meant to be: Forward off that interstitial onto the name it blocks
+// matches it exactly as Back off it does. So a name continued once through
+// `ens-unverified.html`'s "continue anyway" keeps its restored page and its
+// `unverified` badge when the user steps back onto the interstitial and
+// forward again — the one-shot consent is not re-asked for. Re-raising
+// there would put back the very page the user just navigated off, one step
+// behind them in the direction they came from, which is the same dead end
+// the Back case describes; the verdict stays on screen either way.
 //
 // A resolution that fails outright drops the stored trust object so the
 // shield goes quiet instead of vouching for a name we can no longer verify;

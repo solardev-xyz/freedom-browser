@@ -257,6 +257,20 @@ test('a conflict under the new settings blocks once, without trapping Back', asy
     .toMatch(/^ipfs:\/\/traversal\.eth/);
   await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', 'conflict');
 
+  // That badge is clickable, so the popover behind it has to agree with it.
+  // A conflict has no resolved URI of its own — the RPCs returned 0xaa and
+  // 0xbb — so the "Resolves to" row must not still be printing the CID the
+  // *first* load resolved, which would read as this verdict's answer.
+  await window.click('#trust-shield');
+  await expect(window.locator('#trust-popover')).toBeVisible();
+  await expect(window.locator('#trust-popover-status')).toHaveText(
+    'Verification failed: RPCs disagree'
+  );
+  await expect(window.locator('#trust-popover')).not.toContainText('QmEnsTraversalPage');
+  await window.screenshot({ path: testInfo.outputPath('4-conflict-badge-popover.png') });
+  await window.click('#trust-shield');
+  await expect(window.locator('#trust-popover')).toBeHidden();
+
   // …and one more Back reaches the page before it.
   await window.click('#back-btn');
   await expect
