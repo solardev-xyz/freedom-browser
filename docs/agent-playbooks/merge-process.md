@@ -35,13 +35,29 @@ See `changelog-process.md`.
    GitHub then merges each one the moment it is up to date and green, in
    whatever order they become ready — no polling, and no waiting for a human
    between one merge and the next.
-3. When a branch falls behind, update it **server-side**:
+3. When a branch falls behind, update it **server-side** first:
    `gh pr update-branch <n>`.
-   Do not merge `main` in locally unless there is a conflict to resolve: the
-   local route needs a push, and a GitHub token without the `workflow` scope
-   is refused on any push that touches `.github/workflows/`. Check yours with
-   `gh auth status`; if `workflow` is missing, push those branches over SSH
-   (`git@github.com:...`) instead. The server-side update has no such limit.
+   It works for most branches, but **not** for one whose diff touches
+   `.github/workflows/`. The server builds a merge commit, and a token without
+   the `workflow` scope is refused for that commit exactly as it is for a
+   push — verified on #400 (2026-09-22):
+
+   ```
+   GraphQL: refusing to allow an OAuth App to create or update workflow
+   `.github/workflows/ci.yml` without `workflow` scope (updatePullRequestBranch)
+   ```
+
+   Check your token with `gh auth status`. If `workflow` is missing, a branch
+   that touches a workflow file has to be merged with `main` locally and pushed
+   over SSH (`git@github.com:...`), which is not subject to the OAuth rule:
+
+   ```
+   git fetch origin && git checkout -B upd origin/<branch>
+   git merge origin/main -m "Merge branch 'main' into <branch>"
+   git push git@github.com:<owner>/<repo>.git HEAD:<branch>
+   ```
+
+   Everything else takes the server-side route: no local checkout, no push.
 4. If a branch does conflict, resolve it on the branch, push, and let auto-merge
    take it from there. A conflict outside `CHANGELOG.md` is a real one: resolve
    it deliberately, never by preferring one side wholesale.
