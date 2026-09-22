@@ -20,6 +20,86 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Is there anything in this pull request that the *gated* suites below could
+  # possibly be testing? A changelog fragment, a playbook or a doc cannot
+  # change what the app does, and re-running 40 Playwright, native-addon and
+  # cross-platform jobs to prove that costs 10-14 minutes per push — the cost
+  # that made a four-PR merge train an hour long. Anything else, including an
+  # unrecognised path, runs the full suite: the filter defaults to "code
+  # changed", never the other way round.
+  #
+  # That default has to survive this job *failing* too, which is why every
+  # gated job below reads `!= 'false'` behind `!cancelled()` rather than the
+  # obvious `== 'true'`. A job skipped by its own `if`, or skipped because a
+  # job it `needs` failed, reports **Success** to branch protection — only a
+  # whole workflow skipped by a path/branch filter sits pending. So with
+  # `== 'true'`, a `code-changed` that died on a transient `checkout`/`git
+  # fetch` error or a lost runner would skip all sixteen suites and hand the
+  # pull request a green merge button with no Playwright, native-addon or
+  # cross-platform job having run. `!= 'false'` fails open instead: a gate
+  # that never wrote `code=` leaves the output empty and everything runs;
+  # only a gate that positively concluded "prose only" skips anything.
+  # `!cancelled()` rather than `always()` so `cancel-in-progress` still
+  # cancels the suites. `scripts/ci/ci-gate.test.js` pins the shape, because
+  # a copy-pasted `== 'true'` on the next gated job reopens this silently.
+  #
+  # The `test` job is deliberately *not* gated on this one, because prose is
+  # not inert here — it is an input to the jest suite. This repo's doc<->code
+  # guards read the very files this filter calls prose: `docs/features.md`
+  # (`src/shared/shortcuts.test.js`'s shortcut-registry guard and
+  # `settings-search.test.js`), `CHANGELOG.md` (`settings-search.test.js`),
+  # `docs/agent-playbooks/ui-consistency.md` (`renderer-copy.test.js`),
+  # `docs/audits/evidence/` (`checkpoint-verifier-worker.test.js`) — and two
+  # `*.test.js` files live under `docs/` outright, where jest's `**/*.test.js`
+  # picks them up and `eslint .` lints them. Skipping `test` on a docs-only
+  # pull request would let exactly the drift those guards exist to catch merge
+  # green and leave `main` red for the next PR. It is the cheap job anyway
+  # (~100s against 10-14 minutes), and `scripts/ci/ci-gate.test.js` pins that
+  # it stays ungated for as long as the jest suite reads prose.
+  code-changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether anything outside the docs changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "not a pull request — running everything"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE"
+          changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
+          echo "$changed"
+          # Prose only: the changelog and its fragments, docs/, and the
+          # top-level markdown. One path outside that list is enough to run
+          # the full suite.
+          # `grep` drains its input and its output is discarded, rather than
+          # `grep -q`: `-q` exits at the first hit, and once `$changed`
+          # outgrows the 64 KiB pipe buffer the still-writing `echo` dies of
+          # SIGPIPE, `set -o pipefail` makes the pipeline 141 and the `else`
+          # branch writes `code=false` for a pull request whose first changed
+          # path was code. That is the one shape the fail-open `if` on the
+          # gated jobs cannot cover, since the gate positively concluded.
+          if echo "$changed" | grep -vE '^(CHANGELOG\.md|changelog\.d/|docs/|[A-Z_]+\.md$)' >/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Lint plus the whole jest suite, doc<->code guards included — which is why
+  # this is the one suite `code-changed` does not gate. See the note there.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -59,6 +139,8 @@ jobs:
   # resolver/paths suites must be green on Windows and macOS too — not just the
   # ubuntu-only `test` job. Pure jest, no display or native nodes required.
   migration-cross-platform:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +171,8 @@ jobs:
   # artifact, loads it in Node, starts native freedom-ipfs, and retrieves a real
   # IPNS page through the native request API.
   freedom-ipfs-native-addon:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -151,6 +235,8 @@ jobs:
   # downloaded and checksum-verified on windows-latest (a foreign-arch library
   # cannot be dlopen'ed), which is what catches a missing or re-published asset.
   radicle-addon-load:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -205,6 +291,8 @@ jobs:
   # shipped OS; this fast matrix closes the packaging gap for Intel macOS and
   # ARM64 Linux without multiplying the expensive cold-sync workload.
   myotis-addon-load:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -433,6 +521,8 @@ jobs:
   # sidebar markup, broken transitions, and Myotis policy regressions cannot
   # pass unit-only CI.
   e2e-settings:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -479,6 +569,8 @@ jobs:
   # regression in it cannot pass unit-only CI (previously they ran locally
   # only — see #180).
   e2e-shortcuts-zoom:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -527,6 +619,8 @@ jobs:
   # the binary on first use in whichever job asks for it — including the
   # `test` job, where it lands uncached.)
   ipfs-gateway-proxy:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -583,6 +677,8 @@ jobs:
   # in — including the private-window scoping, which needs two real windows on
   # two real sessions (#364, #365).
   e2e-tabs:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -641,6 +737,8 @@ jobs:
   # typed-draft rules from #305/#310/#313/#314. Neither spec was in any job's
   # curated list, so a regression in either shipped green — the #319 lesson.
   e2e-address-bar-ens:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -688,6 +786,8 @@ jobs:
   # keys/swarm.key; it has no LevelDB statestore, but the wizard's
   # stop→wipe→reinject→restart flow is still exercised.)
   e2e-onboarding-identity:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -763,6 +863,8 @@ jobs:
   # would ship green. No network is needed — the spec starts the node, waits
   # for it to report running, and quits — so this job only downloads the addon.
   e2e-ipfs-quit:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -814,6 +916,8 @@ jobs:
   # downloads. Linux-only to keep CI cheap; the cross-platform spawn proof lives
   # in e2e-onboarding-identity above.
   e2e-ant:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -869,6 +973,8 @@ jobs:
   # it. Unlike e2e-ant this needs no bundled node, so there is nothing to
   # download first and the spec seeds node autostart off.
   e2e-chrome-webstore:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -916,6 +1022,8 @@ jobs:
 
   # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
   e2e-address-bar-clipboard:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -970,6 +1078,8 @@ jobs:
   # the real-keypress half needs X11 key injection and runs on Linux only,
   # which is where the bug shipped.
   e2e-close-tab-shortcut:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1031,6 +1141,8 @@ jobs:
   # platforms. Runs the in-process harness in catalog mode (no real nodes, no
   # second-process spawn — see test-e2e/profiles-fixtures.js).
   e2e-profiles:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1085,7 +1197,10 @@ jobs:
   # a change that touches the renderer, its harness, or the specs themselves,
   # and a screenshot job that runs on every backend-only PR is a job people
   # learn to ignore. On a push (not a PR) they always run, so `main` keeps the
-  # baselines honest even when nobody opened a PR.
+  # baselines honest even when nobody opened a PR. Both read `!= 'false'`
+  # behind `!cancelled()` for the same reason the `code-changed` consumers do
+  # — see the note on that job: a gate that fails must run the suites, not
+  # skip them into a reported Success.
   renderer-changed:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1110,7 +1225,7 @@ jobs:
             exit 0
           fi
           git fetch --no-tags origin "$BASE"
-          changed=$(git diff --name-only "origin/$BASE...HEAD")
+          changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
           echo "$changed"
           # Everything the two visual jobs read, not just the renderer: the
           # specs, the fixtures, the gate that can turn them into no-ops, the
@@ -1121,7 +1236,10 @@ jobs:
           # only `__screenshots__/` or the contrast baseline, and skipping both
           # jobs on it would land the new pixels unchecked. `package.json` is in
           # the list because the npm scripts are how the jobs launch the specs.
-          if echo "$changed" | grep -Eq '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate|screenshot-baselines)\.js|test-e2e/theme-contrast-baseline\.json|test-e2e/__screenshots__/|package\.json|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)'; then
+          # No `-q`, for the same reason as the `code-changed` filter above:
+          # `-q` exits at the first hit and a >64 KiB path list then kills the
+          # `echo` with SIGPIPE, which `pipefail` turns into `renderer=false`.
+          if echo "$changed" | grep -E '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate|screenshot-baselines)\.js|test-e2e/theme-contrast-baseline\.json|test-e2e/__screenshots__/|package\.json|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)' >/dev/null; then
             echo "renderer=true" >> "$GITHUB_OUTPUT"
           else
             echo "renderer=false" >> "$GITHUB_OUTPUT"
@@ -1133,7 +1251,7 @@ jobs:
   # #249 (white-on-white permission origin).
   e2e-theme-parity:
     needs: renderer-changed
-    if: needs.renderer-changed.outputs.renderer == 'true'
+    if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -1181,7 +1299,7 @@ jobs:
   # Locally: `xvfb-run -a npm run test:e2e:screenshots:update`.
   e2e-renderer-screenshots:
     needs: renderer-changed
-    if: needs.renderer-changed.outputs.renderer == 'true'
+    if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -1217,3 +1335,55 @@ jobs:
             playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+
+  # The single check branch protection should require. A skipped job does not
+  # leave a required context pending — it reports Success — which is exactly
+  # why naming the individual contexts is the weaker arrangement: on a
+  # docs-only pull request nine of today's ten required contexts pass without
+  # running, and nothing in that set can see the gate job's own result. This
+  # job can: it waits on every job in the workflow, `code-changed` and
+  # `renderer-changed` included, and goes red the moment any of them fails or
+  # is cancelled, whatever the gates decided to skip.
+  ci-ok:
+    if: always()
+    needs:
+      [
+        code-changed,
+        e2e-address-bar-clipboard,
+        e2e-address-bar-ens,
+        e2e-ant,
+        e2e-chrome-webstore,
+        e2e-close-tab-shortcut,
+        e2e-ipfs-quit,
+        e2e-onboarding-identity,
+        e2e-profiles,
+        e2e-renderer-screenshots,
+        e2e-settings,
+        e2e-shortcuts-zoom,
+        e2e-tabs,
+        e2e-theme-parity,
+        freedom-ipfs-native-addon,
+        ipfs-gateway-proxy,
+        migration-cross-platform,
+        myotis-addon-load,
+        myotis-native-e2e,
+        radicle-addon-load,
+        renderer-changed,
+        test,
+      ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report whether every job that ran succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "a required job did not pass"
+              exit 1
+            fi
+          done
+          echo "all jobs passed or were skipped"
