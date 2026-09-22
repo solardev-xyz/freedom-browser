@@ -239,3 +239,98 @@ test('a conflict under the new settings blocks once, without trapping Back', asy
     .poll(() => webviewUrl(window), { timeout: 15_000 })
     .toMatch(/^https:\/\/start\.example/);
 });
+
+// A frame that rewrites its own URL every 20ms through the History API.
+// Chromium reports each of those through the *same* `did-navigate-in-page`
+// event as a main-frame same-document commit, with `isMainFrame: false`, so
+// one of them reliably lands in the window between a Back press and the
+// restored entry committing.
+const seedRewritingFrame = async (harness, hostUrl, heading) => {
+  await harness.setContentFixture(hostUrl, {
+    body: `<html><body><h1>${heading}</h1><iframe src="ipfs://qmframechild/"></iframe></body></html>`,
+  });
+  await harness.setContentFixture('ipfs://qmframechild/', {
+    body:
+      '<html><body>frame<script>let n = 0;' +
+      "setInterval(() => { history.replaceState(null, '', '/f?n=' + ++n); }, 20);" +
+      '</script></body></html>',
+  });
+};
+
+test('an iframe rewriting its own URL does not eat the traversal', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // Before the main-frame gate in `tabs.js`, the subframe report consumed the
+  // traversal mark and the restored entry was never re-verified — the shield
+  // stayed on the method configured when it first loaded, which is the bug
+  // this PR exists to fix, reappearing on any page with a live iframe.
+  await seedEnsPage(harness);
+  await seedRewritingFrame(harness, 'ipfs://qmiframehost/', 'host');
+  const shield = window.locator('#trust-shield');
+
+  await navigateTo(window, 'traversal.eth');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await expect(shield).toHaveAttribute('data-trust', 'user-configured');
+
+  await navigateTo(window, 'ipfs://qmiframehost/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/qmiframehost/);
+
+  // The verification method is switched while the iframe keeps rewriting.
+  await harness.setEnsFixture('traversal.eth', VERIFIED_AFTER_SETTINGS_CHANGE);
+
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await expect(shield).toHaveAttribute('data-trust', 'verified', { timeout: 15_000 });
+  await window.screenshot({ path: testInfo.outputPath('4-traversal-past-live-iframe.png') });
+});
+
+test('a rewriting iframe cannot raise its own page over a traversal away from it', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // The sharper half of the same bug. Here the ENS page carrying the frame is
+  // the one being *left*: a subframe report consuming the mark made the
+  // refresh run against `committedDisplayUrl` — still the outgoing entry —
+  // so the conflict verdict for the page the user was walking away from was
+  // raised as an interstitial over the traversal itself. The user pressed
+  // Back and landed on `ens-conflict.html` for the page they were leaving,
+  // with the forward history gone.
+  await harness.setEnsFixture('probe.eth', UNVERIFIED_FIRST_LOAD);
+  await seedRewritingFrame(harness, 'ipfs://probe.eth/', 'probe.eth');
+
+  await navigateTo(window, 'https://start.example/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/start\.example/);
+  await navigateTo(window, 'probe.eth');
+  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toMatch(/^ipfs:\/\/probe\.eth/);
+
+  // The resolvers now disagree about the name of the page being left.
+  await harness.setEnsFixture('probe.eth', {
+    type: 'conflict',
+    trust: { level: 'conflict', block: { number: 21000000 } },
+    groups: [
+      { value: '0xaa', sources: ['rpc-one.test'] },
+      { value: '0xbb', sources: ['rpc-two.test'] },
+    ],
+  });
+
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/start\.example/);
+  // The Back the user pressed still works, and the traversal was not
+  // overwritten by an interstitial for the entry they left.
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 2_000 })
+    .not.toMatch(/pages\/ens-conflict\.html/);
+  await expect(window.locator('#forward-btn')).toBeEnabled();
+  await window.screenshot({ path: testInfo.outputPath('5-traversal-not-hijacked.png') });
+});

@@ -4430,7 +4430,11 @@ describe('navigation', () => {
     //      restored entry (still from the *stale* trust map at this point).
     //   3. tabs.js reports the consumed traversal mark, which is what
     //      kicks off the re-verification under today's settings.
-    const commitTraversalTo = (ctx, display, { tab = ctx.activeRef.tab, previousUrl = '' } = {}) => {
+    const commitTraversalTo = (
+      ctx,
+      display,
+      { tab = ctx.activeRef.tab, previousUrl = '' } = {}
+    ) => {
       tab.navigationState.committedDisplayUrl = display;
       tab.navigationState.committedNavigationSequence += 1;
       if (tab === ctx.activeRef.tab) {
@@ -4475,6 +4479,24 @@ describe('navigation', () => {
       expect(consumeHistoryTraversal(webview)).toBe(true);
 
       // Nothing left standing once consumed.
+      expect(consumeHistoryTraversal(webview)).toBe(false);
+    });
+
+    test('a navigation the user asks for drops a still-pending traversal mark', async () => {
+      // Back pressed, then — before the restored entry commits — the user
+      // types something else. The traversal is superseded, so the commit
+      // that eventually lands belongs to the new navigation and must not be
+      // re-verified as a restored entry. Same clear bounds the mark a
+      // subframe-only restored entry leaves standing, where no main-frame
+      // commit ever follows to consume it.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const { consumeHistoryTraversal } = await import('./history-traversal.js');
+      const { webview } = ctx.activeRef.tab;
+
+      ctx.elements.backBtn.dispatch('click');
+      ctx.mod.loadTarget('https://example.com/');
+
       expect(consumeHistoryTraversal(webview)).toBe(false);
     });
 

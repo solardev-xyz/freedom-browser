@@ -730,6 +730,24 @@ const createWebview = (tabId, initialUrl) => {
       // this path too — both to refresh the restored entry's trust metadata
       // and so a mark can never survive into a later navigation. The
       // document is unchanged, so the page this commit "replaced" is itself.
+      //
+      // Main frame only. Chromium fires `did-navigate-in-page` for **any**
+      // frame: an iframe driving the History API (an embedded SPA widget
+      // calling `pushState`/`replaceState`, an ad frame rewriting its own
+      // URL) reports here with `isMainFrame: false`, on a document the user
+      // has not left. Letting one of those consume the mark meant an iframe
+      // on the page being *left* ate it while the real traversal was still
+      // in flight: the restored entry was then never re-verified, or — when
+      // the subframe report won the race before the main-frame commit — the
+      // refresh ran against the outgoing page and raised *its* interstitial
+      // over the traversal the user had just asked for. Undefined is treated
+      // as main frame, same rule as the `did-fail-load` gate above.
+      //
+      // The converse — a traversal whose restored entry differs only in a
+      // subframe, so no main-frame commit ever follows to consume the mark —
+      // is bounded by `clearHistoryTraversal`, which every shell-initiated
+      // navigation calls; see history-traversal.js.
+      if (event.isMainFrame === false) return;
       reportHistoryTraversalCommit(
         webview,
         tabId,

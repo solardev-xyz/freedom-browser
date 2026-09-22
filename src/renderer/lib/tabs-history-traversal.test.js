@@ -9,9 +9,11 @@
 // Two halves are pinned:
 //   * only a commit that a traversal asked for is reported — a link click or
 //     an address-bar load committing on the same guest is not;
-//   * the mark is consumed by the first commit that follows, so a traversal
-//     that never commits cannot make a later, unrelated navigation look like
-//     one.
+//   * the mark is consumed by the first *main-frame* commit that follows, so
+//     a traversal that never commits cannot make a later, unrelated
+//     navigation look like one — and an iframe's own History API call, which
+//     Chromium also reports through `did-navigate-in-page`, cannot eat the
+//     mark out from under a main-frame traversal still in flight.
 
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
 
@@ -176,6 +178,44 @@ describe('back/forward traversal marking (tabs.js + history-traversal.js)', () =
     // is not a second report.
     ctx.webview.dispatch('did-navigate', { url: 'https://example.com/' });
     expect(ctx.traversalReports()).toHaveLength(1);
+  });
+
+  test('a subframe in-page navigation neither reports nor consumes the mark', async () => {
+    // Chromium fires `did-navigate-in-page` for any frame. An iframe on the
+    // page being *left* — an embedded widget calling `replaceState` on a
+    // timer, an ad frame rewriting its own URL — must not be taken for the
+    // commit the traversal asked for, and must not consume the mark: doing
+    // so left the restored entry unverified (its trust badge stuck on the
+    // method configured when it first loaded), or ran the refresh against
+    // the outgoing page and raised *its* interstitial over the traversal.
+    const ctx = await loadModules();
+
+    ctx.traversal.goBackInHistory(ctx.webview);
+    ctx.webview.dispatch('did-navigate-in-page', {
+      url: 'https://widget.example/embed?r=2',
+      isMainFrame: false,
+    });
+
+    expect(ctx.traversalReports()).toHaveLength(0);
+
+    // The mark survived for the main-frame commit the traversal produces.
+    ctx.webview.dispatch('did-navigate', { url: ENS_URL });
+    expect(ctx.traversalReports()).toHaveLength(1);
+  });
+
+  test('clearHistoryTraversal drops a mark no commit will consume', async () => {
+    // A traversal superseded by a navigation the user asked for, and the
+    // subframe-only restored entry (Chromium navigates that frame alone, so
+    // no main-frame commit ever follows) both leave a mark standing. Every
+    // shell-initiated navigation clears it, so it cannot attach itself to
+    // some later, unrelated commit.
+    const ctx = await loadModules();
+
+    ctx.traversal.goBackInHistory(ctx.webview);
+    ctx.traversal.clearHistoryTraversal(ctx.webview);
+
+    ctx.webview.dispatch('did-navigate', { url: ENS_URL });
+    expect(ctx.traversalReports()).toHaveLength(0);
   });
 
   test('a guest that cannot go back is neither traversed nor marked', async () => {

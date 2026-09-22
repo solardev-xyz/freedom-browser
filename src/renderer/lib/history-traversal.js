@@ -66,3 +66,28 @@ export const consumeHistoryTraversal = (webview) => {
   pendingTraversals.delete(webview);
   return true;
 };
+
+/**
+ * Drop any traversal mark for `webview` without reporting a commit.
+ *
+ * Called by every shell-initiated navigation (`loadTarget`). Two cases need
+ * it, and neither can be recognised from a commit alone:
+ *
+ *   * the user asks for something else before the traversal commits (types a
+ *     URL, picks a bookmark) — the traversal is superseded, so the commit
+ *     that eventually lands belongs to the new navigation, not to it;
+ *   * the traversal restores an entry that differs only in a *subframe*.
+ *     Chromium then navigates that frame alone, so no main-frame commit ever
+ *     follows and nothing consumes the mark. (The subframe commit must not
+ *     consume it either: an iframe rewriting its own URL while a real
+ *     main-frame traversal is in flight is indistinguishable from it here,
+ *     and eating the mark there is the bug the main-frame gate in `tabs.js`
+ *     closes.) The mark would otherwise stand until some later, unrelated
+ *     main-frame commit was taken for the traversal.
+ *
+ * @param {object|null} webview - guest `<webview>` element
+ * @returns {void}
+ */
+export const clearHistoryTraversal = (webview) => {
+  if (webview) pendingTraversals.delete(webview);
+};

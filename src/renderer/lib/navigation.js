@@ -73,7 +73,7 @@ import {
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
-import { goBackInHistory, goForwardInHistory } from './history-traversal.js';
+import { clearHistoryTraversal, goBackInHistory, goForwardInHistory } from './history-traversal.js';
 import { isTezosDomainHost } from './origin-utils.js';
 import {
   shouldRecordHistory,
@@ -1306,6 +1306,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // leaving Swarm entirely, in which case we don't want the old probe to
   // eventually navigate the webview to a now-stale bzz URL.
   cancelPendingSwarmProbe(navState);
+
+  // ...and any still-pending back/forward traversal mark on this guest (#86).
+  // Whatever commits next belongs to *this* navigation, so it must not be
+  // taken for the traversal's commit and re-verified as a restored entry.
+  // This is also what bounds a mark left standing by a traversal that
+  // restored a subframe-only entry, where no main-frame commit ever follows
+  // to consume it — see `clearHistoryTraversal`.
+  clearHistoryTraversal(webview);
 
   // Every chrome-initiated navigation funnels through here (address-bar
   // submit, a picked autocomplete suggestion, bookmarks, menu items), so this
