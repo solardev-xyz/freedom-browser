@@ -2265,16 +2265,28 @@ const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
       }
 
       // An `ok` result is not automatically loadable. `loadTarget` applies
-      // three further rejections to one, and on each of them it aborts
-      // without writing a badge — it never vouches for content it refused to
-      // load. The refresh has to reach the same verdict, or a restored entry
-      // whose contenthash moved since its first load gets a `verified` shield
-      // over bytes `loadTarget` would have turned away: the entry's own
-      // scheme is an assertion about the transport (`bzz://name.eth/` says
-      // Swarm), and its bytes are whatever the handler served for the *old*
-      // record. Treated like `type !== 'ok'`: the stored trust object is
-      // dropped, the shield goes quiet, and the failure is logged — the
-      // restored page itself stays put, as everywhere else here.
+      // three further rejections to one and aborts the *navigation* on each
+      // — but it has already recorded the verdict by then:
+      // `storeNameResolutionTrust` runs at `:1632`, above the external-Tezos
+      // (`:1657`), unsupported-transport (`:1684`) and asserted-vs-resolved
+      // (`:1698`) checks, so a refused `ok` still writes the trust object.
+      // Whether that shows as a badge is incidental rather than a policy:
+      // the shield is resolved from `state.ensTrustByName` keyed on whatever
+      // the address bar currently reads, so a refused result *is* painted
+      // when the name is already in the bar (re-type `ipfs://name.eth` while
+      // sitting on `bzz://name.eth/`) and simply isn't when it is not.
+      //
+      // The refresh deliberately does not copy that. There is no typed input
+      // here to carry the verdict: the restored entry is on screen, and its
+      // bytes are whatever the handler served for the *old* record — so a
+      // `verified` object for a transport this entry's own scheme
+      // contradicts (`bzz://name.eth/` says Swarm) would put a green shield
+      // over content `loadTarget` would have turned away. Treated like
+      // `type !== 'ok'` instead: the stored trust object is dropped, the
+      // shield goes quiet, and the failure is logged — the restored page
+      // itself stays put, as everywhere else here. (Moving `loadTarget`'s
+      // store below its own rejections would make the two paths genuinely
+      // match, but that is a change to the typed path, outside #86.)
       const isExternalTezosWebsite =
         ens.system === 'tezos' && (result.protocol === 'http' || result.protocol === 'https');
       const rejection = isExternalTezosWebsite
