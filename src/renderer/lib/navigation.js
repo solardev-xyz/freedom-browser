@@ -74,6 +74,7 @@ import {
   buildInternalPageUrl,
 } from './page-urls.js';
 import { clearHistoryTraversal, goBackInHistory, goForwardInHistory } from './history-traversal.js';
+import { grantContinueOnce, hasContinueOnceGrant } from './name-continue-grants.js';
 import { isTezosDomainHost } from './origin-utils.js';
 import {
   shouldRecordHistory,
@@ -2080,25 +2081,34 @@ export const loadHomePage = () => {
 // Blocking verdicts route to the interstitials the app already has rather
 // than to a new surface: `conflict` → `ens-conflict.html`, unverified while
 // `blockUnverifiedEns` is on → `ens-unverified.html` (the same pair a reload
-// of that page would raise — a "continue anyway" click has always been a
-// one-shot here), with one exception. Raising an interstitial is a real
-// navigation, so it appends an entry: pressing Back *out of* it lands on the
-// blocked entry again, which would re-raise it and trap the user one entry
-// deep with no way back but the address bar (verified in a real run before
-// this guard existed). When the entry this traversal just left is the
+// of that page raises), with two exceptions.
+//
+// The first is a name this tab has already been continued past. "Continue
+// once" is consent to a specific entry: the user read that name's block page,
+// in this tab, and chose to go on. Coming *back* to the page that consent
+// produced is a return to that decision, not a new request for the name, so
+// the block page is not raised over it a second time — which is also what
+// the browser did before this refresh landed, since a traversal then raised
+// nothing at all. The grant is name- and tab-scoped and lives for the
+// session; `loadTarget` never consults it, so a fresh visit to the name
+// (typed again, followed from a link, reloaded) still blocks. See
+// `name-continue-grants.js` for the scope in full.
+//
+// The second is structural. Raising an interstitial is a real navigation, so
+// it appends an entry: pressing Back *out of* it lands on the blocked entry
+// again, which would re-raise it and trap the user one entry deep with no way
+// back but the address bar (verified in a real run before this guard
+// existed). When the entry this traversal just left is the
 // name-block interstitial for this same name, the restored page therefore
 // keeps displaying and the refreshed badge — `conflict` / `unverified`, with
 // the popover's own explanation behind it — carries the verdict instead.
 //
 // That check is on the entry left behind, not on the direction, and is
 // meant to be: Forward off that interstitial onto the name it blocks
-// matches it exactly as Back off it does. So a name continued once through
-// `ens-unverified.html`'s "continue anyway" keeps its restored page and its
-// `unverified` badge when the user steps back onto the interstitial and
-// forward again — the one-shot consent is not re-asked for. Re-raising
-// there would put back the very page the user just navigated off, one step
-// behind them in the direction they came from, which is the same dead end
-// the Back case describes; the verdict stays on screen either way.
+// matches it exactly as Back off it does. Re-raising there would put back the
+// very page the user just navigated off, one step behind them in the
+// direction they came from, which is the same dead end the Back case
+// describes; the verdict stays on screen either way.
 //
 // The same "do not navigate the guest out from under the user" rule covers a
 // second case the commit counter cannot see: a navigation the user asked for
@@ -2215,6 +2225,12 @@ const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
   // Raise a block interstitial over the restored entry, unless doing so would
   // bounce the user straight back into the one they are leaving.
   const blockWithInterstitial = (url, logLine) => {
+    if (hasContinueOnceGrant(getTabById(tabId)?.webview, ens.name)) {
+      pushDebug(
+        `${systemLabel} ${ens.name} still blocked, but this tab was continued past it once — keeping the restored entry with its badge`
+      );
+      return;
+    }
     if (leftThisNamesInterstitial) {
       pushDebug(
         `${systemLabel} ${ens.name} still blocked, but the user is backing out of its interstitial — keeping the restored entry with its badge`
@@ -2324,7 +2340,9 @@ const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
         // by *name* — `ensContinueUnverified(name)` → `loadTarget` with
         // `allowUnverifiedOnce`, which resolves the name again and derives
         // its own target. So the two paths agreeing here is a consistency
-        // property of the page copy, not of where the button lands.
+        // property of the page copy, not of where the button lands. That
+        // click also records the tab's grant, so a later Back onto the page
+        // it produces does not come through here at all.
         //
         // The suffix is never empty on this path — `committedDisplayUrl`
         // always carries at least `/` — so `applyEnsSuffix` always resolves
@@ -3121,6 +3139,14 @@ export const initNavigation = () => {
           const name = data.args?.[0]?.name;
           if (name) {
             pushDebug(`ENS continue-unverified requested for ${name}`);
+            // The consent is recorded against the tab that gave it, so a
+            // later Back onto the entry it produces is recognised as a return
+            // to this decision rather than a new request for the name. Only
+            // the traversal refresh reads it; `loadTarget` below still gets
+            // its one-shot `allowUnverifiedOnce` and nothing else, so every
+            // fresh visit to the name goes on blocking. See
+            // `name-continue-grants.js`.
+            grantContinueOnce(getTabById(data.tabId)?.webview || webview, name);
             // `ens://` is the legacy Ethereum-name form; parseEnsInput
             // deliberately rejects `ens://<name>.tez`, so Tezos names have to
             // go back through loadTarget bare or the continue is a no-op.

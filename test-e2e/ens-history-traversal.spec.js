@@ -380,6 +380,124 @@ for (const blocked of [
   });
 }
 
+// "Continue once" on an unverified name's interstitial, and what Back does
+// with it afterwards. The grant is a consent to *this* entry: the user looked
+// at the block page for this name, in this tab, and chose to go on. Pressing
+// Back onto the page that consent produced is a return to the same entry, not
+// a new decision, so the block page is not put up again — which is what the
+// browser did before the traversal refresh landed, and what these two legs
+// pin from opposite sides. The sibling leg below pins the other half: the
+// grant is "once", so asking for the name afresh still blocks.
+const CONSENT_UNVERIFIED = {
+  type: 'ok',
+  protocol: 'ipfs',
+  decoded: 'QmEnsConsentPage',
+  uri: 'ipfs://QmEnsConsentPage',
+  trust: { level: 'unverified', method: 'direct-rpc' },
+};
+
+const seedConsentName = async (harness) => {
+  await harness.setEnsFixture('consent.eth', CONSENT_UNVERIFIED);
+  await harness.setContentFixture('ipfs://consent.eth/', {
+    body: '<html><body><h1>consent.eth</h1></body></html>',
+  });
+};
+
+// Walk the name through its interstitial and out the "Continue once" button,
+// leaving the tab on the page that consent produced.
+const continueOncePast = async (window, harness) => {
+  await seedConsentName(harness);
+  await navigateTo(window, 'consent.eth');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/pages\/ens-unverified\.html/);
+  await clickInGuest(window, '#continue-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/consent\.eth/);
+};
+
+// Both themes, like the acceptance walk-through above: the shield the
+// restored entry keeps is the surface this leg is about, and its colour
+// carries the verdict.
+for (const theme of ['dark', 'light']) {
+  test.describe(`continue-once grant ${theme}`, () => {
+    test.use({ seedSettings: { theme } });
+    test('Back onto a name continued past once does not block it again', async ({
+      window,
+      harness,
+    }, testInfo) => {
+      // The reported repro, at default settings (`blockUnverifiedEns` on).
+      await continueOncePast(window, harness);
+      await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', 'unverified');
+
+      await navigateTo(window, 'https://after.example/');
+      await expect
+        .poll(() => webviewUrl(window), { timeout: 15_000 })
+        .toMatch(/^https:\/\/after\.example/);
+
+      await window.click('#back-btn');
+      await expect
+        .poll(() => webviewUrl(window), { timeout: 15_000 })
+        .toMatch(/^ipfs:\/\/consent\.eth/);
+      // The restored entry keeps its own badge — the verdict is still
+      // `unverified`, and the grant covers the block page, not the shield.
+      await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', 'unverified', {
+        timeout: 15_000,
+      });
+      // A traversal, not a re-navigation: what the user came from is still ahead.
+      await expect(window.locator('#forward-btn')).toBeEnabled();
+      // And it stays: the refresh settles asynchronously, so a block raised late
+      // would land after the assertions above.
+      await window.waitForTimeout(2_000);
+      expect(await webviewUrl(window)).toMatch(/^ipfs:\/\/consent\.eth/);
+      // Popover open, so the evidence shows what the shield is claiming
+      // rather than just its colour.
+      await window.click('#trust-shield');
+      await expect(window.locator('#trust-popover-status')).toHaveText(
+        'ENS resolution not verified'
+      );
+      await window.screenshot({
+        path: testInfo.outputPath(`11-continue-once-survives-back-${theme}.png`),
+      });
+      await window.click('#trust-shield');
+      await expect(window.locator('#trust-popover')).toBeHidden();
+
+      await window.click('#forward-btn');
+      await expect
+        .poll(() => webviewUrl(window), { timeout: 15_000 })
+        .toMatch(/^https:\/\/after\.example/);
+    });
+  });
+}
+
+test('a fresh visit to a name continued past once still blocks', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // The other side of "once": the grant covers returning to the entry it was
+  // given for, never a new request for the name. Typing it again is a new
+  // request, so the block page comes back.
+  await continueOncePast(window, harness);
+
+  await navigateTo(window, 'consent.eth');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/pages\/ens-unverified\.html/);
+  await window.screenshot({ path: testInfo.outputPath('12-fresh-visit-still-blocks.png') });
+
+  // A reload of the continued page re-resolves the name too, and is likewise
+  // a fresh request rather than a return.
+  await clickInGuest(window, '#continue-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/consent\.eth/);
+  await window.click('#reload-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/pages\/ens-unverified\.html/);
+});
+
 // A frame that rewrites its own URL every 20ms through the History API.
 // Chromium reports each of those through the *same* `did-navigate-in-page`
 // event as a main-frame same-document commit, with `isMainFrame: false`, so
@@ -731,9 +849,7 @@ test('a verdict settling mid-traversal does not cancel the Back the user is wait
   });
 
   await navigateTo(window, 'ipfs://slowstart/');
-  await expect
-    .poll(() => webviewUrl(window), { timeout: 15_000 })
-    .toMatch(/^ipfs:\/\/slowstart/);
+  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toMatch(/^ipfs:\/\/slowstart/);
   await navigateTo(window, 'traversal.eth');
   await expect
     .poll(() => webviewUrl(window), { timeout: 15_000 })
@@ -765,9 +881,7 @@ test('a verdict settling mid-traversal does not cancel the Back the user is wait
 
   // The second traversal completes: the verdict landed while it was in flight
   // and left it alone.
-  await expect
-    .poll(() => webviewUrl(window), { timeout: 20_000 })
-    .toMatch(/^ipfs:\/\/slowstart/);
+  await expect.poll(() => webviewUrl(window), { timeout: 20_000 }).toMatch(/^ipfs:\/\/slowstart/);
   // …and stays completed — an interstitial loaded over it would arrive after
   // this URL first reads correctly, so it has to be observed still standing.
   await window.waitForTimeout(1_500);
@@ -826,9 +940,7 @@ test('a verdict settling mid-resolution does not interrupt a URL the user entere
   await window.waitForTimeout(6_500);
   expect(await webviewUrl(window)).not.toMatch(/pages\/ens-conflict\.html/);
 
-  await expect
-    .poll(() => webviewUrl(window), { timeout: 20_000 })
-    .toMatch(/^ipfs:\/\/other\.eth/);
+  await expect.poll(() => webviewUrl(window), { timeout: 20_000 }).toMatch(/^ipfs:\/\/other\.eth/);
   await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', 'verified');
   await window.screenshot({ path: testInfo.outputPath('11-entered-url-not-interrupted.png') });
 });

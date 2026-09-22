@@ -4886,6 +4886,143 @@ describe('navigation', () => {
       expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('unverified');
     });
 
+    // "Continue once" is consent to an entry, so a traversal back onto the
+    // page it produced is a return to that decision rather than a new request
+    // for the name. These legs pin the grant from every side its scope has:
+    // what it covers, what it does not, and the two axes it is keyed on.
+    const UNVERIFIED_RESULT = (name) => ({
+      type: 'ok',
+      name,
+      protocol: 'bzz',
+      uri: `bzz://${'a'.repeat(64)}`,
+      trust: { level: 'unverified' },
+    });
+
+    // Drive the interstitial's own "Continue once" button, exactly as
+    // `ens-unverified.js` does: a `sendToHost` the shell picks up as an
+    // `ipc-message` from the tab the block page is in.
+    const continueOnce = async (ctx, name, tab = ctx.activeRef.tab) => {
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: tab.id,
+        channel: 'ens:continue-unverified',
+        args: [{ name }],
+      });
+      await flushMicrotasks();
+      tab.webview.loadURL.mockClear();
+    };
+
+    test('a name this tab was continued past once is not blocked again on Back', async () => {
+      // The reported repro: continue past the block, navigate on, press Back.
+      // Before the grant the refresh re-resolved, found the same `unverified`
+      // verdict and loaded the block page over the restored entry — taking
+      // the forward history with it, since raising it is a real navigation.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+
+      await continueOnce(ctx, 'vitalik.eth');
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      // The grant covers the block page, not the shield: the refreshed
+      // verdict is still `unverified` and still painted.
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual({ level: 'unverified' });
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('unverified');
+    });
+
+    test('a conflict on a continued-past name is not blocked on Back either', async () => {
+      // The grant is on the entry, not on the verdict that raised the page
+      // the user continued from. A name that has since started conflicting
+      // still carries its verdict on the restored entry's badge — the same
+      // trade the interstitial-backout guard already makes, and the same
+      // thing a traversal did before any of this refreshed at all.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+      await continueOnce(ctx, 'vitalik.eth');
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ resolvedData: '0xaa' }, { resolvedData: '0xbb' }],
+      });
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('conflict');
+    });
+
+    test('the grant covers only the name it was given for', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+      await continueOnce(ctx, 'vitalik.eth');
+
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('other.eth'));
+      commitTraversalTo(ctx, 'bzz://other.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain(
+        'pages/ens-unverified.html'
+      );
+    });
+
+    test('the grant covers only the tab it was given in', async () => {
+      // Tab A consents; tab B holds its own entry for the same name (loaded
+      // while it verified) and never did. Backing onto it there is a decision
+      // tab B's user has not made, so it blocks.
+      const tabA = createTab(1, 'https://a.example', { title: 'Tab A' });
+      const tabB = createTab(2, 'bzz://vitalik.eth/', { title: 'Tab B' });
+      const ctx = await loadNavigationModule({
+        firstTab: tabA,
+        tabs: [tabA, tabB],
+        activeTab: tabA,
+      });
+      installEnsParser(ctx);
+      ctx.tabsRef.list = [tabA, tabB];
+      ctx.activeRef.tab = tabA;
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+
+      await continueOnce(ctx, 'vitalik.eth', tabA);
+      tabB.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', { tab: tabB });
+      await flushMicrotasks();
+
+      expect(tabB.webview.loadURL.mock.calls.at(-1)[0]).toContain('pages/ens-unverified.html');
+      // …and tab A's own grant is untouched by tab B being blocked.
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', { tab: tabA });
+      await flushMicrotasks();
+      expect(tabA.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('the grant does not survive a fresh request for the same name', async () => {
+      // "Once" still means once per visit: nothing in `loadTarget` consults
+      // the grant, so typing the name again (or following a link to it, or
+      // reloading, both of which land in the same place) blocks as before.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+      await continueOnce(ctx, 'vitalik.eth');
+
+      ctx.mod.loadTarget('ens://vitalik.eth');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain(
+        'pages/ens-unverified.html'
+      );
+    });
+
     test('an ok result loadTarget would refuse on transport gets no badge', async () => {
       // `loadTarget` never writes a badge over content it declined to load,
       // and an `ok` result is not automatically loadable. Both rejections it
