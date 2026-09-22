@@ -10,10 +10,12 @@
 // was configured when the entry first loaded.
 //
 // The mark lives here, in a leaf module, rather than on `tabs.js`'
-// `navigationState`: `page-context-menu.js` is one of the two traversal call
-// sites and deliberately does not import `tabs.js` (it resolves the active
-// guest off the DOM), and `tabs.js` already imports `page-context-menu.js`, so
-// putting the setter there would close an import cycle.
+// `navigationState`: `page-context-menu.js` is one of the three renderer
+// routes into a traversal — the toolbar's back/forward buttons and the
+// `interstitial:go-back` handler are the other two, both in `navigation.js`
+// — and it deliberately does not import `tabs.js` (it resolves the active
+// guest off the DOM), while `tabs.js` already imports `page-context-menu.js`,
+// so putting the setter there would close an import cycle.
 //
 // A `WeakMap` keyed by the `<webview>` element needs no teardown when a tab
 // closes, and keeps the mark attached to the guest that was actually asked to
