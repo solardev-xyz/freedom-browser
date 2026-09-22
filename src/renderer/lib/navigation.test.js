@@ -1368,6 +1368,54 @@ describe('navigation', () => {
       );
     });
 
+    // #280: `getInternalPageName` renders a chain detail
+    // (`settings.html#chains/1`) as `freedom://settings/chains/1`, so that is
+    // what the address bar shows and what a bookmark of it hands back. While
+    // `FREEDOM_PAGE_PATTERN` stopped at one sub-path segment this branch never
+    // matched it: the URL the chrome had just displayed was not a routable
+    // address, and committing it navigated nowhere.
+    test('routes a multi-segment sub-path, the depth the address bar displays', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.mod.loadTarget('freedom://settings/chains/1');
+
+      expect(ctx.tabsMocks.routeInternalPageNavigation).toHaveBeenCalledWith(
+        'settings',
+        'chains/1',
+        ctx.activeRef.tab.webview
+      );
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'file:///app/pages/settings.html#chains/1'
+      );
+    });
+
+    // The charset is unchanged, so a sub-path can still only ever become the
+    // fragment of a known internal page: anything else falls through this
+    // branch entirely rather than resolving to a `pages/` URL.
+    test('still refuses a sub-path that is not plain `[a-z0-9-]` segments', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      for (const value of [
+        'freedom://settings/../../etc/passwd',
+        'freedom://settings/chains//1',
+        'freedom://settings/chains/1?x=1',
+        'freedom://settings/chains/1#x',
+      ]) {
+        ctx.tabsMocks.routeInternalPageNavigation.mockClear();
+        ctx.activeRef.tab.webview.loadURL.mockClear();
+        ctx.mod.loadTarget(value);
+        await flushMicrotasks();
+        expect(ctx.tabsMocks.routeInternalPageNavigation).not.toHaveBeenCalled();
+        expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
+          expect.stringContaining('/pages/settings.html')
+        );
+      }
+    });
+
     test('leaves the current tab alone when the page was routed elsewhere', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();

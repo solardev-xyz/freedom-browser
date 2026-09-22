@@ -1799,13 +1799,21 @@ export const switchTab = (tabId, options = {}) => {
  * @param {{ background?: boolean }} [options] - opening disposition
  * @returns {object|null} the (possibly new) tab, or null on noop
  */
-// Parse a `freedom://<page>[/<sub>]` URL into `{ pageName, subPath }` when
-// `<page>` is a recognised internal page, else null. A single sub-path segment
-// is accepted (e.g. `freedom://settings/profile`) so deep links still resolve
-// to the page's singleton tab — the sub-path routes the (possibly reused) tab
-// to the right section. Anything deeper or unrecognised returns null.
+// Parse a `freedom://<page>[/<sub-path>]` URL into `{ pageName, subPath }` when
+// `<page>` is a recognised internal page, else null. A sub-path of any depth is
+// accepted (e.g. `freedom://settings/profile`, `freedom://settings/chains/1`) so
+// deep links still resolve to the page's singleton tab — the sub-path routes the
+// (possibly reused) tab to the right section. It is as deep as the page's own
+// fragment because that is what `page-urls.js#getInternalPageName` emits for it,
+// and that is what the address bar shows and a bookmark hands back; stopping at
+// one segment made the chrome's own chain-detail URL unroutable (#280). Keep in
+// step with `navigation.js#FREEDOM_PAGE_PATTERN`, the sibling copy the
+// address-bar branch uses. An unrecognised page, or anything outside
+// `[a-z0-9-]` segments, returns null.
 const freedomInternalPageTarget = (url) => {
-  const match = /^freedom:\/\/([a-z0-9-]+)(?:\/([a-z0-9-]+))?\/?$/i.exec(url || '');
+  const match = /^freedom:\/\/([a-z0-9-]+)(?:\/([a-z0-9-]+(?:\/[a-z0-9-]+)*))?\/?$/i.exec(
+    url || ''
+  );
   if (!match || !internalPages) return null;
   const pageName = match[1].toLowerCase();
   if (!Object.prototype.hasOwnProperty.call(internalPages, pageName)) return null;

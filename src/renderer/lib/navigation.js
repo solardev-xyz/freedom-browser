@@ -1156,9 +1156,22 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
     });
 };
 
-// `freedom://<page>[/<sub>]` (e.g. freedom://settings/appearance), the only
-// shape the internal-page branch below accepts.
-const FREEDOM_PAGE_PATTERN = /^freedom:\/\/([a-zA-Z0-9-]+)(?:\/([a-zA-Z0-9-]+))?\/?$/i;
+// `freedom://<page>[/<sub-path>]` (e.g. freedom://settings/appearance), the
+// only shape the internal-page branch below accepts.
+//
+// The sub-path becomes the page's fragment, so it has to accept every depth
+// `page-urls.js#getInternalPageName` *emits* — that function is the inverse of
+// this one, and what it emits is what the address bar shows and what a user or
+// a bookmark hands back. A chain detail is `settings.html#chains/1`, shown as
+// `freedom://settings/chains/1`; while this stopped at a single segment the
+// chrome's own chain-detail URL was not a routable address at all — typing it
+// back navigated nowhere while the bar went on standing over the chain list,
+// the same "URL promises a view that isn't on screen" shape as #280 itself.
+// `tabs.js#freedomInternalPageTarget` is the sibling copy for the singleton-tab
+// rules and has to match. A segment stays `[a-zA-Z0-9-]`, so a sub-path can
+// only ever become the fragment of one of the known `internalPages` URLs.
+const FREEDOM_PAGE_PATTERN =
+  /^freedom:\/\/([a-zA-Z0-9-]+)(?:\/([a-zA-Z0-9-]+(?:\/[a-zA-Z0-9-]+)*))?\/?$/i;
 
 // `{ pageName, subPath }` for a recognised internal page, else null. Parsed up
 // front so `loadTarget` can settle *where* the open lands before it runs any
