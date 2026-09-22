@@ -26,7 +26,7 @@
   "dependencies": [
     {
       "name": "electron",
-      "version": "44.4.1",
+      "version": "44.4.4",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/electron/electron" },

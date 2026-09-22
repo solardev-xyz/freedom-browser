@@ -150,7 +150,7 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 
 ## Electron Framework
 
-- **Version:** 44.4.1 (lockfile-resolved)
+- **Version:** 44.4.4 (lockfile-resolved)
 - **License:** MIT
 - **Risk:** Yellow (requires notice)
 - **Notes:** Electron bundles Chromium, which contains hundreds of third-party components under various permissive licenses.
