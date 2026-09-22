@@ -11,6 +11,7 @@ import {
   formatSearchMenuSelection,
   getSearchProviderLabel,
 } from './search-utils.js';
+import { goBackInHistory, goForwardInHistory } from './history-traversal.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
 import { onWindowDeactivated } from './window-deactivation.js';
 
@@ -288,16 +289,15 @@ const handleAction = async (action, { background = false } = {}) => {
   const activeWebview = getActiveWebview();
 
   switch (action) {
+    // Same shared traversal helpers the toolbar buttons use, so the mark
+    // that drives the post-traversal ENS trust refresh (#86) is recorded
+    // here too rather than only on the one call site the issue named.
     case 'back':
-      if (activeWebview?.canGoBack()) {
-        activeWebview.goBack();
-      }
+      goBackInHistory(activeWebview);
       break;
 
     case 'forward':
-      if (activeWebview?.canGoForward()) {
-        activeWebview.goForward();
-      }
+      goForwardInHistory(activeWebview);
       break;
 
     case 'reload':

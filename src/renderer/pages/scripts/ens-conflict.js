@@ -61,12 +61,16 @@ for (const g of groups) {
   groupsEl.appendChild(groupDiv);
 }
 
+// Hand the traversal to the shell instead of calling `window.history.back()`
+// here. A renderer-initiated traversal onto the custom-scheme entry behind
+// this page (`ipfs://name.eth/…`, the shape #86's trust refresh appends the
+// interstitial after) is caught by the main process' `will-navigate`
+// intercept and replayed through `loadTarget` as a fresh navigation, which
+// re-resolves the name and raises this same interstitial again — the button
+// loops. The shell traverses with `webview.goBack()`, which no intercept
+// sees, and loads the home page when there is nothing behind this entry.
 document.getElementById('back-btn').onclick = () => {
-  if (window.history.length > 1) {
-    window.history.back();
-  } else {
-    window.location.href = 'home.html';
-  }
+  window.freedomAPI?.interstitialGoBack?.();
 };
 
 document.getElementById('settings-btn').onclick = () => {

@@ -1096,6 +1096,21 @@ describe('url-utils', () => {
         expect(result).toBe('ipfs://modern.eth/app');
       });
 
+      // The counterpart to the Swarm case-insensitivity test above: base58
+      // case is load-bearing, so a case-folded CIDv0 is a different,
+      // unresolvable reference (`buildGatewayUrl` answers it with a 400) and
+      // must not be painted with this name. See the note in
+      // `extractEnsResolutionMetadata`.
+      test('does not name-preserve a case-folded CIDv0 root', () => {
+        const cid = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+        const folded = cid.toLowerCase();
+        const ensNames = new Map([[cid, 'ipfsdapp.eth']]);
+
+        expect(applyEnsNamePreservation(`ipfs://${folded}/docs`, ensNames)).toBe(
+          `ipfs://${folded}/docs`
+        );
+      });
+
       test('returns original URL for unknown IPFS CID', () => {
         const cid = 'QmUnknownCidThatDoesNotExistInOurMap12345678901';
         const ensNames = new Map([['QmDifferentCid', 'other.eth']]);
@@ -1112,6 +1127,17 @@ describe('url-utils', () => {
 
         const result = applyEnsNamePreservation(`ipns://${ipnsId}`, ensNames);
         expect(result).toBe('ipns://dynamic.eth');
+      });
+
+      // Same rule as the CIDv0 case above, for a base58 peer-ID root.
+      test('does not name-preserve a case-folded base58 IPNS root', () => {
+        const ipnsId = '12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp';
+        const folded = ipnsId.toLowerCase();
+        const ensNames = new Map([[ipnsId, 'dynamic.eth']]);
+
+        expect(applyEnsNamePreservation(`ipns://${folded}/other`, ensNames)).toBe(
+          `ipns://${folded}/other`
+        );
       });
 
       test('preserves transport scheme + path for IPNS', () => {
