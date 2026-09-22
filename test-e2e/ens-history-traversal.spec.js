@@ -334,3 +334,89 @@ test('a rewriting iframe cannot raise its own page over a traversal away from it
   await expect(window.locator('#forward-btn')).toBeEnabled();
   await window.screenshot({ path: testInfo.outputPath('5-traversal-not-hijacked.png') });
 });
+
+// The same pair again, with the History API call in the restored page's **own
+// main document** rather than in a frame it embeds. Chromium reports those
+// through `did-navigate-in-page` with `isMainFrame: true`, so the subframe
+// gate above does not see them at all.
+const seedRewritingPage = async (harness, hostUrl, heading) => {
+  await harness.setContentFixture(hostUrl, {
+    body:
+      `<html><body><h1>${heading}</h1><script>let n = 0;` +
+      "setInterval(() => { history.replaceState(null, '', '/p?n=' + ++n); }, 20);" +
+      '</script></body></html>',
+  });
+};
+
+test('a page rewriting its own URL does not eat the traversal', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // The main-document half of the pair above, and the one the subframe gate
+  // could not see: `history.replaceState` on a 20ms timer in the *restored
+  // page's own document* reports as a main-frame `did-navigate-in-page`, so
+  // before this fix the first of those consumed the traversal mark and the
+  // real commit re-verified nothing — the shield stayed on the method
+  // configured when the entry first loaded.
+  await seedEnsPage(harness);
+  await seedRewritingPage(harness, 'ipfs://qmspahost/', 'spa host');
+  const shield = window.locator('#trust-shield');
+
+  await navigateTo(window, 'traversal.eth');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await expect(shield).toHaveAttribute('data-trust', 'user-configured');
+
+  await navigateTo(window, 'ipfs://qmspahost/');
+  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toMatch(/^ipfs:\/\/qmspahost/);
+
+  await harness.setEnsFixture('traversal.eth', VERIFIED_AFTER_SETTINGS_CHANGE);
+
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await expect(shield).toHaveAttribute('data-trust', 'verified', { timeout: 15_000 });
+  await window.screenshot({ path: testInfo.outputPath('6-traversal-past-rewriting-page.png') });
+});
+
+test('a rewriting page cannot raise its own interstitial over a traversal away from it', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // The sharper half: here the rewriting page is the ENS entry being *left*,
+  // and its verdict has flipped to conflict. A main-frame in-page commit
+  // consuming the mark ran the refresh against `committedDisplayUrl` — still
+  // that outgoing entry — and loaded `ens-conflict.html?name=probe.eth` over
+  // the pending Back, so the user landed on an interstitial for the page they
+  // were walking away from with the forward history gone.
+  await harness.setEnsFixture('probe.eth', UNVERIFIED_FIRST_LOAD);
+  await seedRewritingPage(harness, 'ipfs://probe.eth/', 'probe.eth');
+
+  await navigateTo(window, 'https://start.example/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/start\.example/);
+  await navigateTo(window, 'probe.eth');
+  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toMatch(/^ipfs:\/\/probe\.eth/);
+
+  await harness.setEnsFixture('probe.eth', {
+    type: 'conflict',
+    trust: { level: 'conflict', block: { number: 21000000 } },
+    groups: [
+      { value: '0xaa', sources: ['rpc-one.test'] },
+      { value: '0xbb', sources: ['rpc-two.test'] },
+    ],
+  });
+
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/start\.example/);
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 2_000 })
+    .not.toMatch(/pages\/ens-conflict\.html/);
+  await expect(window.locator('#forward-btn')).toBeEnabled();
+  await window.screenshot({ path: testInfo.outputPath('7-traversal-not-hijacked.png') });
+});

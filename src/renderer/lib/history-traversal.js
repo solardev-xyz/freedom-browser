@@ -52,11 +52,19 @@ export const goForwardInHistory = (webview) => {
 /**
  * Read *and clear* the traversal mark for `webview`.
  *
- * Call this on every commit, not just the ones the caller cares about: a
- * traversal that never commits (a restored entry that turns out to be a
- * download, a `stop()` mid-flight) would otherwise leave its mark standing and
- * let the *next*, unrelated navigation be taken for a traversal. Consuming
- * unconditionally bounds a stale mark to a single commit.
+ * Call this on every *cross-document* commit, not just the ones the caller
+ * cares about: a traversal that never commits (a restored entry that turns out
+ * to be a download, a `stop()` mid-flight) would otherwise leave its mark
+ * standing and let the *next*, unrelated navigation be taken for a traversal.
+ * Consuming unconditionally bounds a stale mark to a single commit.
+ *
+ * Same-document commits (`did-navigate-in-page`) deliberately do not call
+ * this. Chromium reports a page's own `pushState`/`replaceState` through the
+ * same event as a same-document traversal, with nothing on either the commit
+ * or its preceding `did-start-navigation` to separate them, so a page
+ * rewriting its own URL on a timer could otherwise eat the mark out from under
+ * a traversal still in flight; see the `did-navigate-in-page` handler in
+ * tabs.js for the probe that established this.
  *
  * @param {object|null} webview - guest `<webview>` element
  * @returns {boolean} true when this commit is the one a traversal asked for
@@ -76,14 +84,12 @@ export const consumeHistoryTraversal = (webview) => {
  *   * the user asks for something else before the traversal commits (types a
  *     URL, picks a bookmark) — the traversal is superseded, so the commit
  *     that eventually lands belongs to the new navigation, not to it;
- *   * the traversal restores an entry that differs only in a *subframe*.
- *     Chromium then navigates that frame alone, so no main-frame commit ever
- *     follows and nothing consumes the mark. (The subframe commit must not
- *     consume it either: an iframe rewriting its own URL while a real
- *     main-frame traversal is in flight is indistinguishable from it here,
- *     and eating the mark there is the bug the main-frame gate in `tabs.js`
- *     closes.) The mark would otherwise stand until some later, unrelated
- *     main-frame commit was taken for the traversal.
+ *   * the traversal restores an entry Chromium can serve without a
+ *     cross-document commit — one that differs only in a *subframe*, or one
+ *     in the same document (an in-page anchor, an SPA route). Nothing then
+ *     consumes the mark, because no same-document commit is allowed to (see
+ *     `consumeHistoryTraversal`), and it would otherwise stand until some
+ *     later, unrelated cross-document commit was taken for the traversal.
  *
  * @param {object|null} webview - guest `<webview>` element
  * @returns {void}

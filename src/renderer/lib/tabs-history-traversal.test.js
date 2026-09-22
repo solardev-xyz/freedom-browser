@@ -9,11 +9,12 @@
 // Two halves are pinned:
 //   * only a commit that a traversal asked for is reported — a link click or
 //     an address-bar load committing on the same guest is not;
-//   * the mark is consumed by the first *main-frame* commit that follows, so
-//     a traversal that never commits cannot make a later, unrelated
-//     navigation look like one — and an iframe's own History API call, which
-//     Chromium also reports through `did-navigate-in-page`, cannot eat the
-//     mark out from under a main-frame traversal still in flight.
+//   * the mark is consumed by the first *cross-document* commit that follows,
+//     so a traversal that never commits cannot make a later, unrelated
+//     navigation look like one — while a same-document commit, which is how
+//     Chromium reports a page's own `pushState`/`replaceState` (in the main
+//     frame as much as in an iframe), can neither report nor eat the mark out
+//     from under a traversal still in flight.
 
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
 
@@ -166,41 +167,49 @@ describe('back/forward traversal marking (tabs.js + history-traversal.js)', () =
     expect(ctx.traversalReports()).toHaveLength(1);
   });
 
-  test('a same-document traversal reports through did-navigate-in-page', async () => {
-    const ctx = await loadModules();
+  test('an in-page commit neither reports nor consumes the mark, in any frame', async () => {
+    // Chromium reports a page's own History API call through the same
+    // `did-navigate-in-page` event as a same-document traversal, with nothing
+    // on it or on its preceding `did-start-navigation` to separate the two.
+    // So the page being *left* — its main document on a `replaceState` timer,
+    // or an embedded widget/ad frame rewriting its own URL — must not be
+    // taken for the commit the traversal asked for, and must not consume the
+    // mark: doing so left the restored entry unverified (its trust badge
+    // stuck on the method configured when it first loaded), or ran the
+    // refresh against the outgoing page and raised *its* interstitial over
+    // the traversal the user had just asked for.
+    for (const frame of [
+      { isMainFrame: true, url: 'ipfs://qmspahost/p?n=1' },
+      { isMainFrame: false, url: 'https://widget.example/embed?r=2' },
+      // Chromium omitting the flag must not read as "report it anyway".
+      { url: 'ipfs://qmspahost/p?n=2' },
+    ]) {
+      const ctx = await loadModules();
 
-    ctx.traversal.goBackInHistory(ctx.webview);
-    ctx.webview.dispatch('did-navigate-in-page', { url: `${ENS_URL}#section`, isMainFrame: true });
+      ctx.traversal.goBackInHistory(ctx.webview);
+      // A whole burst of them, as a 20ms timer produces while a traversal to
+      // a page that takes a moment to commit is still in flight.
+      for (let i = 0; i < 5; i += 1) ctx.webview.dispatch('did-navigate-in-page', frame);
 
-    expect(ctx.traversalReports()).toHaveLength(1);
+      expect(ctx.traversalReports()).toHaveLength(0);
 
-    // ...and is consumed there too, so the following cross-document commit
-    // is not a second report.
-    ctx.webview.dispatch('did-navigate', { url: 'https://example.com/' });
-    expect(ctx.traversalReports()).toHaveLength(1);
+      // The mark survived, so the cross-document commit the traversal
+      // actually produces still reports — exactly once.
+      ctx.webview.dispatch('did-navigate', { url: ENS_URL });
+      expect(ctx.traversalReports()).toHaveLength(1);
+      expect(ctx.traversalReports()[0].data.previousUrl).toBe(HOME_URL);
+    }
   });
 
-  test('a subframe in-page navigation neither reports nor consumes the mark', async () => {
-    // Chromium fires `did-navigate-in-page` for any frame. An iframe on the
-    // page being *left* — an embedded widget calling `replaceState` on a
-    // timer, an ad frame rewriting its own URL — must not be taken for the
-    // commit the traversal asked for, and must not consume the mark: doing
-    // so left the restored entry unverified (its trust badge stuck on the
-    // method configured when it first loaded), or ran the refresh against
-    // the outgoing page and raised *its* interstitial over the traversal.
+  test('an in-page commit outside a traversal is still not a traversal', async () => {
+    // The control for the pair above: with no mark pending, a same-document
+    // commit reports nothing either, so nothing about this path can start
+    // looking like a traversal on its own.
     const ctx = await loadModules();
 
-    ctx.traversal.goBackInHistory(ctx.webview);
-    ctx.webview.dispatch('did-navigate-in-page', {
-      url: 'https://widget.example/embed?r=2',
-      isMainFrame: false,
-    });
+    ctx.webview.dispatch('did-navigate-in-page', { url: `${ENS_URL}#section`, isMainFrame: true });
 
     expect(ctx.traversalReports()).toHaveLength(0);
-
-    // The mark survived for the main-frame commit the traversal produces.
-    ctx.webview.dispatch('did-navigate', { url: ENS_URL });
-    expect(ctx.traversalReports()).toHaveLength(1);
   });
 
   test('clearHistoryTraversal drops a mark no commit will consume', async () => {

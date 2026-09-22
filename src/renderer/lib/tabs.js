@@ -725,34 +725,47 @@ const createWebview = (tabId, initialUrl) => {
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate-in-page', { tabId, event });
       }
-      // Same-document traversal (an in-page anchor entry, a popstate route)
-      // commits here and nowhere else, so the mark has to be consumed on
-      // this path too — both to refresh the restored entry's trust metadata
-      // and so a mark can never survive into a later navigation. The
-      // document is unchanged, so the page this commit "replaced" is itself.
+      // A back/forward traversal mark is deliberately *not* read here: this
+      // event cannot tell the commit a traversal asked for apart from one the
+      // page made for itself, and guessing wrong is worse than not refreshing.
       //
-      // Main frame only. Chromium fires `did-navigate-in-page` for **any**
-      // frame: an iframe driving the History API (an embedded SPA widget
-      // calling `pushState`/`replaceState`, an ad frame rewriting its own
-      // URL) reports here with `isMainFrame: false`, on a document the user
-      // has not left. Letting one of those consume the mark meant an iframe
-      // on the page being *left* ate it while the real traversal was still
-      // in flight: the restored entry was then never re-verified, or — when
-      // the subframe report won the race before the main-frame commit — the
-      // refresh ran against the outgoing page and raised *its* interstitial
-      // over the traversal the user had just asked for. Undefined is treated
-      // as main frame, same rule as the `did-fail-load` gate above.
+      // Chromium reports both through the identical event. Probed against a
+      // real guest on Electron 44 (`did-start-navigation` / commit pairs
+      // logged while a back traversal to a deliberately slow page was in
+      // flight), a page's own `history.replaceState` and a same-document
+      // history traversal are indistinguishable from the embedder:
       //
-      // The converse — a traversal whose restored entry differs only in a
-      // subframe, so no main-frame commit ever follows to consume the mark —
-      // is bounded by `clearHistoryTraversal`, which every shell-initiated
-      // navigation calls; see history-traversal.js.
-      if (event.isMainFrame === false) return;
-      reportHistoryTraversalCommit(
-        webview,
-        tabId,
-        tabState.tabs.find((t) => t.id === tabId)?.url || null
-      );
+      //   * both arrive as `did-navigate-in-page` with `isMainFrame: true`
+      //     and nothing else on the event (`url` and `isMainFrame` are its
+      //     only fields) — the subframe gate this replaces saw a main-frame
+      //     `replaceState` as the traversal's commit;
+      //   * both are preceded, 1-2ms earlier, by a main-frame
+      //     `did-start-navigation` carrying the same URL and `isInPlace:
+      //     true`, so the start event does not separate them either — and the
+      //     traversal's own start arrives *after* the first of the page's, so
+      //     "wait for a start before consuming" does not either;
+      //   * the session-history position, probed through `canGoToOffset`,
+      //     reports the *pending* traversal's target for the whole window, so
+      //     a page commit landing mid-traversal reads exactly the index the
+      //     traversal's own commit would.
+      //
+      // Letting any of them consume the mark is what a page on a timer
+      // exploited: a `replaceState` loop on the page being left ate the mark
+      // before the restored entry committed, so either the restored entry was
+      // never re-verified, or the refresh ran against `committedDisplayUrl` —
+      // still the outgoing entry, since this event does not write it — and
+      // raised *that* page's interstitial over the traversal, landing Back on
+      // `ens-conflict.html` for the page the user was walking away from with
+      // the forward history gone.
+      //
+      // So only a cross-document commit (`did-navigate`, above) reports a
+      // traversal. What that gives up is the refresh on a same-document
+      // traversal, which costs nothing real: the document is unchanged, so
+      // the restored entry carries the same origin and therefore the same
+      // name, and the verdict already on the shield is that name's. The mark
+      // it leaves standing is bounded exactly as a subframe-only traversal's
+      // is — by `clearHistoryTraversal` on every shell-initiated navigation,
+      // and by the next cross-document commit — see history-traversal.js.
     },
     'page-favicon-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
