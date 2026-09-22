@@ -1,6 +1,8 @@
 # Changelog Process Playbook
 
-Use this playbook when asked to update `CHANGELOG.md` for a new version.
+Use this playbook whenever a change earns a changelog entry: day to day that is
+a `changelog.d/` fragment on the pull request that makes the change (next
+section), and at release it is assembling those fragments into `CHANGELOG.md`.
 
 ## Day to day: write a fragment, not a changelog edit
 
@@ -171,4 +173,4 @@ An agent draft is a starting point, not a final. Check the draft for editorial f
 
 **Nothing disappears silently.** When a draft trims or replaces entries that were already in `[Unreleased]` (or in an earlier agent draft), the PR or review note lists what was dropped and why — "Ant internals with no Freedom UI surface", "duplicate of the Added parent" — so the releaser decides, not the compressor. Restoring a dropped capability requires checking in `src/` that a user can actually reach it in this build; the old text is not evidence.
 
-**Do not land the changelog edits until the releaser has reviewed them.** Two equivalent ways to hold the gate: leave the `CHANGELOG.md` changes unstaged on the release branch and present the diff, creating the `docs(changelog): …` commit only after explicit approval; or, when the draft comes from an agent working on its own branch, open a PR **against the release branch** (not `main`) that touches only `CHANGELOG.md` — the PR is the presentation and the releaser's merge is the approval. Either way, keep `## [Unreleased]` as the heading while the release is still in candidates; the rename to `## [<version>] - <date>` happens when the bare version is cut. See `release-process.md` for how the gate sequences against verify / build / upload / tag.
+**Do not land the changelog edits until the releaser has reviewed them.** Two equivalent ways to hold the gate: leave the `CHANGELOG.md` changes unstaged on the release branch and present the diff, creating the `docs(changelog): …` commit only after explicit approval; or, when the draft comes from an agent working on its own branch, open a PR **against the release branch** (not `main`) carrying the assembled `CHANGELOG.md` and the `git rm` of the `changelog.d/` fragments it consumed (step 9) — the PR is the presentation and the releaser's merge is the approval, retiring the fragments in the same commit that publishes their text. Leaving the `git rm` out is how a fragment survives the release and is re-spliced at the next one. Either way, keep `## [Unreleased]` as the heading while the release is still in candidates; the rename to `## [<version>] - <date>` happens when the bare version is cut. See `release-process.md` for how the gate sequences against verify / build / upload / tag.

@@ -21,13 +21,15 @@ See `changelog-process.md`.
 ## Procedure
 
 1. Confirm each pull request is reviewed and its checks are green.
-   Steps 2 and 3 need two repository settings that are **off** here as of
-   2026-09 — check with `gh api repos/<owner>/<repo>` and read
-   `allow_auto_merge` / `allow_update_branch`. Without _Allow auto-merge_,
+   Step 2 needs _Allow auto-merge_, which is **off** here as of 2026-09 —
+   check with `gh api repos/<owner>/<repo> --jq .allow_auto_merge`. Without it
    `gh pr merge --auto` fails with "auto-merge is not allowed for this
-   repository"; without _Allow update branch_, step 3's API call still works
-   but the web "Update branch" button does not appear. Ask the maintainer to
-   enable them, or merge each pull request by hand in turn.
+   repository"; ask the maintainer to enable it, or merge each pull request by
+   hand in turn. Step 3 needs nothing: `allow_update_branch` is off too, but it
+   only governs branches that are _not_ required to be up to date, and `main`'s
+   protection sets `required_status_checks.strict` — check it with
+   `gh api repos/<owner>/<repo>/branches/main/protection` — so both
+   `gh pr update-branch` and the web "Update branch" button work regardless.
 2. Enable auto-merge on all of them at once:
    `gh pr merge <n> --merge --auto`.
    GitHub then merges each one the moment it is up to date and green, in

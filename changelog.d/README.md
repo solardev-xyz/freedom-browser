@@ -20,6 +20,13 @@ to the voice rules in `docs/agent-playbooks/changelog-process.md`:
   - `freedom://settings/privacy` opened Appearance and left its own name in the address bar
 ```
 
+Bullets and nothing else: the body is spliced into `## [Unreleased]` verbatim,
+so a heading line or a bare paragraph lands there as one. Sub-bullets and
+wrapped lines are indented — an unindented continuation becomes its own entry.
+`npm run changelog:assemble` refuses anything else, and the `changelog.d/`
+guard in `scripts/assemble-changelog.test.js` runs that check on every pull
+request rather than leaving it for the releaser.
+
 Not every change needs one. The same exclusions apply as before — developer-only
 fixes, in-release polish, test-only and internal work stay out of the changelog,
 and so stay out of `changelog.d/`.

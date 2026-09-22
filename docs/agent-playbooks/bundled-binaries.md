@@ -132,11 +132,18 @@ This is the sequence [#387](https://github.com/solardev-xyz/freedom-browser/pull
    and the release assembles the fragments (see `changelog-process.md` and
    `changelog.d/README.md`).
 
+   The whole of `changelog.d/security--ant-0.5.45.md` is the entry itself:
+
    ```
-   # changelog.d/security--ant-0.5.45.md
    - Updated bundled nodes:
      - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45 — <what changes for a user>
    ```
+
+   Nothing above that — no heading, no file name — goes in the file: the body
+   is spliced into `## [Unreleased]` verbatim, so a stray heading line lands
+   there as a heading. `npm run changelog:assemble` refuses a fragment that is
+   not a bullet list, and the `changelog.d/` guard in
+   `scripts/assemble-changelog.test.js` runs that check on every pull request.
 
    Writing the same `- Updated bundled nodes:` lead as the last bump is
    correct, not a duplicate: the assembler folds the sub-bullets under the one

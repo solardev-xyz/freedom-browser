@@ -40,6 +40,12 @@ The allowed types are `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `build
 
 Pull requests should:
 
+- Add a changelog fragment for a user-visible change: one new file,
+  `changelog.d/<section>--<slug>.md`, whose body is the entry as it should read
+  — not an edit to `CHANGELOG.md`, which is what stops two pull requests
+  conflicting over the same lines. See
+  [changelog.d/README.md](changelog.d/README.md). Developer-only fixes,
+  in-release polish and internal work need no fragment.
 - Link the relevant issue.
 - Explain the problem and the chosen approach.
 - Describe user-visible impact and risk.

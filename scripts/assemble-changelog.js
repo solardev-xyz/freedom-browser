@@ -49,6 +49,38 @@ function sectionOf(filename) {
   return section;
 }
 
+/**
+ * A fragment body is a markdown bullet list and nothing else; throws otherwise.
+ *
+ * The body is spliced into CHANGELOG.md verbatim, so anything that is not a
+ * bullet lands there as-is: a heading line copied along with a fenced example
+ * becomes an `# ...` heading inside `## [Unreleased]`, a wrapped line that was
+ * not indented becomes a second entry, and an empty file contributes nothing at
+ * all. None of that is visible until the releaser assembles, months later —
+ * this runs on every pull request instead, through the `changelog.d/` name
+ * guard in `assemble-changelog.test.js`.
+ */
+function validateBody(filename, body) {
+  const where = `changelog.d/${filename}`;
+  if (!body) {
+    throw new Error(`${where}: empty. Write the entry as it should read, or delete the file.`);
+  }
+  const lines = body.split('\n');
+  if (!/^- \S/.test(lines[0])) {
+    throw new Error(
+      `${where}: must start with a top-level bullet ('- ...'), not ${JSON.stringify(lines[0])}. ` +
+        `The body is the entry exactly as it reads in CHANGELOG.md — no heading, no file name, no prose.`
+    );
+  }
+  for (const line of lines.slice(1)) {
+    if (line.trim() === '' || /^\s/.test(line) || /^- \S/.test(line)) continue;
+    throw new Error(
+      `${where}: ${JSON.stringify(line)} is neither a bullet nor indented. ` +
+        `Indent a sub-bullet or a wrapped line; an unindented line becomes its own entry.`
+    );
+  }
+}
+
 /** Fragments on disk, grouped by section, each group sorted by filename. */
 function collectFragments(dir = FRAGMENT_DIR) {
   if (!fs.existsSync(dir)) return new Map();
@@ -59,8 +91,10 @@ function collectFragments(dir = FRAGMENT_DIR) {
   const bySection = new Map();
   for (const file of files) {
     const section = sectionOf(file);
-    const body = fs.readFileSync(path.join(dir, file), 'utf8').trim();
-    if (!body) continue;
+    // CRLF normalised here: a `\r` left on a line end is spliced into
+    // CHANGELOG.md with it and breaks every sub-bullet comparison below.
+    const body = fs.readFileSync(path.join(dir, file), 'utf8').replace(/\r\n/g, '\n').trim();
+    validateBody(file, body);
     if (!bySection.has(section)) bySection.set(section, []);
     bySection.get(section).push(body);
   }
@@ -230,7 +264,10 @@ function spliceIntoChangelog(changelog, bySection) {
       if (next === -1) next = block.length;
       let insertAt = next;
       while (insertAt > at + 1 && block[insertAt - 1].trim() === '') insertAt -= 1;
-      block.splice(insertAt, 0, ...entries);
+      // A heading with no entries yet leaves the insert point on the heading's
+      // own line; every other section has a blank line under its heading.
+      const lead = insertAt === at + 1 ? [''] : [];
+      block.splice(insertAt, 0, ...lead, ...entries);
     }
   }
   return [...lines.slice(0, start + 1), ...block, ...lines.slice(end)].join('\n');
@@ -279,6 +316,7 @@ module.exports = {
   SECTIONS,
   UNRELEASED_HEADING,
   sectionOf,
+  validateBody,
   collectFragments,
   mergeEntries,
   renderSections,

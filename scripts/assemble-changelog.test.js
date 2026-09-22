@@ -13,6 +13,7 @@ const path = require('path');
 const {
   SECTIONS,
   sectionOf,
+  validateBody,
   collectFragments,
   mergeEntries,
   renderSections,
@@ -82,18 +83,63 @@ describe('sectionOf', () => {
   });
 });
 
+describe('validateBody', () => {
+  test('accepts a bullet with sub-bullets and an indented wrapped line', () => {
+    expect(() =>
+      validateBody('fixed--a.md', '- A lead bullet\n  wrapped onto a second line\n  - a sub-bullet')
+    ).not.toThrow();
+  });
+
+  test('rejects a heading line, the shape a copied fenced example carries', () => {
+    // `bundled-binaries.md` step 7 shows a fragment inside a fence. Copied
+    // with the fence's file-name label, the body opens with `# changelog.d/...`
+    // and `--write` splices that heading into `## [Unreleased]` verbatim.
+    expect(() =>
+      validateBody(
+        'security--ant-0.5.46.md',
+        '# changelog.d/security--ant-0.5.46.md\n- Updated bundled nodes:'
+      )
+    ).toThrow(/must start with a top-level bullet/);
+  });
+
+  test('rejects a paragraph fragment', () => {
+    expect(() => validateBody('fixed--a.md', 'Settings deeplinks work again')).toThrow(
+      /must start with a top-level bullet/
+    );
+  });
+
+  test('rejects an unindented wrapped line, which would become its own entry', () => {
+    expect(() => validateBody('fixed--a.md', '- A lead bullet\nwrapped with no indent')).toThrow(
+      /neither a bullet nor indented/
+    );
+  });
+
+  test('rejects an empty fragment rather than contributing nothing at release', () => {
+    expect(() => validateBody('fixed--a.md', '')).toThrow(/empty/);
+  });
+});
+
 describe('collectFragments', () => {
-  test('groups by section, sorts by filename and skips README and empties', () => {
+  test('groups by section, sorts by filename and skips README', () => {
     const dir = fragmentDir({
       'README.md': '# not a fragment',
       'fixed--b.md': '- Entry B\n',
       'fixed--a.md': '- Entry A\n',
       'added--z.md': '- Entry Z\n',
-      'fixed--empty.md': '   \n',
     });
     const bySection = collectFragments(dir);
     expect(bySection.get('Fixed')).toEqual(['- Entry A', '- Entry B']);
     expect(bySection.get('Added')).toEqual(['- Entry Z']);
+  });
+
+  test('throws on an empty fragment, naming it', () => {
+    const dir = fragmentDir({ 'fixed--empty.md': '   \n' });
+    expect(() => collectFragments(dir)).toThrow(/changelog\.d\/fixed--empty\.md: empty/);
+  });
+
+  test('normalises CRLF, which would otherwise be spliced in with the entry', () => {
+    const dir = fragmentDir({ 'fixed--a.md': '- Entry A\r\n  - a sub-bullet\r\n' });
+    expect(collectFragments(dir).get('Fixed')).toEqual(['- Entry A\n  - a sub-bullet']);
   });
 
   test('is empty when the directory does not exist', () => {
@@ -158,6 +204,15 @@ describe('spliceIntoChangelog', () => {
     const unreleased = out.slice(out.indexOf('## [Unreleased]'), out.indexOf('## [0.8.5]'));
     expect(unreleased.indexOf('### Added')).toBeLessThan(unreleased.indexOf('### Changed'));
     expect(unreleased.indexOf('### Changed')).toBeLessThan(unreleased.indexOf('### Fixed'));
+  });
+
+  test('keeps a blank line under a heading that had no entries yet', () => {
+    // A release can leave `### Fixed` standing with nothing under it (the
+    // entries were cut, the heading was not). Without the blank line the
+    // splice writes `### Fixed\n- x`, which no other section in the file does.
+    const empty = '# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n## [0.8.5] - 2026-09-10\n';
+    const out = spliceIntoChangelog(empty, new Map([['Fixed', ['- A new fixed entry']]]));
+    expect(out).toContain('### Fixed\n\n- A new fixed entry');
   });
 
   test('leaves shipped releases untouched', () => {
@@ -311,11 +366,11 @@ describe('pendingFragments', () => {
 });
 
 describe("this repo's own changelog.d/", () => {
-  test('every fragment name carries a valid <section>-- prefix', () => {
-    // Nothing else checks a fragment's name before release: `code-changed`
-    // calls `changelog.d/` prose, so a mis-named fragment would merge green
-    // and throw on the releaser running the assembler. This runs in the
-    // ungated `test` job on every pull request instead.
+  test('every fragment carries a valid <section>-- prefix and a bullet body', () => {
+    // Nothing else reads a fragment between the pull request that writes it
+    // and the release that assembles it, so a mis-named file or a body that is
+    // not a bullet list would merge green and surface months later, on the
+    // releaser. This runs in the `test` job on every pull request instead.
     expect(() => collectFragments()).not.toThrow();
   });
 });
