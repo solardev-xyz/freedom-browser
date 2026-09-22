@@ -237,6 +237,23 @@ describe('the test job', () => {
   });
 });
 
+describe('the triggers', () => {
+  it('do not run a push that a pull request already covers', () => {
+    // A branch push and the `pull_request` run for the same head are two runs
+    // of this workflow under two different `github.ref`s, so `concurrency`
+    // does not collapse them — and both gates short-circuit to true on a
+    // non-pull-request event. An unfiltered `push:` therefore paid the full
+    // 10-14 minutes on every same-repo branch push next to the gated PR run,
+    // which is the whole saving handed back. `main` and the release tags have
+    // no pull request of their own and keep their run.
+    const on = withoutComments.match(/^on:\n([\s\S]*?)^[a-z]/m);
+    expect(on).toBeTruthy();
+    const push = on[1].match(/^ {2}push:\n((?: {4}\S.*\n)*)/m);
+    expect(push).toBeTruthy();
+    expect(push[1]).toMatch(/^ {4}branches: \[main\]$/m);
+  });
+});
+
 describe('the path filters', () => {
   /** The `if echo "$changed" | grep …` line of each filter step. */
   const filterLines = () => withoutComments.match(/^.*\| grep .*$/gm) || [];
@@ -263,7 +280,27 @@ describe('the path filters', () => {
 });
 
 describe('the gate jobs', () => {
-  const GATES = ['code-changed', 'renderer-changed'];
+  /**
+   * The gates, read out of the workflow rather than listed here: a job that
+   * publishes an `outputs:` block is one.
+   *
+   * Derived because a hard-coded pair is invisible to its own guard. A third
+   * gate added below would not appear in `gatedJobs()` at all, so a consumer
+   * carrying `needs: <new gate>` and no `if:` — skipped to Success when that
+   * gate fails, the exact shape the fail-open test exists to catch — would
+   * pass this suite untouched.
+   */
+  const GATES = [...jobs()]
+    .filter(([, block]) => /^ {4}outputs:[ \t]*$/m.test(block))
+    .map(([name]) => name);
+
+  it('are discovered from the workflow, not listed here', () => {
+    // A derivation that quietly matched nothing would leave every guard below
+    // iterating an empty list, so pin that it still finds the gates in the
+    // file today. Containment, not equality: a third gate should inherit these
+    // guards without having to edit this line.
+    expect(GATES).toEqual(expect.arrayContaining(['code-changed', 'renderer-changed']));
+  });
 
   /**
    * Every job that waits on a gate, as `[name, condition, needs]`.
@@ -322,7 +359,7 @@ describe('the gate jobs', () => {
   });
 
   it('are themselves ungated, so nothing can skip the gate itself', () => {
-    for (const gate of ['code-changed', 'renderer-changed']) {
+    for (const gate of GATES) {
       const block = jobs().get(gate);
       expect(block).toBeTruthy();
       expect(needsOf(block)).toEqual([]);

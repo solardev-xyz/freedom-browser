@@ -2,6 +2,16 @@ name: CI
 
 on:
   push:
+    # A same-repo branch push and the `pull_request` event for the same head
+    # are two separate runs of this workflow — `github.ref` differs
+    # (`refs/heads/<branch>` against `refs/pull/N/merge`), so the `concurrency`
+    # group below does not collapse them — and both gate jobs short-circuit to
+    # true on anything that is not a pull request. An unfiltered `push:`
+    # therefore ran the whole matrix on every branch push alongside the PR run,
+    # gate or no gate. A branch push is covered by its pull request; `main` and
+    # the release tags have no pull request of their own, so they keep theirs.
+    branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -23,10 +33,17 @@ jobs:
   # Is there anything in this pull request that the *gated* suites below could
   # possibly be testing? A changelog fragment, a playbook or a doc cannot
   # change what the app does, and re-running 40 Playwright, native-addon and
-  # cross-platform jobs to prove that costs 10-14 minutes per push — the cost
-  # that made a four-PR merge train an hour long. Anything else, including an
-  # unrecognised path, runs the full suite: the filter defaults to "code
-  # changed", never the other way round.
+  # cross-platform jobs to prove that costs 10-14 minutes per push. Anything
+  # else, including an unrecognised path, runs the full suite: the filter
+  # defaults to "code changed", never the other way round.
+  #
+  # What that does and does not buy: the filter reads the pull request's whole
+  # diff against its base, so it fires only on a pull request that is prose all
+  # the way down. A code pull request still runs everything on every push, an
+  # update-branch commit included — so this job does nothing for a four-PR
+  # merge train of code changes; what shortened that is `changelog.d/`
+  # fragments no longer manufacturing a conflict per merge. What this job buys
+  # is the prose-only pull request: about two minutes instead of 10-14.
   #
   # That default has to survive this job *failing* too, which is why every
   # gated job below reads `!= 'false'` behind `!cancelled()` rather than the
