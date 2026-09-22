@@ -28,6 +28,21 @@ jobs:
   # unrecognised path, runs the full suite: the filter defaults to "code
   # changed", never the other way round.
   #
+  # That default has to survive this job *failing* too, which is why every
+  # gated job below reads `!= 'false'` behind `!cancelled()` rather than the
+  # obvious `== 'true'`. A job skipped by its own `if`, or skipped because a
+  # job it `needs` failed, reports **Success** to branch protection — only a
+  # whole workflow skipped by a path/branch filter sits pending. So with
+  # `== 'true'`, a `code-changed` that died on a transient `checkout`/`git
+  # fetch` error or a lost runner would skip all sixteen suites and hand the
+  # pull request a green merge button with no Playwright, native-addon or
+  # cross-platform job having run. `!= 'false'` fails open instead: a gate
+  # that never wrote `code=` leaves the output empty and everything runs;
+  # only a gate that positively concluded "prose only" skips anything.
+  # `!cancelled()` rather than `always()` so `cancel-in-progress` still
+  # cancels the suites. `scripts/ci/ci-gate.test.js` pins the shape, because
+  # a copy-pasted `== 'true'` on the next gated job reopens this silently.
+  #
   # The `test` job is deliberately *not* gated on this one, because prose is
   # not inert here — it is an input to the jest suite. This repo's doc<->code
   # guards read the very files this filter calls prose: `docs/features.md`
@@ -118,7 +133,7 @@ jobs:
   # ubuntu-only `test` job. Pure jest, no display or native nodes required.
   migration-cross-platform:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -150,7 +165,7 @@ jobs:
   # IPNS page through the native request API.
   freedom-ipfs-native-addon:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -214,7 +229,7 @@ jobs:
   # cannot be dlopen'ed), which is what catches a missing or re-published asset.
   radicle-addon-load:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -270,7 +285,7 @@ jobs:
   # ARM64 Linux without multiplying the expensive cold-sync workload.
   myotis-addon-load:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -500,7 +515,7 @@ jobs:
   # pass unit-only CI.
   e2e-settings:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -548,7 +563,7 @@ jobs:
   # only — see #180).
   e2e-shortcuts-zoom:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -598,7 +613,7 @@ jobs:
   # `test` job, where it lands uncached.)
   ipfs-gateway-proxy:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -656,7 +671,7 @@ jobs:
   # two real sessions (#364, #365).
   e2e-tabs:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -716,7 +731,7 @@ jobs:
   # curated list, so a regression in either shipped green — the #319 lesson.
   e2e-address-bar-ens:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -765,7 +780,7 @@ jobs:
   # stop→wipe→reinject→restart flow is still exercised.)
   e2e-onboarding-identity:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -842,7 +857,7 @@ jobs:
   # for it to report running, and quits — so this job only downloads the addon.
   e2e-ipfs-quit:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -895,7 +910,7 @@ jobs:
   # in e2e-onboarding-identity above.
   e2e-ant:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -952,7 +967,7 @@ jobs:
   # download first and the spec seeds node autostart off.
   e2e-chrome-webstore:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -1001,7 +1016,7 @@ jobs:
   # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
   e2e-address-bar-clipboard:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1057,7 +1072,7 @@ jobs:
   # which is where the bug shipped.
   e2e-close-tab-shortcut:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1120,7 +1135,7 @@ jobs:
   # second-process spawn — see test-e2e/profiles-fixtures.js).
   e2e-profiles:
     needs: code-changed
-    if: needs.code-changed.outputs.code == 'true'
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1175,7 +1190,10 @@ jobs:
   # a change that touches the renderer, its harness, or the specs themselves,
   # and a screenshot job that runs on every backend-only PR is a job people
   # learn to ignore. On a push (not a PR) they always run, so `main` keeps the
-  # baselines honest even when nobody opened a PR.
+  # baselines honest even when nobody opened a PR. Both read `!= 'false'`
+  # behind `!cancelled()` for the same reason the `code-changed` consumers do
+  # — see the note on that job: a gate that fails must run the suites, not
+  # skip them into a reported Success.
   renderer-changed:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1223,7 +1241,7 @@ jobs:
   # #249 (white-on-white permission origin).
   e2e-theme-parity:
     needs: renderer-changed
-    if: needs.renderer-changed.outputs.renderer == 'true'
+    if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -1271,7 +1289,7 @@ jobs:
   # Locally: `xvfb-run -a npm run test:e2e:screenshots:update`.
   e2e-renderer-screenshots:
     needs: renderer-changed
-    if: needs.renderer-changed.outputs.renderer == 'true'
+    if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -1308,10 +1326,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The single check branch protection should require. Everything above may be
-  # skipped (a docs-only pull request) without leaving a required check
-  # pending for ever, which is what named job contexts do — and this still
-  # goes red the moment any job it waits on fails or is cancelled.
+  # The single check branch protection should require. A skipped job does not
+  # leave a required context pending — it reports Success — which is exactly
+  # why naming the individual contexts is the weaker arrangement: on a
+  # docs-only pull request nine of today's ten required contexts pass without
+  # running, and nothing in that set can see the gate job's own result. This
+  # job can: it waits on every job in the workflow, `code-changed` and
+  # `renderer-changed` included, and goes red the moment any of them fails or
+  # is cancelled, whatever the gates decided to skip.
   ci-ok:
     if: always()
     needs:

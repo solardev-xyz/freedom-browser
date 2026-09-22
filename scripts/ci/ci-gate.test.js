@@ -1,8 +1,8 @@
 /**
- * Guard for the two aggregate mechanisms in `.github/workflows/ci.yml`: the
- * `code-changed` gate that decides which suites a prose-only pull request
- * skips, and the `ci-ok` job branch protection requires in place of the
- * individual job contexts.
+ * Guard for the aggregate mechanisms in `.github/workflows/ci.yml`: the
+ * `code-changed` and `renderer-changed` gates that decide which suites a
+ * prose-only pull request skips, and the `ci-ok` job branch protection
+ * requires in place of the individual job contexts.
  *
  * Both are "never under-test" claims, and both fail silently when they are
  * wrong — a skipped job and a job nobody waits on are indistinguishable from a
@@ -17,7 +17,15 @@
  *    drift those guards exist to catch. So `test` must run unconditionally
  *    for as long as any jest file reads a prose path, and this derives both
  *    halves of that from the workflow and the tree rather than restating them.
- * 2. `ci-ok` is only as complete as its `needs:` list. A job added to the
+ * 2. A gate that *fails* must run the suites it gates, not skip them. GitHub
+ *    reports a job skipped by its own `if` — or skipped because a job it
+ *    `needs` failed — as Success to branch protection, so a `code-changed`
+ *    that died on a transient checkout/fetch error would, under the obvious
+ *    `== 'true'`, hand a code pull request a green merge button with no
+ *    Playwright or native-addon job having run. Every gated job must read
+ *    `!= 'false'` behind `!cancelled()`, and a copy-pasted `== 'true'` on the
+ *    next one has to fail here.
+ * 3. `ci-ok` is only as complete as its `needs:` list. A job added to the
  *    workflow and forgotten there stops gating merges the moment branch
  *    protection names `ci-ok` alone.
  */
@@ -224,6 +232,47 @@ describe('the test job', () => {
     // A `test` job narrowed to named files would drop the guards out of CI
     // just as effectively as the gate would.
     expect(jobs().get('test')).toContain('run: npm run test:coverage');
+  });
+});
+
+describe('the gate jobs', () => {
+  /** Jobs whose `if:` reads a gate job's `outputs`, with that condition. */
+  const gatedJobs = () =>
+    [...jobs()]
+      .map(([name, block]) => [name, (block.match(/^ {4}if:[ \t]*(.*)$/m) || [])[1] || ''])
+      .filter(([, condition]) => /needs\.[A-Za-z0-9_-]+\.outputs\./.test(condition));
+
+  it.each(['code-changed', 'renderer-changed'])('%s has consumers to protect', (gate) => {
+    expect(gatedJobs().filter(([, c]) => c.includes(`needs.${gate}.outputs.`))).not.toEqual([]);
+  });
+
+  // The failure message to read here: `== 'true'` skips on a gate that never
+  // concluded, and a skipped job reports Success to branch protection — so a
+  // transient failure of a five-minute filter job is enough to make an
+  // untested code change mergeable. Fail open on anything but a positive
+  // "prose only".
+  it('fail open on a gate that did not conclude, and only then', () => {
+    expect(
+      gatedJobs().map(([name, condition]) => [
+        name,
+        /^\$\{\{ !cancelled\(\) && needs\.[A-Za-z0-9_-]+\.outputs\.[A-Za-z0-9_-]+ != 'false' \}\}$/.test(
+          condition
+        ),
+      ])
+    ).toEqual(gatedJobs().map(([name]) => [name, true]));
+  });
+
+  it('never gate on a positive == \'true\', which skips a failed gate', () => {
+    expect(gatedJobs().filter(([, condition]) => /==\s*'true'/.test(condition))).toEqual([]);
+  });
+
+  it('are themselves ungated, so nothing can skip the gate itself', () => {
+    for (const gate of ['code-changed', 'renderer-changed']) {
+      const block = jobs().get(gate);
+      expect(block).toBeTruthy();
+      expect(needsOf(block)).toEqual([]);
+      expect(block).not.toMatch(/^ {4}if:/m);
+    }
   });
 });
 
