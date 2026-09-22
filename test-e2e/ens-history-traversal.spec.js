@@ -501,3 +501,54 @@ test('a traversal onto about:blank cannot raise the interstitial of the entry it
   await expect(window.locator('[data-test="address-input"]')).not.toHaveValue('traversal.eth');
   await window.screenshot({ path: testInfo.outputPath('8-blank-traversal-not-hijacked.png') });
 });
+
+test('a refreshed verdict for a transport the entry did not ask for gets no badge', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // `loadTarget` refuses an `ok` result whose transport contradicts the scheme
+  // the entry asserts — a `bzz://name.eth/` load must resolve to a Swarm
+  // contenthash — and never writes a badge over content it refused. The
+  // traversal refresh has to reach the same verdict: the restored entry's
+  // bytes are whatever the handler served for the *old* record, so a fresh
+  // "verified" for a different transport says nothing about what is on
+  // screen. Before the fix it painted the green verified shield anyway.
+  await harness.setEnsFixture('traversal.eth', {
+    type: 'ok',
+    protocol: 'bzz',
+    decoded: 'b'.repeat(64),
+    uri: `bzz://${'b'.repeat(64)}`,
+    trust: { level: 'user-configured', method: 'direct-rpc', agreed: ['rpc.mine.test'] },
+  });
+  await harness.setContentFixture('bzz://traversal.eth/', {
+    body: '<html><body><h1>traversal.eth over Swarm</h1></body></html>',
+  });
+  const shield = window.locator('#trust-shield');
+
+  await navigateTo(window, 'bzz://traversal.eth/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^bzz:\/\/traversal\.eth/);
+  await expect(shield).toHaveAttribute('data-trust', 'user-configured');
+
+  await navigateTo(window, 'https://example.com/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/example\.com/);
+
+  // The contenthash has since moved to IPFS — and the new answer is verified,
+  // so the only thing keeping the badge off is the transport check itself.
+  await harness.setEnsFixture('traversal.eth', VERIFIED_AFTER_SETTINGS_CHANGE);
+
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^bzz:\/\/traversal\.eth/);
+  // The shield goes quiet rather than vouching for the Swarm bytes on screen
+  // with a verdict about an IPFS contenthash…
+  await expect(shield).toBeHidden({ timeout: 15_000 });
+  // …and the restored entry itself stays put, with its forward history.
+  expect(await webviewUrl(window)).toMatch(/^bzz:\/\/traversal\.eth/);
+  await expect(window.locator('#forward-btn')).toBeEnabled();
+  await window.screenshot({ path: testInfo.outputPath('9-transport-mismatch-no-badge.png') });
+});

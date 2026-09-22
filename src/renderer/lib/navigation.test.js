@@ -4487,8 +4487,11 @@ describe('navigation', () => {
       // types something else. The traversal is superseded, so the commit
       // that eventually lands belongs to the new navigation and must not be
       // re-verified as a restored entry. Same clear bounds the mark a
-      // subframe-only restored entry leaves standing, where no main-frame
-      // commit ever follows to consume it.
+      // subframe-only or same-document restored entry leaves standing, where
+      // no cross-document commit ever follows to consume it — including when
+      // the navigation is one the *page* started, since the main process
+      // replays a page-driven hop to a dweb scheme through `navigate-to-url`
+      // and into this same function (pinned in tabs-history-traversal.test.js).
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
       const { consumeHistoryTraversal } = await import('./history-traversal.js');
@@ -4560,9 +4563,19 @@ describe('navigation', () => {
       expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
     });
 
-    test('a legacy ens:// entry and a bare committed name are both ENS-backed', async () => {
-      // The display forms issue #86 enumerates, minus the two covered above.
-      for (const display of ['ens://vitalik.eth/', 'vitalik.eth/about']) {
+    test('a bare committed name is ENS-backed, and the legacy ens:// form parses', async () => {
+      // `vitalik.eth/about` is the third display form a dweb load actually
+      // commits, alongside the `bzz://`/`ipfs://` ones covered above.
+      //
+      // `ens://vitalik.eth/` rides along as a parser-level case only: that
+      // display is emitted for a raw-IPNS-key contenthash, and the URL such
+      // a load commits is `ipns://<key>/…`, which `parseEnsInput` declines
+      // because the host is the key rather than the name. So it cannot reach
+      // the refresh from a traversal today — reload keys on the same field
+      // and has the same reach — and this leg only pins that the branch
+      // behaves if a committed `ens://` form ever appears. See the reach note
+      // above `refreshNameTrustAfterTraversal`.
+      for (const display of ['vitalik.eth/about', 'ens://vitalik.eth/']) {
         const ctx = await loadNavigationModule();
         installEnsParser(ctx);
         await ctx.mod.initNavigation();
@@ -4669,6 +4682,83 @@ describe('navigation', () => {
 
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
       expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('unverified');
+    });
+
+    test('an ok result loadTarget would refuse on transport gets no badge', async () => {
+      // `loadTarget` never writes a badge over content it declined to load,
+      // and an `ok` result is not automatically loadable. Both rejections it
+      // applies to one are reachable from a traversal, and each leaves the
+      // restored entry showing bytes the *old* contenthash served:
+      //
+      //   * a contenthash on a transport the browser cannot load at all;
+      //   * one whose transport contradicts the scheme the committed entry
+      //     asserts (a `bzz://name.eth/` entry now resolving to IPFS).
+      //
+      // Either way the fresh verdict says nothing about what is on screen, so
+      // the stored trust object is dropped rather than repainted `verified`.
+      const cases = [
+        {
+          label: 'unsupported transport',
+          display: 'bzz://vitalik.eth/',
+          protocol: 'arweave',
+          uri: 'arweave://whatever',
+        },
+        {
+          label: 'transport contradicts the entry scheme',
+          display: 'bzz://vitalik.eth/',
+          protocol: 'ipfs',
+          uri: 'ipfs://bafyfake',
+        },
+      ];
+      for (const { display, protocol, uri } of cases) {
+        const ctx = await loadNavigationModule();
+        installEnsParser(ctx);
+        await ctx.mod.initNavigation();
+
+        ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+        ctx.electronAPI.resolveEns.mockResolvedValue({
+          type: 'ok',
+          name: 'vitalik.eth',
+          protocol,
+          uri,
+          trust: FRESH_TRUST,
+        });
+        ctx.activeRef.tab.webview.loadURL.mockClear();
+
+        commitTraversalTo(ctx, display);
+        await flushMicrotasks();
+
+        expect(ctx.state.ensTrustByName.has('vitalik.eth')).toBe(false);
+        expect(ctx.elements.trustShield.hidden).toBe(true);
+        // Same shape as the other refusals here: the page stays put, the
+        // failure is logged rather than alerted.
+        expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+        expect(global.alert).not.toHaveBeenCalled();
+      }
+    });
+
+    test('an ok result whose transport matches the entry scheme still gets its badge', async () => {
+      // The control for the refusal above: `ipfs://` entry, `ipfs` result.
+      // Without it the refusal test passes just as well against a branch that
+      // refuses everything.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'ipfs',
+        uri: 'ipfs://bafyfake',
+        trust: FRESH_TRUST,
+      });
+
+      commitTraversalTo(ctx, 'ipfs://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(FRESH_TRUST);
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
     });
 
     test('a failed re-resolution drops the stale trust object instead of vouching', async () => {

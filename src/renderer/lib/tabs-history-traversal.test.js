@@ -45,6 +45,7 @@ const loadModules = async () => {
   jest.resetModules();
 
   const createdWebviews = [];
+  const navigateToUrlListeners = [];
   const document = createDocument({
     elementsById: {
       'tab-bar': createElement('div'),
@@ -65,6 +66,9 @@ const loadModules = async () => {
       closeWindow: jest.fn(),
       getWebviewPreloadPath: jest.fn().mockResolvedValue('/tmp/webview-preload.js'),
       getCachedFavicon: jest.fn().mockResolvedValue(''),
+      onNavigateToUrl: (cb) => {
+        navigateToUrlListeners.push(cb);
+      },
     },
     innerWidth: 800,
     innerHeight: 600,
@@ -109,8 +113,19 @@ const loadModules = async () => {
   await tabs.initTabs();
 
   const traversalReports = () => events.filter((e) => e.name === 'history-traversal-committed');
+  // The main process `preventDefault()`s a page-driven navigation to a custom
+  // protocol and replays it through this IPC, which is how such a navigation
+  // reaches `loadTarget` at all.
+  const replayNavigateToUrl = (url) => navigateToUrlListeners.forEach((cb) => cb(url));
 
-  return { tabs, traversal, events, traversalReports, webview: createdWebviews[0] };
+  return {
+    tabs,
+    traversal,
+    events,
+    traversalReports,
+    replayNavigateToUrl,
+    webview: createdWebviews[0],
+  };
 };
 
 describe('back/forward traversal marking (tabs.js + history-traversal.js)', () => {
@@ -152,6 +167,38 @@ describe('back/forward traversal marking (tabs.js + history-traversal.js)', () =
     ctx.webview.dispatch('did-navigate', { url: ENS_URL });
 
     expect(ctx.traversalReports()).toHaveLength(0);
+  });
+
+  test('a page-driven dweb navigation is routed to loadTarget, which clears the mark', async () => {
+    // What bounds the mark a *same-document* traversal leaves standing (no
+    // same-document commit is allowed to consume it — see the
+    // `did-navigate-in-page` handler). The dangerous shape would be a
+    // navigation the page starts, which never calls `loadTarget` itself: but
+    // every page-driven hop to a scheme the refresh can act on
+    // (`bzz:`/`ipfs:`/`ipns:`) is `preventDefault()`ed in the main process
+    // and replayed through `navigate-to-url`, and *that* lands in
+    // `loadTarget`. This test pins the replay hop; that `loadTarget` then
+    // drops the mark is pinned on the real function in navigation.test.js
+    // ("a navigation the user asks for drops a still-pending traversal
+    // mark"). A page-driven hop to http(s) is not replayed and does consume
+    // a standing mark — harmlessly, since `parseEnsInput` declines its
+    // committed URL and the refresh returns having done nothing.
+    const ctx = await loadModules();
+    jest.useFakeTimers();
+    try {
+      const loadTargets = [];
+      ctx.tabs.setLoadTargetHandler((url) => loadTargets.push(url));
+
+      ctx.traversal.goBackInHistory(ctx.webview);
+      ctx.replayNavigateToUrl(ENS_URL);
+
+      expect(loadTargets).toEqual([ENS_URL]);
+    } finally {
+      // The replay arms the phantom-abort suppression timers; run them out so
+      // they don't outlive the test.
+      jest.runOnlyPendingTimers();
+      jest.useRealTimers();
+    }
   });
 
   test('the mark is consumed by the first commit and no later one', async () => {

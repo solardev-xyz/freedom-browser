@@ -786,10 +786,44 @@ const createWebview = (tabId, initialUrl) => {
       // traversal. What that gives up is the refresh on a same-document
       // traversal, which costs nothing real: the document is unchanged, so
       // the restored entry carries the same origin and therefore the same
-      // name, and the verdict already on the shield is that name's. The mark
-      // it leaves standing is bounded exactly as a subframe-only traversal's
-      // is — by `clearHistoryTraversal` on every shell-initiated navigation,
-      // and by the next cross-document commit — see history-traversal.js.
+      // name, and the verdict already on the shield is that name's.
+      //
+      // The mark such a traversal leaves standing is bounded by
+      // `clearHistoryTraversal` on every shell-initiated navigation, and
+      // otherwise by the next cross-document commit, which consumes it. That
+      // second bound means a commit the user never asked to be a traversal
+      // can be reported as one — but not one the refresh acts on, and the
+      // reason is worth writing down because it lives in another process:
+      //
+      //   * to reach the refresh at all, the committed URL has to parse as a
+      //     name, which means one of the dweb schemes (`bzz:`/`ipfs:`/
+      //     `ipns:`). Every page-driven navigation to one of those is
+      //     `preventDefault()`ed in the main process (`will-navigate` in
+      //     webcontents-setup.js) and re-routed through `navigate-to-url` →
+      //     `loadTarget`, which clears the mark before anything commits;
+      //   * a page-driven navigation to http(s) is *not* intercepted, so it
+      //     does consume a stale mark and is reported — and then
+      //     `parseEnsInput` declines its `https://…` URL and the refresh
+      //     returns having done nothing.
+      //
+      // Probed rather than reasoned (2026-09-22, harness): from an
+      // `ipfs://name.eth/` page, an in-page `pushState` hop then Back — which
+      // leaves the mark standing by design — followed by a page-driven
+      // `location.assign()` to `ipfs://name.eth/after` and, separately, to
+      // `https://example.com/after`. Neither produced a single "History
+      // traversal re-verifying" line; the dweb hop went through `loadTarget`,
+      // the http hop parsed as nothing. A control without the Back behaved
+      // identically. So this is a real bound, not a silent gap — but it rests
+      // on that main-process intercept: widen the refresh past committed
+      // display URLs, or drop a scheme from that list, and the stale mark
+      // becomes reachable.
+      //
+      // Narrowing it further is not available to the embedder anyway: nothing
+      // on a same-document commit, on its `did-start-navigation`, or in the
+      // session-history position separates a traversal's own same-document
+      // commit from the page's own (the probe above), so "the traversal
+      // already happened" is not knowable at the point the mark would have to
+      // be dropped. See history-traversal.js.
     },
     'page-favicon-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);

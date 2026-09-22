@@ -91,6 +91,12 @@ export const consumeHistoryTraversal = (webview) => {
  *     `consumeHistoryTraversal`), and it would otherwise stand until some
  *     later, unrelated cross-document commit was taken for the traversal.
  *
+ * A cross-document navigation the *page* starts (a form submit,
+ * `location.assign()`, a meta refresh) does not call this, so it consumes a
+ * mark left standing rather than clearing it — but it cannot reach the
+ * refresh with one: see the `did-navigate-in-page` handler in tabs.js for the
+ * probe, and for what that conclusion rests on.
+ *
  * @param {object|null} webview - guest `<webview>` element
  * @returns {void}
  */

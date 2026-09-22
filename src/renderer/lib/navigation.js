@@ -2048,6 +2048,40 @@ export const loadHomePage = () => {
 // the restored page itself stays put, and the failure is logged rather than
 // alerted — a modal over a page the user navigated *back* to is noise, not
 // information.
+//
+// What this reaches, exactly. Keying on `committedDisplayUrl` means keying on
+// a URL Chromium actually committed (`webview.getURL()`), so the forms that
+// arrive here are the ones a dweb load commits: `bzz://name.eth/…`,
+// `ipfs://name.eth/…`, `ipns://name.eth/…` and the bare `name.eth/…` display,
+// for ENS as for WNS/GNS/Tezos names that resolve to a dweb contenthash. Two
+// forms `parseEnsInput` accepts are *not* reachable from a traversal, and are
+// covered only defensively:
+//
+//   * the legacy `ens://name.eth/…` display, which `buildEnsDisplayUri` emits
+//     for a raw-IPNS-key contenthash — the URL that commits for it is
+//     `ipns://<key>/…` (`ipfsLoadUrl = targetUri`), which `parseEnsInput`
+//     declines because the host is the key, not the name;
+//   * a Tezos name resolving to an external `http(s)` website, which commits
+//     that site's own `https://…` URL.
+//
+// Reload keys on the same field and has the same reach, so this is parity
+// rather than a gap opened here; closing it for both would mean keying on
+// `state.ensResolutionMetadata` (which `storeEnsResolutionMetadata` already
+// populates with the target-URI → name mapping) instead of on the committed
+// display, and is deliberately out of scope for #86.
+//
+// One consequence of appending the interstitial rather than replacing the
+// entry: the history becomes `[…, name.eth, interstitial]`, so the
+// interstitial's own "← Go back" button (`window.history.back()`) restores
+// `name.eth` — the blocked name's bytes — rather than the page before it.
+// That is the same outcome the `leftThisNamesInterstitial` guard above
+// deliberately chooses for the toolbar Back, and the restored entry carries
+// the refreshed `conflict`/`unverified` badge, so the verdict is still on
+// screen; but the button's copy reads like it leaves the name behind. Left as
+// is rather than special-cased to `goToOffset(-2)`, which would be wrong for
+// the far more common shape the same button serves — a block raised by
+// `loadTarget`, where the blocked name never committed and one step back is
+// already the page before it.
 const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
   const navState = getTabById(tabId)?.navigationState;
   if (!navState) return;
@@ -2128,14 +2162,49 @@ const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
         return;
       }
 
+      // An `ok` result is not automatically loadable. `loadTarget` applies
+      // three further rejections to one, and on each of them it aborts
+      // without writing a badge — it never vouches for content it refused to
+      // load. The refresh has to reach the same verdict, or a restored entry
+      // whose contenthash moved since its first load gets a `verified` shield
+      // over bytes `loadTarget` would have turned away: the entry's own
+      // scheme is an assertion about the transport (`bzz://name.eth/` says
+      // Swarm), and its bytes are whatever the handler served for the *old*
+      // record. Treated like `type !== 'ok'`: the stored trust object is
+      // dropped, the shield goes quiet, and the failure is logged — the
+      // restored page itself stays put, as everywhere else here.
+      const isExternalTezosWebsite =
+        ens.system === 'tezos' && (result.protocol === 'http' || result.protocol === 'https');
+      const rejection = isExternalTezosWebsite
+        ? // An external Tezos website satisfies no dweb transport assertion.
+          // Defensive only: such a name commits its `https://…` site as the
+          // URL, which `parseEnsInput` declines, so this branch is not
+          // reachable from a traversal today (see the reach note above).
+          ens.assertedTransport
+          ? `asserted ${ens.assertedTransport}, got ${result.protocol}`
+          : null
+        : // A transport the browser cannot load at all, or one that
+          // contradicts the scheme the committed entry asserts.
+          !isSupportedEnsTransport(result.protocol)
+          ? `unsupported protocol ${result.protocol}`
+          : ens.assertedTransport && ens.assertedTransport !== result.protocol
+            ? `asserted ${ens.assertedTransport}, got ${result.protocol}`
+            : null;
+      if (rejection) {
+        state.ensTrustByName.delete(ens.name);
+        repaintBadge();
+        pushDebug(
+          `${systemLabel} traversal refresh refused for ${ens.name}: ${rejection} — no badge over content loadTarget would not have loaded`
+        );
+        return;
+      }
+
       storeNameResolutionTrust(ens.name, result);
       repaintBadge();
 
       if (result.trust?.level === 'unverified' && state.blockUnverifiedEns) {
         // Same target-URI derivation as `loadTarget`, so the interstitial's
         // "continue" button lands on the identical URL either path raised it.
-        const isExternalTezosWebsite =
-          ens.system === 'tezos' && (result.protocol === 'http' || result.protocol === 'https');
         const targetUri = isExternalTezosWebsite
           ? result.redirect
             ? result.uri
