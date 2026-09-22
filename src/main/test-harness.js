@@ -214,6 +214,17 @@ function replaceHandler(channel, handler) {
   ipcMain.handle(channel, handler);
 }
 
+// A name fixture may carry `delayMs`, exactly as a content fixture does, so a
+// spec can act while a resolution is genuinely still in flight — pressing Back
+// again, entering another URL — which is the only way to observe what the
+// renderer does with a verdict that settles after the user moved on. The key
+// is stripped from the answer so it can never read as part of a result.
+const answerEnsFixture = async (fixture) => {
+  const { delayMs, ...result } = fixture || {};
+  await holdOpen(delayMs);
+  return result;
+};
+
 function overrideEnsIpc() {
   replaceHandler(IPC.ENS_RESOLVE, async (_event, payload = {}) => {
     const name = (payload?.name || '').trim().toLowerCase();
@@ -221,7 +232,7 @@ function overrideEnsIpc() {
       return { type: 'not_found', name: '', reason: 'EMPTY' };
     }
     if (ensFixtures.has(name)) {
-      return ensFixtures.get(name);
+      return answerEnsFixture(ensFixtures.get(name));
     }
     return { type: 'not_found', name, reason: 'NO_FIXTURE' };
   });
@@ -248,7 +259,7 @@ function overrideEnsIpc() {
       return { type: 'not_found', reason: 'EMPTY', system: 'tezos' };
     }
     if (ensFixtures.has(name)) {
-      return ensFixtures.get(name);
+      return answerEnsFixture(ensFixtures.get(name));
     }
     return { type: 'not_found', reason: 'NO_FIXTURE', system: 'tezos' };
   });

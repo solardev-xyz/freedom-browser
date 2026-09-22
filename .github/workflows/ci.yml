@@ -791,6 +791,10 @@ jobs:
   # the scheme/gateway-form rewrites the name parser has to decline, plus the
   # typed-draft rules from #305/#310/#313/#314. Neither spec was in any job's
   # curated list, so a regression in either shipped green — the #319 lesson.
+  # `ens-history-traversal.spec.js` joins them for the same reason: it drives
+  # the toolbar's Back/Forward through the real webview session history and
+  # asserts the trust badge re-verifies for the restored entry (#86), which no
+  # unit-level dispatch can exercise.
   e2e-address-bar-ens:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -820,7 +824,8 @@ jobs:
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/address-bar.spec.js \
-            test-e2e/ensv2.spec.js
+            test-e2e/ensv2.spec.js \
+            test-e2e/ens-history-traversal.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

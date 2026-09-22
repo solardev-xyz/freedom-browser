@@ -28,6 +28,7 @@
     "test:e2e:onboarding": "playwright test --project=live test-e2e/live/onboarding-identity.spec.js",
     "test:e2e:tor": "FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/tor-onion.spec.js",
     "lint": "eslint .",
+    "changelog:assemble": "node scripts/assemble-changelog.js",
     "styles:inventory": "node scripts/update-renderer-color-literals.js",
     "test:e2e:theme-parity": "playwright test --project=harness test-e2e/theme-parity.spec.js",
     "test:e2e:theme-parity:update": "THEME_CONTRAST_UPDATE=1 playwright test --project=harness test-e2e/theme-parity.spec.js",
