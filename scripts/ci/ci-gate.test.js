@@ -1,8 +1,10 @@
 /**
  * Guard for the aggregate mechanisms in `.github/workflows/ci.yml`: the
  * `code-changed` and `renderer-changed` gates that decide which suites a
- * prose-only pull request skips, and the `ci-ok` job branch protection
- * requires in place of the individual job contexts.
+ * prose-only pull request skips, and the `ci-ok` job that is meant to
+ * replace those individual job contexts in branch protection. That switch is
+ * a settings change an admin still has to make: as of 2026-09-22 protection
+ * names the ten job contexts, and not `ci-ok`.
  *
  * Both are "never under-test" claims, and both fail silently when they are
  * wrong — a skipped job and a job nobody waits on are indistinguishable from a
@@ -329,8 +331,9 @@ describe('the triggers', () => {
     // saw. §4 gates the pre-tag "CI is green" check on these runs off the
     // Actions tab precisely because §8 makes the pull request into `main`
     // optional, so there is often no `gh pr checks` to ask instead.
-    // release/0.8.0 and release/0.8.5 each took dozens of them. Without them
-    // `release.yml`, which does not gate on CI, publishes the tagged
+    // Counted 2026-09-22 over the runs still in Actions retention,
+    // release/0.8.5 took 13 of these runs and release/0.8.0 took 8. Without
+    // them `release.yml`, which does not gate on CI, publishes the tagged
     // pre-release to testers with no CI signal for that tree at all.
     expect(
       ['main', 'release/0.9.0', 'release/cut-0.8.5', 'hotfix/0.8.5.1'].filter((ref) => !covers(ref))

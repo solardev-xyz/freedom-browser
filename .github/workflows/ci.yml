@@ -21,10 +21,11 @@ on:
     # check on exactly these runs — "every push to the release branch runs the
     # full CI matrix", read off the Actions tab, since §8 makes the pull
     # request into `main` optional and there is often no `gh pr checks` to ask.
-    # release/0.8.0 and release/0.8.5 each took dozens of them. Dropping them
-    # would leave `release.yml` — which does not gate on CI — publishing a
-    # tagged pre-release to testers while the first CI signal for that tree
-    # was still running.
+    # Counted 2026-09-22 over the runs still in Actions retention,
+    # release/0.8.5 took 13 of these runs and release/0.8.0 took 8. Dropping
+    # them would leave `release.yml` — which does not gate on CI —
+    # publishing a tagged pre-release to testers while the first CI signal
+    # for that tree was still running.
     #
     # `scripts/ci/ci-gate.test.js` pins this by matching real branch names
     # against the list rather than the list's text, so a rename of the release
