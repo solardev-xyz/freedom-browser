@@ -238,19 +238,72 @@ describe('the test job', () => {
 });
 
 describe('the triggers', () => {
+  /**
+   * The `branches:` filter under `on: push:`, as the patterns it lists.
+   *
+   * Read as patterns and matched against real branch names below rather than
+   * pinned as text: the list is a claim about which branches keep their push
+   * run, and `branches: [main]` looks just as correct as the right answer
+   * until you ask it about `release/0.9.0`.
+   */
+  const pushBranches = () => {
+    const on = withoutComments.match(/^on:\n([\s\S]*?)^[a-z]/m);
+    expect(on).toBeTruthy();
+    const push = on[1].match(/^ {2}push:\n((?: {4,}\S.*\n)*)/m);
+    expect(push).toBeTruthy();
+    const inline = push[1].match(/^ {4}branches: \[(.*)\]$/m);
+    const block = push[1].match(/^ {4}branches:[ \t]*\n((?: {6}- .*\n)+)/m);
+    const listed = inline
+      ? inline[1].split(',')
+      : (block ? block[1].split('\n') : []).map((line) => line.replace(/^ *- */, ''));
+    const patterns = listed
+      .map((entry) => entry.trim().replace(/^['"]|['"]$/g, ''))
+      .filter(Boolean);
+    // An unfiltered `push:` (no `branches:` at all) is the state this filter
+    // replaced, and would read as "nothing listed" rather than a failure.
+    expect(patterns).not.toEqual([]);
+    return patterns;
+  };
+
+  /** GitHub's branch-filter glob: `*` stops at a `/`, `**` does not. */
+  const matches = (pattern, ref) => {
+    const literal = (text) => text.replace(/[.+^${}()|[\]\\?]/g, '\\$&');
+    const source = pattern
+      .split('**')
+      .map((between) => between.split('*').map(literal).join('[^/]*'))
+      .join('.*');
+    return new RegExp(`^${source}$`).test(ref);
+  };
+
+  const covers = (ref) => pushBranches().some((pattern) => matches(pattern, ref));
+
   it('do not run a push that a pull request already covers', () => {
     // A branch push and the `pull_request` run for the same head are two runs
     // of this workflow under two different `github.ref`s, so `concurrency`
     // does not collapse them — and both gates short-circuit to true on a
     // non-pull-request event. An unfiltered `push:` therefore paid the full
-    // 10-14 minutes on every same-repo branch push next to the gated PR run,
-    // which is the whole saving handed back. `main` and the release tags have
-    // no pull request of their own and keep their run.
-    const on = withoutComments.match(/^on:\n([\s\S]*?)^[a-z]/m);
-    expect(on).toBeTruthy();
-    const push = on[1].match(/^ {2}push:\n((?: {4}\S.*\n)*)/m);
-    expect(push).toBeTruthy();
-    expect(push[1]).toMatch(/^ {4}branches: \[main\]$/m);
+    // 10-14 minutes on every same-repo feature-branch push next to the gated
+    // PR run, which is the whole saving handed back.
+    expect(
+      ['chore/ci-gate-ci-ok', 'alan/backdrop-closes-trust-popover', 'fix/kebab'].filter(covers)
+    ).toEqual([]);
+  });
+
+  it('still run the branches the release process reads CI from', () => {
+    // The other half, and the one `branches: [main]` got wrong. A release or
+    // hotfix branch has no pull request of its own: `release-process.md` §1
+    // puts every `-rc.N` version bump straight onto it, §8 expects same-cycle
+    // `fix(build): …` commits there, and a fix that does arrive as a pull
+    // request still lands as a merge commit whose tree no `pull_request` run
+    // saw. §4 gates the pre-tag "CI is green" check on these runs off the
+    // Actions tab precisely because §8 makes the pull request into `main`
+    // optional, so there is often no `gh pr checks` to ask instead.
+    // release/0.8.0 and release/0.8.5 each took dozens of them. Without them
+    // `release.yml`, which does not gate on CI, publishes the tagged
+    // pre-release to testers with no CI signal for that tree at all.
+    expect(
+      ['main', 'release/0.9.0', 'release/cut-0.8.5', 'hotfix/0.8.5.1'].filter((ref) => !covers(ref))
+    ).toEqual([]);
   });
 });
 

@@ -7,10 +7,32 @@ on:
     # (`refs/heads/<branch>` against `refs/pull/N/merge`), so the `concurrency`
     # group below does not collapse them — and both gate jobs short-circuit to
     # true on anything that is not a pull request. An unfiltered `push:`
-    # therefore ran the whole matrix on every branch push alongside the PR run,
-    # gate or no gate. A branch push is covered by its pull request; `main` and
-    # the release tags have no pull request of their own, so they keep theirs.
-    branches: [main]
+    # therefore ran the whole matrix on every *feature* branch push alongside
+    # the pull request run, gate or no gate, and that duplicate is what this
+    # filter drops.
+    #
+    # What it must not drop is a ref that takes commits with no pull request
+    # of its own. `main` and the release tags are the obvious two.
+    # `release/**` and `hotfix/**` are the third: `release-process.md` §1 puts
+    # each `npm version <x>-rc.N` bump straight onto the release branch and §8
+    # expects same-cycle `fix(build): …` commits there, and even the fixes that
+    # do arrive as pull requests (§0) land as a merge commit whose tree no
+    # `pull_request` run ever saw. §4 then gates the pre-tag "CI is green"
+    # check on exactly these runs — "every push to the release branch runs the
+    # full CI matrix", read off the Actions tab, since §8 makes the pull
+    # request into `main` optional and there is often no `gh pr checks` to ask.
+    # release/0.8.0 and release/0.8.5 each took dozens of them. Dropping them
+    # would leave `release.yml` — which does not gate on CI — publishing a
+    # tagged pre-release to testers while the first CI signal for that tree
+    # was still running.
+    #
+    # `scripts/ci/ci-gate.test.js` pins this by matching real branch names
+    # against the list rather than the list's text, so a rename of the release
+    # convention has to update both.
+    branches:
+      - main
+      - 'release/**'
+      - 'hotfix/**'
     tags: ['v*']
   pull_request:
   workflow_dispatch:
