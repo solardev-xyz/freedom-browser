@@ -47,6 +47,7 @@ const {
   resolveContentName,
 } = require('../content-name-resolver');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
+const { rewriteGatewayLocation } = require('../lib/gateway-location');
 const {
   runWithPrivateLogContext,
   redactForLog,
@@ -378,6 +379,46 @@ async function fetchWithRetry(
   return result.response;
 }
 
+// Bee writes its redirects in the gateway's own URL space (`Location:
+// /bzz/<ref>/blog/`, a 308 from `pkg/api/bzz.go`'s directory canonicalisation),
+// but Chromium resolves them against the `bzz://` request URL it issued — it
+// never saw the gateway origin. Left alone, that redirect for
+// `bzz://name.eth/blog` commits
+// `bzz://name.eth/bzz/<resolved-hash>/blog/`: a doubled path that 404s and
+// publishes the resolved manifest hash in the address bar, `window.location`
+// and the storage origin, which is exactly what resolving the name in this
+// process is meant to avoid (see #95). `rewriteGatewayLocation` re-expresses a
+// same-origin, same-directory-or-below target as a relative reference, which
+// resolves identically in both spaces — so `bzz://name.eth/blog` canonicalises
+// to `bzz://name.eth/blog/`, and a hash-host `bzz://<ref>/blog` (where the hash
+// form IS the canonical URL) to `bzz://<ref>/blog/`.
+//
+// Following the redirect here instead (`redirect: 'follow'`) is NOT equivalent:
+// Chromium would stay on the slash-less URL, so every relative URL inside the
+// directory's manifest would resolve one level too high.
+//
+// Only 3xx carries a Location Chromium acts on, and a redirect's body is never
+// rendered, so the upstream body is dropped (and cancelled, freeing the socket)
+// rather than re-streamed with headers that no longer describe it.
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+function canonicalizeRedirect(response, gatewayUrl) {
+  if (!REDIRECT_STATUSES.has(response.status)) return response;
+  const location = response.headers.get('location');
+  if (!location) return response;
+  const rewritten = rewriteGatewayLocation(location, gatewayUrl);
+  if (!rewritten) return response;
+
+  const headers = new Headers(response.headers);
+  headers.set('location', rewritten);
+  // Describe the empty body we are about to send, not the upstream one.
+  headers.delete('content-length');
+  headers.delete('content-encoding');
+  headers.delete('transfer-encoding');
+  response.body?.cancel().catch(() => {});
+  return new Response(null, { status: response.status, statusText: response.statusText, headers });
+}
+
 /**
  * Core handler, exported for testability. `fetchImpl` defaults to global
  * fetch but tests can inject a stub. `attemptTimeoutMs` is exposed for
@@ -415,12 +456,13 @@ async function handleBzzRequest(
   const body = method === 'GET' || method === 'HEAD' ? undefined : request.body;
 
   try {
-    return await fetchWithRetry(
+    const response = await fetchWithRetry(
       gatewayUrl,
       { method, headers, body, signal: request.signal },
       fetchImpl,
       attemptTimeoutMs
     );
+    return canonicalizeRedirect(response, gatewayUrl);
   } catch (err) {
     const code = err?.cause?.code || err?.code || '';
     const isConnRefused = code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND';
@@ -464,6 +506,7 @@ function registerBzzProtocol(targetSession, { privatePartition = null } = {}) {
 
 module.exports = {
   registerBzzProtocol,
+  canonicalizeRedirect,
   handleBzzRequest,
   buildGatewayUrl,
   sanitizeRequestHeaders,

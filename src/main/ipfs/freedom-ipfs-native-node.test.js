@@ -89,6 +89,15 @@ function createStartedNode(FreedomIpfsNativeNode, onFailure) {
   return node;
 }
 
+// Same as createStartedNode, but with a real (mocked) Worker installed through
+// startDispatcher() so the shutdown handshake can be driven end to end.
+function createDispatcherNode(FreedomIpfsNativeNode, onFailure) {
+  const node = new FreedomIpfsNativeNode({ dataDir: '/tmp/freedom-ipfs-test', onFailure });
+  node.nodeHandle = '1';
+  node.startDispatcher();
+  return node;
+}
+
 describe('FreedomIpfsNativeNode', () => {
   afterEach(() => {
     jest.useRealTimers();
@@ -329,5 +338,138 @@ describe('FreedomIpfsNativeNode', () => {
     await expect(node.request({ path: '/ipfs/next', headers: new Headers() })).rejects.toThrow(
       'Native gateway stopped unexpectedly'
     );
+  });
+
+  // --- dispatcher shutdown (issue #345) -----------------------------------
+  //
+  // The worker exits on its own after acknowledging a stop; terminate() is
+  // the backstop for a wedged worker. These pin the ordering that keeps a
+  // gatewayWaitNextEvent call from ever being in flight while the node handle
+  // is torn down — the race that aborted the process with
+  // `Error::ThrowAsJavaScriptException napi_throw`.
+
+  test('stop() waits for the dispatcher acknowledgement before touching the native gateway', async () => {
+    const binding = createBindingMock();
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const node = createDispatcherNode(FreedomIpfsNativeNode);
+    const worker = node.dispatcher;
+
+    const stopped = node.stop();
+    await Promise.resolve();
+
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: 'stop' });
+    expect(binding.nodeStopGateway).not.toHaveBeenCalled();
+    expect(binding.nodeFree).not.toHaveBeenCalled();
+
+    worker.emit('message', { type: 'stopped' });
+    worker.emit('exit', 0);
+    await stopped;
+
+    expect(worker.terminate).not.toHaveBeenCalled();
+    expect(binding.nodeStopGateway).toHaveBeenCalledWith('1');
+    expect(binding.nodeFree).toHaveBeenCalledWith('1');
+    expect(node.nodeHandle).toBe('0');
+  });
+
+  test('stop() resolves on the acknowledgement without waiting out the terminate budget', async () => {
+    jest.useFakeTimers();
+    const binding = createBindingMock();
+    const { FreedomIpfsNativeNode, DISPATCHER_EXIT_GRACE_MS } = loadModule(binding);
+    const node = createDispatcherNode(FreedomIpfsNativeNode);
+    const worker = node.dispatcher;
+
+    const stopped = node.stop();
+    await Promise.resolve();
+    worker.emit('message', { type: 'stopped' });
+
+    // Exit lands inside the grace: nothing to terminate, and the stop settles
+    // far short of DISPATCHER_STOP_TIMEOUT_MS.
+    jest.advanceTimersByTime(DISPATCHER_EXIT_GRACE_MS - 1);
+    worker.emit('exit', 0);
+    await stopped;
+
+    expect(worker.terminate).not.toHaveBeenCalled();
+    expect(binding.nodeFree).toHaveBeenCalledWith('1');
+  });
+
+  test('stop() terminates an acknowledged dispatcher that never exits', async () => {
+    jest.useFakeTimers();
+    const binding = createBindingMock();
+    const { FreedomIpfsNativeNode, DISPATCHER_EXIT_GRACE_MS } = loadModule(binding);
+    const log = require('../logger');
+    const node = createDispatcherNode(FreedomIpfsNativeNode);
+    const worker = node.dispatcher;
+
+    const stopped = node.stop();
+    await Promise.resolve();
+    worker.emit('message', { type: 'stopped' });
+
+    // The thread acknowledged but is still ref'ing its loop. Resolving on the
+    // grace alone would drop the `exit` listener and leak it silently.
+    jest.advanceTimersByTime(DISPATCHER_EXIT_GRACE_MS);
+    await stopped;
+
+    expect(worker.terminate).toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      '[IPFS] native dispatcher acknowledged stop but did not exit; terminating'
+    );
+    expect(binding.nodeFree).toHaveBeenCalledWith('1');
+  });
+
+  test('stop() falls back to terminate() when the dispatcher never acknowledges', async () => {
+    jest.useFakeTimers();
+    const binding = createBindingMock();
+    const { FreedomIpfsNativeNode, DISPATCHER_STOP_TIMEOUT_MS } = loadModule(binding);
+    const node = createDispatcherNode(FreedomIpfsNativeNode);
+    const worker = node.dispatcher;
+
+    const stopped = node.stop();
+    await Promise.resolve();
+    expect(binding.nodeStopGateway).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(DISPATCHER_STOP_TIMEOUT_MS);
+    await stopped;
+
+    expect(worker.terminate).toHaveBeenCalled();
+    expect(binding.nodeFree).toHaveBeenCalledWith('1');
+  });
+
+  test('a late exit from a stopped dispatcher does not fail the one that replaced it', async () => {
+    jest.useFakeTimers();
+    const binding = createBindingMock();
+    const onFailure = jest.fn();
+    const { FreedomIpfsNativeNode, DISPATCHER_EXIT_GRACE_MS } = loadModule(binding);
+    const node = createDispatcherNode(FreedomIpfsNativeNode, onFailure);
+    const first = node.dispatcher;
+
+    const stopped = node.stop();
+    await Promise.resolve();
+    first.emit('message', { type: 'stopped' });
+    jest.advanceTimersByTime(DISPATCHER_EXIT_GRACE_MS);
+    await stopped;
+
+    node.nodeHandle = '1';
+    node.startDispatcher();
+    const second = node.dispatcher;
+    expect(second).not.toBe(first);
+
+    first.emit('exit', 0);
+
+    expect(node.dispatcher).toBe(second);
+    expect(node.isHealthy()).toBe(true);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  test('an exit from the live dispatcher still marks the node failed', async () => {
+    const binding = createBindingMock();
+    const onFailure = jest.fn();
+    const { FreedomIpfsNativeNode } = loadModule(binding);
+    const node = createDispatcherNode(FreedomIpfsNativeNode, onFailure);
+
+    node.dispatcher.emit('exit', 1);
+
+    expect(node.dispatcher).toBeNull();
+    expect(onFailure).toHaveBeenCalledWith('Native event dispatcher exited with code 1', node);
+    expect(node.isHealthy()).toBe(false);
   });
 });

@@ -323,6 +323,30 @@ describe('page-context-menu', () => {
     expect(pageContextMenu.focus).toHaveBeenCalledTimes(1);
   });
 
+  // #67: every other menu-raising module chains index.js's `onAnyMenuOpening`
+  // so the address bar's three no-backdrop surfaces (the trust popover, the
+  // permission indicator's popover and the GitHub-bridge panel) cannot end up
+  // stacked beside a menu. This one was raised from inside the guest and was
+  // not on that chain, so a right-click in the page left them hanging over it.
+  test('fires onOpening before the menu is shown', async () => {
+    const { mod, pageContextMenu } = await loadPageContextMenuModule();
+    const onOpening = jest.fn(() => {
+      // Before, not after: the surfaces are put away while the menu is still
+      // hidden, so nothing is ever painted stacked.
+      expect(pageContextMenu.classList.contains('hidden')).toBe(true);
+    });
+    await mod.initPageContextMenu({ onOpening });
+
+    mod.showPageContextMenu(10, 20, { pageUrl: 'https://example.com/page' });
+
+    expect(onOpening).toHaveBeenCalledTimes(1);
+    expect(pageContextMenu.classList.contains('hidden')).toBe(false);
+
+    mod.hidePageContextMenu();
+    mod.showPageContextMenu(10, 20, { pageUrl: 'https://example.com/other' });
+    expect(onOpening).toHaveBeenCalledTimes(2);
+  });
+
   test('a menu dismissed inside that frame is not revealed after the fact', async () => {
     const { mod, pageContextMenu } = await loadPageContextMenuModule();
     await mod.initPageContextMenu();

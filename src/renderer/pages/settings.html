@@ -2046,13 +2046,6 @@
       const SECTIONS = navItems.map((i) => i.dataset.target).filter(Boolean);
       const DEFAULT_SECTION = SECTIONS[0] || 'appearance';
 
-      // The section is the part before any `/` sub-route, so a deep link
-      // like #chains/1 (a chain detail) still resolves to `chains`.
-      const resolveSection = (hash) => {
-        const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
-        return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
-      };
-
       const showSection = (section) => {
         for (const id of SECTIONS) {
           const el = document.getElementById(id);
@@ -2078,22 +2071,39 @@
         });
       });
 
-      window.addEventListener('hashchange', () => {
-        showSection(resolveSection(location.hash));
-      });
+      /* settings-hash routing: start */
+      // The section is the part before any `/` sub-route, so a deep link
+      // like #chains/1 (a chain detail) still resolves to `chains`.
+      const resolveSection = (hash) => {
+        const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
+        return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
+      };
 
-      // On first load, normalize the URL so freedom://settings becomes
-      // freedom://settings/appearance in the address bar. history.replaceState
-      // keeps this out of the back/forward stack.
-      const initialSection = resolveSection(location.hash);
-      const initialRawHash = location.hash.replace(/^#/, '').toLowerCase();
-      // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
-      const initialHashIsCanonical =
-        initialRawHash === initialSection || initialRawHash.startsWith(initialSection + '/');
-      if (!initialHashIsCanonical) {
-        history.replaceState(null, '', `#${initialSection}`);
-      }
-      showSection(initialSection);
+      // Normalize the URL onto the section that is actually on screen, so
+      // freedom://settings becomes freedom://settings/appearance and a hash
+      // naming no section at all — a stale bookmark, a typo, a link from an
+      // older build — stops promising one. history.replaceState keeps the
+      // rewrite out of the back/forward stack.
+      const canonicalizeHash = (section) => {
+        const rawHash = location.hash.replace(/^#/, '').toLowerCase();
+        // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
+        if (rawHash === section || rawHash.startsWith(section + '/')) return;
+        history.replaceState(null, '', `#${section}`);
+      };
+
+      // One path for every arrival at a hash — first load, a nav click, a
+      // back/forward, an outer-chrome deep link opened in an existing
+      // Settings tab (#280) — so no navigation can leave a hash the page
+      // resolved somewhere else standing in the address bar.
+      const applyHashSection = () => {
+        const section = resolveSection(location.hash);
+        canonicalizeHash(section);
+        showSection(section);
+      };
+      /* settings-hash routing: end */
+
+      window.addEventListener('hashchange', applyHashSection);
+      applyHashSection();
 
       // ── Search settings (#281) ──────────────────────────────────────────
       // Chrome has kept a persistent "Search settings" field in its header
@@ -3590,6 +3600,11 @@
         let endpointSaveInFlight = false; // guards against a double-click adding two 'user-<Date.now()>' sources
         let addState = null; // null | { mode: 'search'|'manual', results, picked } — the add-chain flow
 
+        // Shown when a chain-detail deep link names a chain the registry does
+        // not have (#280). Named so the notice can be recognized again and
+        // cleared when the user navigates on.
+        const CHAIN_GONE_STATUS = 'That chain is no longer configured.';
+
         const setStatus = (msg, kind) => {
           if (!statusEl) return;
           statusEl.textContent = msg || '';
@@ -4007,14 +4022,40 @@
             ${isCustom ? cardButton('Remove this chain', 'remove-chain', 'danger') : ''}`;
         };
 
-        const render = () => {
+        // The notice answers one hash and one view: the chain list standing
+        // in for a chain the registry does not have. Every re-render is a
+        // chance for that view to be replaced, so clearing it belongs here
+        // rather than only on `hashchange` — the add-chain form opens on the
+        // same hash, so no `hashchange` fires for it.
+        const clearChainGoneStatus = () => {
+          if (statusEl && statusEl.textContent === CHAIN_GONE_STATUS) setStatus('');
+        };
+
+        // `fresh` marks a render driven by a config just read from the
+        // registry. Only such a render may conclude that a chain named in the
+        // hash is gone: a hash change re-renders off the cached config first,
+        // and that copy can simply predate a chain added in another window.
+        const render = ({ fresh = false } = {}) => {
+          clearChainGoneStatus(); // the branch below re-raises it if it still holds
           if (addState) {
             renderAdd();
             return;
           }
           const cid = openChainId();
-          if (cid && config.networks[cid]) renderDetail(cid);
-          else renderList();
+          if (cid && config.networks[cid]) {
+            renderDetail(cid);
+            return;
+          }
+          if (cid && fresh) {
+            // The chain is not configured — removed here or in another
+            // window, or a typo. Rendering the list under the detail hash
+            // leaves the URL promising a chain nothing on screen names, so
+            // put the URL back on the list and say what happened.
+            // replaceState keeps the dead link out of the back/forward stack.
+            history.replaceState(null, '', '#chains');
+            setStatus(CHAIN_GONE_STATUS, 'error');
+          }
+          renderList();
         };
 
         const reload = async () => {
@@ -4030,7 +4071,7 @@
             }
             config = { networks: res.networks || {}, sources: res.sources || [] };
             myotisStatuses = { 1: ethereumMyotis, 100: gnosisMyotis };
-            render();
+            render({ fresh: true });
           } catch {
             setStatus('Failed to load network configuration', 'error');
           }
@@ -4444,6 +4485,8 @@
           clearTimeout(searchTimer);
           endpointForm = null;
           addState = null;
+          // The "no longer configured" notice is cleared by `render()` below:
+          // the user has navigated past the hash it explains.
           render(); // instant list<->detail swap from cached config
           if (entering) reload(); // then re-sync in case it changed elsewhere
         });

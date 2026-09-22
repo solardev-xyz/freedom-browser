@@ -23,6 +23,7 @@ const {
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
 const { gatewayFetch, isLoopbackHostname, isOnionHostname } = require('./ipfs/gateway-transport');
 const { redactForLog } = require('./private/private-log-context');
+const { rewriteGatewayLocation } = require('./lib/gateway-location');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 
 const STATUS = {
@@ -825,60 +826,8 @@ function proxiedResponseHeaders(upstreamHeaders) {
   return headers;
 }
 
-// A gateway redirect is written in the gateway's own URL space, but Chromium
-// resolves it against the `ipfs://` / `ipns://` request URL — it never saw the
-// gateway origin. Kubo's canonical directory redirect is the everyday case:
-// `GET /ipfs/<cid>/docs` answers `301 Location: /ipfs/<cid>/docs/` (measured
-// against a default-config Kubo 0.42.0 on 2026-09-14), which resolved against
-// `ipfs://<cid>/docs` yields `ipfs://<cid>/ipfs/<cid>/docs/` — a doubled path
-// that 404s with the mangled URL left in the address bar. So every directory
-// URL typed, bookmarked or linked without its trailing slash breaks.
-//
-// The gateway path is the `ipfs://` path with a `/<ns>/<ref>` prefix glued in
-// front (see `buildGatewayUrl` in ipfs/ipfs-protocol.js), and the prefix is
-// whatever the host resolved to — a CID, an IPNS key, or an Ethereum name whose
-// contenthash carries its own base path, none of which this layer knows. A
-// *relative* reference computed from the request's gateway path is therefore
-// the one rewrite that resolves identically in both spaces, whatever the prefix
-// is, so a same-directory-or-below target is re-expressed that way. A target
-// that would need to climb out of the request's directory can't be expressed
-// without knowing how deep the prefix goes, so it is passed through untouched —
-// as is any cross-origin Location, which Chromium applies the normal
-// cross-origin rules to (a hostile gateway must not be able to aim the
-// `ipfs://` origin at a loopback service; see the `redirect: 'manual'` note).
-function rewriteGatewayLocation(location, requestUrl) {
-  let requested;
-  let target;
-  try {
-    requested = new URL(requestUrl);
-    target = new URL(location, requested);
-  } catch {
-    return null;
-  }
-  if (target.origin !== requested.origin) return null;
-
-  // Everything up to and including the last `/` of the request path — the
-  // directory a relative reference is resolved against on both sides.
-  const dir = requested.pathname.slice(0, requested.pathname.lastIndexOf('/') + 1);
-  if (!dir || !target.pathname.startsWith(dir)) return null;
-
-  const relative = target.pathname.slice(dir.length);
-  // Always `./`-prefixed, never bare. A bare relative reference whose first
-  // segment contains a `:` is parsed as an absolute URL with that segment as
-  // its *scheme* (RFC 3986 §4.2 / the WHATWG URL parser), and `:` is a legal
-  // UnixFS directory name: `ipfs://<cid>/re:port` → Kubo's
-  // `301 Location: /ipfs/<cid>/re:port/` → bare `re:port/` would be read as
-  // scheme `re:` and fail the navigation instead of opening the directory.
-  // The prefix also keeps a name that starts the relative part with `/` or `//`
-  // (a doubled slash in the gateway path) from resolving against the origin
-  // root or being read as a scheme-relative authority. It is a no-op for the
-  // everyday `docs/` case (`./docs/` resolves identically) and for the empty
-  // target-is-the-directory case, which stays `./`.
-  return `./${relative}${target.search}${target.hash}`;
-}
-
 // 3xx from the gateway: rewrite `Location` in place when it can be expressed in
-// the `ipfs://` URL space (see rewriteGatewayLocation), leave it otherwise.
+// the `ipfs://` URL space (see `lib/gateway-location.js`), leave it otherwise.
 function proxiedRedirectHeaders(upstreamHeaders, requestUrl) {
   const headers = proxiedResponseHeaders(upstreamHeaders);
   const location = headers.get('location');

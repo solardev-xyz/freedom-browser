@@ -581,12 +581,27 @@ app.on('window-all-closed', () => {
 });
 
 let isQuitting = false;
+// Flipped once windDown() has finished (or its watchdog gave up), so the
+// app.quit() that follows is let straight through instead of being held again.
+let shutdownSettled = false;
 
-app.on('before-quit', async (event) => {
-  if (isQuitting) return;
+// Bound on how long a re-entrant quit is held back. Holding it unconditionally
+// would let one wedged manager keep the app alive forever. Measured wind-downs
+// on a dev box are ~30-120ms, but this has to stay above the *longest* stop
+// budget underneath it, or the watchdog fires while a manager is still inside
+// its own budget and the quit proceeds with the wind-down unfinished. Longest
+// first, as of this commit: Tor SIGKILLs arti 10s after the SIGTERM
+// (tor-manager.js), Ant SIGKILLs antd after 5s (ant-manager.js), Myotis waits
+// 5s for its child to exit (myotis-process.js EXIT_WAIT_MS), and the IPFS
+// dispatcher falls back to terminate() after 2s
+// (freedom-ipfs-native-node.js DISPATCHER_STOP_TIMEOUT_MS). Re-derive against
+// those four before trimming this number.
+const SHUTDOWN_WATCHDOG_MS = 20_000;
 
-  event.preventDefault();
-  isQuitting = true;
+// Everything that has to happen before the process may go away. Split out of
+// the before-quit handler so the handler can bound it and still be the only
+// place that decides when quitting is allowed.
+async function windDown() {
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
 
   // Close all DevTools first to prevent crashes during cleanup
@@ -632,13 +647,73 @@ app.on('before-quit', async (event) => {
   cleanupTempDirs();
 
   log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, and Tor to stop...');
-  const [myotisExits] = await Promise.all([myotisStopped, stopAnt(), stopIpfs(), stopRadicle(), stopTor()]);
-  if (myotisExits.some((exited) => !exited)) {
+  // allSettled, not all: Promise.all settles on the *first* rejection, so one
+  // manager throwing would release the quit while the other legs are still in
+  // flight — notably stopIpfs(), whose dispatcher ack is the very window this
+  // wind-down exists to hold open (issue #345). Every leg has to finish, and
+  // a rejecting one is logged rather than abandoning the others. The
+  // SHUTDOWN_WATCHDOG_MS timer above still bounds the total wait, so waiting
+  // for more legs can't wedge the quit.
+  const LEGS = [
+    ['Myotis', () => myotisStopped],
+    ['Ant', stopAnt],
+    ['IPFS', stopIpfs],
+    ['Radicle', stopRadicle],
+    ['Tor', stopTor],
+  ];
+  // The async wrapper keeps a *synchronous* throw from a stop function inside
+  // the join too: thrown straight into Promise.allSettled's argument array it
+  // would escape past every sibling leg, the same short-circuit one step
+  // earlier. Each leg still starts in this tick, as before.
+  const settled = await Promise.allSettled(LEGS.map(async ([, start]) => start()));
+  settled.forEach((result, i) => {
+    if (result.status === 'rejected') log.error(`[App] ${LEGS[i][0]} stop failed:`, result.reason);
+  });
+  // A rejected Myotis leg proves nothing about its children, so treat it the
+  // same as an unconfirmed exit rather than as a clean stop.
+  const myotisExits = settled[0].status === 'fulfilled' ? settled[0].value : null;
+  if (!myotisExits || myotisExits.some((exited) => !exited)) {
     log.warn('[App] Myotis child exit unconfirmed; data-directory reuse remains blocked');
   }
-  log.info(myotisExits.every(Boolean)
+  log.info(myotisExits && myotisExits.every(Boolean)
     ? '[App] All processes stopped, quitting...'
     : '[App] Quitting with Myotis exit unconfirmed');
+}
+
+app.on('before-quit', async (event) => {
+  if (isQuitting) {
+    // Re-entrant quit. Destroying the last window inside windDown() makes
+    // Electron fire 'window-all-closed', whose handler calls app.quit() again
+    // — and a before-quit that returns without preventDefault() lets Electron
+    // shut the process down right there, while the wind-down is still in
+    // flight. That is what took the main process out with
+    // `Error::ThrowAsJavaScriptException napi_throw` on most quits (issue
+    // #345): the IPFS dispatcher worker's env was destroyed while it sat
+    // inside a native gatewayWaitNextEvent call. It also meant no node was
+    // reliably stopped on quit — the wind-down was racing the process exit
+    // every time, and usually losing.
+    if (!shutdownSettled) event.preventDefault();
+    return;
+  }
+
+  event.preventDefault();
+  isQuitting = true;
+
+  const watchdog = setTimeout(() => {
+    log.warn('[App] Shutdown watchdog fired; quitting with the wind-down unfinished');
+    shutdownSettled = true;
+    app.quit();
+  }, SHUTDOWN_WATCHDOG_MS);
+
+  try {
+    await windDown();
+  } catch (err) {
+    // A manager that rejects must not strand the app in a half-quit state.
+    log.error('[App] Wind-down failed:', err);
+  } finally {
+    clearTimeout(watchdog);
+    shutdownSettled = true;
+  }
 
   app.quit();
 });

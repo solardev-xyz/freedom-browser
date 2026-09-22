@@ -244,6 +244,18 @@ const setPopoverOpen = (open) => {
   }
 };
 
+// Public hook so the chrome's shared dismissal paths (index.js's
+// `closeAllOverlays` on the menu backdrop, and `onAnyMenuOpening`) can put
+// this popover away, the mirror of navigation.js' `closeTrustPopover`. Only
+// the indicator popover: the prompt is deliberately held across every one of
+// those gestures (see the click-away and blur handlers below), since closing
+// it is an answer to the page, not a dismissal of chrome.
+export const closePermissionPopover = () => {
+  if (popoverEl && !popoverEl.hidden) {
+    setPopoverOpen(false);
+  }
+};
+
 const renderPopover = () => {
   if (!popoverEl || !popoverTitleEl || !popoverListEl) return;
 
