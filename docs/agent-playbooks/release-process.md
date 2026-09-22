@@ -452,7 +452,7 @@ FREEDOM_TEST_USER_DATA="$HOME/freedom-nightly" /Applications/Freedom.app/Content
 
 Nightlies are only as useful as `main` is green. The recommended next step is to turn on a **GitHub merge queue** for `main`: CI then runs on the merged result of a batch of pull requests before any of them land, which both keeps a broken combination out of `main` (and out of the next nightly) and removes the "branch must be up to date" churn of re-running CI on every PR after every merge.
 
-That is a repository **settings** change (Settings → Branches → branch protection rule for `main` → "Require merge queue"), not a workflow change, so it is deliberately not part of this change and needs an admin to enable it.
+Enabling it is a repository **settings** change (Settings → Branches → branch protection rule for `main` → "Require merge queue") and needs an admin, so it is deliberately not part of this change. The workflow half, though, is not free: a queue pushes its candidate head to `gh-readonly-queue/<base>/pr-<n>-<sha>`, which the `on: push: branches:` filter in `ci.yml` deliberately does not match, so the workflow also carries an explicit `merge_group:` trigger. Without it a queue run produces no run of `ci.yml` at all on the queue head — no `ci-ok`, no `test` — and every queued pull request waits on checks that cannot arrive until the queue's own timeout evicts it. `scripts/ci/ci-gate.test.js` pins the trigger set so that stays true. Point the queue at `ci-ok`, for the same reason branch protection should: it is the only context that can tell "ran and passed" from "never ran".
 
 ## Appendix A: building locally (fallback)
 
