@@ -104,11 +104,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
 
 - **Source:** https://github.com/biafra23/myotis
-- **Version:** `v0.1.10` (pin: `scripts/myotis-release.json` `releaseTag`)
+- **Version:** `v0.1.11` (pin: `scripts/myotis-release.json` `releaseTag`)
 - **License:** **Apache-2.0** (single-licensed, not dual)
 - **Risk:** **Yellow**
 - **Integration:** Native addon (`myotis-node.node`), run out-of-process under Freedom's own supervisor
-- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.10 (`7c962968`): unchanged; the existing attribution still matches.
+- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.11 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10): unchanged; the existing attribution still matches.
 
 ### Arti (Tor Client) — _new in 0.8.5_
 
