@@ -1,8 +1,26 @@
 # Changelog Process Playbook
 
-Use this playbook when asked to update `CHANGELOG.md` for a new version.
+Use this playbook whenever a change earns a changelog entry: day to day that is
+a `changelog.d/` fragment on the pull request that makes the change (next
+section), and at release it is assembling those fragments into `CHANGELOG.md`.
 
-## Procedure
+## Day to day: write a fragment, not a changelog edit
+
+A pull request with a user-visible change adds one file under `changelog.d/`
+and leaves `CHANGELOG.md` alone — `changelog.d/<section>--<slug>.md`, body
+written to the voice rules below. `changelog.d/README.md` has the format.
+
+This is not bookkeeping preference. Every pull request used to edit the same
+few lines under the same heading, so the first merge of a batch left all the
+others conflicting there, and each needed a merge commit plus a full CI run to
+validate one paragraph. A file per change cannot collide.
+
+The exclusions in step 5 still decide whether a change earns an entry at all:
+no fragment for developer-only fixes, in-release polish, or internal work.
+
+## At release: assemble them
+
+### Procedure
 
 1. Find the baseline commit. Prefer the previous release's tag, which is unambiguous regardless of dev-suffix bookkeeping:
    - `git rev-list -n 1 v<prev>` (e.g. `v0.7.0`).
@@ -33,7 +51,12 @@ Use this playbook when asked to update `CHANGELOG.md` for a new version.
 6. Merge related commits into a single user-facing entry.
 7. Inspect PR merge commits by reviewing underlying commits.
 8. Re-run the git log before editing to catch late commits.
-9. Prepend the new version section above the previous one. While the release is still in candidates (`rc.N` tags), keep the heading as `## [Unreleased]` and only replace it with `## [<version>] - <YYYY-MM-DD>` when the bare version is cut (see `release-process.md` §1/§3). If the heading is absent (rare, since the dev cycle on `main` accumulates entries under `[Unreleased]`), add the version heading directly. When writing the first user-facing change in the next dev cycle, re-introduce a `## [Unreleased]` heading above the latest released version.
+9. Give the fragments a heading to land in, then fold them in.
+   - Check for `## [Unreleased]` in `CHANGELOG.md` first. Under the fragment flow no pull request edits that file, so after every release the heading is gone — the release renamed it to `## [<version>] - <date>` and nothing re-introduced it. That is the normal state on `main`, not an edge case. Add it back above the latest released version before assembling; without it `npm run changelog:assemble` exits 1 — the dry run and `--write` alike, so the dry run cannot read as ready when it is not — with `CHANGELOG.md has no '## [Unreleased]' heading to assemble into`.
+   - `npm run changelog:assemble` to see what the fragments add — what is still _missing_ from `## [Unreleased]`, so after a `--write` it prints nothing rather than re-listing what it just spliced — then `npm run changelog:assemble -- --write` to splice them in. The `--` is not optional: npm swallows `npm run changelog:assemble --write` and it silently dry-runs.
+   - Fragments sharing a top-level bullet (the category leads below: `- Updated bundled nodes:` and friends) are folded into one entry, sub-bullet by sub-bullet — including under a lead an earlier bump already put in the block. Two bumps in a release window write two fragments and assemble into one bullet; neither is dropped for repeating the lead.
+   - The script never deletes the fragments, so remove the consumed ones yourself in the same commit: `git rm changelog.d/*--*.md`. Until that lands, re-running `--write` is safe — a sub-bullet already under `## [Unreleased]` is left alone rather than duplicated.
+10. Prepend the new version section above the previous one. While the release is still in candidates (`rc.N` tags), keep the heading as `## [Unreleased]` and only replace it with `## [<version>] - <YYYY-MM-DD>` when the bare version is cut (see `release-process.md` §1/§3). Step 9 is where a missing `## [Unreleased]` gets re-introduced; nothing else puts it back, since pull requests write fragments instead of editing this file.
 
 ## Output Style
 
@@ -150,4 +173,4 @@ An agent draft is a starting point, not a final. Check the draft for editorial f
 
 **Nothing disappears silently.** When a draft trims or replaces entries that were already in `[Unreleased]` (or in an earlier agent draft), the PR or review note lists what was dropped and why — "Ant internals with no Freedom UI surface", "duplicate of the Added parent" — so the releaser decides, not the compressor. Restoring a dropped capability requires checking in `src/` that a user can actually reach it in this build; the old text is not evidence.
 
-**Do not land the changelog edits until the releaser has reviewed them.** Two equivalent ways to hold the gate: leave the `CHANGELOG.md` changes unstaged on the release branch and present the diff, creating the `docs(changelog): …` commit only after explicit approval; or, when the draft comes from an agent working on its own branch, open a PR **against the release branch** (not `main`) that touches only `CHANGELOG.md` — the PR is the presentation and the releaser's merge is the approval. Either way, keep `## [Unreleased]` as the heading while the release is still in candidates; the rename to `## [<version>] - <date>` happens when the bare version is cut. See `release-process.md` for how the gate sequences against verify / build / upload / tag.
+**Do not land the changelog edits until the releaser has reviewed them.** Two equivalent ways to hold the gate: leave the `CHANGELOG.md` changes unstaged on the release branch and present the diff, creating the `docs(changelog): …` commit only after explicit approval; or, when the draft comes from an agent working on its own branch, open a PR **against the release branch** (not `main`) carrying the assembled `CHANGELOG.md` and the `git rm` of the `changelog.d/` fragments it consumed (step 9) — the PR is the presentation and the releaser's merge is the approval, retiring the fragments in the same commit that publishes their text. Leaving the `git rm` out is how a fragment survives the release and is re-spliced at the next one. Either way, keep `## [Unreleased]` as the heading while the release is still in candidates; the rename to `## [<version>] - <date>` happens when the bare version is cut. See `release-process.md` for how the gate sequences against verify / build / upload / tag.
