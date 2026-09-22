@@ -72,7 +72,9 @@ const needsOf = (block) => {
 // rather than restated: a narrowed or widened prose list has to move this
 // whole test with it.
 const proseFilter = () => {
-  const found = withoutComments.match(/grep -qvE '(\^\([^']+\))'/);
+  // `-q?` so a reintroduced `grep -q` fails the drain guard below with its
+  // own message rather than blanking every test that reads the filter.
+  const found = withoutComments.match(/grep -q?vE '(\^\([^']+\))'/);
   expect(found).toBeTruthy();
   return new RegExp(found[1]);
 };
@@ -235,15 +237,64 @@ describe('the test job', () => {
   });
 });
 
+describe('the path filters', () => {
+  /** The `if echo "$changed" | grep …` line of each filter step. */
+  const filterLines = () => withoutComments.match(/^.*\| grep .*$/gm) || [];
+
+  it('drain their input instead of exiting at the first hit', () => {
+    // `grep -q` exits as soon as it has an answer; with `set -o pipefail` the
+    // still-writing `echo` then dies of SIGPIPE, the pipeline returns 141 and
+    // the `else` branch writes a positive `code=false` / `renderer=false` for
+    // a pull request full of code. Reproduced with the step's own line: 1 500
+    // paths (46 KB) answer `true`, 2 500 (79 KB) answer `false`. It is the one
+    // shape the fail-open `if` below cannot cover, because the gate concluded.
+    expect(filterLines()).toHaveLength(2);
+    expect(filterLines().filter((line) => /grep -[A-Za-z]*q/.test(line))).toEqual([]);
+  });
+
+  it('read both sides of a rename', () => {
+    // `git diff --name-only` with rename detection prints only a rename's
+    // destination, so `git mv src/x.js docs/x.js` reads as a prose-only pull
+    // request that deleted nothing.
+    const diffs = withoutComments.match(/^.*git diff .*--name-only.*$/gm) || [];
+    expect(diffs).toHaveLength(2);
+    expect(diffs.filter((line) => !line.includes('--no-renames'))).toEqual([]);
+  });
+});
+
 describe('the gate jobs', () => {
-  /** Jobs whose `if:` reads a gate job's `outputs`, with that condition. */
+  const GATES = ['code-changed', 'renderer-changed'];
+
+  /**
+   * Every job that waits on a gate, as `[name, condition, needs]`.
+   *
+   * Keyed on `needs:`, not on the condition: a job that `needs` a gate and
+   * carries no `if:` at all is gated too — GitHub skips it through the
+   * implicit `success()` when the gate fails, and reports that skip as
+   * Success. Reading only the conditions would give this guard the same blind
+   * spot it exists to close. `ci-ok` is the one deliberate exception; it waits
+   * on every job by design and its `always()` is pinned in its own block.
+   */
   const gatedJobs = () =>
     [...jobs()]
-      .map(([name, block]) => [name, (block.match(/^ {4}if:[ \t]*(.*)$/m) || [])[1] || ''])
-      .filter(([, condition]) => /needs\.[A-Za-z0-9_-]+\.outputs\./.test(condition));
+      .filter(([name]) => name !== 'ci-ok')
+      .map(([name, block]) => [
+        name,
+        (block.match(/^ {4}if:[ \t]*(.*)$/m) || [])[1] || '',
+        needsOf(block),
+      ])
+      .filter(
+        ([, condition, needs]) =>
+          needs.some((job) => GATES.includes(job)) ||
+          /needs\.[A-Za-z0-9_-]+\.outputs\./.test(condition)
+      );
 
-  it.each(['code-changed', 'renderer-changed'])('%s has consumers to protect', (gate) => {
-    expect(gatedJobs().filter(([, c]) => c.includes(`needs.${gate}.outputs.`))).not.toEqual([]);
+  it.each(GATES)('%s has consumers to protect', (gate) => {
+    expect(
+      gatedJobs().filter(
+        ([, c, needs]) => needs.includes(gate) || c.includes(`needs.${gate}.outputs.`)
+      )
+    ).not.toEqual([]);
   });
 
   // The failure message to read here: `== 'true'` skips on a gate that never
@@ -252,17 +303,21 @@ describe('the gate jobs', () => {
   // untested code change mergeable. Fail open on anything but a positive
   // "prose only".
   it('fail open on a gate that did not conclude, and only then', () => {
+    // A missing `if:` fails this too: an empty condition matches nothing, and
+    // a job that `needs` a gate without one is skipped-to-Success on a gate
+    // failure exactly as `== 'true'` would be.
+    const failsOpen = (condition, needs) =>
+      needs.some((gate) =>
+        new RegExp(
+          `^\\$\\{\\{ !cancelled\\(\\) && needs\\.${gate}\\.outputs\\.[A-Za-z0-9_-]+ != 'false' \\}\\}$`
+        ).test(condition)
+      );
     expect(
-      gatedJobs().map(([name, condition]) => [
-        name,
-        /^\$\{\{ !cancelled\(\) && needs\.[A-Za-z0-9_-]+\.outputs\.[A-Za-z0-9_-]+ != 'false' \}\}$/.test(
-          condition
-        ),
-      ])
+      gatedJobs().map(([name, condition, needs]) => [name, failsOpen(condition, needs)])
     ).toEqual(gatedJobs().map(([name]) => [name, true]));
   });
 
-  it('never gate on a positive == \'true\', which skips a failed gate', () => {
+  it("never gate on a positive == 'true', which skips a failed gate", () => {
     expect(gatedJobs().filter(([, condition]) => /==\s*'true'/.test(condition))).toEqual([]);
   });
 
@@ -280,6 +335,11 @@ describe('ci-ok', () => {
   it('waits on every other job in the workflow', () => {
     const all = [...jobs().keys()].filter((name) => name !== 'ci-ok').sort();
     expect(needsOf(jobs().get('ci-ok')).sort()).toEqual(all);
+  });
+
+  it('runs whatever else happened, since a gate failure skips its consumers', () => {
+    // `always()` is why `ci-ok` may be left out of the gated-job guard above.
+    expect(jobs().get('ci-ok')).toMatch(/^ {4}if: always\(\)$/m);
   });
 
   it('goes red on a job that failed or was cancelled', () => {

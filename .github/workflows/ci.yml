@@ -80,12 +80,19 @@ jobs:
             exit 0
           fi
           git fetch --no-tags origin "$BASE"
-          changed=$(git diff --name-only "origin/$BASE...HEAD")
+          changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
           echo "$changed"
           # Prose only: the changelog and its fragments, docs/, and the
           # top-level markdown. One path outside that list is enough to run
           # the full suite.
-          if echo "$changed" | grep -qvE '^(CHANGELOG\.md|changelog\.d/|docs/|[A-Z_]+\.md$)'; then
+          # `grep` drains its input and its output is discarded, rather than
+          # `grep -q`: `-q` exits at the first hit, and once `$changed`
+          # outgrows the 64 KiB pipe buffer the still-writing `echo` dies of
+          # SIGPIPE, `set -o pipefail` makes the pipeline 141 and the `else`
+          # branch writes `code=false` for a pull request whose first changed
+          # path was code. That is the one shape the fail-open `if` on the
+          # gated jobs cannot cover, since the gate positively concluded.
+          if echo "$changed" | grep -vE '^(CHANGELOG\.md|changelog\.d/|docs/|[A-Z_]+\.md$)' >/dev/null; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -1218,7 +1225,7 @@ jobs:
             exit 0
           fi
           git fetch --no-tags origin "$BASE"
-          changed=$(git diff --name-only "origin/$BASE...HEAD")
+          changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
           echo "$changed"
           # Everything the two visual jobs read, not just the renderer: the
           # specs, the fixtures, the gate that can turn them into no-ops, the
@@ -1229,7 +1236,10 @@ jobs:
           # only `__screenshots__/` or the contrast baseline, and skipping both
           # jobs on it would land the new pixels unchecked. `package.json` is in
           # the list because the npm scripts are how the jobs launch the specs.
-          if echo "$changed" | grep -Eq '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate|screenshot-baselines)\.js|test-e2e/theme-contrast-baseline\.json|test-e2e/__screenshots__/|package\.json|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)'; then
+          # No `-q`, for the same reason as the `code-changed` filter above:
+          # `-q` exits at the first hit and a >64 KiB path list then kills the
+          # `echo` with SIGPIPE, which `pipefail` turns into `renderer=false`.
+          if echo "$changed" | grep -E '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate|screenshot-baselines)\.js|test-e2e/theme-contrast-baseline\.json|test-e2e/__screenshots__/|package\.json|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)' >/dev/null; then
             echo "renderer=true" >> "$GITHUB_OUTPUT"
           else
             echo "renderer=false" >> "$GITHUB_OUTPUT"

@@ -26,8 +26,13 @@ and so stay out of `changelog.d/`.
 
 ## Assembling them
 
-`npm run changelog:assemble` prints what the fragments add; `--write` splices
-them into the `## [Unreleased]` block, joining headings that are already there
-and inserting missing ones in Keep a Changelog order. It never deletes a
-fragment: removing the consumed ones is an explicit `git rm` in the release
-steps, so a dry run cannot lose an unreleased entry.
+`npm run changelog:assemble` prints what the fragments add;
+`npm run changelog:assemble -- --write` splices them into the
+`## [Unreleased]` block, joining headings that are already there and inserting
+missing ones in Keep a Changelog order. The `--` is not optional: npm swallows
+`npm run changelog:assemble --write`, which then silently dry-runs.
+
+It never deletes a fragment: removing the consumed ones is an explicit
+`git rm changelog.d/*--*.md` in the release steps, so a dry run cannot lose an
+unreleased entry. Running `--write` twice before that `git rm` is harmless —
+an entry the `## [Unreleased]` block already carries is left alone.

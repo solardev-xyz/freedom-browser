@@ -15,6 +15,7 @@ const {
   sectionOf,
   collectFragments,
   renderSections,
+  pendingFragments,
   spliceIntoChangelog,
 } = require('./assemble-changelog.js');
 
@@ -125,13 +126,33 @@ describe('spliceIntoChangelog', () => {
   });
 
   test('refuses a changelog with no Unreleased heading', () => {
-    expect(() => spliceIntoChangelog('# Changelog\n\n## [0.8.5]\n', new Map([['Fixed', ['- X']]]))).toThrow(
-      /no '## \[Unreleased\]' heading/
-    );
+    expect(() =>
+      spliceIntoChangelog('# Changelog\n\n## [0.8.5]\n', new Map([['Fixed', ['- X']]]))
+    ).toThrow(/no '## \[Unreleased\]' heading/);
   });
 
   test('is a no-op when there are no fragments', () => {
     expect(spliceIntoChangelog(CHANGELOG, new Map())).toBe(CHANGELOG);
+  });
+
+  test('a second write adds nothing, since nothing consumed the fragments', () => {
+    // The script never deletes a fragment, so `--write` twice before the
+    // `git rm` used to duplicate every entry.
+    const bySection = new Map([
+      ['Fixed', ['- A new fixed entry\n  - with a sub-bullet']],
+      ['Changed', ['- A changed entry']],
+    ]);
+    const once = spliceIntoChangelog(CHANGELOG, bySection);
+    expect(spliceIntoChangelog(once, bySection)).toBe(once);
+    expect(once.match(/- A new fixed entry/g)).toHaveLength(1);
+    expect(once.match(/- A changed entry/g)).toHaveLength(1);
+  });
+
+  test('still splices the fragments the block does not carry yet', () => {
+    const once = spliceIntoChangelog(CHANGELOG, new Map([['Fixed', ['- Entry one']]]));
+    const twice = spliceIntoChangelog(once, new Map([['Fixed', ['- Entry one', '- Entry two']]]));
+    expect(twice.match(/- Entry one/g)).toHaveLength(1);
+    expect(twice).toContain('- Entry two');
   });
 
   test('every section name it accepts can be spliced', () => {
@@ -139,5 +160,33 @@ describe('spliceIntoChangelog', () => {
       const out = spliceIntoChangelog(CHANGELOG, new Map([[section, [`- ${section} entry`]]]));
       expect(out).toContain(`- ${section} entry`);
     }
+  });
+});
+
+describe('pendingFragments', () => {
+  test('drops an entry the Unreleased block already carries', () => {
+    const pending = pendingFragments(
+      CHANGELOG,
+      new Map([['Fixed', ['- An existing fixed entry\n  - with a sub-bullet', '- A new one']]])
+    );
+    expect(pending.get('Fixed')).toEqual(['- A new one']);
+  });
+
+  test('ignores entries that only appear in a shipped release', () => {
+    const pending = pendingFragments(
+      CHANGELOG,
+      new Map([['Fixed', ['- A shipped entry that must not move']]])
+    );
+    expect(pending.get('Fixed')).toEqual(['- A shipped entry that must not move']);
+  });
+});
+
+describe("this repo's own changelog.d/", () => {
+  test('every fragment name carries a valid <section>-- prefix', () => {
+    // Nothing else checks a fragment's name before release: `code-changed`
+    // calls `changelog.d/` prose, so a mis-named fragment would merge green
+    // and throw on the releaser running the assembler. This runs in the
+    // ungated `test` job on every pull request instead.
+    expect(() => collectFragments()).not.toThrow();
   });
 });

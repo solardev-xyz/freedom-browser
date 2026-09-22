@@ -5,9 +5,10 @@
  * CHANGELOG.md directly, and they all edit the same few lines under the same
  * `### Fixed` heading. `main` requires branches to be up to date, so the first
  * merge of a batch left every other open PR conflicting on that one paragraph
- * — each then needed a merge commit and a full CI run (41 jobs, 10-14 minutes)
- * to validate a changelog edit. Merging four PRs cost four CI cycles, none of
- * which tested anything that had changed.
+ * — each then needed a merge commit and a full CI run (41 jobs at 10-14
+ * minutes, measured 2026-09 before this change; see the workflow for what it
+ * runs today) to validate a changelog edit. Merging four PRs cost four CI
+ * cycles, none of which tested anything that had changed.
  *
  * A fragment is one file per change, so two PRs never write the same bytes and
  * the conflict disappears. The file is named `<section>--<slug>.md`, where the
@@ -16,8 +17,9 @@
  * and all. Release assembles them (see docs/agent-playbooks/changelog-process.md).
  *
  * This script never deletes a fragment: consuming them is an explicit
- * `git rm changelog.d/*.md` in the release steps, so a dry run can never lose
- * an unreleased entry.
+ * `git rm changelog.d/*--*.md` in the release steps — the `--` keeps
+ * `changelog.d/README.md` out of the glob — so a dry run can never lose an
+ * unreleased entry.
  */
 
 const fs = require('fs');
@@ -72,20 +74,57 @@ function renderSections(bySection) {
     .join('\n\n');
 }
 
+/** Line range of the `## [Unreleased]` block, or null when it has no heading. */
+function unreleasedRange(lines) {
+  const start = lines.findIndex((l) => l.trim() === UNRELEASED_HEADING);
+  if (start === -1) return null;
+  let end = lines.findIndex((l, i) => i > start && l.startsWith('## '));
+  if (end === -1) end = lines.length;
+  return { start, end };
+}
+
+/**
+ * The fragments whose entry is not already under `## [Unreleased]`.
+ *
+ * The script never deletes a fragment, so the easy mistake is running
+ * `--write` twice before the `git rm` that consumes them — which used to
+ * duplicate every entry. An entry whose first line is already in the block is
+ * skipped, which makes a repeat run a no-op instead.
+ */
+function pendingFragments(changelog, bySection) {
+  const lines = changelog.split('\n');
+  const range = unreleasedRange(lines);
+  if (!range) return bySection;
+  const present = new Set(
+    lines
+      .slice(range.start + 1, range.end)
+      .map((l) => l.trim())
+      .filter(Boolean)
+  );
+  const pending = new Map();
+  for (const [section, entries] of bySection) {
+    const fresh = entries.filter((entry) => !present.has(entry.split('\n')[0].trim()));
+    if (fresh.length > 0) pending.set(section, fresh);
+  }
+  return pending;
+}
+
 /**
  * Splice fragment entries into the `## [Unreleased]` block of `changelog`.
  * Entries join a heading that is already there; a heading that is not gets
- * inserted at its canonical position rather than appended at the end.
+ * inserted at its canonical position rather than appended at the end. An entry
+ * the block already carries is left alone, so a second `--write` adds nothing.
  */
 function spliceIntoChangelog(changelog, bySection) {
   if (bySection.size === 0) return changelog;
   const lines = changelog.split('\n');
-  const start = lines.findIndex((l) => l.trim() === UNRELEASED_HEADING);
-  if (start === -1) {
+  const range = unreleasedRange(lines);
+  if (!range) {
     throw new Error(`CHANGELOG.md has no '${UNRELEASED_HEADING}' heading to assemble into`);
   }
-  let end = lines.findIndex((l, i) => i > start && l.startsWith('## '));
-  if (end === -1) end = lines.length;
+  bySection = pendingFragments(changelog, bySection);
+  if (bySection.size === 0) return changelog;
+  const { start, end } = range;
 
   const block = lines.slice(start + 1, end);
   for (const section of SECTIONS) {
@@ -125,8 +164,17 @@ function main(argv) {
     return 0;
   }
   const changelog = fs.readFileSync(CHANGELOG_PATH, 'utf8');
-  fs.writeFileSync(CHANGELOG_PATH, spliceIntoChangelog(changelog, bySection));
-  const count = [...bySection.values()].reduce((n, e) => n + e.length, 0);
+  const updated = spliceIntoChangelog(changelog, bySection);
+  if (updated === changelog) {
+    console.log('CHANGELOG.md already carries every fragment — nothing to splice.');
+    console.log('Remove the consumed fragments: git rm changelog.d/*--*.md');
+    return 0;
+  }
+  fs.writeFileSync(CHANGELOG_PATH, updated);
+  const count = [...pendingFragments(changelog, bySection).values()].reduce(
+    (n, e) => n + e.length,
+    0
+  );
   console.log(`Assembled ${count} fragment(s) into CHANGELOG.md.`);
   console.log('Now remove the consumed fragments: git rm changelog.d/*--*.md');
   return 0;
@@ -147,6 +195,7 @@ module.exports = {
   sectionOf,
   collectFragments,
   renderSections,
+  pendingFragments,
   spliceIntoChangelog,
   main,
 };

@@ -49,8 +49,11 @@ no fragment for developer-only fixes, in-release polish, or internal work.
 6. Merge related commits into a single user-facing entry.
 7. Inspect PR merge commits by reviewing underlying commits.
 8. Re-run the git log before editing to catch late commits.
-9. Fold in the fragments before writing the section: `npm run changelog:assemble` to see what they add, then `npm run changelog:assemble -- --write` to splice them into `## [Unreleased]`. The script never deletes them, so remove the consumed ones yourself in the same commit: `git rm changelog.d/*--*.md`.
-10. Prepend the new version section above the previous one. While the release is still in candidates (`rc.N` tags), keep the heading as `## [Unreleased]` and only replace it with `## [<version>] - <YYYY-MM-DD>` when the bare version is cut (see `release-process.md` §1/§3). If the heading is absent (rare, since the dev cycle on `main` accumulates entries under `[Unreleased]`), add the version heading directly. When writing the first user-facing change in the next dev cycle, re-introduce a `## [Unreleased]` heading above the latest released version.
+9. Give the fragments a heading to land in, then fold them in.
+   - Check for `## [Unreleased]` in `CHANGELOG.md` first. Under the fragment flow no pull request edits that file, so after every release the heading is gone — the release renamed it to `## [<version>] - <date>` and nothing re-introduced it. That is the normal state on `main`, not an edge case. Add it back above the latest released version before assembling; without it `--write` exits 1 with `CHANGELOG.md has no '## [Unreleased]' heading to assemble into`.
+   - `npm run changelog:assemble` to see what the fragments add, then `npm run changelog:assemble -- --write` to splice them in. The `--` is not optional: npm swallows `npm run changelog:assemble --write` and it silently dry-runs.
+   - The script never deletes the fragments, so remove the consumed ones yourself in the same commit: `git rm changelog.d/*--*.md`. Until that lands, re-running `--write` is safe — an entry already under `## [Unreleased]` is left alone rather than duplicated.
+10. Prepend the new version section above the previous one. While the release is still in candidates (`rc.N` tags), keep the heading as `## [Unreleased]` and only replace it with `## [<version>] - <YYYY-MM-DD>` when the bare version is cut (see `release-process.md` §1/§3). Step 9 is where a missing `## [Unreleased]` gets re-introduced; nothing else puts it back, since pull requests write fragments instead of editing this file.
 
 ## Output Style
 
