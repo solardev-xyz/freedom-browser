@@ -456,6 +456,19 @@ export const extractEnsResolutionMetadata = (targetUri, ensName) => {
     resolvedProtocol = 'swarm';
   }
 
+  // A bzz root is hex, so `applyEnsNamePreservation` can fold both sides of the
+  // comparison losslessly — and does. IPFS/IPNS roots are stored, and matched,
+  // verbatim on purpose. `ens-resolver.js` emits them in base58 (CIDv0 `Qm…`,
+  // peer-ID multihash `12D3…`) for byte-compatibility with the history and
+  // bookmark entries the previous resolver wrote, and base58 case is
+  // load-bearing: a case-folded root is a *different*, unresolvable reference
+  // rather than a sloppier spelling of this name's content. `buildGatewayUrl`
+  // (src/main/ipfs/ipfs-protocol.js) answers a lowercased `Qm…`/`12D3…` host
+  // with a 400 for exactly that reason — checked against the handler itself on
+  // 2026-09-22 — and Chromium folds the host of every standard-scheme URL it
+  // parses, so a folded root only ever reaches the address bar attached to a
+  // page that cannot load. Matching these case-insensitively would paint an ENS
+  // name over that page; keep the comparison exact.
   const ipfsMatch = targetUri.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
   if (ipfsMatch) {
     knownEnsPairs.push([ipfsMatch[1], ensName]);
