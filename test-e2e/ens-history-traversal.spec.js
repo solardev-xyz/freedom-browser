@@ -694,14 +694,21 @@ const CONFLICT_IN_FLIGHT = {
     { value: '0xbb', sources: ['rpc-two.test'] },
   ],
   // Settles well after the traversal below commits, and well before the slow
-  // page the user is waiting on does.
-  delayMs: 1_200,
+  // page the user is waiting on does. Both margins are wide (seconds, not
+  // hundreds of ms) on purpose: the window being tested is bounded on one side
+  // by how long the runner takes to register the *next* click, and a narrow
+  // margin there flakes under load rather than failing honestly.
+  delayMs: 5_000,
 };
 
 test('a verdict settling mid-traversal does not cancel the Back the user is waiting on', async ({
   window,
   harness,
 }, testInfo) => {
+  // Deliberately slow: the fixture delays below are what hold a navigation
+  // open long enough for a verdict to settle over it, so the budget has to
+  // cover them with room for a loaded runner.
+  test.setTimeout(60_000);
   await seedEnsPage(harness);
   // The entry the second Back restores: genuinely still fetching when the
   // conflict verdict lands. `no-store` keeps the traversal a real fetch rather
@@ -709,7 +716,6 @@ test('a verdict settling mid-traversal does not cancel the Back the user is wait
   await harness.setContentFixture('ipfs://slowstart/', {
     body: '<html><body><h1>slow start</h1></body></html>',
     headers: { 'Cache-Control': 'no-store' },
-    delayMs: 2_500,
   });
 
   await navigateTo(window, 'ipfs://slowstart/');
@@ -725,8 +731,17 @@ test('a verdict settling mid-traversal does not cancel the Back the user is wait
     .poll(() => webviewUrl(window), { timeout: 15_000 })
     .toMatch(/^https:\/\/after\.example/);
 
-  // The resolvers now disagree about the name, and take a beat to say so.
+  // The resolvers now disagree about the name, and take a beat to say so —
+  // and the entry behind the ENS one is now slow to serve, so the second Back
+  // below is genuinely still in flight when that verdict lands. `no-store`
+  // keeps the traversal a real fetch rather than an instant cache hit, which
+  // is what makes the window observable at all.
   await harness.setEnsFixture('traversal.eth', CONFLICT_IN_FLIGHT);
+  await harness.setContentFixture('ipfs://slowstart/', {
+    body: '<html><body><h1>slow start</h1></body></html>',
+    headers: { 'Cache-Control': 'no-store' },
+    delayMs: 8_000,
+  });
 
   // Back onto the ENS entry — which starts the refresh — then Back again
   // immediately, toward the slow entry, without waiting for that refresh.
@@ -739,7 +754,7 @@ test('a verdict settling mid-traversal does not cancel the Back the user is wait
   // The second traversal completes: the verdict landed while it was in flight
   // and left it alone.
   await expect
-    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .poll(() => webviewUrl(window), { timeout: 20_000 })
     .toMatch(/^ipfs:\/\/slowstart/);
   // …and stays completed — an interstitial loaded over it would arrive after
   // this URL first reads correctly, so it has to be observed still standing.
@@ -762,6 +777,7 @@ test('a verdict settling mid-resolution does not interrupt a URL the user entere
   // started yet, so `loadTarget` records the intent itself. Without that, the
   // conflict interstitial for the entry being left behind loaded over the page
   // the user was waiting on.
+  test.setTimeout(60_000);
   await seedEnsPage(harness);
   await harness.setEnsFixture('other.eth', {
     type: 'ok',
@@ -769,7 +785,9 @@ test('a verdict settling mid-resolution does not interrupt a URL the user entere
     decoded: 'QmOtherPage',
     uri: 'ipfs://QmOtherPage',
     trust: { level: 'verified', method: 'colibri', queried: ['colibri'], agreed: ['colibri'] },
-    delayMs: 2_500,
+    // Outlasts the conflict verdict above by a wide margin, so the check below
+    // lands squarely inside this name's own resolution.
+    delayMs: 9_000,
   });
   await harness.setContentFixture('ipfs://other.eth/', {
     body: '<html><body><h1>other.eth</h1></body></html>',
@@ -793,11 +811,11 @@ test('a verdict settling mid-resolution does not interrupt a URL the user entere
 
   // Past the conflict verdict, still inside the entered name's own
   // resolution: the guest is where the user left it, not on an interstitial.
-  await window.waitForTimeout(2_000);
+  await window.waitForTimeout(6_500);
   expect(await webviewUrl(window)).not.toMatch(/pages\/ens-conflict\.html/);
 
   await expect
-    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .poll(() => webviewUrl(window), { timeout: 20_000 })
     .toMatch(/^ipfs:\/\/other\.eth/);
   await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', 'verified');
   await window.screenshot({ path: testInfo.outputPath('11-entered-url-not-interrupted.png') });
