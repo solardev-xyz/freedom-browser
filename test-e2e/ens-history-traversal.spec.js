@@ -471,6 +471,64 @@ for (const theme of ['dark', 'light']) {
   });
 }
 
+test('a conflict on a continued-past entry prints no "Resolves to" section', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // The popover behind the badge the grant leaves standing. A conflict is
+  // the assertion that nothing resolved, so the stored URI goes — but the
+  // URI's sibling, the cached protocol, feeds `buildContentRows`' fallback
+  // and would keep the section alive as a lone "Network: IPFS" line printed
+  // directly under "Verification failed: RPCs disagree". Both halves are
+  // dropped, and the section — heading, divider and all — goes with them.
+  // Driven end-to-end because the hide is half CSS: `.trust-popover-content`
+  // is `display: flex`, which outranks the UA sheet's `[hidden]`.
+  await continueOncePast(window, harness);
+
+  await navigateTo(window, 'https://after.example/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/after\.example/);
+
+  // The resolvers start disagreeing while the user is away.
+  await harness.setEnsFixture('consent.eth', {
+    type: 'conflict',
+    trust: { level: 'conflict', block: { number: 21000000 } },
+    groups: [
+      { value: '0xaa', sources: ['rpc-one.test'] },
+      { value: '0xbb', sources: ['rpc-two.test'] },
+    ],
+  });
+
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/consent\.eth/);
+  await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', 'conflict', {
+    timeout: 15_000,
+  });
+
+  await window.click('#trust-shield');
+  await expect(window.locator('#trust-popover-status')).toHaveText(
+    'Verification failed: RPCs disagree'
+  );
+  await expect(window.locator('#trust-popover-content')).toBeHidden();
+  await expect(window.locator('#trust-popover-content-title')).toBeHidden();
+  expect(
+    await window.locator('#trust-popover-content-fields .trust-popover-field').allTextContents()
+  ).toEqual([]);
+  // ...and the section above it does not keep the divider that used to
+  // separate the two.
+  expect(
+    await window
+      .locator('#trust-popover-trust-fields')
+      .evaluate((el) => getComputedStyle(el).borderBottomStyle)
+  ).toBe('none');
+  await window.screenshot({
+    path: testInfo.outputPath('13-conflict-prints-no-resolves-to.png'),
+  });
+});
+
 test('a fresh visit to a name continued past once still blocks', async ({
   window,
   harness,

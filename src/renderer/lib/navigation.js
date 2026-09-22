@@ -227,6 +227,18 @@ const storeNameResolutionTrust = (name, result) => {
     // the trust object itself and returns. Results that carry no verdict at
     // all (a resolver error, no response) are likewise left alone.
     state.ensUriByName.delete(name);
+    // `ensProtocols` is the URI's sibling: the same previous resolution wrote
+    // both, and `buildContentRows` falls back to it for the "Network" row
+    // whenever the URI is missing. Dropping only the URI would leave the
+    // popover's "Resolves to" section printing a bare "Network: IPFS" under
+    // "Verification failed: RPCs disagree" — the section hides only when its
+    // row list comes out empty — so the pair goes together, same as trust and
+    // URI. The protocol icon reads this map too, and falls back to the
+    // neutral globe once it is gone: correct for a name the RPCs could not
+    // agree on, and only reachable where the address bar carries the bare
+    // name (the conflict interstitial itself), since a committed
+    // `ipfs://name.eth/` entry takes its icon from the scheme it carries.
+    state.ensProtocols.delete(name);
   }
 };
 

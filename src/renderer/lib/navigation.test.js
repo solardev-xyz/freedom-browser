@@ -2737,6 +2737,7 @@ describe('navigation', () => {
       const ctx = await setupEnsDispatch();
 
       ctx.state.ensUriByName.set('vitalik.eth', 'ipfs://QmStillOnScreen');
+      ctx.state.ensProtocols.set('vitalik.eth', 'ipfs');
       ctx.electronAPI.resolveEns.mockResolvedValue({
         name: 'vitalik.eth',
         trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
@@ -2747,6 +2748,10 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.state.ensUriByName.get('vitalik.eth')).toBe('ipfs://QmStillOnScreen');
+      // The URI's sibling stays for the same reason it does: the page on
+      // screen still resolved through IPFS, and its protocol icon reads
+      // this map.
+      expect(ctx.state.ensProtocols.get('vitalik.eth')).toBe('ipfs');
     });
 
     test('a conflict verdict on the typed path drops the URI it contradicts', async () => {
@@ -2757,6 +2762,7 @@ describe('navigation', () => {
       const ctx = await setupEnsDispatch();
 
       ctx.state.ensUriByName.set('vitalik.eth', 'ipfs://QmStillOnScreen');
+      ctx.state.ensProtocols.set('vitalik.eth', 'ipfs');
       ctx.electronAPI.resolveEns.mockResolvedValue({
         type: 'conflict',
         name: 'vitalik.eth',
@@ -2771,6 +2777,11 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.state.ensUriByName.has('vitalik.eth')).toBe(false);
+      // The URI's sibling goes with it: left behind, it would still feed
+      // the popover's "Network" row from `buildContentRows`' proto
+      // fallback, so "Resolves to" would survive the verdict that says
+      // nothing resolved.
+      expect(ctx.state.ensProtocols.has('vitalik.eth')).toBe(false);
     });
 
     test('legacy ens:// dispatch shows the input in the address bar during resolution', async () => {
@@ -4809,6 +4820,7 @@ describe('navigation', () => {
 
       ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
       ctx.state.ensUriByName.set('vitalik.eth', 'ipfs://QmEnsTraversalPage');
+      ctx.state.ensProtocols.set('vitalik.eth', 'ipfs');
       ctx.electronAPI.resolveEns.mockResolvedValue({
         type: 'conflict',
         name: 'vitalik.eth',
@@ -4827,15 +4839,19 @@ describe('navigation', () => {
 
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
       expect(ctx.state.ensUriByName.has('vitalik.eth')).toBe(false);
+      expect(ctx.state.ensProtocols.has('vitalik.eth')).toBe(false);
 
-      // ...and the popover behind that badge is handed no URI to print.
+      // ...and the popover behind that badge is handed neither a URI nor
+      // the protocol `buildContentRows` would otherwise render a lone
+      // "Network: IPFS" row from, so "Resolves to" comes out empty and the
+      // section hides.
       ctx.elements.trustPopover.hidden = true;
       ctx.navigationUtilsMocks.buildTrustRows.mockClear();
       ctx.elements.trustShield.dispatch('click');
 
       expect(ctx.elements.trustPopover.hidden).toBe(false);
       expect(ctx.navigationUtilsMocks.buildTrustRows).toHaveBeenCalledWith(
-        expect.objectContaining({ uri: '' })
+        expect.objectContaining({ uri: '', proto: undefined })
       );
     });
 

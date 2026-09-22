@@ -255,6 +255,18 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* `:last-child` is structural, so a hidden trailing section still counts as
+   one and leaves the section above it wearing a divider with nothing under
+   it. The content section is the only hideable one (navigation.js sets its
+   `hidden` whenever the row list comes out empty — a conflict verdict drops
+   both the URI and its sibling protocol, so no row is left to print), so
+   take the divider back off whatever precedes it. */
+.trust-popover-info > *:has(+ [hidden]:last-child) {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
 .trust-popover-fields {
   display: flex;
   flex-direction: column;
@@ -268,6 +280,17 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* `display: flex` above outranks the UA sheet's `[hidden] { display: none }`,
+   so the section's own `hidden` toggle (set in navigation.js whenever the row
+   list comes out empty) needs this to bite — same pattern as the popover and
+   its tooltip above. Without it the "Resolves to" heading stays painted over
+   an empty list, which is what a conflict verdict now produces: it asserts
+   nothing resolved, so both the URI and its sibling protocol are dropped and
+   there is no row left to print. */
+.trust-popover-content[hidden] {
+  display: none !important;
 }
 
 .trust-popover-section-title {
