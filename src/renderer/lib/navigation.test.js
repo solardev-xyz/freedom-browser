@@ -44,6 +44,8 @@ const createTab = (id, url, overrides = {}) => {
     currentBzzBase: null,
     addressBarSnapshot: '',
     committedDisplayUrl: '',
+    committedNavigationSequence: 0,
+    requestedNavigationSequence: 0,
     cachedWebContentsId: null,
     resolvingWebContentsId: null,
     ...overrides.navigationState,
@@ -2720,6 +2722,68 @@ describe('navigation', () => {
       expect(global.alert).not.toHaveBeenCalled();
     });
 
+    test.each([
+      ['not_found', { type: 'not_found', reason: 'NO_CONTENTHASH', error: 'CCIP revert' }],
+      ['unsupported', { type: 'unsupported', reason: 'UNSUPPORTED_CONTENTHASH_FORMAT' }],
+    ])('a %s verdict keeps the URI of the page the user is still on', async (_label, verdict) => {
+      // `not_found` and `unsupported` carry a `trust` object with no `uri`,
+      // same shape as a conflict, but they are not the conflict's assertion
+      // that nothing resolved: `loadTarget` records them and then aborts,
+      // leaving the user on the page they were already on — and a
+      // `NO_CONTENTHASH` with an error is explicitly transient (the resolver
+      // refuses to cache it). Dropping the stored URI here would blank the
+      // trust popover's "Resolves to" row for a page still on screen, on
+      // nothing worse than a failed re-type.
+      const ctx = await setupEnsDispatch();
+
+      ctx.state.ensUriByName.set('vitalik.eth', 'ipfs://QmStillOnScreen');
+      ctx.state.ensProtocols.set('vitalik.eth', 'ipfs');
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        name: 'vitalik.eth',
+        trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+        ...verdict,
+      });
+
+      ctx.mod.loadTarget('bzz://vitalik.eth');
+      await flushMicrotasks();
+
+      expect(ctx.state.ensUriByName.get('vitalik.eth')).toBe('ipfs://QmStillOnScreen');
+      // The URI's sibling stays for the same reason it does: the page on
+      // screen still resolved through IPFS, and its protocol icon reads
+      // this map.
+      expect(ctx.state.ensProtocols.get('vitalik.eth')).toBe('ipfs');
+    });
+
+    test('a conflict verdict on the typed path drops the URI it contradicts', async () => {
+      // The other half of the pair above, on this path: a conflict *is* the
+      // assertion that nothing resolved, so the previous load's CID goes with
+      // the verdict it belonged to rather than being printed under
+      // "Verification failed: RPCs disagree".
+      const ctx = await setupEnsDispatch();
+
+      ctx.state.ensUriByName.set('vitalik.eth', 'ipfs://QmStillOnScreen');
+      ctx.state.ensProtocols.set('vitalik.eth', 'ipfs');
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [
+          { value: '0xaa', sources: ['a'] },
+          { value: '0xbb', sources: ['b'] },
+        ],
+      });
+
+      ctx.mod.loadTarget('bzz://vitalik.eth');
+      await flushMicrotasks();
+
+      expect(ctx.state.ensUriByName.has('vitalik.eth')).toBe(false);
+      // The URI's sibling goes with it: left behind, it would still feed
+      // the popover's "Network" row from `buildContentRows`' proto
+      // fallback, so "Resolves to" would survive the verdict that says
+      // nothing resolved.
+      expect(ctx.state.ensProtocols.has('vitalik.eth')).toBe(false);
+    });
+
     test('legacy ens:// dispatch shows the input in the address bar during resolution', async () => {
       // For `ens://vitalik.eth` clicks and bookmarks, the address bar
       // should show the URL immediately rather than staying blank for the
@@ -4439,6 +4503,1001 @@ describe('navigation', () => {
       });
 
       expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
+    });
+  });
+
+  describe('ENS trust refresh on history traversal', () => {
+    // Issue #86: back/forward hand the restored entry to Chromium's own
+    // session history, so none of the renderer's ENS resolution path runs.
+    // After flipping the verification method in settings, going *back* to an
+    // ENS page kept painting the method that was configured when the entry
+    // first loaded. These tests pin the fix: the commit a traversal produces
+    // re-runs the resolution half under today's settings, updates
+    // `state.ensTrustByName` and repaints the shield — without re-navigating
+    // (the restored entry, and the forward history, stay put) and without
+    // bypassing the contenthash cache (traversal is not a hard reload).
+    const installEnsParser = (ctx) => {
+      ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) => {
+        const prefixMatch = value.match(/^(ens|bzz|ipfs|ipns):\/\//i);
+        const assertedTransport = prefixMatch
+          ? prefixMatch[1].toLowerCase() === 'ens'
+            ? null
+            : prefixMatch[1].toLowerCase()
+          : null;
+        const m = value.match(/^(?:(?:ens|bzz|ipfs|ipns):\/\/)?([^?/]+)(.*)?$/i);
+        if (!m) return null;
+        const name = m[1].toLowerCase();
+        return name.endsWith('.eth') || name.endsWith('.box')
+          ? { name, suffix: m[2] || '', assertedTransport }
+          : null;
+      });
+    };
+
+    // Mirror the production post-traversal shape:
+    //   1. tabs.js' per-webview did-navigate handler writes the restored
+    //      entry's identity into `committedDisplayUrl` and bumps the
+    //      per-tab commit sequence — for active and background tabs alike.
+    //   2. navigation.js' `did-navigate` case repaints the chrome for the
+    //      restored entry (still from the *stale* trust map at this point).
+    //   3. tabs.js reports the consumed traversal mark, which is what
+    //      kicks off the re-verification under today's settings.
+    const commitTraversalTo = (
+      ctx,
+      display,
+      { tab = ctx.activeRef.tab, previousUrl = '' } = {}
+    ) => {
+      tab.navigationState.committedDisplayUrl = display;
+      tab.navigationState.committedNavigationSequence += 1;
+      if (tab === ctx.activeRef.tab) {
+        ctx.navigationUtilsMocks.deriveDisplayAddress.mockReturnValueOnce(display);
+        ctx.tabsMocks.webviewEventHandler('did-navigate', {
+          tabId: tab.id,
+          event: { url: display },
+        });
+      }
+      ctx.tabsMocks.webviewEventHandler('history-traversal-committed', {
+        tabId: tab.id,
+        previousUrl,
+      });
+    };
+
+    const STALE_TRUST = { level: 'user-configured', method: 'direct-rpc' };
+    const FRESH_TRUST = {
+      level: 'verified',
+      method: 'colibri',
+      queried: ['a', 'b'],
+      agreed: ['a', 'b'],
+    };
+
+    test('the toolbar Back and Forward buttons mark the commit they produce', async () => {
+      // Pins the wiring the rest of this block stands on: both buttons go
+      // through the shared traversal helpers, so the commit Chromium
+      // produces carries the mark tabs.js consumes. Reverting either to a
+      // bare `webview.goBack()` still traverses — and silently stops
+      // refreshing trust — so `goBack`/`goForward` spies alone can't catch
+      // it.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const { consumeHistoryTraversal } = await import('./history-traversal.js');
+      const { webview } = ctx.activeRef.tab;
+
+      ctx.elements.backBtn.dispatch('click');
+      expect(webview.goBack).toHaveBeenCalled();
+      expect(consumeHistoryTraversal(webview)).toBe(true);
+
+      ctx.elements.forwardBtn.dispatch('click');
+      expect(webview.goForward).toHaveBeenCalled();
+      expect(consumeHistoryTraversal(webview)).toBe(true);
+
+      // Nothing left standing once consumed.
+      expect(consumeHistoryTraversal(webview)).toBe(false);
+    });
+
+    test("a block interstitial's own Go back button traverses through the shell", async () => {
+      // The interstitial cannot press Back itself: `window.history.back()`
+      // inside the page is renderer-initiated, so the main process'
+      // `will-navigate` intercept catches the hop onto the blocked
+      // `ipfs://name.eth/` entry and replays it through `loadTarget` — which
+      // re-resolves the name and raises the same interstitial again. So the
+      // page signals the shell, which traverses for it, and marks the commit
+      // so the restored entry is re-verified (the same mark the toolbar
+      // button sets — a bare `webview.goBack()` here would still traverse but
+      // silently stop refreshing trust, which is why the mark is asserted).
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const { consumeHistoryTraversal } = await import('./history-traversal.js');
+      const { webview } = ctx.activeRef.tab;
+      webview.loadURL.mockClear();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'interstitial:go-back',
+        args: [],
+      });
+      await flushMicrotasks();
+
+      expect(webview.goBack).toHaveBeenCalledTimes(1);
+      expect(consumeHistoryTraversal(webview)).toBe(true);
+      // A traversal, never a re-navigation: loading the entry instead would
+      // push a fresh one over it and drop the forward history.
+      expect(webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('a block interstitial with nothing behind it goes home instead', async () => {
+      // The interstitial can be the tab's first entry (a typed name that
+      // blocked on its very first load), which is the case the page's old
+      // inline `history.length > 1` check covered. `canGoBack()` is the
+      // authoritative version of it.
+      const tab = createTab(1, 'https://active.example', {
+        webview: createWebview('https://active.example', {
+          canGoBack: false,
+          canGoForward: false,
+          webContentsId: 21,
+        }),
+      });
+      const ctx = await loadNavigationModule({ firstTab: tab });
+      await ctx.mod.initNavigation();
+      const { webview } = ctx.activeRef.tab;
+      webview.loadURL.mockClear();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'interstitial:go-back',
+        args: [],
+      });
+      await flushMicrotasks();
+
+      expect(webview.goBack).not.toHaveBeenCalled();
+      expect(webview.loadURL).toHaveBeenCalledWith(ctx.pageUrlsMocks.homeUrl);
+    });
+
+    test('a navigation the user asks for drops a still-pending traversal mark', async () => {
+      // Back pressed, then — before the restored entry commits — the user
+      // types something else. The traversal is superseded, so the commit
+      // that eventually lands belongs to the new navigation and must not be
+      // re-verified as a restored entry. Same clear bounds the mark a
+      // subframe-only or same-document restored entry leaves standing, where
+      // no cross-document commit ever follows to consume it — including when
+      // the navigation is one the *page* started, since the main process
+      // replays a page-driven hop to a dweb scheme through `navigate-to-url`
+      // and into this same function (pinned in tabs-history-traversal.test.js).
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const { consumeHistoryTraversal } = await import('./history-traversal.js');
+      const { webview } = ctx.activeRef.tab;
+
+      ctx.elements.backBtn.dispatch('click');
+      ctx.mod.loadTarget('https://example.com/');
+
+      expect(consumeHistoryTraversal(webview)).toBe(false);
+    });
+
+    test('back to a bzz:// ENS entry re-verifies under the new settings', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      // The page was first loaded while "use my own RPC" was configured.
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      // Settings have since been flipped to the verifying method, so the
+      // main process re-resolves rather than serving its cached verdict.
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'bzz',
+        uri: `bzz://${'a'.repeat(64)}`,
+        decoded: 'a'.repeat(64),
+        trust: FRESH_TRUST,
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      // The restored entry paints from the stale map first — that is the
+      // bug's visible symptom, and the "before" half of this assertion.
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('user-configured');
+
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('vitalik.eth');
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(FRESH_TRUST);
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
+      expect(ctx.elements.trustShield.hidden).toBe(false);
+      // Traversal stays a traversal: no re-navigation over the restored
+      // entry (which would drop the forward history)...
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      // ...and no hard-reload-style contenthash cache bypass.
+      expect(ctx.electronAPI.invalidateEnsContent).not.toHaveBeenCalled();
+    });
+
+    test('forward to an ipfs:// ENS entry refreshes trust metadata too', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'ipfs',
+        uri: 'ipfs://bafyfake',
+        trust: FRESH_TRUST,
+      });
+
+      commitTraversalTo(ctx, 'ipfs://vitalik.eth/docs');
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('vitalik.eth');
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(FRESH_TRUST);
+      expect(ctx.state.ensUriByName.get('vitalik.eth')).toBe('ipfs://bafyfake');
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
+    });
+
+    test('the scheme-less and legacy ens:// name forms parse, defensively', async () => {
+      // Both legs are parser-level cases only — neither form can actually be
+      // committed, so neither reaches the refresh from a traversal today.
+      // `tabs.js`' did-navigate writes `committedDisplayUrl` as
+      // `formatOnchainAppDisplayUrl(…) || webview.getURL()`, and both halves
+      // are always scheme-qualified, so `vitalik.eth/about` never arrives;
+      // `ens://vitalik.eth/` is emitted only for a raw-IPNS-key contenthash,
+      // whose load commits `ipns://<key>/…`, which `parseEnsInput` declines
+      // because the host is the key rather than the name. Reload keys on the
+      // same field and has the same reach. These legs pin only that the
+      // branch behaves if either form ever does appear. See the reach note
+      // above `refreshNameTrustAfterTraversal`.
+      for (const display of ['vitalik.eth/about', 'ens://vitalik.eth/']) {
+        const ctx = await loadNavigationModule();
+        installEnsParser(ctx);
+        await ctx.mod.initNavigation();
+        ctx.electronAPI.resolveEns.mockResolvedValue({
+          type: 'ok',
+          name: 'vitalik.eth',
+          protocol: 'bzz',
+          uri: `bzz://${'a'.repeat(64)}`,
+          trust: FRESH_TRUST,
+        });
+
+        commitTraversalTo(ctx, display);
+        await flushMicrotasks();
+
+        expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('vitalik.eth');
+        expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(FRESH_TRUST);
+      }
+    });
+
+    test('a non-ENS traversal keeps today behaviour exactly', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'https://example.com/');
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).not.toHaveBeenCalled();
+      expect(ctx.electronAPI.invalidateEnsContent).not.toHaveBeenCalled();
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.trustShield.hidden).toBe(true);
+    });
+
+    test('a conflict under the new settings routes to the existing conflict interstitial', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      const conflictTrust = { level: 'conflict', block: { number: 21 } };
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: conflictTrust,
+        groups: [
+          { value: '0xaa', sources: ['a'] },
+          { value: '0xbb', sources: ['b'] },
+        ],
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(conflictTrust);
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toContain('pages/ens-conflict.html');
+      expect(loadedUrl).toContain('name=vitalik.eth');
+    });
+
+    test('a conflict verdict drops the URI the previous load resolved', async () => {
+      // A conflict carries a verdict but no URI: the RPCs disagreed, so
+      // there is no answer to record. The previous load's CID has to go
+      // with the verdict it belonged to — otherwise the popover prints
+      // "Resolves to: <that CID>" straight under "Verification failed: RPCs
+      // disagree". Reachable exactly here: backing out of this name's own
+      // interstitial keeps the restored page, so its refreshed conflict
+      // badge is on screen and clickable.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      ctx.state.ensUriByName.set('vitalik.eth', 'ipfs://QmEnsTraversalPage');
+      ctx.state.ensProtocols.set('vitalik.eth', 'ipfs');
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [
+          { value: '0xaa', sources: ['a'] },
+          { value: '0xbb', sources: ['b'] },
+        ],
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'ipfs://vitalik.eth/', {
+        previousUrl: 'file:///app/pages/ens-conflict.html?name=vitalik.eth',
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.state.ensUriByName.has('vitalik.eth')).toBe(false);
+      expect(ctx.state.ensProtocols.has('vitalik.eth')).toBe(false);
+
+      // ...and the popover behind that badge is handed neither a URI nor
+      // the protocol `buildContentRows` would otherwise render a lone
+      // "Network: IPFS" row from, so "Resolves to" comes out empty and the
+      // section hides.
+      ctx.elements.trustPopover.hidden = true;
+      ctx.navigationUtilsMocks.buildTrustRows.mockClear();
+      ctx.elements.trustShield.dispatch('click');
+
+      expect(ctx.elements.trustPopover.hidden).toBe(false);
+      expect(ctx.navigationUtilsMocks.buildTrustRows).toHaveBeenCalledWith(
+        expect.objectContaining({ uri: '', proto: undefined })
+      );
+    });
+
+    test('an unverified verdict while blocking is on routes to the unverified interstitial', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'bzz',
+        uri: `bzz://${'a'.repeat(64)}`,
+        trust: { level: 'unverified' },
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/about');
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toContain('pages/ens-unverified.html');
+      expect(loadedUrl).toContain('name=vitalik.eth');
+      // Same target-URI derivation loadTarget uses, so the interstitial's
+      // "continue" button lands on the identical URL from either path.
+      expect(loadedUrl).toContain(encodeURIComponent(`bzz://${'a'.repeat(64)}/about`));
+    });
+
+    test('an unverified verdict with blocking switched off only updates the badge', async () => {
+      const ctx = await loadNavigationModule({ blockUnverifiedEns: false });
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', FRESH_TRUST);
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'bzz',
+        uri: `bzz://${'a'.repeat(64)}`,
+        trust: { level: 'unverified' },
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('unverified');
+    });
+
+    // "Continue once" is consent to an entry, so a traversal back onto the
+    // page it produced is a return to that decision rather than a new request
+    // for the name. These legs pin the grant from every side its scope has:
+    // what it covers, what it does not, and the two axes it is keyed on.
+    const UNVERIFIED_RESULT = (name) => ({
+      type: 'ok',
+      name,
+      protocol: 'bzz',
+      uri: `bzz://${'a'.repeat(64)}`,
+      trust: { level: 'unverified' },
+    });
+
+    // Drive the interstitial's own "Continue once" button, exactly as
+    // `ens-unverified.js` does: a `sendToHost` the shell picks up as an
+    // `ipc-message` from the tab the block page is in.
+    const continueOnce = async (ctx, name, tab = ctx.activeRef.tab) => {
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: tab.id,
+        channel: 'ens:continue-unverified',
+        args: [{ name }],
+      });
+      await flushMicrotasks();
+      tab.webview.loadURL.mockClear();
+    };
+
+    test('a name this tab was continued past once is not blocked again on Back', async () => {
+      // The reported repro: continue past the block, navigate on, press Back.
+      // Before the grant the refresh re-resolved, found the same `unverified`
+      // verdict and loaded the block page over the restored entry — taking
+      // the forward history with it, since raising it is a real navigation.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+
+      await continueOnce(ctx, 'vitalik.eth');
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      // The grant covers the block page, not the shield: the refreshed
+      // verdict is still `unverified` and still painted.
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual({ level: 'unverified' });
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('unverified');
+    });
+
+    test('a conflict on a continued-past name is not blocked on Back either', async () => {
+      // The grant is on the entry, not on the verdict that raised the page
+      // the user continued from. A name that has since started conflicting
+      // still carries its verdict on the restored entry's badge — the same
+      // trade the interstitial-backout guard already makes, and the same
+      // thing a traversal did before any of this refreshed at all.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+      await continueOnce(ctx, 'vitalik.eth');
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ resolvedData: '0xaa' }, { resolvedData: '0xbb' }],
+      });
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('conflict');
+    });
+
+    test('the grant covers only the name it was given for', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+      await continueOnce(ctx, 'vitalik.eth');
+
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('other.eth'));
+      commitTraversalTo(ctx, 'bzz://other.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain(
+        'pages/ens-unverified.html'
+      );
+    });
+
+    test('the grant covers only the tab it was given in', async () => {
+      // Tab A consents; tab B holds its own entry for the same name (loaded
+      // while it verified) and never did. Backing onto it there is a decision
+      // tab B's user has not made, so it blocks.
+      const tabA = createTab(1, 'https://a.example', { title: 'Tab A' });
+      const tabB = createTab(2, 'bzz://vitalik.eth/', { title: 'Tab B' });
+      const ctx = await loadNavigationModule({
+        firstTab: tabA,
+        tabs: [tabA, tabB],
+        activeTab: tabA,
+      });
+      installEnsParser(ctx);
+      ctx.tabsRef.list = [tabA, tabB];
+      ctx.activeRef.tab = tabA;
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+
+      await continueOnce(ctx, 'vitalik.eth', tabA);
+      tabB.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', { tab: tabB });
+      await flushMicrotasks();
+
+      expect(tabB.webview.loadURL.mock.calls.at(-1)[0]).toContain('pages/ens-unverified.html');
+      // …and tab A's own grant is untouched by tab B being blocked.
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', { tab: tabA });
+      await flushMicrotasks();
+      expect(tabA.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('the grant does not survive a fresh request for the same name', async () => {
+      // "Once" still means once per visit: nothing in `loadTarget` consults
+      // the grant, so typing the name again (or following a link to it, or
+      // reloading, both of which land in the same place) blocks as before.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockResolvedValue(UNVERIFIED_RESULT('vitalik.eth'));
+      await continueOnce(ctx, 'vitalik.eth');
+
+      ctx.mod.loadTarget('ens://vitalik.eth');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain(
+        'pages/ens-unverified.html'
+      );
+    });
+
+    test('an ok result loadTarget would refuse on transport gets no badge', async () => {
+      // `loadTarget` never writes a badge over content it declined to load,
+      // and an `ok` result is not automatically loadable. Both rejections it
+      // applies to one are reachable from a traversal, and each leaves the
+      // restored entry showing bytes the *old* contenthash served:
+      //
+      //   * a contenthash on a transport the browser cannot load at all;
+      //   * one whose transport contradicts the scheme the committed entry
+      //     asserts (a `bzz://name.eth/` entry now resolving to IPFS).
+      //
+      // Either way the fresh verdict says nothing about what is on screen, so
+      // the stored trust object is dropped rather than repainted `verified`.
+      const cases = [
+        {
+          label: 'unsupported transport',
+          display: 'bzz://vitalik.eth/',
+          protocol: 'arweave',
+          uri: 'arweave://whatever',
+        },
+        {
+          label: 'transport contradicts the entry scheme',
+          display: 'bzz://vitalik.eth/',
+          protocol: 'ipfs',
+          uri: 'ipfs://bafyfake',
+        },
+      ];
+      for (const { display, protocol, uri } of cases) {
+        const ctx = await loadNavigationModule();
+        installEnsParser(ctx);
+        await ctx.mod.initNavigation();
+
+        ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+        ctx.electronAPI.resolveEns.mockResolvedValue({
+          type: 'ok',
+          name: 'vitalik.eth',
+          protocol,
+          uri,
+          trust: FRESH_TRUST,
+        });
+        ctx.activeRef.tab.webview.loadURL.mockClear();
+
+        commitTraversalTo(ctx, display);
+        await flushMicrotasks();
+
+        expect(ctx.state.ensTrustByName.has('vitalik.eth')).toBe(false);
+        expect(ctx.elements.trustShield.hidden).toBe(true);
+        // Same shape as the other refusals here: the page stays put, the
+        // failure is logged rather than alerted.
+        expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+        expect(global.alert).not.toHaveBeenCalled();
+      }
+    });
+
+    test('an ok result whose transport matches the entry scheme still gets its badge', async () => {
+      // The control for the refusal above: `ipfs://` entry, `ipfs` result.
+      // Without it the refusal test passes just as well against a branch that
+      // refuses everything.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'ipfs',
+        uri: 'ipfs://bafyfake',
+        trust: FRESH_TRUST,
+      });
+
+      commitTraversalTo(ctx, 'ipfs://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(FRESH_TRUST);
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
+    });
+
+    test('a failed re-resolution drops the stale trust object instead of vouching', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', FRESH_TRUST);
+      ctx.electronAPI.resolveEns.mockResolvedValue({ type: 'error', reason: 'timeout' });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
+
+      await flushMicrotasks();
+
+      // The page stays put; only the claim about it goes away.
+      expect(ctx.state.ensTrustByName.has('vitalik.eth')).toBe(false);
+      expect(ctx.elements.trustShield.hidden).toBe(true);
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(global.alert).not.toHaveBeenCalled();
+    });
+
+    test('a rejected re-resolution drops the stale trust object too', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', FRESH_TRUST);
+      ctx.electronAPI.resolveEns.mockRejectedValue(new Error('resolver offline'));
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      expect(ctx.state.ensTrustByName.has('vitalik.eth')).toBe(false);
+      expect(ctx.elements.trustShield.hidden).toBe(true);
+    });
+
+    test('an unsubmitted address-bar draft does not affect the refresh decision', async () => {
+      // The decision keys on `committedDisplayUrl` (commit-only), never on
+      // the live input or `addressBarSnapshot` (which carry drafts). Typing
+      // `vitalik.eth` over an https page and pressing Back must refresh
+      // nothing; the draft is not a page the user ever visited.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.elements.addressInput.value = 'vitalik.eth';
+      ctx.elements.addressInput.dispatch('input');
+      ctx.activeRef.tab.navigationState.addressBarSnapshot = 'vitalik.eth';
+
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'https://example.com/';
+      ctx.activeRef.tab.navigationState.committedNavigationSequence += 1;
+      ctx.tabsMocks.webviewEventHandler('history-traversal-committed', {
+        tabId: ctx.activeRef.tab.id,
+      });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).not.toHaveBeenCalled();
+      // ...and the draft survives the traversal untouched.
+      expect(ctx.elements.addressInput.value).toBe('vitalik.eth');
+    });
+
+    test('a draft over an ENS page refreshes the committed name, not the draft', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'bzz',
+        uri: `bzz://${'a'.repeat(64)}`,
+        trust: FRESH_TRUST,
+      });
+
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'bzz://vitalik.eth/';
+      ctx.activeRef.tab.navigationState.committedNavigationSequence += 1;
+      ctx.elements.addressInput.value = 'other.box';
+      ctx.elements.addressInput.dispatch('input');
+      ctx.tabsMocks.webviewEventHandler('history-traversal-committed', {
+        tabId: ctx.activeRef.tab.id,
+      });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledTimes(1);
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('vitalik.eth');
+      expect(ctx.elements.addressInput.value).toBe('other.box');
+    });
+
+    test('a refresh that settles after the tab has moved on is dropped', async () => {
+      // The generation guard, not a URL comparison: the tab navigates away
+      // and back onto the *same* entry while the refresh is in flight, so
+      // `committedDisplayUrl` alone still reads as "unchanged".
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      // A second commit lands on the same tab (same URL, new entry).
+      ctx.activeRef.tab.navigationState.committedNavigationSequence += 1;
+
+      settle({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ value: '0xaa' }, { value: '0xbb' }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(STALE_TRUST);
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('a verdict settling over a pending navigation does not cancel it', async () => {
+      // The commit counter cannot see this one: the user asked for another
+      // navigation (a second Back, a link, a typed URL) onto a page that is
+      // still fetching, so *nothing has committed* and the tab is still on the
+      // restored entry. Raising the interstitial there would `loadURL` over
+      // the pending navigation, cancelling it and taking the forward history
+      // with it. Mirrors production: tabs.js bumps
+      // `requestedNavigationSequence` on the main-frame
+      // `did-start-navigation` that navigation produces.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      // The user presses Back again toward a slow entry: started, not
+      // committed.
+      ctx.activeRef.tab.navigationState.requestedNavigationSequence += 1;
+
+      settle({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ value: '0xaa' }, { value: '0xbb' }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      // The verdict is not lost: it is stored and painted on the shield, which
+      // is what the user is left with if that navigation never commits.
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual({ level: 'conflict' });
+      expect(ctx.elements.trustShield.hidden).toBe(false);
+    });
+
+    test('an unverified block over a pending navigation is skipped the same way', async () => {
+      // Sibling branch of the same helper — the `blockUnverifiedEns`
+      // interstitial cancels a pending navigation exactly as the conflict one
+      // does.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.blockUnverifiedEns = true;
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      ctx.activeRef.tab.navigationState.requestedNavigationSequence += 1;
+
+      settle({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'bzz',
+        uri: `bzz://${'a'.repeat(64)}`,
+        trust: { level: 'unverified' },
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual({ level: 'unverified' });
+    });
+
+    test('a URL entered while the refresh is in flight survives the verdict', async () => {
+      // The other writer of the counter: `loadTarget` records the intent at
+      // entry, because a chrome-driven navigation can spend a second in a name
+      // resolution before Chromium starts anything at all — so waiting for
+      // `did-start-navigation` would leave that whole window unguarded.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      ctx.elements.addressInput.value = 'https://after.example/';
+      ctx.mod.loadTarget('https://after.example/', null, null, { commitsAddressBar: true });
+
+      settle({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ value: '0xaa' }, { value: '0xbb' }],
+      });
+      await flushMicrotasks();
+
+      const loaded = ctx.activeRef.tab.webview.loadURL.mock.calls.map(([url]) => url);
+      expect(loaded).toEqual(['https://after.example/']);
+      expect(loaded.some((url) => url.includes('ens-conflict.html'))).toBe(false);
+    });
+
+    test('backing out of this name\u2019s interstitial keeps the restored entry', async () => {
+      // Raising an interstitial appends a history entry, so Back out of it
+      // lands on the blocked entry again. Re-raising there traps the user one
+      // entry deep (reproduced in a real run before this guard existed): the
+      // restored page keeps displaying instead, with the refreshed badge
+      // carrying the verdict.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ value: '0xaa' }, { value: '0xbb' }],
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', {
+        previousUrl: 'file:///app/pages/ens-conflict.html?name=vitalik.eth',
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('conflict');
+    });
+
+    test('stepping Forward off this name\u2019s interstitial keeps the restored entry too', async () => {
+      // The guard keys on the entry just left, not on the direction, and is
+      // meant to: `[A, ens-unverified(name), name.eth]` after a "continue
+      // anyway" click, Back onto the interstitial, then Forward. The entry
+      // left behind is that same interstitial, so the one-shot consent is
+      // not re-asked for — the restored page stays and carries the verdict
+      // on its badge.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'bzz',
+        uri: `bzz://${'a'.repeat(64)}`,
+        trust: { level: 'unverified' },
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      // Forward restores the continued-once page; `previousUrl` is the
+      // interstitial the user is stepping off, exactly as it is for Back.
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', {
+        previousUrl: 'file:///app/pages/ens-unverified.html?name=vitalik.eth',
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('unverified');
+    });
+
+    test('an interstitial for a different name does not suppress the block', async () => {
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ value: '0xaa' }, { value: '0xbb' }],
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', {
+        previousUrl: 'file:///app/pages/ens-conflict.html?name=other.eth',
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain(
+        'pages/ens-conflict.html'
+      );
+    });
+
+    test('a remote look-alike interstitial path does not suppress the block', async () => {
+      // The suppression keys on the anchored internal-page check (#243), so a
+      // site serving `https://evil.test/pages/ens-conflict.html?name=…` can't
+      // talk the browser out of blocking its own name.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ value: '0xaa' }, { value: '0xbb' }],
+      });
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', {
+        previousUrl: 'https://evil.test/pages/ens-conflict.html?name=vitalik.eth',
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain(
+        'pages/ens-conflict.html'
+      );
+    });
+
+    test('a background tab traversal refreshes trust without repainting the foreground shield', async () => {
+      // tabs.js reports the traversal for background tabs too (its
+      // did-navigate forward to navigation.js is active-tab-only), so a
+      // user who switches tabs between pressing Back and the commit
+      // landing still gets fresh trust metadata for the restored entry.
+      const tabA = createTab(1, 'https://a.example', { title: 'Tab A' });
+      const tabB = createTab(2, 'bzz://vitalik.eth/', { title: 'Tab B' });
+      const ctx = await loadNavigationModule({
+        firstTab: tabA,
+        tabs: [tabA, tabB],
+        activeTab: tabA,
+      });
+      installEnsParser(ctx);
+      ctx.tabsRef.list = [tabA, tabB];
+      ctx.activeRef.tab = tabA;
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      ctx.elements.addressInput.value = 'https://a.example';
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'bzz',
+        uri: `bzz://${'a'.repeat(64)}`,
+        trust: FRESH_TRUST,
+      });
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/', { tab: tabB });
+      const foregroundPaints = ctx.navigationUtilsMocks.resolveTrustBadge.mock.calls.length;
+      await flushMicrotasks();
+
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(FRESH_TRUST);
+      // Tab A is what the user is looking at: the refresh for the
+      // background tab must not redraw its chrome. Tab B picks the new
+      // trust object up from the map when it is switched back to.
+      expect(ctx.navigationUtilsMocks.resolveTrustBadge.mock.calls.length).toBe(foregroundPaints);
+      expect(ctx.elements.addressInput.value).toBe('https://a.example');
     });
   });
 });

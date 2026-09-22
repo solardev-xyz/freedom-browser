@@ -604,6 +604,20 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.sendToHost('ens:open-settings');
   }),
 
+  // "← Go back" on a block interstitial. The shell traverses, rather than
+  // the page calling `window.history.back()` itself: a *renderer*-initiated
+  // traversal onto a custom-scheme entry (`ipfs://name.eth/…`, the shape
+  // #86's refresh appends this interstitial after) is caught by the main
+  // process' `will-navigate` intercept and replayed through `loadTarget` as a
+  // fresh navigation, which re-resolves the name and raises this same
+  // interstitial again — the button loops with nothing to show for it. The
+  // shell's `webview.goBack()` is browser-initiated, so no intercept sees it;
+  // it restores the entry the traversal marked for a trust refresh, and falls
+  // back to the home page when there is nothing behind the interstitial.
+  interstitialGoBack: guardInternal('interstitialGoBack', () => {
+    ipcRenderer.sendToHost('interstitial:go-back');
+  }),
+
   // Signals from the onchain-app trust interstitial. The opaque approval
   // token is minted and consumed by the web3: protocol handler; the shell
   // only carries it back on the next top-level navigation.
