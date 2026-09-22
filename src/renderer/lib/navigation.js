@@ -2072,16 +2072,23 @@ export const loadHomePage = () => {
 //
 // One consequence of appending the interstitial rather than replacing the
 // entry: the history becomes `[…, name.eth, interstitial]`, so the
-// interstitial's own "← Go back" button (`window.history.back()`) restores
-// `name.eth` — the blocked name's bytes — rather than the page before it.
-// That is the same outcome the `leftThisNamesInterstitial` guard above
-// deliberately chooses for the toolbar Back, and the restored entry carries
-// the refreshed `conflict`/`unverified` badge, so the verdict is still on
-// screen; but the button's copy reads like it leaves the name behind. Left as
-// is rather than special-cased to `goToOffset(-2)`, which would be wrong for
-// the far more common shape the same button serves — a block raised by
-// `loadTarget`, where the blocked name never committed and one step back is
-// already the page before it.
+// interstitial's own "← Go back" button restores `name.eth` — the blocked
+// name's bytes — rather than the page before it. That is the same outcome the
+// `leftThisNamesInterstitial` guard above deliberately chooses for the toolbar
+// Back, and the restored entry carries the refreshed `conflict`/`unverified`
+// badge, so the verdict is still on screen; but the button's copy reads like
+// it leaves the name behind. Left as is rather than special-cased to
+// `goToOffset(-2)`, which would be wrong for the far more common shape the
+// same button serves — a block raised by `loadTarget`, where the blocked name
+// never committed and one step back is already the page before it.
+//
+// That button traverses through the shell (`interstitial:go-back` →
+// `goBackInHistory`), not through `window.history.back()` in the page: a
+// renderer-initiated traversal onto `ipfs://name.eth/…` is caught by the main
+// process' `will-navigate` intercept and replayed through `loadTarget` as a
+// fresh navigation, which re-resolves the name and raises this same
+// interstitial again — leaving the button dead on exactly the history shape
+// this refresh creates.
 const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
   const navState = getTabById(tabId)?.navigationState;
   if (!navState) return;
@@ -3002,6 +3009,24 @@ export const initNavigation = () => {
           }
         } else if (data.channel === 'ens:open-settings') {
           loadTarget('freedom://settings', null, webview);
+        } else if (data.channel === 'interstitial:go-back') {
+          // A block interstitial's own "← Go back". It has to be a real
+          // traversal driven from here: `window.history.back()` inside the
+          // page is renderer-initiated, so the main process' `will-navigate`
+          // intercept catches the hop onto the custom-scheme entry behind the
+          // interstitial and replays it through `loadTarget` as a fresh
+          // navigation — which re-resolves the name and raises the very same
+          // interstitial again (guest URL unchanged, on every click). Going
+          // through `goBackInHistory` also marks the commit as a traversal, so
+          // the restored entry is re-verified and, because the entry being
+          // left is this name's own interstitial, kept with its refreshed
+          // `conflict`/`unverified` badge rather than blocked a second time.
+          const senderWebview = getTabById(data.tabId)?.webview;
+          if (!goBackInHistory(senderWebview) && isActiveTab(data.tabId)) {
+            // Nothing behind the interstitial (it is the tab's first entry):
+            // the home page, which is where the inline fallback went too.
+            loadHomePage();
+          }
         } else if (data.channel === 'onchain:continue-unverified') {
           const payload = data.args?.[0] || {};
           const target = formatOnchainAppUrl(payload.target);

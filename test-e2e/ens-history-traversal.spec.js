@@ -48,6 +48,30 @@ const seedEnsPage = async (harness) => {
   });
 };
 
+// Click a control *inside* the guest document (the interstitial's own
+// buttons), with a user gesture, the way the user would. The guest carries
+// `.hidden` until `dom-ready`, so the element is waited for rather than
+// assumed present the moment the URL poll above is satisfied.
+const guestScript = (sel) =>
+  `(() => { const el = document.querySelector(${JSON.stringify(sel)});` +
+  ` if (!el) return 'missing'; el.click(); return 'clicked'; })()`;
+
+const inGuest = (window, source) =>
+  window.evaluate(async (js) => {
+    const wv = document.querySelector('webview.active, webview:not(.hidden)');
+    if (!wv?.executeJavaScript) return 'no-webview';
+    return await wv.executeJavaScript(js, true);
+  }, source);
+
+const clickInGuest = async (window, selector) => {
+  await expect
+    .poll(() => inGuest(window, `!!document.querySelector(${JSON.stringify(selector)})`), {
+      timeout: 15_000,
+    })
+    .toBe(true);
+  expect(await inGuest(window, guestScript(selector))).toBe('clicked');
+};
+
 const navigateTo = async (window, value) => {
   const input = window.locator('[data-test="address-input"]');
   await input.click();
@@ -239,6 +263,96 @@ test('a conflict under the new settings blocks once, without trapping Back', asy
     .poll(() => webviewUrl(window), { timeout: 15_000 })
     .toMatch(/^https:\/\/start\.example/);
 });
+
+// The interstitial's own "← Go back" button, on the history shape the
+// traversal refresh appends (`[…, name.eth, its-interstitial]`). Before the
+// fix the button was dead: `window.history.back()` inside the page is a
+// *renderer*-initiated navigation to `ipfs://traversal.eth/`, so the main
+// process' `will-navigate` intercept caught it and replayed it through
+// `loadTarget` — which re-resolved the name, found the same conflict and
+// loaded the same interstitial again. The guest URL never changed, however
+// many times it was clicked. The shell traverses now, so the blocked entry is
+// restored with the refreshed verdict on its badge, exactly as the toolbar
+// Back already did.
+for (const blocked of [
+  {
+    label: 'conflict',
+    page: /pages\/ens-conflict\.html/,
+    trust: 'conflict',
+    fixture: {
+      type: 'conflict',
+      trust: { level: 'conflict', block: { number: 21000000 } },
+      groups: [
+        { value: '0xaa', sources: ['rpc-one.test'] },
+        { value: '0xbb', sources: ['rpc-two.test'] },
+      ],
+    },
+  },
+  {
+    label: 'unverified',
+    page: /pages\/ens-unverified\.html/,
+    trust: 'unverified',
+    fixture: {
+      type: 'ok',
+      protocol: 'ipfs',
+      decoded: 'QmEnsTraversalPage',
+      uri: 'ipfs://QmEnsTraversalPage',
+      trust: { level: 'unverified', method: 'direct-rpc' },
+    },
+  },
+]) {
+  test(`the ${blocked.label} interstitial's own Go back button leaves it`, async ({
+    window,
+    harness,
+  }, testInfo) => {
+    await seedEnsPage(harness);
+
+    await navigateTo(window, 'https://start.example/');
+    await expect
+      .poll(() => webviewUrl(window), { timeout: 15_000 })
+      .toMatch(/^https:\/\/start\.example/);
+    await navigateTo(window, 'traversal.eth');
+    await expect
+      .poll(() => webviewUrl(window), { timeout: 15_000 })
+      .toMatch(/^ipfs:\/\/traversal\.eth/);
+    await navigateTo(window, 'https://after.example/');
+    await expect
+      .poll(() => webviewUrl(window), { timeout: 15_000 })
+      .toMatch(/^https:\/\/after\.example/);
+
+    // The verdict for the name flips while the user is away, so backing onto
+    // it blocks (`blockUnverifiedEns` is on by default).
+    await harness.setEnsFixture('traversal.eth', blocked.fixture);
+
+    await window.click('#back-btn');
+    await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toMatch(blocked.page);
+
+    // The page's own button, clicked as the user clicks it.
+    await clickInGuest(window, '#back-btn');
+    await expect
+      .poll(() => webviewUrl(window), { timeout: 15_000 })
+      .toMatch(/^ipfs:\/\/traversal\.eth/);
+    // It is a real traversal, not a re-navigation: the restored entry carries
+    // the refreshed verdict on its badge and the forward entry is still there.
+    await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', blocked.trust, {
+      timeout: 15_000,
+    });
+    await expect(window.locator('#forward-btn')).toBeEnabled();
+    // And it stays left: nothing re-raises the interstitial behind the back of
+    // the restored entry.
+    await window.waitForTimeout(2_000);
+    expect(await webviewUrl(window)).toMatch(/^ipfs:\/\/traversal\.eth/);
+    await window.screenshot({
+      path: testInfo.outputPath(`10-${blocked.label}-interstitial-go-back.png`),
+    });
+
+    // One more Back reaches the page before the name, as it did before.
+    await window.click('#back-btn');
+    await expect
+      .poll(() => webviewUrl(window), { timeout: 15_000 })
+      .toMatch(/^https:\/\/start\.example/);
+  });
+}
 
 // A frame that rewrites its own URL every 20ms through the History API.
 // Chromium reports each of those through the *same* `did-navigate-in-page`

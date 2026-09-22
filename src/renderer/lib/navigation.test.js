@@ -4482,6 +4482,64 @@ describe('navigation', () => {
       expect(consumeHistoryTraversal(webview)).toBe(false);
     });
 
+    test("a block interstitial's own Go back button traverses through the shell", async () => {
+      // The interstitial cannot press Back itself: `window.history.back()`
+      // inside the page is renderer-initiated, so the main process'
+      // `will-navigate` intercept catches the hop onto the blocked
+      // `ipfs://name.eth/` entry and replays it through `loadTarget` — which
+      // re-resolves the name and raises the same interstitial again. So the
+      // page signals the shell, which traverses for it, and marks the commit
+      // so the restored entry is re-verified (the same mark the toolbar
+      // button sets — a bare `webview.goBack()` here would still traverse but
+      // silently stop refreshing trust, which is why the mark is asserted).
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const { consumeHistoryTraversal } = await import('./history-traversal.js');
+      const { webview } = ctx.activeRef.tab;
+      webview.loadURL.mockClear();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'interstitial:go-back',
+        args: [],
+      });
+      await flushMicrotasks();
+
+      expect(webview.goBack).toHaveBeenCalledTimes(1);
+      expect(consumeHistoryTraversal(webview)).toBe(true);
+      // A traversal, never a re-navigation: loading the entry instead would
+      // push a fresh one over it and drop the forward history.
+      expect(webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('a block interstitial with nothing behind it goes home instead', async () => {
+      // The interstitial can be the tab's first entry (a typed name that
+      // blocked on its very first load), which is the case the page's old
+      // inline `history.length > 1` check covered. `canGoBack()` is the
+      // authoritative version of it.
+      const tab = createTab(1, 'https://active.example', {
+        webview: createWebview('https://active.example', {
+          canGoBack: false,
+          canGoForward: false,
+          webContentsId: 21,
+        }),
+      });
+      const ctx = await loadNavigationModule({ firstTab: tab });
+      await ctx.mod.initNavigation();
+      const { webview } = ctx.activeRef.tab;
+      webview.loadURL.mockClear();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'interstitial:go-back',
+        args: [],
+      });
+      await flushMicrotasks();
+
+      expect(webview.goBack).not.toHaveBeenCalled();
+      expect(webview.loadURL).toHaveBeenCalledWith(ctx.pageUrlsMocks.homeUrl);
+    });
+
     test('a navigation the user asks for drops a still-pending traversal mark', async () => {
       // Back pressed, then — before the restored entry commits — the user
       // types something else. The traversal is superseded, so the commit
