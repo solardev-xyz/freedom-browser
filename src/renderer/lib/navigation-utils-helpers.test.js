@@ -33,10 +33,21 @@ describe('navigation-utils extracted helpers', () => {
       'ipfs://QmEnsTraversalPage/docs?q=1'
     );
     // A suffix that is an absolute URL of its own moves off the root; the
-    // restore must not drag the old host back onto it.
-    expect(mod.applyEnsSuffix('ipfs://QmEnsTraversalPage', 'ipfs://QmOtherPage/x')).toBe(
-      'ipfs://QmOtherPage/x'
-    );
+    // restore must not drag the old host back onto it. That half is ours and
+    // holds in any runtime. The *new* root's case is the URL parser's, and
+    // the two runtimes disagree: Node leaves these schemes opaque and keeps
+    // `QmOtherPage`, while the renderer — where `ipfs:` is a registered
+    // standard scheme — folds the host and returns `ipfs://qmotherpage/x`
+    // (probed in the chrome window under xvfb, 2026-09-22). Nothing puts that
+    // case back, on purpose: the restore only ever replaces a root it was
+    // given, and the case of a root it never saw is not ours to invent.
+    // Defensive either way — `parseEnsInput`'s suffix is always empty or
+    // `/`/`?`/`#`-led (`page-urls.js:256-261`), so an absolute-URL suffix
+    // never reaches any caller — so assert the runtime-independent half
+    // rather than pinning Node's answer as if it were the renderer's.
+    const offRoot = mod.applyEnsSuffix('ipfs://QmEnsTraversalPage', 'ipfs://QmOtherPage/x');
+    expect(offRoot).not.toMatch(/QmEnsTraversalPage/i);
+    expect(offRoot.toLowerCase()).toBe('ipfs://qmotherpage/x');
 
     expect(mod.extractEnsResolutionMetadata('bzz://abcdef/path', 'name.eth')).toEqual({
       knownEnsPairs: [['abcdef', 'name.eth']],
