@@ -32,7 +32,14 @@ and so stay out of `changelog.d/`.
 missing ones in Keep a Changelog order. The `--` is not optional: npm swallows
 `npm run changelog:assemble --write`, which then silently dry-runs.
 
+Fragments that open with the same top-level bullet are one entry, not two:
+their sub-bullets are folded under that one bullet, whether the bullet comes
+from another fragment in the same release or is already under
+`## [Unreleased]` from an earlier one. That is what makes the category leads
+`changelog-process.md` prescribes — `- Updated bundled nodes:` and friends —
+writable one bump per fragment.
+
 It never deletes a fragment: removing the consumed ones is an explicit
 `git rm changelog.d/*--*.md` in the release steps, so a dry run cannot lose an
 unreleased entry. Running `--write` twice before that `git rm` is harmless —
-an entry the `## [Unreleased]` block already carries is left alone.
+a sub-bullet the `## [Unreleased]` block already carries is left alone.

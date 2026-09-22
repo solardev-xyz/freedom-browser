@@ -14,6 +14,7 @@ const {
   SECTIONS,
   sectionOf,
   collectFragments,
+  mergeEntries,
   renderSections,
   pendingFragments,
   spliceIntoChangelog,
@@ -39,6 +40,26 @@ All notable changes to Freedom will be documented in this file.
 ### Fixed
 
 - A shipped entry that must not move
+`;
+
+// The shape `changelog-process.md` prescribes for every dependency bump: one
+// category lead with a sub-bullet per package. The lead is already under
+// `## [Unreleased]` as soon as one bump has landed, which is what a
+// first-line-only duplicate check mistook the next bump's fragment for.
+const BUNDLED = `# Changelog
+
+## [Unreleased]
+
+### Fixed
+
+- Something else entirely
+
+### Security
+
+- Updated bundled nodes:
+  - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45 — a chain read that fails
+
+## [0.8.5] - 2026-09-10
 `;
 
 function fragmentDir(files) {
@@ -91,6 +112,34 @@ describe('renderSections', () => {
     expect(out.indexOf('### Added')).toBeLessThan(out.indexOf('### Fixed'));
     expect(out.indexOf('### Fixed')).toBeLessThan(out.indexOf('### Security'));
   });
+
+  test('the dry run shows the folded shape the write produces', () => {
+    const out = renderSections(
+      new Map([
+        ['Security', ['- Updated bundled nodes:\n  - Ant', '- Updated bundled nodes:\n  - Arti']],
+      ])
+    );
+    expect(out).toBe('### Security\n\n- Updated bundled nodes:\n  - Ant\n  - Arti');
+  });
+});
+
+describe('mergeEntries', () => {
+  test('folds a shared lead bullet, keeping sub-bullet order and dropping repeats', () => {
+    expect(
+      mergeEntries([
+        '- Updated bundled nodes:\n  - Ant 0.5.45 to 0.5.46',
+        '- Updated bundled nodes:\n  - Ant 0.5.45 to 0.5.46\n  - Arti 1.4.0 to 1.4.1',
+        '- An unrelated entry',
+      ])
+    ).toEqual([
+      '- Updated bundled nodes:\n  - Ant 0.5.45 to 0.5.46\n  - Arti 1.4.0 to 1.4.1',
+      '- An unrelated entry',
+    ]);
+  });
+
+  test('splits a fragment carrying more than one top-level bullet', () => {
+    expect(mergeEntries(['- One\n  - a\n- Two\n  - b'])).toEqual(['- One\n  - a', '- Two\n  - b']);
+  });
 });
 
 describe('spliceIntoChangelog', () => {
@@ -123,6 +172,78 @@ describe('spliceIntoChangelog', () => {
       new Map([['Fixed', ['- Parent entry\n  - Child detail']]])
     );
     expect(out).toContain('- Parent entry\n  - Child detail');
+  });
+
+  test('folds a fragment under a lead bullet the block already carries', () => {
+    // The Ant pin-bump fragment `bundled-binaries.md` step 7 prescribes: its
+    // first line is a bullet the previous bump already put in the block, so
+    // keying the duplicate check on that line alone dropped the whole entry
+    // and the bump shipped with no changelog at all.
+    const out = spliceIntoChangelog(
+      BUNDLED,
+      new Map([
+        [
+          'Security',
+          [
+            '- Updated bundled nodes:\n  - [Ant](https://github.com/freedom-hq/ant) 0.5.45 to 0.5.46 — a postage top-up no longer stalls',
+          ],
+        ],
+      ])
+    );
+    expect(out).toContain('0.5.45 to 0.5.46');
+    expect(out.match(/^- Updated bundled nodes:$/gm)).toHaveLength(1);
+    // Under that bullet, after the bump already there — not under `### Fixed`.
+    const security = out.slice(out.indexOf('### Security'), out.indexOf('## [0.8.5]'));
+    expect(security.indexOf('0.5.44 to 0.5.45')).toBeLessThan(security.indexOf('0.5.45 to 0.5.46'));
+  });
+
+  test('folds two fragments that share a lead bullet into one entry', () => {
+    // Two bumps in one release window are two fragments, one changelog entry.
+    const out = spliceIntoChangelog(
+      CHANGELOG,
+      new Map([
+        [
+          'Security',
+          [
+            '- Updated bundled nodes:\n  - Ant 0.5.45 to 0.5.46',
+            '- Updated bundled nodes:\n  - Arti 1.4.0 to 1.4.1',
+          ],
+        ],
+      ])
+    );
+    expect(out.match(/^- Updated bundled nodes:$/gm)).toHaveLength(1);
+    expect(out).toContain('  - Ant 0.5.45 to 0.5.46\n  - Arti 1.4.0 to 1.4.1');
+  });
+
+  test('a folded entry is not folded in again on a second write', () => {
+    const bySection = new Map([
+      ['Security', ['- Updated bundled nodes:\n  - Ant 0.5.45 to 0.5.46']],
+    ]);
+    const once = spliceIntoChangelog(BUNDLED, bySection);
+    expect(spliceIntoChangelog(once, bySection)).toBe(once);
+    expect(once.match(/0\.5\.45 to 0\.5\.46/g)).toHaveLength(1);
+  });
+
+  test('folding stays inside its own entry and its own section', () => {
+    const out = spliceIntoChangelog(
+      BUNDLED,
+      new Map([['Fixed', ['- Updated bundled nodes:\n  - a Fixed-section bullet']]])
+    );
+    const fixed = out.slice(out.indexOf('### Fixed'), out.indexOf('### Security'));
+    // The lead the Security section carries is not this section's, so the
+    // entry lands under `### Fixed` as its own bullet.
+    expect(fixed).toContain('- Updated bundled nodes:\n  - a Fixed-section bullet');
+    expect(out.slice(out.indexOf('### Security'))).not.toContain('a Fixed-section bullet');
+    expect(out).toContain('- Something else entirely');
+  });
+
+  test('a new sub-bullet joins an entry whose other sub-bullets are there', () => {
+    const out = spliceIntoChangelog(
+      CHANGELOG,
+      new Map([['Fixed', ['- An existing fixed entry\n  - with a sub-bullet\n  - and a new one']]])
+    );
+    expect(out.match(/- An existing fixed entry/g)).toHaveLength(1);
+    expect(out).toContain('  - with a sub-bullet\n  - and a new one');
   });
 
   test('refuses a changelog with no Unreleased heading', () => {
@@ -170,6 +291,14 @@ describe('pendingFragments', () => {
       new Map([['Fixed', ['- An existing fixed entry\n  - with a sub-bullet', '- A new one']]])
     );
     expect(pending.get('Fixed')).toEqual(['- A new one']);
+  });
+
+  test('keeps an entry whose lead bullet is there but whose sub-bullet is not', () => {
+    const pending = pendingFragments(
+      CHANGELOG,
+      new Map([['Fixed', ['- An existing fixed entry\n  - a sub-bullet nobody has written yet']]])
+    );
+    expect(pending.get('Fixed')).toHaveLength(1);
   });
 
   test('ignores entries that only appear in a shipped release', () => {

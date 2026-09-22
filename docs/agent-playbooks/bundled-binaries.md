@@ -138,6 +138,11 @@ This is the sequence [#387](https://github.com/solardev-xyz/freedom-browser/pull
      - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45 — <what changes for a user>
    ```
 
+   Writing the same `- Updated bundled nodes:` lead as the last bump is
+   correct, not a duplicate: the assembler folds the sub-bullets under the one
+   lead, whether it comes from another fragment or is already under
+   `## [Unreleased]`.
+
    The file name's `<section>--` prefix is what picks the heading. `security`
    vs `changed` follows `changelog-process.md`: a hardening fix to code that
    shipped in a _previous tagged release_ is `security`.

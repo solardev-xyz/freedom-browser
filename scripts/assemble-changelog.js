@@ -67,10 +67,47 @@ function collectFragments(dir = FRAGMENT_DIR) {
   return bySection;
 }
 
+/** A top-level bullet starts at column 0; its sub-bullets are indented. */
+function isTopLevelLine(line) {
+  return line.trim() !== '' && !/^\s/.test(line);
+}
+
+/** A body split into one string per top-level bullet, sub-bullets attached. */
+function splitEntries(body) {
+  const entries = [];
+  for (const line of body.split('\n')) {
+    if (entries.length === 0 || isTopLevelLine(line)) entries.push([line]);
+    else entries[entries.length - 1].push(line);
+  }
+  return entries.map((lines) => lines.join('\n').replace(/\s+$/, '')).filter(Boolean);
+}
+
+/**
+ * Entries that share a top-level bullet folded into one, sub-bullets in order.
+ *
+ * `changelog-process.md` puts every dependency update under a category lead
+ * (`- Updated bundled nodes:`) with one sub-bullet per package, so a release
+ * that bumps two of them has two fragments whose first line is the same
+ * bullet. They are one entry in the changelog, not two.
+ */
+function mergeEntries(entries) {
+  const byLead = new Map();
+  for (const entry of entries.flatMap(splitEntries)) {
+    const [lead, ...subs] = entry.split('\n');
+    const key = lead.trim();
+    if (!byLead.has(key)) byLead.set(key, [lead]);
+    const lines = byLead.get(key);
+    for (const sub of subs) {
+      if (!lines.some((l) => l.trim() === sub.trim())) lines.push(sub);
+    }
+  }
+  return [...byLead.values()].map((lines) => lines.join('\n'));
+}
+
 /** The markdown those fragments add, in canonical section order. */
 function renderSections(bySection) {
   return SECTIONS.filter((s) => bySection.has(s))
-    .map((s) => `### ${s}\n\n${bySection.get(s).join('\n')}`)
+    .map((s) => `### ${s}\n\n${mergeEntries(bySection.get(s)).join('\n')}`)
     .join('\n\n');
 }
 
@@ -83,27 +120,67 @@ function unreleasedRange(lines) {
   return { start, end };
 }
 
+/** The `### <section>` line in `block`, or -1; and where that section ends. */
+function sectionRange(block, section) {
+  const start = block.findIndex((l) => l.trim() === `### ${section}`);
+  if (start === -1) return null;
+  let end = block.findIndex((l, i) => i > start && l.startsWith('### '));
+  if (end === -1) end = block.length;
+  return { start, end };
+}
+
 /**
- * The fragments whose entry is not already under `## [Unreleased]`.
+ * Where an entry's lead bullet already sits in a section, and which of its
+ * lines are missing under it.
+ *
+ * Matching whole entries, not just their first line: a fragment's lead bullet
+ * can be one the block already carries — `- Updated bundled nodes:` is written
+ * by every bundled-binary bump (`bundled-binaries.md` step 7) and is already
+ * under `## [Unreleased]` the moment one of them has landed. Such a fragment
+ * is not a duplicate; its sub-bullets belong under that bullet, and keying the
+ * check on the first line alone dropped the whole entry on the floor.
+ */
+function locateEntry(block, section, entry) {
+  const range = sectionRange(block, section);
+  const [lead, ...subs] = entry.split('\n');
+  if (!range) return { leadAt: -1, subsEnd: -1, missing: [lead, ...subs] };
+  let leadAt = -1;
+  for (let i = range.start + 1; i < range.end; i += 1) {
+    if (isTopLevelLine(block[i]) && block[i].trim() === lead.trim()) {
+      leadAt = i;
+      break;
+    }
+  }
+  if (leadAt === -1) return { leadAt, subsEnd: -1, missing: [lead, ...subs] };
+  // That bullet's own lines run to the next bullet or the blank line before it.
+  let subsEnd = leadAt + 1;
+  while (subsEnd < range.end && block[subsEnd].trim() !== '' && !isTopLevelLine(block[subsEnd])) {
+    subsEnd += 1;
+  }
+  const present = block.slice(leadAt + 1, subsEnd).map((l) => l.trim());
+  const missing = subs.filter((l) => l.trim() !== '' && !present.includes(l.trim()));
+  return { leadAt, subsEnd, missing };
+}
+
+/**
+ * The fragments that would still add something to `## [Unreleased]`.
  *
  * The script never deletes a fragment, so the easy mistake is running
  * `--write` twice before the `git rm` that consumes them — which used to
- * duplicate every entry. An entry whose first line is already in the block is
- * skipped, which makes a repeat run a no-op instead.
+ * duplicate every entry. An entry the block carries in full is skipped, which
+ * makes a repeat run a no-op instead.
  */
 function pendingFragments(changelog, bySection) {
   const lines = changelog.split('\n');
   const range = unreleasedRange(lines);
   if (!range) return bySection;
-  const present = new Set(
-    lines
-      .slice(range.start + 1, range.end)
-      .map((l) => l.trim())
-      .filter(Boolean)
-  );
+  const block = lines.slice(range.start + 1, range.end);
   const pending = new Map();
   for (const [section, entries] of bySection) {
-    const fresh = entries.filter((entry) => !present.has(entry.split('\n')[0].trim()));
+    const fresh = mergeEntries(entries).filter((entry) => {
+      const { leadAt, missing } = locateEntry(block, section, entry);
+      return leadAt === -1 || missing.length > 0;
+    });
     if (fresh.length > 0) pending.set(section, fresh);
   }
   return pending;
@@ -113,7 +190,9 @@ function pendingFragments(changelog, bySection) {
  * Splice fragment entries into the `## [Unreleased]` block of `changelog`.
  * Entries join a heading that is already there; a heading that is not gets
  * inserted at its canonical position rather than appended at the end. An entry
- * the block already carries is left alone, so a second `--write` adds nothing.
+ * whose lead bullet is already in the block has its own sub-bullets folded
+ * under it rather than being appended a second time — or dropped. An entry the
+ * block carries in full adds nothing, so a second `--write` is a no-op.
  */
 function spliceIntoChangelog(changelog, bySection) {
   if (bySection.size === 0) return changelog;
@@ -122,14 +201,21 @@ function spliceIntoChangelog(changelog, bySection) {
   if (!range) {
     throw new Error(`CHANGELOG.md has no '${UNRELEASED_HEADING}' heading to assemble into`);
   }
-  bySection = pendingFragments(changelog, bySection);
-  if (bySection.size === 0) return changelog;
   const { start, end } = range;
 
   const block = lines.slice(start + 1, end);
   for (const section of SECTIONS) {
     if (!bySection.has(section)) continue;
-    const entries = bySection.get(section).join('\n').split('\n');
+    // Fold the fragments' own shared lead bullets together first, so two
+    // bumps in one release land under one `- Updated bundled nodes:`.
+    const fresh = [];
+    for (const entry of mergeEntries(bySection.get(section))) {
+      const { leadAt, subsEnd, missing } = locateEntry(block, section, entry);
+      if (leadAt === -1) fresh.push(entry);
+      else if (missing.length > 0) block.splice(subsEnd, 0, ...missing);
+    }
+    if (fresh.length === 0) continue;
+    const entries = fresh.join('\n').split('\n');
     const at = block.findIndex((l) => l.trim() === `### ${section}`);
     if (at === -1) {
       // Insert before the first heading that sorts after this one, so the
@@ -175,7 +261,7 @@ function main(argv) {
     (n, e) => n + e.length,
     0
   );
-  console.log(`Assembled ${count} fragment(s) into CHANGELOG.md.`);
+  console.log(`Assembled ${count} entr${count === 1 ? 'y' : 'ies'} into CHANGELOG.md.`);
   console.log('Now remove the consumed fragments: git rm changelog.d/*--*.md');
   return 0;
 }
@@ -194,6 +280,7 @@ module.exports = {
   UNRELEASED_HEADING,
   sectionOf,
   collectFragments,
+  mergeEntries,
   renderSections,
   pendingFragments,
   spliceIntoChangelog,
