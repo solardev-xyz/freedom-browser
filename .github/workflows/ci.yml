@@ -35,6 +35,21 @@ on:
       - 'hotfix/**'
     tags: ['v*']
   pull_request:
+  # A merge queue is not a workflow-free settings change, which is what the
+  # `branches:` filter above turns it into. A queue pushes its candidate head
+  # to `gh-readonly-queue/<base>/pr-<n>-<sha>`, and that name matches none of
+  # the patterns above — deliberately, since a queue branch is machinery, not
+  # a ref anyone develops on. Without this trigger the queue head would get no
+  # run of this workflow at all, so `ci-ok` (and every other context) would
+  # never report on it and every queued pull request would sit waiting for
+  # checks that cannot arrive until the queue's own timeout evicted it.
+  #
+  # Both gates short-circuit to "changed" on any event that is not a
+  # `pull_request`, so a queue run is never classified as prose and always
+  # runs the full matrix — which is the right answer for a merged-result
+  # check, and is what `$EVENT != "pull_request"` already gives it. Pinned in
+  # `scripts/ci/ci-gate.test.js` along with the rest of the trigger set.
+  merge_group:
   workflow_dispatch:
     inputs:
       myotis_live:

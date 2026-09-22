@@ -277,6 +277,37 @@ describe('the triggers', () => {
 
   const covers = (ref) => pushBranches().some((pattern) => matches(pattern, ref));
 
+  /** The events under `on:`, as that block's own top-level keys. */
+  const triggers = () => {
+    const on = withoutComments.match(/^on:\n([\s\S]*?)^[a-z]/m);
+    expect(on).toBeTruthy();
+    return (on[1].match(/^ {2}([a-z_]+):/gm) || []).map((line) => line.trim().replace(':', ''));
+  };
+
+  it('are the whole set, not just the two a pull request sees', () => {
+    // Pinned as the exact set, because the failure this exists to catch is a
+    // trigger that is *missing*: a `branches:` filter narrow enough to drop
+    // the duplicate feature-branch push also drops every ref an automation
+    // pushes, and nothing else in this file would notice. Adding a trigger
+    // should have to say so here.
+    expect(triggers().sort()).toEqual(['merge_group', 'pull_request', 'push', 'workflow_dispatch']);
+  });
+
+  it('report on a merge queue head, which no other trigger reaches', () => {
+    // A merge queue pushes its candidate head to
+    // `gh-readonly-queue/<base>/pr-<n>-<sha>`. That is not a pull request ref,
+    // and the `branches:` filter above does not list it — correctly, since a
+    // queue branch is machinery nobody develops on. So `merge_group:` is the
+    // only trigger that can produce a run there. Without it a queue run
+    // reports no `ci-ok` and no `test` on the queue head at all, and every
+    // queued pull request waits on checks that cannot arrive until the
+    // queue's own timeout evicts it. `release-process.md`'s "Next step: a
+    // merge queue" says enabling one is a settings change; this is the half
+    // that is not.
+    expect(covers('gh-readonly-queue/main/pr-400-0123456789ab')).toBe(false);
+    expect(triggers()).toContain('merge_group');
+  });
+
   it('do not run a push that a pull request already covers', () => {
     // A branch push and the `pull_request` run for the same head are two runs
     // of this workflow under two different `github.ref`s, so `concurrency`
@@ -409,6 +440,26 @@ describe('the gate jobs', () => {
 
   it("never gate on a positive == 'true', which skips a failed gate", () => {
     expect(gatedJobs().filter(([, condition]) => /==\s*'true'/.test(condition))).toEqual([]);
+  });
+
+  it('run everything on an event that is not a pull request', () => {
+    // The other half of the `merge_group:` trigger. A queue run has no
+    // `github.base_ref` and no pull request diff to read, and the merged
+    // result of a batch is the last tree that should be waved through as
+    // prose — so every gate must answer "changed" on any event that is not a
+    // `pull_request`, before it reaches the diff at all.
+    const defaultsToChanged = (gate) => {
+      const block = jobs().get(gate);
+      const output = (block.match(/^ {6}([a-z]+): \$\{\{ steps\.filter\.outputs\./m) || [])[1];
+      if (!output) return false;
+      return new RegExp(
+        `if \\[ "\\$EVENT" != "pull_request" \\]; then[\\s\\S]*?` +
+          `echo "${output}=true" >> "\\$GITHUB_OUTPUT"[\\s\\S]*?exit 0`
+      ).test(block);
+    };
+    expect(GATES.map((gate) => [gate, defaultsToChanged(gate)])).toEqual(
+      GATES.map((gate) => [gate, true])
+    );
   });
 
   it('are themselves ungated, so nothing can skip the gate itself', () => {
