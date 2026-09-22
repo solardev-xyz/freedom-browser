@@ -50,6 +50,27 @@ function sectionOf(filename) {
 }
 
 /**
+ * A fragment's bytes as the rest of this script needs them: no UTF-8 BOM, `\n`
+ * line ends, and no trailing whitespace on any line.
+ *
+ * All three are things an editor adds without being asked, and all three land
+ * in CHANGELOG.md or break a check without ever looking wrong in the fragment:
+ * a BOM on the first line makes `validateBody` refuse a bullet whose quoted
+ * text reads byte-for-byte correct; a bare `\r` (an editor writing classic-Mac
+ * line ends) leaves the whole file as one line that validates and splices with
+ * the `\r` mid-entry; two trailing spaces are a markdown hard break that would
+ * be spliced in verbatim, and any trailing whitespace defeats the sub-bullet
+ * comparisons below, which are the only thing keeping a second `--write` from
+ * duplicating an entry.
+ */
+function normaliseFragment(text) {
+  return text
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+$/gm, '');
+}
+
+/**
  * A fragment body is one tight markdown bullet list and nothing else; throws
  * otherwise.
  *
@@ -68,6 +89,14 @@ function sectionOf(filename) {
  * and a second `--write` inserts them again, against `changelog.d/README.md`'s
  * promise that the repeat run is harmless. The shipped changelog has never put
  * a blank inside an entry.
+ *
+ * Two levels deep at most — a bullet and sub-bullets indented two spaces — for
+ * the same reason. `locateEntry` reads an entry back as a flat list of
+ * sub-lines and folds a missing one in after the last one already there, so a
+ * third level (or a sub-bullet mis-indented four spaces) would land under
+ * whichever sub-bullet happens to be last rather than under its own parent.
+ * The shipped changelog has never carried a third level either, so refusing
+ * one here costs nothing and keeps that silent misplacement out of a release.
  */
 function validateBody(filename, body) {
   const where = `changelog.d/${filename}`;
@@ -88,7 +117,16 @@ function validateBody(filename, body) {
           `list — a loose one splices in fine and then duplicates on the next run.`
       );
     }
-    if (/^\s/.test(line) || /^- \S/.test(line)) continue;
+    if (/^- \S/.test(line) || /^ {2}\S/.test(line)) continue;
+    if (/^\s/.test(line)) {
+      throw new Error(
+        `${where}: ${JSON.stringify(line)} is indented deeper than one level. ` +
+          `An entry is a top-level bullet plus sub-bullets indented two spaces — the only ` +
+          `shape CHANGELOG.md has ever carried, and the only one the assembler can place: ` +
+          `a deeper line is folded in after the entry's last sub-bullet, under whichever ` +
+          `one happens to sit there rather than under its own parent.`
+      );
+    }
     throw new Error(
       `${where}: ${JSON.stringify(line)} is neither a bullet nor indented. ` +
         `Indent a sub-bullet or a wrapped line; an unindented line becomes its own entry.`
@@ -126,9 +164,7 @@ function collectFragments(dir = FRAGMENT_DIR) {
   const bySection = new Map();
   for (const file of files) {
     const section = sectionOf(file);
-    // CRLF normalised here: a `\r` left on a line end is spliced into
-    // CHANGELOG.md with it and breaks every sub-bullet comparison below.
-    const body = dedent(fs.readFileSync(path.join(dir, file), 'utf8').replace(/\r\n/g, '\n'));
+    const body = dedent(normaliseFragment(fs.readFileSync(path.join(dir, file), 'utf8')));
     validateBody(file, body);
     if (!bySection.has(section)) bySection.set(section, []);
     bySection.get(section).push(body);
@@ -326,24 +362,30 @@ function main(argv) {
     console.log('No changelog fragments in changelog.d/.');
     return 0;
   }
-  const rendered = renderSections(bySection);
-  if (!write) {
-    console.log(rendered);
-    console.log('\n(dry run — pass --write to splice this into CHANGELOG.md)');
-    return 0;
-  }
+  // Both runs read CHANGELOG.md, so the dry run answers the question the
+  // releaser is actually asking — what would `--write` add *now* — instead of
+  // re-printing every fragment as pending after a `--write` has already
+  // spliced them, while `--write` itself reports nothing to do. The missing
+  // `## [Unreleased]` heading fails here too (changelog-process.md step 9 is
+  // where it gets re-introduced): surfacing it only on `--write` means the dry
+  // run reads as ready when it is not.
   const changelog = fs.readFileSync(CHANGELOG_PATH, 'utf8');
-  const updated = spliceIntoChangelog(changelog, bySection);
-  if (updated === changelog) {
+  if (!unreleasedRange(changelog.split('\n'))) {
+    throw new Error(`CHANGELOG.md has no '${UNRELEASED_HEADING}' heading to assemble into`);
+  }
+  const pending = pendingFragments(changelog, bySection);
+  const count = [...pending.values()].reduce((n, e) => n + e.length, 0);
+  if (count === 0) {
     console.log('CHANGELOG.md already carries every fragment — nothing to splice.');
     console.log('Remove the consumed fragments: git rm changelog.d/*--*.md');
     return 0;
   }
-  fs.writeFileSync(CHANGELOG_PATH, updated);
-  const count = [...pendingFragments(changelog, bySection).values()].reduce(
-    (n, e) => n + e.length,
-    0
-  );
+  if (!write) {
+    console.log(renderSections(pending));
+    console.log('\n(dry run — pass --write to splice this into CHANGELOG.md)');
+    return 0;
+  }
+  fs.writeFileSync(CHANGELOG_PATH, spliceIntoChangelog(changelog, bySection));
   console.log(`Assembled ${count} entr${count === 1 ? 'y' : 'ies'} into CHANGELOG.md.`);
   console.log('Now remove the consumed fragments: git rm changelog.d/*--*.md');
   return 0;
@@ -362,6 +404,7 @@ module.exports = {
   SECTIONS,
   UNRELEASED_HEADING,
   sectionOf,
+  normaliseFragment,
   validateBody,
   collectFragments,
   mergeEntries,

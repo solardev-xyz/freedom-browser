@@ -22,8 +22,11 @@ to the voice rules in `docs/agent-playbooks/changelog-process.md`:
 
 Bullets and nothing else: the body is spliced into `## [Unreleased]` verbatim,
 so a heading line or a bare paragraph lands there as one. Sub-bullets and
-wrapped lines are indented — an unindented continuation becomes its own entry —
-and the list is tight, with no blank line between the bullets. The file's own
+wrapped lines are indented two spaces — an unindented continuation becomes its
+own entry, and a deeper indent is refused: the assembler folds a missing line
+in after an entry's last sub-bullet, so a third level would land under
+whichever sub-bullet happens to sit there rather than under its own parent.
+The list is tight, with no blank line between the bullets. The file's own
 indentation does not matter: a fragment pasted out of an indented fence (the
 one in `docs/agent-playbooks/bundled-binaries.md` step 7 sits inside a numbered
 list) is dedented by its first line's whitespace. `npm run changelog:assemble`
@@ -37,7 +40,8 @@ and so stay out of `changelog.d/`.
 
 ## Assembling them
 
-`npm run changelog:assemble` prints what the fragments add;
+`npm run changelog:assemble` prints what the fragments still add to
+`## [Unreleased]` — after a `--write`, that is nothing;
 `npm run changelog:assemble -- --write` splices them into the
 `## [Unreleased]` block, joining headings that are already there and inserting
 missing ones in Keep a Changelog order. The `--` is not optional: npm swallows
@@ -53,4 +57,7 @@ writable one bump per fragment.
 It never deletes a fragment: removing the consumed ones is an explicit
 `git rm changelog.d/*--*.md` in the release steps, so a dry run cannot lose an
 unreleased entry. Running `--write` twice before that `git rm` is harmless —
-a sub-bullet the `## [Unreleased]` block already carries is left alone.
+a sub-bullet the `## [Unreleased]` block already carries is left alone. What it
+compares is the text, so a line edited in `CHANGELOG.md` after assembling no
+longer matches its fragment and a further `--write` inserts the original beside
+it: edit the fragment, or `git rm` it first.

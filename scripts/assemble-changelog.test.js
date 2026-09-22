@@ -13,6 +13,7 @@ const path = require('path');
 const {
   SECTIONS,
   sectionOf,
+  normaliseFragment,
   validateBody,
   collectFragments,
   mergeEntries,
@@ -118,6 +119,19 @@ describe('validateBody', () => {
     expect(() => validateBody('fixed--a.md', '')).toThrow(/empty/);
   });
 
+  test('rejects a line indented deeper than one level, which the splice cannot place', () => {
+    // `locateEntry` folds a missing line in after the entry's last sub-bullet,
+    // so a third level lands under whichever sub-bullet happens to sit there.
+    // Both shapes below read as valid markdown; neither has ever appeared in
+    // CHANGELOG.md, and the assembler has nowhere correct to put them.
+    expect(() => validateBody('fixed--a.md', '- Lead\n  - sub a\n    - deeper still')).toThrow(
+      /indented deeper than one level/
+    );
+    expect(() => validateBody('fixed--a.md', '- Lead\n    - a sub-bullet four spaces in')).toThrow(
+      /indented deeper than one level/
+    );
+  });
+
   test('rejects a loose sub-list, which splices once and duplicates on the next run', () => {
     // `locateEntry` reads an entry back out of `## [Unreleased]` as the lines
     // up to the next bullet or the blank before it, so the sub-bullets past a
@@ -125,6 +139,30 @@ describe('validateBody', () => {
     // against `changelog.d/README.md`'s "running it twice is harmless".
     expect(() => validateBody('fixed--a.md', '- Lead\n  - sub a\n\n  - sub b')).toThrow(
       /blank line inside the entry/
+    );
+  });
+});
+
+describe('normaliseFragment', () => {
+  test('strips a UTF-8 BOM, which makes a valid bullet fail validation', () => {
+    // Notepad and PowerShell 5's `>` both write one. Without this the error
+    // quotes a first line that reads byte-for-byte like a correct bullet.
+    expect(normaliseFragment('\uFEFF- Entry A\n')).toBe('- Entry A\n');
+    expect(() => validateBody('fixed--a.md', normaliseFragment('\uFEFF- Entry A'))).not.toThrow();
+  });
+
+  test('normalises a bare CR as well as CRLF', () => {
+    // A classic-Mac line end leaves the file as one line, which validates and
+    // then splices into CHANGELOG.md with the `\r` mid-entry.
+    expect(normaliseFragment('- Entry A\r  - a sub-bullet\r')).toBe(
+      '- Entry A\n  - a sub-bullet\n'
+    );
+    expect(normaliseFragment('- Entry A\r\n')).toBe('- Entry A\n');
+  });
+
+  test('strips trailing whitespace, a markdown hard break the splice would carry', () => {
+    expect(normaliseFragment('- Entry A  \n  - a sub-bullet\t\n')).toBe(
+      '- Entry A\n  - a sub-bullet\n'
     );
   });
 });
@@ -149,6 +187,13 @@ describe('collectFragments', () => {
 
   test('normalises CRLF, which would otherwise be spliced in with the entry', () => {
     const dir = fragmentDir({ 'fixed--a.md': '- Entry A\r\n  - a sub-bullet\r\n' });
+    expect(collectFragments(dir).get('Fixed')).toEqual(['- Entry A\n  - a sub-bullet']);
+  });
+
+  test('normalises a BOM, a bare CR and trailing whitespace off a fragment', () => {
+    const dir = fragmentDir({
+      'fixed--a.md': '\uFEFF- Entry A  \r  - a sub-bullet \r',
+    });
     expect(collectFragments(dir).get('Fixed')).toEqual(['- Entry A\n  - a sub-bullet']);
   });
 
