@@ -45,6 +45,7 @@ const createTab = (id, url, overrides = {}) => {
     addressBarSnapshot: '',
     committedDisplayUrl: '',
     committedNavigationSequence: 0,
+    requestedNavigationSequence: 0,
     cachedWebContentsId: null,
     resolvingWebContentsId: null,
     ...overrides.navigationState,
@@ -4984,6 +4985,121 @@ describe('navigation', () => {
 
       expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(STALE_TRUST);
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('a verdict settling over a pending navigation does not cancel it', async () => {
+      // The commit counter cannot see this one: the user asked for another
+      // navigation (a second Back, a link, a typed URL) onto a page that is
+      // still fetching, so *nothing has committed* and the tab is still on the
+      // restored entry. Raising the interstitial there would `loadURL` over
+      // the pending navigation, cancelling it and taking the forward history
+      // with it. Mirrors production: tabs.js bumps
+      // `requestedNavigationSequence` on the main-frame
+      // `did-start-navigation` that navigation produces.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', STALE_TRUST);
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      // The user presses Back again toward a slow entry: started, not
+      // committed.
+      ctx.activeRef.tab.navigationState.requestedNavigationSequence += 1;
+
+      settle({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ value: '0xaa' }, { value: '0xbb' }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      // The verdict is not lost: it is stored and painted on the shield, which
+      // is what the user is left with if that navigation never commits.
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual({ level: 'conflict' });
+      expect(ctx.elements.trustShield.hidden).toBe(false);
+    });
+
+    test('an unverified block over a pending navigation is skipped the same way', async () => {
+      // Sibling branch of the same helper — the `blockUnverifiedEns`
+      // interstitial cancels a pending navigation exactly as the conflict one
+      // does.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      ctx.state.blockUnverifiedEns = true;
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      ctx.activeRef.tab.navigationState.requestedNavigationSequence += 1;
+
+      settle({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'bzz',
+        uri: `bzz://${'a'.repeat(64)}`,
+        trust: { level: 'unverified' },
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual({ level: 'unverified' });
+    });
+
+    test('a URL entered while the refresh is in flight survives the verdict', async () => {
+      // The other writer of the counter: `loadTarget` records the intent at
+      // entry, because a chrome-driven navigation can spend a second in a name
+      // resolution before Chromium starts anything at all — so waiting for
+      // `did-start-navigation` would leave that whole window unguarded.
+      const ctx = await loadNavigationModule();
+      installEnsParser(ctx);
+      await ctx.mod.initNavigation();
+
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+
+      commitTraversalTo(ctx, 'bzz://vitalik.eth/');
+      await flushMicrotasks();
+
+      ctx.elements.addressInput.value = 'https://after.example/';
+      ctx.mod.loadTarget('https://after.example/', null, null, { commitsAddressBar: true });
+
+      settle({
+        type: 'conflict',
+        name: 'vitalik.eth',
+        trust: { level: 'conflict' },
+        groups: [{ value: '0xaa' }, { value: '0xbb' }],
+      });
+      await flushMicrotasks();
+
+      const loaded = ctx.activeRef.tab.webview.loadURL.mock.calls.map(([url]) => url);
+      expect(loaded).toEqual(['https://after.example/']);
+      expect(loaded.some((url) => url.includes('ens-conflict.html'))).toBe(false);
     });
 
     test('backing out of this name\u2019s interstitial keeps the restored entry', async () => {

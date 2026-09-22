@@ -332,6 +332,18 @@ const createNavigationState = () => ({
   // and `currentPageUrl`.
   committedDisplayUrl: '',
   committedNavigationSequence: 0,
+  // The commit counter's sibling, for the other half of the question an
+  // async landing site has to ask. `committedNavigationSequence` answers
+  // "has this tab moved on since I started?"; this one answers "is it about
+  // to?" — bumped by every navigation this guest has been *asked* for,
+  // whether or not it ever commits: Chromium's own main-frame,
+  // cross-document `did-start-navigation` (a back/forward traversal, a link
+  // click, any `loadURL`) and `loadTarget`'s entry, which records the intent
+  // before a name resolution that can take a second has produced a start
+  // event at all. Work that navigates the guest itself when it settles must
+  // compare this too, or it cancels the navigation the user asked for while
+  // it was in flight and takes the forward history with it (#86).
+  requestedNavigationSequence: 0,
   cachedWebContentsId: null,
   resolvingWebContentsId: null,
   pendingSwarmProbeId: null,
@@ -513,14 +525,19 @@ const createWebview = (tabId, initialUrl) => {
 
   // Create named event handlers so they can be removed later
   const handlers = {
-    // A main-frame, cross-document navigation started: record whether the
-    // find bar was open for this tab, which is what decides at commit
-    // whether the bar closes — Chrome's rule. Nothing visible happens here,
-    // because this navigation may never commit (a download link, Stop, an
-    // external protocol handler), and the user is then still on this page
+    // A main-frame, cross-document navigation started: bump the per-tab
+    // requested-navigation counter (see `createNavigationState`), and record
+    // whether the find bar was open for this tab, which is what decides at
+    // commit whether the bar closes — Chrome's rule. Nothing visible happens
+    // here, because this navigation may never commit (a download link, Stop,
+    // an external protocol handler), and the user is then still on this page
     // with a live search that must survive.
     'did-start-navigation': (event) => {
       if (event.isMainFrame === false || event.isInPlace) return;
+      const tab = tabState.tabs.find((t) => t.id === tabId);
+      if (tab?.navigationState) {
+        tab.navigationState.requestedNavigationSequence += 1;
+      }
       notifyFindBarNavigationStarted(webview);
     },
     'did-start-loading': () => {

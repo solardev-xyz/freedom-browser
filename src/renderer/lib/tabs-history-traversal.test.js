@@ -317,6 +317,53 @@ describe('back/forward traversal marking (tabs.js + history-traversal.js)', () =
     expect(ctx.traversalReports()).toHaveLength(0);
   });
 
+  test('a started navigation bumps the requested-navigation counter', async () => {
+    // What the traversal refresh compares to find out the user has asked for
+    // something else *since* the restored entry committed. A second Back, a
+    // link click or a typed URL onto a slow page starts a navigation that has
+    // not committed, so the commit counter is unchanged and only this one
+    // moves — and raising a block interstitial without checking it would
+    // `loadURL` over that navigation, cancelling it and destroying the
+    // forward history the traversal had just restored (#86).
+    const ctx = await loadModules();
+    const navState = ctx.tabs.getTabs()[0].navigationState;
+    const committedBefore = navState.committedNavigationSequence;
+    const requestedBefore = navState.requestedNavigationSequence;
+
+    ctx.webview.dispatch('did-start-navigation', {
+      url: 'https://slow.example/',
+      isMainFrame: true,
+      isInPlace: false,
+    });
+
+    expect(navState.requestedNavigationSequence).toBe(requestedBefore + 1);
+    // Nothing committed, which is the whole point of the second counter.
+    expect(navState.committedNavigationSequence).toBe(committedBefore);
+  });
+
+  test('a subframe or same-document start does not bump it', async () => {
+    // Same gate the find bar's start hook uses: neither navigates the guest's
+    // main document away, so neither supersedes a refresh in flight — and a
+    // page rewriting its own URL on a timer must not be able to suppress a
+    // block interstitial by looking like a pending navigation.
+    const ctx = await loadModules();
+    const navState = ctx.tabs.getTabs()[0].navigationState;
+    const requestedBefore = navState.requestedNavigationSequence;
+
+    ctx.webview.dispatch('did-start-navigation', {
+      url: 'https://ads.example/frame',
+      isMainFrame: false,
+      isInPlace: false,
+    });
+    ctx.webview.dispatch('did-start-navigation', {
+      url: `${ENS_URL}#section`,
+      isMainFrame: true,
+      isInPlace: true,
+    });
+
+    expect(navState.requestedNavigationSequence).toBe(requestedBefore);
+  });
+
   test('a background tab traversal is still reported', async () => {
     // tabs.js forwards `did-navigate` to navigation.js for the active tab
     // only. The traversal report is deliberately not gated that way: a user

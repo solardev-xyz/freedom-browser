@@ -680,3 +680,125 @@ test('a refreshed verdict for a transport the entry did not ask for gets no badg
   await expect(window.locator('#forward-btn')).toBeEnabled();
   await window.screenshot({ path: testInfo.outputPath('9-transport-mismatch-no-badge.png') });
 });
+
+// The other half of "a refresh that settles late must not navigate the guest":
+// a navigation the user has asked for but that has not *committed* yet. The
+// commit counter cannot see one — nothing committed — so a blocking verdict
+// settling inside that window used to `loadURL` its interstitial straight over
+// the pending load, cancelling it and taking the forward history with it.
+const CONFLICT_IN_FLIGHT = {
+  type: 'conflict',
+  trust: { level: 'conflict', block: { number: 21000000 } },
+  groups: [
+    { value: '0xaa', sources: ['rpc-one.test'] },
+    { value: '0xbb', sources: ['rpc-two.test'] },
+  ],
+  // Settles well after the traversal below commits, and well before the slow
+  // page the user is waiting on does.
+  delayMs: 1_200,
+};
+
+test('a verdict settling mid-traversal does not cancel the Back the user is waiting on', async ({
+  window,
+  harness,
+}, testInfo) => {
+  await seedEnsPage(harness);
+  // The entry the second Back restores: genuinely still fetching when the
+  // conflict verdict lands. `no-store` keeps the traversal a real fetch rather
+  // than an instant cache hit, which is what makes the window observable.
+  await harness.setContentFixture('ipfs://slowstart/', {
+    body: '<html><body><h1>slow start</h1></body></html>',
+    headers: { 'Cache-Control': 'no-store' },
+    delayMs: 2_500,
+  });
+
+  await navigateTo(window, 'ipfs://slowstart/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/slowstart/);
+  await navigateTo(window, 'traversal.eth');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await navigateTo(window, 'https://after.example/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/after\.example/);
+
+  // The resolvers now disagree about the name, and take a beat to say so.
+  await harness.setEnsFixture('traversal.eth', CONFLICT_IN_FLIGHT);
+
+  // Back onto the ENS entry — which starts the refresh — then Back again
+  // immediately, toward the slow entry, without waiting for that refresh.
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await window.click('#back-btn');
+
+  // The second traversal completes: the verdict landed while it was in flight
+  // and left it alone.
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/slowstart/);
+  // …and stays completed — an interstitial loaded over it would arrive after
+  // this URL first reads correctly, so it has to be observed still standing.
+  await window.waitForTimeout(1_500);
+  expect(await webviewUrl(window)).toMatch(/^ipfs:\/\/slowstart/);
+  // The forward history the traversal restored is intact (both entries ahead
+  // are still reachable), and the address bar is not showing the bare-name
+  // display an ENS interstitial paints.
+  await expect(window.locator('#forward-btn')).toBeEnabled();
+  await expect(window.locator('[data-test="address-input"]')).not.toHaveValue('traversal.eth');
+  await window.screenshot({ path: testInfo.outputPath('10-pending-back-not-cancelled.png') });
+});
+
+test('a verdict settling mid-resolution does not interrupt a URL the user entered', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // The same window, opened by the *chrome* rather than by Chromium: a name
+  // entered in the address bar spends its resolution with no navigation
+  // started yet, so `loadTarget` records the intent itself. Without that, the
+  // conflict interstitial for the entry being left behind loaded over the page
+  // the user was waiting on.
+  await seedEnsPage(harness);
+  await harness.setEnsFixture('other.eth', {
+    type: 'ok',
+    protocol: 'ipfs',
+    decoded: 'QmOtherPage',
+    uri: 'ipfs://QmOtherPage',
+    trust: { level: 'verified', method: 'colibri', queried: ['colibri'], agreed: ['colibri'] },
+    delayMs: 2_500,
+  });
+  await harness.setContentFixture('ipfs://other.eth/', {
+    body: '<html><body><h1>other.eth</h1></body></html>',
+  });
+
+  await navigateTo(window, 'traversal.eth');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await navigateTo(window, 'https://after.example/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/after\.example/);
+  await harness.setEnsFixture('traversal.eth', CONFLICT_IN_FLIGHT);
+
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await navigateTo(window, 'other.eth');
+
+  // Past the conflict verdict, still inside the entered name's own
+  // resolution: the guest is where the user left it, not on an interstitial.
+  await window.waitForTimeout(2_000);
+  expect(await webviewUrl(window)).not.toMatch(/pages\/ens-conflict\.html/);
+
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/other\.eth/);
+  await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', 'verified');
+  await window.screenshot({ path: testInfo.outputPath('11-entered-url-not-interrupted.png') });
+});

@@ -1326,6 +1326,17 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // to consume it — see `clearHistoryTraversal`.
   clearHistoryTraversal(webview);
 
+  // A navigation for this guest is now in flight, even though Chromium has
+  // not started one yet: a name resolution can run for a second first, and
+  // `did-start-navigation` — the other writer of this counter — only fires
+  // once that settles into a real load. Recording the intent here is what
+  // lets async work that would navigate this tab itself (the traversal
+  // refresh's block interstitials) see that the user has asked for something
+  // else and stand down instead of cancelling it (#86).
+  if (navState) {
+    navState.requestedNavigationSequence = (navState.requestedNavigationSequence || 0) + 1;
+  }
+
   // Every chrome-initiated navigation funnels through here (address-bar
   // submit, a picked autocomplete suggestion, bookmarks, menu items), so this
   // is the one place that reliably ends an uncommitted address-bar edit for
@@ -2064,6 +2075,21 @@ export const loadHomePage = () => {
 // behind them in the direction they came from, which is the same dead end
 // the Back case describes; the verdict stays on screen either way.
 //
+// The same "do not navigate the guest out from under the user" rule covers a
+// second case the commit counter cannot see: a navigation the user asked for
+// that has not committed yet. Back again onto a slow entry, or a URL typed
+// and entered while the re-resolution is still in flight, leaves the tab on
+// the restored page — nothing has committed — so a blocking verdict settling
+// inside that window would `loadURL` the interstitial over the pending load,
+// cancelling it and dropping the forward history with it. The block is
+// therefore skipped whenever `requestedNavigationSequence` has moved since
+// the refresh started; the trust object has already been stored and the badge
+// repainted, so if that navigation never commits (a download, Stop, an
+// external protocol handler) the user is left on the blocked entry with its
+// `conflict`/`unverified` shield — the same "the verdict stays on screen"
+// outcome the interstitial-backout case above settles for, and never weaker
+// than the pre-#86 behaviour, where a traversal raised no interstitial at all.
+//
 // A resolution that fails outright drops the stored trust object so the
 // shield goes quiet instead of vouching for a name we can no longer verify;
 // the restored page itself stays put, and the failure is logged rather than
@@ -2132,6 +2158,19 @@ const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
   const sequence = navState.committedNavigationSequence;
   const isStillCurrent = () =>
     getTabById(tabId)?.navigationState?.committedNavigationSequence === sequence;
+  // Second half of that guard, for the interstitial only. Commits are not the
+  // only thing that can happen while a resolution is in flight: the user can
+  // ask for a navigation that has not *committed* yet — a second Back, a URL
+  // typed and entered, a link clicked — onto a page that is still fetching.
+  // The commit counter cannot see it (nothing committed), so a verdict
+  // settling inside that window would `loadURL` the interstitial over the
+  // pending navigation, cancelling it and destroying the forward history the
+  // traversal restored. `requestedNavigationSequence` is bumped by every
+  // navigation this guest is asked for, committed or not (tabs.js), so
+  // comparing it answers "has the user moved on?" for exactly that window.
+  const requested = navState.requestedNavigationSequence;
+  const hasPendingNavigation = () =>
+    getTabById(tabId)?.navigationState?.requestedNavigationSequence !== requested;
   const repaintBadge = () => {
     // Background tabs repaint from the refreshed map when they are switched
     // back to; only the foreground shield needs redrawing now.
@@ -2150,6 +2189,12 @@ const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
     if (leftThisNamesInterstitial) {
       pushDebug(
         `${systemLabel} ${ens.name} still blocked, but the user is backing out of its interstitial — keeping the restored entry with its badge`
+      );
+      return;
+    }
+    if (hasPendingNavigation()) {
+      pushDebug(
+        `${systemLabel} ${ens.name} still blocked, but a newer navigation is in flight — leaving it alone, the badge carries the verdict`
       );
       return;
     }
