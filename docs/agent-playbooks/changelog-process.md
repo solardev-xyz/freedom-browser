@@ -2,7 +2,23 @@
 
 Use this playbook when asked to update `CHANGELOG.md` for a new version.
 
-## Procedure
+## Day to day: write a fragment, not a changelog edit
+
+A pull request with a user-visible change adds one file under `changelog.d/`
+and leaves `CHANGELOG.md` alone — `changelog.d/<section>--<slug>.md`, body
+written to the voice rules below. `changelog.d/README.md` has the format.
+
+This is not bookkeeping preference. Every pull request used to edit the same
+few lines under the same heading, so the first merge of a batch left all the
+others conflicting there, and each needed a merge commit plus a full CI run to
+validate one paragraph. A file per change cannot collide.
+
+The exclusions in step 5 still decide whether a change earns an entry at all:
+no fragment for developer-only fixes, in-release polish, or internal work.
+
+## At release: assemble them
+
+### Procedure
 
 1. Find the baseline commit. Prefer the previous release's tag, which is unambiguous regardless of dev-suffix bookkeeping:
    - `git rev-list -n 1 v<prev>` (e.g. `v0.7.0`).
@@ -33,7 +49,8 @@ Use this playbook when asked to update `CHANGELOG.md` for a new version.
 6. Merge related commits into a single user-facing entry.
 7. Inspect PR merge commits by reviewing underlying commits.
 8. Re-run the git log before editing to catch late commits.
-9. Prepend the new version section above the previous one. While the release is still in candidates (`rc.N` tags), keep the heading as `## [Unreleased]` and only replace it with `## [<version>] - <YYYY-MM-DD>` when the bare version is cut (see `release-process.md` §1/§3). If the heading is absent (rare, since the dev cycle on `main` accumulates entries under `[Unreleased]`), add the version heading directly. When writing the first user-facing change in the next dev cycle, re-introduce a `## [Unreleased]` heading above the latest released version.
+9. Fold in the fragments before writing the section: `npm run changelog:assemble` to see what they add, then `npm run changelog:assemble -- --write` to splice them into `## [Unreleased]`. The script never deletes them, so remove the consumed ones yourself in the same commit: `git rm changelog.d/*--*.md`.
+10. Prepend the new version section above the previous one. While the release is still in candidates (`rc.N` tags), keep the heading as `## [Unreleased]` and only replace it with `## [<version>] - <YYYY-MM-DD>` when the bare version is cut (see `release-process.md` §1/§3). If the heading is absent (rare, since the dev cycle on `main` accumulates entries under `[Unreleased]`), add the version heading directly. When writing the first user-facing change in the next dev cycle, re-introduce a `## [Unreleased]` heading above the latest released version.
 
 ## Output Style
 
