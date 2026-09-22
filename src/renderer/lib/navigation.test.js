@@ -4721,17 +4721,17 @@ describe('navigation', () => {
       expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
     });
 
-    test('a bare committed name is ENS-backed, and the legacy ens:// form parses', async () => {
-      // `vitalik.eth/about` is the third display form a dweb load actually
-      // commits, alongside the `bzz://`/`ipfs://` ones covered above.
-      //
-      // `ens://vitalik.eth/` rides along as a parser-level case only: that
-      // display is emitted for a raw-IPNS-key contenthash, and the URL such
-      // a load commits is `ipns://<key>/…`, which `parseEnsInput` declines
-      // because the host is the key rather than the name. So it cannot reach
-      // the refresh from a traversal today — reload keys on the same field
-      // and has the same reach — and this leg only pins that the branch
-      // behaves if a committed `ens://` form ever appears. See the reach note
+    test('the scheme-less and legacy ens:// name forms parse, defensively', async () => {
+      // Both legs are parser-level cases only — neither form can actually be
+      // committed, so neither reaches the refresh from a traversal today.
+      // `tabs.js`' did-navigate writes `committedDisplayUrl` as
+      // `formatOnchainAppDisplayUrl(…) || webview.getURL()`, and both halves
+      // are always scheme-qualified, so `vitalik.eth/about` never arrives;
+      // `ens://vitalik.eth/` is emitted only for a raw-IPNS-key contenthash,
+      // whose load commits `ipns://<key>/…`, which `parseEnsInput` declines
+      // because the host is the key rather than the name. Reload keys on the
+      // same field and has the same reach. These legs pin only that the
+      // branch behaves if either form ever does appear. See the reach note
       // above `refreshNameTrustAfterTraversal`.
       for (const display of ['vitalik.eth/about', 'ens://vitalik.eth/']) {
         const ctx = await loadNavigationModule();

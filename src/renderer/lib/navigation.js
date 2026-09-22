@@ -2122,13 +2122,17 @@ export const loadHomePage = () => {
 // information.
 //
 // What this reaches, exactly. Keying on `committedDisplayUrl` means keying on
-// a URL Chromium actually committed (`webview.getURL()`), so the forms that
-// arrive here are the ones a dweb load commits: `bzz://name.eth/…`,
-// `ipfs://name.eth/…`, `ipns://name.eth/…` and the bare `name.eth/…` display,
-// for ENS as for WNS/GNS/Tezos names that resolve to a dweb contenthash. Two
-// forms `parseEnsInput` accepts are *not* reachable from a traversal, and are
-// covered only defensively:
+// a URL Chromium actually committed: `tabs.js`' did-navigate writes that field
+// as `formatOnchainAppDisplayUrl(…) || webview.getURL()`, and both halves are
+// always scheme-qualified. So the forms that arrive here are the dweb schemes
+// a name load commits — `bzz://name.eth/…`, `ipfs://name.eth/…`,
+// `ipns://name.eth/…` — for ENS as for WNS/GNS/Tezos names that resolve to a
+// dweb contenthash. Three forms `parseEnsInput` accepts are *not* reachable
+// from a traversal, and are covered only defensively:
 //
+//   * the bare `name.eth/…` display, which is an address-bar *input* form
+//     only: nothing ever commits it, because neither of did-navigate's two
+//     sources can produce a scheme-less string;
 //   * the legacy `ens://name.eth/…` display, which `buildEnsDisplayUri` emits
 //     for a raw-IPNS-key contenthash — the URL that commits for it is
 //     `ipns://<key>/…` (`ipfsLoadUrl = targetUri`), which `parseEnsInput`
