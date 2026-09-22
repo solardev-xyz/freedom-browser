@@ -50,7 +50,8 @@ function sectionOf(filename) {
 }
 
 /**
- * A fragment body is a markdown bullet list and nothing else; throws otherwise.
+ * A fragment body is one tight markdown bullet list and nothing else; throws
+ * otherwise.
  *
  * The body is spliced into CHANGELOG.md verbatim, so anything that is not a
  * bullet lands there as-is: a heading line copied along with a fenced example
@@ -59,6 +60,14 @@ function sectionOf(filename) {
  * all. None of that is visible until the releaser assembles, months later —
  * this runs on every pull request instead, through the `changelog.d/` name
  * guard in `assemble-changelog.test.js`.
+ *
+ * Tight — no blank line inside the body — because that is the shape
+ * `locateEntry` reads back out of `## [Unreleased]`: an entry's lines run to
+ * the next bullet or the blank line before it. A loose sub-list splices once
+ * and then reads back short, so the sub-bullets past the blank look missing
+ * and a second `--write` inserts them again, against `changelog.d/README.md`'s
+ * promise that the repeat run is harmless. The shipped changelog has never put
+ * a blank inside an entry.
  */
 function validateBody(filename, body) {
   const where = `changelog.d/${filename}`;
@@ -73,12 +82,38 @@ function validateBody(filename, body) {
     );
   }
   for (const line of lines.slice(1)) {
-    if (line.trim() === '' || /^\s/.test(line) || /^- \S/.test(line)) continue;
+    if (line.trim() === '') {
+      throw new Error(
+        `${where}: a blank line inside the entry. Write the bullets as one tight ` +
+          `list — a loose one splices in fine and then duplicates on the next run.`
+      );
+    }
+    if (/^\s/.test(line) || /^- \S/.test(line)) continue;
     throw new Error(
       `${where}: ${JSON.stringify(line)} is neither a bullet nor indented. ` +
         `Indent a sub-bullet or a wrapped line; an unindented line becomes its own entry.`
     );
   }
+}
+
+/**
+ * A body with its own indentation removed: the first line's leading whitespace
+ * stripped off every line, and blank lines trimmed from both ends.
+ *
+ * `bundled-binaries.md` step 7 shows the fragment inside a numbered list, so
+ * every line of that fence carries three spaces. Trimming the body dedents its
+ * *first* line only, so the sub-bullets land in CHANGELOG.md two spaces too
+ * deep — still valid markdown, so nothing downstream notices, and prettier is
+ * not in CI to catch it.
+ */
+function dedent(body) {
+  const lines = body.replace(/\s+$/, '').split('\n');
+  while (lines.length > 0 && lines[0].trim() === '') lines.shift();
+  const [indent] = /^[ \t]*/.exec(lines[0] ?? '');
+  if (indent === '') return lines.join('\n');
+  return lines
+    .map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line.trimStart()))
+    .join('\n');
 }
 
 /** Fragments on disk, grouped by section, each group sorted by filename. */
@@ -93,7 +128,7 @@ function collectFragments(dir = FRAGMENT_DIR) {
     const section = sectionOf(file);
     // CRLF normalised here: a `\r` left on a line end is spliced into
     // CHANGELOG.md with it and breaks every sub-bullet comparison below.
-    const body = fs.readFileSync(path.join(dir, file), 'utf8').replace(/\r\n/g, '\n').trim();
+    const body = dedent(fs.readFileSync(path.join(dir, file), 'utf8').replace(/\r\n/g, '\n'));
     validateBody(file, body);
     if (!bySection.has(section)) bySection.set(section, []);
     bySection.get(section).push(body);
@@ -186,12 +221,19 @@ function locateEntry(block, section, entry) {
     }
   }
   if (leadAt === -1) return { leadAt, subsEnd: -1, missing: [lead, ...subs] };
-  // That bullet's own lines run to the next bullet or the blank line before it.
+  // That bullet's own lines run to the next bullet. A blank one inside them is
+  // read as part of the entry rather than as its end — `validateBody` refuses
+  // to write that shape, but one hand-typed into `## [Unreleased]` would
+  // otherwise hide every sub-bullet below it and have the next `--write`
+  // splice those in again. `subsEnd` is where a missing sub-bullet goes: the
+  // line after the last one actually there, never after a trailing blank.
+  let scan = leadAt + 1;
   let subsEnd = leadAt + 1;
-  while (subsEnd < range.end && block[subsEnd].trim() !== '' && !isTopLevelLine(block[subsEnd])) {
-    subsEnd += 1;
+  while (scan < range.end && !isTopLevelLine(block[scan])) {
+    scan += 1;
+    if (block[scan - 1].trim() !== '') subsEnd = scan;
   }
-  const present = block.slice(leadAt + 1, subsEnd).map((l) => l.trim());
+  const present = block.slice(leadAt + 1, scan).map((l) => l.trim());
   const missing = subs.filter((l) => l.trim() !== '' && !present.includes(l.trim()));
   return { leadAt, subsEnd, missing };
 }
@@ -257,7 +299,11 @@ function spliceIntoChangelog(changelog, bySection) {
       const later = SECTIONS.slice(SECTIONS.indexOf(section) + 1);
       let insertAt = block.findIndex((l) => later.some((s) => l.trim() === `### ${s}`));
       if (insertAt === -1) insertAt = block.length;
-      block.splice(insertAt, 0, `### ${section}`, '', ...entries, '');
+      // An empty block puts the insert point on the line straight after
+      // `## [Unreleased]` — the shape step 9 hand-types at release. Every other
+      // release heading has a blank line under it; this one gets one too.
+      const lead = insertAt === 0 ? [''] : [];
+      block.splice(insertAt, 0, ...lead, `### ${section}`, '', ...entries, '');
     } else {
       // End of that heading's entries: the line before the next heading.
       let next = block.findIndex((l, i) => i > at && l.startsWith('### '));

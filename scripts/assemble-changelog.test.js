@@ -117,6 +117,16 @@ describe('validateBody', () => {
   test('rejects an empty fragment rather than contributing nothing at release', () => {
     expect(() => validateBody('fixed--a.md', '')).toThrow(/empty/);
   });
+
+  test('rejects a loose sub-list, which splices once and duplicates on the next run', () => {
+    // `locateEntry` reads an entry back out of `## [Unreleased]` as the lines
+    // up to the next bullet or the blank before it, so the sub-bullets past a
+    // blank read as missing and a second `--write` inserts them again —
+    // against `changelog.d/README.md`'s "running it twice is harmless".
+    expect(() => validateBody('fixed--a.md', '- Lead\n  - sub a\n\n  - sub b')).toThrow(
+      /blank line inside the entry/
+    );
+  });
 });
 
 describe('collectFragments', () => {
@@ -140,6 +150,18 @@ describe('collectFragments', () => {
   test('normalises CRLF, which would otherwise be spliced in with the entry', () => {
     const dir = fragmentDir({ 'fixed--a.md': '- Entry A\r\n  - a sub-bullet\r\n' });
     expect(collectFragments(dir).get('Fixed')).toEqual(['- Entry A\n  - a sub-bullet']);
+  });
+
+  test('dedents a fragment copied out of an indented fence', () => {
+    // `bundled-binaries.md` step 7 sits inside a numbered list, so its fenced
+    // example carries three spaces on every line. Trimming dedents the first
+    // line only, and the sub-bullet lands in CHANGELOG.md two spaces too deep.
+    const dir = fragmentDir({
+      'security--ant-0.5.45.md': '   - Updated bundled nodes:\n     - [Ant](x) 0.5.44 to 0.5.45\n',
+    });
+    expect(collectFragments(dir).get('Security')).toEqual([
+      '- Updated bundled nodes:\n  - [Ant](x) 0.5.44 to 0.5.45',
+    ]);
   });
 
   test('is empty when the directory does not exist', () => {
@@ -213,6 +235,32 @@ describe('spliceIntoChangelog', () => {
     const empty = '# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n## [0.8.5] - 2026-09-10\n';
     const out = spliceIntoChangelog(empty, new Map([['Fixed', ['- A new fixed entry']]]));
     expect(out).toContain('### Fixed\n\n- A new fixed entry');
+  });
+
+  test('a second write adds nothing to a loose entry already in the block', () => {
+    // The sibling of the `validateBody` case above, for a block whose entry
+    // was hand-typed loose: the sub-bullets below the blank line must still
+    // read as present, or `--write` splices them in a second time.
+    const loose =
+      '# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- Lead\n  - sub a\n\n  - sub b\n\n## [0.8.5]\n';
+    const bySection = new Map([['Fixed', ['- Lead\n  - sub a\n  - sub b']]]);
+    expect(spliceIntoChangelog(loose, bySection)).toBe(loose);
+    expect(pendingFragments(loose, bySection).size).toBe(0);
+  });
+
+  test('a missing sub-bullet joins a loose entry above its blank line', () => {
+    const loose =
+      '# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n- Lead\n  - sub a\n\n  - sub b\n\n## [0.8.5]\n';
+    const out = spliceIntoChangelog(loose, new Map([['Fixed', ['- Lead\n  - sub c']]]));
+    expect(out).toContain('- Lead\n  - sub a\n\n  - sub b\n  - sub c\n');
+  });
+
+  test('keeps a blank line under an Unreleased heading with no block at all', () => {
+    // What `release-process.md` step 9 hand-types when it adds `## [Unreleased]`
+    // back after cutting a version: the heading and nothing under it.
+    const empty = '# Changelog\n\n## [Unreleased]\n## [0.8.5] - 2026-09-10\n';
+    const out = spliceIntoChangelog(empty, new Map([['Fixed', ['- A new fixed entry']]]));
+    expect(out).toContain('## [Unreleased]\n\n### Fixed\n\n- A new fixed entry\n');
   });
 
   test('leaves shipped releases untouched', () => {

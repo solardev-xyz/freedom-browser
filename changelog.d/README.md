@@ -22,10 +22,14 @@ to the voice rules in `docs/agent-playbooks/changelog-process.md`:
 
 Bullets and nothing else: the body is spliced into `## [Unreleased]` verbatim,
 so a heading line or a bare paragraph lands there as one. Sub-bullets and
-wrapped lines are indented — an unindented continuation becomes its own entry.
-`npm run changelog:assemble` refuses anything else, and the `changelog.d/`
-guard in `scripts/assemble-changelog.test.js` runs that check on every pull
-request rather than leaving it for the releaser.
+wrapped lines are indented — an unindented continuation becomes its own entry —
+and the list is tight, with no blank line between the bullets. The file's own
+indentation does not matter: a fragment pasted out of an indented fence (the
+one in `docs/agent-playbooks/bundled-binaries.md` step 7 sits inside a numbered
+list) is dedented by its first line's whitespace. `npm run changelog:assemble`
+refuses anything else, and the `changelog.d/` guard in
+`scripts/assemble-changelog.test.js` runs that check on every pull request
+rather than leaving it for the releaser.
 
 Not every change needs one. The same exclusions apply as before — developer-only
 fixes, in-release polish, test-only and internal work stay out of the changelog,
