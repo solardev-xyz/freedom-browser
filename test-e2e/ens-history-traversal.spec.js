@@ -420,3 +420,84 @@ test('a rewriting page cannot raise its own interstitial over a traversal away f
   await expect(window.locator('#forward-btn')).toBeEnabled();
   await window.screenshot({ path: testInfo.outputPath('7-traversal-not-hijacked.png') });
 });
+
+test('a traversal onto about:blank cannot raise the interstitial of the entry it leaves', async ({
+  window,
+  harness,
+}, testInfo) => {
+  // `did-navigate` deliberately does not write `committedDisplayUrl` for an
+  // `about:blank` commit (Chromium fires one through it during "open in new
+  // window", and clobbering the commit there would lose the real page
+  // identity). The refresh keys on `committedDisplayUrl`, so reporting such a
+  // commit as a traversal handed it the entry the traversal had just *left*:
+  // Forward onto an `about:blank` entry re-resolved the outgoing name, found
+  // it now in conflict, and loaded `ens-conflict.html?name=traversal.eth`
+  // over the traversal — forward history gone, address bar back on the name
+  // the user had just navigated away from.
+  await harness.setEnsFixture('traversal.eth', UNVERIFIED_FIRST_LOAD);
+  await harness.setContentFixture('ipfs://traversal.eth/', {
+    body: '<html><body><h1>traversal.eth</h1><a id="blank" href="about:blank">blank</a></body></html>',
+  });
+
+  await navigateTo(window, 'https://start.example/');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^https:\/\/start\.example/);
+  await navigateTo(window, 'traversal.eth');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+
+  // A user-activated link to about:blank, so the blank document is a real
+  // history entry between the ENS page and the forward end of the stack.
+  await window.evaluate(() => {
+    const wv = document.querySelector('webview.active, webview:not(.hidden)');
+    // `userGesture: true` matters: without one Chromium treats the
+    // JS-initiated hop as a client redirect and *replaces* the ENS entry
+    // instead of pushing the blank one after it.
+    return wv.executeJavaScript("document.getElementById('blank').click()", true);
+  });
+  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe('about:blank');
+
+  // Back onto the ENS entry. That traversal legitimately refreshes its trust,
+  // so the fixture is swapped to a *different verified* answer first and the
+  // badge flip is waited on: it is how this test knows that refresh has
+  // settled before the conflict verdict below is armed, instead of racing an
+  // in-flight resolution that would raise the interstitial on the entry the
+  // user is actually standing on.
+  await harness.setEnsFixture('traversal.eth', VERIFIED_AFTER_SETTINGS_CHANGE);
+  await window.click('#back-btn');
+  await expect
+    .poll(() => webviewUrl(window), { timeout: 15_000 })
+    .toMatch(/^ipfs:\/\/traversal\.eth/);
+  await expect(window.locator('#trust-shield')).toHaveAttribute('data-trust', 'verified', {
+    timeout: 15_000,
+  });
+
+  // Now the verdict for that name flips to conflict.
+  await harness.setEnsFixture('traversal.eth', {
+    type: 'conflict',
+    trust: { level: 'conflict', block: { number: 21000000 } },
+    groups: [
+      { value: '0xaa', sources: ['rpc-one.test'] },
+      { value: '0xbb', sources: ['rpc-two.test'] },
+    ],
+  });
+
+  // Forward onto the blank entry: it is what commits, and it stays committed.
+  await window.click('#forward-btn');
+  await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toBe('about:blank');
+  // The refresh settles a beat after the commit, so the blank entry has to be
+  // observed *still* standing rather than merely reached: a plain
+  // `.not.toMatch()` poll is satisfied by the very first read, before the
+  // interstitial this guards against could have been loaded over it.
+  await window.waitForTimeout(3_000);
+  expect(await webviewUrl(window)).toBe('about:blank');
+  // The entry behind this one is still reachable — an interstitial load here
+  // would have pushed a fresh entry over the restored one — and the address
+  // bar is not showing the bare-name display an ENS interstitial paints
+  // (#235), which is how the hijack read to the user.
+  await expect(window.locator('#back-btn')).toBeEnabled();
+  await expect(window.locator('[data-test="address-input"]')).not.toHaveValue('traversal.eth');
+  await window.screenshot({ path: testInfo.outputPath('8-blank-traversal-not-hijacked.png') });
+});

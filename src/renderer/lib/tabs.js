@@ -148,9 +148,18 @@ export const setWebviewEventHandler = (handler) => {
 // pressed Back onto a blocked name" from "the user pressed Back *out of* the
 // interstitial we raised over that name". Re-raising it in the second case
 // puts the user in a loop they can only leave through the address bar.
-const reportHistoryTraversalCommit = (webview, tabId, previousUrl) => {
+//
+// `wroteCommittedIdentity` — whether *this* commit actually updated the tab's
+// `committedDisplayUrl`. The refresh keys on that URL, so a commit that
+// deliberately leaves it alone — `about:blank`, or a tab that has already
+// gone away — must not be reported:
+// the refresh would re-resolve the entry the traversal just *left* and could
+// raise that name's interstitial over the restored entry, with the restored
+// entry's own forward history gone. Same reasoning as the same-document case
+// in `did-navigate-in-page`; there the identity is never written either.
+const reportHistoryTraversalCommit = (webview, tabId, previousUrl, wroteCommittedIdentity) => {
   const traversed = consumeHistoryTraversal(webview);
-  if (!traversed || !onWebviewEvent) return;
+  if (!traversed || !wroteCommittedIdentity || !onWebviewEvent) return;
   onWebviewEvent('history-traversal-committed', { tabId, previousUrl: previousUrl || '' });
 };
 
@@ -622,8 +631,10 @@ const createWebview = (tabId, initialUrl) => {
     'did-navigate': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       // Hoisted out of the block below so the traversal report at the tail
-      // can name the page this commit replaced.
+      // can name the page this commit replaced, and can tell whether this
+      // commit wrote a new committed identity at all.
       let previousCommittedUrl = null;
+      let wroteCommittedIdentity = false;
       if (tab) {
         // Use webview.getURL() for full URL (includes view-source: prefix)
         // event.url doesn't include the view-source: prefix
@@ -643,11 +654,24 @@ const createWebview = (tabId, initialUrl) => {
         // through about:blank during "open in new window" before the real
         // loadURL runs; clobbering the previous commit there would lose
         // the actual page identity.
-        if (tab.navigationState && event.url && event.url !== 'about:blank') {
-          const interstitialTarget = getOnchainInterstitialTarget(webviewUrl);
-          tab.navigationState.committedDisplayUrl =
-            formatOnchainAppDisplayUrl(interstitialTarget || webviewUrl) || webviewUrl;
+        //
+        // The sequence counter is *not* skipped with it. It answers a
+        // different question — "has this tab moved on since I started?" —
+        // which every async landing site that writes back into this tab
+        // compares against (the onchain provenance lookup below, the ENS
+        // trust refresh a traversal kicks off in navigation.js). An
+        // about:blank commit moves the tab on like any other, so leaving
+        // the counter behind let work started for the previous entry settle
+        // over the blank page: a re-resolution that came back `conflict`
+        // raised that entry's interstitial on top of it.
+        if (tab.navigationState && event.url) {
           tab.navigationState.committedNavigationSequence += 1;
+          if (event.url !== 'about:blank') {
+            const interstitialTarget = getOnchainInterstitialTarget(webviewUrl);
+            tab.navigationState.committedDisplayUrl =
+              formatOnchainAppDisplayUrl(interstitialTarget || webviewUrl) || webviewUrl;
+            wroteCommittedIdentity = true;
+          }
         }
         // A committed main-frame navigation replaces the document, so the
         // previous page's title must not survive it. Chromium fires
@@ -715,7 +739,7 @@ const createWebview = (tabId, initialUrl) => {
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate', { tabId, event });
       }
-      reportHistoryTraversalCommit(webview, tabId, previousCommittedUrl);
+      reportHistoryTraversalCommit(webview, tabId, previousCommittedUrl, wroteCommittedIdentity);
     },
     'did-navigate-in-page': (event) => {
       // A same-document navigation (an in-page anchor, a history.pushState

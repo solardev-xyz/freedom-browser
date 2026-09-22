@@ -167,6 +167,38 @@ describe('back/forward traversal marking (tabs.js + history-traversal.js)', () =
     expect(ctx.traversalReports()).toHaveLength(1);
   });
 
+  test('a commit onto about:blank is not reported, but still consumes the mark', async () => {
+    // `did-navigate` deliberately skips the `committedDisplayUrl` write for
+    // `about:blank` (Chromium fires one through it during "open in new
+    // window", and clobbering the commit there would lose the real page
+    // identity). The refresh keys on `committedDisplayUrl`, so reporting such
+    // a commit would hand it the entry the traversal just *left*: a Forward
+    // onto an `about:blank` entry re-resolved the outgoing ENS name and
+    // raised *its* interstitial over the restored entry, forward history
+    // gone.
+    const ctx = await loadModules();
+    const navState = ctx.tabs.getTabs()[0].navigationState;
+    navState.committedDisplayUrl = ENS_URL;
+    const sequenceBefore = navState.committedNavigationSequence;
+
+    ctx.traversal.goForwardInHistory(ctx.webview);
+    ctx.webview.dispatch('did-navigate', { url: 'about:blank' });
+
+    expect(ctx.traversalReports()).toHaveLength(0);
+    // The skipped identity write is what makes the report wrong — pinned here
+    // so the two can't drift apart. The sequence counter is *not* skipped with
+    // it: it is what a refresh already in flight for the outgoing entry
+    // compares against to find out the tab has moved on, so an about:blank
+    // commit has to bump it like any other.
+    expect(navState.committedDisplayUrl).toBe(ENS_URL);
+    expect(navState.committedNavigationSequence).toBe(sequenceBefore + 1);
+
+    // The mark is still consumed, exactly as any other cross-document commit
+    // consumes it: the next, unrelated navigation is not a traversal.
+    ctx.webview.dispatch('did-navigate', { url: 'https://example.com/' });
+    expect(ctx.traversalReports()).toHaveLength(0);
+  });
+
   test('an in-page commit neither reports nor consumes the mark, in any frame', async () => {
     // Chromium reports a page's own History API call through the same
     // `did-navigate-in-page` event as a same-document traversal, with nothing
