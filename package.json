@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.6-dev",
+  "version": "0.8.6-rc.1",
   "license": "MPL-2.0",
   "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
@@ -100,7 +100,9 @@
       "icon": "assets/icon.png",
       "identity": "Solar Dev Ltd (46XPHRBLH5)",
       "hardenedRuntime": true,
-      "binaries": ["Contents/Resources/myotis-node/myotis-supervisor"],
+      "binaries": [
+        "Contents/Resources/myotis-node/myotis-supervisor"
+      ],
       "sign": "./scripts/sign-myotis-helper.js",
       "gatekeeperAssess": false,
       "extendInfo": {
