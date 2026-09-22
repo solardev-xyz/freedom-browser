@@ -313,6 +313,15 @@ for (const blocked of [
       uri: 'ipfs://QmEnsTraversalPage',
       trust: { level: 'unverified', method: 'direct-rpc' },
     },
+    // The URI the interstitial prints, byte for byte. The committed display
+    // this refresh keys on always carries a path (`ipfs://traversal.eth/`),
+    // so `applyEnsSuffix` resolves a non-empty suffix through `new URL()` —
+    // and `ipfs` is a *standard* scheme in the renderer
+    // (`registerSchemesAsPrivileged`, main/index.js), so canonicalization
+    // lower-cases the host. A CIDv0 root is case-sensitive base58, which the
+    // resolver preserves on purpose (ens-resolver.js), so a folded root is
+    // not merely ugly: it is not a CID any more.
+    expectedUri: 'ipfs://QmEnsTraversalPage/',
   },
 ]) {
   test(`the ${blocked.label} interstitial's own Go back button leaves it`, async ({
@@ -340,6 +349,9 @@ for (const blocked of [
 
     await window.click('#back-btn');
     await expect.poll(() => webviewUrl(window), { timeout: 15_000 }).toMatch(blocked.page);
+    if (blocked.expectedUri) {
+      expect(new URL(await webviewUrl(window)).searchParams.get('uri')).toBe(blocked.expectedUri);
+    }
 
     // The page's own button, clicked as the user clicks it.
     await clickInGuest(window, '#back-btn');

@@ -2317,8 +2317,21 @@ const refreshNameTrustAfterTraversal = (tabId, previousUrl = '') => {
       repaintBadge();
 
       if (result.trust?.level === 'unverified' && state.blockUnverifiedEns) {
-        // Same target-URI derivation as `loadTarget`, so the interstitial's
-        // "continue" button lands on the identical URL either path raised it.
+        // Same target-URI derivation as `loadTarget`, so the URI the
+        // interstitial *prints* reads the same whichever path raised it.
+        // That is all it is: `uri` is display-only (`ens-unverified.js` puts
+        // it in the page and nowhere else), and "Continue once" re-navigates
+        // by *name* — `ensContinueUnverified(name)` → `loadTarget` with
+        // `allowUnverifiedOnce`, which resolves the name again and derives
+        // its own target. So the two paths agreeing here is a consistency
+        // property of the page copy, not of where the button lands.
+        //
+        // The suffix is never empty on this path — `committedDisplayUrl`
+        // always carries at least `/` — so `applyEnsSuffix` always resolves
+        // through `new URL()` here, where the typed bare-name form skips it.
+        // See the note on `CONTENT_ADDRESSED_ROOT_RE` in `navigation-utils.js`
+        // for why that round trip has to put a content-addressed root's case
+        // back before the page prints it.
         const targetUri = isExternalTezosWebsite
           ? result.redirect
             ? result.uri

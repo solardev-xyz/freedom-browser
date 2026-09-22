@@ -22,6 +22,21 @@ describe('navigation-utils extracted helpers', () => {
       'https://example.com/docs?q=1'
     );
     expect(mod.applyEnsSuffix('not-a-url', '/docs')).toBe('not-a-url/docs');
+    // A content-addressed root survives suffix resolution byte for byte. Node
+    // never folds it (these schemes are opaque here), so this pins the
+    // passthrough only — the fold, and the restore that undoes it, are
+    // Chromium-side and pinned by `test-e2e/ens-history-traversal.spec.js`.
+    expect(mod.applyEnsSuffix('ipfs://QmEnsTraversalPage', '/')).toBe(
+      'ipfs://QmEnsTraversalPage/'
+    );
+    expect(mod.applyEnsSuffix('ipfs://QmEnsTraversalPage', '/docs?q=1')).toBe(
+      'ipfs://QmEnsTraversalPage/docs?q=1'
+    );
+    // A suffix that is an absolute URL of its own moves off the root; the
+    // restore must not drag the old host back onto it.
+    expect(mod.applyEnsSuffix('ipfs://QmEnsTraversalPage', 'ipfs://QmOtherPage/x')).toBe(
+      'ipfs://QmOtherPage/x'
+    );
 
     expect(mod.extractEnsResolutionMetadata('bzz://abcdef/path', 'name.eth')).toEqual({
       knownEnsPairs: [['abcdef', 'name.eth']],
