@@ -30,8 +30,7 @@ All notable changes to Freedom will be documented in this file.
 
 - Opening a Chrome Web Store page no longer crashes Freedom
 - Quitting with the IPFS node running no longer crashes Freedom
-- Sites that check permission before asking, such as Google Meet, can reach the camera and microphone prompt
-- macOS lists Freedom under Privacy & Security for camera and microphone
+- Camera and microphone now work on macOS, and on sites like Google Meet that check before asking
 - Visiting a site no longer fetches its page a second time, without your cookies, to find its icon
 - `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window
 - Removing a permission from the address-bar indicator no longer clears another window's session decisions
