@@ -153,7 +153,7 @@ describe('permissions-manager', () => {
   test('non-promptable permissions (hid, display-capture, unknown) are denied without a prompt', () => {
     load();
     const host = makeHost();
-    for (const permission of ['hid', 'display-capture', 'openExternal', 'unknown']) {
+    for (const permission of ['hid', 'display-capture', 'unknown']) {
       expect(request(permission, { host })).toHaveBeenCalledWith(false);
     }
     expect(host.send).not.toHaveBeenCalled();
@@ -1603,5 +1603,352 @@ describe('permissions-manager private windows', () => {
     const again = requestOn(privateSession, 'notifications', host);
     expect(again).not.toHaveBeenCalled();
     expect(lastPrompt(host)).not.toBeNull();
+  });
+});
+
+// #406: a link to an external protocol (magnet:, mailto:, …) arrives as an
+// `openExternal` request carrying `externalURL`. It used to be denied with no
+// prompt; it now goes through the same per-site prompt, keyed per scheme, and
+// an allow hands the URL to shell.openExternal — never to Electron's callback.
+describe('permissions-manager: external protocols (#406)', () => {
+  const PARTITION = 'private-ext-1';
+  let userDataDir;
+  let ctx;
+  let normalSession;
+  let privateSession;
+  let shell;
+  let log;
+  let external;
+
+  const load = () => {
+    log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    shell = { openExternal: jest.fn(() => Promise.resolve()) };
+    ctx = loadMainModule(require.resolve('./permissions-manager'), {
+      userDataDir,
+      electronOverrides: {
+        shell,
+        systemPreferences: { askForMediaAccess: jest.fn(() => Promise.resolve(true)) },
+      },
+      extraMocks: {
+        [require.resolve('../logger')]: () => log,
+        [require.resolve('../private/private-windows')]: () => ({
+          getPartitionForWebContents: (webContents) => webContents?.privatePartition || null,
+        }),
+      },
+    });
+    // Same module registry as the manager, so gestures recorded here are the
+    // ones it consumes.
+    external = require('../external-protocol');
+    normalSession = makeFakeSession();
+    privateSession = makeFakeSession();
+    ctx.mod.installPermissionHandlers(normalSession);
+    ctx.mod.installPermissionHandlers(privateSession, { privatePartition: PARTITION });
+    ctx.mod.registerPermissionsIpc();
+    return ctx;
+  };
+
+  // A guest whose page just got a real click (unless `gesture: false`).
+  const guestFor = (host, url = 'https://example.com/page', { gesture = true } = {}) => {
+    const guest = makeGuest(url, host);
+    external.trackUserGestures(guest);
+    if (gesture) guest.emit('input-event', {}, { type: 'mouseDown' });
+    return guest;
+  };
+
+  const clickGesture = (guest) => guest.emit('input-event', {}, { type: 'mouseDown' });
+
+  // Issue an openExternal request the way Electron does for a link click.
+  const openExternal = (
+    session,
+    guest,
+    externalURL,
+    { isMainFrame = true, requestingUrl = guest.getURL() } = {}
+  ) => {
+    const callback = jest.fn();
+    session.requestHandler(guest, 'openExternal', callback, {
+      externalURL,
+      isMainFrame,
+      requestingUrl,
+    });
+    return callback;
+  };
+
+  const prompts = (host) =>
+    host.send.mock.calls.filter(([ch]) => ch === IPC.PERMISSIONS_PROMPT_REQUEST).map(([, p]) => p);
+
+  const respond = (response) => ctx.ipcMain.invoke(IPC.PERMISSIONS_PROMPT_RESPONSE, response);
+
+  const allLogs = () => log.info.mock.calls.map((args) => args.join(' ')).join('\n');
+
+  beforeEach(() => {
+    userDataDir = createTempUserDataDir();
+    nextHostId = 1;
+    nextGuestId = 100;
+  });
+
+  afterEach(() => {
+    removeTempUserDataDir(userDataDir);
+  });
+
+  test('a magnet: link prompts, and Allow hands the URL to shell.openExternal', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    const url = 'magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=file';
+
+    const callback = openExternal(normalSession, guest, url);
+
+    // Electron's own launch path is never used.
+    expect(callback).toHaveBeenCalledWith(false);
+    const [prompt] = prompts(host);
+    expect(prompt).toMatchObject({
+      origin: 'https://example.com',
+      permission: 'openExternal',
+      keys: ['external:magnet'],
+      guestId: guest.id,
+    });
+    expect(shell.openExternal).not.toHaveBeenCalled();
+
+    await respond({ id: prompt.id, decision: 'allow', remember: false });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledWith(url);
+  });
+
+  test('Block opens nothing', async () => {
+    load();
+    const host = makeHost();
+    openExternal(normalSession, guestFor(host), 'mailto:someone@example.com');
+    const [prompt] = prompts(host);
+    expect(prompt.keys).toEqual(['external:mailto']);
+
+    await respond({ id: prompt.id, decision: 'deny', remember: false });
+    await flush();
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  test('a remembered allow opens without prompting; a remembered block stays silent', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    openExternal(normalSession, guest, 'mailto:first@example.com');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+    expect(ctx.ipcMain.handlers.get(IPC.PERMISSIONS_GET_ALL)()).toEqual({
+      'https://example.com': { 'external:mailto': 'allow' },
+    });
+
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'mailto:second@example.com');
+    await flush();
+    expect(prompts(host)).toHaveLength(1);
+    expect(shell.openExternal).toHaveBeenLastCalledWith('mailto:second@example.com');
+
+    // …and a remembered block on another site.
+    const other = guestFor(host, 'https://other.example/');
+    openExternal(normalSession, other, 'mailto:x@example.com');
+    await respond({ id: prompts(host)[1].id, decision: 'deny', remember: true });
+    clickGesture(other);
+    openExternal(normalSession, other, 'mailto:y@example.com');
+    await flush();
+    expect(prompts(host)).toHaveLength(2);
+    expect(shell.openExternal).toHaveBeenCalledTimes(2);
+  });
+
+  test('decisions are per scheme: allowing magnet: does not allow mailto:', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    openExternal(normalSession, guest, 'magnet:?xt=a');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'mailto:a@b.c');
+    expect(prompts(host)).toHaveLength(2);
+    expect(prompts(host)[1].keys).toEqual(['external:mailto']);
+  });
+
+  test('blocked schemes never prompt and never reach shell.openExternal, even with an allow on file', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    for (const url of [
+      'file:///etc/passwd',
+      'javascript:alert(1)',
+      'data:text/html,x',
+      'blob:https://example.com/x',
+      'about:blank',
+      'chrome://settings',
+      'devtools://devtools',
+      'view-source:https://example.com',
+      'freedom://settings',
+      'ms-msdt:/id PCWDiagnostic',
+      'search-ms:query=x',
+      'ms-officecmd:{}',
+    ]) {
+      clickGesture(guest);
+      expect(openExternal(normalSession, guest, url)).toHaveBeenCalledWith(false);
+    }
+    // A hand-edited permissions.json cannot unlock one either: blocked
+    // schemes have no key to look a decision up under.
+    clickGesture(guest);
+    openExternal(normalSession, guest, undefined);
+    await flush();
+    expect(prompts(host)).toHaveLength(0);
+    expect(shell.openExternal).not.toHaveBeenCalled();
+    expect(allLogs()).toContain('ms-msdt:<redacted> refused: blocked scheme');
+  });
+
+  test('no recent user input: no prompt, and no launch even with a remembered allow', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://example.com/', { gesture: false });
+
+    openExternal(normalSession, guest, 'magnet:?xt=a');
+    expect(prompts(host)).toHaveLength(0);
+    expect(allLogs()).toContain('refused: no recent user input');
+
+    // Allow it for real, then try again on load (no gesture).
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'magnet:?xt=a');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+
+    openExternal(normalSession, guest, 'magnet:?xt=b');
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+  });
+
+  test('one click buys one launch: a burst from a single gesture is cut to the first', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    openExternal(normalSession, guest, 'magnet:?xt=a');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+
+    clickGesture(guest);
+    for (let i = 0; i < 5; i += 1) openExternal(normalSession, guest, `magnet:?xt=${i}`);
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(2);
+  });
+
+  test('a cross-origin subframe cannot ask; a same-origin one can', () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://example.com/page');
+
+    openExternal(normalSession, guest, 'magnet:?xt=a', {
+      isMainFrame: false,
+      requestingUrl: 'https://ads.example.net/frame',
+    });
+    expect(prompts(host)).toHaveLength(0);
+    expect(allLogs()).toContain('refused: cross-origin subframe');
+
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'magnet:?xt=a', {
+      isMainFrame: false,
+      requestingUrl: 'https://example.com/embed',
+    });
+    expect(prompts(host)).toHaveLength(1);
+    expect(prompts(host)[0].origin).toBe('https://example.com');
+  });
+
+  test('internal pages cannot launch external apps', () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'file:///app/pages/home.html');
+    openExternal(normalSession, guest, 'mailto:a@b.c');
+    expect(prompts(host)).toHaveLength(0);
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  test('private window: remember stays session-only, never persisted, never logged by origin', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://secret.example/page');
+    guest.privatePartition = PARTITION;
+
+    openExternal(privateSession, guest, 'mailto:hidden@secret.example');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledWith('mailto:hidden@secret.example');
+    expect(ctx.ipcMain.handlers.get(IPC.PERMISSIONS_GET_ALL)()).toEqual({});
+
+    // Honoured again inside the private window…
+    clickGesture(guest);
+    openExternal(privateSession, guest, 'mailto:again@secret.example');
+    await flush();
+    expect(prompts(host)).toHaveLength(1);
+    expect(shell.openExternal).toHaveBeenCalledTimes(2);
+
+    // …but not in a normal window.
+    const normalGuest = guestFor(host, 'https://secret.example/page');
+    openExternal(normalSession, normalGuest, 'mailto:x@secret.example');
+    expect(prompts(host)).toHaveLength(2);
+
+    // The private window's origin and the mail address never reach the log.
+    const privateLines = log.info.mock.calls
+      .map((args) => args.join(' '))
+      .filter((line) => line.includes('<private>'));
+    expect(privateLines.length).toBeGreaterThan(0);
+    expect(allLogs()).not.toContain('hidden@secret.example');
+    expect(allLogs()).not.toContain('again@secret.example');
+  });
+
+  test('the prompt names the OS handler when one is registered', () => {
+    load();
+    ctx.app.getApplicationNameForProtocol = jest.fn(() => 'Transmission');
+    const host = makeHost();
+    openExternal(normalSession, guestFor(host), 'magnet:?xt=a');
+    expect(ctx.app.getApplicationNameForProtocol).toHaveBeenCalledWith('magnet:');
+    expect(prompts(host)[0].appName).toBe('Transmission');
+  });
+
+  test('requestOpenExternal (the window-open route) applies the same gates', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://example.com/page');
+
+    // A `target="_blank"` link inside a third-party frame: referrer is the frame.
+    expect(
+      ctx.mod.requestOpenExternal({
+        webContents: guest,
+        url: 'magnet:?xt=a',
+        isMainFrame: false,
+        requestingUrl: 'https://ads.example.net/',
+      })
+    ).toBe(false);
+
+    clickGesture(guest);
+    expect(
+      ctx.mod.requestOpenExternal({
+        webContents: guest,
+        url: 'ms-msdt:/id x',
+        isMainFrame: false,
+        requestingUrl: 'https://example.com/',
+      })
+    ).toBe(false);
+
+    expect(
+      ctx.mod.requestOpenExternal({
+        webContents: guest,
+        url: 'mailto:a@b.c',
+        isMainFrame: false,
+        requestingUrl: 'https://example.com/',
+      })
+    ).toBe(true);
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: false });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledWith('mailto:a@b.c');
+  });
+
+  test('the check path never reports openExternal as granted', () => {
+    load();
+    expect(
+      normalSession.checkHandler(null, 'openExternal', 'https://example.com', {
+        requestingUrl: 'https://example.com/',
+      })
+    ).toBe(false);
   });
 });

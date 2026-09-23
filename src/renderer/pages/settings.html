@@ -5243,7 +5243,12 @@
           geolocation: 'Location',
           midi: 'MIDI devices',
         };
-        const label = (key) => PERMISSION_LABELS[key] || key;
+        // `external:<scheme>` — one decision per external-protocol scheme
+        // (#406); mirrors permissionLabel in lib/site-permissions-ui.js.
+        const label = (key) =>
+          key.startsWith('external:')
+            ? `Open ${key.slice('external:'.length)}: links`
+            : PERMISSION_LABELS[key] || key;
 
         const render = (all) => {
           const origins = Object.keys(all || {}).sort();

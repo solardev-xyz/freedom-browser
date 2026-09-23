@@ -84,7 +84,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(28);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(29);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -107,6 +107,7 @@ describe('preload', () => {
       'tokens',
       'rpcManager',
       'sitePermissions',
+      'externalProtocol',
       'dappPermissions',
       'swarmPermissions',
       'swarmManifest',
@@ -205,6 +206,7 @@ describe('preload', () => {
       // marker here and resolves the window itself from the IPC sender.
       [exposures.sitePermissions, 'revoke', ['https://example.com', 'camera'], IPC.PERMISSIONS_REVOKE, ['https://example.com', 'camera', { scope: 'window' }]],
       [exposures.sitePermissions, 'revokeOrigin', ['https://example.com'], IPC.PERMISSIONS_REVOKE_ORIGIN, ['https://example.com', { scope: 'window' }]],
+      [exposures.externalProtocol, 'openFromAddressBar', ['magnet:?xt=a'], IPC.EXTERNAL_PROTOCOL_OPEN_FROM_ADDRESS_BAR, ['magnet:?xt=a']],
       [exposures.payments, 'getRecent', [{ limit: 10 }], IPC.PAYMENTS_GET_RECENT, [{ limit: 10 }]],
       [exposures.payments, 'getById', [7], IPC.PAYMENTS_GET_BY_ID, [7]],
       [exposures.payments, 'getCount', [{ kind: 'x402' }], IPC.PAYMENTS_GET_COUNT, [{ kind: 'x402' }]],

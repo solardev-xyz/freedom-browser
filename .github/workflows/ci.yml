@@ -730,7 +730,10 @@ jobs:
   # rather than dismissed, a modal <dialog> taking the Escape instead), and it
   # drives the indicator popover the dismissal embargo is surfaced and lifted
   # in — including the private-window scoping, which needs two real windows on
-  # two real sessions (#364, #365).
+  # two real sessions (#364, #365). `external-protocol.spec.js` rides the same
+  # prompt for magnet:/mailto: links (#406), and its user-gesture gate reads
+  # real input events on the guest webContents — a scripted click must not
+  # count, so only a real input path can prove it.
   e2e-tabs:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -756,7 +759,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -765,7 +768,8 @@ jobs:
             test-e2e/chrome-popovers.spec.js \
             test-e2e/bookmarks.spec.js \
             test-e2e/page-context-menu.spec.js \
-            test-e2e/permissions.spec.js
+            test-e2e/permissions.spec.js \
+            test-e2e/external-protocol.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

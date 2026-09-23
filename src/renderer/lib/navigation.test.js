@@ -1347,6 +1347,101 @@ describe('navigation', () => {
     });
   });
 
+  // #406: a typed external-protocol URL goes to its OS handler (main decides:
+  // blocklist, and only a scheme the OS has a handler for). Anything main
+  // declines re-enters the ordinary pipeline once — which, with the URL
+  // helpers mocked here, ends in the search fallback.
+  describe('address bar external-protocol URLs', () => {
+    const load = async (result) => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      global.window.externalProtocol = {
+        openFromAddressBar: jest.fn(() =>
+          result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+        ),
+      };
+      return ctx;
+    };
+
+    test('a committed magnet: URL opens in its handler and loads nothing in the tab', async () => {
+      const ctx = await load({ opened: true });
+      const typed = 'magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a';
+      ctx.elements.addressInput.value = typed;
+
+      ctx.mod.loadTarget(`  ${typed} `, null, null, { commitsAddressBar: true });
+      await flushMicrotasks();
+
+      expect(global.window.externalProtocol.openFromAddressBar).toHaveBeenCalledWith(typed);
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      // The bar goes back to the page the tab is still on.
+      expect(ctx.elements.addressInput.value).not.toBe(typed);
+    });
+
+    test('a scheme main will not open (no handler, blocked) continues the ordinary pipeline once', async () => {
+      const ctx = await load({ opened: false, reason: 'no-handler' });
+
+      ctx.mod.loadTarget('define:serendipity', null, null, { commitsAddressBar: true });
+      await flushMicrotasks();
+
+      expect(global.window.externalProtocol.openFromAddressBar).toHaveBeenCalledTimes(1);
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://duckduckgo.com/?q=define%3Aserendipity'
+      );
+    });
+
+    test('a failed IPC still continues rather than doing nothing', async () => {
+      const ctx = await load(new Error('boom'));
+
+      ctx.mod.loadTarget('mailto:someone@example.com', null, null, { commitsAddressBar: true });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://duckduckgo.com/?q=mailto%3Asomeone%40example.com'
+      );
+    });
+
+    test('only a commit of the bar itself asks main; other chrome callers are unchanged', async () => {
+      const ctx = await load({ opened: true });
+
+      ctx.mod.loadTarget('mailto:someone@example.com');
+
+      expect(global.window.externalProtocol.openFromAddressBar).not.toHaveBeenCalled();
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://duckduckgo.com/?q=mailto%3Asomeone%40example.com'
+      );
+    });
+
+    test('a newer navigation supersedes a pending answer', async () => {
+      const ctx = await load({ opened: false, reason: 'no-handler' });
+
+      ctx.mod.loadTarget('define:serendipity', null, null, { commitsAddressBar: true });
+      ctx.mod.loadTarget('https://newer.example/');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledTimes(1);
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('https://newer.example/');
+    });
+
+    test('browser-handled schemes never make the round-trip', async () => {
+      const ctx = await load({ opened: true });
+
+      ctx.mod.loadTarget('https://example.com/', null, null, { commitsAddressBar: true });
+      ctx.mod.loadTarget('about:blank', null, null, { commitsAddressBar: true });
+
+      expect(global.window.externalProtocol.openFromAddressBar).not.toHaveBeenCalled();
+    });
+
+    test('input with spaces is a query, never an external URL', async () => {
+      const ctx = await load({ opened: true });
+
+      ctx.mod.loadTarget('note: buy milk', null, null, { commitsAddressBar: true });
+
+      expect(global.window.externalProtocol.openFromAddressBar).not.toHaveBeenCalled();
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalled();
+    });
+  });
+
   // #325: a chrome-driven `freedom://` navigation is routed by the tab layer
   // first — an open Settings tab is focused instead of duplicated. Before the
   // fix this branch went straight to `webview.loadURL`, so the hamburger menu

@@ -1257,6 +1257,14 @@ const parseInternalPageTarget = (value) => {
   return { pageName, subPath: match[2]?.toLowerCase() || null };
 };
 
+// `scheme:rest` with no whitespace — the only shape an external-protocol URL
+// typed into the bar can take. Main makes the real decision; the second
+// pattern just spares the IPC round-trip for schemes the browser handles
+// itself (main would answer `not-external` for them anyway).
+const EXTERNAL_PROTOCOL_INPUT = /^[a-z][a-z0-9+.-]*:\S+$/i;
+const BROWSER_HANDLED_INPUT =
+  /^(?:https?|bzz|ipfs|ipns|web3|ens|rad|freedom|ethereum|file|about|data|blob|javascript|view-source|chrome|devtools):/i;
+
 export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
   // `options.allowUnverifiedOnce` — skip the unverified-ENS interstitial
   // for this single call. Set by the ens-unverified page's "Continue once"
@@ -1916,6 +1924,64 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     webview.loadURL(ipfsLoadUrl);
     pushDebug(`Loading ${ipfsTarget.displayValue} via ${ipfsLoadUrl}`);
     syncBzzBase(null);
+    return;
+  }
+
+  // An external-protocol URL typed into the bar (magnet:, mailto:, …) goes to
+  // its OS handler (#406). It has to be claimed here, ahead of the Swarm
+  // branch: `formatBzzUrl` passes any parseable `scheme:` URL straight to
+  // `webview.loadURL`, where Chromium turns it into an `openExternal` request
+  // attributed to the page on screen — and refused, since the page saw no
+  // click. Main makes the decision: it refuses blocked schemes and, like
+  // Chrome's omnibox, only claims input whose scheme has an OS handler
+  // registered. Anything it declines re-enters this pipeline exactly as
+  // before. Only a real commit of the bar takes this path; a page link goes
+  // through the per-site prompt in main instead.
+  if (
+    options.commitsAddressBar &&
+    !options.externalProtocolChecked &&
+    EXTERNAL_PROTOCOL_INPUT.test(value.trim()) &&
+    !BROWSER_HANDLED_INPUT.test(value.trim()) &&
+    window.externalProtocol?.openFromAddressBar
+  ) {
+    const typed = value.trim();
+    // The answer is async: if the user has asked this tab for something else
+    // in the meantime, this navigation is stale and must not act.
+    const requestSequence = navState?.requestedNavigationSequence;
+    const superseded = () => !!navState && navState.requestedNavigationSequence !== requestSequence;
+    const continueAsBefore = (why) => {
+      if (superseded()) return;
+      pushDebug(`[AddressBar] Not opened externally (${why}); continuing`);
+      loadTarget(value, displayOverride, webview, {
+        ...options,
+        continuesNavigation: true,
+        externalProtocolChecked: true,
+      });
+    };
+    window.externalProtocol
+      .openFromAddressBar(typed)
+      .then((result) => {
+        if (!result?.opened) {
+          continueAsBefore(result?.reason || 'declined');
+          return;
+        }
+        pushDebug('[AddressBar] Opened external-protocol URL in its OS handler');
+        if (superseded()) return;
+        // Nothing loads in the tab (Chrome reverts the omnibox the same
+        // way), so the bar goes back to the page the tab is still on.
+        const display = navState.currentPageUrl
+          ? deriveDisplayValue(
+              navState.currentPageUrl,
+              state.bzzRoutePrefix,
+              homeUrlNormalized,
+              state.ipfsRoutePrefix,
+              state.ipnsRoutePrefix,
+              state.radicleApiPrefix
+            )
+          : '';
+        setAddressDisplayForTab(display, targetTabId);
+      })
+      .catch((err) => continueAsBefore(err?.message || String(err)));
     return;
   }
 
