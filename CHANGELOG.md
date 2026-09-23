@@ -6,23 +6,23 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- External IPFS node support (thanks @ivanmmurciaua!):
+- External IPFS node support ([#351](https://github.com/solardev-xyz/freedom-browser/pull/351), thanks @ivanmmurciaua!):
   - Under Settings > Nodes
   - Your own gateway, or one detected on the standard local port
-- Myotis keeps syncing after its built-in checkpoint expires:
+- Myotis keeps syncing after its built-in checkpoint expires ([#353](https://github.com/solardev-xyz/freedom-browser/pull/353)):
   - A replacement needs agreeing independent sources and a local proof check
   - Progress, errors and Retry sync in the Nodes menu
-- ENSv2 readiness:
+- ENSv2 readiness ([#352](https://github.com/solardev-xyz/freedom-browser/pull/352)):
   - DNS names such as `gregskril.com` as wallet recipients
   - Offchain names with every Name Resolution method
   - Per-chain addresses on chains other than Ethereum
-- Settings search:
+- Settings search ([#281](https://github.com/solardev-xyz/freedom-browser/issues/281)):
   - Field in the Settings sidebar, covering every section
   - Enter or a click opens the matching row
-- Limit on repeated permission prompts:
+- Limit on repeated permission prompts ([#364](https://github.com/solardev-xyz/freedom-browser/issues/364)):
   - Three dismissals in a row block the site for the session, as in Chrome
   - Shown in the address-bar indicator, where Remove lifts it
-- Arch Linux `.pacman` packages (thanks @jwahdatehagh!):
+- Arch Linux `.pacman` packages ([#367](https://github.com/solardev-xyz/freedom-browser/pull/367), thanks @jwahdatehagh!):
   - For x64 and arm64, next to the AppImage and deb
   - In-app updates, as with the deb
 
@@ -32,25 +32,25 @@ All notable changes to Freedom will be documented in this file.
 
 ### Fixed
 
-- Opening a Chrome Web Store page no longer crashes Freedom
-- Quitting with the IPFS node running no longer crashes Freedom
-- Camera and microphone now work on macOS, and on sites like Google Meet that check before asking
-- Visiting a site no longer fetches its page a second time, without your cookies, to find its icon
-- `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window
-- Removing a permission from the address-bar indicator no longer clears another window's session decisions
-- The trust, permission and Radicle popovers close along with the address-bar suggestions instead of staying over the page
-- The Nodes menu no longer shows a Tor version while Tor is off
-- A Swarm folder address without its trailing slash, or with a colon in its name, opens the folder
-- A Settings address naming a section that does not exist changes to the section shown
-- A Settings link to a single chain opens that chain, or says it is no longer configured
-- Small plain-text files on IPFS open in the tab instead of downloading
-- Myotis catches up on a fresh install instead of stalling, most often on Gnosis
-- A transient Gnosis RPC error no longer makes the Swarm node lose a paid postage batch or deploy a second chequebook
+- Opening a Chrome Web Store page no longer crashes Freedom ([#346](https://github.com/solardev-xyz/freedom-browser/issues/346))
+- Quitting with the IPFS node running no longer crashes Freedom ([#345](https://github.com/solardev-xyz/freedom-browser/issues/345))
+- Camera and microphone now work on macOS, and on sites like Google Meet that check before asking ([#363](https://github.com/solardev-xyz/freedom-browser/pull/363))
+- Visiting a site no longer fetches its page a second time, without your cookies, to find its icon ([#75](https://github.com/solardev-xyz/freedom-browser/issues/75))
+- `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window ([#97](https://github.com/solardev-xyz/freedom-browser/issues/97))
+- Removing a permission from the address-bar indicator no longer clears another window's session decisions ([#366](https://github.com/solardev-xyz/freedom-browser/issues/366))
+- The trust, permission and Radicle popovers close along with the address-bar suggestions instead of staying over the page ([#67](https://github.com/solardev-xyz/freedom-browser/issues/67))
+- The Nodes menu no longer shows a Tor version while Tor is off ([#349](https://github.com/solardev-xyz/freedom-browser/issues/349))
+- A Swarm folder address without its trailing slash, or with a colon in its name, opens the folder ([#95](https://github.com/solardev-xyz/freedom-browser/issues/95))
+- A Settings address naming a section that does not exist changes to the section shown ([#280](https://github.com/solardev-xyz/freedom-browser/issues/280))
+- A Settings link to a single chain opens that chain, or says it is no longer configured ([#280](https://github.com/solardev-xyz/freedom-browser/issues/280))
+- Small plain-text files on IPFS open in the tab instead of downloading ([#352](https://github.com/solardev-xyz/freedom-browser/pull/352))
+- Myotis catches up on a fresh install instead of stalling, most often on Gnosis ([#200](https://github.com/solardev-xyz/freedom-browser/issues/200))
+- A transient Gnosis RPC error no longer makes the Swarm node lose a paid postage batch or deploy a second chequebook ([#387](https://github.com/solardev-xyz/freedom-browser/pull/387))
 
 ### Security
 
-- Back and Forward re-check an ENS name's verification instead of restoring the verdict from the first visit
-- Offchain ENS lookups reach only public HTTPS gateways, within time and size limits
+- Back and Forward re-check an ENS name's verification instead of restoring the verdict from the first visit ([#86](https://github.com/solardev-xyz/freedom-browser/issues/86))
+- Offchain ENS lookups reach only public HTTPS gateways, within time and size limits ([#352](https://github.com/solardev-xyz/freedom-browser/pull/352))
 - Updated bundled nodes:
   - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45
   - [Myotis](https://github.com/biafra23/myotis) 0.1.7 to 0.1.11
