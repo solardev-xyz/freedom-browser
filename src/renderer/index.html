@@ -11,6 +11,9 @@
     <title>Freedom</title>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./styles/sidebar.css" />
+    <!-- Classic (parser-blocking) on purpose: tags <html> with the OS before
+         first paint so per-platform layout never jumps. -->
+    <script src="./platform-init.js"></script>
   </head>
   <body>
     <!-- Download shelf (cards inserted dynamically) -->

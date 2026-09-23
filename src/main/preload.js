@@ -38,6 +38,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUrlInNewWindow: (url) => ipcRenderer.send('window:new-with-url', url),
   showAbout: () => ipcRenderer.send('app:show-about'),
   getPlatform: () => ipcRenderer.invoke('window:get-platform'),
+  // Synchronous copy of process.platform for renderer/platform-init.js, which
+  // must tag <html> before first paint (getPlatform() resolves too late for
+  // layout that differs per OS, e.g. the macOS traffic-light spacer).
+  platform: process.platform,
   getWindowButtonLayout: () => ipcRenderer.invoke('window:get-button-layout'),
   getActiveProfile: () => ipcRenderer.invoke('profile:get-active'),
   listProfiles: () => ipcRenderer.invoke('profile:list'),
