@@ -69,6 +69,10 @@ let installed = false;
 let cacheDir = null;
 let engine = null;
 let lastArtifacts = null;
+// False until the first engine build has looked for lists on disk. Until
+// then `lastArtifacts === null` means "not checked yet", not "no lists", and
+// the settings page must not report the section as unable to run.
+let artifactsResolved = false;
 let allowlistedHosts = [];
 // webContentsId -> top-level URL, maintained from mainFrame requests so
 // subresources get first-party context and allowlist scoping.
@@ -286,7 +290,12 @@ async function rebuildEngineOnce() {
   const settings = loadSettings();
   // Re-resolve the layers each build (unless pinned) so a just-promoted
   // update dir wins per category.
-  const resolved = await resolveArtifacts();
+  let resolved;
+  try {
+    resolved = await resolveArtifacts();
+  } finally {
+    artifactsResolved = true;
+  }
   lastArtifacts = resolved;
   if (!resolved) {
     engine = null;
@@ -462,6 +471,7 @@ function getAdblockStatus() {
   return {
     engineReady: isEngineReady(),
     listsVersion: lastArtifacts?.version || null,
+    listsResolved: artifactsResolved,
     categories,
   };
 }
@@ -495,6 +505,7 @@ function _resetAdblockForTests() {
   cacheDir = null;
   engine = null;
   lastArtifacts = null;
+  artifactsResolved = false;
   allowlistedHosts = [];
   topLevelUrls.clear();
   frameUrlCache.clear();
