@@ -12,6 +12,10 @@ All notable changes to Freedom will be documented in this file.
 - Myotis keeps syncing after its built-in checkpoint expires:
   - A replacement needs agreeing independent sources and a local proof check
   - Progress, errors and Retry sync in the Nodes menu
+- ENSv2 readiness:
+  - DNS names such as `gregskril.com` as wallet recipients
+  - Offchain names with every Name Resolution method
+  - Per-chain addresses on chains other than Ethereum
 - Settings search:
   - Field in the Settings sidebar, covering every section
   - Enter or a click opens the matching row
@@ -39,8 +43,6 @@ All notable changes to Freedom will be documented in this file.
 - A Swarm folder address without its trailing slash, or with a colon in its name, opens the folder
 - A Settings address naming a section that does not exist changes to the section shown
 - A Settings link to a single chain opens that chain, or says it is no longer configured
-- Wallet sends accept ENS names on DNS domains, such as `gregskril.com`
-- Offchain ENS names resolve with every method under Settings > Name Resolution
 - Small plain-text files on IPFS open in the tab instead of downloading
 - Myotis catches up on a fresh install instead of stalling, most often on Gnosis
 - A transient Gnosis RPC error no longer makes the Swarm node lose a paid postage batch or deploy a second chequebook
@@ -48,7 +50,6 @@ All notable changes to Freedom will be documented in this file.
 ### Security
 
 - Back and Forward re-check an ENS name's verification instead of restoring the verdict from the first visit
-- Wallet sends on chains other than Ethereum use the name's address for that chain, never its Ethereum address
 - Offchain ENS lookups reach only public HTTPS gateways, within time and size limits
 - Updated bundled nodes:
   - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45
