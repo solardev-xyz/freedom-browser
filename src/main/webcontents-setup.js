@@ -3,7 +3,9 @@ const { BrowserWindow, app } = require('electron');
 const { activeBzzBases } = require('./state');
 const { cleanupWebContents: cleanupX402WebContents } = require('./x402/intercept');
 const { cleanupAdblockWebContents } = require('./adblock/service');
-const { isPrivateWebContents } = require('./private/private-windows');
+const { isPrivateWebContents, getPartitionForWebContents } = require('./private/private-windows');
+const { isExternalProtocolUrl, trackUserGestures } = require('./external-protocol');
+const { requestOpenExternal } = require('./permissions/permissions-manager');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -124,6 +126,11 @@ function registerWebContentsHandlers() {
 
     // For webview contents, fix dark defaults and intercept navigation
     if (type === 'webview') {
+      // An external-protocol launch (magnet:, mailto:, …) must follow real
+      // user input on the page; Electron does not report Chromium's gesture
+      // bit, so the guest's input stream stands in for it (#406).
+      trackUserGestures(contents);
+
       // Electron applies dark system colors (Canvas, CanvasText) to ALL pages when
       // nativeTheme is dark, even pages that don't opt in via color-scheme. This
       // makes pages without dark mode support unreadable (dark bg + unchanged text).
@@ -141,7 +148,7 @@ function registerWebContentsHandlers() {
         }
       });
 
-      contents.setWindowOpenHandler(({ url, frameName, disposition }) => {
+      contents.setWindowOpenHandler(({ url, frameName, disposition, referrer }) => {
         log.info(
           `${tag} intercepted new window request: ${navUrlForLog(contents, url)} ` +
             `(target: ${frameName || 'none'}, disposition: ${disposition || 'default'})`
@@ -151,6 +158,24 @@ function registerWebContentsHandlers() {
         // handed to the host renderer before this callback; anything reaching
         // here from a web3: document is therefore denied without navigation.
         if (contents.getURL().startsWith('web3://')) {
+          return { action: 'deny' };
+        }
+        // `target="_blank"` / `window.open` to an external scheme (magnet:,
+        // mailto:, …): Chrome launches it without leaving a tab behind. Opening
+        // a tab here would route the URL through the address bar's typed-URL
+        // path, which launches without asking — so it goes through the same
+        // per-site gate a same-tab link click does instead (#406). The
+        // window-open handler reports no frame, so the requesting frame is
+        // read from the referrer; with no referrer the top document is taken
+        // as the requester.
+        if (isExternalProtocolUrl(url)) {
+          requestOpenExternal({
+            webContents: contents,
+            url,
+            isMainFrame: false,
+            requestingUrl: referrer?.url || contents.getURL(),
+            privatePartition: getPartitionForWebContents(contents),
+          });
           return { action: 'deny' };
         }
         // Send message to the owning BrowserWindow to open URL in new tab
