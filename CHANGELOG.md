@@ -17,7 +17,7 @@ All notable changes to Freedom will be documented in this file.
   - Offchain names with every Name Resolution method
   - Per-chain addresses on chains other than Ethereum
 - Settings search ([#281](https://github.com/solardev-xyz/freedom-browser/issues/281)):
-  - Field in the Settings sidebar, covering every section
+  - Field in the Settings sidebar that finds a setting by its label or description
   - Enter or a click opens the matching row
 - Limit on repeated permission prompts ([#364](https://github.com/solardev-xyz/freedom-browser/issues/364)):
   - Three dismissals in a row block the site for the session, as in Chrome
