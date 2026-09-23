@@ -9,8 +9,7 @@ All notable changes to Freedom will be documented in this file.
 - External IPFS node support (thanks @ivanmmurciaua!):
   - Under Settings > Nodes
   - Your own gateway, or one detected on the standard local port
-- Automatic Myotis checkpoint recovery:
-  - Replaces an expired built-in checkpoint without your input
+- Myotis keeps syncing after its built-in checkpoint expires:
   - A replacement needs agreeing independent sources and a local proof check
   - Progress, errors and Retry sync in the Nodes menu
 - Settings search:
