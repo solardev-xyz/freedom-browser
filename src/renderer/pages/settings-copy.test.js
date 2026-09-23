@@ -37,14 +37,18 @@ const textOf = (html) =>
 
 /** The nav's `data-target` → its visible label. */
 const navItems = () =>
-  [...SOURCE.matchAll(/<button[^>]*class="nav-item"[^>]*data-target="([a-z]+)"[^>]*>([\s\S]*?)<\/button>/g)].map(
-    ([, target, body]) => ({ target, label: textOf(body) })
-  );
+  [
+    ...SOURCE.matchAll(
+      /<button[^>]*class="nav-item"[^>]*data-target="([a-z]+)"[^>]*>([\s\S]*?)<\/button>/g
+    ),
+  ].map(([, target, body]) => ({ target, label: textOf(body) }));
 
 /** A static `<section id=…>` → the text of the `<h2 class="section-title">` it ships. */
 const staticSectionTitles = () => {
   const titles = new Map();
-  const sections = [...SOURCE.matchAll(/<section class="section" id="([a-z]+)">([\s\S]*?)<\/section>/g)];
+  const sections = [
+    ...SOURCE.matchAll(/<section class="section" id="([a-z]+)">([\s\S]*?)<\/section>/g),
+  ];
   for (const [, id, body] of sections) {
     const heading = body.match(/<h2 class="section-title">([\s\S]*?)<\/h2>/);
     if (heading) titles.set(id, textOf(heading[1]));
@@ -54,7 +58,9 @@ const staticSectionTitles = () => {
 
 /** The body of one static `<section id=…>`. */
 const section = (id) => {
-  const match = SOURCE.match(new RegExp(`<section class="section" id="${id}">([\\s\\S]*?)</section>`));
+  const match = SOURCE.match(
+    new RegExp(`<section class="section" id="${id}">([\\s\\S]*?)</section>`)
+  );
   expect(match).not.toBeNull();
   return match[1];
 };
@@ -116,7 +122,9 @@ describe('settings.html sub-headings use the house style (#283)', () => {
   });
 
   test('the sub-headings carry no inline margin override', () => {
-    const headings = [...SOURCE.matchAll(/<h3[^>]*class="subsection-title"[^>]*>/g)].map(([tag]) => tag);
+    const headings = [...SOURCE.matchAll(/<h3[^>]*class="subsection-title"[^>]*>/g)].map(
+      ([tag]) => tag
+    );
     expect(headings.length).toBeGreaterThanOrEqual(2);
     expect(headings.filter((tag) => tag.includes('style='))).toEqual([]);
   });
@@ -128,7 +136,11 @@ describe('settings.html button labels carry no glyphs (#278)', () => {
   });
 
   test('no button or link label is suffixed with a literal `→`', () => {
-    const anchors = [...SOURCE.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/g)].map(([, body]) => textOf(body));
+    // `</a\n>` is how Prettier wraps a long anchor; without `\s*` the match
+    // runs on to the next anchor's `</a>` and sweeps the page in between.
+    const anchors = [...SOURCE.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/g)].map(([, body]) =>
+      textOf(body)
+    );
     // The ENS method rows render their link text from a `linkLabel` field
     // rather than as markup, so it is swept from the registry too.
     const linkLabels = [...SOURCE.matchAll(/linkLabel:\s*'([^']*)'/g)].map(([, label]) => label);
@@ -193,7 +205,9 @@ describe('settings.html Site Permissions says it once (#272)', () => {
 
   test('one empty state, pointing at the checkbox that creates a row', () => {
     expect(SOURCE).toContain('<p class="row-label">No saved permissions</p>');
-    expect(SOURCE).toMatch(/Sites you allow or block with\s+“Remember for this site” appear here\./);
+    expect(SOURCE).toMatch(
+      /Sites you allow or block with\s+“Remember for this site” appear here\./
+    );
   });
 
   test('`Remove all` sits beside the heading, where section-level actions live', () => {
@@ -226,9 +240,7 @@ describe('settings.html helper lines earn their place (#273)', () => {
   test('the two Myotis rows say Beta in a badge instead of in a paragraph', () => {
     const startup = section('startup');
     for (const label of ['Start Ethereum node', 'Start Gnosis node']) {
-      expect(startup).toMatch(
-        new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`)
-      );
+      expect(startup).toMatch(new RegExp(`${label}\\s*<span class="resolver-badge">Beta</span>`));
     }
     expect(SOURCE).not.toContain('light client (Myotis)');
     expect(SOURCE).not.toContain('Takes effect on next launch');

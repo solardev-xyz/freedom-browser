@@ -121,6 +121,8 @@ describe('preload', () => {
       openlvSignaling: null,
     });
     expect(exposures.internalPages).toBe(internalPages);
+    // Read synchronously by renderer/platform-init.js before first paint.
+    expect(exposures.electronAPI.platform).toBe(process.platform);
 
     const invokeCases = [
       [exposures.electronAPI, 'setBzzBase', [11, 'http://127.0.0.1:1633/bzz/hash/'], IPC.BZZ_SET_BASE, [{ webContentsId: 11, baseUrl: 'http://127.0.0.1:1633/bzz/hash/' }]],

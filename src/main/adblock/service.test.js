@@ -544,7 +544,13 @@ describe('artifact layers', () => {
     await buildWithLayers({ adblockCookies: true });
     const status = getAdblockStatus();
     expect(status.listsVersion).toBe('2026-08-01');
+    expect(status.listsResolved).toBe(true);
     expect(Object.keys(status.categories).sort()).toEqual(['ads', 'cookies', 'privacy']);
+  });
+
+  test('reports lists as not yet resolved before the first build', () => {
+    _resetAdblockForTests();
+    expect(getAdblockStatus()).toMatchObject({ listsResolved: false, listsVersion: null });
   });
 });
 
