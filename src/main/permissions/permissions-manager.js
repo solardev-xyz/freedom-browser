@@ -655,14 +655,6 @@ function sendNextPrompt(state) {
 }
 
 /**
- * Queue a prompt for the requesting guest. Coalesces with an existing
- * pending prompt from the SAME guest for the same origin + key set;
- * same-origin requests from different tabs stay separate prompts so
- * each answer binds to the tab the user is actually looking at. The
- * private partition is part of the coalescing signature so a private and
- * a normal request can never share one prompt (and therefore one answer).
- */
-/**
  * Whether the guest already has an external-protocol prompt showing or
  * queued. Following Chrome, a tab with an external-protocol dialog up
  * gets no further external-protocol requests until it is answered.
@@ -675,6 +667,20 @@ function hasPendingExternalPrompt(webContents) {
   );
 }
 
+/**
+ * Queue a prompt for the requesting guest. Coalesces with an existing
+ * pending prompt from the SAME guest for the same origin + key set;
+ * same-origin requests from different tabs stay separate prompts so
+ * each answer binds to the tab the user is actually looking at. The
+ * private partition is part of the coalescing signature so a private and
+ * a normal request can never share one prompt (and therefore one answer).
+ *
+ * Exception: an `openExternal` request is never coalesced. Each one
+ * carries its own URL, and one Allow must launch exactly the one URL the
+ * user was shown, so a matching pending prompt denies the new request
+ * instead of merging into it (callers are expected to check
+ * hasPendingExternalPrompt first, as requestOpenExternal does).
+ */
 function enqueuePrompt({
   host,
   guest,
