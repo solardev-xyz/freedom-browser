@@ -1824,3 +1824,87 @@ describe('webview-preload adblock scriptlets', () => {
     expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(2);
   });
 });
+
+// The about:blank child-realm hook (inheritScriptletsIntoChildRealms) runs in
+// the page's main world and fires only when the page later reads
+// `iframe.contentWindow` — after page scripts have run. So it must not call
+// anything the page can replace in between. Two real V8 realms (node:vm)
+// stand in for the parent page and its about:blank child.
+describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile page', () => {
+  const vm = require('node:vm');
+  const SCRIPT = 'window.__freedomScriptletRan = (window.__freedomScriptletRan || 0) + 1;';
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    jest.restoreAllMocks();
+  });
+
+  function bundleSource() {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const { contextBridge } = loadWebviewPreloadModule({
+      location: {
+        href: 'https://www.youtube.com/watch?v=x',
+        protocol: 'https:',
+        pathname: '/watch',
+      },
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    return String(contextBridge.executeInMainWorld.mock.calls[0][0].func);
+  }
+
+  function makeRealms() {
+    const child = vm.createContext({});
+    vm.runInContext(
+      `var window = globalThis; var location = { href: 'about:blank' };
+       function HTMLIFrameElement() {}
+       var nativeGet = function () { return null; };
+       Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+         configurable: true, enumerable: true, get: nativeGet,
+       });`,
+      child
+    );
+    const parent = vm.createContext({ __child: vm.runInContext('globalThis', child) });
+    vm.runInContext(
+      `var window = globalThis;
+       var location = { href: 'https://www.youtube.com/watch?v=x' };
+       function HTMLIFrameElement() {}
+       Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+         configurable: true, enumerable: true, get() { return __child; },
+       });`,
+      parent
+    );
+    return { parent, child };
+  }
+
+  test.each([
+    ['an untouched page', ''],
+    ['String.prototype.startsWith replaced', 'String.prototype.startsWith = () => false;'],
+    ['String replaced', 'String = () => "https://evil.test/";'],
+    ['the Array iterator replaced', 'Array.prototype[Symbol.iterator] = function* () {};'],
+  ])('patches a same-origin about:blank child with %s', (_label, sabotage) => {
+    const src = bundleSource();
+    const { parent, child } = makeRealms();
+    vm.runInContext(`(${src})()`, parent);
+    // The parent's own scriptlets ran at install time.
+    expect(vm.runInContext('window.__freedomScriptletRan', parent)).toBe(1);
+    // Page script runs, then reaches into the child.
+    vm.runInContext(`${sabotage}\n new HTMLIFrameElement().contentWindow;`, parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+    // …and the hooks were installed in the child too, for nesting.
+    expect(
+      vm.runInContext(
+        "Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get !== nativeGet",
+        child
+      )
+    ).toBe(true);
+    // Adopted once per realm.
+    vm.runInContext('new HTMLIFrameElement().contentWindow;', parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+});

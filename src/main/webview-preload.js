@@ -78,17 +78,24 @@ function scriptletMatchUrl() {
 //
 // Runs in the page's main world, stringified into the bundle: no closures
 // over this file. Everything it needs later is captured up front, since page
-// scripts run between install and the first hooked access.
+// scripts run between install and the first hooked access — so no call below
+// goes through a page-replaceable global or prototype method (String,
+// String.prototype.startsWith, Array iteration…) once the page has run.
 function inheritScriptletsIntoChildRealms(runIn) {
   const { apply } = Reflect;
   const { defineProperty, getOwnPropertyDescriptor } = Object;
+  const { startsWith } = String.prototype;
   const adopted = new WeakSet();
   const { has, add } = WeakSet.prototype;
+  const CTORS = ['HTMLIFrameElement', 'HTMLFrameElement', 'HTMLObjectElement'];
+  const PROPS = ['contentWindow', 'contentDocument'];
   const adopt = (win) => {
     try {
       // Cross-origin children throw here; http(s)/srcdoc documents ran
       // their own scriptlets from the preload at document start.
-      if (!win || !String(win.location.href).startsWith('about:blank')) return;
+      if (!win) return;
+      const href = win.location.href;
+      if (typeof href !== 'string' || !apply(startsWith, href, ['about:blank'])) return;
       // Keyed on a realm intrinsic: the WindowProxy survives navigation, the
       // realm (and its Object) doesn't.
       const realm = win.Object;
@@ -101,10 +108,14 @@ function inheritScriptletsIntoChildRealms(runIn) {
     }
   };
   const install = (realm) => {
-    for (const ctor of ['HTMLIFrameElement', 'HTMLFrameElement', 'HTMLObjectElement']) {
+    // Indexed loops, not for…of: install() also runs for a child at hooked-
+    // access time, and for…of would call the page's Array iterator.
+    for (let i = 0; i < CTORS.length; i++) {
+      const ctor = CTORS[i];
       const proto = realm[ctor] && realm[ctor].prototype;
       if (!proto) continue;
-      for (const prop of ['contentWindow', 'contentDocument']) {
+      for (let j = 0; j < PROPS.length; j++) {
+        const prop = PROPS[j];
         const desc = getOwnPropertyDescriptor(proto, prop);
         if (!desc || typeof desc.get !== 'function') continue;
         const nativeGet = desc.get;
