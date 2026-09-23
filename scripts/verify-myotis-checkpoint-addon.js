@@ -3,10 +3,14 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// The pin is the single source of truth for the expected ABI, so a release bump
+// does not have to be repeated here (it was, and this check failed the download
+// on the v0.1.11/ABI 29 bump while the pin already said 29).
+const { abi: EXPECTED_ABI } = require('./myotis-release.json');
 
 function verifyAddon(addonPath) {
   const addon = require(path.resolve(addonPath));
-  assert.equal(addon.init(), 26);
+  assert.equal(addon.init(), EXPECTED_ABI);
   assert.equal(typeof addon.createWithCheckpoint, 'function');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-myotis-constructor-'));
   const untouched = path.join(directory, 'invalid-must-not-exist');
@@ -42,7 +46,7 @@ function verifyAddon(addonPath) {
     addon.stop(resumed);
     assert.equal(fs.readFileSync(path.join(dataDir, filename), 'utf8'), 'constructor-only fixture');
   }
-  console.log('Official Myotis ABI 26 checkpoint import constructor checks passed (no networking)');
+  console.log(`Official Myotis ABI ${EXPECTED_ABI} checkpoint import constructor checks passed (no networking)`);
 }
 
 if (require.main === module) verifyAddon(process.argv[2]);
