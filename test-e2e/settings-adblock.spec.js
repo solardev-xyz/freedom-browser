@@ -91,12 +91,20 @@ test('with no filter lists the section says once it cannot run and disables its 
   );
   // Settings are untouched (master still on); only the controls are inert.
   await expect(page.locator('#adblock-enabled')).toBeChecked();
-  for (const selector of ADBLOCK_TOGGLES) {
+  for (const selector of ADBLOCK_TOGGLES.filter((s) => s !== '#adblock-autoupdate')) {
     await expect(page.locator(selector)).toBeDisabled();
   }
-  for (const row of ['enabled', 'ads', 'privacy', 'cookies', 'annoyances', 'autoupdate']) {
+  for (const row of ['enabled', 'ads', 'privacy', 'cookies', 'annoyances']) {
     await expect(page.locator(`#adblock-${row}-row`)).toHaveClass(/\bdisabled\b/);
   }
+  // Auto-update stays usable: switching it off is how a user stops the
+  // Swarm list updater's background fetches while the master is held on.
+  const autoUpdate = page.locator('#adblock-autoupdate');
+  await expect(autoUpdate).toBeChecked();
+  await expect(autoUpdate).toBeEnabled();
+  await page.locator('#adblock-autoupdate-row .slider').click();
+  await expect(autoUpdate).not.toBeChecked();
+  await expect(autoUpdate).toBeEnabled();
 });
 
 test.describe('with no filter lists and ad blocking switched off', () => {

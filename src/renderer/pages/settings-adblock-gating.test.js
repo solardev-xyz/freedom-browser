@@ -7,6 +7,8 @@
  * whose switching-on is how lists can still arrive (the Swarm list updater
  * needs the master and auto-update switches on and at least one category):
  * that control must stay usable, or the section locks itself out for good.
+ * And the auto-update switch is never frozen, so the user can always stop the
+ * updater's background Swarm fetches.
  *
  * Same extraction approach as settings-tor-rows.test.js: the helper is lifted
  * out of the shipped inline script and evaluated with fake collaborators, so
@@ -108,14 +110,15 @@ describe('applyAdblockGating', () => {
     });
   });
 
-  test('no lists, default settings: the master and all five sub-rows are disabled', () => {
+  test('no lists, default settings: the master and categories are disabled, auto-update is not', () => {
+    // Auto-update stays usable so the updater's Swarm fetches can be stopped.
     expect(section({ unavailable: true, checked: DEFAULTS })).toEqual({
       enabled: true,
       ads: true,
       privacy: true,
       cookies: true,
       annoyances: true,
-      autoupdate: true,
+      autoupdate: false,
     });
   });
 
@@ -137,7 +140,7 @@ describe('applyAdblockGating', () => {
     const state = section({ unavailable: true, checked: none });
     for (const name of CATS) expect(state[name]).toBe(false);
     expect(state.enabled).toBe(true);
-    expect(state.autoupdate).toBe(true);
+    expect(state.autoupdate).toBe(false);
   });
 
   test('lists arriving re-enables everything the master allows', () => {
@@ -165,13 +168,22 @@ describe('applyAdblockGating', () => {
     );
 
     apply();
-    expect(names.every((n) => inputs[n].disabled)).toBe(true);
+    for (const n of names) expect(inputs[n].disabled).toBe(n !== 'autoupdate');
     setUnavailable(false);
     apply();
     for (const n of names) {
       expect(inputs[n].disabled).toBe(false);
       expect(rows[n].classList.contains('disabled')).toBe(false);
     }
+  });
+});
+
+describe('renderAdblockStatus before the first engine build', () => {
+  test('lists not yet resolved do not count as "no lists"', () => {
+    const body = slice('const renderAdblockStatus = async () => {');
+    expect(body).toContain('const listsPending = status.listsResolved === false;');
+    expect(body).toMatch(/adblockUnavailable = !listsPending && /);
+    expect(body).toContain("'Checking filter lists…'");
   });
 });
 

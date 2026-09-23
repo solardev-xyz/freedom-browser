@@ -2972,9 +2972,11 @@
       // updater, which only runs with the master and auto-update switches on
       // and only fetches the categories switched on (update-scheduler.js,
       // update-manager.js). So a control stays usable while switching it on
-      // is the way out: the master or auto-update switch when it is off, and
-      // the category switches when none of them is on. Anything else is
-      // frozen in place until lists exist.
+      // is the way out: the master switch when it is off, and the category
+      // switches when none of them is on. The auto-update switch is never
+      // frozen: switching it on is a way out, and switching it off is the
+      // only way to stop the updater's background Swarm fetches while the
+      // master is held on. Anything else is frozen in place until lists exist.
       let adblockUnavailable = false;
 
       const applyAdblockGating = () => {
@@ -2995,7 +2997,6 @@
         }
         const autoUpdateRow = $('adblock-autoupdate-row');
         setFieldEnabled(fields.adblockEnabled, autoUpdateRow, fields.adblockAutoUpdate);
-        freeze(autoUpdateRow, fields.adblockAutoUpdate, !fields.adblockAutoUpdate.checked);
       };
 
       // Rule counts / list version come from the main-process engine, not
@@ -3004,12 +3005,17 @@
       const renderAdblockStatus = async () => {
         try {
           const status = await freedomAPI.adblockGetStatus();
-          adblockUnavailable = !status.engineReady && !status.listsVersion;
+          // Before the first engine build has looked for lists, "no version"
+          // means "not checked yet", not "no lists" — keep the section live.
+          const listsPending = status.listsResolved === false;
+          adblockUnavailable = !listsPending && !status.engineReady && !status.listsVersion;
           $('adblock-status').textContent = status.engineReady
             ? `Filter lists ${status.listsVersion} · engine active`
             : status.listsVersion
               ? `Filter lists ${status.listsVersion} · engine preparing…`
-              : 'No filter lists available. Ad blocking cannot run.';
+              : listsPending
+                ? 'Checking filter lists…'
+                : 'No filter lists available. Ad blocking cannot run.';
           for (const { id } of ADBLOCK_CATEGORIES) {
             const meta = status.categories?.[id];
             if (meta?.ruleCount) {
@@ -3020,7 +3026,8 @@
           // Keep watching while there is nothing to run: the list updater (or
           // a first engine build still resolving at startup) can supply lists
           // at any time, and the section should come alive when it does.
-          if (adblockUnavailable) refreshAdblockStatusSoon(5000);
+          if (listsPending) refreshAdblockStatusSoon(1500);
+          else if (adblockUnavailable) refreshAdblockStatusSoon(5000);
         } catch {
           $('adblock-status').textContent = 'Status unavailable.';
         }
