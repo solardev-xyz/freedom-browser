@@ -392,7 +392,10 @@ jobs:
           MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
 
       - name: Load addon and verify ABI
-        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==26) throw new Error('Expected ABI 26, got '+abi); if(typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import API'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
+        # The expected ABI comes from the release pin, not a literal repeated
+        # here: on the v0.1.11 bump this step still said 26 and would have
+        # failed every platform against a correctly pinned addon.
+        run: node -e "const {abi:expected}=require('./scripts/myotis-release.json'); const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==expected) throw new Error('Expected ABI '+expected+', got '+abi); if(typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import API'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
         env:
           MYOTIS_ADDON: ${{ matrix.addon }}
 
