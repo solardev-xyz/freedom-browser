@@ -744,6 +744,41 @@ describe('scriptlets', () => {
     });
   });
 
+  test('an unreadable updated resources file falls back to the bundled copy, uncached', async () => {
+    // A landed update names its own resources.json, but the file is missing:
+    // the bundled floor's resources still serve the scriptlets.
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-userdata-'));
+    const updated = path.join(userData, 'adblock', 'updated');
+    fs.mkdirSync(updated, { recursive: true });
+    fs.writeFileSync(
+      path.join(updated, 'manifest.json'),
+      JSON.stringify({
+        version: '2026-10-01',
+        categories: {},
+        resources: { file: 'resources.json', version: 'v-upd', sha256: 'sha-upd' },
+      })
+    );
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
+    mockElectron.userData = userData;
+    process.env.FREEDOM_ADBLOCK_DIR = dir;
+    try {
+      _resetAdblockForTests();
+      installAdblockInterception({ cacheDir });
+      await refreshEngine();
+      navigateTab(9, 'https://video.test/watch');
+      expect(
+        run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script).sort()
+      ).toEqual(['mark:hello', 'quiet:q', 'trusted:t']);
+      // Cached under the update's resources identity, this engine would keep
+      // serving the fallback after the updated file is repaired.
+      expect(fs.readdirSync(cacheDir).filter((f) => f.startsWith('engine-'))).toEqual([]);
+    } finally {
+      mockElectron.userData = null;
+      delete process.env.FREEDOM_ADBLOCK_DIR;
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
   test('scriptlets survive the serialized engine cache, and new resources miss it', async () => {
     cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
     await install({ cacheDir });

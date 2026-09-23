@@ -200,7 +200,7 @@ async function readManifest(dir) {
 async function resolveArtifacts() {
   const categories = {};
   let version = null;
-  let resources = null;
+  const resources = [];
   for (const dir of getArtifactDirs()) {
     const manifest = await readManifest(dir);
     if (!manifest) continue;
@@ -212,30 +212,43 @@ async function resolveArtifacts() {
     }
     // Scriptlet resources layer the same way: the highest layer naming a
     // resources file serves it (today only the bundled floor carries one).
-    if (!resources && manifest.resources?.file) {
-      resources = { ...manifest.resources, dir };
+    // Lower layers stay on as fallbacks in case that file can't be read.
+    if (manifest.resources?.file) {
+      resources.push({ ...manifest.resources, dir });
     }
   }
-  return version === null ? null : { version, categories, resources };
+  return version === null
+    ? null
+    : { version, categories, resources: resources[0] || null, resourcesFallbacks: resources };
 }
 
 /**
- * Read and parse the scriptlet resources file. Returns null when there is
- * none or it can't be used — the engine still blocks and hides, it just has
- * no scriptlets (and no `$redirect=` bodies).
+ * Read and parse the scriptlet resources file, from the highest layer whose
+ * file is usable (an unreadable updated copy falls back to a lower layer's,
+ * ultimately the bundled floor). Returns null when there is none or none can
+ * be used — the engine still blocks and hides, it just has no scriptlets (and
+ * no `$redirect=` bodies). `degraded` marks a result that isn't the top
+ * layer's own file, so the caller doesn't cache it under that file's identity.
  */
 async function readResources(resolved) {
-  const entry = resolved.resources;
-  if (!entry) return null;
-  try {
-    const text = await fs.promises.readFile(path.join(entry.dir, entry.file), 'utf-8');
-    const checksum = entry.sha256 || crypto.createHash('sha256').update(text).digest('hex');
-    const parsed = Resources.parse(text, { checksum });
-    return { text, checksum, trustedNames: trustedScriptletNames(parsed) };
-  } catch (err) {
-    log.warn(`[adblock] skipping unreadable scriptlet resources: ${err.message}`);
-    return null;
+  const candidates = resolved.resourcesFallbacks || [];
+  for (const [i, entry] of candidates.entries()) {
+    try {
+      const text = await fs.promises.readFile(path.join(entry.dir, entry.file), 'utf-8');
+      const checksum = entry.sha256 || crypto.createHash('sha256').update(text).digest('hex');
+      const parsed = Resources.parse(text, { checksum });
+      return {
+        text,
+        checksum,
+        entry,
+        degraded: i > 0,
+        trustedNames: trustedScriptletNames(parsed),
+      };
+    } catch (err) {
+      log.warn(`[adblock] skipping unreadable scriptlet resources in ${entry.dir}: ${err.message}`);
+    }
   }
+  return candidates.length ? { degraded: true } : null;
 }
 
 // Every spelling a list can use to name a trust-requiring scriptlet: its
@@ -398,7 +411,8 @@ async function rebuildEngineOnce() {
     }
   }
 
-  const resources = await readResources(resolved);
+  const read = await readResources(resolved);
+  const resources = read?.text ? read : null;
   const text = await readEnabledListsText(settings, resolved, resources?.trustedNames);
   if (text === null) {
     engine = null;
@@ -409,9 +423,12 @@ async function rebuildEngineOnce() {
   engine = built;
   log.info(
     `[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey}, ` +
-      `scriptlets: ${resources ? resolved.resources.version || 'yes' : 'none'})`
+      `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'})`
   );
-  if (cacheFile) {
+  // A build that couldn't use the top layer's resources file isn't what the
+  // engine identity names; caching it would keep serving the fallback after
+  // that file is fixed.
+  if (cacheFile && !read?.degraded) {
     await writeEngineCache(cacheFile, engine);
   }
 }
