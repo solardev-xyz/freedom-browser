@@ -81,6 +81,10 @@ function scriptletMatchUrl() {
 // scripts run between install and the first hooked access — so no call below
 // goes through a page-replaceable global or prototype method (String,
 // String.prototype.startsWith, Array iteration…) once the page has run.
+// Serialized into the page by buildScriptletBundle, so it must be
+// self-contained: `istanbul ignore` keeps coverage counters (which only exist
+// in the test runner's realm) from being compiled into its source.
+/* istanbul ignore next */
 function inheritScriptletsIntoChildRealms(runIn) {
   const { apply } = Reflect;
   const { defineProperty, getOwnPropertyDescriptor } = Object;
