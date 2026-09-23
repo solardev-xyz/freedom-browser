@@ -93,7 +93,7 @@ describe('checkpoint generation store on the real filesystem', () => {
       const persisted = await readJson(path.join(created.dataDir, 'anchor.json'));
       expect(persisted).toEqual({
         schemaVersion: 1,
-        nativeCheckpointApi: 26,
+        nativeCheckpointApi: 29,
         chainId,
         generation: created.generation,
         origin: 'verified',
@@ -148,14 +148,14 @@ describe('checkpoint generation store on the real filesystem', () => {
     await fs.writeFile(snapshot, 'old patched lineage');
     const current = await loadOrCreateState(baseDir, chainId);
     expect(current.generation).not.toBe(old.generation);
-    expect(current).toMatchObject({ origin: 'bundled', checkpoint: null, nativeCheckpointApi: 26 });
+    expect(current).toMatchObject({ origin: 'bundled', checkpoint: null, nativeCheckpointApi: 29 });
     expect(await fs.readFile(anchorPath)).toEqual(original);
     expect(await fs.readFile(snapshot, 'utf8')).toBe('old patched lineage');
     expect(await fs.readdir(current.dataDir)).toEqual(['anchor.json']);
     expect((await loadOrCreateState(baseDir, chainId)).generation).toBe(current.generation);
   });
 
-  test.each([25, 27, '26', null])('a generation recorded against native checkpoint API %s is never resumed', async (api) => {
+  test.each([28, 30, '29', null])('a generation recorded against native checkpoint API %s is never resumed', async (api) => {
     const created = await replaceCheckpoint(baseDir, 1, checkpoint());
     const anchorPath = path.join(created.dataDir, 'anchor.json');
     const record = await readJson(anchorPath);

@@ -1,6 +1,6 @@
 # Myotis process isolation
 
-Official Myotis v0.1.10 / ABI 26 is pinned. No downstream native patch is used. Every addon call, including init,
+Official Myotis v0.1.11 / ABI 29 is pinned. No downstream native patch is used. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -132,7 +132,7 @@ the native weak-subjectivity bound; renewed staleness triggers another recovery.
 New schema-v2 checkpoint records retain the distinct quorum voter origins;
 worker and new-generation validation require the configured threshold. Historical
 schema-v1 records retain their original single-authority provenance for migration;
-patched ABI 25 generations are preserved and replaced, not resumed under ABI 26.
+patched ABI 25 generations are preserved and replaced, not resumed under ABI 29.
 They cannot authorize a new recovery or be relabeled as quorum-verified. New
 recovery always requires v2 acquisition.
 Malformed records or unsafe state paths fail closed as storage failures.
@@ -273,11 +273,11 @@ requirement is a release limitation.
 
 ## Build and signing
 
-`npm run myotis:download` downloads the official v0.1.10 Node addons for all
+`npm run myotis:download` downloads the official v0.1.11 Node addons for all
 five supported targets (or one `MYOTIS_DOWNLOAD_TARGET`). The release checksum
 manifest and each addon digest are pinned in `scripts/myotis-release.json`.
 Packaging checks the actual bytes against these pins before signing; runtime
-requires exactly ABI 26. No Rust build, downstream patch, or build-provenance
+requires exactly ABI 29. No Rust build, downstream patch, or build-provenance
 sidecar is required for Myotis. Other native components retain their own builds.
 
 The official API is `createWithCheckpoint(network, dataDir, root, slot)`.
@@ -285,10 +285,13 @@ Myotis writes `sync-anchor[-gnosis].json` and allows only the same root/slot to
 resume that directory; `-3 ANCHOR_MISMATCH` is a storage failure, never a fallback
 to the embedded anchor. Freedom validates existing native markers against its
 own authenticated checkpoint record. New generations record `nativeCheckpointApi:
-26` in `anchor.json`. Pre-release generations made by our patched ABI 25 build
+29` in `anchor.json`. Generations recorded against any other value — including
+the ABI 26 ones written before the v0.1.11 bump — are preserved and replaced
+rather than resumed, so upgrading to v0.1.11 starts a fresh generation and
+re-syncs once. Pre-release generations made by our patched ABI 25 build
 are preserved and replaced with a clean bundled generation, after checking
 retired ownership. No old snapshot is copied or relabeled. If the bundled anchor
-is stale, the usual quorum and Colibri recovery runs. Ordinary ABI 26 restarts
+is stale, the usual quorum and Colibri recovery runs. Ordinary ABI 29 restarts
 retain their generation and need no new external checkpoint unless native sync
 reports a stale anchor.
 
