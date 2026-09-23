@@ -3,6 +3,37 @@ import { cidV0ToV1Base32, cidV1B58btcToBase32, ipnsMhToCidV1Base36 } from './cid
 
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
 
+export const TON_SUFFIXES = ['.ton', '.adnl', '.bag', '.t.me'];
+
+export const isTonHost = (host) => {
+  if (typeof host !== 'string' || !host) return false;
+  const normalized = host.toLowerCase().replace(/\.$/, '');
+  return TON_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+};
+
+export const parseTonInput = (input) => {
+  const raw = typeof input === 'string' ? input.trim() : '';
+  if (!raw) return null;
+
+  const withoutScheme = raw.replace(/^(?:https?|tonsite|ton):\/\//i, '');
+  let parsed;
+  try {
+    parsed = new URL(`http://${withoutScheme}`);
+  } catch {
+    return null;
+  }
+  if (parsed.username || parsed.password || !isTonHost(parsed.hostname)) return null;
+
+  const hostname = parsed.hostname.replace(/\.$/, '');
+  const host = parsed.port ? `${hostname}:${parsed.port}` : hostname;
+  const tail = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  const displayTail = tail === '/' ? '' : tail;
+  return {
+    targetUrl: `http://${host}${tail}`,
+    displayValue: `tonsite://${host}${displayTail}`,
+  };
+};
+
 export const DEFAULT_ONCHAIN_APP_CHAIN_ID = 1;
 const ETHEREUM_ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 
@@ -523,6 +554,11 @@ export const deriveDisplayValue = (
   if (radicleApiPrefix && url.startsWith(radicleApiPrefix)) {
     const decoded = decodeAndTrim(url.slice(radicleApiPrefix.length));
     return decoded ? `rad://${decoded}` : '';
+  }
+
+  if (/^https?:\/\//i.test(url)) {
+    const tonTarget = parseTonInput(url);
+    if (tonTarget) return tonTarget.displayValue;
   }
 
   return url;

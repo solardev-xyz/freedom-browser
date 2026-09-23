@@ -14,14 +14,14 @@
       "libradicle.node",
       "myotis-node.node"
     ],
-    "external_binaries": ["antd", "arti", "myotis-supervisor"],
+    "external_binaries": ["antd", "tonutils-freedom-cli", "arti", "myotis-supervisor"],
     "vendored_renderer_bundles": [
       "src/renderer/vendor/openlv.esm.js",
       "src/renderer/vendor/highlight.min.js",
       "src/renderer/vendor/marked.min.js",
       "src/renderer/vendor/purify.min.js"
     ],
-    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd) and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
+    "notes": "Electron desktop app bundled as DMG/DEB/AppImage/pacman/NSIS. Node modules bundled in app.asar. Native addons better-sqlite3, freedom_ipfs_native.node, libradicle.node and myotis-node.node ship under resources/. Ant (antd), Tonutils Proxy and, on macOS, Linux and Windows x64, Arti ship as external binaries in resources/. myotis-supervisor is compiled from Freedom's own C sources (src/main/myotis/native/) and is not third-party. Pre-built third-party renderer libraries are committed under src/renderer/vendor/ and ship inside app.asar via the src/**/* files pattern, which also ships every other committed file under src/ — see the assets array for the media it carries."
   },
   "dependencies": [
     {
@@ -65,6 +65,34 @@
       "linking_or_integration": "separate-process",
       "risk": "green",
       "issues": []
+    },
+    {
+      "name": "tonutils-proxy",
+      "version": "v0.1.0-freedom",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github",
+        "url": "https://github.com/TONresistor/Tonutils-Proxy",
+        "commit": "0b4eb46be7c073d6b3e94421b4b80e9b807a246c"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "version_pin": "src/shared/ton-version.js RELEASE_TAG plus scripts/fetch-tonutils-freedom.js per-asset SHA-256",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "supply-chain",
+          "details": "Release assets are published from a project fork. Freedom pins every binary asset by SHA-256 and records the reviewed source commit; the release's own checksums.txt is not trusted by itself.",
+          "recommended_fix": "Re-review the source commit and compiled Go dependency license set on every bump, then update the tag, source commit and all per-asset checksums together."
+        }
+      ]
     },
     {
       "name": "freedom-ipfs",

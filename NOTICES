@@ -20,6 +20,13 @@ Ant (antd, Swarm node)
   Copyright (c) solardev-xyz contributors
   https://github.com/freedom-hq/ant
 
+Tonutils Proxy (TON Sites HTTP proxy)
+  License: MIT
+  Copyright (c) 2025 Oleg Baranov
+  https://github.com/TONresistor/Tonutils-Proxy
+  Freedom ships the v0.1.0-freedom binaries built from source commit
+  0b4eb46be7c073d6b3e94421b4b80e9b807a246c.
+
 freedom-ipfs
   License: MIT OR Apache-2.0
   Copyright (c) 2026 Freedom IPFS contributors

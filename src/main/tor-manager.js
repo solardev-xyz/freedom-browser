@@ -704,11 +704,15 @@ function stopTor(options = {}) {
         clearTimeout(forceKillTimeout);
         forceKillTimeout = null;
       }
-      if (!preserveOnionRouting) clearOnionRouting().catch(() => {});
+      const routingCleanup = preserveOnionRouting
+        ? Promise.resolve()
+        : clearOnionRouting().catch((err) => {
+            log.error('[Tor] Failed to clear .onion routing:', err.message);
+          });
       clearService('tor');
       artiBootstrapped = false;
       artiOutputBuffer = '';
-      resolve();
+      routingCleanup.finally(resolve);
     };
 
     if (!artiProcess) {

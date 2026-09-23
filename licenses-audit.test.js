@@ -67,6 +67,13 @@ const EXTRA_RESOURCES = {
     noticeMatch: /^Ant \(antd, Swarm node\)$/m,
     pin: { file: 'scripts/fetch-ant.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
   },
+  'ton-bin/${os}-${arch}/': {
+    thirdParty: true,
+    label: 'Tonutils Proxy',
+    auditName: 'tonutils-proxy',
+    noticeMatch: /^Tonutils Proxy \(TON Sites HTTP proxy\)$/m,
+    pin: { file: 'src/shared/ton-version.js', re: /RELEASE_TAG = '([^']+)'/ },
+  },
   'native/freedom-ipfs-node/prebuilds/${os}-${arch}/': {
     thirdParty: true,
     label: 'freedom-ipfs',

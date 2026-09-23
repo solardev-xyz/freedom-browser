@@ -99,6 +99,10 @@ function getTorDataDir() {
   return resolveDir('FREEDOM_TOR_DATA', 'tor-data');
 }
 
+function getTonDataDir() {
+  return resolveDir('FREEDOM_TON_DATA', 'ton-data');
+}
+
 function getRadicleDataDir() {
   const override = process.env.FREEDOM_RADICLE_DATA;
   if (override) {
@@ -181,5 +185,6 @@ module.exports = {
   getProfileUserDataDir,
   getQuickUnlockCredentialPath,
   getRadicleDataDir,
+  getTonDataDir,
   getTorDataDir,
 };

@@ -90,6 +90,7 @@ const loadNavigationModule = async (options = {}) => {
     radicleBase: 'radapi://local',
     currentRadicleStatus: options.currentRadicleStatus || 'running',
     currentIpfsStatus: options.currentIpfsStatus || 'running',
+    currentTonStatus: options.currentTonStatus || 'running',
     registry: options.registry || { ipfs: { mode: 'bundled' } },
     knownEnsNames: new Map(),
     ensProtocols: new Map(),
@@ -291,6 +292,15 @@ const loadNavigationModule = async (options = {}) => {
       return `web3://${match[1].toLowerCase()}${chainId === 1 ? '' : `:${chainId}`}${suffix}`;
     }),
     looksLikeOnchainAppInput: jest.fn((input) => /^web3:/i.test((input || '').trim())),
+    parseTonInput: jest.fn((input) => {
+      const match = (input || '').trim().match(/^(?:(?:https?|tonsite|ton):\/\/)?([^/?#]+)(.*)$/i);
+      if (!match || !/\.(?:ton|adnl|bag)$|\.t\.me$/i.test(match[1])) return null;
+      const tail = match[2] || '';
+      return {
+        targetUrl: `http://${match[1].toLowerCase()}${tail || '/'}`,
+        displayValue: `tonsite://${match[1].toLowerCase()}${tail === '/' ? '' : tail}`,
+      };
+    }),
     deriveDisplayValue: jest.fn((url) => `display:${url}`),
     deriveBzzBaseFromUrl: jest.fn((url) =>
       url.includes('/bzz/') ? 'https://gateway.example/bzz/hash/' : null
@@ -2063,6 +2073,39 @@ describe('navigation', () => {
       const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
       expect(loadedUrl).toBe('ipfs://QmTest');
       expect(loadedUrl).not.toContain('error.html');
+    });
+
+    test('TON: normalizes TON schemes to the loopback-proxied HTTP transport', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('tonsite://Foundation.TON/docs?q=1');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenLastCalledWith(
+        'http://foundation.ton/docs?q=1'
+      );
+      expect(ctx.elements.addressInput.value).toBe('tonsite://foundation.ton/docs?q=1');
+      expect(ctx.activeRef.tab.navigationState.pendingNavigationUrl).toBe(
+        'http://foundation.ton/docs?q=1'
+      );
+    });
+
+    test('TON: never loads the hostname directly while the proxy is stopped', async () => {
+      const ctx = await loadNavigationModule({ currentTonStatus: 'stopped' });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('foundation.ton');
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toContain('pages/error.html');
+      expect(loadedUrl).toContain('protocol=ton');
+      expect(loadedUrl).toContain(encodeURIComponent('tonsite://foundation.ton'));
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
+        'http://foundation.ton/'
+      );
+      expect(ctx.elements.addressInput.value).toBe('tonsite://foundation.ton');
     });
   });
 

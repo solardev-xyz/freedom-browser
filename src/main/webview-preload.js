@@ -221,6 +221,12 @@ const getRawDwebHref = (anchor) => {
   return null;
 };
 
+const isTonSiteUrl = (url) => {
+  if (!url || !['ton:', 'tonsite:'].includes(url.protocol)) return false;
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  return ['.ton', '.adnl', '.bag', '.t.me'].some((suffix) => host.endsWith(suffix));
+};
+
 const getHostRoutedHref = (anchor) => {
   const rawHref = anchor?.getAttribute?.('href')?.trim();
   if (!rawHref) return null;
@@ -231,8 +237,19 @@ const getHostRoutedHref = (anchor) => {
     try {
       const resolved = new URL(rawHref, globalThis.location.href);
       if (
-        ['web3:', 'http:', 'https:', 'bzz:', 'ipfs:', 'ipns:', 'rad:', 'ens:',
-          'freedom:', 'ethereum:'].includes(resolved.protocol)
+        [
+          'web3:',
+          'http:',
+          'https:',
+          'bzz:',
+          'ipfs:',
+          'ipns:',
+          'rad:',
+          'ens:',
+          'freedom:',
+          'ethereum:',
+        ].includes(resolved.protocol) ||
+        isTonSiteUrl(resolved)
       ) {
         return resolved.toString();
       }

@@ -6,6 +6,10 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
+- TON Sites support through a bundled, checksum-pinned Tonutils HTTP proxy
+  - Open `.ton`, `.adnl`, `.bag`, and TON DNS `.t.me` subdomains from bare names or `tonsite://` links; `ton://<TON host>` remains an input alias without claiming wallet actions such as `ton://transfer/...`
+  - TON and Tor routes coexist in one scoped per-session proxy policy, including private windows; all other traffic stays direct
+  - Start and stop the proxy from the Nodes menu, or opt into automatic startup under Settings > Startup
 - External IPFS node mode under Settings > Nodes, for hosts where the embedded node cannot run
   - Point a profile at your own gateway, or accept the one Freedom detects on the standard local port at launch
   - A gateway that is not on your own machine is dialled through the browser's own network stack, so it follows whatever proxy the app is using — a gateway on a `.onion` address is reached over Tor instead of being handed to your DNS resolver, and is not dialled at all until Tor is actually routing it. Gateways on `127.0.0.1` / `localhost` are dialled directly, as before

@@ -41,6 +41,9 @@ describe('page-urls', () => {
       'onchain'
     );
     expect(mod.detectProtocol('rad://rid')).toBe('radicle');
+    expect(mod.detectProtocol('ton://foundation.ton')).toBe('ton');
+    expect(mod.detectProtocol('tonsite://foundation.ton')).toBe('ton');
+    expect(mod.detectProtocol('http://foundation.ton')).toBe('ton');
     expect(mod.detectProtocol('https://example.com')).toBe('https');
     expect(mod.detectProtocol('http://example.com')).toBe('http');
     expect(mod.detectProtocol('')).toBe('unknown');

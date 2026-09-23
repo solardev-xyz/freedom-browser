@@ -23,6 +23,8 @@ import {
   formatOnchainAppDisplayUrl,
   looksLikeOnchainAppInput,
   parseOnchainAppUrl,
+  isTonHost,
+  parseTonInput,
 } from './url-utils.js';
 
 const BZZ_ROUTE_PREFIX = 'http://127.0.0.1:1633/bzz/';
@@ -31,6 +33,43 @@ const IPNS_ROUTE_PREFIX = 'http://127.0.0.1:8080/ipns/';
 const HOME_URL = 'file:///app/home.html';
 
 describe('url-utils', () => {
+  describe('TON Sites URLs', () => {
+    test.each(['example.ton', 'site.adnl', 'archive.bag', 'name.t.me'])(
+      'recognizes %s as a TON host',
+      (host) => expect(isTonHost(host)).toBe(true)
+    );
+
+    test.each(['example.com', 'example.tonic', 't.me', 'ton', '', null])(
+      'rejects non-TON host %p',
+      (host) => expect(isTonHost(host)).toBe(false)
+    );
+
+    test('normalizes supported input forms to HTTP transport and tonsite display', () => {
+      expect(parseTonInput('tonsite://Example.TON/docs?q=1#top')).toEqual({
+        targetUrl: 'http://example.ton/docs?q=1#top',
+        displayValue: 'tonsite://example.ton/docs?q=1#top',
+      });
+      expect(parseTonInput('https://example.ton/')).toEqual({
+        targetUrl: 'http://example.ton/',
+        displayValue: 'tonsite://example.ton',
+      });
+      expect(parseTonInput('ton://foundation.ton/')).toEqual({
+        targetUrl: 'http://foundation.ton/',
+        displayValue: 'tonsite://foundation.ton',
+      });
+      expect(parseTonInput('foundation.ton./docs')).toEqual({
+        targetUrl: 'http://foundation.ton/docs',
+        displayValue: 'tonsite://foundation.ton/docs',
+      });
+    });
+
+    test('rejects credentials and unrelated URLs', () => {
+      expect(parseTonInput('https://user@example.ton')).toBeNull();
+      expect(parseTonInput('https://example.com')).toBeNull();
+      expect(parseTonInput('ton://transfer/UQexample')).toBeNull();
+    });
+  });
+
   describe('onchain application URLs', () => {
     const ADDRESS = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
     const LOWER_ADDRESS = ADDRESS.toLowerCase();

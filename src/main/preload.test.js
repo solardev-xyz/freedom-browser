@@ -29,6 +29,7 @@ function loadPreloadModule(options = {}) {
         [IPC.IPFS_GET_STATUS]: { status: 'stopped', error: null },
         [IPC.MYOTIS_GET_STATUS]: { state: 'off', running: false, available: true },
         [IPC.RADICLE_GET_STATUS]: { status: 'error', error: 'offline' },
+        [IPC.TON_GET_STATUS]: { status: 'stopped', error: null },
         ...(options.invokeResponses || {}),
       },
     });
@@ -84,7 +85,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(28);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(29);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -94,6 +95,7 @@ describe('preload', () => {
       'ipfs',
       'radicle',
       'tor',
+      'ton',
       'githubBridge',
       'serviceRegistry',
       'identity',
@@ -185,6 +187,10 @@ describe('preload', () => {
       [exposures.tor, 'getStatus', [], IPC.TOR_GET_STATUS, []],
       [exposures.tor, 'checkBinary', [], IPC.TOR_CHECK_BINARY, []],
       [exposures.tor, 'getVersion', [], IPC.TOR_GET_VERSION, []],
+      [exposures.ton, 'start', [], IPC.TON_START, []],
+      [exposures.ton, 'stop', [], IPC.TON_STOP, []],
+      [exposures.ton, 'getStatus', [], IPC.TON_GET_STATUS, []],
+      [exposures.ton, 'checkBinary', [], IPC.TON_CHECK_BINARY, []],
       [exposures.githubBridge, 'import', ['https://github.com/openai/project'], IPC.GITHUB_BRIDGE_IMPORT, ['https://github.com/openai/project']],
       [exposures.githubBridge, 'checkGit', [], IPC.GITHUB_BRIDGE_CHECK_GIT, []],
       [exposures.githubBridge, 'checkPrerequisites', [], IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES, []],
@@ -326,6 +332,7 @@ describe('preload', () => {
       [exposures.myotis, IPC.MYOTIS_STATUS_UPDATE, IPC.MYOTIS_GET_STATUS, myotisStatus, { state: 'ready', running: true }],
       [exposures.radicle, IPC.RADICLE_STATUS_UPDATE, IPC.RADICLE_GET_STATUS, radicleStatus, { status: 'running', error: null }],
       [exposures.tor, IPC.TOR_STATUS_UPDATE, IPC.TOR_GET_STATUS, torStatus, { status: 'running', error: null }],
+      [exposures.ton, IPC.TON_STATUS_UPDATE, IPC.TON_GET_STATUS, { status: 'stopped', error: null }, { status: 'running', error: null }],
     ];
 
     for (const [target, updateChannel, getStatusChannel, initialStatus, pushedStatus] of statusCases) {

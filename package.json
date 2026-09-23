@@ -2,7 +2,7 @@
   "name": "freedom-browser",
   "version": "0.8.6-dev",
   "license": "MPL-2.0",
-  "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
+  "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, TON Sites, onchain apps, and ENS as first-class protocols.",
   "author": {
     "name": "Freedom Team",
     "email": "browser@freedom.baby"
@@ -44,8 +44,8 @@
     "dist:mac:notary-status": "dotenv -- node scripts/macos-notary.js status",
     "dist:mac:notary-log": "dotenv -- node scripts/macos-notary.js log",
     "dist:mac:staple-notary": "dotenv -- node scripts/macos-notary.js staple",
-    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
-    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run ton:download && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run ton:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
@@ -68,6 +68,12 @@
     "ipfs:reset": "rm -rf ipfs-data && echo 'Legacy repo-root IPFS data reset.'",
     "tor:download": "node scripts/fetch-arti.js",
     "tor:reset": "rm -rf tor-data && echo 'Tor data reset.'",
+    "ton:download": "node scripts/fetch-tonutils-freedom.js",
+    "ton:smoke": "node scripts/smoke-ton-proxy.js",
+    "ton:start": "node -e \"const p=require('./scripts/fetch-tonutils-freedom');const b=p.checkBinary();if(!b.available){console.error('Binary missing. Run: npm run ton:download');process.exit(1);}require('child_process').spawnSync(b.path,['-addr','127.0.0.1:18085','-verbosity','1','-no-http'],{stdio:'inherit'})\"",
+    "ton:stop": "pkill -SIGTERM tonutils-freedom-cli || echo 'TON proxy not running or failed to stop'",
+    "ton:status": "curl -s --max-time 5 -x http://127.0.0.1:18085 http://freedom-proxy-check.invalid/ || echo 'TON proxy not responding'",
+    "ton:reset": "rm -rf ton-bin && echo 'TON binaries removed.'",
     "radicle:download": "node scripts/fetch-radicle-addon.js",
     "radicle:reset": "rm -rf radicle-data && echo 'Legacy repo-root Radicle data removed; managed profile data was not changed.'",
     "identity:reset": "rm -rf ant-data ipfs-data radicle-data identity-data && echo 'Legacy repo-root Ant/IPFS/Radicle/identity data removed; managed profile data was not changed.'",
@@ -175,7 +181,7 @@
       ]
     },
     "pacman": {
-      "synopsis": "A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols",
+      "synopsis": "A browser for the decentralized web, with Swarm, IPFS, TON Sites, onchain apps, and ENS as first-class protocols",
       "depends": [
         "gtk3",
         "libnotify",
@@ -249,6 +255,13 @@
           "myotis-node.node",
           "myotis-supervisor",
           "myotis-supervisor.exe"
+        ]
+      },
+      {
+        "from": "ton-bin/${os}-${arch}/",
+        "to": "ton-bin",
+        "filter": [
+          "**/*"
         ]
       },
       {

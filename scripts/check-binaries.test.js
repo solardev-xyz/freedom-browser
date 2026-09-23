@@ -60,6 +60,32 @@ describe('Radicle build inputs', () => {
   });
 });
 
+describe('TON proxy build inputs', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test.each([
+    ['mac', 'arm64', 'tonutils-freedom-cli'],
+    ['linux', 'x64', 'tonutils-freedom-cli'],
+    ['win', 'x64', 'tonutils-freedom-cli.exe'],
+  ])('requires the binary for %s-%s', (os, arch, binaryName) => {
+    fs.existsSync.mockImplementation((target) => !target.endsWith(binaryName));
+
+    expect(checkBinaries([{ os, arch }])).toContainEqual(
+      expect.stringContaining(`TON proxy binary for ${os}-${arch}`)
+    );
+  });
+
+  test('packages the target binary as a global extra resource', () => {
+    expect(packageJson.build.extraResources).toContainEqual({
+      from: 'ton-bin/${os}-${arch}/',
+      to: 'ton-bin',
+      filter: ['**/*'],
+    });
+  });
+});
+
 
 describe('Myotis supervisor build inputs', () => {
   test.each([['mac', 'arm64'], ['linux', 'x64'], ['win', 'x64']])(

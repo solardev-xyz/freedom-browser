@@ -30,6 +30,7 @@ import {
   formatOnchainAppUrl,
   formatOnchainAppDisplayUrl,
   looksLikeOnchainAppInput,
+  parseTonInput,
 } from './url-utils.js';
 import { buildSearchUrl } from './search-utils.js';
 import { isModalDialogOpen } from './modal-dialog.js';
@@ -1838,6 +1839,31 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.pendingNavigationUrl = errorUrl.toString();
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(errorUrl.toString());
+    syncBzzBase(null);
+    return;
+  }
+
+  const tonTarget = parseTonInput(value);
+  if (tonTarget) {
+    const tonDisplayValue = displayOverride || tonTarget.displayValue;
+    setAddressDisplayForTab(tonDisplayValue, targetTabId);
+    if (state.currentTonStatus !== 'running') {
+      const errorUrl = buildErrorPageUrl('ERR_CONNECTION_REFUSED', tonDisplayValue, {
+        protocol: 'ton',
+        retry: tonDisplayValue,
+      });
+      pushDebug(`[AddressBar] TON proxy unavailable — error page for ${tonDisplayValue}`);
+      navState.pendingNavigationUrl = errorUrl;
+      navState.hasNavigatedDuringCurrentLoad = false;
+      webview.loadURL(errorUrl);
+      syncBzzBase(null);
+      return;
+    }
+    pushDebug(`[AddressBar] Loading TON target: ${tonTarget.targetUrl}`);
+    navState.pendingTitleForUrl = tonTarget.targetUrl;
+    navState.pendingNavigationUrl = tonTarget.targetUrl;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(tonTarget.targetUrl);
     syncBzzBase(null);
     return;
   }

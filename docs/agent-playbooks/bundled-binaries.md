@@ -1,4 +1,4 @@
-# Bundled Node Binaries (Ant, freedom-ipfs, Radicle, Arti)
+# Bundled Node Binaries (Ant, freedom-ipfs, Radicle, Arti, Tonutils Proxy)
 
 Day-to-day operator guide for the node binaries and native addons Freedom ships:
 what they are, where they come from, and how to bump a pin. Release-time checks
@@ -31,6 +31,11 @@ links there rather than restating it.
   Linux x64/arm64, Windows x64). Unlike the others it is **compiled from
   crates.io**, host-only, not downloaded. Fetch script `scripts/fetch-arti.js`;
   pin `PINNED_ARTI_VERSION` (and `MIN_RUST_VERSION`) in that script.
+- **Tonutils Proxy** — the loopback HTTP proxy used for TON Sites, published
+  from <https://github.com/TONresistor/Tonutils-Proxy>. Fetch script
+  `scripts/fetch-tonutils-freedom.js`; pin = `RELEASE_TAG` in
+  `src/shared/ton-version.js`, `PINNED_SOURCE_COMMIT`, and every per-target
+  `sha256` in the fetch script. Those values move together.
 
 Adjacent but out of scope here: **Myotis** (the experimental Ethereum light
 client addon, `scripts/fetch-myotis.js`, `npm run myotis:download`) follows the
@@ -38,12 +43,13 @@ same shape and is covered by `npm run check-binaries` too.
 
 ## Where each binary lands, and how to fetch it
 
-| Binary       | Lands at (source build)                                                                                                                            | Fetch command              |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| Ant          | `ant-bin/<os>-<arch>/antd` (`antd.exe` on Windows)                                                                                                 | `npm run ant:download`     |
-| freedom-ipfs | `native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node` (prebuilds cached under `native/freedom-ipfs-node/prebuilds/<platform>-<arch>/`) | `npm run ipfs:download`    |
-| Radicle      | `radicle-bin/<platform>-<arch>/libradicle.node`                                                                                                    | `npm run radicle:download` |
-| Arti         | `arti-bin/<platform>-<arch>/arti` (`arti.exe` on Windows)                                                                                          | `npm run tor:download`     |
+| Binary         | Lands at (source build)                                                                                                                            | Fetch command              |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Ant            | `ant-bin/<os>-<arch>/antd` (`antd.exe` on Windows)                                                                                                 | `npm run ant:download`     |
+| freedom-ipfs   | `native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node` (prebuilds cached under `native/freedom-ipfs-node/prebuilds/<platform>-<arch>/`) | `npm run ipfs:download`    |
+| Radicle        | `radicle-bin/<platform>-<arch>/libradicle.node`                                                                                                    | `npm run radicle:download` |
+| Arti           | `arti-bin/<platform>-<arch>/arti` (`arti.exe` on Windows)                                                                                          | `npm run tor:download`     |
+| Tonutils Proxy | `ton-bin/<platform>-<arch>/tonutils-freedom-cli` (`.exe` on Windows)                                                                               | `npm run ton:download`     |
 
 `os`/`arch` are this repo's own names (`mac`/`linux`/`win` × `arm64`/`x64`), not
 Node's. Packaged builds drop the `<os>-<arch>/` level (only the target's own
@@ -249,6 +255,13 @@ Same shape, different pin location:
   feature) — those are written up in
   [`release-process.md` § Bundled binaries](release-process.md), not repeated
   here.
+- **Tonutils Proxy** — review the tagged source, record its exact commit in
+  `PINNED_SOURCE_COMMIT`, download each published target, independently hash
+  it, and update the tag plus every per-target digest together. The release's
+  own `checksums.txt` is useful evidence but is not a trust root because it is
+  mutable alongside the binaries. Run `npm run ton:download` followed by
+  `npm run ton:smoke`; release CI repeats that real-binary start/probe/stop on
+  every packaged target.
 
 **Trust roots differ, so check which one you are updating.** Ant and libradicle
 each pin the sha256 of the release's own `SHA256SUMS` asset in-repo
@@ -256,6 +269,7 @@ each pin the sha256 of the release's own `SHA256SUMS` asset in-repo
 from the same mutable GitHub release as the binaries and proves nothing on its
 own. freedom-ipfs skips the sums file and pins each asset's sha256 directly.
 Arti pins a crates.io version only — cargo does the fetching and verification.
+Tonutils Proxy pins each release asset directly in source.
 All the downloaders share one retry/timeout/redirect policy,
 `scripts/lib/fetch-with-retry.js`; `release-process.md` § Bundled binaries has
 the full policy and the per-binary authoritative-source table.

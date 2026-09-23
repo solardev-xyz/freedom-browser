@@ -217,10 +217,10 @@ describe('settings.html helper lines earn their place (#273)', () => {
     });
   };
 
-  test('the five startup rows agree on whether they get a helper, and what it says', () => {
+  test('the six startup rows agree on whether they get a helper, and what it says', () => {
     const helpers = startupHelpers();
-    expect(helpers.length).toBe(5);
-    expect(helpers).toEqual(Array(5).fill('Restart to apply.'));
+    expect(helpers.length).toBe(6);
+    expect(helpers).toEqual(Array(6).fill('Restart to apply.'));
   });
 
   test('the two Myotis rows say Beta in a badge instead of in a paragraph', () => {

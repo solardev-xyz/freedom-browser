@@ -23,7 +23,9 @@ const INDEX = path.join(__dirname, 'index.js');
 // passing.
 function windDownJoin() {
   const source = fs.readFileSync(INDEX, 'utf8');
-  const start = source.indexOf("log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, and Tor to stop...');");
+  const start = source.indexOf(
+    "log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, Tor, and TON to stop...');"
+  );
   if (start === -1) return null;
   const end = source.indexOf('\napp.on(', start);
   return end === -1 ? source.slice(start) : source.slice(start, end);
@@ -48,7 +50,14 @@ describe('wind-down stop-leg join', () => {
 
   test('every named stop leg is in the join', () => {
     const join = windDownJoin();
-    for (const leg of ['myotisStopped', 'stopAnt', 'stopIpfs', 'stopRadicle', 'stopTor']) {
+    for (const leg of [
+      'myotisStopped',
+      'stopAnt',
+      'stopIpfs',
+      'stopRadicle',
+      'stopTor',
+      'stopTon',
+    ]) {
       expect(join).toContain(leg);
     }
   });

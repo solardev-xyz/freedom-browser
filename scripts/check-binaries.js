@@ -20,6 +20,7 @@ const MYOTIS_BIN_DIR = path.join(__dirname, '..', 'myotis-bin');
 // gracefully to Colibri/quorum when the addon is absent.
 const MYOTIS_SUPPORTED = new Set(['mac-x64', 'mac-arm64', 'linux-x64', 'linux-arm64', 'win-x64']);
 const ARTI_BIN_DIR = path.join(__dirname, '..', 'arti-bin');
+const TON_BIN_DIR = path.join(__dirname, '..', 'ton-bin');
 
 function getPlatformArch() {
   const args = process.argv.slice(2);
@@ -102,6 +103,15 @@ function checkBinaries(platforms) {
 
     if (!fs.existsSync(antPath)) {
       missing.push(`antd binary for ${platformDir}: ${antPath}`);
+    }
+
+    const tonBinaryPath = path.join(
+      TON_BIN_DIR,
+      platformDir,
+      `tonutils-freedom-cli${os === 'win' ? '.exe' : ''}`
+    );
+    if (!fs.existsSync(tonBinaryPath)) {
+      missing.push(`TON proxy binary for ${platformDir}: ${tonBinaryPath}`);
     }
 
     const freedomIpfsAddonPath = path.join(
@@ -190,6 +200,7 @@ function main() {
     missing.forEach((m) => console.error(`  - ${m}`));
     console.error('\nRun the following commands to download binaries:');
     console.error('  npm run ant:download');
+    console.error('  npm run ton:download');
     console.error('  npm run ipfs:download');
     for (const { os, arch } of platforms) {
       console.error(`  npm run radicle:download -- --${os} --${arch}`);

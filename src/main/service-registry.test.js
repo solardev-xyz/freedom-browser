@@ -151,6 +151,20 @@ describe('service-registry', () => {
       tempMessage: null,
       tempMessageTimeout: null,
     });
+
+    mod.updateService('ton', {
+      proxy: 'http://127.0.0.1:18085',
+      mode: mod.MODE.BUNDLED,
+    });
+    mod.clearService('ton');
+
+    expect(mod.getService('ton')).toEqual({
+      proxy: null,
+      mode: mod.MODE.NONE,
+      statusMessage: null,
+      tempMessage: null,
+      tempMessageTimeout: null,
+    });
   });
 
   test('registers an IPC handler that returns the current registry state', async () => {

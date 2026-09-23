@@ -475,6 +475,14 @@ describe('bookmarks-ui', () => {
     await ctx.mod.updateBookmarkButtonVisibility();
     expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(false);
 
+    ctx.elements.addressInput.value = 'tonsite://foundation.ton/';
+    await ctx.mod.updateBookmarkButtonVisibility();
+    expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(false);
+
+    ctx.elements.addressInput.value = 'ton://transfer/UQexample';
+    await ctx.mod.updateBookmarkButtonVisibility();
+    expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(true);
+
     consoleError.mockRestore();
   });
 

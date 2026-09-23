@@ -250,6 +250,44 @@ describe('webcontents-setup', () => {
       'ethereum:vitalik.eth@1?value=1e16'
     );
 
+    const tonEvent = {
+      preventDefault: jest.fn(),
+    };
+    contents.emit('will-navigate', tonEvent, 'tonsite://foundation.ton/');
+    expect(tonEvent.preventDefault).toHaveBeenCalled();
+    expect(parentWindow.webContents.send).toHaveBeenCalledWith(
+      'navigate-to-url',
+      'tonsite://foundation.ton/'
+    );
+
+    const tonAliasEvent = {
+      preventDefault: jest.fn(),
+    };
+    contents.emit('will-navigate', tonAliasEvent, 'ton://foundation.ton/');
+    expect(tonAliasEvent.preventDefault).toHaveBeenCalled();
+
+    const walletTransferEvent = {
+      preventDefault: jest.fn(),
+    };
+    contents.emit('will-navigate', walletTransferEvent, 'ton://transfer/UQexample');
+    expect(walletTransferEvent.preventDefault).not.toHaveBeenCalled();
+
+    const httpsTonEvent = {
+      preventDefault: jest.fn(),
+    };
+    contents.emit('will-navigate', httpsTonEvent, 'https://foundation.ton/docs');
+    expect(httpsTonEvent.preventDefault).toHaveBeenCalled();
+    expect(parentWindow.webContents.send).toHaveBeenCalledWith(
+      'navigate-to-url',
+      'https://foundation.ton/docs'
+    );
+
+    const telegramEvent = {
+      preventDefault: jest.fn(),
+    };
+    contents.emit('will-navigate', telegramEvent, 'https://t.me/freedom');
+    expect(telegramEvent.preventDefault).not.toHaveBeenCalled();
+
     const httpEvent = {
       preventDefault: jest.fn(),
     };

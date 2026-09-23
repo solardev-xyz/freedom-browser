@@ -51,6 +51,12 @@ export const state = {
       statusMessage: null,
       tempMessage: null,
     },
+    ton: {
+      proxy: null,
+      mode: 'none',
+      statusMessage: null,
+      tempMessage: null,
+    },
   },
 
   // Swarm Gateway config (from env override or registry)
@@ -137,6 +143,10 @@ export const state = {
   // Tor (.onion) state
   currentTorStatus: 'stopped',
   suppressTorRunningStatus: false,
+
+  // TON state
+  currentTonStatus: 'stopped',
+  suppressTonRunningStatus: false,
 
   // Feature flags
   enableTorIntegration: false,

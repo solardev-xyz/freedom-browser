@@ -1339,6 +1339,18 @@
                 </label>
               </div>
             </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Start TON proxy</p>
+                <p class="row-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-ton-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
             <div class="row" id="radicle-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Radicle node</p>
@@ -1706,6 +1718,7 @@
         unverifiedEnsAction: $('unverified-ens-action'),
         askWhereToSave: $('ask-where-to-save'),
         startRadicle: $('start-radicle-at-launch'),
+        startTon: $('start-ton-at-launch'),
         enableTor: $('enable-tor-integration'),
         startTorRow: $('start-tor-row'),
         startTor: $('start-tor-at-launch'),
@@ -2907,6 +2920,7 @@
         startMyotisGnosisAtLaunch: fields.startMyotisGnosis.checked,
         askWhereToSave: fields.askWhereToSave.checked,
         startRadicleAtLaunch: fields.startRadicle.checked,
+        startTonAtLaunch: fields.startTon.checked,
         enableTorIntegration: fields.enableTor.checked,
         startTorAtLaunch: fields.startTor.checked,
         enableIdentityWallet: fields.enableIdentity.checked,
@@ -2931,6 +2945,7 @@
         fields.startMyotisGnosis.checked = settings.startMyotisGnosisAtLaunch === true;
         fields.askWhereToSave.checked = settings.askWhereToSave === true;
         fields.startRadicle.checked = settings.startRadicleAtLaunch === true;
+        fields.startTon.checked = settings.startTonAtLaunch === true;
         fields.enableTor.checked = settings.enableTorIntegration === true;
         fields.startTor.checked = settings.startTorAtLaunch === true;
         fields.enableIdentity.checked = settings.enableIdentityWallet === true;
@@ -3144,6 +3159,7 @@
       fields.startMyotisGnosis.addEventListener('change', save);
       fields.askWhereToSave.addEventListener('change', save);
       fields.startRadicle.addEventListener('change', save);
+      fields.startTon.addEventListener('change', save);
       fields.enableTor.addEventListener('change', () => {
         setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
         // Enabling the integration only reveals the controls — it does not

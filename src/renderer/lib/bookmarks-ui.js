@@ -4,7 +4,7 @@ import { getActiveTab, hideTabContextMenu, openInNewTabWithTarget } from './tabs
 import { closeMenus } from './menus.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
-import { normalizeLegacyEnsBookmarkUrl } from './url-utils.js';
+import { normalizeLegacyEnsBookmarkUrl, parseTonInput } from './url-utils.js';
 import { boundPopoverToViewport, placePopoverAtPoint } from './popover-bounds.js';
 import { onWindowDeactivated } from './window-deactivation.js';
 
@@ -23,6 +23,7 @@ const isBookmarkableUrl = (url) => {
     url.startsWith('ipns://') ||
     url.startsWith('web3://') ||
     url.startsWith('rad://') ||
+    parseTonInput(url) !== null ||
     url.startsWith('ens://') ||
     url.startsWith('http://') ||
     url.startsWith('https://') ||

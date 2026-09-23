@@ -9,10 +9,11 @@ Freedom automatically manages node connections per profile. In a **packaged buil
 - **Myotis**: embedded native Ethereum and Gnosis clients; no desktop loopback API port is started
 - **Radicle**: embedded native `libradicle` addon; no desktop loopback API or P2P port is started
 - **Tor**: profile-scoped Arti SOCKS5 proxy starting at `127.0.0.1:19150`
+- **TON Sites**: profile-process Tonutils HTTP proxy starting at `127.0.0.1:18085` and moving upward when busy
 
-Named profiles use the next profile slot for Ant and Tor (`11634`, `19151`, and so on). The ecosystem default Swarm and Tor ports (`1633`, `9150`) are treated as external/system-node endpoints, not Freedom-managed defaults. IPFS, Myotis, and Radicle are native-only and do not expose or reuse external daemon ports.
+Named profiles use the next profile slot for Ant and Tor (`11634`, `19151`, and so on). Each profile process probes the TON proxy range from `18085` and selects the first free port. The ecosystem default Swarm and Tor ports (`1633`, `9150`) are treated as external/system-node endpoints, not Freedom-managed defaults. IPFS, Myotis, and Radicle are native-only and do not expose or reuse external daemon ports.
 
-**Source builds (`npm start`) never use these ports.** Development runs off a separate base (`21633`, `22633`, `29150`) plus a per-checkout offset derived from the checkout path, so several clones can run side by side without colliding — see `getManagedPorts()` in `src/main/profile-catalog.js`. Read the effective endpoint for the running profile from **Settings → Nodes** (or the Nodes panel) rather than assuming a port number.
+For Ant and Tor, **source builds (`npm start`) never use the packaged ports**. Development runs off a separate base (`21633`, `22633`, `29150`) plus a per-checkout offset derived from the checkout path, so several clones can run side by side without colliding — see `getManagedPorts()` in `src/main/profile-catalog.js`. The TON proxy starts probing at `18085` in both source and packaged builds and moves upward when that port is occupied. Read the effective endpoint from the Nodes panel rather than assuming a port number.
 
 If Freedom detects a compatible Swarm or Tor daemon on an ecosystem default port while that protocol is starting, it asks whether that profile should use the existing external node or keep an independent managed node. This check runs both during profile startup and when a managed node is started manually from the Nodes menu.
 
@@ -27,7 +28,7 @@ npm start
 
 ## External Protocol Links And Profiles
 
-Inside Freedom, `bzz://`, `ipfs://`, `ipns://`, `web3://`, `rad://`, and `.onion` URLs always resolve through the active profile's node and network settings and storage. OS-level protocol launches from other apps are a v1 limitation: they are not profile-aware and should not be used when a link must open in a specific profile. Open the target profile first and paste or navigate to the URL inside that window.
+Inside Freedom, `bzz://`, `ipfs://`, `ipns://`, `tonsite://`, `web3://`, `rad://`, and `.onion` URLs always resolve through the active profile's node and network settings and storage. `ton://<TON host>` is accepted only as an input alias so Freedom does not claim TON wallet actions such as `ton://transfer/...`. OS-level protocol launches from other apps are a v1 limitation: they are not profile-aware and should not be used when a link must open in a specific profile. Open the target profile first and paste or navigate to the URL inside that window.
 
 ## Ethereum Name Resolution
 

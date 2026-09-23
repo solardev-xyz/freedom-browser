@@ -17,15 +17,15 @@
 
 ### Key Findings
 
-| Category                                                  | Count       | Status                                      |
-| --------------------------------------------------------- | ----------- | ------------------------------------------- |
-| Production npm packages (unique name@version)             | 273         | See distribution below                      |
-| Dev npm dependencies                                      | not bundled | Do not affect the distributed product       |
-| External binaries / native addons shipped in `resources/` | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti |
-| Vendored renderer bundles in `src/renderer/vendor/`       | 4           | OpenLV, highlight.js, marked, DOMPurify     |
-| Strong copyleft (GPL/AGPL)                                | 0           | One found and removed — see below           |
-| Weak copyleft (MPL-2.0)                                   | 13 packages | Compatible; MPL-2.0 is our own license      |
-| Weak copyleft (LGPL-3.0)                                  | 5 packages  | Compatible via the isolated OpenLV bundle   |
+| Category                                                  | Count       | Status                                                      |
+| --------------------------------------------------------- | ----------- | ----------------------------------------------------------- |
+| Production npm packages (unique name@version)             | 273         | See distribution below                                      |
+| Dev npm dependencies                                      | not bundled | Do not affect the distributed product                       |
+| External binaries / native addons shipped in `resources/` | 6           | Ant, Tonutils Proxy, freedom-ipfs, libradicle, Myotis, Arti |
+| Vendored renderer bundles in `src/renderer/vendor/`       | 4           | OpenLV, highlight.js, marked, DOMPurify                     |
+| Strong copyleft (GPL/AGPL)                                | 0           | One found and removed — see below                           |
+| Weak copyleft (MPL-2.0)                                   | 13 packages | Compatible; MPL-2.0 is our own license                      |
+| Weak copyleft (LGPL-3.0)                                  | 5 packages  | Compatible via the isolated OpenLV bundle                   |
 
 ### Resolved during this audit: a GPL-3.0 library was shipping
 
@@ -53,6 +53,7 @@ Freedom Browser is distributed as:
   - `myotis-node.node` (`resources/myotis-node/`)
 - **External binaries** shipped in `resources/`:
   - Ant (`antd`, Swarm node)
+  - Tonutils Proxy (`tonutils-freedom-cli`, TON Sites HTTP proxy)
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 
@@ -81,6 +82,17 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 - **Risk:** Green
 - **Integration:** Separate process via IPC
 - **Action Required:** MIT/Apache notice in `NOTICES` ✔
+
+### Tonutils Proxy (TON Sites HTTP Proxy)
+
+- **Source:** https://github.com/TONresistor/Tonutils-Proxy
+- **Version:** `v0.1.0-freedom` (pin: `src/shared/ton-version.js` `RELEASE_TAG`)
+- **Reviewed source commit:** `0b4eb46be7c073d6b3e94421b4b80e9b807a246c`
+- **License:** MIT (upstream ships `LICENSE`)
+- **Risk:** Yellow
+- **Integration:** Separate process, reached over a loopback HTTP proxy
+- **Notes:** Each release asset is pinned to an in-repo SHA-256 value in `scripts/fetch-tonutils-freedom.js`; the release's own mutable checksums file is not a trust root. The fork removes the GPL `adnl-tunnel` dependency present in earlier variants. Re-check the compiled Go dependency license set on every source or release bump.
+- **Action Required:** MIT notice in `NOTICES` ✔; retain the per-asset checksums and reviewed source commit pin.
 
 ### freedom-ipfs (Native IPFS Addon)
 
@@ -253,16 +265,17 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 4. **libradicle** — MIT OR Apache-2.0
 5. **Myotis** — Apache-2.0, _with the upstream `NOTICE` text reproduced_ (§4(d))
 6. **Arti** — MIT OR Apache-2.0, Copyright 2019-2025 The Tor Project, Inc.
-7. **OpenLV + websocket-mqtt** — LGPL-3.0, _with relinking instructions_
-8. **highlight.js** — BSD-3-Clause
-9. **marked** — MIT
-10. **DOMPurify** — MPL-2.0 OR Apache-2.0
-11. **@ghostery/adblocker** — MPL-2.0
-12. **Ad-blocking filter lists** — CC BY-SA
-13. **Chain and token marks** committed under `src/renderer/assets/` — third-party marks, terms unconfirmed (see _Assets_)
-14. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
+7. **Tonutils Proxy** — MIT, Copyright 2025 Oleg Baranov
+8. **OpenLV + websocket-mqtt** — LGPL-3.0, _with relinking instructions_
+9. **highlight.js** — BSD-3-Clause
+10. **marked** — MIT
+11. **DOMPurify** — MPL-2.0 OR Apache-2.0
+12. **@ghostery/adblocker** — MPL-2.0
+13. **Ad-blocking filter lists** — CC BY-SA
+14. **Chain and token marks** committed under `src/renderer/assets/` — third-party marks, terms unconfirmed (see _Assets_)
+15. **All npm production dependencies** with MIT/ISC/BSD/Apache licenses
 
-`licenses-audit.test.js` checks 2–13 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
+`licenses-audit.test.js` checks 2–14 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
 
 ## License files shipped in the app
 

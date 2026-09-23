@@ -25,12 +25,13 @@ cd freedom-browser
 npm ci
 npm run ant:download
 npm run ipfs:download
+npm run ton:download
 npm run myotis:download
 npm run myotis:build-supervisor
 npm start
 ```
 
-Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. Install optional Tor support with `npm run tor:download` (macOS, Linux, and Windows x64 — it compiles Arti for the host), then enable it under **Settings → Experimental**; the Tor rows stay hidden until that binary exists.
+Swarm and IPFS start automatically by default, while TON Sites, Radicle, and Myotis are opt-in under **Settings → Startup**. Install the pinned TON proxy with `npm run ton:download`. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. Install optional Tor support with `npm run tor:download` (macOS, Linux, and Windows x64 — it compiles Arti for the host), then enable it under **Settings → Experimental**; the Tor rows stay hidden until that binary exists.
 
 Myotis also requires its small supervisor built from checked-in source with an
 already installed C compiler: Apple clang/CLT on macOS, a native C compiler on
@@ -71,6 +72,8 @@ Protocol and privileged logic belongs in the main process. The renderer talks to
 | `npm run check-binaries`      | Validate packaged native binary targets                         |
 | `npm run ant:download`        | Download the pinned Ant binary                                  |
 | `npm run ipfs:download`       | Download the pinned freedom-ipfs native addon                   |
+| `npm run ton:download`        | Download and verify the pinned TON Sites proxy                  |
+| `npm run ton:smoke`           | Start, probe, and stop the downloaded TON proxy                 |
 | `npm run myotis:download`     | Download the pinned Myotis native addon                         |
 | `npm run radicle:download`    | Download the embedded libradicle addon for the current platform |
 | `npm run radicle:build-addon` | Build the libradicle addon from a sibling checkout              |
@@ -143,7 +146,7 @@ npm run dist:linux:x64:docker
 npm run dist:linux:arm64:docker
 ```
 
-Windows builds ship the embedded Radicle addon for x64 and ARM64 and, since the `win` target gained an `arti-bin` `extraResources` entry alongside its `radicle-bin` one, the bundled Tor (Arti) client as well. Arti is compiled for the host only, so a Windows package carries Tor only when `npm run tor:download` ran on a Windows machine (the release workflow builds it on the `windows-x64` runner); a cross-build from macOS or Linux produces a Windows package without it, and the app hides the Tor rows there. Windows ARM64 is not part of the release workflow, so no ARM64 build bundles Tor unless the same build step is run on an ARM64 Windows host. When cross-building for Windows, stage the target-native addon first with `npm run radicle:download -- --win --x64` or `-- --win --arm64`; the architecture must match the one passed to `npm run dist`. Signed releases, notarization, artifact verification, and deployment are maintainer workflows documented in the [release playbook](agent-playbooks/release-process.md).
+Windows builds ship the embedded Radicle addon for x64 and ARM64 and, since the `win` target gained an `arti-bin` `extraResources` entry alongside its `radicle-bin` one, the bundled Tor (Arti) client as well. Arti is compiled for the host only, so a Windows package carries Tor only when `npm run tor:download` ran on a Windows machine (the release workflow builds it on the `windows-x64` runner); a cross-build from macOS or Linux produces a Windows package without it, and the app hides the Tor rows there. Windows ARM64 is not part of the release workflow, so no ARM64 build bundles Tor unless the same build step is run on an ARM64 Windows host. When cross-building for Windows, stage both target-native downloads first: `npm run radicle:download -- --win --x64` (or `--win --arm64`) and `npm run ton:download -- --win --x64` (or `--win --arm64`). The architecture must match the one passed to `npm run dist`; the TON downloader copies its pinned x64 binary into the Windows ARM64 resource directory for emulation. Signed releases, notarization, artifact verification, and deployment are maintainer workflows documented in the [release playbook](agent-playbooks/release-process.md).
 
 ## Testing updates locally
 

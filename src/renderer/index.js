@@ -11,6 +11,7 @@ import {
   updateRadicleStatusLine,
 } from './lib/radicle-ui.js';
 import { initTorUi, updateTorStatusLine } from './lib/tor-ui.js';
+import { initTonUi, updateTonStatusLine } from './lib/ton-ui.js';
 import {
   initMenus,
   setOnOpenHistory,
@@ -123,6 +124,7 @@ window.serviceRegistry?.onUpdate?.((registry) => {
   updateIpfsToggleState();
   updateRadicleStatusLine();
   updateTorStatusLine();
+  updateTonStatusLine();
 });
 
 // Fetch initial registry state
@@ -839,6 +841,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initMyotisUi();
   initRadicleUi();
   initTorUi();
+  initTonUi();
   initGithubBridgeUi();
   document.getElementById('settings-btn')?.addEventListener('click', () => {
     closeMenus();

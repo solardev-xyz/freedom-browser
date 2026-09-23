@@ -53,6 +53,13 @@ module.exports = {
   TOR_CHECK_BINARY: 'tor:checkBinary',
   TOR_GET_VERSION: 'tor:getVersion',
 
+  // TON node management
+  TON_START: 'ton:start',
+  TON_STOP: 'ton:stop',
+  TON_GET_STATUS: 'ton:getStatus',
+  TON_STATUS_UPDATE: 'ton:statusUpdate',
+  TON_CHECK_BINARY: 'ton:checkBinary',
+
   // ENS resolution
   ENS_RESOLVE: 'ens:resolve',
   ENS_RESOLVE_ADDRESS: 'ens:resolve-address',

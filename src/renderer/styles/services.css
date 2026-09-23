@@ -315,8 +315,9 @@
   }
 }
 
-/* Tor (.onion) section — mirrors the Radicle section styling */
-.tor-toggle {
+/* Tor and TON proxy sections — both use the standard service toggle shape. */
+.tor-toggle,
+.ton-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -324,7 +325,8 @@
   width: 100%;
 }
 
-.tor-toggle-label {
+.tor-toggle-label,
+.ton-toggle-label {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -333,7 +335,8 @@
   justify-content: space-between;
 }
 
-.tor-toggle-switch {
+.tor-toggle-switch,
+.ton-toggle-switch {
   width: 36px;
   height: 18px;
   border-radius: 9px;
@@ -343,7 +346,8 @@
   flex-shrink: 0;
 }
 
-.tor-toggle-knob {
+.tor-toggle-knob,
+.ton-toggle-knob {
   width: 14px;
   height: 14px;
   border-radius: 50%;
@@ -354,21 +358,25 @@
   left: 2px;
 }
 
-.tor-toggle-switch.running {
+.tor-toggle-switch.running,
+.ton-toggle-switch.running {
   /* theme-literal: node status colour, not a theme surface: green means running everywhere */
   background: #4caf50;
 }
 
-.tor-toggle-switch.starting {
+.tor-toggle-switch.starting,
+.ton-toggle-switch.starting {
   /* theme-literal: node status colour, not a theme surface: amber means starting everywhere */
   background: #ffcc00;
 }
 
-.tor-toggle-switch.running .tor-toggle-knob {
+.tor-toggle-switch.running .tor-toggle-knob,
+.ton-toggle-switch.running .ton-toggle-knob {
   transform: translateX(18px);
 }
 
-.tor-info {
+.tor-info,
+.ton-info {
   padding: 8px 14px 10px;
   display: flex;
   flex-direction: column;
@@ -380,25 +388,28 @@
 
 /*
  * Same gate as the Radicle/IPFS info panels: nothing renders beneath the toggle
- * while the node is off (#349). `tor-ui.js`'s updateTorInfoVisibility is the
- * sole writer of the class; individual rows still self-manage inside a visible
- * block (status via .node-status-row, version via [hidden] in external mode).
+ * while the service is off (#349). The matching UI module is the sole writer
+ * of the class; individual rows still self-manage inside a visible block.
  */
-.tor-info:not(.visible) {
+.tor-info:not(.visible),
+.ton-info:not(.visible) {
   display: none;
 }
 
-.tor-info-row {
+.tor-info-row,
+.ton-info-row {
   display: flex;
   justify-content: space-between;
   gap: 12px;
 }
 
-.tor-info-label {
+.tor-info-label,
+.ton-info-label {
   color: var(--muted);
 }
 
-.tor-toggle:hover {
+.tor-toggle:hover,
+.ton-toggle:hover {
   background: transparent;
 }
 
@@ -407,8 +418,26 @@
   pointer-events: none;
 }
 
-.tor-toggle.disabled .tor-toggle-switch {
+.ton-toggle.disabled {
+  /* Keep the service label readable in both themes; only the unavailable
+     control is dimmed. The full-row opacity fails WCAG contrast. */
+  pointer-events: none;
+}
+
+/* The toggle is also a disabled .menu-item, whose shared rule dims the entire
+   row. Restore the normal label treatment and dim only the switch below. */
+.ton-toggle.menu-item:disabled {
+  color: var(--text);
+  opacity: 1;
+}
+
+.tor-toggle.disabled .tor-toggle-switch,
+.ton-toggle.disabled .ton-toggle-switch {
   background: var(--border);
+}
+
+.ton-toggle.disabled .ton-toggle-switch {
+  opacity: 0.4;
 }
 
 .myotis-checkpoint-retry[hidden],

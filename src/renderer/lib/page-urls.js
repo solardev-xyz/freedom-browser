@@ -2,9 +2,8 @@
 //
 // Canonical source of truth: src/shared/internal-pages.json
 // Served to the renderer via sync IPC → preload → window.internalPages
-
 import { isEnsHost, isTezosDomainHost, isPotentialEnsName } from './origin-utils.js';
-import { isIpfsGatewayFormUrl } from './url-utils.js';
+import { isIpfsGatewayFormUrl, isTonHost } from './url-utils.js';
 
 const ROUTABLE_PAGES = window.internalPages?.routable || {};
 
@@ -93,8 +92,15 @@ export const detectProtocol = (url) => {
   if (url.startsWith('ipns://')) return 'ipns';
   if (url.startsWith('web3://')) return 'onchain';
   if (url.startsWith('rad:')) return 'radicle';
+  if (url.startsWith('ton://') || url.startsWith('tonsite://')) return 'ton';
   if (url.startsWith('https://')) return 'https';
-  if (url.startsWith('http://')) return 'http';
+  if (url.startsWith('http://')) {
+    try {
+      const { hostname } = new URL(url);
+      if (isTonHost(hostname)) return 'ton';
+    } catch { /* ignore */ }
+    return 'http';
+  }
   return 'unknown';
 };
 

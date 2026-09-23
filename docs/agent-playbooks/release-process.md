@@ -110,15 +110,17 @@ After updating, run `npm audit` and decide per advisory:
 - **Auto-fixable but `--force` required** (downgrades a top-level dep across a major): do **not** take the auto-fix. Add an `overrides` block in `package.json` pinning just the transitive to a non-vulnerable version. `0.7.1` did exactly this for `uuid` under `@metamask/utils`; the same pattern applies to anything where the auto-fix would regress a direct dependency.
 - **Not exploitable in our usage**: document why in the commit body (`0.7.1`'s commit explains the `uuid.v3/v5/v6` advisory is unreachable from our import graph).
 
-### Bundled binaries (Ant, freedom-ipfs, Radicle, Arti)
+### Bundled binaries (Ant, freedom-ipfs, Radicle, Arti, Tonutils Proxy)
 
 Ant is the exception to the "resolve latest" rule: `scripts/fetch-ant.js` pins a known-good tag (`PINNED_RELEASE_TAG` in the script) so CI and releases install the exact version that was tested. To bump Ant, change the pin in the script **together with** `PINNED_SHA256SUMS_DIGEST` (the sha256 of the new release's `SHA256SUMS` asset — the in-repo trust root that makes a later swap of the release assets detectable; compute it with `shasum -a 256` on the freshly downloaded file) and let CI validate it; `ANT_RELEASE_TAG` (a tag, or `latest`) overrides for local testing only and skips the digest check. Every bump must also keep the real-binary integration test green (`src/main/identity/__tests__/integration/bee-to-ant-migration.test.js`, run in the `e2e-onboarding-identity` CI job) — it guards the invariant that antd never self-creates `keys/swarm.key`, which the upgrade-path identity migration depends on.
 
 `freedom-ipfs` is pinned the same way: desktop intentionally consumes a pinned GitHub release asset with a checked checksum, so updating it means changing the pinned release metadata in `scripts/fetch-freedom-ipfs-native.js`.
 
+Tonutils Proxy is pinned by release tag, reviewed source commit, and one in-repo SHA-256 per shipped target (`src/shared/ton-version.js` and `scripts/fetch-tonutils-freedom.js`). Update all three together; never treat the release's own `checksums.txt` as sufficient proof because it can be replaced with the binaries.
+
 The remaining fetch scripts use their pinned upstream release metadata.
 
-All six `scripts/fetch-*.js` share one download policy, `scripts/lib/fetch-with-retry.js`: 4 attempts with ~1s/3s/9s jittered backoff on HTTP 5xx, 429, connection errors and per-attempt timeouts; **no** retry on any other 4xx (a missing asset is an answer, not weather); a per-attempt deadline sized for what is being fetched (30s for release JSON and `SHA256SUMS`, 10 minutes for a binary) plus a 60s socket-inactivity timeout; and a temp-file-then-rename write, so a failed attempt can never leave a partial archive for the checksum step to find. Checksum verification deliberately sits *outside* the retry loop — a digest mismatch is corruption or tampering and fails the run immediately. `fetch-arti.js` has no HTTP of its own (cargo does the downloading), so the same loop wraps its `cargo install`, retrying only failures whose output names a crates.io/network problem and never a compile error.
+All download-based `scripts/fetch-*.js` share one download policy, `scripts/lib/fetch-with-retry.js`: 4 attempts with ~1s/3s/9s jittered backoff on HTTP 5xx, 429, connection errors and per-attempt timeouts; **no** retry on any other 4xx (a missing asset is an answer, not weather); a per-attempt deadline sized for what is being fetched (30s for release JSON and `SHA256SUMS`, 10 minutes for a binary) plus a 60s socket-inactivity timeout; and a temp-file-then-rename write, so a failed attempt can never leave a partial archive for the checksum step to find. Checksum verification deliberately sits *outside* the retry loop — a digest mismatch is corruption or tampering and fails the run immediately. `fetch-arti.js` has no HTTP of its own (cargo does the downloading), so the same loop wraps its `cargo install`, retrying only failures whose output names a crates.io/network problem and never a compile error.
 
 | Binary                                                | Authoritative source the fetch script reads                                                                                          |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -126,6 +128,7 @@ All six `scripts/fetch-*.js` share one download policy, `scripts/lib/fetch-with-
 | freedom-ipfs (`scripts/fetch-freedom-ipfs-native.js`) | pinned GitHub release in the fetch script                                                                                            |
 | libradicle (`scripts/fetch-radicle-addon.js`)         | pinned GitHub release in the fetch script                                                                                            |
 | Arti (`scripts/fetch-arti.js`)                        | `ARTI_VERSION` in the script — a crates.io version, built from source (`ARTI_VERSION` overrides for local testing)                   |
+| Tonutils Proxy (`scripts/fetch-tonutils-freedom.js`)  | pinned GitHub release plus reviewed source commit and per-target SHA-256 values                                                      |
 
 To check whether the bundled binary is stale, compare its self-reported version against the source above:
 
@@ -138,7 +141,7 @@ For native addons, compare the pinned release in its fetch script against the re
 
 Arti is the one binary compiled rather than downloaded, so its bump has two extra steps. Read the [Arti changelog](https://gitlab.torproject.org/tpo/core/arti/-/blob/main/CHANGELOG.md) across the whole range for CLI and `arti.toml` changes — `src/main/tor-manager.js` drives the binary by `arti proxy -c <config>` and by config keys, and Arti removes long-deprecated options at major versions (2.0.0 dropped `proxy.socks_port`). Check `cargoFeatures()` in the same script while you are there: the Windows build passes Arti's `static-sqlite` feature (Windows has no system SQLite, and without it the link fails with `LNK1181: cannot open input file 'sqlite3.lib'`), and a major version may rename or drop that feature. Then bump `MIN_RUST_VERSION` in the fetch script alongside `ARTI_VERSION` when the release raises its MSRV: the release runners reuse a preinstalled toolchain when one is present, and this check turns a too-old one into an immediate failure instead of a compile error minutes into the build.
 
-For each binary/addon that's behind, re-run its fetch script (`npm run ant:download` / `ipfs:download` / `radicle:download` / `tor:download`, the last one being the Arti build above) and verify the result still passes `npm run check-binaries`. Downloaded binary directories are gitignored, so the refresh usually produces no file-tree change. Document versions in the changelog and the matching build commit.
+For each binary/addon that's behind, re-run its fetch script (`npm run ant:download` / `ipfs:download` / `radicle:download` / `tor:download` / `ton:download`) and verify the result still passes `npm run check-binaries`. `tor:download` is the Arti build above. Downloaded binary directories are gitignored, so the refresh usually produces no file-tree change. Document versions in the changelog and the matching build commit.
 
 ### Commit style
 
@@ -185,7 +188,7 @@ Presence in the _artifact_ is checked separately, because config alone cannot pr
 
 What the guard cannot check, and you must do by hand before tagging:
 
-- **Upstream licenses are unchanged at the pinned versions.** The guard knows a component is attributed; it cannot know whether upstream relicensed. Re-read the license for anything whose pin moved this cycle: Ant (`MIT OR Apache-2.0`, `LICENSE-MIT` / `LICENSE-APACHE`), freedom-ipfs and Arti (same), libradicle (`license` field in its `Cargo.toml` — it publishes no license file), Myotis (`Apache-2.0`).
+- **Upstream licenses are unchanged at the pinned versions.** The guard knows a component is attributed; it cannot know whether upstream relicensed. Re-read the license for anything whose pin moved this cycle: Ant (`MIT OR Apache-2.0`, `LICENSE-MIT` / `LICENSE-APACHE`), freedom-ipfs and Arti (same), Tonutils Proxy (`MIT`, plus its compiled Go dependency tree), libradicle (`license` field in its `Cargo.toml` — it publishes no license file), Myotis (`Apache-2.0`).
 - **Myotis's upstream `NOTICE`.** Apache-2.0 §4(d) obliges us to reproduce it verbatim, and `NOTICES` does. Re-read `https://github.com/biafra23/myotis/blob/<pinned tag>/NOTICE` on every bump and copy across any change — the guard checks that Myotis is attributed, not that the notice text still matches.
 - **Re-stamp the audit at the final cut.** `licenses-audit.json`'s `audit_baseline` and `LICENSE_AUDIT.md`'s `**Baseline:**` and footer must name `package.json`'s version, so `npm version 0.8.5` turns the suite red until you update all three and refresh `Audit Date`. That is the reminder; it is not evidence the audit was re-derived, so re-read what changed since the last candidate before re-stamping. The one exception is the `<next>-dev` bump of §9, which ships nothing: there the guard accepts the audit still naming the release just shipped (a bare version below the dev number), so do not re-stamp it to `0.8.6-dev`.
 - **The OpenLV bundle is still relinkable.** `src/renderer/vendor/openlv.esm.js` is LGPL-3.0 and ships only because it is one standalone generated file containing no Freedom code, which is what makes LGPL §4 relinking possible. If a change inlines it into an app bundle or mixes Freedom code into it, that stops being true.
@@ -498,15 +501,17 @@ npm run dist:linux:x64:docker
 npm run dist:linux:arm64:docker
 ```
 
-Both run `electron-builder` inside a Linux container and download the matching Radicle addon for the target arch. Each invocation produces the `.AppImage`, the `.deb` and the `.pacman` for that arch. The container installs `libarchive-tools` alongside `fpm` for the same reason the release workflow's Linux legs do — fpm writes a pacman package's `.MTREE` manifest by shelling out to `bsdtar --format=mtree`, which `node:24-trixie` does not ship, and a missing one fails the build at the pacman step with a bare `/bin/sh failed (exit code 127)`.
+Both run `electron-builder` inside a Linux container and download the matching Radicle, IPFS, Myotis, and TON artifacts for the target arch. Each invocation produces the `.AppImage`, the `.deb` and the `.pacman` for that arch. The container installs `libarchive-tools` alongside `fpm` for the same reason the release workflow's Linux legs do — fpm writes a pacman package's `.MTREE` manifest by shelling out to `bsdtar --format=mtree`, which `node:24-trixie` does not ship, and a missing one fails the build at the pacman step with a bare `/bin/sh failed (exit code 127)`.
 
 ### Windows
 
 ```
 npm run radicle:download -- --win --x64
+npm run ton:download -- --win --x64
 npm run dist -- --win --x64
 
 npm run radicle:download -- --win --arm64
+npm run ton:download -- --win --arm64
 npm run dist -- --win --arm64
 ```
 

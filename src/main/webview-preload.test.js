@@ -1135,6 +1135,48 @@ describe('webview-preload', () => {
     });
   });
 
+  test('routes TON Site links but not TON wallet actions out of an onchain app', () => {
+    const location = {
+      href: 'web3://0x00000095643cffA7d9faE407A84Dfcb6406456C6.eip155-1/',
+      protocol: 'web3:',
+      pathname: '/',
+    };
+    const makeEvent = (href) => ({
+      target: {
+        tagName: 'A',
+        hasAttribute: jest.fn(() => false),
+        getAttribute: jest.fn((name) => (name === 'href' ? href : name === 'target' ? '' : null)),
+        parentElement: global.document.body,
+      },
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      isTrusted: true,
+      preventDefault: jest.fn(),
+    });
+
+    const site = loadWebviewPreloadModule({ location });
+    const siteEvent = makeEvent('tonsite://foundation.ton/docs');
+    site.documentCaptureHandlers.click(siteEvent);
+    expect(siteEvent.preventDefault).toHaveBeenCalled();
+    expect(site.ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+      url: 'tonsite://foundation.ton/docs',
+      disposition: 'currentTab',
+      target: null,
+    });
+
+    const wallet = loadWebviewPreloadModule({ location });
+    const walletEvent = makeEvent('ton://transfer/UQexample');
+    wallet.documentCaptureHandlers.click(walletEvent);
+    expect(walletEvent.preventDefault).not.toHaveBeenCalled();
+    expect(wallet.ipcRenderer.sendToHost).not.toHaveBeenCalledWith(
+      'link:navigate',
+      expect.anything()
+    );
+  });
+
   test('does not elevate synthetic onchain clicks into browser navigation', () => {
     const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
       location: {

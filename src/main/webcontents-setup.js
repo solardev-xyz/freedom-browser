@@ -4,6 +4,7 @@ const { activeBzzBases } = require('./state');
 const { cleanupWebContents: cleanupX402WebContents } = require('./x402/intercept');
 const { cleanupAdblockWebContents } = require('./adblock/service');
 const { isPrivateWebContents } = require('./private/private-windows');
+const { isTonHost } = require('../shared/ton-suffixes');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -54,6 +55,24 @@ const isPrivateSender = (contents) => {
 
 const navUrlForLog = (contents, rawUrl) =>
   isPrivateSender(contents) ? '<private>' : sanitizeUrlForLog(rawUrl);
+
+const isHttpsTonNavigation = (rawUrl) => {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === 'https:' && isTonHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
+
+const isTonCustomNavigation = (rawUrl) => {
+  try {
+    const parsed = new URL(rawUrl);
+    return ['ton:', 'tonsite:'].includes(parsed.protocol) && isTonHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
 
 // Resolve the BrowserWindow that hosts a webview's contents. Webviews carry
 // their chrome renderer as hostWebContents; routing through it (instead of
@@ -177,7 +196,7 @@ function registerWebContentsHandlers() {
       });
 
       // Intercept navigation to custom protocols (freedom://, bzz://, ipfs://,
-      // ipns://, web3://, rad:, ethereum:, ens://). `ens://` is included so legacy
+      // ipns://, web3://, rad:, TON Site names, ethereum:, ens://). `ens://` is included so legacy
       // links inside pages route through the renderer's ENS resolver instead
       // of failing as an unknown scheme — bookmarks created before the
       // transport-aware migration still carry the legacy prefix.
@@ -198,8 +217,10 @@ function registerWebContentsHandlers() {
           url.startsWith('ipns://') ||
           url.startsWith('web3://') ||
           url.startsWith('ens://') ||
+          isTonCustomNavigation(url) ||
           url.startsWith('rad:') ||
-          url.startsWith('ethereum:')
+          url.startsWith('ethereum:') ||
+          isHttpsTonNavigation(url)
         ) {
           log.info(`${tag} intercepted custom protocol navigation: ${navUrlForLog(contents, url)}`);
           event.preventDefault();

@@ -4,7 +4,7 @@
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20|%20Linux%20|%20Windows-lightgrey)](https://freedom.baby)
 
-Freedom is a browser for the decentralized web, with Swarm, IPFS, onchain applications, Radicle, ENS, and Tezos Domains as first-class protocols. Integrated Ant, freedom-ipfs, Radicle, experimental Myotis, and Tor components provide direct access to decentralized and onion networks without relying on centralized HTTP gateways.
+Freedom is a browser for the decentralized web, with Swarm, IPFS, TON Sites, onchain applications, Radicle, ENS, and Tezos Domains as first-class protocols. Integrated Ant, freedom-ipfs, Tonutils Proxy, Radicle, experimental Myotis, and Tor components provide direct access to decentralized and onion networks without relying on centralized HTTP gateways.
 
 ## Download
 
@@ -14,9 +14,9 @@ Radicle is available on macOS, Linux, and Windows (x64 and ARM64). The release w
 
 ## What Freedom supports
 
-- Native `bzz://`, `ipfs://`, `ipns://`, `web3://`, and `rad://` navigation, plus optional `.onion` routing through Tor.
+- Native `bzz://`, `ipfs://`, `ipns://`, `tonsite://`, `web3://`, and `rad://` navigation, plus optional `.onion` routing through Tor.
 - Contract-hosted applications (draft ERC-8244) loaded straight from an Ethereum-compatible chain, with no HTTP gateway.
-- Integrated Ant (Swarm), freedom-ipfs, Radicle, experimental Myotis, and Tor components with per-profile configuration.
+- Integrated Ant (Swarm), freedom-ipfs, Tonutils Proxy, Radicle, experimental Myotis, and Tor components with per-profile configuration.
 - ENS, WNS, GNS, and Tezos Domains resolution, including `.eth`, `.box`, `.wei`, `.gwei`, and `.tez` names.
 - Tabs, sidebar, bookmarks, history, downloads, find-in-page, shortcuts, themes, permissions, and automatic updates.
 - Ad blocking with signed list updates and per-site allowlisting.
@@ -35,18 +35,19 @@ nvm use
 npm ci
 npm run ant:download
 npm run ipfs:download
+npm run ton:download
 npm run myotis:download
 npm run myotis:build-supervisor
 npm start
 ```
 
-Swarm and IPFS start automatically. Radicle and Myotis are opt-in under **Settings → Startup**. Run `npm run radicle:download` before enabling Radicle under **Settings → Nodes**; run `npm run tor:download` (macOS, Linux, and Windows) before enabling Tor under **Settings → Experimental** — the Tor rows only appear once that build exists. For prerequisites, platform notes, tests, debugging, and local builds, read the [development guide](docs/development.md).
+Swarm and IPFS start automatically. TON Sites, Radicle, and Myotis are opt-in under **Settings → Startup**. Run `npm run ton:download` before starting the TON proxy, `npm run radicle:download` before enabling Radicle under **Settings → Nodes**, and `npm run tor:download` (macOS, Linux, and Windows) before enabling Tor under **Settings → Experimental** — the Tor rows only appear once that build exists. For prerequisites, platform notes, tests, debugging, and local builds, read the [development guide](docs/development.md).
 
 ## Architecture
 
 Freedom is an Electron application. Protocol, node-lifecycle, permission, wallet, download, and persistence logic lives in the main process. The renderer is a modular UI layer that communicates with the main process through the allowlisted channels in `src/shared/ipc-channels.js`.
 
-The main process handles `bzz:`, `ipfs:`, `ipns:`, `web3:`, `rad:`, and `.onion` navigation, manages per-profile nodes and storage, and resolves supported decentralized names. `web3:` needs no node or gateway: the handler reads the contract's ERC-8244 `html()` document through the same chain-data router the wallet uses. Security-sensitive capabilities stay out of page and renderer contexts unless exposed through a narrow preload or IPC API.
+The main process handles `bzz:`, `ipfs:`, `ipns:`, `ton:`, `web3:`, `rad:`, and `.onion` navigation, manages per-profile nodes and storage, and resolves supported decentralized names. `web3:` needs no node or gateway: the handler reads the contract's ERC-8244 `html()` document through the same chain-data router the wallet uses. Security-sensitive capabilities stay out of page and renderer contexts unless exposed through a narrow preload or IPC API.
 
 | Directory       | Responsibility                                                                         |
 | --------------- | -------------------------------------------------------------------------------------- |

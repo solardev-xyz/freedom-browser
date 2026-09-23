@@ -287,6 +287,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Download TON proxy binary
+        run: npm run ton:download
+
+      - name: Smoke test TON proxy binary
+        run: npm run ton:smoke
+
       # fetch-freedom-ipfs-native.js downloads release assets directly and
       # makes no API calls, so it needs no token.
       - name: Download IPFS native addon
@@ -528,6 +534,12 @@ jobs:
         run: npm run ant:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download TON proxy binary
+        run: npm run ton:download
+
+      - name: Smoke test TON proxy binary
+        run: npm run ton:smoke
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
@@ -1065,6 +1077,12 @@ jobs:
         run: npm run ant:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download TON proxy binary
+        run: npm run ton:download
+
+      - name: Smoke test TON proxy binary
+        run: npm run ton:smoke
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
