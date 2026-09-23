@@ -35,10 +35,14 @@ const {
   installAdblockInterception,
   adblockRequestForDispatch,
   getCosmeticFilters,
+  getScriptlets,
+  stripTrustedScriptlets,
   refreshEngine,
   cleanupAdblockWebContents,
   setAllowlistedHosts,
   getAdblockStatus,
+  getEnabledCategories,
+  getEnabledFeedCategories,
   _resetAdblockForTests,
 } = require('./service');
 
@@ -540,5 +544,258 @@ describe('artifact layers', () => {
     const status = getAdblockStatus();
     expect(status.listsVersion).toBe('2026-08-01');
     expect(Object.keys(status.categories).sort()).toEqual(['ads', 'cookies', 'privacy']);
+  });
+});
+
+// #410: `##+js(...)` scriptlets, from a resources file named by the manifest.
+describe('scriptlets', () => {
+  // The shape @ghostery's Resources.parse reads (uBlock's scriptlets in
+  // resources.json form). Each scriptlet records the args it was called with
+  // on globalThis.__marks, so a test can execute what getScriptlets returns.
+  const record = (fnName, tag) =>
+    `function ${fnName}(a) { (globalThis.__marks = globalThis.__marks || []).push('${tag}:' + a); }`;
+  const RESOURCES = {
+    scriptlets: [
+      { name: 'mark.js', aliases: ['mk.js'], body: record('mark', 'mark'), dependencies: [] },
+      {
+        name: 'trusted-mark.js',
+        aliases: [],
+        body: record('trustedMark', 'trusted'),
+        dependencies: [],
+        requiresTrust: true,
+      },
+      // Trust-requiring without the `trusted-` prefix (uBlock has these, e.g.
+      // prevent-clipboard-write.js): only the resources file says so.
+      {
+        name: 'quiet-power.js',
+        aliases: ['qp.js'],
+        body: record('quietPower', 'quiet'),
+        dependencies: [],
+        requiresTrust: true,
+      },
+    ],
+    redirects: [],
+  };
+  const RULES = [
+    'video.test##+js(mark, hello)',
+    'video.test##+js(trusted-mark, t)',
+    'video.test##+js(qp, q)',
+  ];
+
+  let dir;
+  let cacheDir;
+
+  function writeArtifacts({ resources = RESOURCES, withResources = true, resourcesSha } = {}) {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-scriptlets-'));
+    const manifest = {
+      version: '2026-09-23',
+      categories: {
+        ads: { file: 'easylist.txt' },
+        ublock: { file: 'ublock-filters.txt' },
+        privacy: { file: 'easyprivacy.txt' },
+      },
+    };
+    // EasyList carries the same rules on another host, to show which ones an
+    // untrusted list keeps.
+    fs.writeFileSync(
+      path.join(dir, 'easylist.txt'),
+      RULES.map((r) => r.replace('video.test', 'easy.test')).join('\n')
+    );
+    fs.writeFileSync(path.join(dir, 'ublock-filters.txt'), RULES.join('\n'));
+    fs.writeFileSync(path.join(dir, 'easyprivacy.txt'), '||telemetry.test^');
+    if (withResources) {
+      fs.writeFileSync(path.join(dir, 'resources.json'), JSON.stringify(resources));
+      manifest.resources = {
+        file: 'resources.json',
+        version: 'v-test',
+        sha256: resourcesSha || 'sha-one',
+      };
+    }
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+  }
+
+  async function install(options = {}) {
+    _resetAdblockForTests();
+    installAdblockInterception({ artifactsDir: dir, ...options });
+    await refreshEngine();
+  }
+
+  // Run what the preload would hand executeInMainWorld; return the marks.
+  function run(script) {
+    delete globalThis.__marks;
+    new Function(script)();
+    const marks = globalThis.__marks || [];
+    delete globalThis.__marks;
+    return marks;
+  }
+
+  beforeEach(async () => {
+    writeArtifacts();
+    await install();
+    navigateTab(9, 'https://video.test/watch');
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (cacheDir) fs.rmSync(cacheDir, { recursive: true, force: true });
+    cacheDir = null;
+  });
+
+  test('returns runnable code for the frame host, trusted scriptlets included for uBlock lists', () => {
+    const { script } = getScriptlets({ url: 'https://video.test/watch', sourceId: 9 });
+    expect(run(script).sort()).toEqual(['mark:hello', 'quiet:q', 'trusted:t']);
+  });
+
+  test('strips trust-requiring scriptlets from every other list', () => {
+    navigateTab(9, 'https://easy.test/');
+    const { script } = getScriptlets({ url: 'https://easy.test/', sourceId: 9 });
+    expect(run(script)).toEqual(['mark:hello']);
+  });
+
+  test('one throwing scriptlet does not stop the others', () => {
+    writeArtifacts({
+      resources: {
+        ...RESOURCES,
+        scriptlets: [
+          ...RESOURCES.scriptlets,
+          {
+            name: 'boom.js',
+            aliases: [],
+            body: 'function boom() { throw new Error("x"); }',
+            dependencies: [],
+          },
+        ],
+      },
+    });
+    fs.writeFileSync(
+      path.join(dir, 'ublock-filters.txt'),
+      ['video.test##+js(boom)', 'video.test##+js(mark, after)'].join('\n')
+    );
+    return install().then(() => {
+      const { script } = getScriptlets({ url: 'https://video.test/', sourceId: 9 });
+      expect(run(script)).toEqual(['mark:after']);
+    });
+  });
+
+  test('a host without rules gets nothing', () => {
+    expect(getScriptlets({ url: 'https://plain.test/', sourceId: 9 })).toEqual({ script: '' });
+  });
+
+  test('a sub-frame is matched on its own host', () => {
+    // Tab on some other site, frame on video.test (an embedded player).
+    navigateTab(9, 'https://blog.test/post');
+    const { script } = getScriptlets({ url: 'https://video.test/embed/x', sourceId: 9 });
+    expect(run(script)).toContain('mark:hello');
+  });
+
+  test('respects the master toggle', () => {
+    loadSettings.mockReturnValue({ ...DEFAULT_TEST_SETTINGS, adblockEnabled: false });
+    expect(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 })).toEqual({
+      script: '',
+    });
+  });
+
+  test('the uBlock list follows the "Block ads" toggle', async () => {
+    loadSettings.mockReturnValue({ ...DEFAULT_TEST_SETTINGS, adblockAds: false });
+    await refreshEngine();
+    expect(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 })).toEqual({
+      script: '',
+    });
+  });
+
+  test("is off for an allowlisted tab, keyed on the tab's top-level host", () => {
+    setAllowlistedHosts(['video.test']);
+    expect(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 })).toEqual({
+      script: '',
+    });
+    // A sub-frame of an allowlisted tab is spared too.
+    setAllowlistedHosts(['blog.test']);
+    navigateTab(9, 'https://blog.test/post');
+    expect(getScriptlets({ url: 'https://video.test/embed/x', sourceId: 9 })).toEqual({
+      script: '',
+    });
+  });
+
+  test.each(['file:///app/pages/home.html', 'bzz://abc/', 'ipfs://bafy/', 'wss://video.test/'])(
+    'never answers for %s',
+    (url) => {
+      expect(getScriptlets({ url, sourceId: 9 })).toEqual({ script: '' });
+    }
+  );
+
+  test('without a resources file the engine still blocks, with no scriptlets', async () => {
+    writeArtifacts({ withResources: false });
+    await install();
+    navigateTab(9, 'https://video.test/watch');
+    expect(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 })).toEqual({
+      script: '',
+    });
+    expect(
+      adblockRequestForDispatch(makeDetails({ url: 'https://telemetry.test/p', webContentsId: 9 }))
+    ).toEqual({ cancel: true });
+  });
+
+  test('an unparsable resources file degrades the same way', async () => {
+    writeArtifacts();
+    fs.writeFileSync(path.join(dir, 'resources.json'), '{not json');
+    await install();
+    expect(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 })).toEqual({
+      script: '',
+    });
+  });
+
+  test('scriptlets survive the serialized engine cache, and new resources miss it', async () => {
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
+    await install({ cacheDir });
+    const [first] = fs.readdirSync(cacheDir).filter((f) => f.startsWith('engine-'));
+
+    // Cache hit: drop the list and resources files; scriptlets still come out.
+    fs.rmSync(path.join(dir, 'ublock-filters.txt'));
+    fs.rmSync(path.join(dir, 'resources.json'));
+    await install({ cacheDir });
+    navigateTab(9, 'https://video.test/watch');
+    expect(run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script)).toContain(
+      'mark:hello'
+    );
+
+    // A different resources digest is a different engine.
+    fs.rmSync(dir, { recursive: true, force: true });
+    writeArtifacts({ resourcesSha: 'sha-two' });
+    await install({ cacheDir });
+    const caches = fs.readdirSync(cacheDir).filter((f) => f.startsWith('engine-'));
+    expect(caches).toHaveLength(1);
+    expect(caches[0]).not.toBe(first);
+  });
+
+  test('the uBlock list is enabled with "Block ads" but never requested from the feed', () => {
+    expect(getEnabledCategories()).toEqual(['ads', 'ublock', 'privacy']);
+    expect(getEnabledFeedCategories()).toEqual(['ads', 'privacy']);
+  });
+});
+
+describe('stripTrustedScriptlets', () => {
+  test('drops trusted-* injections, keeps exceptions and everything else', () => {
+    const text = [
+      'a.test##+js(trusted-set-constant, x, 1)',
+      'a.test##+js(trusted-anything-new)',
+      'a.test#@#+js(trusted-set-constant, x, 1)',
+      'a.test##+js(set-constant, x, 1)',
+      'a.test##.ad',
+      '||ads.test^',
+    ].join('\n');
+    expect(stripTrustedScriptlets(text, new Set()).split('\n')).toEqual([
+      '',
+      '',
+      'a.test#@#+js(trusted-set-constant, x, 1)',
+      'a.test##+js(set-constant, x, 1)',
+      'a.test##.ad',
+      '||ads.test^',
+    ]);
+  });
+
+  test('uses the resources file for trust-requiring names without the prefix', () => {
+    expect(
+      stripTrustedScriptlets('a.test##+js(qp, 1)\nb.test##+js(mark)', new Set(['qp'])).split('\n')
+    ).toEqual(['', 'b.test##+js(mark)']);
   });
 });

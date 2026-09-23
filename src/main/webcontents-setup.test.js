@@ -107,6 +107,23 @@ describe('webcontents-setup', () => {
     expect(ctx.state.activeBzzBases.has(contents.id)).toBe(false);
   });
 
+  // #410: iframes need the webview preload for their adblock scriptlets; the
+  // <webview> attribute can't turn this on, only the embedder's event can.
+  test('attaches tab webviews with the preload running in sub-frames', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    const webPreferences = { preload: '/app/webview-preload.js', sandbox: true };
+    host.emit('will-attach-webview', {}, webPreferences, {});
+    expect(webPreferences).toEqual({
+      preload: '/app/webview-preload.js',
+      sandbox: true,
+      nodeIntegrationInSubFrames: true,
+    });
+  });
+
   test('skips css injection for internal file pages and intercepts external window opens', () => {
     const parentWindow = {
       webContents: {

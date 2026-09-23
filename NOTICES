@@ -120,6 +120,32 @@ Ad-blocking filter lists (bundled data, not code)
   Fanboy Cookiemonster and Fanboy Annoyances
     License: GPLv3+ or CC BY-SA 3.0+ (redistributed under CC BY-SA)
     Copyright (c) The EasyList authors (https://easylist.to/)
+  uBlock filters and uBlock filters – Quick fixes (uBlock Origin's uAssets)
+    License: GPL-3.0
+    Copyright (C) Raymond Hill and the uBlock Origin contributors
+    https://github.com/uBlockOrigin/uAssets
+    Shipped as `assets/adblock/ublock-filters.txt`, a modified version
+    built at release time by `scripts/fetch-adblock-lists.js`: `!#if`
+    blocks evaluated for a Chromium desktop build, `!#include` files
+    spliced in, and the two lists concatenated. The file is plain text and
+    is its own source; its header records the sources and the
+    modification.
+  uBlock Origin scriptlets and redirect resources
+    License: GPL-3.0-or-later
+    Copyright (C) Raymond Hill and the uBlock Origin contributors
+    https://github.com/gorhill/uBlock (src/js/resources/)
+    Shipped unmodified as `assets/adblock/resources.json`, the build of
+    those scriptlets that @ghostery/adblocker publishes at
+    https://github.com/ghostery/adblocker (tag v2.18.2,
+    packages/adblocker/assets/ublock-origin/resources.json). Its script
+    bodies are minified; the corresponding source is uBlock Origin's
+    src/js/resources/ at the revision that build was made from, plus
+    Ghostery's asset build script in the same repository.
+  The GPL-3.0 text ships next to both files as
+  `assets/adblock/COPYING.GPL-3.0.txt`. These files are separate data and
+  scripts that Freedom's filter engine reads at run time (the scriptlets
+  run inside web pages, not in Freedom's own code); they are not
+  combined into Freedom's MPL-2.0 sources. See LICENSE_AUDIT.md.
 
 == Committed assets ==
 

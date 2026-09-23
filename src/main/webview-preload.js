@@ -8,6 +8,53 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// ============================================
+// Ad blocking — scriptlets (document start, main world)
+// ============================================
+//
+// Some ads can't be blocked on the network: YouTube streams its video ads
+// from the same hosts as the video, and whether one plays is decided by
+// fields in the player JSON. Filter lists handle that with scriptlets
+// (`youtube.com##+js(json-prune, adPlacements …)`) that patch JSON.parse /
+// fetch before the page's own scripts read the config (#410).
+//
+// That only works if they run first, so this is the first thing the preload
+// does: a synchronous lookup (the engine lives in the main process, which
+// applies the master toggle, category toggles and the tab's allowlist), then
+// the code runs in the page's main world through executeInMainWorld — which,
+// like the ethereum provider below, is not subject to the page's CSP. Only
+// http(s) frames: internal pages are file:, and dweb frames (bzz/ipfs/web3)
+// carry no list-targeted ads.
+(function injectAdblockScriptlets() {
+  const loc = globalThis.location;
+  if (!loc || (loc.protocol !== 'http:' && loc.protocol !== 'https:')) return;
+  let script = '';
+  try {
+    const res = ipcRenderer.sendSync('adblock:scriptlets', { url: loc.href });
+    if (res && typeof res.script === 'string') script = res.script;
+  } catch {
+    return; // Main process unavailable — leave the page unmodified.
+  }
+  if (!script) return;
+  try {
+    // The source is the packaged, sha256-pinned scriptlet resources compiled
+    // by the main-process engine; page content never contributes code here.
+    contextBridge.executeInMainWorld({ func: new Function(script) });
+  } catch (err) {
+    console.warn('[webview-preload] adblock scriptlet injection failed:', err);
+  }
+})();
+
+// Sub-frames: the main process turns on nodeIntegrationInSubFrames for tab
+// webviews (webcontents-setup.js) only so that iframes — an embedded YouTube
+// player, say — get the scriptlets above. Nothing else in this file is meant
+// for them (wallet providers, freedomAPI, context menu, cosmetic filtering
+// all stay main-frame only, as before), so stop here. Sandboxed preloads run
+// inside a function wrapper, which is what makes this top-level return legal.
+if (globalThis.window && globalThis.window.top !== globalThis.window) {
+  return;
+}
+
 // PRIVATE MODE GUARD (providers): webviews in private windows never get
 // the wallet providers. `window.ethereum` / `window.swarm` are not
 // injected and the request/response bridges are not installed, so a dApp

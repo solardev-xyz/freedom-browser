@@ -75,7 +75,7 @@ Protocol and privileged logic belongs in the main process. The renderer talks to
 | `npm run radicle:download`    | Download the embedded libradicle addon for the current platform |
 | `npm run radicle:build-addon` | Build the libradicle addon from a sibling checkout              |
 | `npm run tor:download`        | Build the Arti Tor binary for the current platform              |
-| `npm run adblock:download`    | Download the packaged ad-blocking lists                         |
+| `npm run adblock:download`    | Download the packaged ad-blocking lists and scriptlet resources |
 | `npm run ipfs:native:smoke`   | Smoke-test the native IPFS addon and retrieval path             |
 | `npm run ant:smoke-upload`    | Exercise a Swarm buy/upload/download round trip                 |
 

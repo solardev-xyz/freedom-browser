@@ -42,6 +42,12 @@ test('adblock section shows iOS-matching defaults and engine status', async ({
   // Bundled lists exist in the dev tree (assets/adblock), so the status
   // line names a lists version; the engine may still be compiling.
   await expect(page.locator('#adblock-status')).toContainText('Filter lists');
+
+  // "Block ads" covers two bundled lists: EasyList and the uBlock filters
+  // that carry the YouTube scriptlets (#410). Both name their rule counts.
+  await expect(page.locator('#adblock-ads-help')).toHaveText(
+    /^EasyList · [\d,.]+ rules, uBlock filters · [\d,.]+ rules$/
+  );
 });
 
 test('ad blocking and site permissions are separate navigable sections', async ({

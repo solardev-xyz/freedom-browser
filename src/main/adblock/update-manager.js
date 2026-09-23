@@ -24,7 +24,7 @@ const {
   isTrustAnchorConfigured,
 } = require('./feed-config');
 const { verifyManifest, desktopListsFor } = require('./update-manifest');
-const { refreshEngine, getEnabledCategories } = require('./service');
+const { refreshEngine, getEnabledFeedCategories } = require('./service');
 
 function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
@@ -91,7 +91,7 @@ async function runUpdateOnce(io = {}) {
 
   const updatedDir = path.join(root, 'updated');
   const applied = readAppliedState(updatedDir);
-  const enabledCategories = getEnabledCategories();
+  const enabledCategories = getEnabledFeedCategories();
   // A category enabled after the last update landed isn't in updated/ — the
   // bundled floor serves it meanwhile, but the feed copy must be able to
   // backfill without waiting for the publisher to bump the version. Re-applying

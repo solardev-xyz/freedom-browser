@@ -89,9 +89,18 @@ function checkBinaries(platforms) {
 
   // Platform-independent: bundled adblock filter lists (assets/adblock is
   // gitignored; populated by npm run adblock:download).
-  const adblockManifest = path.join(__dirname, '..', 'assets', 'adblock', 'manifest.json');
+  const adblockDir = path.join(__dirname, '..', 'assets', 'adblock');
+  const adblockManifest = path.join(adblockDir, 'manifest.json');
   if (!fs.existsSync(adblockManifest)) {
     missing.push(`adblock filter lists: ${adblockManifest}`);
+  } else {
+    // A lists dir fetched before scriptlet support (#410) has a manifest but
+    // no scriptlet resources — it would ship with YouTube ads unblocked — and
+    // no GPL-3.0 text for the uBlock files the current script adds.
+    for (const file of ['resources.json', 'COPYING.GPL-3.0.txt']) {
+      const target = path.join(adblockDir, file);
+      if (!fs.existsSync(target)) missing.push(`adblock ${file} (stale lists dir): ${target}`);
+    }
   }
 
   for (const { os, arch } of platforms) {

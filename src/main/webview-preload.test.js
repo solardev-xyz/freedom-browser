@@ -130,6 +130,9 @@ function loadWebviewPreloadModule(options = {}) {
     matchMedia: jest.fn(() => prefersDarkQuery),
     fetch: windowFetch,
   };
+  // A main frame is its own top; `options.subframe` models an iframe, whose
+  // top is some other (cross-origin) window.
+  global.window.top = options.subframe === true ? {} : global.window;
   global.location = location;
   global.navigator = {
     clipboard,
@@ -1608,5 +1611,118 @@ describe('webview-preload internal-page theme', () => {
     expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(IPC.GET_THEME);
     expect(documentElement.setAttribute).not.toHaveBeenCalled();
     expect(ipcRenderer.listeners.get(IPC.SETTINGS_UPDATED)).toBeUndefined();
+  });
+});
+
+// #410: filter-list scriptlets (`youtube.com##+js(json-prune, …)`) must run in
+// the page's main world before any page script, in the main frame and in
+// sub-frames — and a sub-frame gets nothing else from this preload.
+describe('webview-preload adblock scriptlets', () => {
+  const webLocation = {
+    href: 'https://www.youtube.com/watch?v=x',
+    protocol: 'https:',
+    pathname: '/watch',
+  };
+  const SCRIPT = 'window.__freedomScriptletRan = true;';
+
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    jest.restoreAllMocks();
+  });
+
+  const scriptletCalls = (contextBridge) =>
+    contextBridge.executeInMainWorld.mock.calls.filter(([{ func }]) =>
+      String(func).includes(SCRIPT)
+    );
+
+  test('asks the main process synchronously first, then runs the code in the main world', () => {
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      location: webLocation,
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+
+    // Before every other sync lookup, so nothing precedes it at document start.
+    expect(ipcRenderer.sendSync.mock.calls[0]).toEqual([
+      IPC.ADBLOCK_SCRIPTLETS,
+      { url: webLocation.href },
+    ]);
+    expect(scriptletCalls(contextBridge)).toHaveLength(1);
+    // …and the scriptlets are the first thing executed in the main world.
+    expect(String(contextBridge.executeInMainWorld.mock.calls[0][0].func)).toContain(SCRIPT);
+  });
+
+  test('injects nothing when the engine returns no script', () => {
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      location: webLocation,
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: '' } },
+    });
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.ADBLOCK_SCRIPTLETS, expect.any(Object));
+    expect(scriptletCalls(contextBridge)).toHaveLength(0);
+  });
+
+  test.each([
+    ['an internal page', 'file:///app/pages/history.html', 'file:', '/app/pages/history.html'],
+    ['a Swarm page', 'bzz://abc/index.html', 'bzz:', '/index.html'],
+    ['an IPFS page', 'ipfs://bafy/index.html', 'ipfs:', '/index.html'],
+  ])('never asks for scriptlets on %s', (_label, href, protocol, pathname) => {
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      location: { href, protocol, pathname },
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(
+      IPC.ADBLOCK_SCRIPTLETS,
+      expect.anything()
+    );
+    expect(scriptletCalls(contextBridge)).toHaveLength(0);
+  });
+
+  test('no answer from the main process leaves the rest of the preload working', () => {
+    const { contextBridge } = loadWebviewPreloadModule({ location: webLocation });
+    // sendSync returned undefined — nothing injected, providers still installed.
+    expect(scriptletCalls(contextBridge)).toHaveLength(0);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalled();
+  });
+
+  test('a sub-frame gets its scriptlets and nothing else', () => {
+    const { contextBridge, ipcRenderer, documentHandlers, windowCaptureHandlers } =
+      loadWebviewPreloadModule({
+        location: {
+          href: 'https://www.youtube-nocookie.com/embed/x',
+          protocol: 'https:',
+          pathname: '/embed/x',
+        },
+        subframe: true,
+        syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+      });
+
+    expect(scriptletCalls(contextBridge)).toHaveLength(1);
+    // No wallet provider, no freedomAPI, no other IPC, no listeners.
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(1);
+    expect(contextBridge.exposeInMainWorld).not.toHaveBeenCalled();
+    expect(ipcRenderer.sendSync).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).not.toHaveBeenCalled();
+    expect(ipcRenderer.on).not.toHaveBeenCalled();
+    expect(Object.keys(documentHandlers)).toHaveLength(0);
+    expect(Object.keys(windowCaptureHandlers)).toHaveLength(0);
+  });
+
+  test('a main frame still installs everything else after its scriptlets', () => {
+    const { contextBridge } = loadWebviewPreloadModule({
+      location: webLocation,
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledWith('freedomAPI', expect.any(Object));
+    // Scriptlets + the ethereum provider.
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(2);
   });
 });

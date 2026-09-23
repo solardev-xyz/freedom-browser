@@ -823,6 +823,24 @@
       ]
     },
     {
+      "name": "uBlock Origin filters and scriptlets",
+      "path": "assets/adblock/",
+      "type": "data",
+      "license": {
+        "spdx": ["GPL-3.0-only", "GPL-3.0-or-later"],
+        "raw": "uBlock filters + Quick fixes (uAssets): GPL-3.0; scriptlets/resources (uBlock Origin src/js/resources): GPL-3.0-or-later",
+        "notice_required": true
+      },
+      "risk": "orange",
+      "issues": [
+        {
+          "kind": "copyleft",
+          "details": "ublock-filters.txt (modified: preprocessed and concatenated, marked in its header) and resources.json (unmodified, minified scriptlet bodies, pinned to @ghostery/adblocker v2.18.2 by sha256) ship as standalone files in extraResources, next to the GPL-3.0 text (COPYING.GPL-3.0.txt). Freedom's code does not link or include them; the engine reads the lists as data and injects the scriptlets into web pages. Treated as an aggregate under GPL-3.0 section 5, so the GPL does not extend to Freedom (#410).",
+          "recommended_fix": "Maintainer sign-off on the aggregation position and on how the minified resources.json's corresponding source is provided (upstream link in NOTICES today, or a mirrored copy per release). See LICENSE_AUDIT.md, The GPL question."
+        }
+      ]
+    },
+    {
       "name": "internal-page artwork",
       "path": "src/renderer/pages/images/",
       "type": "asset",

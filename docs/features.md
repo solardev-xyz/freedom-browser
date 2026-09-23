@@ -210,7 +210,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 ## Ad Blocking
 
 - **Request Blocking**: Blocks ads and trackers with Ghostery's blocking engine.
-- **List Categories**: Configure EasyList, EasyPrivacy, cookie-notice, and annoyance lists independently.
+- **List Categories**: Configure EasyList, EasyPrivacy, cookie-notice, and annoyance lists independently. "Block ads" also covers uBlock Origin's own filters, which are bundled with each release and not yet part of the Swarm updates.
+- **Scriptlets**: List rules that have to patch a page's scripts — for example removing YouTube's video-ad entries from the player's data — run before the page's own code, in the page and in its frames.
 - **Authenticated Updates**: Optional Swarm-delivered updates require a pinned signer, valid manifest shape, increasing version, and matching content hashes before activation.
 - **Per-Site Allowlist**: Exempt individual hosts from filtering in Settings.
 

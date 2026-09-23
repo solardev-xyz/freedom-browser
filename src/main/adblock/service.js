@@ -19,13 +19,22 @@
  * Blocking decisions match Freedom iOS: ads + privacy on by default,
  * cookie banners + annoyances opt-in, allowlist bypasses the engine for
  * the tab's whole top-level host rather than layering exception rules.
+ *
+ * Scriptlets (`##+js(...)`, #410): the manifest may name a `resources` file
+ * (uBlock Origin's scriptlets, in @ghostery's resources.json shape) that is
+ * loaded into the engine; `getScriptlets` then hands a frame its injection
+ * code, which the webview preload runs in the page's main world at document
+ * start. `trusted-*` scriptlets can do arbitrary things to a page (replace
+ * fetch responses, set any constant), so — as in uBlock Origin — only lists
+ * from the scriptlet authors themselves may invoke them; they are stripped
+ * from every other list before the engine sees it.
  */
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const log = require('../logger');
-const { FiltersEngine, Request, ENGINE_VERSION } = require('@ghostery/adblocker');
+const { FiltersEngine, Request, Resources, ENGINE_VERSION } = require('@ghostery/adblocker');
 const ADBLOCKER_VERSION = require('@ghostery/adblocker/package.json').version;
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 const { loadSettings } = require('../settings-store');
@@ -44,21 +53,38 @@ const {
   isHostAllowlisted,
 } = require('./request-classifier');
 
-// Cosmetic filtering is loaded (element hiding); extended/procedural
-// selectors and scriptlet resources are out of scope for now. This config
-// is folded into the cache key (below) so any change to it — enabling
-// cosmetics, a later scriptlet milestone — automatically invalidates caches
-// serialized under a different shape, with no separate version to bump.
+// Cosmetic filtering is loaded (element hiding and, with a resources file,
+// `+js(...)` scriptlets — @ghostery parses both as cosmetic filters);
+// extended/procedural selectors stay out of scope. `scriptlets` is Freedom's
+// own list preprocessing (untrusted lists lose their `trusted-*` scriptlet
+// rules, see stripTrustedScriptlets), not an engine option: bump it whenever
+// that preprocessing changes. The whole object is folded into the cache key
+// (below) so any change to it automatically invalidates caches serialized
+// under a different shape, with no separate version to bump.
 const ENGINE_CONFIG = { loadCosmeticFilters: true, loadExtendedSelectors: false };
-const ENGINE_CONFIG_KEY = JSON.stringify(ENGINE_CONFIG);
+const ENGINE_CONFIG_KEY = JSON.stringify({ ...ENGINE_CONFIG, scriptlets: 1 });
 
-// Category name in manifest.json -> settings key gating it.
+// Category name in manifest.json -> settings key gating it. Two categories
+// can share a setting: `ublock` (uBlock Origin's own filters + Quick fixes,
+// which carry the YouTube ad-pruning scriptlets) is part of "Block ads", but
+// is its own manifest entry so a Swarm update carrying only `ads` never
+// shadows it (layers are merged per category, see resolveArtifacts).
 const CATEGORY_SETTINGS = [
   ['ads', 'adblockAds'],
+  ['ublock', 'adblockAds'],
   ['privacy', 'adblockPrivacy'],
   ['cookies', 'adblockCookies'],
   ['annoyances', 'adblockAnnoyances'],
 ];
+
+// Categories bundled at build time only — the Swarm update channel
+// (freedom-adblock-service/sources.json) does not publish them, so the update
+// manager must not wait for / try to backfill them from the feed.
+const BUNDLED_ONLY_CATEGORIES = new Set(['ublock']);
+
+// Categories whose lists may invoke `trusted-*` scriptlets: the lists written
+// by the authors of the scriptlets themselves, as in uBlock Origin.
+const TRUSTED_SCRIPTLET_CATEGORIES = new Set(['ublock']);
 
 // When set (tests / E2E via options.artifactsDir), the artifacts dir is
 // pinned. Otherwise refreshEngine re-resolves the layers each build so a Swarm
@@ -174,6 +200,7 @@ async function readManifest(dir) {
 async function resolveArtifacts() {
   const categories = {};
   let version = null;
+  let resources = null;
   for (const dir of getArtifactDirs()) {
     const manifest = await readManifest(dir);
     if (!manifest) continue;
@@ -183,17 +210,77 @@ async function resolveArtifacts() {
         categories[category] = { ...entry, dir, listsVersion: manifest.version };
       }
     }
+    // Scriptlet resources layer the same way: the highest layer naming a
+    // resources file serves it (today only the bundled floor carries one).
+    if (!resources && manifest.resources?.file) {
+      resources = { ...manifest.resources, dir };
+    }
   }
-  return version === null ? null : { version, categories };
+  return version === null ? null : { version, categories, resources };
 }
 
-async function readEnabledListsText(settings, resolved) {
+/**
+ * Read and parse the scriptlet resources file. Returns null when there is
+ * none or it can't be used — the engine still blocks and hides, it just has
+ * no scriptlets (and no `$redirect=` bodies).
+ */
+async function readResources(resolved) {
+  const entry = resolved.resources;
+  if (!entry) return null;
+  try {
+    const text = await fs.promises.readFile(path.join(entry.dir, entry.file), 'utf-8');
+    const checksum = entry.sha256 || crypto.createHash('sha256').update(text).digest('hex');
+    const parsed = Resources.parse(text, { checksum });
+    return { text, checksum, trustedNames: trustedScriptletNames(parsed) };
+  } catch (err) {
+    log.warn(`[adblock] skipping unreadable scriptlet resources: ${err.message}`);
+    return null;
+  }
+}
+
+// Every spelling a list can use to name a trust-requiring scriptlet: its
+// name and aliases, each with and without the `.js`/`.fn` suffix (uBlock lets
+// `+js(json-prune, …)` omit it).
+function trustedScriptletNames(resources) {
+  const names = new Set();
+  for (const scriptlet of resources.scriptlets) {
+    if (scriptlet.requiresTrust !== true) continue;
+    for (const name of [scriptlet.name, ...(scriptlet.aliases || [])]) {
+      names.add(name);
+      names.add(name.replace(/\.(js|fn)$/, ''));
+    }
+  }
+  return names;
+}
+
+// A `+js(...)` injection rule (not an `#@#` exception), capturing the
+// scriptlet name.
+const SCRIPTLET_RULE_RE = /^[^\n]*?#[$?]?#\+js\(\s*([^,)\s]+)[^\n]*$/gm;
+
+/**
+ * Drop the rules of `text` that invoke a trust-requiring scriptlet. Anything
+ * named `trusted-*` counts even if the resources file doesn't list it, so a
+ * newer list can't slip one past an older resources file.
+ */
+function stripTrustedScriptlets(text, trustedNames) {
+  if (!text.includes('+js(')) return text;
+  return text.replace(SCRIPTLET_RULE_RE, (line, name) =>
+    name.startsWith('trusted-') || trustedNames.has(name) ? '' : line
+  );
+}
+
+async function readEnabledListsText(settings, resolved, trustedNames = new Set()) {
   const texts = [];
   for (const [category, settingKey] of CATEGORY_SETTINGS) {
     const entry = resolved.categories[category];
     if (!entry || settings[settingKey] !== true) continue;
     try {
-      texts.push(await fs.promises.readFile(path.join(entry.dir, entry.file), 'utf-8'));
+      const text = await fs.promises.readFile(path.join(entry.dir, entry.file), 'utf-8');
+      texts.push(
+        TRUSTED_SCRIPTLET_CATEGORIES.has(category)
+          ? text
+          : stripTrustedScriptlets(text, trustedNames)
+      );
     } catch (err) {
       // A bad list disables that category, never the whole feature.
       log.warn(`[adblock] skipping unreadable list '${category}': ${err.message}`);
@@ -207,14 +294,19 @@ async function readEnabledListsText(settings, resolved) {
 // digest — deliberately not its directory, so the identity travels with the
 // content. A partial update refreshing only 'ads' therefore invalidates the
 // cache while the bundled layer's other categories keep their identity.
+// The scriptlet resources are compiled into (and serialized with) the engine
+// too, so their digest is part of the identity.
 function engineIdentity(resolved, enabledCategories) {
-  return enabledCategories
-    .map((category) => {
-      const entry = resolved.categories[category];
-      if (!entry) return `${category}@none`;
-      return `${category}@${entry.listsVersion}:${entry.file}:${entry.sha256 || ''}`;
-    })
-    .join(',');
+  const lists = enabledCategories.map((category) => {
+    const entry = resolved.categories[category];
+    if (!entry) return `${category}@none`;
+    return `${category}@${entry.listsVersion}:${entry.file}:${entry.sha256 || ''}`;
+  });
+  const res = resolved.resources;
+  lists.push(
+    res ? `resources@${res.version || ''}:${res.file}:${res.sha256 || ''}` : 'resources@none'
+  );
+  return lists.join(',');
 }
 
 // The serialized-engine format is version-locked, so the cache key covers
@@ -306,13 +398,19 @@ async function rebuildEngineOnce() {
     }
   }
 
-  const text = await readEnabledListsText(settings, resolved);
+  const resources = await readResources(resolved);
+  const text = await readEnabledListsText(settings, resolved, resources?.trustedNames);
   if (text === null) {
     engine = null;
     return;
   }
-  engine = FiltersEngine.parse(text, ENGINE_CONFIG);
-  log.info(`[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey})`);
+  const built = FiltersEngine.parse(text, ENGINE_CONFIG);
+  if (resources) built.updateResources(resources.text, resources.checksum);
+  engine = built;
+  log.info(
+    `[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey}, ` +
+      `scriptlets: ${resources ? resolved.resources.version || 'yes' : 'none'})`
+  );
   if (cacheFile) {
     await writeEngineCache(cacheFile, engine);
   }
@@ -417,6 +515,52 @@ function getCosmeticFilters({ url, sourceId, initial, classes = [], ids = [], hr
 }
 
 /**
+ * The scriptlet code a frame must run before any of its own scripts, as one
+ * function body (empty when there is nothing to inject). Requested
+ * synchronously by the webview preload at document start, so this sits on
+ * every http(s) navigation of every frame: no I/O, and the same early-outs
+ * as getCosmeticFilters — master toggle, per-category toggles (baked into
+ * the engine), the tab's allowlisted top-level host, non-web URLs.
+ *
+ * Each scriptlet is wrapped in its own try/catch so one throwing (a page
+ * that already froze the global it patches, say) can't stop the rest.
+ *
+ * @param {object} args
+ * @param {string} args.url        Frame document URL.
+ * @param {number} [args.sourceId] Guest webContents id, for allowlist scoping.
+ * @returns {{ script: string }}
+ */
+function getScriptlets({ url, sourceId } = {}) {
+  const none = { script: '' };
+  if (!engine || loadSettings().adblockEnabled === false) return none;
+  if (!isInterceptableUrl(url) || url.startsWith('ws')) return none;
+
+  const topUrl = (typeof sourceId === 'number' && topLevelUrls.get(sourceId)) || url;
+  const topHost = normalizeHost(hostnameFromUrl(topUrl));
+  if (topHost && allowlistedHosts.length > 0 && isHostAllowlisted(topHost, allowlistedHosts)) {
+    return none;
+  }
+
+  const parsed = parseFrameUrl(url);
+  if (!parsed) return none;
+
+  const { active, scripts } = engine.getCosmeticsFilters({
+    url,
+    hostname: parsed.hostname,
+    domain: parsed.domain,
+    getRulesFromHostname: true,
+    getRulesFromDOM: false,
+    getBaseRules: false,
+    getInjectionRules: true,
+    getExtendedRules: false,
+  });
+  if (active === false || !Array.isArray(scripts) || scripts.length === 0) return none;
+  return {
+    script: scripts.map((code) => `try {\n${code}\n} catch (e) {}`).join('\n'),
+  };
+}
+
+/**
  * Register the adblock handler. Must run before
  * `attachWebRequestDispatcher()`. The initial engine build is kicked off
  * in the background; blocking starts once it completes.
@@ -478,6 +622,17 @@ function registerAdblockIpc() {
   ipcMain.handle(IPC.ADBLOCK_COSMETIC, (event, args) =>
     getCosmeticFilters({ ...args, sourceId: event.sender?.id })
   );
+  // Synchronous: the preload must have the scriptlets before the page's first
+  // script runs. Sub-frames send it too; their sender is the tab's guest
+  // webContents, so the allowlist still keys on the tab's top-level host.
+  ipcMain.on(IPC.ADBLOCK_SCRIPTLETS, (event, args) => {
+    try {
+      event.returnValue = getScriptlets({ url: args?.url, sourceId: event.sender?.id });
+    } catch (err) {
+      log.warn(`[adblock] scriptlet lookup failed: ${err.message}`);
+      event.returnValue = { script: '' };
+    }
+  });
 }
 
 /** The category keys currently enabled in settings (e.g. ['ads','privacy']). */
@@ -486,6 +641,15 @@ function getEnabledCategories() {
   return CATEGORY_SETTINGS.filter(([, key]) => settings[key] === true).map(
     ([category]) => category
   );
+}
+
+/**
+ * The enabled categories the Swarm update channel publishes — what the update
+ * manager downloads and backfills. Bundle-only categories are left out, or a
+ * category the feed never carries would look permanently un-backfilled.
+ */
+function getEnabledFeedCategories() {
+  return getEnabledCategories().filter((category) => !BUNDLED_ONLY_CATEGORIES.has(category));
 }
 
 /** Test-only: clear module state between suites. */
@@ -506,11 +670,14 @@ module.exports = {
   registerAdblockIpc,
   adblockRequestForDispatch,
   getCosmeticFilters,
+  getScriptlets,
+  stripTrustedScriptlets,
   refreshEngine,
   setAllowlistedHosts,
   cleanupAdblockWebContents,
   isEngineReady,
   getAdblockStatus,
   getEnabledCategories,
+  getEnabledFeedCategories,
   _resetAdblockForTests,
 };

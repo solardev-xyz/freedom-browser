@@ -1519,7 +1519,7 @@
             <div class="row sub" id="adblock-ads-row">
               <div class="row-body">
                 <p class="row-label">Block ads</p>
-                <p class="row-help" id="adblock-ads-help">EasyList</p>
+                <p class="row-help" id="adblock-ads-help">EasyList, uBlock filters</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1598,7 +1598,8 @@
           </div>
           <p class="row-help" style="margin-top: 16px">
             Filter lists © The EasyList authors (https://easylist.to/), redistributed under CC
-            BY-SA.
+            BY-SA. uBlock filters and scriptlets © Raymond Hill and the uBlock Origin contributors
+            (https://github.com/uBlockOrigin/uAssets); licence terms in NOTICES.
           </p>
         </section>
 
@@ -1754,9 +1755,11 @@
       };
 
       // id ties together the manifest category, the #adblock-<id>-row
-      // element, and the status field; field is the checkbox input.
+      // element, and the status field; field is the checkbox input. `lists`
+      // names the manifest categories the toggle covers when there's more
+      // than one: "Block ads" also switches the uBlock filters (#410).
       const ADBLOCK_CATEGORIES = [
-        { id: 'ads', field: fields.adblockAds },
+        { id: 'ads', field: fields.adblockAds, lists: ['ads', 'ublock'] },
         { id: 'privacy', field: fields.adblockPrivacy },
         { id: 'cookies', field: fields.adblockCookies },
         { id: 'annoyances', field: fields.adblockAnnoyances },
@@ -2979,11 +2982,13 @@
             : status.listsVersion
               ? `Filter lists ${status.listsVersion} · engine preparing…`
               : 'No filter lists bundled — blocking is inactive.';
-          for (const { id } of ADBLOCK_CATEGORIES) {
-            const meta = status.categories?.[id];
-            if (meta?.ruleCount) {
-              $(`adblock-${id}-help`).textContent =
-                `${meta.title} · ${meta.ruleCount.toLocaleString()} rules`;
+          for (const { id, lists = [id] } of ADBLOCK_CATEGORIES) {
+            const parts = lists
+              .map((list) => status.categories?.[list])
+              .filter((meta) => meta?.ruleCount)
+              .map((meta) => `${meta.title} · ${meta.ruleCount.toLocaleString()} rules`);
+            if (parts.length > 0) {
+              $(`adblock-${id}-help`).textContent = parts.join(', ');
             }
           }
         } catch {
