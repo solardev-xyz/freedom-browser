@@ -2,7 +2,7 @@
 
 **Intended License:** MPL-2.0 (Mozilla Public License 2.0)
 **Audit Date:** 2026-09-23
-**Baseline:** `0.8.6-rc.1`
+**Baseline:** `0.8.6`
 **Auditor:** Automated analysis, re-derived from the installed tree
 
 > **DISCLAIMER:** This is a practical engineering audit, not legal advice. For final licensing decisions, consult a qualified attorney.
@@ -346,4 +346,4 @@ Freedom Browser can be released under MPL-2.0, with these conditions:
 
 ---
 
-_Re-derived from the installed tree on 2026-09-23 against `0.8.6-rc.1`. Kept honest by `licenses-audit.test.js`._
+_Re-derived from the installed tree on 2026-09-23 against `0.8.6`. Kept honest by `licenses-audit.test.js`._
