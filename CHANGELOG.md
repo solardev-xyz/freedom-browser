@@ -6,92 +6,54 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- External IPFS node mode under Settings > Nodes, for hosts where the embedded node cannot run
-  - Point a profile at your own gateway, or accept the one Freedom detects on the standard local port at launch
-  - A gateway that is not on your own machine is dialled through the browser's own network stack, so it follows whatever proxy the app is using — a gateway on a `.onion` address is reached over Tor instead of being handed to your DNS resolver, and is not dialled at all until Tor is actually routing it. Gateways on `127.0.0.1` / `localhost` are dialled directly, as before
-  - A gateway that is not answering yet when Freedom starts — your own node still booting, or a `.onion` gateway waiting on Tor — is retried in the background and starts serving on its own as soon as it answers, instead of waiting for you to switch the node off and on; saving Settings > Nodes without changing anything keeps that retry and the unreachable diagnosis
-  - Nothing fetched from an external gateway is written to, or served from, the browser's HTTP cache: private-window `ipfs://` browsing leaves no page bytes or visited CIDs on disk, and a gateway that goes down is reported unreachable instead of being answered from a year-long cached copy
-  - Freedom does not verify content integrity in this mode; the gateway is trusted for every page it serves
-  - Address a local Kubo as `127.0.0.1`, not `localhost`: a default Kubo redirects `localhost` to its subdomain gateway, which Freedom does not follow, so it reads as unreachable — the node status now says so
-- Automatic recovery when a light client's built-in trust checkpoint goes out of date
-  - Myotis starts syncing from a checkpoint built into the release, and that checkpoint expires on its own after a few weeks. A node that reached one used to stop there; it now fetches a recent finalized checkpoint, verifies it, and restarts syncing without you doing anything
-  - A replacement is checked before it is trusted: a proof verified in an isolated worker, plus agreement from independent sources — two of three on Ethereum, two of two on Gnosis. Sources that disagree pause the sync instead of picking a winner
-  - What it is doing, and what went wrong, is shown under Settings > Nodes, each with the one action that clears it — retry, repair, or update Freedom — and a recovery you no longer want can be cancelled. After a minute it says it is still trying and that you can keep browsing
-  - Local sync data that no longer adds up offers a repair you confirm, and keeps the old data rather than deleting it
-- Nightly builds of `main` for internal testers, on their own update channel — a nightly updates to the next nightly, stable installs are never offered one
-- A limit on how often a site can re-ask for a permission you keep dismissing, matching Chrome
-  - Pressing Esc or clicking away still denies just that one request and records nothing, so the site can ask again
-  - After three dismissals in a row it is blocked for the rest of the session instead, so a page can no longer put the prompt back up every time you close it
-  - The block shows in the address-bar indicator as "Blocked after repeated dismissals"; Remove there lets the site ask again. It is never saved to disk, and a private window's dismissals stay in that window
-- Linux pacman distribution target for Arch Linux and Omarchy users, next to the existing AppImage and deb, for x64 and arm64
-  - Install it with `sudo pacman -U <file>`; in-app updates work from there on, the same as they do for the deb, asking for your password when the new package is installed
-- A "Search settings" field in the Settings sidebar, covering the whole page the way Chrome's does
-  - Type a word and every setting whose label or description contains it is listed with the section it lives in, so finding one no longer means knowing which of the 14 sections it is under — Tor's startup toggle is under Experimental, a chain's API keys under RPC Providers
-  - Enter, or clicking a result, opens that section and marks the row it found; Esc clears the field and puts the section you were on back
-  - What it searches is what each section has on the page at that moment, so a chain is findable by its own name from the Chains list — but not while that list is replaced by a single chain's own page or by the add-chain form; leaving Chains puts the list, and those rows, back
-  - The Shortcuts section keeps its own search field, which still filters only that list
+- External IPFS node support ([#351](https://github.com/solardev-xyz/freedom-browser/pull/351), thanks @ivanmmurciaua!):
+  - Under Settings > Nodes
+  - Your own gateway, or one detected on the standard local port
+- Myotis keeps syncing after its built-in checkpoint expires ([#353](https://github.com/solardev-xyz/freedom-browser/pull/353)):
+  - A replacement needs agreeing independent sources and a local proof check
+  - Progress, errors and Retry sync in the Nodes menu
+- ENSv2 readiness ([#352](https://github.com/solardev-xyz/freedom-browser/pull/352)):
+  - DNS names such as `gregskril.com` as wallet recipients
+  - Offchain names with every Name Resolution method
+  - Per-chain addresses on chains other than Ethereum
+- Settings search ([#281](https://github.com/solardev-xyz/freedom-browser/issues/281)):
+  - Field in the Settings sidebar that finds a setting by its label or description
+  - Enter or a click opens the matching row
+- Limit on repeated permission prompts ([#364](https://github.com/solardev-xyz/freedom-browser/issues/364)):
+  - Three dismissals in a row block the site for the session, as in Chrome
+  - Shown in the address-bar indicator, where Remove lifts it
+- Arch Linux `.pacman` packages ([#367](https://github.com/solardev-xyz/freedom-browser/pull/367), thanks @jwahdatehagh!):
+  - For x64 and arm64, next to the AppImage and deb
+  - In-app updates, as with the deb
+
+### Changed
+
+- Myotis re-syncs from scratch once after updating to this release
 
 ### Fixed
 
-- The address-bar trust badge now reflects your current ENS verification settings when you go Back or Forward onto a name
-  - Going back onto an ENS-backed page used to keep whatever method was in effect when that page first loaded — switch the method under Settings > Name Resolution, press Back, and the shield still said "Resolved with your configured RPC" until you reloaded or re-typed the name
-  - Back and Forward still restore the historical entry rather than re-navigating, so the page you return to and the rest of your history are unchanged; only the name is re-checked
-  - A name that no longer checks out is sent to the same _RPC servers disagreed_ or _unverified_ page a fresh visit would show. That is not only about settings you changed: RPC servers that have started disagreeing block a name on their own, and blocking unverified names is on out of the box
-  - Putting that page up is a real navigation, so it takes the place of anything that was ahead of the entry you just returned to — the same as opening any other page from there would
-  - A page you clicked "Continue once" on is not blocked again when you go Back to it: that tab's shield keeps showing what the name checks out as now, and what was ahead of the page stays ahead of it. Visiting the name afresh — typing it again, following a link to it, reloading — still asks, and so does going Back to it in another tab
-  - Stepping off a name's own block page, in either direction, likewise leaves the page you return to alone: it carries the verdict on its badge instead of putting the block page straight back up
-  - `.tez`, `.wei` and `.gwei` names published to Swarm or IPFS are refreshed the same way. A `.tez` name pointing at an ordinary website is not: what the browser has on screen there is the website's own address, with no name left in it to re-check — the same limit a reload has
-
-- Opening a Chrome Web Store page no longer crashes Freedom
-  - Visiting an extension's page on `chromewebstore.google.com` — by clicking a card on the store, or by going straight to the address — closed the whole browser about a second later, taking every open tab and window with it
-  - The store was being handed an internal Chrome extension-installation API that Freedom does not implement, and the store's first call into it brought the browser down. The page is now served the same way any other site is, with no such API in it
-  - Freedom still cannot install Chrome extensions; the store's pages simply read like any other website now
-
-- Visiting a site no longer downloads its page twice
-  - Finding a site's icon used to mean fetching the page a second time behind your back — without your cookies or session — purely to read its `<link rel="icon">` tag. Every site you visited saw two requests for the same address, one signed in and one not
-  - On sites that gate content — a paywall, a paid session, a rate limit, a login — that second anonymous request could be refused, logged as a failed visit, or counted against your quota
-  - Freedom now uses the icon address the page itself already reported while loading, and fetches only the icon. Icons that a page does not declare are still looked for at the site's `/favicon.ico`, as before
-  - The icon is still fetched without your cookies or session, and a `.onion` site's icon still goes over Tor. Private windows still fetch and cache no icons at all
-- The Nodes menu no longer shows a Tor version while Tor is off
-  - A stopped Tor still carried a `Version: Arti <n>` row beneath its toggle — the one section in that menu with anything under an off node, where Swarm, IPFS, Ethereum, Gnosis and Radicle all show nothing until they are running
-  - A running Tor is unchanged: the SOCKS endpoint and the version read as before, and a start that fails still says why
-- `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window
-  - The File menu carried the shortcut twice — on Close Tab, and invisibly on Close Window — and Windows and Linux gave it to Close Window, so one keystroke closed every tab in the window at once. It only looked right with a single tab open, where closing the tab closes the window anyway
-  - Closing the last tab still closes the window, and `Cmd+W` on macOS is unchanged
-  - Close Window keeps its place in the File menu and no longer advertises a shortcut of its own; `Ctrl+F4` still closes a tab on Windows and Linux
-- Address-bar popovers no longer stay open over the page after you press somewhere to put them away
-  - With the trust shield's popover, the permission indicator's popover or the "Seed to Radicle" panel open, and the address-bar suggestions showing, a press that started on the page outside the suggestions left the popover hanging over the page — no suggestions, no highlight on the button it came from, and nothing left under the pointer to close it
-  - It happened with an ordinary mouse: press outside the suggestions and release over the page content, and the press was never completed anywhere the browser could see it
-  - All three now close along with the suggestions, and they also close when you open any menu. The shield, the indicator and the bridge button themselves stay where they are
-- Removing a site permission from the address-bar indicator no longer reaches into another window's own decisions
-  - "Remove" in a private window lifts what that window is running on; it used to also clear the same site's this-session decision in your normal windows, with no sign of it in the window you were looking at
-  - "Remove" in a normal window likewise no longer reaches into an open private window's own decisions
-  - A remembered decision is a single saved entry for the whole profile, so removing one from the indicator clears it for every window — including from a private window, whose indicator lists it because that window inherits it
-  - Settings > Site Permissions is unchanged: "Remove", "Remove site" and "Remove all" still clear the profile's saved decisions everywhere, open private windows included
-- Camera and microphone on sites that check permission before they ask, such as Google Meet
-  - `navigator.permissions.query()` and `Notification.permission` no longer report "denied" for a site you have never been asked about, so those sites go on to ask and Freedom's own prompt appears instead of their "access is blocked" screen
-  - A remembered or this-session Block still reads as denied, and the prompt is unchanged: an undecided site is still asked about, and blocking it still denies
-  - macOS builds now carry the camera and microphone entitlements and their usage descriptions, so allowing a site can reach the system prompt and Freedom appears under Privacy & Security instead of being refused before it is ever listed
-- A Swarm or IPFS folder address typed without its trailing slash opens the folder
-  - It used to land on a "not found" page, with the site's content hash in the address bar in place of its name
-  - A Swarm folder whose name contains a colon (`re:port/`) opens as well; typing one used to leave the tab on the page it was already showing
-- A Settings address that names a section Freedom does not have no longer stands over a different one
-  - `freedom://settings/privacy` — a stale bookmark, a typo, a link from an older build — opened Appearance and left its own name in the address bar, so bookmarking, sharing or reloading it went on promising a section that has never existed. The address is now put back on the section actually on screen, the way `chrome://settings/nonsense` is
-  - Only the very first arrival at the page was ever corrected, so the case that mattered — a link followed into a Settings tab that is already open — was the one that kept its address
-  - A section's own address is untouched, and so is a sub-route such as a single chain's page
-- A Settings link to a single chain opens that chain, and one that is no longer configured says so
-  - `freedom://settings/chains/1` is the address Freedom shows while you are on a chain's own page, but typing it back — or opening the bookmark it makes — navigated nowhere, leaving that address standing over the chain list. A link to a section's sub-page now goes where it says
-  - A chain that is no longer configured, removed here or in another window, rendered the whole chain list beneath an address still claiming that one chain, with a blank status line. It now puts the address back on the chain list and says "That chain is no longer configured."
-  - A chain added in another window is not mistaken for a removed one: the notice is only drawn once the chain list has been re-read from the app, and it is cleared as soon as you navigate on
+- Opening a Chrome Web Store page no longer crashes Freedom ([#346](https://github.com/solardev-xyz/freedom-browser/issues/346))
+- Quitting with the IPFS node running no longer crashes Freedom ([#345](https://github.com/solardev-xyz/freedom-browser/issues/345))
+- Camera and microphone now work on macOS, and on sites like Google Meet that check before asking ([#363](https://github.com/solardev-xyz/freedom-browser/pull/363))
+- Visiting a site no longer fetches its page a second time, without your cookies, to find its icon ([#75](https://github.com/solardev-xyz/freedom-browser/issues/75))
+- `Ctrl+W` on Windows and Linux closes the active tab instead of the whole window ([#97](https://github.com/solardev-xyz/freedom-browser/issues/97))
+- Removing a permission from the address-bar indicator no longer clears another window's session decisions ([#366](https://github.com/solardev-xyz/freedom-browser/issues/366))
+- The trust, permission and Radicle popovers close along with the address-bar suggestions instead of staying over the page ([#67](https://github.com/solardev-xyz/freedom-browser/issues/67))
+- The Nodes menu no longer shows a Tor version while Tor is off ([#349](https://github.com/solardev-xyz/freedom-browser/issues/349))
+- A Swarm folder address without its trailing slash, or with a colon in its name, opens the folder ([#95](https://github.com/solardev-xyz/freedom-browser/issues/95))
+- A Settings address naming a section that does not exist changes to the section shown ([#280](https://github.com/solardev-xyz/freedom-browser/issues/280))
+- A Settings link to a single chain opens that chain, or says it is no longer configured ([#280](https://github.com/solardev-xyz/freedom-browser/issues/280))
+- Small plain-text files on IPFS open in the tab instead of downloading ([#352](https://github.com/solardev-xyz/freedom-browser/pull/352))
+- Myotis catches up on a fresh install instead of stalling, most often on Gnosis ([#200](https://github.com/solardev-xyz/freedom-browser/issues/200))
+- A transient Gnosis RPC error no longer makes the Swarm node lose a paid postage batch or deploy a second chequebook ([#387](https://github.com/solardev-xyz/freedom-browser/pull/387))
 
 ### Security
 
+- Back and Forward re-check an ENS name's verification instead of restoring the verdict from the first visit ([#86](https://github.com/solardev-xyz/freedom-browser/issues/86))
+- Offchain ENS lookups reach only public HTTPS gateways, within time and size limits ([#352](https://github.com/solardev-xyz/freedom-browser/pull/352))
 - Updated bundled nodes:
-  - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45 — a chain read that fails is no longer taken as a definitive "no": a transient Gnosis RPC error can no longer make the node lose sight of a postage batch you have paid for, nor make it deploy a second chequebook and strand the deposit in the first
-  - [Myotis](https://github.com/biafra23/myotis) 0.1.7 to 0.1.11 — the light client 0.8.5 shipped could stall on a fresh install and never finish catching up, worst on Gnosis; it now completes the gossipsub handshake its peers require before they stop refusing it, takes sync peers from everything discovery hears about rather than lookups alone, and fetches catch-up periods from several of them at once
-    - Reads near the chain head ask a second peer after three seconds instead of waiting out a silent one, and peers that keep losing that race are dropped
-    - A signature from the next sync-committee period is checked against the next committee, so a genuine update at a period boundary is no longer rejected. That cost only liveness; forged state was never admissible
-    - Myotis re-syncs once after this update, on a state directory it starts fresh rather than carrying over
+  - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45
+  - [Myotis](https://github.com/biafra23/myotis) 0.1.7 to 0.1.11
 - Updated runtime dependencies:
   - Electron 44.3.0 to 44.4.4 (Chromium 152.0.7977.78 to 152.0.7977.130, Node 24.20.0 to 24.21.0)
   - `@corpus-core/colibri-stateless` 2.0.6 to 3.0.0
