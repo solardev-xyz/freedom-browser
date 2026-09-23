@@ -192,8 +192,6 @@ What the guard cannot check, and you must do by hand before tagging:
 
 The 0.8.5 cycle is why this is written down: Myotis and Arti reached the artifacts with no attribution at all, the audit files still described a pre-0.8.5 inventory, and a GPL-3.0 QR library (`qrious.min.js`) had been shipping unreferenced inside `app.asar` — all while this step was passing.
 
-**Source-tree spot check.** `npm ci && npm start` once on the release branch and confirm the About/version surface shows the number you just set. This catches a broken tree before you spend a 25-minute CI run on it.
-
 **UI consistency audit**, once per cycle, on the release branch before the first release candidate is tagged. Nothing in CI renders the light theme, so theme and sibling-drift bugs only surface when someone looks: the 0.8.5 audit found 28 of them (#223–#242, #249–#260), including a Settings page that had been dark-only for a month. Run the tour in both themes from the release branch:
 
 ```
