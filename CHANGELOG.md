@@ -6,10 +6,9 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- External IPFS node mode (thanks @ivanmmurciaua!):
-  - Under Settings > Nodes, using your own gateway or one detected on the standard local port
-  - Remote gateways follow the app's proxy; `.onion` gateways go over Tor
-  - Gateway content is trusted, not verified
+- External IPFS node support (thanks @ivanmmurciaua!):
+  - Under Settings > Nodes
+  - Your own gateway, or one detected on the standard local port
 - Automatic Myotis checkpoint recovery:
   - Replaces an expired built-in checkpoint without your input
   - A replacement needs agreeing independent sources and a local proof check
