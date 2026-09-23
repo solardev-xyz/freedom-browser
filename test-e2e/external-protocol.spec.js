@@ -193,3 +193,96 @@ test('a magnet: URL typed into the address bar opens in its handler instead of s
   );
   await window.screenshot({ path: '/tmp/ext-406-magnet-prompt-app.png' });
 });
+
+// R1-M2: a cross-origin iframe (an ad) that the user clicks can set
+// `top.location = 'magnet:…'` — framebusting is allowed after activation — and
+// the resulting request is a navigation of the *main* frame. If Electron
+// reported it as the top document's request, the iframe would ride the top
+// site's remembered allow. Probed in this harness (Electron 44): the
+// `openExternal` details for that navigation are
+//   { externalURL, isMainFrame: false, requestingUrl: <the iframe's URL> },
+// and `will-navigate`/`will-frame-navigate` carry the iframe as `initiator`:
+// Chromium attributes the request to the initiating frame, as Chrome's own
+// dialog does. So the cross-origin-subframe refusal already covers it. This
+// pins that: with a remembered allow for the top site, the cross-origin
+// iframe's framebust opens nothing, while the same framebust from a
+// same-origin iframe (the positive control, proving the probe can see a
+// launch) opens silently under that allow.
+const CROSS_ORIGIN_FRAME = `bzz://${'b'.repeat(64)}/frame.html`;
+const SAME_ORIGIN_FRAME = `${FIXTURE_URL}/same.html`;
+const FRAMEBUST = (url) =>
+  `<!doctype html><style>body{margin:0}</style>` +
+  `<button id="bust" onclick="top.location = ${JSON.stringify(url).replace(/"/g, "'")}">go</button>`;
+
+test("a cross-origin iframe's top.location = magnet: is refused even with the top site's allow", async ({
+  window,
+  electronApp,
+}) => {
+  const crossUrl = `${MAGNET}&dn=cross-origin`;
+  const sameUrl = `${MAGNET}&dn=same-origin`;
+  await electronApp.evaluate(
+    (_e, { fixtures }) => {
+      for (const [url, body] of fixtures) {
+        globalThis.__FREEDOM_TEST_HARNESS__.setContentFixture(url, { body });
+      }
+    },
+    {
+      fixtures: [
+        [
+          `${FIXTURE_URL}/frames.html`,
+          FIXTURE_BODY +
+            `<iframe id="cross" src="${CROSS_ORIGIN_FRAME}"></iframe>` +
+            `<iframe id="same" src="${SAME_ORIGIN_FRAME}"></iframe>`,
+        ],
+        [CROSS_ORIGIN_FRAME, FRAMEBUST(crossUrl)],
+        [SAME_ORIGIN_FRAME, FRAMEBUST(sameUrl)],
+      ],
+    }
+  );
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(`${FIXTURE_URL}/frames.html`);
+  await input.press('Enter');
+  await expect
+    .poll(() => evalInWebview(window, "document.getElementById('out')?.textContent || null"), {
+      timeout: 10_000,
+    })
+    .toBe('ready');
+
+  // The top site gets a remembered allow for magnet:.
+  const prompt = window.locator('[data-test="permission-prompt"]');
+  await clickLink(window, electronApp, 'magnet');
+  await expect(prompt).toBeVisible();
+  await answerPrompt(window, 'allow');
+  await expect.poll(() => opens(electronApp), { timeout: 5_000 }).toEqual([MAGNET]);
+
+  // A click inside the iframe: real input on the guest (the gesture the
+  // manager reads) plus the button's click run in that frame with user
+  // activation (Chromium's framebusting rule). `sendInputEvent` on the guest
+  // does not reach an out-of-process iframe here, hence the explicit frame.
+  const bustFrom = (frameUrl) =>
+    electronApp.evaluate(
+      async ({ webContents }, { prefix, frameUrl }) => {
+        const guest = webContents
+          .getAllWebContents()
+          .find((wc) => wc.getType() === 'webview' && wc.getURL().startsWith(prefix));
+        if (!guest) throw new Error('fixture guest not found');
+        const frame = guest.mainFrame.frames.find((f) => f.url === frameUrl);
+        if (!frame) throw new Error(`frame ${frameUrl} not found`);
+        guest.sendInputEvent({ type: 'mouseDown', x: 5, y: 5, button: 'left', clickCount: 1 });
+        guest.sendInputEvent({ type: 'mouseUp', x: 5, y: 5, button: 'left', clickCount: 1 });
+        await frame.executeJavaScript("document.getElementById('bust').click()", true);
+      },
+      { prefix: FIXTURE_URL, frameUrl }
+    );
+
+  await bustFrom(CROSS_ORIGIN_FRAME);
+  await window.waitForTimeout(750);
+  await expect(prompt).toBeHidden();
+  expect(await opens(electronApp)).toEqual([MAGNET]);
+  // The page was not navigated away either.
+  expect(await evalInWebview(window, "document.getElementById('out').textContent")).toBe('ready');
+
+  await bustFrom(SAME_ORIGIN_FRAME);
+  await expect.poll(() => opens(electronApp), { timeout: 5_000 }).toEqual([MAGNET, sameUrl]);
+});

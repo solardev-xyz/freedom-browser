@@ -1833,6 +1833,57 @@ describe('permissions-manager: external protocols (#406)', () => {
     expect(shell.openExternal).toHaveBeenCalledTimes(2);
   });
 
+  // R1-M1: requests used to coalesce by origin + key, so a second magnet:
+  // URL issued while the first prompt was up joined it, and one Allow
+  // launched both. Like Chrome, a tab with an external-app prompt pending
+  // gets no further external-protocol requests until it is answered.
+  test('a second request while a prompt is pending is refused, and Allow launches only the first URL', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    openExternal(normalSession, guest, 'magnet:?xt=first');
+    expect(prompts(host)).toHaveLength(1);
+
+    // Each with its own real click, same scheme and another one.
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'magnet:?xt=second');
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'mailto:a@b.c');
+    expect(prompts(host)).toHaveLength(1);
+    expect(allLogs()).toContain(
+      'magnet:<redacted> from https://example.com refused: an external-app prompt is already pending for this tab'
+    );
+    expect(allLogs()).toContain(
+      'mailto:<redacted> from https://example.com refused: an external-app prompt'
+    );
+
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: false });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+    expect(shell.openExternal).toHaveBeenCalledWith('magnet:?xt=first');
+    // Nothing was queued behind it either.
+    expect(prompts(host)).toHaveLength(1);
+
+    // Once answered, the tab can ask again.
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'mailto:a@b.c');
+    expect(prompts(host)).toHaveLength(2);
+  });
+
+  test('a pending prompt in one tab does not refuse requests from another tab', () => {
+    load();
+    const host = makeHost();
+    const first = guestFor(host);
+    const second = guestFor(host);
+    openExternal(normalSession, first, 'magnet:?xt=a');
+    openExternal(normalSession, second, 'magnet:?xt=b');
+    expect(prompts(host).map((p) => p.guestId)).toEqual([first.id, second.id]);
+  });
+
+  // The shape Electron 44 really delivers for a cross-origin iframe that sets
+  // `top.location = 'magnet:…'` after a click (probed for R1-M2; pinned end to
+  // end in test-e2e/external-protocol.spec.js): the main frame navigates, but
+  // the request is attributed to the initiating iframe.
   test('a cross-origin subframe cannot ask; a same-origin one can', () => {
     load();
     const host = makeHost();

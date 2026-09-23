@@ -662,6 +662,19 @@ function sendNextPrompt(state) {
  * private partition is part of the coalescing signature so a private and
  * a normal request can never share one prompt (and therefore one answer).
  */
+/**
+ * Whether the guest already has an external-protocol prompt showing or
+ * queued. Following Chrome, a tab with an external-protocol dialog up
+ * gets no further external-protocol requests until it is answered.
+ */
+function hasPendingExternalPrompt(webContents) {
+  const state = typeof webContents?.id === 'number' ? guestQueues.get(webContents.id) : null;
+  if (!state) return false;
+  return [state.active, ...state.queue].some(
+    (entry) => entry && entry.permission === 'openExternal'
+  );
+}
+
 function enqueuePrompt({
   host,
   guest,
@@ -679,6 +692,15 @@ function enqueuePrompt({
     (entry) => entry && entry.signature === signature
   );
   if (existing) {
+    // Never merge an external-protocol request into a pending prompt: each
+    // one carries its own URL, and one Allow must launch exactly the one
+    // URL the user was shown (R1-M1). requestOpenExternal already refuses
+    // a second request while one is pending for the tab; this keeps the
+    // queue itself from ever coalescing them should a caller skip that.
+    if (permission === 'openExternal') {
+      callback(false);
+      return;
+    }
     existing.callbacks.push(callback);
     return;
   }
@@ -881,6 +903,7 @@ function decideOrPrompt({
  *   no usable requesting origin   → refused (internal pages, data:, …)
  *   cross-origin subframe         → refused (a third-party frame cannot ask
  *                                   in the top site's name)
+ *   prompt already pending (tab)  → refused (one prompt launches one URL)
  *   no recent user input          → refused (no launch or prompt on load)
  *
  * Then the stored/session/private decision for origin + `external:<scheme>`
@@ -918,6 +941,15 @@ function requestOpenExternal({
   if (!isMainFrame) {
     const topOrigin = originForRequest(webContents, {});
     if (topOrigin !== origin) return refuse('cross-origin subframe', origin);
+  }
+
+  // One prompt, one URL: while this tab has an external-protocol prompt
+  // pending, further requests are refused rather than merged into it, so
+  // Allow launches only the URL the prompt was raised for (Chrome does the
+  // same). Checked before the gesture is consumed; the request is refused
+  // either way.
+  if (hasPendingExternalPrompt(webContents)) {
+    return refuse('an external-app prompt is already pending for this tab', origin);
   }
 
   if (!consumeUserGesture(webContents)) return refuse('no recent user input', origin);
