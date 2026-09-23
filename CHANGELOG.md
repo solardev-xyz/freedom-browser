@@ -83,6 +83,18 @@ All notable changes to Freedom will be documented in this file.
 
 - Updated bundled nodes:
   - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45 — a chain read that fails is no longer taken as a definitive "no": a transient Gnosis RPC error can no longer make the node lose sight of a postage batch you have paid for, nor make it deploy a second chequebook and strand the deposit in the first
+  - [Myotis](https://github.com/biafra23/myotis) 0.1.7 to 0.1.11 — the light client 0.8.5 shipped could stall on a fresh install and never finish catching up, worst on Gnosis; it now completes the gossipsub handshake its peers require before they stop refusing it, takes sync peers from everything discovery hears about rather than lookups alone, and fetches catch-up periods from several of them at once
+    - Reads near the chain head ask a second peer after three seconds instead of waiting out a silent one, and peers that keep losing that race are dropped
+    - A signature from the next sync-committee period is checked against the next committee, so a genuine update at a period boundary is no longer rejected. That cost only liveness; forged state was never admissible
+    - Myotis re-syncs once after this update, on a state directory it starts fresh rather than carrying over
+- Updated runtime dependencies:
+  - Electron 44.3.0 to 44.4.4 (Chromium 152.0.7977.78 to 152.0.7977.130, Node 24.20.0 to 24.21.0)
+  - `@corpus-core/colibri-stateless` 2.0.6 to 3.0.0
+  - `@ethersphere/bee-js` 13.0.0 to 13.1.0
+  - `@ledgerhq/hw-app-eth` 7.8.17 to 7.8.19
+  - `@safe-global/protocol-kit` 8.0.6 to 8.0.7
+  - `@x402/core` 2.25.0 to 2.27.0
+  - `@x402/evm` 2.25.0 to 2.27.0
 
 ## [0.8.5] - 2026-09-10
 
