@@ -1,7 +1,8 @@
 // Filter-list scriptlets (`##+js(...)`) end to end: the engine resolves them
 // against the real, sha256-pinned uBlock Origin resources, the webview preload
 // fetches them synchronously and runs them in the page's main world before the
-// page's own scripts — in the main frame and in a cross-origin iframe (#410).
+// page's own scripts — in the main frame and in a cross-origin iframe (#410),
+// and in same-origin about:blank / srcdoc frames the page can reach into.
 //
 // CI can't depend on youtube.com, so a local server plays it: a page shaped
 // like a watch page (a `ytInitialPlayerResponse` parsed from JSON, a fetch of
@@ -81,6 +82,35 @@ const pageScript = (label) => `
     .finally(() => { if (window.parent !== window) parent.postMessage(window.__${label}, '*'); });
 `;
 
+// Same-origin documents a page can reach into (#412 R1-M3): a script-created
+// about:blank iframe whose JSON.parse the page calls straight away — the
+// "borrow an unpatched global" move — and srcdoc and blob: iframes parsing in
+// their own inline scripts. All inherit the page's origin, so all must be
+// patched like the page itself, before the first line that touches them.
+const PLAYER_JSON = JSON.stringify(JSON.stringify(PLAYER));
+const srcdocHtml = `<script>
+  parent.__srcdoc = Object.keys(JSON.parse(${PLAYER_JSON})).sort();
+</script>`;
+const blobHtml = srcdocHtml.replace('__srcdoc', '__blob');
+const sameOriginFramesScript = `
+  var blank = document.createElement('iframe');
+  document.documentElement.appendChild(blank);
+  window.__page.blank = Object.keys(blank.contentWindow.JSON.parse(${PLAYER_JSON})).sort();
+  // The same through contentDocument, and one level deeper (an about:blank
+  // frame created inside the first one, through that realm's own DOM).
+  var viaDoc = document.createElement('iframe');
+  document.documentElement.appendChild(viaDoc);
+  var viaDocWin = viaDoc.contentDocument.defaultView;
+  window.__page.blankDoc = Object.keys(viaDocWin.JSON.parse(${PLAYER_JSON})).sort();
+  var nested = blank.contentDocument.createElement('iframe');
+  blank.contentDocument.documentElement.appendChild(nested);
+  window.__page.blankNested = Object.keys(nested.contentWindow.JSON.parse(${PLAYER_JSON})).sort();
+  var blob = document.createElement('iframe');
+  blob.src = URL.createObjectURL(new Blob([${JSON.stringify(blobHtml).replace(/</g, '\\u003c')}], { type: 'text/html' }));
+  document.documentElement.appendChild(blob);
+`;
+const escapeAttr = (html) => html.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+
 let server;
 let port;
 
@@ -113,7 +143,9 @@ test.beforeAll(async () => {
     const iframe =
       label === 'page'
         ? `<iframe src="http://${EMBED_HOST}:${port}/embed"></iframe>
-           <script>addEventListener('message', (e) => { window.__embed = e.data; });</script>`
+           <script>addEventListener('message', (e) => { window.__embed = e.data; });</script>
+           <script>${sameOriginFramesScript}</script>
+           <iframe srcdoc="${escapeAttr(srcdocHtml)}"></iframe>`
         : '';
     res.end(`<!doctype html><title>scriptlets e2e ${label}</title>
       <script>${pageScript(label)}</script>${iframe}`);
@@ -188,14 +220,21 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
             .evaluate(
               (visit) =>
                 location.search.includes(`n=${visit}`) &&
-                Boolean(window.__page?.api && window.__embed?.api),
+                Boolean(
+                  window.__page?.api && window.__embed?.api && window.__srcdoc && window.__blob
+                ),
               n
             )
             .catch(() => false),
         { timeout: 15_000 }
       )
       .toBe(true);
-    return guest.evaluate(() => ({ page: window.__page, embed: window.__embed }));
+    return guest.evaluate(() => ({
+      page: window.__page,
+      embed: window.__embed,
+      srcdoc: window.__srcdoc,
+      blob: window.__blob,
+    }));
   };
 
   // 1. Blocking on: both frames see the player data without its ad fields —
@@ -203,8 +242,17 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
   await go(visit(1));
   let guest = await guestPage();
   expect(await results(guest, 1)).toEqual({
-    page: { initial: PRUNED, api: PRUNED, wallet: true },
+    page: {
+      initial: PRUNED,
+      api: PRUNED,
+      wallet: true,
+      blank: PRUNED,
+      blankDoc: PRUNED,
+      blankNested: PRUNED,
+    },
     embed: { initial: PRUNED, api: PRUNED, wallet: false },
+    srcdoc: PRUNED,
+    blob: PRUNED,
   });
   const asked = await askedUrls();
   expect(asked).toContain(visit(1));
@@ -218,8 +266,17 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
   await go(visit(2));
   guest = await guestPage();
   expect(await results(guest, 2)).toEqual({
-    page: { initial: UNTOUCHED, api: UNTOUCHED, wallet: true },
+    page: {
+      initial: UNTOUCHED,
+      api: UNTOUCHED,
+      wallet: true,
+      blank: UNTOUCHED,
+      blankDoc: UNTOUCHED,
+      blankNested: UNTOUCHED,
+    },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },
+    srcdoc: UNTOUCHED,
+    blob: UNTOUCHED,
   });
 
   // 3. Back on, but the tab's site allowlisted: the page and its iframe are
@@ -237,8 +294,17 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
   await go(visit(3));
   guest = await guestPage();
   expect(await results(guest, 3)).toEqual({
-    page: { initial: UNTOUCHED, api: UNTOUCHED, wallet: true },
+    page: {
+      initial: UNTOUCHED,
+      api: UNTOUCHED,
+      wallet: true,
+      blank: UNTOUCHED,
+      blankDoc: UNTOUCHED,
+      blankNested: UNTOUCHED,
+    },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },
+    srcdoc: UNTOUCHED,
+    blob: UNTOUCHED,
   });
 
   // 4. Internal pages never even ask.

@@ -57,7 +57,8 @@ function readAppliedState(updatedDir) {
   try {
     const raw = fs.readFileSync(path.join(updatedDir, 'manifest.json'), 'utf-8');
     const local = JSON.parse(raw);
-    const entries = local.categories && typeof local.categories === 'object' ? local.categories : {};
+    const entries =
+      local.categories && typeof local.categories === 'object' ? local.categories : {};
     return {
       version: Number.isInteger(local.feedVersion) ? local.feedVersion : 0,
       categories: Object.keys(entries),
@@ -223,6 +224,12 @@ async function runUpdateOnce(io = {}) {
       2
     )
   );
+
+  // Scriptlet resources are not carried by the feed yet: the staged manifest
+  // has no `resources`, so service.js keeps serving the bundled floor's
+  // (digest-checked at load, see readResources). When the feed publishes
+  // them, verify the blob against the feed sha256 here before staging, like
+  // the lists above — tracked in #415.
 
   // Promote: current → prev, next → current.
   await fs.promises.rm(prevDir, { recursive: true, force: true });

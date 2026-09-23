@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -585,6 +586,10 @@ describe('scriptlets', () => {
   let dir;
   let cacheDir;
 
+  const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
+
+  // `resourcesSha` overrides the digest the manifest claims (default: the
+  // file's real one).
   function writeArtifacts({ resources = RESOURCES, withResources = true, resourcesSha } = {}) {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-scriptlets-'));
     const manifest = {
@@ -604,11 +609,12 @@ describe('scriptlets', () => {
     fs.writeFileSync(path.join(dir, 'ublock-filters.txt'), RULES.join('\n'));
     fs.writeFileSync(path.join(dir, 'easyprivacy.txt'), '||telemetry.test^');
     if (withResources) {
-      fs.writeFileSync(path.join(dir, 'resources.json'), JSON.stringify(resources));
+      const text = JSON.stringify(resources);
+      fs.writeFileSync(path.join(dir, 'resources.json'), text);
       manifest.resources = {
         file: 'resources.json',
         version: 'v-test',
-        sha256: resourcesSha || 'sha-one',
+        sha256: resourcesSha || sha256(text),
       };
     }
     fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
@@ -738,68 +744,188 @@ describe('scriptlets', () => {
   test('an unparsable resources file degrades the same way', async () => {
     writeArtifacts();
     fs.writeFileSync(path.join(dir, 'resources.json'), '{not json');
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'));
+    manifest.resources.sha256 = sha256('{not json');
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
     await install();
     expect(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 })).toEqual({
       script: '',
     });
   });
 
-  test('an unreadable updated resources file falls back to the bundled copy, uncached', async () => {
-    // A landed update names its own resources.json, but the file is missing:
-    // the bundled floor's resources still serve the scriptlets.
+  test('a resources file matching its manifest digest is loaded', () => {
+    // The default fixture: manifest sha256 is the file's real digest.
+    const { script } = getScriptlets({ url: 'https://video.test/watch', sourceId: 9 });
+    expect(run(script)).toContain('mark:hello');
+  });
+
+  test('a resources file that fails its digest check is not loaded', async () => {
+    writeArtifacts({ resourcesSha: 'f'.repeat(64) });
+    await install();
+    navigateTab(9, 'https://video.test/watch');
+    expect(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 })).toEqual({
+      script: '',
+    });
+    // Blocking is unaffected.
+    expect(
+      adblockRequestForDispatch(makeDetails({ url: 'https://telemetry.test/p', webContentsId: 9 }))
+    ).toEqual({ cancel: true });
+  });
+
+  // A landed update layer in a fake userData over `dir` as the bundled floor.
+  // `resources` is written as the update's resources.json (omitted: missing);
+  // `claimedSha` is what its manifest says (default: the real digest).
+  async function withUpdateLayer({ resources, claimedSha }, body) {
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-userdata-'));
     const updated = path.join(userData, 'adblock', 'updated');
     fs.mkdirSync(updated, { recursive: true });
+    let sha = claimedSha;
+    if (resources !== undefined) {
+      const text = JSON.stringify(resources);
+      fs.writeFileSync(path.join(updated, 'resources.json'), text);
+      sha = sha || sha256(text);
+    }
     fs.writeFileSync(
       path.join(updated, 'manifest.json'),
       JSON.stringify({
         version: '2026-10-01',
         categories: {},
-        resources: { file: 'resources.json', version: 'v-upd', sha256: 'sha-upd' },
+        resources: { file: 'resources.json', version: 'v-upd', sha256: sha || 'a'.repeat(64) },
       })
     );
-    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
     mockElectron.userData = userData;
     process.env.FREEDOM_ADBLOCK_DIR = dir;
     try {
-      _resetAdblockForTests();
-      installAdblockInterception({ cacheDir });
-      await refreshEngine();
-      navigateTab(9, 'https://video.test/watch');
-      expect(
-        run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script).sort()
-      ).toEqual(['mark:hello', 'quiet:q', 'trusted:t']);
-      // Cached under the update's resources identity, this engine would keep
-      // serving the fallback after the updated file is repaired.
-      expect(fs.readdirSync(cacheDir).filter((f) => f.startsWith('engine-'))).toEqual([]);
+      await body(updated);
     } finally {
       mockElectron.userData = null;
       delete process.env.FREEDOM_ADBLOCK_DIR;
       fs.rmSync(userData, { recursive: true, force: true });
     }
+  }
+
+  async function installLayered() {
+    _resetAdblockForTests();
+    installAdblockInterception({ cacheDir });
+    await refreshEngine();
+    navigateTab(9, 'https://video.test/watch');
+  }
+
+  const engineCaches = () => fs.readdirSync(cacheDir).filter((f) => f.startsWith('engine-'));
+
+  test('an unreadable updated resources file falls back to the bundled copy, cached', async () => {
+    // A landed update names its own resources.json, but the file is missing:
+    // the bundled floor's resources still serve the scriptlets.
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
+    await withUpdateLayer({}, async () => {
+      await installLayered();
+      expect(
+        run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script).sort()
+      ).toEqual(['mark:hello', 'quiet:q', 'trusted:t']);
+      // Keyed on the bundled file actually used, so the next start is a hit.
+      expect(engineCaches()).toHaveLength(1);
+      const [cached] = engineCaches();
+      await installLayered();
+      expect(engineCaches()).toEqual([cached]);
+    });
   });
 
-  test('scriptlets survive the serialized engine cache, and new resources miss it', async () => {
+  test('an updated resources file failing its digest falls back to the bundled copy', async () => {
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
+    const evil = {
+      ...RESOURCES,
+      scriptlets: RESOURCES.scriptlets.map((s) =>
+        s.name === 'mark.js' ? { ...s, body: record('mark', 'evil') } : s
+      ),
+    };
+    await withUpdateLayer({ resources: evil, claimedSha: 'b'.repeat(64) }, async () => {
+      await installLayered();
+      const marks = run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script);
+      expect(marks).toContain('mark:hello');
+      expect(marks.join()).not.toContain('evil');
+    });
+  });
+
+  test('a valid updated resources file wins over the bundled one', async () => {
+    const newer = {
+      ...RESOURCES,
+      scriptlets: RESOURCES.scriptlets.map((s) =>
+        s.name === 'mark.js' ? { ...s, body: record('mark', 'upd') } : s
+      ),
+    };
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
+    await withUpdateLayer({ resources: newer }, async () => {
+      await installLayered();
+      expect(run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script)).toContain(
+        'upd:hello'
+      );
+    });
+  });
+
+  test('repairing the updated file under the same manifest claim is a cache miss', async () => {
+    // A fallback build is keyed on the bundled bytes it used, not on the
+    // update's claim — or it would keep serving after the update file lands.
+    const newer = {
+      ...RESOURCES,
+      scriptlets: RESOURCES.scriptlets.map((s) =>
+        s.name === 'mark.js' ? { ...s, body: record('mark', 'upd') } : s
+      ),
+    };
+    const newerText = JSON.stringify(newer);
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
+    await withUpdateLayer({ claimedSha: sha256(newerText) }, async (updated) => {
+      await installLayered();
+      expect(run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script)).toContain(
+        'mark:hello'
+      );
+      fs.writeFileSync(path.join(updated, 'resources.json'), newerText);
+      await installLayered();
+      expect(run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script)).toContain(
+        'upd:hello'
+      );
+    });
+  });
+
+  test('with no usable resources file anywhere the scriptlet-less engine is cached', async () => {
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
+    writeArtifacts({ resourcesSha: 'c'.repeat(64) });
+    await install({ cacheDir });
+    expect(engineCaches()).toHaveLength(1);
+    const [cached] = engineCaches();
+    // Repairing the file (manifest and bytes agree again) is a different
+    // engine, with scriptlets.
+    fs.rmSync(dir, { recursive: true, force: true });
+    writeArtifacts();
+    await install({ cacheDir });
+    navigateTab(9, 'https://video.test/watch');
+    expect(engineCaches()).not.toEqual([cached]);
+    expect(run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script)).toContain(
+      'mark:hello'
+    );
+  });
+
+  test('scriptlets survive the serialized engine cache; the key is the file digest, not the manifest claim', async () => {
     cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-cache-'));
     await install({ cacheDir });
-    const [first] = fs.readdirSync(cacheDir).filter((f) => f.startsWith('engine-'));
+    const [first] = engineCaches();
 
-    // Cache hit: drop the list and resources files; scriptlets still come out.
+    // Cache hit: drop the list file; scriptlets still come out of the cache.
     fs.rmSync(path.join(dir, 'ublock-filters.txt'));
-    fs.rmSync(path.join(dir, 'resources.json'));
     await install({ cacheDir });
     navigateTab(9, 'https://video.test/watch');
     expect(run(getScriptlets({ url: 'https://video.test/watch', sourceId: 9 }).script)).toContain(
       'mark:hello'
     );
+    expect(engineCaches()).toEqual([first]);
 
-    // A different resources digest is a different engine.
+    // New resource bytes (with a matching manifest digest) are a new engine.
     fs.rmSync(dir, { recursive: true, force: true });
-    writeArtifacts({ resourcesSha: 'sha-two' });
+    writeArtifacts({
+      resources: { ...RESOURCES, redirects: [], scriptlets: RESOURCES.scriptlets.slice(0, 2) },
+    });
     await install({ cacheDir });
-    const caches = fs.readdirSync(cacheDir).filter((f) => f.startsWith('engine-'));
-    expect(caches).toHaveLength(1);
-    expect(caches[0]).not.toBe(first);
+    expect(engineCaches()).toHaveLength(1);
+    expect(engineCaches()[0]).not.toBe(first);
   });
 
   test('the uBlock list is enabled with "Block ads" but never requested from the feed', () => {

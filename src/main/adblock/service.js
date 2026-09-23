@@ -211,44 +211,50 @@ async function resolveArtifacts() {
       }
     }
     // Scriptlet resources layer the same way: the highest layer naming a
-    // resources file serves it (today only the bundled floor carries one).
-    // Lower layers stay on as fallbacks in case that file can't be read.
+    // usable resources file serves it (today only the bundled floor carries
+    // one). Lower layers stay on as fallbacks, see readResources.
     if (manifest.resources?.file) {
       resources.push({ ...manifest.resources, dir });
     }
   }
-  return version === null
-    ? null
-    : { version, categories, resources: resources[0] || null, resourcesFallbacks: resources };
+  return version === null ? null : { version, categories, resources };
 }
 
 /**
- * Read and parse the scriptlet resources file, from the highest layer whose
- * file is usable (an unreadable updated copy falls back to a lower layer's,
- * ultimately the bundled floor). Returns null when there is none or none can
- * be used — the engine still blocks and hides, it just has no scriptlets (and
- * no `$redirect=` bodies). `degraded` marks a result that isn't the top
- * layer's own file, so the caller doesn't cache it under that file's identity.
+ * Pick the scriptlet resources file to compile in: the highest layer whose
+ * file can be read, hashes to the sha256 its manifest names, and parses. A
+ * layer failing any of these is logged and skipped, so a broken or tampered
+ * updated copy falls back to a lower layer's (ultimately the bundled
+ * floor's). With none usable the engine still blocks and hides, it just has
+ * no scriptlets (and no `$redirect=` bodies).
+ *
+ * This runs before the engine-cache lookup (one ~200 KB read + hash + parse,
+ * a couple of milliseconds): the cache identity is the digest of the file
+ * actually chosen, not a manifest's claim, so a fallback or scriptlet-less
+ * build is cached like any other and a repaired file is a different key.
+ *
+ * @returns {Promise<{text: string, checksum: string, entry: object,
+ *   trustedNames: Set<string>}|null>}
  */
 async function readResources(resolved) {
-  const candidates = resolved.resourcesFallbacks || [];
-  for (const [i, entry] of candidates.entries()) {
+  for (const entry of resolved.resources || []) {
+    const where = path.join(entry.dir, entry.file);
     try {
-      const text = await fs.promises.readFile(path.join(entry.dir, entry.file), 'utf-8');
-      const checksum = entry.sha256 || crypto.createHash('sha256').update(text).digest('hex');
+      const bytes = await fs.promises.readFile(where);
+      const checksum = crypto.createHash('sha256').update(bytes).digest('hex');
+      if (checksum !== entry.sha256) {
+        throw new Error(
+          `sha256 mismatch: manifest names ${entry.sha256 || 'none'}, file is ${checksum}`
+        );
+      }
+      const text = bytes.toString('utf-8');
       const parsed = Resources.parse(text, { checksum });
-      return {
-        text,
-        checksum,
-        entry,
-        degraded: i > 0,
-        trustedNames: trustedScriptletNames(parsed),
-      };
+      return { text, checksum, entry, trustedNames: trustedScriptletNames(parsed) };
     } catch (err) {
-      log.warn(`[adblock] skipping unreadable scriptlet resources in ${entry.dir}: ${err.message}`);
+      log.warn(`[adblock] not using scriptlet resources ${where}: ${err.message}`);
     }
   }
-  return candidates.length ? { degraded: true } : null;
+  return null;
 }
 
 // Every spelling a list can use to name a trust-requiring scriptlet: its
@@ -308,17 +314,14 @@ async function readEnabledListsText(settings, resolved, trustedNames = new Set()
 // content. A partial update refreshing only 'ads' therefore invalidates the
 // cache while the bundled layer's other categories keep their identity.
 // The scriptlet resources are compiled into (and serialized with) the engine
-// too, so their digest is part of the identity.
-function engineIdentity(resolved, enabledCategories) {
+// too, so the digest of the file readResources actually picked is part of it.
+function engineIdentity(resolved, enabledCategories, resources) {
   const lists = enabledCategories.map((category) => {
     const entry = resolved.categories[category];
     if (!entry) return `${category}@none`;
     return `${category}@${entry.listsVersion}:${entry.file}:${entry.sha256 || ''}`;
   });
-  const res = resolved.resources;
-  lists.push(
-    res ? `resources@${res.version || ''}:${res.file}:${res.sha256 || ''}` : 'resources@none'
-  );
+  lists.push(resources ? `resources@${resources.checksum}` : 'resources@none');
   return lists.join(',');
 }
 
@@ -400,7 +403,10 @@ async function rebuildEngineOnce() {
 
   const enabledCategories = getEnabledCategories();
   const categoriesKey = enabledCategories.join(',');
-  const cacheFile = cacheDir ? cacheFileFor(engineIdentity(resolved, enabledCategories)) : null;
+  const resources = await readResources(resolved);
+  const cacheFile = cacheDir
+    ? cacheFileFor(engineIdentity(resolved, enabledCategories, resources))
+    : null;
 
   if (cacheFile) {
     const cached = await readEngineCache(cacheFile);
@@ -411,8 +417,6 @@ async function rebuildEngineOnce() {
     }
   }
 
-  const read = await readResources(resolved);
-  const resources = read?.text ? read : null;
   const text = await readEnabledListsText(settings, resolved, resources?.trustedNames);
   if (text === null) {
     engine = null;
@@ -425,12 +429,7 @@ async function rebuildEngineOnce() {
     `[adblock] filter engine ready (${resolved.version}, categories: ${categoriesKey}, ` +
       `scriptlets: ${resources ? resources.entry.version || 'yes' : 'none'})`
   );
-  // A build that couldn't use the top layer's resources file isn't what the
-  // engine identity names; caching it would keep serving the fallback after
-  // that file is fixed.
-  if (cacheFile && !read?.degraded) {
-    await writeEngineCache(cacheFile, engine);
-  }
+  if (cacheFile) await writeEngineCache(cacheFile, engine);
 }
 
 /**

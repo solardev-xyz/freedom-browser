@@ -133,6 +133,11 @@ function loadWebviewPreloadModule(options = {}) {
   // A main frame is its own top; `options.subframe` models an iframe, whose
   // top is some other (cross-origin) window.
   global.window.top = options.subframe === true ? {} : global.window;
+  // `options.parent` models a same-origin parent window (about:blank/srcdoc
+  // frames match on it); otherwise a sub-frame's parent is its top.
+  global.window.parent = options.parent || global.window.top;
+  // The document's origin (about:blank/srcdoc inherit their creator's).
+  if (options.origin !== undefined) global.origin = options.origin;
   global.location = location;
   global.navigator = {
     clipboard,
@@ -1637,6 +1642,7 @@ describe('webview-preload adblock scriptlets', () => {
     global.navigator = originalNavigator;
     global.location = originalLocation;
     global.MutationObserver = originalMutationObserver;
+    delete global.origin;
     jest.restoreAllMocks();
   });
 
@@ -1714,6 +1720,98 @@ describe('webview-preload adblock scriptlets', () => {
     expect(ipcRenderer.on).not.toHaveBeenCalled();
     expect(Object.keys(documentHandlers)).toHaveLength(0);
     expect(Object.keys(windowCaptureHandlers)).toHaveLength(0);
+  });
+
+  // Same-origin inheriting documents: a page can reach into these
+  // (`iframe.contentWindow.JSON.parse`), so they get the scriptlets of the
+  // document they inherit from, matched on its URL.
+  test.each([
+    ['about:blank', 'about:blank', 'about:'],
+    ['about:srcdoc', 'about:srcdoc', 'about:'],
+    ['a blob: document', 'blob:https://www.youtube.com/0b3c', 'blob:'],
+  ])('%s inherits its same-origin parent’s scriptlets', (_label, href, protocol) => {
+    const parent = {
+      origin: 'https://www.youtube.com',
+      location: { href: webLocation.href, protocol: 'https:' },
+    };
+    parent.parent = parent;
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      location: { href, protocol, pathname: '' },
+      subframe: true,
+      parent,
+      origin: 'https://www.youtube.com',
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.ADBLOCK_SCRIPTLETS, {
+      url: webLocation.href,
+    });
+    expect(scriptletCalls(contextBridge)).toHaveLength(1);
+  });
+
+  test('about:blank nested in about:blank walks up to the web document', () => {
+    const top = {
+      origin: 'https://www.youtube.com',
+      location: { href: webLocation.href, protocol: 'https:' },
+    };
+    top.parent = top;
+    const middle = {
+      origin: 'https://www.youtube.com',
+      location: { href: 'about:blank', protocol: 'about:' },
+      parent: top,
+    };
+    const { ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'about:blank', protocol: 'about:', pathname: 'blank' },
+      subframe: true,
+      parent: middle,
+      origin: 'https://www.youtube.com',
+    });
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.ADBLOCK_SCRIPTLETS, {
+      url: webLocation.href,
+    });
+  });
+
+  test('an about:blank frame whose parent is another origin matches on its own origin', () => {
+    const parent = {
+      origin: 'https://blog.test',
+      get location() {
+        throw new Error('SecurityError: cross-origin');
+      },
+    };
+    parent.parent = parent;
+    const { ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'about:blank', protocol: 'about:', pathname: 'blank' },
+      subframe: true,
+      parent,
+      origin: 'https://www.youtube.com',
+    });
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.ADBLOCK_SCRIPTLETS, {
+      url: 'https://www.youtube.com/',
+    });
+  });
+
+  test('an opaque-origin about:blank/srcdoc frame (sandboxed, data:) asks for nothing', () => {
+    const { ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'about:srcdoc', protocol: 'about:', pathname: 'srcdoc' },
+      subframe: true,
+      origin: 'null',
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(
+      IPC.ADBLOCK_SCRIPTLETS,
+      expect.anything()
+    );
+  });
+
+  test('an about:blank frame inheriting an internal page’s origin asks for nothing', () => {
+    const { ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'about:blank', protocol: 'about:', pathname: 'blank' },
+      subframe: true,
+      origin: 'file://',
+    });
+    expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(
+      IPC.ADBLOCK_SCRIPTLETS,
+      expect.anything()
+    );
   });
 
   test('a main frame still installs everything else after its scriptlets', () => {
