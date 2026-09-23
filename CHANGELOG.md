@@ -31,7 +31,7 @@ All notable changes to Freedom will be documented in this file.
 ### Fixed
 
 - Opening a Chrome Web Store page no longer crashes Freedom
-- Quitting with the IPFS node running no longer crashes Freedom, as most such quits did, and the bundled nodes finish stopping first
+- Quitting with the IPFS node running no longer crashes Freedom
 - Sites that check permission before asking, such as Google Meet, can reach the camera and microphone prompt
 - macOS lists Freedom under Privacy & Security for camera and microphone
 - Visiting a site no longer fetches its page a second time, without your cookies, to find its icon
