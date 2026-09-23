@@ -271,6 +271,13 @@
         opacity: 0.55;
       }
 
+      /* The ad-blocking category rows carry a help line only once the engine
+         reports a rule count; until then the empty paragraph would still add
+         its top margin under the label. */
+      #adblock .row-help:empty {
+        display: none;
+      }
+
       /* The row a search result jumped to (#281), marked so the eye lands on
          the control rather than on the section it is somewhere inside. The
          accent wash alone is 12% alpha and disappears under `.row.sub`'s own
@@ -1504,7 +1511,7 @@
         <section class="section" id="adblock">
           <h2 class="section-title">Ad Blocking</h2>
           <div class="card">
-            <div class="row">
+            <div class="row" id="adblock-enabled-row">
               <div class="row-body">
                 <p class="row-label">Enable ad blocking</p>
                 <p class="row-help" id="adblock-status">Loading…</p>
@@ -1519,7 +1526,7 @@
             <div class="row sub" id="adblock-ads-row">
               <div class="row-body">
                 <p class="row-label">Block ads</p>
-                <p class="row-help" id="adblock-ads-help">EasyList</p>
+                <p class="row-help" id="adblock-ads-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1531,7 +1538,7 @@
             <div class="row sub" id="adblock-privacy-row">
               <div class="row-body">
                 <p class="row-label">Block trackers</p>
-                <p class="row-help" id="adblock-privacy-help">EasyPrivacy</p>
+                <p class="row-help" id="adblock-privacy-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1543,7 +1550,7 @@
             <div class="row sub" id="adblock-cookies-row">
               <div class="row-body">
                 <p class="row-label">Block cookie banners</p>
-                <p class="row-help" id="adblock-cookies-help">Fanboy Cookiemonster</p>
+                <p class="row-help" id="adblock-cookies-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1555,7 +1562,7 @@
             <div class="row sub" id="adblock-annoyances-row">
               <div class="row-body">
                 <p class="row-label">Block other annoyances</p>
-                <p class="row-help" id="adblock-annoyances-help">Fanboy Annoyances</p>
+                <p class="row-help" id="adblock-annoyances-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1597,8 +1604,9 @@
             <div id="adblock-allowlist-list"></div>
           </div>
           <p class="row-help" style="margin-top: 16px">
-            Filter lists © The EasyList authors (https://easylist.to/), redistributed under CC
-            BY-SA.
+            Filter lists © the
+            <a href="https://easylist.to/" target="_blank" rel="noreferrer">EasyList authors</a>,
+            redistributed under CC BY-SA.
           </p>
         </section>
 
@@ -2957,15 +2965,38 @@
         applyAdblockGating();
       };
 
+      // With no filter lists the engine cannot run, so the section's controls
+      // do nothing — say so once (in the status line) and disable them, rather
+      // than leaving six live toggles above a line that says blocking is
+      // inactive (#274). Lists can still arrive later through the Swarm list
+      // updater, which only runs with the master and auto-update switches on
+      // and only fetches the categories switched on (update-scheduler.js,
+      // update-manager.js). So a control stays usable while switching it on
+      // is the way out: the master switch when it is off, and the category
+      // switches when none of them is on. The auto-update switch is never
+      // frozen: switching it on is a way out, and switching it off is the
+      // only way to stop the updater's background Swarm fetches while the
+      // master is held on. Anything else is frozen in place until lists exist.
+      let adblockUnavailable = false;
+
       const applyAdblockGating = () => {
+        const freeze = (row, field, keepUsable) => {
+          if (!adblockUnavailable || keepUsable) return;
+          row?.classList.add('disabled');
+          if (field) field.disabled = true;
+        };
+        fields.adblockEnabled.disabled = false;
+        $('adblock-enabled-row')?.classList.remove('disabled');
+        freeze($('adblock-enabled-row'), fields.adblockEnabled, !fields.adblockEnabled.checked);
+
+        const noCategoryOn = ADBLOCK_CATEGORIES.every(({ field }) => !field.checked);
         for (const { id, field } of ADBLOCK_CATEGORIES) {
-          setFieldEnabled(fields.adblockEnabled, $(`adblock-${id}-row`), field);
+          const row = $(`adblock-${id}-row`);
+          setFieldEnabled(fields.adblockEnabled, row, field);
+          freeze(row, field, noCategoryOn);
         }
-        setFieldEnabled(
-          fields.adblockEnabled,
-          $('adblock-autoupdate-row'),
-          fields.adblockAutoUpdate
-        );
+        const autoUpdateRow = $('adblock-autoupdate-row');
+        setFieldEnabled(fields.adblockEnabled, autoUpdateRow, fields.adblockAutoUpdate);
       };
 
       // Rule counts / list version come from the main-process engine, not
@@ -2974,26 +3005,37 @@
       const renderAdblockStatus = async () => {
         try {
           const status = await freedomAPI.adblockGetStatus();
+          // Before the first engine build has looked for lists, "no version"
+          // means "not checked yet", not "no lists" — keep the section live.
+          const listsPending = status.listsResolved === false;
+          adblockUnavailable = !listsPending && !status.engineReady && !status.listsVersion;
           $('adblock-status').textContent = status.engineReady
             ? `Filter lists ${status.listsVersion} · engine active`
             : status.listsVersion
               ? `Filter lists ${status.listsVersion} · engine preparing…`
-              : 'No filter lists bundled — blocking is inactive.';
+              : listsPending
+                ? 'Checking filter lists…'
+                : 'No filter lists available. Ad blocking cannot run.';
           for (const { id } of ADBLOCK_CATEGORIES) {
             const meta = status.categories?.[id];
             if (meta?.ruleCount) {
-              $(`adblock-${id}-help`).textContent =
-                `${meta.title} · ${meta.ruleCount.toLocaleString()} rules`;
+              $(`adblock-${id}-help`).textContent = `${meta.ruleCount.toLocaleString()} rules`;
             }
           }
+          applyAdblockGating();
+          // Keep watching while there is nothing to run: the list updater (or
+          // a first engine build still resolving at startup) can supply lists
+          // at any time, and the section should come alive when it does.
+          if (listsPending) refreshAdblockStatusSoon(1500);
+          else if (adblockUnavailable) refreshAdblockStatusSoon(5000);
         } catch {
           $('adblock-status').textContent = 'Status unavailable.';
         }
       };
       let adblockStatusTimer = null;
-      const refreshAdblockStatusSoon = () => {
+      const refreshAdblockStatusSoon = (delay = 1500) => {
         clearTimeout(adblockStatusTimer);
-        adblockStatusTimer = setTimeout(renderAdblockStatus, 1500);
+        adblockStatusTimer = setTimeout(renderAdblockStatus, delay);
       };
 
       const renderAdblockAllowlist = async () => {
@@ -3163,11 +3205,15 @@
       });
       for (const { field } of ADBLOCK_CATEGORIES) {
         field.addEventListener('change', () => {
+          applyAdblockGating();
           save();
           refreshAdblockStatusSoon();
         });
       }
-      fields.adblockAutoUpdate.addEventListener('change', save);
+      fields.adblockAutoUpdate.addEventListener('change', () => {
+        applyAdblockGating();
+        save();
+      });
       $('adblock-allowlist-add').addEventListener('click', addAllowlistHostFromInput);
       $('adblock-allowlist-input').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') addAllowlistHostFromInput();

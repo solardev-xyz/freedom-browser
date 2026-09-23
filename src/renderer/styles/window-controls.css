@@ -42,8 +42,3 @@
   /* theme-literal: fixed contrast pair with the close-button red above it */
   color: white;
 }
-
-/* Linux-specific styles */
-body.platform-linux .title-bar-spacer {
-  width: 12px;
-}
