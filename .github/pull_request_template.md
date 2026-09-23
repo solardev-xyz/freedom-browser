@@ -36,8 +36,10 @@ pull request against `release/<version>` is the exception: editing
 <!--
 Anything under `src/renderer/` (chrome, sidebar, internal pages, settings):
 before/after screenshots of every surface you touched, in **both themes** —
-required, not optional. Nothing else renders the light theme, which is how a
-month of dark-only Settings (#223) and a white-on-white sidebar (#249) shipped.
+required, not optional. CI renders both themes now and fails on contrast and
+on unintended repaints, but a changed screenshot baseline is only as good as
+the eye that approves it, and nothing in CI can see a new surface drifting from
+its siblings.
 
 The repo's own driver takes them:
 
