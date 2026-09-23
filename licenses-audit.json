@@ -1,7 +1,7 @@
 {
   "project_license": "MPL-2.0",
-  "generated_at": "2026-09-10T00:00:00.000Z",
-  "audit_baseline": "0.8.5",
+  "generated_at": "2026-09-23T00:00:00.000Z",
+  "audit_baseline": "0.8.6",
   "notes": "Regenerated for the 0.8.5 release. The 2026-08-19 revision of this file described a pre-0.8.5 tree (electron 39.2.7, ant v0.5.21, libradicle 0.3.0, no Myotis, no Arti) and reported zero copyleft dependencies, which was already untrue. Bundled-component inventory is derived from package.json build.extraResources and src/renderer/vendor/; licenses-audit.test.js fails if this file drifts from either.",
   "distribution_model": {
     "packaging": "electron-builder",
@@ -26,7 +26,7 @@
   "dependencies": [
     {
       "name": "electron",
-      "version": "44.4.1",
+      "version": "44.4.5",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/electron/electron" },
@@ -110,7 +110,7 @@
     },
     {
       "name": "myotis",
-      "version": "v0.1.10",
+      "version": "v0.1.11",
       "type": "native-addon",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/biafra23/myotis" },
@@ -398,7 +398,7 @@
     },
     {
       "name": "@corpus-core/colibri-stateless",
-      "version": "2.0.6",
+      "version": "3.0.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/corpus-core/c4" },
@@ -449,7 +449,7 @@
     },
     {
       "name": "@ethersphere/bee-js",
-      "version": "13.0.0",
+      "version": "13.1.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/ethersphere/bee-js" },
@@ -466,7 +466,7 @@
     },
     {
       "name": "@ledgerhq/hw-app-eth",
-      "version": "7.8.17",
+      "version": "7.8.19",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/LedgerHQ/ledger-live" },
@@ -517,7 +517,7 @@
     },
     {
       "name": "@safe-global/protocol-kit",
-      "version": "8.0.6",
+      "version": "8.0.7",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/safe-global/safe-core-sdk" },
@@ -551,7 +551,7 @@
     },
     {
       "name": "@x402/core",
-      "version": "2.25.0",
+      "version": "2.27.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/x402-foundation/x402" },
@@ -568,7 +568,7 @@
     },
     {
       "name": "@x402/evm",
-      "version": "2.25.0",
+      "version": "2.27.0",
       "type": "direct",
       "scope": "runtime",
       "source": { "ecosystem": "npm", "url": "https://github.com/x402-foundation/x402" },
