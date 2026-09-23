@@ -130,6 +130,12 @@ function registerWebContentsHandlers() {
     // integration itself stays off (sandbox + contextIsolation, tabs.js).
     // The <webview> `webpreferences` attribute can't set this; only the
     // embedder's will-attach-webview can.
+    // Precedent (accepted by the maintainer in PR #412): this is how Electron
+    // adblockers do it. Ghostery's @ghostery/adblocker-electron registers its
+    // preload with `session.registerPreloadScript({ type: 'frame' })` and its
+    // example app turns this same flag on, because Electron only gives a
+    // child frame's preload working IPC with it set; browsers and extensions
+    // inject into every frame too (uBlock Origin's `all_frames`, Brave).
     contents.on('will-attach-webview', (_event, webPreferences) => {
       webPreferences.nodeIntegrationInSubFrames = true;
     });

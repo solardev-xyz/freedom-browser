@@ -605,6 +605,10 @@ jobs:
 
       - name: Download adblock filter lists
         run: npm run adblock:download
+        env:
+          # The uBlock lists are pinned to a uAssets commit resolved through
+          # GitHub's API; the token avoids its anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run settings E2E
         run: xvfb-run -a npm run test:e2e -- test-e2e/settings.spec.js test-e2e/settings-adblock.spec.js

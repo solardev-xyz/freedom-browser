@@ -79,6 +79,26 @@ describe('catalog', () => {
     expect(RESOURCES.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  // GPL-3.0 §6: the manifest and NOTICES name the exact uBlock Origin source
+  // the minified scriptlets were built from, as URLs at a tag or commit.
+  test('the scriptlet resources record their exact upstream source', () => {
+    const { ublockOrigin, ghostery } = RESOURCES.upstream;
+    expect(ublockOrigin.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(ublockOrigin.sourceUrl).toBe(
+      `https://github.com/gorhill/uBlock/tree/${ublockOrigin.commit}/src/js/resources`
+    );
+    expect(ghostery.tag).toBe(RESOURCES.tag);
+    expect(ghostery.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(ghostery.buildScript).toContain(`/ghostery/adblocker/blob/${RESOURCES.tag}/`);
+    const notices = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'NOTICES'),
+      'utf8'
+    );
+    for (const url of [ublockOrigin.sourceUrl, ghostery.commitUrl, ghostery.buildScript]) {
+      expect(notices).toContain(url);
+    }
+  });
+
   test('counts rules, ignoring comments and section headers', () => {
     expect(countRules(LIST)).toBe(1);
   });
@@ -136,7 +156,7 @@ describe('fetchList', () => {
         { ...CATEGORIES.ads, sourceUrl: 'https://easylist.test/easylist.txt' },
         noWait
       )
-    ).resolves.toBe(LIST);
+    ).resolves.toEqual({ text: LIST, source: null });
   });
 });
 
@@ -249,36 +269,95 @@ describe('fetchResources', () => {
 });
 
 describe('fetchList (uBlock format)', () => {
+  const SHA = 'b0c10f2fa1c411bfe81ff9f3ceb60aa5c5d02544';
+  const RAW = `https://raw.githubusercontent.com/uBlockOrigin/uAssets/${SHA}/filters`;
+  const LISTS = [
+    { statusCode: 200, body: '! Title: uBlock filters\na##.main\n!#include filters-2024.txt' },
+    { statusCode: 200, body: '! SECTION: no title here\nb##.included' },
+    { statusCode: 200, body: '! Title: uBlock₀ filters – Quick fixes\nc##.quick' },
+  ];
+  const origToken = process.env.GITHUB_TOKEN;
+  afterEach(() => {
+    if (origToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = origToken;
+  });
+
   test('rejects a top-level uBlock list without its title header', async () => {
-    mockResponses([{ statusCode: 200, body: '<html>captive portal</html>' }]);
+    mockResponses([
+      { statusCode: 200, body: SHA },
+      { statusCode: 200, body: '<html>captive portal</html>' },
+    ]);
     await expect(fetchList('ublock', CATEGORIES.ublock, noWait)).rejects.toThrow(
       /does not look like a uBlock filter list/
     );
   });
 
-  test('fetches the main list and Quick fixes, resolving includes', async () => {
-    const calls = mockResponses([
-      {
-        statusCode: 200,
-        body: '! Title: uBlock filters\na##.main\n!#include filters-2024.txt',
-      },
-      { statusCode: 200, body: '! SECTION: no title here\nb##.included' },
-      { statusCode: 200, body: '! Title: uBlock₀ filters – Quick fixes\nc##.quick' },
-    ]);
-    const text = await fetchList('ublock', CATEGORIES.ublock, noWait);
+  test('pins the lists to the resolved uAssets commit, resolving includes', async () => {
+    process.env.GITHUB_TOKEN = 'ci-token';
+    const calls = mockResponses([{ statusCode: 200, body: `${SHA}\n` }, ...LISTS]);
+    const { text, source } = await fetchList('ublock', CATEGORIES.ublock, noWait);
     // GPL-3.0 §5(a): the shipped file says it was modified, and how.
     expect(text).toMatch(/^! Title: uBlock filters \(Freedom build\)\n/);
     expect(text).toContain('! Modified: `!#if` blocks evaluated');
     expect(text).toContain('! License: GPL-3.0');
+    // …and names the exact revision, as permanent GitHub URLs.
+    expect(text).toContain(
+      `!   https://github.com/uBlockOrigin/uAssets/blob/${SHA}/filters/filters.txt`
+    );
+    expect(text).toContain(`! (uBlockOrigin/uAssets commit ${SHA})`);
     expect(text.split('\n').filter((l) => l && !l.startsWith('!'))).toEqual([
       'a##.main',
       'b##.included',
       'c##.quick',
     ]);
     expect(calls.map((c) => c.url)).toEqual([
+      'https://api.github.com/repos/uBlockOrigin/uAssets/commits/gh-pages',
+      `${RAW}/filters.txt`,
+      `${RAW}/filters-2024.txt`,
+      `${RAW}/quick-fixes.txt`,
+    ]);
+    expect(calls[0].headers.Authorization).toBe('Bearer ci-token');
+    // The token never leaves GitHub's API host.
+    expect(calls[1].headers.Authorization).toBeUndefined();
+    expect(source).toMatchObject({
+      repo: 'uBlockOrigin/uAssets',
+      branch: 'gh-pages',
+      commit: SHA,
+      treeUrl: `https://github.com/uBlockOrigin/uAssets/tree/${SHA}`,
+      urls: [
+        `https://github.com/uBlockOrigin/uAssets/blob/${SHA}/filters/filters.txt`,
+        `https://github.com/uBlockOrigin/uAssets/blob/${SHA}/filters/quick-fixes.txt`,
+      ],
+    });
+    expect(source.fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test('falls back to the Pages URLs and the fetch date when the commit is unknown', async () => {
+    const warnings = [];
+    const calls = mockResponses([{ statusCode: 404 }, ...LISTS]);
+    const { text, source } = await fetchList('ublock', CATEGORIES.ublock, {
+      ...noWait,
+      log: (m) => warnings.push(m),
+    });
+    expect(warnings.join('')).toMatch(/Could not resolve uBlockOrigin\/uAssets@gh-pages/);
+    expect(calls.slice(1).map((c) => c.url)).toEqual([
       'https://ublockorigin.github.io/uAssets/filters/filters.txt',
       'https://ublockorigin.github.io/uAssets/filters/filters-2024.txt',
       'https://ublockorigin.github.io/uAssets/filters/quick-fixes.txt',
     ]);
+    expect(source.commit).toBeNull();
+    expect(source.urls[0]).toBe('https://ublockorigin.github.io/uAssets/filters/filters.txt');
+    expect(text).toContain('! (commit unresolved: fetched from the live site on ');
+  });
+
+  test('refuses an API answer that is not a commit sha', async () => {
+    const warnings = [];
+    mockResponses([{ statusCode: 200, body: '<html>captive portal</html>' }, ...LISTS]);
+    const { source } = await fetchList('ublock', CATEGORIES.ublock, {
+      ...noWait,
+      log: (m) => warnings.push(m),
+    });
+    expect(source.commit).toBeNull();
+    expect(warnings.join('')).toMatch(/unexpected answer/);
   });
 });

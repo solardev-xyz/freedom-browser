@@ -63,6 +63,17 @@ const CATEGORIES = {
     extraSourceUrls: ['https://ublockorigin.github.io/uAssets/filters/quick-fixes.txt'],
     license: 'GPL-3.0-only',
     format: 'ublock',
+    // The Pages site above serves this repo branch. The build resolves the
+    // branch head once and downloads every file at that commit from
+    // raw.githubusercontent.com, so the manifest and the list header can name
+    // an exact, permanent source (a GitHub URL at a commit, not a branch).
+    // If the commit can't be resolved (API down, rate-limited) it falls back
+    // to the Pages URLs and records the fetch date instead.
+    pin: {
+      repo: 'uBlockOrigin/uAssets',
+      branch: 'gh-pages',
+      pagesBase: 'https://ublockorigin.github.io/uAssets/',
+    },
   },
 };
 
@@ -74,6 +85,26 @@ const CATEGORIES = {
 // sha256, checked before anything is written. The tag is the installed
 // @ghostery/adblocker release (fetch-adblock-lists.test.js fails if the two
 // drift apart), so bumping the library is the moment to re-pin this.
+//
+// `upstream` records where those bytes come from, for GPL-3.0 §6 (the script
+// bodies are minified, so the corresponding source is uBlock Origin's own
+// tree). Ghostery doesn't label its build with a uBlock revision, so the
+// revision was identified by content and is re-checkable by anyone:
+//   - the file last changed in ghostery/adblocker at `ghostery.commit`
+//     (2026-08-04 12:06 UTC), written by `ghostery.buildScript`, which copies
+//     Ghostery's CDN build of uBlock's resources verbatim;
+//   - its 148 scriptlet names equal exactly the set uBlock's
+//     src/js/resources/ declares from be3bb05f (07-20) to 505fbc7a (08-06),
+//     and `prevent-clipboard-write` already takes `excludeMatches` as a vararg
+//     (0e1001f5, 08-02) while every scriptlet still calls `getExtraArgs`
+//     (renamed in 505fbc7a) — no other commit touches that directory in
+//     between, so the source tree is 0e1001f5's;
+//   - uBlock tag 1.72.3rc4 is that tree (released 08-02, the last tag before
+//     Ghostery's build), and 1.73.0 stable ships byte-identical
+//     src/js/resources/, src/js/redirect-resources.js and
+//     src/web_accessible_resources/ (same git tree hashes).
+// The `MIME_TYPE_STUB.*` redirects are Ghostery's additions, not uBlock's.
+// Re-derive all of this when bumping the tag; the test only guards the tag.
 const RESOURCES = {
   file: 'resources.json',
   title: 'uBlock Origin scriptlets and redirect resources (via @ghostery/adblocker)',
@@ -82,6 +113,27 @@ const RESOURCES = {
     'https://raw.githubusercontent.com/ghostery/adblocker/v2.18.2/packages/adblocker/assets/ublock-origin/resources.json',
   sha256: 'e14b498f693c4166d27971f7fdfe49b167c139a8e659cc59bedc9ab29a2348f5',
   license: 'GPL-3.0-only',
+  upstream: {
+    ublockOrigin: {
+      repo: 'gorhill/uBlock',
+      tag: '1.72.3rc4',
+      commit: 'de31aee0fcd69dc89cde558f1a0638c1aa77b75e',
+      sourceUrl:
+        'https://github.com/gorhill/uBlock/tree/de31aee0fcd69dc89cde558f1a0638c1aa77b75e/src/js/resources',
+      sameSourceAsRelease: '1.73.0',
+      sameSourceAsReleaseUrl: 'https://github.com/gorhill/uBlock/tree/1.73.0/src/js/resources',
+    },
+    ghostery: {
+      repo: 'ghostery/adblocker',
+      tag: 'v2.18.2',
+      tagCommit: 'c4c20aa63e3a72113f66777cf35a3f58877a36ee',
+      commit: 'e08ecf7fe10f929d5053234017d72d65001640a6',
+      commitUrl:
+        'https://github.com/ghostery/adblocker/commit/e08ecf7fe10f929d5053234017d72d65001640a6',
+      buildScript:
+        'https://github.com/ghostery/adblocker/blob/v2.18.2/packages/adblocker/assets/update.js',
+    },
+  },
 };
 
 // GPL-3.0 §4/§6: the uBlock filters and scriptlets must travel with the
@@ -131,6 +183,9 @@ function download(url, options = {}) {
  * server that answered 200 with something that is not a filter list is not
  * going to answer differently three seconds later, and installing it would
  * silently disable blocking.
+ *
+ * Resolves to `{ text, source }`; `source` is the exact upstream revision for
+ * lists that have one (the uBlock category), null otherwise.
  */
 async function fetchList(category, meta, options = {}) {
   if (meta.format === 'ublock') return fetchUblockList(meta, options);
@@ -138,7 +193,7 @@ async function fetchList(category, meta, options = {}) {
   if (!text.includes('[Adblock')) {
     throw new Error(`${meta.sourceUrl} does not look like an ABP filter list`);
   }
-  return text;
+  return { text, source: null };
 }
 
 /**
@@ -199,12 +254,16 @@ function assertUblockList(text, url, { topLevel }) {
 }
 
 // GPL-3.0 §5(a): the list Freedom ships is a modified work (branches
-// evaluated, includes spliced, Quick fixes appended), so it says so up front.
-function ublockHeader(meta, date) {
+// evaluated, includes spliced, Quick fixes appended), so it says so up front,
+// and names the exact source revision it was built from.
+function ublockHeader(meta, source) {
   return [
     `! Title: ${meta.title} (Freedom build)`,
-    `! Built by Freedom's scripts/fetch-adblock-lists.js on ${date} from:`,
-    ...[meta.sourceUrl, ...(meta.extraSourceUrls || [])].map((url) => `!   ${url}`),
+    `! Built by Freedom's scripts/fetch-adblock-lists.js on ${source.fetchedAt.slice(0, 10)} from:`,
+    ...source.urls.map((url) => `!   ${url}`),
+    source.commit
+      ? `! (${source.repo} commit ${source.commit})`
+      : `! (commit unresolved: fetched from the live site on ${source.fetchedAt})`,
     '! Modified: `!#if` blocks evaluated for a Chromium desktop build, `!#include`',
     '! files spliced in, lists concatenated. Rules themselves are unchanged.',
     '! License: GPL-3.0 (see COPYING.GPL-3.0.txt next to this file).',
@@ -214,17 +273,73 @@ function ublockHeader(meta, date) {
   ].join('\n');
 }
 
+const GITHUB_API_HOST = 'api.github.com';
+
+/**
+ * The commit a branch points at right now, or null when GitHub can't say
+ * (the caller then falls back to the Pages URLs). Like fetch-ant.js, the
+ * token only goes to GitHub's own API host, recomputed per redirect hop.
+ */
+async function resolveBranchCommit({ repo, branch }, options = {}) {
+  const url = `https://${GITHUB_API_HOST}/repos/${repo}/commits/${branch}`;
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  try {
+    const sha = (
+      await fetchText(url, {
+        label: `${repo}@${branch} commit lookup`,
+        timeoutMs: TIMEOUTS.metadata,
+        ...options,
+        headers: (hop) => ({
+          'User-Agent': 'Freedom-Adblock-Fetcher',
+          Accept: 'application/vnd.github.sha',
+          ...(token && new URL(hop).host === GITHUB_API_HOST
+            ? { Authorization: `Bearer ${token}` }
+            : {}),
+        }),
+      })
+    ).trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`unexpected answer ${JSON.stringify(sha)}`);
+    return sha;
+  } catch (err) {
+    (options.log || console.warn)(
+      `\n⚠️  Could not resolve ${repo}@${branch} (${err.message}); ` +
+        'fetching from the live site and recording the fetch date instead of a commit.'
+    );
+    return null;
+  }
+}
+
 async function fetchUblockList(meta, options = {}) {
+  const fetchedAt = new Date().toISOString();
+  const { repo, branch, pagesBase } = meta.pin;
+  const commit = await resolveBranchCommit(meta.pin, options);
+  const pagesUrls = [meta.sourceUrl, ...(meta.extraSourceUrls || [])];
+  const atCommit = (url, host) => {
+    if (!commit) return url;
+    if (!url.startsWith(pagesBase)) throw new Error(`${url} is not under ${pagesBase}`);
+    return `${host}${url.slice(pagesBase.length)}`;
+  };
+  const rawBase = `https://raw.githubusercontent.com/${repo}/${commit}/`;
+  const source = {
+    repo,
+    branch,
+    commit,
+    fetchedAt,
+    // Permanent, human-readable URLs at the commit (or the Pages URLs).
+    urls: pagesUrls.map((url) => atCommit(url, `https://github.com/${repo}/blob/${commit}/`)),
+    ...(commit ? { treeUrl: `https://github.com/${repo}/tree/${commit}` } : {}),
+  };
   const fetchOne = async (url, topLevel = false) => {
     const text = await download(url, { label: `${meta.title} download (${url})`, ...options });
     assertUblockList(text, url, { topLevel });
     return text;
   };
-  const parts = [ublockHeader(meta, new Date().toISOString().slice(0, 10))];
-  for (const url of [meta.sourceUrl, ...(meta.extraSourceUrls || [])]) {
+  const parts = [ublockHeader(meta, source)];
+  for (const pagesUrl of pagesUrls) {
+    const url = atCommit(pagesUrl, rawBase);
     parts.push(await resolveUblockText(await fetchOne(url, true), url, fetchOne));
   }
-  return parts.join('\n');
+  return { text: parts.join('\n'), source };
 }
 
 /**
@@ -262,12 +377,13 @@ async function main() {
 
   for (const [category, meta] of Object.entries(CATEGORIES)) {
     process.stdout.write(`Fetching ${meta.title} (${category})... `);
-    const text = await fetchList(category, meta);
+    const { text, source } = await fetchList(category, meta);
     fs.writeFileSync(path.join(OUTPUT_DIR, meta.file), text, 'utf-8');
     manifest.categories[category] = {
       file: meta.file,
       title: meta.title,
       sourceUrl: meta.sourceUrl,
+      ...(source ? { source } : {}),
       license: meta.license,
       sha256: crypto.createHash('sha256').update(text).digest('hex'),
       bytes: Buffer.byteLength(text),
@@ -284,6 +400,7 @@ async function main() {
     title: RESOURCES.title,
     sourceUrl: RESOURCES.sourceUrl,
     version: RESOURCES.tag,
+    upstream: RESOURCES.upstream,
     license: RESOURCES.license,
     sha256: resources.digest,
     bytes: Buffer.byteLength(resources.text),
@@ -325,6 +442,7 @@ module.exports = {
   download,
   fetchList,
   fetchResources,
+  resolveBranchCommit,
   resolveUblockText,
   main,
 };

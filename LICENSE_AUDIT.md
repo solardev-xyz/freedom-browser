@@ -19,16 +19,16 @@
 
 ### Key Findings
 
-| Category                                                    | Count       | Status                                                                   |
-| ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------------ |
-| Production npm packages (unique name@version)               | 273         | See distribution below                                                   |
-| Dev npm dependencies                                        | not bundled | Do not affect the distributed product                                    |
-| External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                              |
-| Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                                  |
-| Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                        |
-| GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **pending maintainer sign-off** (#410) |
-| Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                                   |
-| Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                                |
+| Category                                                    | Count       | Status                                                             |
+| ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
+| Production npm packages (unique name@version)               | 273         | See distribution below                                             |
+| Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
+| External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                        |
+| Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
+| Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
+| GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
+| Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                             |
+| Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                          |
 
 ### Resolved during this audit: a GPL-3.0 library was shipping
 
@@ -238,15 +238,19 @@ The filter lists (EasyList, EasyPrivacy, Fanboy Cookiemonster, Fanboy Annoyances
 Blocking YouTube's video ads needs scriptlets, and the rules that use them live in uBlock Origin's own lists. Two files in `assets/adblock/` are therefore **GPL-only**, with no CC BY-SA arm:
 
 - `ublock-filters.txt` — _uBlock filters_ plus _uBlock filters – Quick fixes_ from [uBlockOrigin/uAssets](https://github.com/uBlockOrigin/uAssets) (GPL-3.0). Freedom's build modifies it (evaluates `!#if` blocks, splices `!#include` files, concatenates the two lists) and says so in the file's header, as GPL-3.0 §5(a) requires. It is plain text and is its own source.
-- `resources.json` — uBlock Origin's scriptlets and redirect resources (GPL-3.0-or-later, [gorhill/uBlock](https://github.com/gorhill/uBlock) `src/js/resources/`), shipped unmodified in the form @ghostery/adblocker publishes, pinned by tag (`v2.18.2`) and sha256 in `scripts/fetch-adblock-lists.js`. Its script bodies are **minified**, so under GPL-3.0 §6 it is object code: `NOTICES` names where the corresponding source is (uBlock Origin's `src/js/resources/` plus Ghostery's asset build script).
+- `resources.json` — uBlock Origin's scriptlets and redirect resources (GPL-3.0-or-later, [gorhill/uBlock](https://github.com/gorhill/uBlock) `src/js/resources/`), shipped unmodified in the form @ghostery/adblocker publishes, pinned by tag (`v2.18.2`) and sha256 in `scripts/fetch-adblock-lists.js`. Its script bodies are **minified**, so under GPL-3.0 §6 it is object code: `NOTICES` and the manifest name the exact corresponding source (see _Decided_ below).
 
 **Position.** These are separate works shipped next to Freedom, not combined with it: they sit outside `app.asar` as standalone files in `extraResources`, Freedom's MPL-2.0 code never links or includes them, and the MPL-2.0 engine (@ghostery/adblocker) only reads the list text as data and hands the scriptlet text to the web page it's injected into. That is an "aggregate" under GPL-3.0 §5's last paragraph, so the GPL applies to those files and not to Freedom. Brave (MPL-2.0) and Ghostery's own extension ship uBlock's lists and scriptlets the same way. Obligations met in this tree: licence text shipped (`COPYING.GPL-3.0.txt`, written by the same fetch script), copyright and source named in `NOTICES` and in the settings page's footer, and the modification notice in the list header.
 
-**Open for the maintainer (sign-off required before this ships):**
+**Decided** (maintainer, [PR #412](https://github.com/solardev-xyz/freedom-browser/pull/412#issuecomment-5803316294)): do what Brave does.
 
-1. Accept the aggregation position above, or drop the `ublock` category and resources (YouTube video ads then stay unblocked).
-2. The minified `resources.json`: relying on upstream GitHub for the corresponding source (GPL-3.0 §6(d) lets a third party host it, but the obligation to keep it available stays with the distributor), or mirroring that source ourselves — for example by attaching it to each release.
-3. Whether this should also be checked with counsel, per the disclaimer above.
+1. **The aggregation position stands.** Brave (MPL-2.0) ships uBlock Origin's lists as data straight from `uBlockOrigin/uAssets` ([`brave/adblock-resources`](https://github.com/brave/adblock-resources) `filter_lists/list_catalog.json`), and builds uBlock's scriptlets and redirect resources from a pinned uBlock source ([`brave/brave-core-crx-packager`](https://github.com/brave/brave-core-crx-packager): `submodules/uBlock` → `adblock-rs` `uBlockResources(...)`, `lib/adBlockRustUtils.js`), shipped as separate data files next to its MPL code. Freedom's arrangement is the same.
+2. **Corresponding source: point to the exact public source, don't mirror it.** Brave pins uBlock as a git submodule at an exact commit; Ghostery builds `resources.json` from a uBlock release. Freedom records the same kind of exact, verifiable pin, as permanent GitHub URLs at a tag or commit, in `NOTICES` and in `assets/adblock/manifest.json`:
+   - `resources.json` (sha256 `e14b498f…`): uBlock Origin [1.72.3rc4, commit `de31aee0`](https://github.com/gorhill/uBlock/tree/de31aee0fcd69dc89cde558f1a0638c1aa77b75e/src/js/resources) (`src/js/resources/`, `src/js/redirect-resources.js`, `src/web_accessible_resources/`; [1.73.0 stable](https://github.com/gorhill/uBlock/tree/1.73.0) has byte-identical copies), brought into @ghostery/adblocker by [commit `e08ecf7f`](https://github.com/ghostery/adblocker/commit/e08ecf7fe10f929d5053234017d72d65001640a6) via Ghostery's [asset build script at `v2.18.2`](https://github.com/ghostery/adblocker/blob/v2.18.2/packages/adblocker/assets/update.js). Ghostery doesn't label its build with a uBlock revision, so the revision was identified by content (scriptlet set and two dated source changes); the derivation is written next to the pin in `scripts/fetch-adblock-lists.js` and has to be redone on every @ghostery/adblocker bump.
+   - `ublock-filters.txt`: each build resolves uAssets' published branch (`gh-pages`) to one commit and downloads every file at that commit, recording it as `https://github.com/uBlockOrigin/uAssets/tree/<commit>` in the file's header and in the manifest (`categories.ublock.source`). If GitHub can't resolve the commit at build time, the build falls back to the Pages URL and records that plus the fetch date.
+3. **Sub-frame injection** (`nodeIntegrationInSubFrames`, needed for scriptlets in child frames) is accepted as established practice; see the comment at the site in `src/main/webcontents-setup.js`.
+
+Obligations met in this tree, then: licence text shipped, copyright and exact source named in `NOTICES` and the manifest, the modification notice in the list header. As with everything here, this is an engineering position, not legal advice (see the disclaimer above).
 
 `src/renderer/pages/images/` is Freedom's own internal-page artwork and wordmark, and `src/main/myotis/native/` is Freedom's own Myotis supervisor sources — original works under the same MPL-2.0 as the rest of the tree, needing no third-party notice. They are listed because the audit claims to describe what the artifact contains, and until this revision it named only `assets/`: a third-party file committed under `src/` outside `vendor/` was exactly how `qrious.min.js` shipped unnoticed.
 
@@ -299,7 +303,7 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 
 `src/renderer/vendor/qrious.min.js` (GPL-3.0) was shipping unreferenced; see _Resolved during this audit_ above. Nothing else in the production tree or the vendor directory is GPL or AGPL.
 
-The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"; Freedom redistributes them under CC BY-SA, so no GPL obligation attaches. The uBlock Origin filters and scriptlets in `assets/adblock/` are GPL-only, shipped alongside Freedom as separate files rather than combined with it — see _The GPL question_ under _Assets_, including the items that need a maintainer decision.
+The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"; Freedom redistributes them under CC BY-SA, so no GPL obligation attaches. The uBlock Origin filters and scriptlets in `assets/adblock/` are GPL-only, shipped alongside Freedom as separate files rather than combined with it — see _The GPL question_ under _Assets_ for the position and the maintainer's decision.
 
 ### Weak copyleft: present and handled
 
