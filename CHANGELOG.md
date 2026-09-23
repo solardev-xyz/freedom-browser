@@ -13,6 +13,11 @@ All notable changes to Freedom will be documented in this file.
   - Nothing fetched from an external gateway is written to, or served from, the browser's HTTP cache: private-window `ipfs://` browsing leaves no page bytes or visited CIDs on disk, and a gateway that goes down is reported unreachable instead of being answered from a year-long cached copy
   - Freedom does not verify content integrity in this mode; the gateway is trusted for every page it serves
   - Address a local Kubo as `127.0.0.1`, not `localhost`: a default Kubo redirects `localhost` to its subdomain gateway, which Freedom does not follow, so it reads as unreachable — the node status now says so
+- Automatic recovery when a light client's built-in trust checkpoint goes out of date
+  - Myotis starts syncing from a checkpoint built into the release, and that checkpoint expires on its own after a few weeks. A node that reached one used to stop there; it now fetches a recent finalized checkpoint, verifies it, and restarts syncing without you doing anything
+  - A replacement is checked before it is trusted: a proof verified in an isolated worker, plus agreement from independent sources — two of three on Ethereum, two of two on Gnosis. Sources that disagree pause the sync instead of picking a winner
+  - What it is doing, and what went wrong, is shown under Settings > Nodes, each with the one action that clears it — retry, repair, or update Freedom — and a recovery you no longer want can be cancelled. After a minute it says it is still trying and that you can keep browsing
+  - Local sync data that no longer adds up offers a repair you confirm, and keeps the old data rather than deleting it
 - Nightly builds of `main` for internal testers, on their own update channel — a nightly updates to the next nightly, stable installs are never offered one
 - A limit on how often a site can re-ask for a permission you keep dismissing, matching Chrome
   - Pressing Esc or clicking away still denies just that one request and records nothing, so the site can ask again
