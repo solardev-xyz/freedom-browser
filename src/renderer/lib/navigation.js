@@ -1358,6 +1358,76 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     return;
   }
 
+  // An external-protocol URL typed into the bar (magnet:, mailto:, …) goes to
+  // its OS handler (#406). It has to be claimed ahead of the Swarm branch:
+  // `formatBzzUrl` passes any parseable `scheme:` URL straight to
+  // `webview.loadURL`, where Chromium turns it into an `openExternal` request
+  // attributed to the page on screen — and refused, since the page saw no
+  // click. Main makes the decision: it refuses blocked schemes and, like
+  // Chrome's omnibox, only claims input whose scheme has an OS handler
+  // registered. Anything it declines re-enters this pipeline exactly as
+  // before. Only a real commit of the bar takes this path; a page link goes
+  // through the per-site prompt in main instead.
+  //
+  // It runs *before* the entry bookkeeping below, like the routed-away
+  // internal-page open above: a URL that opens in another app leaves this tab
+  // where it is, so it must not cancel the tab's in-flight Swarm probe or
+  // back/forward traversal mark, nor bump `requestedNavigationSequence` (which
+  // would make a pending traversal refresh stand down). The schemes the
+  // branches below handle are all in BROWSER_HANDLED_INPUT, and a declined
+  // answer re-enters with the bookkeeping intact and reaches them as before
+  // (`continuesNavigation` keeps it from ending a newer draft). The one
+  // piece that does apply is ending the address-bar edit: the user committed
+  // it, wherever it opens.
+  if (
+    options.commitsAddressBar &&
+    !options.externalProtocolChecked &&
+    EXTERNAL_PROTOCOL_INPUT.test(value.trim()) &&
+    !BROWSER_HANDLED_INPUT.test(value.trim()) &&
+    window.externalProtocol?.openFromAddressBar
+  ) {
+    const typed = value.trim();
+    clearAddressBarEdit(navState);
+    // The answer is async: if the user has asked this tab for something else
+    // in the meantime, this navigation is stale and must not act.
+    const requestSequence = navState?.requestedNavigationSequence;
+    const superseded = () => !!navState && navState.requestedNavigationSequence !== requestSequence;
+    const continueAsBefore = (why) => {
+      if (superseded()) return;
+      pushDebug(`[AddressBar] Not opened externally (${why}); continuing`);
+      loadTarget(value, displayOverride, webview, {
+        ...options,
+        continuesNavigation: true,
+        externalProtocolChecked: true,
+      });
+    };
+    window.externalProtocol
+      .openFromAddressBar(typed)
+      .then((result) => {
+        if (!result?.opened) {
+          continueAsBefore(result?.reason || 'declined');
+          return;
+        }
+        pushDebug('[AddressBar] Opened external-protocol URL in its OS handler');
+        if (superseded()) return;
+        // Nothing loads in the tab (Chrome reverts the omnibox the same
+        // way), so the bar goes back to the page the tab is still on.
+        const display = navState.currentPageUrl
+          ? deriveDisplayValue(
+              navState.currentPageUrl,
+              state.bzzRoutePrefix,
+              homeUrlNormalized,
+              state.ipfsRoutePrefix,
+              state.ipnsRoutePrefix,
+              state.radicleApiPrefix
+            )
+          : '';
+        setAddressDisplayForTab(display, targetTabId);
+      })
+      .catch((err) => continueAsBefore(err?.message || String(err)));
+    return;
+  }
+
   // A new navigation invalidates any still-pending Swarm content probe for
   // this tab: either a new bzz probe will start below, or the user is
   // leaving Swarm entirely, in which case we don't want the old probe to
@@ -1924,64 +1994,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     webview.loadURL(ipfsLoadUrl);
     pushDebug(`Loading ${ipfsTarget.displayValue} via ${ipfsLoadUrl}`);
     syncBzzBase(null);
-    return;
-  }
-
-  // An external-protocol URL typed into the bar (magnet:, mailto:, …) goes to
-  // its OS handler (#406). It has to be claimed here, ahead of the Swarm
-  // branch: `formatBzzUrl` passes any parseable `scheme:` URL straight to
-  // `webview.loadURL`, where Chromium turns it into an `openExternal` request
-  // attributed to the page on screen — and refused, since the page saw no
-  // click. Main makes the decision: it refuses blocked schemes and, like
-  // Chrome's omnibox, only claims input whose scheme has an OS handler
-  // registered. Anything it declines re-enters this pipeline exactly as
-  // before. Only a real commit of the bar takes this path; a page link goes
-  // through the per-site prompt in main instead.
-  if (
-    options.commitsAddressBar &&
-    !options.externalProtocolChecked &&
-    EXTERNAL_PROTOCOL_INPUT.test(value.trim()) &&
-    !BROWSER_HANDLED_INPUT.test(value.trim()) &&
-    window.externalProtocol?.openFromAddressBar
-  ) {
-    const typed = value.trim();
-    // The answer is async: if the user has asked this tab for something else
-    // in the meantime, this navigation is stale and must not act.
-    const requestSequence = navState?.requestedNavigationSequence;
-    const superseded = () => !!navState && navState.requestedNavigationSequence !== requestSequence;
-    const continueAsBefore = (why) => {
-      if (superseded()) return;
-      pushDebug(`[AddressBar] Not opened externally (${why}); continuing`);
-      loadTarget(value, displayOverride, webview, {
-        ...options,
-        continuesNavigation: true,
-        externalProtocolChecked: true,
-      });
-    };
-    window.externalProtocol
-      .openFromAddressBar(typed)
-      .then((result) => {
-        if (!result?.opened) {
-          continueAsBefore(result?.reason || 'declined');
-          return;
-        }
-        pushDebug('[AddressBar] Opened external-protocol URL in its OS handler');
-        if (superseded()) return;
-        // Nothing loads in the tab (Chrome reverts the omnibox the same
-        // way), so the bar goes back to the page the tab is still on.
-        const display = navState.currentPageUrl
-          ? deriveDisplayValue(
-              navState.currentPageUrl,
-              state.bzzRoutePrefix,
-              homeUrlNormalized,
-              state.ipfsRoutePrefix,
-              state.ipnsRoutePrefix,
-              state.radicleApiPrefix
-            )
-          : '';
-        setAddressDisplayForTab(display, targetTabId);
-      })
-      .catch((err) => continueAsBefore(err?.message || String(err)));
     return;
   }
 

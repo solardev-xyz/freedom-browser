@@ -1423,6 +1423,40 @@ describe('navigation', () => {
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('https://newer.example/');
     });
 
+    // R1-M3: an opened URL leaves the tab where it is, so the entry
+    // bookkeeping of a real navigation (Swarm probe cancel, traversal mark,
+    // requested-navigation counter) must not run for it — only for a
+    // declined one that goes on to navigate the tab.
+    test("an opened URL leaves the tab's in-flight Swarm probe and nav counter alone", async () => {
+      const ctx = await load({ opened: true });
+      ctx.mod.loadTarget(`bzz://${'a'.repeat(64)}`);
+      await flushMicrotasks();
+      const navState = ctx.activeRef.tab.navigationState;
+      expect(navState.pendingSwarmProbeId).toBe('probe-1');
+      const sequence = navState.requestedNavigationSequence;
+
+      ctx.mod.loadTarget('magnet:?xt=urn:btih:abc', null, null, { commitsAddressBar: true });
+      await flushMicrotasks();
+
+      expect(ctx.swarmProbeState.cancelCalls).toEqual([]);
+      expect(navState.pendingSwarmProbeId).toBe('probe-1');
+      expect(navState.requestedNavigationSequence).toBe(sequence);
+    });
+
+    test('a declined URL still runs the entry bookkeeping before navigating', async () => {
+      const ctx = await load({ opened: false, reason: 'no-handler' });
+      ctx.mod.loadTarget(`bzz://${'a'.repeat(64)}`);
+      await flushMicrotasks();
+      const navState = ctx.activeRef.tab.navigationState;
+      const sequence = navState.requestedNavigationSequence;
+
+      ctx.mod.loadTarget('define:serendipity', null, null, { commitsAddressBar: true });
+      await flushMicrotasks();
+
+      expect(ctx.swarmProbeState.cancelCalls).toEqual(['probe-1']);
+      expect(navState.requestedNavigationSequence).toBeGreaterThan(sequence);
+    });
+
     test('browser-handled schemes never make the round-trip', async () => {
       const ctx = await load({ opened: true });
 
