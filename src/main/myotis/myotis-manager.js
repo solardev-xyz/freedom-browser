@@ -15,7 +15,7 @@ const { getMyotisDataDir } = require('../profile-paths');
 const { MyotisProcess } = require('./myotis-process');
 const checkpointStore = require('./checkpoint-store');
 const { acquireCheckpoint } = require('./checkpoint-verifier');
-const MYOTIS_VERSION = '0.1.10';
+const MYOTIS_VERSION = '0.1.11';
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
@@ -733,7 +733,7 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
-    abi: 26,
+    abi: 29,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,
@@ -837,7 +837,7 @@ async function recoveryHelp(event, chainId = 1) {
   }[reason];
   if (!guidance) return;
   // Deliberately bounded: no paths, profile identifiers, wallet data or logs.
-  const details = `Myotis ${MYOTIS_VERSION} / ABI 26\nNetwork: ${status.displayName}\nPlatform: ${process.platform}-${process.arch}\nFailure: ${reason}\nAddon found: ${status.available}\nCheckpoint verification: required`;
+  const details = `Myotis ${MYOTIS_VERSION} / ABI 29\nNetwork: ${status.displayName}\nPlatform: ${process.platform}-${process.arch}\nFailure: ${reason}\nAddon found: ${status.available}\nCheckpoint verification: required`;
   const { dialog, clipboard } = require('electron');
   const { response } = await dialog.showMessageBox(win, {
     type: 'info', title: `${status.displayName} sync help`, message: 'Help with sync recovery',

@@ -186,7 +186,7 @@ async function createState(baseDir, chainId, checkpoint = null, repair = false) 
     schemaVersion: SCHEMA_VERSION,
     chainId,
     generation,
-    nativeCheckpointApi: 26,
+    nativeCheckpointApi: 29,
     origin: checkpoint ? 'verified' : 'bundled',
     checkpoint: checkpoint ? JSON.parse(JSON.stringify(checkpoint)) : null,
   };
@@ -220,7 +220,7 @@ async function loadOrCreateState(baseDir, chainId) {
     const record = await readJson(path.join(dataDir, 'anchor.json'));
     validateIdentity(record, chainId);
     if (record.generation !== pointer.generation ||
-        (record.nativeCheckpointApi !== undefined && record.nativeCheckpointApi !== 26)) throw storageError();
+        (record.nativeCheckpointApi !== undefined && record.nativeCheckpointApi !== 29)) throw storageError();
     if (record.origin === 'verified')
       validateCheckpoint(record.checkpoint, chainId, { fresh: false });
     else if (record.origin !== 'bundled' || record.checkpoint !== null) throw storageError();

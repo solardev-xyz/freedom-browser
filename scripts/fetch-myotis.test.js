@@ -41,7 +41,7 @@ const noWait = { sleep: () => Promise.resolve(), log: () => {} };
 afterEach(() => jest.resetAllMocks());
 
 test('selects official assets for all five targets, including cross-target downloads', () => {
-  expect(release.abi).toBe(26);
+  expect(release.abi).toBe(29);
   expect(selectedTargets()).toHaveLength(5);
   expect(selectedTargets('win32-x64')[0].dir).toBe('win-x64');
   expect(() => selectedTargets('win32-arm64')).toThrow('Unsupported');

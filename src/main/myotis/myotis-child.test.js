@@ -1,7 +1,7 @@
 const { EventEmitter } = require('events');
 const { runChild } = require('./myotis-child');
 
-function setup(abi = 26) {
+function setup(abi = 29) {
   const host = new EventEmitter();
   host.connected = true;
   host.send = jest.fn();
