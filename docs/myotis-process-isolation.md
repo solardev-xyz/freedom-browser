@@ -132,7 +132,7 @@ the native weak-subjectivity bound; renewed staleness triggers another recovery.
 New schema-v2 checkpoint records retain the distinct quorum voter origins;
 worker and new-generation validation require the configured threshold. Historical
 schema-v1 records retain their original single-authority provenance for migration;
-patched ABI 25 generations are preserved and replaced, not resumed under ABI 26.
+patched ABI 25 generations are preserved and replaced, not resumed under ABI 29.
 They cannot authorize a new recovery or be relabeled as quorum-verified. New
 recovery always requires v2 acquisition.
 Malformed records or unsafe state paths fail closed as storage failures.
