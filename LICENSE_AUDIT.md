@@ -7,7 +7,7 @@
 
 > **DISCLAIMER:** This is a practical engineering audit, not legal advice. For final licensing decisions, consult a qualified attorney.
 
-> **What changed in this revision.** Re-derived for the 0.8.6 cut against the installed tree. No component was added or removed since 0.8.5 and no upstream relicensed; ten shipped components moved version, and each one's license was re-read at the version being shipped rather than assumed from the last audit. npm: `@corpus-core/colibri-stateless` 2.0.6 → 3.0.0 (MIT), `@ethersphere/bee-js` 13.0.0 → 13.1.0 (BSD-3-Clause), `@ledgerhq/hw-app-eth` 7.8.17 → 7.8.19 (Apache-2.0), `@safe-global/protocol-kit` 8.0.6 → 8.0.7 (MIT), `@x402/core` and `@x402/evm` 2.25.0 → 2.27.0 (Apache-2.0), `electron` → 44.4.4 (MIT), `ethers` → 6.17.0 (MIT). Bundled binaries: Ant v0.5.44 → v0.5.45 (`MIT OR Apache-2.0`, both `LICENSE-MIT` and `LICENSE-APACHE` still present at the tag) and Myotis v0.1.7 → v0.1.11 (Apache-2.0; upstream's `NOTICE` is byte-identical to the one audited at v0.1.10, sha256 `ee84afd3…`, and `NOTICES` still reproduces it verbatim per section 4(d)). Arti 2.6.0, freedom-ipfs v0.4.3 and libradicle 0.7.1 are unchanged. The only copyleft that ships is still the LGPL-3.0 OpenLV bundle, on the same relinking terms as before.
+> **What changed in this revision.** Re-derived for the 0.8.6 cut against the installed tree. No component was added or removed since 0.8.5 and no upstream relicensed; ten shipped components moved version, and each one's license was re-read at the version being shipped rather than assumed from the last audit. npm: `@corpus-core/colibri-stateless` 2.0.6 → 3.0.0 (MIT), `@ethersphere/bee-js` 13.0.0 → 13.1.0 (BSD-3-Clause), `@ledgerhq/hw-app-eth` 7.8.17 → 7.8.19 (Apache-2.0), `@safe-global/protocol-kit` 8.0.6 → 8.0.7 (MIT), `@x402/core` and `@x402/evm` 2.25.0 → 2.27.0 (Apache-2.0), `electron` → 44.4.5 (MIT), `ethers` → 6.17.0 (MIT). Bundled binaries: Ant v0.5.44 → v0.5.45 (`MIT OR Apache-2.0`, both `LICENSE-MIT` and `LICENSE-APACHE` still present at the tag) and Myotis v0.1.7 → v0.1.11 (Apache-2.0; upstream's `NOTICE` is byte-identical to the one audited at v0.1.10, sha256 `ee84afd3…`, and `NOTICES` still reproduces it verbatim per section 4(d)). Arti 2.6.0, freedom-ipfs v0.4.3 and libradicle 0.7.1 are unchanged. The only copyleft that ships is still the LGPL-3.0 OpenLV bundle, on the same relinking terms as before.
 >
 > The previous revision (2026-08-19) described a pre-0.8.5 tree — electron 39.2.7, ant v0.5.21, libradicle 0.3.0, "downloaded binaries: 2", no Myotis, no Arti — and reported `Copyleft (GPL/AGPL/LGPL): 0`, which was already untrue of the tree it was written against. Because `release-process.md` §4's pre-tag license check reads these files, it was passing on stale data. Since 0.8.5 these files are re-derived from the installed dependency tree and from what `package.json`'s `build` config actually packages, and `licenses-audit.test.js` fails the build when either drifts from what is written here.
 
@@ -152,7 +152,7 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 
 ## Electron Framework
 
-- **Version:** 44.4.4 (lockfile-resolved)
+- **Version:** 44.4.5 (lockfile-resolved)
 - **License:** MIT
 - **Risk:** Yellow (requires notice)
 - **Notes:** Electron bundles Chromium, which contains hundreds of third-party components under various permissive licenses.

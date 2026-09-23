@@ -55,7 +55,7 @@ All notable changes to Freedom will be documented in this file.
   - [Ant](https://github.com/freedom-hq/ant) 0.5.44 to 0.5.45
   - [Myotis](https://github.com/biafra23/myotis) 0.1.7 to 0.1.11
 - Updated runtime dependencies:
-  - Electron 44.3.0 to 44.4.4 (Chromium 152.0.7977.78 to 152.0.7977.130, Node 24.20.0 to 24.21.0)
+  - Electron 44.3.0 to 44.4.5 (Chromium 152.0.7977.78 to 152.0.7977.130, Node 24.20.0 to 24.21.0)
   - `@corpus-core/colibri-stateless` 2.0.6 to 3.0.0
   - `@ethersphere/bee-js` 13.0.0 to 13.1.0
   - `@ledgerhq/hw-app-eth` 7.8.17 to 7.8.19
