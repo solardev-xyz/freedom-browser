@@ -71,6 +71,14 @@ module.exports = [
     },
   },
   {
+    // Electron runs a sandboxed preload inside a function wrapper, so
+    // webview-preload.js may `return` at top level (it does, in sub-frames).
+    files: ['src/main/webview-preload.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+    },
+  },
+  {
     rules: {
       'no-console': 'off',
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],

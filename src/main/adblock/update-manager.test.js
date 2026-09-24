@@ -7,11 +7,11 @@ const { Wallet } = require('ethers');
 jest.mock('../settings-store', () => ({ loadSettings: jest.fn() }));
 jest.mock('./service', () => ({
   refreshEngine: jest.fn(() => Promise.resolve()),
-  getEnabledCategories: jest.fn(() => ['ads', 'privacy']),
+  getEnabledFeedCategories: jest.fn(() => ['ads', 'privacy']),
 }));
 
 const { loadSettings } = require('../settings-store');
-const { getEnabledCategories } = require('./service');
+const { getEnabledFeedCategories } = require('./service');
 const { canonicalManifestForSigning } = require('./update-manifest');
 const { runUpdateOnce } = require('./update-manager');
 
@@ -98,7 +98,7 @@ function io(overrides = {}) {
 
 beforeEach(() => {
   loadSettings.mockReturnValue({ adblockEnabled: true });
-  getEnabledCategories.mockReturnValue(['ads', 'privacy']);
+  getEnabledFeedCategories.mockReturnValue(['ads', 'privacy']);
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'adblock-update-'));
 });
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -120,7 +120,7 @@ describe('runUpdateOnce', () => {
   });
 
   test('only downloads enabled categories', async () => {
-    getEnabledCategories.mockReturnValue(['ads']);
+    getEnabledFeedCategories.mockReturnValue(['ads']);
     const opts = io({ readFeed: async () => signedManifest(1) });
     await runUpdateOnce(opts);
     expect(opts.downloadBlob).toHaveBeenCalledTimes(1);
@@ -170,13 +170,13 @@ describe('runUpdateOnce', () => {
 
   test('backfills a category enabled after the update landed, at the same version', async () => {
     // v3 lands while only ads is on, so updated/ carries ads alone.
-    getEnabledCategories.mockReturnValue(['ads']);
+    getEnabledFeedCategories.mockReturnValue(['ads']);
     await runUpdateOnce(io({ readFeed: async () => signedManifest(3) }));
     expect(fs.existsSync(path.join(root, 'updated', 'easyprivacy.txt'))).toBe(false);
 
     // The user turns privacy on. The feed hasn't bumped its version, but the
     // missing list must still be fetched instead of waiting for a republish.
-    getEnabledCategories.mockReturnValue(['ads', 'privacy']);
+    getEnabledFeedCategories.mockReturnValue(['ads', 'privacy']);
     const opts = io({ readFeed: async () => signedManifest(3) });
     expect(await runUpdateOnce(opts)).toEqual({ status: 'applied', version: 3 });
     expect(fs.readFileSync(path.join(root, 'updated', 'easyprivacy.txt'))).toEqual(PRIV);
@@ -191,10 +191,10 @@ describe('runUpdateOnce', () => {
 
   test('backfill reuses applied copies and downloads only the missing list', async () => {
     // v3 lands with ads only; enabling privacy backfills at the same version.
-    getEnabledCategories.mockReturnValue(['ads']);
+    getEnabledFeedCategories.mockReturnValue(['ads']);
     await runUpdateOnce(io({ readFeed: async () => signedManifest(3) }));
 
-    getEnabledCategories.mockReturnValue(['ads', 'privacy']);
+    getEnabledFeedCategories.mockReturnValue(['ads', 'privacy']);
     const opts = io({ readFeed: async () => signedManifest(3) });
     expect(await runUpdateOnce(opts)).toEqual({ status: 'applied', version: 3 });
     // Only the missing privacy list is fetched — the applied ads copy is
@@ -209,11 +209,11 @@ describe('runUpdateOnce', () => {
     // v3 applied with ads+privacy; user disables privacy and enables ads only
     // — then a backfill (cookies-style scenario via re-apply) must not throw
     // away the still-valid privacy copy from updated/.
-    getEnabledCategories.mockReturnValue(['ads', 'privacy']);
+    getEnabledFeedCategories.mockReturnValue(['ads', 'privacy']);
     await runUpdateOnce(io({ readFeed: async () => signedManifest(3) }));
 
     // Force a rewrite of updated/ while privacy is disabled: bump to v4.
-    getEnabledCategories.mockReturnValue(['ads']);
+    getEnabledFeedCategories.mockReturnValue(['ads']);
     const opts = io({ readFeed: async () => signedManifest(4) });
     expect(await runUpdateOnce(opts)).toEqual({ status: 'applied', version: 4 });
 
@@ -231,7 +231,7 @@ describe('runUpdateOnce', () => {
 
     // 'cookies' is enabled but this feed version carries no cookies list, so
     // the backfill path opens and finds nothing new: no rewrite, no rebuild.
-    getEnabledCategories.mockReturnValue(['ads', 'privacy', 'cookies']);
+    getEnabledFeedCategories.mockReturnValue(['ads', 'privacy', 'cookies']);
     const opts = io({ readFeed: async () => signedManifest(3) });
     expect(await runUpdateOnce(opts)).toEqual({ status: 'up_to_date', version: 3 });
     expect(opts.downloadBlob).not.toHaveBeenCalled();

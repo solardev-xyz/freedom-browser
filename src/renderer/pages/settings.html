@@ -1244,9 +1244,7 @@
           <div class="card" style="margin-top: 12px">
             <div id="custom-search-provider-list"></div>
             <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" id="add-search-provider">
-                Add search engine
-              </button>
+              <button type="button" class="btn" id="add-search-provider">Add search engine</button>
             </div>
             <div class="rpc-block search-provider-form" id="search-provider-form" hidden>
               <div class="search-provider-fields">
@@ -1301,9 +1299,7 @@
           </div>
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" id="manage-profiles-link">
-                Manage profiles
-              </button>
+              <button type="button" class="btn" id="manage-profiles-link">Manage profiles</button>
             </div>
           </div>
           <p id="profile-save-status" class="rpc-status"></p>
@@ -1606,7 +1602,10 @@
           <p class="row-help" style="margin-top: 16px">
             Filter lists © the
             <a href="https://easylist.to/" target="_blank" rel="noreferrer">EasyList authors</a>,
-            redistributed under CC BY-SA.
+            redistributed under CC BY-SA. uBlock filters and scriptlets © Raymond Hill and the
+            <a href="https://github.com/uBlockOrigin/uAssets" target="_blank" rel="noreferrer"
+              >uBlock Origin contributors</a
+            >; licence terms in NOTICES.
           </p>
         </section>
 
@@ -1762,9 +1761,11 @@
       };
 
       // id ties together the manifest category, the #adblock-<id>-row
-      // element, and the status field; field is the checkbox input.
+      // element, and the status field; field is the checkbox input. `lists`
+      // names the manifest categories the toggle covers when there's more
+      // than one: "Block ads" also switches the uBlock filters (#410).
       const ADBLOCK_CATEGORIES = [
-        { id: 'ads', field: fields.adblockAds },
+        { id: 'ads', field: fields.adblockAds, lists: ['ads', 'ublock'] },
         { id: 'privacy', field: fields.adblockPrivacy },
         { id: 'cookies', field: fields.adblockCookies },
         { id: 'annoyances', field: fields.adblockAnnoyances },
@@ -3016,10 +3017,16 @@
               : listsPending
                 ? 'Checking filter lists…'
                 : 'No filter lists available. Ad blocking cannot run.';
-          for (const { id } of ADBLOCK_CATEGORIES) {
-            const meta = status.categories?.[id];
-            if (meta?.ruleCount) {
-              $(`adblock-${id}-help`).textContent = `${meta.ruleCount.toLocaleString()} rules`;
+          // A row can cover more than one list ("Block ads" is EasyList plus
+          // the uBlock filters that carry the YouTube scriptlets, #410); its
+          // helper is their combined rule count, no list names (#274).
+          for (const { id, lists = [id] } of ADBLOCK_CATEGORIES) {
+            const ruleCount = lists.reduce(
+              (sum, list) => sum + (status.categories?.[list]?.ruleCount || 0),
+              0
+            );
+            if (ruleCount) {
+              $(`adblock-${id}-help`).textContent = `${ruleCount.toLocaleString()} rules`;
             }
           }
           applyAdblockGating();
@@ -3915,7 +3922,11 @@
             if (cid !== '1' && cid !== '100') return 'Unsupported';
             const status = myotisStatuses[cid];
             if (!status) return 'Status unknown';
-            if (status.recovery?.reason === 'installation' || status.recovery?.reason === 'unsupported') return 'Update or reinstall — open Nodes';
+            if (
+              status.recovery?.reason === 'installation' ||
+              status.recovery?.reason === 'unsupported'
+            )
+              return 'Update or reinstall — open Nodes';
             if (status.state === 'ready') return 'Ready';
             if (status.state === 'syncing') return 'Syncing';
             if (status.state === 'recovering') return 'Updating checkpoint';

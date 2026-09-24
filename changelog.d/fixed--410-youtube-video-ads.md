@@ -1,0 +1,2 @@
+- YouTube video ads are blocked with ad blocking on
+  - "Block ads" now also uses the uBlock filters, bundled with each release

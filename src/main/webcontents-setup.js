@@ -124,6 +124,24 @@ function registerWebContentsHandlers() {
     const type = contents.getType?.() || 'unknown';
     const tag = `[webcontents:${id}:${type}]`;
 
+    // Tab webviews: run the webview preload in sub-frames too, so an iframe
+    // (an embedded YouTube player, say) gets its adblock scriptlets at
+    // document start like the main frame does (#410). The preload returns
+    // right after the scriptlet step in a sub-frame, so no other preload
+    // surface — wallet providers, freedomAPI — reaches iframes. Node
+    // integration itself stays off (sandbox + contextIsolation, tabs.js).
+    // The <webview> `webpreferences` attribute can't set this; only the
+    // embedder's will-attach-webview can.
+    // Precedent (accepted by the maintainer in PR #412): this is how Electron
+    // adblockers do it. Ghostery's @ghostery/adblocker-electron registers its
+    // preload with `session.registerPreloadScript({ type: 'frame' })` and its
+    // example app turns this same flag on, because Electron only gives a
+    // child frame's preload working IPC with it set; browsers and extensions
+    // inject into every frame too (uBlock Origin's `all_frames`, Brave).
+    contents.on('will-attach-webview', (_event, webPreferences) => {
+      webPreferences.nodeIntegrationInSubFrames = true;
+    });
+
     // For webview contents, fix dark defaults and intercept navigation
     if (type === 'webview') {
       // An external-protocol launch (magnet:, mailto:, …) must follow real

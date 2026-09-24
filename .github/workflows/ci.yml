@@ -605,6 +605,10 @@ jobs:
 
       - name: Download adblock filter lists
         run: npm run adblock:download
+        env:
+          # The uBlock lists are pinned to a uAssets commit resolved through
+          # GitHub's API; the token avoids its anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run settings E2E
         run: xvfb-run -a npm run test:e2e -- test-e2e/settings.spec.js test-e2e/settings-adblock.spec.js
@@ -1033,6 +1037,53 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Ad blocking through the real webRequest pipeline and the webview preload:
+  # network blocking + element hiding (adblock.spec.js, which no job ran
+  # before), and filter-list scriptlets pruning YouTube-shaped player data at
+  # document start in a page and its cross-origin iframe (#410). Local fixture
+  # servers only; the scriptlet spec downloads the sha256-pinned resources
+  # file itself when `npm run adblock:download` hasn't run.
+  e2e-adblock:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run ad blocking E2E (headless)
+        run: >-
+          xvfb-run -a npm run test:e2e:live --
+          test-e2e/live/adblock.spec.js test-e2e/live/adblock-scriptlets.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-adblock-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Issue #346 — a Chrome Web Store page killed the browser process on Electron
   # 44.3.0: Chromium 152 exposes `chrome.webstorePrivate` to ordinary web pages
   # on the store origin, and Electron has no delegate behind it. Live, because
@@ -1416,6 +1467,7 @@ jobs:
     needs:
       [
         code-changed,
+        e2e-adblock,
         e2e-address-bar-clipboard,
         e2e-address-bar-ens,
         e2e-ant,

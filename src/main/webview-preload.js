@@ -8,6 +8,182 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// ============================================
+// Ad blocking — scriptlets (document start, main world)
+// ============================================
+//
+// Some ads can't be blocked on the network: YouTube streams its video ads
+// from the same hosts as the video, and whether one plays is decided by
+// fields in the player JSON. Filter lists handle that with scriptlets
+// (`youtube.com##+js(json-prune, adPlacements …)`) that patch JSON.parse /
+// fetch before the page's own scripts read the config (#410).
+//
+// That only works if they run first, so this is the first thing the preload
+// does: a synchronous lookup (the engine lives in the main process, which
+// applies the master toggle, category toggles and the tab's allowlist), then
+// the code runs in the page's main world through executeInMainWorld — which,
+// like the ethereum provider below, is not subject to the page's CSP. Only
+// web frames: internal pages are file:, and dweb frames (bzz/ipfs/web3)
+// carry no list-targeted ads.
+//
+// about:srcdoc and blob: documents are web frames too: they inherit their
+// creator's origin, so a same-origin page can reach straight into one and
+// pick up an unpatched global (`iframe.contentWindow.JSON.parse`). As in
+// uBlock Origin they get the scriptlets of the document they inherit from,
+// matched on that document's URL (scriptletMatchUrl). The preload runs in
+// them because webcontents-setup.js turns on nodeIntegrationInSubFrames.
+function scriptletMatchUrl() {
+  const loc = globalThis.location;
+  if (!loc) return null;
+  if (loc.protocol === 'http:' || loc.protocol === 'https:') return loc.href;
+  if (loc.protocol !== 'about:' && loc.protocol !== 'blob:') return null;
+  // The inherited origin; opaque ('null') for sandboxed/data: documents,
+  // which nothing outside can reach into anyway.
+  const origin = globalThis.origin;
+  if (typeof origin !== 'string' || !/^https?:\/\//.test(origin)) return null;
+  // Prefer the full URL of the nearest same-origin ancestor web document
+  // (skipping about: documents in between), so path-scoped rules match
+  // like they do for the parent itself; else fall back to the origin.
+  try {
+    let frame = globalThis.window;
+    while (frame && frame.parent && frame.parent !== frame) {
+      frame = frame.parent;
+      if (frame.origin !== origin) break;
+      const protocol = frame.location.protocol;
+      if (protocol === 'http:' || protocol === 'https:') return frame.location.href;
+      if (protocol !== 'about:' && protocol !== 'blob:') break;
+    }
+  } catch {
+    // Cross-origin ancestor: its URL isn't ours to read.
+  }
+  return `${origin}/`;
+}
+
+// about:blank is the exception: Electron never runs the preload in an
+// about:blank document — neither a script-created iframe's initial one nor
+// an explicit src="about:blank" (probed in real Chromium; about:srcdoc and
+// every http(s) document do get it). No main-process hook helps either:
+// `frame-created` and WebFrameMain.executeJavaScript are asynchronous, while
+// a page can append an iframe and call `iframe.contentWindow.JSON.parse` in
+// the same synchronous run. So the parent patches such a child itself, from
+// its own main world, the moment the page first reaches into it:
+// inheritScriptletsIntoChildRealms below is appended to the scriptlet bundle
+// and wraps the `contentWindow` / `contentDocument` getters, running the same
+// scriptlets (the parent's, i.e. matched on the inheriting document's URL) in
+// a same-origin about:blank child's realm before handing it back — and
+// installing the same getters there, for nesting. Known gap (tracked in
+// #414): `window.frames[i]` / `window[i]` reach a child without
+// any hookable accessor, so a page going that way still gets the child's
+// unpatched globals.
+//
+// Runs in the page's main world, stringified into the bundle: no closures
+// over this file. Everything it needs later is captured up front, since page
+// scripts run between install and the first hooked access — so no call below
+// goes through a page-replaceable global or prototype method (String,
+// String.prototype.startsWith, Array iteration…) once the page has run.
+// Serialized into the page by buildScriptletBundle, so it must be
+// self-contained: `istanbul ignore` keeps coverage counters (which only exist
+// in the test runner's realm) from being compiled into its source.
+/* istanbul ignore next */
+function inheritScriptletsIntoChildRealms(runIn) {
+  const { apply } = Reflect;
+  const { defineProperty, getOwnPropertyDescriptor } = Object;
+  const { startsWith } = String.prototype;
+  const adopted = new WeakSet();
+  const { has, add } = WeakSet.prototype;
+  const CTORS = ['HTMLIFrameElement', 'HTMLFrameElement', 'HTMLObjectElement'];
+  const PROPS = ['contentWindow', 'contentDocument'];
+  const adopt = (win) => {
+    try {
+      // Cross-origin children throw here; http(s)/srcdoc documents ran
+      // their own scriptlets from the preload at document start.
+      if (!win) return;
+      const href = win.location.href;
+      if (typeof href !== 'string' || !apply(startsWith, href, ['about:blank'])) return;
+      // Keyed on a realm intrinsic: the WindowProxy survives navigation, the
+      // realm (and its Object) doesn't.
+      const realm = win.Object;
+      if (apply(has, adopted, [realm])) return;
+      apply(add, adopted, [realm]);
+      runIn(win);
+      install(win);
+    } catch {
+      // Leave the child as it is rather than break the page.
+    }
+  };
+  const install = (realm) => {
+    // Indexed loops, not for…of: install() also runs for a child at hooked-
+    // access time, and for…of would call the page's Array iterator.
+    for (let i = 0; i < CTORS.length; i++) {
+      const ctor = CTORS[i];
+      const proto = realm[ctor] && realm[ctor].prototype;
+      if (!proto) continue;
+      for (let j = 0; j < PROPS.length; j++) {
+        const prop = PROPS[j];
+        const desc = getOwnPropertyDescriptor(proto, prop);
+        if (!desc || typeof desc.get !== 'function') continue;
+        const nativeGet = desc.get;
+        const toWindow = prop === 'contentWindow' ? (v) => v : (v) => v.defaultView;
+        const { get } = getOwnPropertyDescriptor(
+          {
+            get [prop]() {
+              const value = apply(nativeGet, this, []);
+              if (value) adopt(toWindow(value));
+              return value;
+            },
+          },
+          prop
+        );
+        defineProperty(proto, prop, { ...desc, get });
+      }
+    }
+  };
+  apply(add, adopted, [Object]);
+  install(globalThis);
+}
+
+// The main-world bundle: the frame's scriptlets for its own realm, then the
+// child-realm hooks carrying a second copy wrapped in `with (childWindow)`, so
+// every global the scriptlets touch (globalThis, self, JSON, fetch, Response…)
+// resolves to the child's. Built with `new Function` here in the isolated
+// world, where the page's CSP doesn't apply.
+function buildScriptletBundle(script) {
+  return new Function(
+    `${script}\n;(${inheritScriptletsIntoChildRealms})(` +
+      `function (__freedomRealm) { with (__freedomRealm) {\n${script}\n} });`
+  );
+}
+
+(function injectAdblockScriptlets() {
+  const url = scriptletMatchUrl();
+  if (!url) return;
+  let script = '';
+  try {
+    const res = ipcRenderer.sendSync('adblock:scriptlets', { url });
+    if (res && typeof res.script === 'string') script = res.script;
+  } catch {
+    return; // Main process unavailable — leave the page unmodified.
+  }
+  if (!script) return;
+  try {
+    // The source is the packaged, sha256-pinned scriptlet resources compiled
+    // by the main-process engine; page content never contributes code here.
+    contextBridge.executeInMainWorld({ func: buildScriptletBundle(script) });
+  } catch (err) {
+    console.warn('[webview-preload] adblock scriptlet injection failed:', err);
+  }
+})();
+
+// Sub-frames: the main process turns on nodeIntegrationInSubFrames for tab
+// webviews (webcontents-setup.js) only so that iframes — an embedded YouTube
+// player, say — get the scriptlets above. Nothing else in this file is meant
+// for them (wallet providers, freedomAPI, context menu, cosmetic filtering
+// all stay main-frame only, as before), so stop here. Sandboxed preloads run
+// inside a function wrapper, which is what makes this top-level return legal.
+if (globalThis.window && globalThis.window.top !== globalThis.window) {
+  return;
+}
+
 // PRIVATE MODE GUARD (providers): webviews in private windows never get
 // the wallet providers. `window.ethereum` / `window.swarm` are not
 // injected and the request/response bridges are not installed, so a dApp
@@ -231,8 +407,18 @@ const getHostRoutedHref = (anchor) => {
     try {
       const resolved = new URL(rawHref, globalThis.location.href);
       if (
-        ['web3:', 'http:', 'https:', 'bzz:', 'ipfs:', 'ipns:', 'rad:', 'ens:',
-          'freedom:', 'ethereum:'].includes(resolved.protocol)
+        [
+          'web3:',
+          'http:',
+          'https:',
+          'bzz:',
+          'ipfs:',
+          'ipns:',
+          'rad:',
+          'ens:',
+          'freedom:',
+          'ethereum:',
+        ].includes(resolved.protocol)
       ) {
         return resolved.toString();
       }
@@ -464,9 +650,7 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // Whether this build bundles an Arti binary — the settings page shows the
   // Tor rows only where there is one to drive (or where the integration is
   // already enabled). Same shape as checkRadicleBinary: `{ available }`.
-  checkTorBinary: guardSettingsPage('checkTorBinary', () =>
-    ipcRenderer.invoke('tor:checkBinary')
-  ),
+  checkTorBinary: guardSettingsPage('checkTorBinary', () => ipcRenderer.invoke('tor:checkBinary')),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),
   createProfile: guardProfileManagerPage('createProfile', (profile) =>

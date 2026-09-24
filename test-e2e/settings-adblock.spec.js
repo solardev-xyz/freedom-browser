@@ -77,6 +77,16 @@ test('adblock section shows iOS-matching defaults and engine status', async ({
     await expect(page.locator(selector)).toBeEnabled();
   }
   await expect(page.locator('#adblock-cookies-help')).toHaveText(/^\d[\d,.\s]* rules$/);
+  // "Block ads" covers two bundled lists, EasyList and the uBlock filters
+  // that carry the YouTube scriptlets (#410): its count is their sum.
+  const bundled = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'assets', 'adblock', 'manifest.json'), 'utf-8')
+  ).categories;
+  const adsHelp = page.locator('#adblock-ads-help');
+  await expect(adsHelp).toHaveText(/^\d[\d,.\s]* rules$/);
+  expect(Number((await adsHelp.textContent()).replace(/\D/g, ''))).toBe(
+    bundled.ads.ruleCount + bundled.ublock.ruleCount
+  );
   await expect(page.locator('#adblock-enabled-row')).not.toHaveClass(/\bdisabled\b/);
 });
 
