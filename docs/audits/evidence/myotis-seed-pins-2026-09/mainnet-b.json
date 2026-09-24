@@ -1,0 +1,347 @@
+{
+  "network": "mainnet",
+  "date": "2026-09-24",
+  "sourceLogSha256": "06311e05b2b027abc0a2902e2a3a2ea151ad918eb6a0ad383f4a2b4620a7fe42",
+  "seedPinReceipts": [
+    "[myotis] mainnet seed pins (5) applied",
+    "[myotis] mainnet seed pins (5) applied",
+    "[myotis] mainnet seed pins (5) applied",
+    "[myotis] mainnet seed pins (5) applied",
+    "[myotis] mainnet seed pins (5) applied\",\"[myotis] mainnet seed pins (5) applied\",\"[myotis] mainnet seed pins (5) applied\",\"[myotis] mainnet seed pins (5) applied\"]}"
+  ],
+  "events": [
+    {
+      "type": "profile",
+      "elapsedMs": 36,
+      "version": "0.1.12",
+      "abi": 32
+    },
+    {
+      "type": "phase-start",
+      "elapsedMs": 221,
+      "phase": "fresh-cold"
+    },
+    {
+      "type": "status",
+      "elapsedMs": 221,
+      "phase": "fresh-cold",
+      "state": "syncing",
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 474,
+      "phase": "fresh-cold",
+      "state": "syncing",
+      "beaconState": "SYNCING",
+      "snapPeers": 0,
+      "snapServingPeers": 0,
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 1231,
+      "phase": "fresh-cold",
+      "state": "syncing",
+      "beaconState": "CATCHING_UP",
+      "snapPeers": 4,
+      "snapServingPeers": 0,
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 2241,
+      "phase": "fresh-cold",
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0,
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 11312,
+      "phase": "fresh-cold",
+      "state": "ready",
+      "beaconState": "SYNCED",
+      "snapPeers": 5,
+      "snapServingPeers": 2,
+      "ready": true
+    },
+    {
+      "type": "ens",
+      "elapsedMs": 12198,
+      "phase": "fresh-cold",
+      "ms": 885,
+      "sinceReadyMs": 885,
+      "phaseElapsedMs": 11998,
+      "result": {
+        "success": true,
+        "name": "vitalik.eth",
+        "system": "ens",
+        "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "trust": {
+          "level": "verified",
+          "system": "ens",
+          "method": "myotis",
+          "finality": "optimistic",
+          "proof": "P2P light client (optimistic beacon root \u2014 attested, not finalized)",
+          "block": null,
+          "agreed": ["myotis-p2p"],
+          "dissented": [],
+          "queried": ["myotis-p2p"],
+          "quorum": {
+            "k": 1,
+            "m": 1,
+            "achieved": true
+          }
+        }
+      }
+    },
+    {
+      "type": "warm-cache",
+      "elapsedMs": 12289,
+      "name": "peers.cache",
+      "bytes": 773,
+      "sha256": "5c19c078758cea3046bc27831dbc6771fbdc8a95e485494d8a938b3e16f2f222",
+      "snapok": 1,
+      "snapbad": 0
+    },
+    {
+      "type": "warm-cache",
+      "elapsedMs": 12289,
+      "name": "cl-peers.cache",
+      "bytes": 190,
+      "sha256": "811c931076c10b7c05655956c089084902993dda5b5012e3f5b0006d11ea0dca",
+      "snapok": 0,
+      "snapbad": 0
+    },
+    {
+      "type": "phase-start",
+      "elapsedMs": 12442,
+      "phase": "cold-el-restart"
+    },
+    {
+      "type": "status",
+      "elapsedMs": 12442,
+      "phase": "cold-el-restart",
+      "state": "syncing",
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 12692,
+      "phase": "cold-el-restart",
+      "state": "syncing",
+      "beaconState": "SYNCING",
+      "snapPeers": 0,
+      "snapServingPeers": 0,
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 13447,
+      "phase": "cold-el-restart",
+      "state": "ready",
+      "beaconState": "SYNCED",
+      "snapPeers": 2,
+      "snapServingPeers": 2,
+      "ready": true
+    },
+    {
+      "type": "ens",
+      "elapsedMs": 14392,
+      "phase": "cold-el-restart",
+      "ms": 945,
+      "sinceReadyMs": 945,
+      "phaseElapsedMs": 1950,
+      "result": {
+        "success": true,
+        "name": "vitalik.eth",
+        "system": "ens",
+        "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "trust": {
+          "level": "verified",
+          "system": "ens",
+          "method": "myotis",
+          "finality": "optimistic",
+          "proof": "P2P light client (optimistic beacon root \u2014 attested, not finalized)",
+          "block": null,
+          "agreed": ["myotis-p2p"],
+          "dissented": [],
+          "queried": ["myotis-p2p"],
+          "quorum": {
+            "k": 1,
+            "m": 1,
+            "achieved": true
+          }
+        }
+      }
+    },
+    {
+      "type": "phase-start",
+      "elapsedMs": 14600,
+      "phase": "warm-stale-recovery"
+    },
+    {
+      "type": "status",
+      "elapsedMs": 14600,
+      "phase": "warm-stale-recovery",
+      "state": "syncing",
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 14853,
+      "phase": "warm-stale-recovery",
+      "state": "syncing",
+      "beaconState": "SYNCING",
+      "snapPeers": 0,
+      "snapServingPeers": 0,
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 15607,
+      "phase": "warm-stale-recovery",
+      "state": "recovering",
+      "beaconState": "STALE_ANCHOR",
+      "recovery": {
+        "phase": "checking",
+        "reason": null,
+        "attempt": 1,
+        "nextRetryAt": null,
+        "canRetry": false,
+        "takingLonger": false
+      },
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 17871,
+      "phase": "warm-stale-recovery",
+      "state": "recovering",
+      "beaconState": "STALE_ANCHOR",
+      "recovery": {
+        "phase": "restarting",
+        "reason": null,
+        "attempt": 1,
+        "nextRetryAt": null,
+        "canRetry": false,
+        "takingLonger": false
+      },
+      "ready": false
+    },
+    {
+      "type": "inherited-at-pointer-swap",
+      "elapsedMs": 17960,
+      "matched": true
+    },
+    {
+      "type": "inherited-at-pointer-swap",
+      "elapsedMs": 17960,
+      "matched": true
+    },
+    {
+      "type": "status",
+      "elapsedMs": 18122,
+      "phase": "warm-stale-recovery",
+      "state": "recovering",
+      "beaconState": "SYNCING",
+      "recovery": {
+        "phase": "restarting",
+        "reason": null,
+        "attempt": 1,
+        "nextRetryAt": null,
+        "canRetry": false,
+        "takingLonger": false
+      },
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 20136,
+      "phase": "warm-stale-recovery",
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 3,
+      "snapServingPeers": 0,
+      "ready": false
+    },
+    {
+      "type": "status",
+      "elapsedMs": 29220,
+      "phase": "warm-stale-recovery",
+      "state": "ready",
+      "beaconState": "SYNCED",
+      "snapPeers": 3,
+      "snapServingPeers": 2,
+      "ready": true
+    },
+    {
+      "type": "ens",
+      "elapsedMs": 30153,
+      "phase": "warm-stale-recovery",
+      "ms": 933,
+      "sinceReadyMs": 933,
+      "phaseElapsedMs": 15553,
+      "result": {
+        "success": true,
+        "name": "vitalik.eth",
+        "system": "ens",
+        "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+        "trust": {
+          "level": "verified",
+          "system": "ens",
+          "method": "myotis",
+          "finality": "optimistic",
+          "proof": "P2P light client (optimistic beacon root \u2014 attested, not finalized)",
+          "block": null,
+          "agreed": ["myotis-p2p"],
+          "dissented": [],
+          "queried": ["myotis-p2p"],
+          "quorum": {
+            "k": 1,
+            "m": 1,
+            "achieved": true
+          }
+        }
+      }
+    },
+    {
+      "type": "recovery-complete",
+      "elapsedMs": 30155,
+      "sinceImportMs": 12196,
+      "checkpoint": {
+        "schemaVersion": 2,
+        "chainId": 1,
+        "network": "mainnet",
+        "root": "0x636688a8d4e82b97b81626640dd9434fdbee933f55097176ad42a89e389ec443",
+        "slot": 15287936,
+        "verifiedAt": 1790280733622,
+        "sources": [
+          "https://mainnet.checkpoint.sigp.io",
+          "https://beaconstate.ethstaker.cc",
+          "https://beaconstate-mainnet.chainsafe.io"
+        ],
+        "finalizedEpoch": 477748
+      }
+    },
+    {
+      "type": "seed-pin-receipts",
+      "elapsedMs": 30156,
+      "lines": [
+        "[myotis] mainnet seed pins (5) applied",
+        "[myotis] mainnet seed pins (5) applied",
+        "[myotis] mainnet seed pins (5) applied",
+        "[myotis] mainnet seed pins (5) applied"
+      ]
+    },
+    {
+      "type": "complete",
+      "elapsedMs": 30256,
+      "success": true,
+      "stopped": [true, true]
+    }
+  ]
+}

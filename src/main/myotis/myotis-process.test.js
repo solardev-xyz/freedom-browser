@@ -21,7 +21,8 @@ describe('MyotisProcess', () => {
     jest.doMock('fs', () => ({ existsSync: () => true, accessSync: jest.fn(), mkdirSync: jest.fn(), constants: { X_OK: 1 } }));
     const { MyotisProcess } = require('./myotis-process');
     callbacks = { onStatus: jest.fn(), onUnavailable: jest.fn(), onExit: jest.fn(), onLifecycle: jest.fn() };
-    processClient = new MyotisProcess({ addonPath: '/addon.node', network: 'mainnet', dataDir: '/data', ...callbacks });
+    processClient = new MyotisProcess({ addonPath: '/addon.node', network: 'mainnet', dataDir: '/data',
+      bootEnodes: [`enode://${'ab'.repeat(64)}@1.2.3.4:30303`], ...callbacks });
   });
   afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
   function receipt(type, extra = {}) {
@@ -91,6 +92,31 @@ describe('MyotisProcess', () => {
     verifiedExit();
     await stopping;
     await Promise.all(requests);
+  });
+
+  test('carries pins through owned startup and reports only bounded application results', () => {
+    const bootEnodes = [`enode://${'ab'.repeat(64)}@1.2.3.4:30303`];
+    receipt('owned');
+    expect(child.send.mock.calls.at(-1)[0]).toMatchObject({ bootEnodes });
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: true,
+      seedPinsCount: 1, seedPinsApplied: true, secret: 'never logged' });
+    expect(callbacks.onLifecycle).toHaveBeenCalledWith({ generation: processClient.generation, event: 'seed-pins', count: 1, applied: true });
+    expect(JSON.stringify(callbacks.onLifecycle.mock.calls)).not.toContain('never logged');
+  });
+
+  test.each([false, 'true', null])('seed application result %p is reported as a refusal, not startup failure', applied => {
+    receipt('owned');
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: true,
+      seedPinsCount: 5, seedPinsApplied: applied });
+    expect(callbacks.onLifecycle).toHaveBeenCalledWith(expect.objectContaining({ event: 'seed-pins', count: 5, applied: false }));
+    expect(processClient.accepting).toBe(true);
+  });
+
+  test.each([0, 65, '5', Infinity])('ignores invalid seed diagnostic count %p', count => {
+    receipt('owned');
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: true,
+      seedPinsCount: count, seedPinsApplied: true });
+    expect(callbacks.onLifecycle.mock.calls.some(([event]) => event.event === 'seed-pins')).toBe(false);
   });
 
   test('preserves the verified head through the real bounded status snapshot', async () => {

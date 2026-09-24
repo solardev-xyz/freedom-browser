@@ -14,6 +14,7 @@ const { getMyotisDataDir } = require('../profile-paths');
 
 const { MyotisProcess } = require('./myotis-process');
 const checkpointStore = require('./checkpoint-store');
+const seedPins = require('./seed-pins');
 const { acquireCheckpoint } = require('./checkpoint-verifier');
 const MYOTIS_VERSION = '0.1.12';
 const AVAILABILITY_POLL_MS = 1000;
@@ -361,7 +362,15 @@ async function launchClient(instance, token) {
     network: instance.name,
     dataDir: instance.storage.dataDir,
     checkpoint: instance.storage.checkpoint,
-    onLifecycle: (event) => log.info(`[myotis] ${instance.name} lifecycle ${JSON.stringify(event)}`),
+    bootEnodes: seedPins.select(seedPins.load(instance.name)),
+    onLifecycle: (event) => {
+      if (event.event === 'seed-pins') {
+        const message = `[myotis] ${instance.name} seed pins (${event.count}) ${event.applied ? 'applied' : 'refused'}`;
+        if (event.applied) log.info(message);
+        else log.warn(message);
+      }
+      log.info(`[myotis] ${instance.name} lifecycle ${JSON.stringify(event)}`);
+    },
     onStatus: (status) => {
       if (instance.client !== client || !currentRun(instance, token)) return;
       instance.lastStatus = status;

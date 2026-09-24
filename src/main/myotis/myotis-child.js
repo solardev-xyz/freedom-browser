@@ -1,6 +1,7 @@
 // Private child entry point. Never import this module into Electron main.
 // No profile policy, wallet signing, renderer IPC, or credentials live here.
 const EXPECTED_ABI = 32;
+const seedPins = require('./seed-pins');
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const OPERATIONS = Object.freeze({
   ens: 'ensRecordJson',
@@ -68,7 +69,16 @@ function runChild(host = process, loadAddon = require) {
         if (handle < 1) throw new Error('create');
         failure = 'start';
         if (!addon.start(handle)) throw new Error('start');
-        send({ type: 'started', ok: true, checkpointSupported });
+        // Pins are optional discovery hints. A refusal must not turn a healthy
+        // native startup into a failure; ordinary discovery remains available.
+        const pins = seedPins.parse(JSON.stringify(message.bootEnodes));
+        let seedPinsApplied = false;
+        if (pins.length) {
+          try { seedPinsApplied = addon.setBootEnodes(handle, JSON.stringify(pins)) === true; }
+          catch { /* report only the bounded refusal, never native exception text */ }
+        }
+        send({ type: 'started', ok: true, checkpointSupported,
+          seedPinsCount: pins.length, seedPinsApplied });
       } catch {
         send({ type: 'started', ok: false, failure });
         stop();

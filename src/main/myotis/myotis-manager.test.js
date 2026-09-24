@@ -53,12 +53,17 @@ describe('myotis-manager', () => {
     const BrowserWindow = { getAllWindows: () => [], fromWebContents: jest.fn(() => win) };
     const dataDir = path.join('/profile', 'myotis');
     const logger = { info: jest.fn(), warn: jest.fn() };
+    const seedPins = {
+      load: jest.fn(network => [`enode://${'ab'.repeat(64)}@1.2.3.4:${network === 'mainnet' ? 30303 : 30304}`]),
+      select: jest.fn(list => list),
+    };
     const { mod } = loadMainModule(require.resolve('./myotis-manager'), {
       ipcMain, dialog, BrowserWindow, clipboard,
       extraMocks: {
         fs: () => ({ existsSync }),
         [require.resolve('./myotis-process')]: () => ({ MyotisProcess: MockProcess }),
         [require.resolve('./checkpoint-store')]: () => store,
+        [require.resolve('./seed-pins')]: () => seedPins,
         [require.resolve('./checkpoint-verifier')]: () => ({ acquireCheckpoint }),
         [require.resolve('../logger')]: () => logger,
         [require.resolve('../profile-paths')]: () => ({ getMyotisDataDir: (network) => path.join(dataDir, network) }),
@@ -71,7 +76,7 @@ describe('myotis-manager', () => {
       },
     });
     const gateStart = () => (startGate = {});
-    return { mod, clients, dataDir, ipcMain, status, event, win, dialog, acquireCheckpoint, store, profile, existsSync, clipboard, logger,
+    return { mod, clients, dataDir, ipcMain, status, event, win, dialog, acquireCheckpoint, store, profile, existsSync, clipboard, logger, seedPins,
       gateStart, releaseStart: (value) => startGate.release(value) };
   }
 
@@ -233,6 +238,9 @@ describe('myotis-manager', () => {
     await flush();
     expect(ctx.store.replaceCheckpoint).toHaveBeenCalledWith(path.join(ctx.dataDir, 'gnosis'), 100, checkpoint);
     const replacement = ctx.clients.at(-1);
+    expect(replacement.options.bootEnodes).toEqual(ctx.clients[0].options.bootEnodes);
+    expect(ctx.seedPins.load).toHaveBeenCalledTimes(ctx.clients.length);
+    expect(ctx.seedPins.load).toHaveBeenLastCalledWith('gnosis');
     expect(replacement.options).toMatchObject({ checkpoint, dataDir: path.join(ctx.dataDir, 'gnosis', 'recovered') });
     expect(ctx.clients.at(-2).exited).toBe(true);
     expect(ctx.mod.isReady(100)).toBe(false);
@@ -241,6 +249,22 @@ describe('myotis-manager', () => {
     expect(ctx.mod.publicStatus(100).recovery).toBeUndefined();
     expect(ctx.dialog.showMessageBox).not.toHaveBeenCalled();
     for (const client of ctx.clients) expect(client.request).not.toHaveBeenCalledWith('accept-stale-anchor');
+  });
+
+  test('selects network-specific seeds on every start and logs application or refusal', async () => {
+    const ctx = loadManager();
+    await ctx.mod.startMyotis({ chainId: 1 });
+    await ctx.mod.startMyotis({ chainId: 100 });
+    expect(ctx.clients[0].options.bootEnodes).toEqual([`enode://${'ab'.repeat(64)}@1.2.3.4:30303`]);
+    expect(ctx.clients[1].options.bootEnodes).toEqual([`enode://${'ab'.repeat(64)}@1.2.3.4:30304`]);
+    ctx.clients[0].options.onLifecycle({ event: 'seed-pins', count: 5, applied: true });
+    ctx.clients[1].options.onLifecycle({ event: 'seed-pins', count: 18, applied: false });
+    expect(ctx.logger.info).toHaveBeenCalledWith('[myotis] mainnet seed pins (5) applied');
+    expect(ctx.logger.warn).toHaveBeenCalledWith('[myotis] gnosis seed pins (18) refused');
+    await ctx.mod.stopMyotis(1);
+    await ctx.mod.startMyotis({ chainId: 1 });
+    expect(ctx.seedPins.load.mock.calls.map(([network]) => network)).toEqual(['mainnet', 'gnosis', 'mainnet']);
+    expect(ctx.seedPins.select).toHaveBeenCalledTimes(3);
   });
 
   test('never publishes new state while native exit is unconfirmed', async () => {

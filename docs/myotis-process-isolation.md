@@ -313,8 +313,10 @@ and a numeric `snapServingPeers > 0`. Missing serving counts fail closed.
 `snapPeers` remains available alongside `snapServingPeers` in renderer status.
 A serving count reflects announced/proven head coverage and read-bench state;
 it is not a guarantee that the next peer request succeeds. ENS continues to
-request `latest`, with existing fallbacks for transient failures. Neither the
-optional host seed-pin API nor finalized state reads are enabled by this update.
+request `latest`, with existing fallbacks for transient failures. Finalized state
+reads are not enabled by this update. Host seed pins now run through
+the existing private startup message and apply in the native child after every
+start, including recovered generations; see [seed configuration and refresh](myotis-seed-pins.md).
 
 If the bundled anchor is stale, quorum and Colibri verification still supply
 a fresh checkpoint. Ordinary compatible restarts retain their generation and

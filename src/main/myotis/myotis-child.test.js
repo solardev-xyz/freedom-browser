@@ -12,6 +12,7 @@ function setup(abi = 32) {
     ensRecordJson: jest.fn(), requestAccountJson: jest.fn(), estimateGasJson: jest.fn(),
     acceptStaleAnchor: jest.fn(() => true),
     createWithCheckpoint: jest.fn(() => 8),
+    setBootEnodes: jest.fn(() => true),
     feeEstimateJson: jest.fn(), sendRawTransactionJson: jest.fn(),
     ethCallJson: jest.fn(async () => '{"resultHex":"0x1234"}'),
   };
@@ -74,6 +75,34 @@ test('does not expose the stale-anchor risk bypass', async () => {
   ctx.send({ type: 'request', id: 1, op: 'accept-stale-anchor', args: [] });
   expect(ctx.addon.acceptStaleAnchor).not.toHaveBeenCalled();
   expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ id: 1, ok: false }));
+});
+
+test.each([false, true])('pushes pins after native start (checkpoint import: %s)', imported => {
+  const ctx = setup();
+  const pins = [`enode://${'ab'.repeat(64)}@1.2.3.4:30303`];
+  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'mainnet', dataDir: '/profile/mainnet',
+    bootEnodes: [...pins, 'invalid', ...pins],
+    ...(imported ? { checkpoint: { chainId: 1, network: 'mainnet', root: '0x' + 'ab'.repeat(32), slot: 1 } } : {}),
+  });
+  expect(ctx.addon.setBootEnodes).toHaveBeenCalledWith(imported ? 8 : 7, JSON.stringify(pins));
+  expect(ctx.addon.start.mock.invocationCallOrder[0]).toBeLessThan(ctx.addon.setBootEnodes.mock.invocationCallOrder[0]);
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: true, seedPinsCount: 1, seedPinsApplied: true }));
+});
+
+test.each(['refused', 'throw', 'missing'])('optional seed %s does not fail native startup or leak diagnostics', variant => {
+  const ctx = setup();
+  if (variant === 'refused') ctx.addon.setBootEnodes.mockReturnValue(false);
+  if (variant === 'throw') ctx.addon.setBootEnodes.mockImplementation(() => { throw new Error('private upstream detail'); });
+  if (variant === 'missing') delete ctx.addon.setBootEnodes;
+  ctx.send({ type: 'start', network: 'mainnet', bootEnodes: [`enode://${'ab'.repeat(64)}@1.2.3.4:30303`] });
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: true, seedPinsCount: 1, seedPinsApplied: false }));
+  expect(ctx.host.exit).not.toHaveBeenCalled();
+  expect(JSON.stringify(ctx.host.send.mock.calls)).not.toContain('private');
+});
+
+test('empty pins skip the addon call', () => {
+  const ctx = setup(); ctx.start();
+  expect(ctx.addon.setBootEnodes).not.toHaveBeenCalled();
 });
 
 test('imports only a chain-bound checkpoint through the explicit native capability', () => {
