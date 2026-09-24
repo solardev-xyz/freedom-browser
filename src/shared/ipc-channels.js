@@ -299,6 +299,10 @@ module.exports = {
   // Main→renderer broadcast after any decision is recorded or revoked, so
   // the address-bar indicator and the settings page can re-query.
   PERMISSIONS_CHANGED: 'permissions:changed',
+  // Address bar → main: open a typed external-protocol URL (magnet:, mailto:,
+  // …) in its OS handler. Answers {opened, reason?}; see
+  // src/main/external-protocol.js (#406).
+  EXTERNAL_PROTOCOL_OPEN_FROM_ADDRESS_BAR: 'external-protocol:open-from-address-bar',
 
   // dApp Permissions
   DAPP_GET_PERMISSION: 'dapp:get-permission',

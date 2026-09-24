@@ -663,6 +663,14 @@ contextBridge.exposeInMainWorld('sitePermissions', {
     ipcRenderer.invoke('permissions:revoke-origin', origin, { scope: 'window' }),
 });
 
+// External-protocol URLs typed into the address bar (magnet:, mailto:, …).
+// Resolves {opened, reason?}; `opened: false` means "not ours — search it"
+// (no OS handler for the scheme) or a blocked scheme. See #406.
+contextBridge.exposeInMainWorld('externalProtocol', {
+  openFromAddressBar: (url) =>
+    ipcRenderer.invoke('external-protocol:open-from-address-bar', url),
+});
+
 contextBridge.exposeInMainWorld('dappPermissions', {
   getPermission: (origin) => ipcRenderer.invoke('dapp:get-permission', origin),
   grantPermission: (origin, walletIndex, chainId) =>

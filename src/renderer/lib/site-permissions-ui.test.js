@@ -35,6 +35,22 @@ describe('site-permissions-ui helpers', () => {
     });
   });
 
+  // #406: external-protocol decisions are keyed `external:<scheme>`.
+  describe('external-protocol keys', () => {
+    test('label and phrase are built from the scheme', () => {
+      expect(permissionLabel('external:magnet')).toBe('Open magnet: links');
+      expect(describePermissionRequest(['external:mailto'])).toBe(
+        'open mailto: links in another app'
+      );
+    });
+
+    test('the phrase names the OS handler when main knows it', () => {
+      expect(describePermissionRequest(['external:magnet'], 'Transmission')).toBe(
+        'open magnet: links in Transmission'
+      );
+    });
+  });
+
   describe('describePermissionRequest', () => {
     test('names single devices', () => {
       expect(describePermissionRequest(['camera'])).toBe('use your camera');

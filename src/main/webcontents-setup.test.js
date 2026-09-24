@@ -55,13 +55,16 @@ function loadWebContentsSetupModule(options = {}) {
     // for ownerWindowOf's teardown fallback.
     fromWebContents: jest.fn(options.fromWebContents || (() => null)),
   };
+  const requestOpenExternal = jest.fn(() => true);
   const { app, mod } = loadMainModule(require.resolve('./webcontents-setup'), {
     BrowserWindow,
     extraMocks: {
       [require.resolve('./logger')]: () => log,
       [require.resolve('./private/private-windows')]: () => ({
         isPrivateWebContents: options.isPrivateWebContents || (() => false),
+        getPartitionForWebContents: options.getPartitionForWebContents || (() => null),
       }),
+      [require.resolve('./permissions/permissions-manager')]: () => ({ requestOpenExternal }),
     },
   });
   const state = require('./state');
@@ -73,6 +76,7 @@ function loadWebContentsSetupModule(options = {}) {
     BrowserWindow,
     log,
     mod,
+    requestOpenExternal,
     state,
   };
 }
@@ -172,6 +176,65 @@ describe('webcontents-setup', () => {
     expect(ctx.log.info).toHaveBeenCalledWith(
       expect.stringContaining('intercepted new window request')
     );
+  });
+
+  // #406: `target="_blank"` / `window.open` to an external scheme must not
+  // become a tab — the renderer's typed-URL path would launch it without the
+  // per-site prompt. It goes through the same gate as a same-tab link.
+  test('routes an external-protocol window open through the permission gate, not a tab', () => {
+    const parentWindow = { webContents: { id: 1, send: jest.fn() } };
+    const ctx = loadWebContentsSetupModule({
+      windows: [parentWindow],
+      getPartitionForWebContents: () => 'private-1',
+    });
+    const contents = createContentsMock({ id: 31, url: 'https://example.com/page' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+
+    const result = contents.windowOpenHandler({
+      url: 'magnet:?xt=urn:btih:abc',
+      frameName: '',
+      disposition: 'foreground-tab',
+      referrer: { url: 'https://ads.example.net/', policy: 'strict-origin-when-cross-origin' },
+    });
+    expect(result).toEqual({ action: 'deny' });
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+    expect(ctx.requestOpenExternal).toHaveBeenCalledWith({
+      webContents: contents,
+      url: 'magnet:?xt=urn:btih:abc',
+      isMainFrame: false,
+      requestingUrl: 'https://ads.example.net/',
+      privatePartition: 'private-1',
+    });
+
+    // No referrer (rel="noreferrer"): the top document is the requester.
+    contents.windowOpenHandler({ url: 'mailto:a@b.c', frameName: '_blank', referrer: { url: '' } });
+    expect(ctx.requestOpenExternal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ url: 'mailto:a@b.c', requestingUrl: 'https://example.com/page' })
+    );
+    // A dangerous OS scheme is still handed to the gate (which refuses and
+    // logs it) rather than falling through to a tab.
+    contents.windowOpenHandler({ url: 'ms-msdt:/id x', frameName: '' });
+    expect(ctx.requestOpenExternal).toHaveBeenCalledTimes(3);
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+
+    // Ordinary links are unaffected.
+    contents.windowOpenHandler({ url: 'https://example.org/', frameName: '' });
+    expect(ctx.requestOpenExternal).toHaveBeenCalledTimes(3);
+    expect(parentWindow.webContents.send).toHaveBeenCalledWith(
+      'tab:new-with-url',
+      'https://example.org/',
+      null,
+      { background: false, newWindow: false }
+    );
+  });
+
+  test('webview guests record user input for the external-protocol gesture check', () => {
+    const ctx = loadWebContentsSetupModule();
+    const contents = createContentsMock({ id: 32 });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+    expect(contents.on).toHaveBeenCalledWith('input-event', expect.any(Function));
   });
 
   // #303: Chromium resolves the activation's modifiers into a disposition
