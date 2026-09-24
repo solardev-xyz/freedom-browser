@@ -1,0 +1,1 @@
+- Preserve proven Myotis peers across checkpoint recovery and wait for serving peers before verified reads ([#389](https://github.com/solardev-xyz/freedom-browser/issues/389))

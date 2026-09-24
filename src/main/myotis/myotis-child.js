@@ -1,6 +1,6 @@
 // Private child entry point. Never import this module into Electron main.
 // No profile policy, wallet signing, renderer IPC, or credentials live here.
-const EXPECTED_ABI = 29;
+const EXPECTED_ABI = 32;
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const OPERATIONS = Object.freeze({
   ens: 'ensRecordJson',

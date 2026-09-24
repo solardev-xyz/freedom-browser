@@ -19,7 +19,7 @@ describe('myotis-manager', () => {
       repairState: jest.fn(async (baseDir) => ({ dataDir: path.join(baseDir, 'repaired'), origin: 'bundled', checkpoint: null })),
       replaceCheckpoint: jest.fn(async (baseDir, _chainId, checkpoint) => ({ dataDir: path.join(baseDir, 'recovered'), origin: 'verified', checkpoint })),
     };
-    const status = { running: true, paused: false, beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 2 };
+    const status = { running: true, paused: false, beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 2, snapServingPeers: 1 };
     // Tests that need to act inside the spawn window replace the resolved start
     // promise with one they release themselves.
     let startGate = null;
@@ -81,7 +81,7 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet', 'initial'), path.join(dataDir, 'gnosis', 'initial'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.11', abi: 29 });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.12', abi: 32, snapPeers: 2, snapServingPeers: 1 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);
@@ -129,7 +129,7 @@ describe('myotis-manager', () => {
 
   test.each([
     { running: false }, { paused: true }, { beaconState: 'STALE_ANCHOR' },
-    { beaconState: 'CATCHING_UP' }, { elReaderAvailable: false }, { snapPeers: 0 }, { elHunting: true },
+    { beaconState: 'CATCHING_UP' }, { elReaderAvailable: false }, { snapServingPeers: 0 }, { snapServingPeers: undefined }, { snapServingPeers: '1' }, { snapServingPeers: NaN }, { elHunting: true },
   ])('does not serve a started but unavailable native lifecycle: %s', async (change) => {
     const { mod, clients, status } = loadManager();
     await mod.startMyotis();
@@ -143,6 +143,15 @@ describe('myotis-manager', () => {
     await expect(mod.startMyotis()).resolves.toBe(false);
     expect(clients).toHaveLength(0);
     expect(mod.publicStatus().state).toBe('disabled');
+  });
+
+  test('an absent serving-peer field fails closed even with a synced populated pool', async () => {
+    const { mod, status } = loadManager();
+    delete status.snapServingPeers;
+    await mod.startMyotis();
+    expect(mod.getStatus()).not.toHaveProperty('snapServingPeers');
+    expect(mod.publicStatus()).toMatchObject({ state: 'syncing', snapPeers: 2 });
+    expect(mod.isReady()).toBe(false);
   });
 
   test('does not restart before exit, or admit work after shutdown starts', async () => {
@@ -363,7 +372,7 @@ describe('myotis-manager', () => {
     await ctx.mod.stopMyotis(100);
   });
 
-  test('stalled execution sync stays visible until the verified reader recovers', async () => {
+  test.each([0, undefined, '1'])('stalled execution sync stays visible with serving count %s until a peer can serve', async (serving) => {
     const ctx = loadManager();
     ctx.status.elReaderAvailable = false;
     await ctx.mod.startMyotis({ chainId: 100 });
@@ -372,6 +381,11 @@ describe('myotis-manager', () => {
     ctx.clients[0].options.onStatus(ctx.status);
     expect(ctx.mod.publicStatus(100).recovery.reason).toBe('stalled');
     ctx.status.elReaderAvailable = true;
+    ctx.status.snapServingPeers = serving;
+    ctx.clients[0].options.onStatus(ctx.status);
+    expect(ctx.mod.isReady(100)).toBe(false);
+    expect(ctx.mod.publicStatus(100).recovery.reason).toBe('stalled');
+    ctx.status.snapServingPeers = 1;
     ctx.clients[0].options.onStatus(ctx.status);
     expect(ctx.mod.publicStatus(100).state).toBe('ready');
   });

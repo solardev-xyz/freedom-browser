@@ -15,7 +15,7 @@ const { getMyotisDataDir } = require('../profile-paths');
 const { MyotisProcess } = require('./myotis-process');
 const checkpointStore = require('./checkpoint-store');
 const { acquireCheckpoint } = require('./checkpoint-verifier');
-const MYOTIS_VERSION = '0.1.11';
+const MYOTIS_VERSION = '0.1.12';
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
@@ -333,7 +333,8 @@ function observeSync(instance, status) {
   }
   const finished = canFinishRecovery(instance, status);
   const ready = finished && status.running === true && status.paused !== true &&
-    status.elReaderAvailable === true && status.elHunting === false && status.snapPeers > 0;
+    status.elReaderAvailable === true && status.elHunting === false &&
+    typeof status.snapServingPeers === 'number' && status.snapServingPeers > 0;
   if ((finished && instance.recovery?.phase === 'restarting') ||
       (ready && instance.recovery?.reason === 'stalled')) {
     clearRecoveryTimer(instance);
@@ -580,13 +581,13 @@ function getStatus(chainId = 1) {
 
 // Ready = the verified read path can actually serve: beacon SYNCED, the EL
 // reader up (and not hunting for a servable head context — first reads
-// during a hunt fail on the cold context), and at least one snap-capable
-// peer held. Callers treat not-ready as "skip myotis, use the next tier" —
+// during a hunt fail on the cold context), and at least one peer covering
+// the anchored head and not read-benched. Callers treat not-ready as "skip myotis, use the next tier" —
 // never as an error.
 function updateReadiness(instance, s) {
   const ready = Boolean(
     !instance.recovery && canFinishRecovery(instance, s) && s && s.running === true && s.paused !== true && s.beaconState === 'SYNCED' && s.elReaderAvailable === true && s.elHunting === false &&
-    typeof s.snapPeers === 'number' && s.snapPeers > 0
+    typeof s.snapServingPeers === 'number' && s.snapServingPeers > 0
   );
   publishAvailability(instance, ready, ready ? 'ready' : 'not-ready');
   return ready;
@@ -733,7 +734,7 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
-    abi: 29,
+    abi: 32,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,
@@ -774,6 +775,7 @@ function publicStatus(chainId = 1) {
     targetPeriod: s.targetPeriod,
     peerCount: s.peerCount,
     snapPeers: s.snapPeers,
+    snapServingPeers: s.snapServingPeers,
     finalizedBlockNumber: s.finalizedBlockNumber,
     uptimeSeconds: Math.round((Date.now() - instance.startedAt) / 1000),
   };
@@ -837,7 +839,7 @@ async function recoveryHelp(event, chainId = 1) {
   }[reason];
   if (!guidance) return;
   // Deliberately bounded: no paths, profile identifiers, wallet data or logs.
-  const details = `Myotis ${MYOTIS_VERSION} / ABI 29\nNetwork: ${status.displayName}\nPlatform: ${process.platform}-${process.arch}\nFailure: ${reason}\nAddon found: ${status.available}\nCheckpoint verification: required`;
+  const details = `Myotis ${MYOTIS_VERSION} / ABI 32\nNetwork: ${status.displayName}\nPlatform: ${process.platform}-${process.arch}\nFailure: ${reason}\nAddon found: ${status.available}\nCheckpoint verification: required`;
   const { dialog, clipboard } = require('electron');
   const { response } = await dialog.showMessageBox(win, {
     type: 'info', title: `${status.displayName} sync help`, message: 'Help with sync recovery',

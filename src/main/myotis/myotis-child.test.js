@@ -1,14 +1,14 @@
 const { EventEmitter } = require('events');
 const { runChild } = require('./myotis-child');
 
-function setup(abi = 29) {
+function setup(abi = 32) {
   const host = new EventEmitter();
   host.connected = true;
   host.send = jest.fn();
   host.exit = jest.fn();
   const addon = {
     init: jest.fn(() => abi), create: jest.fn(() => 7), start: jest.fn(() => true), stop: jest.fn(),
-    statusJson: jest.fn(() => JSON.stringify({ snapPeers: 2 })), drainLogs: jest.fn(),
+    statusJson: jest.fn(() => JSON.stringify({ snapPeers: 2, snapServingPeers: 1 })), drainLogs: jest.fn(),
     ensRecordJson: jest.fn(), requestAccountJson: jest.fn(), estimateGasJson: jest.fn(),
     acceptStaleAnchor: jest.fn(() => true),
     createWithCheckpoint: jest.fn(() => 8),
@@ -23,8 +23,8 @@ function setup(abi = 29) {
   return { host, addon, load, send, start };
 }
 
-test('loads and starts native code only after explicit owned start; enforces ABI', () => {
-  const ctx = setup(21);
+test.each([26, 29, 30, 31, 33, '32'])('loads and starts native code only after explicit owned start; refuses ABI %s', (abi) => {
+  const ctx = setup(abi);
   expect(ctx.load).not.toHaveBeenCalled();
   ctx.start();
   expect(ctx.addon.create).not.toHaveBeenCalled();

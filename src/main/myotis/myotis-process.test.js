@@ -97,7 +97,7 @@ describe('MyotisProcess', () => {
     ready();
     const expected = {
       beaconState: 'SYNCED', currentPeriod: 1400, targetPeriod: 1400,
-      peerCount: 12, snapPeers: 3, finalizedBlockNumber: 25684100,
+      peerCount: 12, snapPeers: 3, snapServingPeers: 1, finalizedBlockNumber: 25684100,
       optimisticBlockNumber: 25684159, elReaderAvailable: true, elHunting: false,
     };
     const status = processClient.request('status');

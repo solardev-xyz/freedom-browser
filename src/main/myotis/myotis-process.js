@@ -33,7 +33,7 @@ function supervisorPath() {
 
 function statusSnapshot(status) {
   const snapshot = {};
-  for (const key of ['beaconState', 'currentPeriod', 'targetPeriod', 'peerCount', 'snapPeers',
+  for (const key of ['beaconState', 'currentPeriod', 'targetPeriod', 'peerCount', 'snapPeers', 'snapServingPeers',
     'finalizedBlockNumber', 'executionBlockNumber', 'wsBoundPeriods', 'running', 'paused',
     'elReaderAvailable', 'elHunting', 'finalizedSlot', 'finalizedRootHex']) {
     const value = status?.[key];

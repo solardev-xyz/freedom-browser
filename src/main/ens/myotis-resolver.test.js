@@ -45,6 +45,8 @@ const originalFetch = global.fetch;
 function offchainResult(sender = UR) {
   return {
     status: 'revert',
+    blockNumber: 26000000,
+    verified: false,
     dataHex: offchain.encodeErrorResult('OffchainLookup', [
       sender,
       ['https://ccip.example/{data}'],
@@ -57,6 +59,8 @@ function offchainResult(sender = UR) {
 function addressResult(multicoin = false) {
   return {
     status: 'ok',
+    blockNumber: 26000000,
+    verified: false,
     resultHex: abi.encode(
       ['bytes', 'address'],
       [abi.encode([multicoin ? 'bytes' : 'address'], [address]), UR]
@@ -86,6 +90,7 @@ test('calls the canonical Universal Resolver through the verified EVM, including
     blockNumber: null,
   });
   const request = mockCall.mock.calls[0][0];
+  expect(request.block).toBe('latest');
   expect(request.to.toLowerCase()).toBe(UR.toLowerCase());
   const [, data] = abi.decode(['bytes', 'bytes'], '0x' + request.data.slice(10));
   expect(data.slice(0, 10)).toBe('0xf1cb7e06');
@@ -139,6 +144,8 @@ test('propagates unavailability and malformed responses instead of treating them
 test('requests the chain-specific primary name via UR.reverse', async () => {
   mockCall.mockResolvedValue({
     status: 'ok',
+    blockNumber: 26000000,
+    verified: false,
     resultHex: abi.encode(['string', 'address', 'address'], ['base.eth', UR, UR]),
   });
   expect(
