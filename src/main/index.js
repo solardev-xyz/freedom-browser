@@ -253,6 +253,7 @@ const {
   registerPermissionsIpc,
   clearPrivateDecisions: clearPrivatePermissionDecisions,
 } = require('./permissions/permissions-manager');
+const { registerExternalProtocolIpc } = require('./external-protocol');
 const { registerSwarmIpc } = require('./swarm/stamp-service');
 const { registerPublishIpc } = require('./swarm/publish-service');
 const {
@@ -348,6 +349,7 @@ async function bootstrap() {
   registerNetworkConfigIpc();
   registerDappPermissionsIpc();
   registerPermissionsIpc();
+  registerExternalProtocolIpc();
   registerX402Ipc();
   registerOnchainProvenanceIpc();
   paymentHistory.registerPaymentHistoryIpc();

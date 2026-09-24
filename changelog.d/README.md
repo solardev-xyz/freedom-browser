@@ -13,10 +13,11 @@ Name the file `<section>--<slug>.md`:
   the issue or PR number works well: `fixed--280-settings-deeplink.md`.
 
 The body is the entry exactly as it should appear under that heading, written
-to the voice rules in `docs/agent-playbooks/changelog-process.md`:
+to the voice rules in `docs/agent-playbooks/changelog-process.md`, ending in a
+link to its issue, or to the pull request when there is none:
 
 ```markdown
-- A Settings address that names a section Freedom does not have no longer stands over a different one
+- A Settings address that names a section Freedom does not have no longer stands over a different one ([#280](https://github.com/solardev-xyz/freedom-browser/issues/280))
   - `freedom://settings/privacy` opened Appearance and left its own name in the address bar
 ```
 

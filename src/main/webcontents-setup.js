@@ -3,7 +3,9 @@ const { BrowserWindow, app } = require('electron');
 const { activeBzzBases } = require('./state');
 const { cleanupWebContents: cleanupX402WebContents } = require('./x402/intercept');
 const { cleanupAdblockWebContents } = require('./adblock/service');
-const { isPrivateWebContents } = require('./private/private-windows');
+const { isPrivateWebContents, getPartitionForWebContents } = require('./private/private-windows');
+const { isExternalProtocolUrl, trackUserGestures } = require('./external-protocol');
+const { requestOpenExternal } = require('./permissions/permissions-manager');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -122,8 +124,31 @@ function registerWebContentsHandlers() {
     const type = contents.getType?.() || 'unknown';
     const tag = `[webcontents:${id}:${type}]`;
 
+    // Tab webviews: run the webview preload in sub-frames too, so an iframe
+    // (an embedded YouTube player, say) gets its adblock scriptlets at
+    // document start like the main frame does (#410). The preload returns
+    // right after the scriptlet step in a sub-frame, so no other preload
+    // surface — wallet providers, freedomAPI — reaches iframes. Node
+    // integration itself stays off (sandbox + contextIsolation, tabs.js).
+    // The <webview> `webpreferences` attribute can't set this; only the
+    // embedder's will-attach-webview can.
+    // Precedent (accepted by the maintainer in PR #412): this is how Electron
+    // adblockers do it. Ghostery's @ghostery/adblocker-electron registers its
+    // preload with `session.registerPreloadScript({ type: 'frame' })` and its
+    // example app turns this same flag on, because Electron only gives a
+    // child frame's preload working IPC with it set; browsers and extensions
+    // inject into every frame too (uBlock Origin's `all_frames`, Brave).
+    contents.on('will-attach-webview', (_event, webPreferences) => {
+      webPreferences.nodeIntegrationInSubFrames = true;
+    });
+
     // For webview contents, fix dark defaults and intercept navigation
     if (type === 'webview') {
+      // An external-protocol launch (magnet:, mailto:, …) must follow real
+      // user input on the page; Electron does not report Chromium's gesture
+      // bit, so the guest's input stream stands in for it (#406).
+      trackUserGestures(contents);
+
       // Electron applies dark system colors (Canvas, CanvasText) to ALL pages when
       // nativeTheme is dark, even pages that don't opt in via color-scheme. This
       // makes pages without dark mode support unreadable (dark bg + unchanged text).
@@ -141,7 +166,7 @@ function registerWebContentsHandlers() {
         }
       });
 
-      contents.setWindowOpenHandler(({ url, frameName, disposition }) => {
+      contents.setWindowOpenHandler(({ url, frameName, disposition, referrer }) => {
         log.info(
           `${tag} intercepted new window request: ${navUrlForLog(contents, url)} ` +
             `(target: ${frameName || 'none'}, disposition: ${disposition || 'default'})`
@@ -151,6 +176,24 @@ function registerWebContentsHandlers() {
         // handed to the host renderer before this callback; anything reaching
         // here from a web3: document is therefore denied without navigation.
         if (contents.getURL().startsWith('web3://')) {
+          return { action: 'deny' };
+        }
+        // `target="_blank"` / `window.open` to an external scheme (magnet:,
+        // mailto:, …): Chrome launches it without leaving a tab behind. Opening
+        // a tab here would route the URL through the address bar's typed-URL
+        // path, which launches without asking — so it goes through the same
+        // per-site gate a same-tab link click does instead (#406). The
+        // window-open handler reports no frame, so the requesting frame is
+        // read from the referrer; with no referrer the top document is taken
+        // as the requester.
+        if (isExternalProtocolUrl(url)) {
+          requestOpenExternal({
+            webContents: contents,
+            url,
+            isMainFrame: false,
+            requestingUrl: referrer?.url || contents.getURL(),
+            privatePartition: getPartitionForWebContents(contents),
+          });
           return { action: 'deny' };
         }
         // Send message to the owning BrowserWindow to open URL in new tab

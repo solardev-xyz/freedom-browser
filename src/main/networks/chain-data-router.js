@@ -387,11 +387,18 @@ function assertMyotisBlockTag(method, blockTag) {
 }
 
 // The engine executes a call as `from`/`to`/`data`/`value` against its verified
-// head: the block argument it takes is discarded (`_block`, never read — the
-// servable-window gate is a host obligation), and the addon exposes no
-// state-override entry point. Any call carrying more than that has to go to a
-// source that can honour it, rather than being answered — as `verified` — from
-// head state without it.
+// head, and the addon exposes no state-override entry point. Any call carrying
+// more than that has to go to a source that can honour it, rather than being
+// answered — as `verified` — from head state without it.
+//
+// Engine ABI 27 (Myotis v0.1.11) started enforcing the block argument instead
+// of discarding it: `latest`, `pending`, `safe`, `finalized` and an empty block
+// still run against head state, a number from 64 below to 16 above the verified
+// head runs against head state too, and anything else is refused rather than
+// answered from the head. We only ever send `latest` — `assertMyotisBlockTag`
+// above already refuses every other tag at the router — so the enforcement is
+// a backstop here, not a behaviour change. It does mean the servable-window
+// gate is no longer a host obligation alone.
 const MYOTIS_UNSUPPORTED_CALL_FIELDS = [
   'gas',
   'gasPrice',

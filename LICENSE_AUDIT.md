@@ -1,13 +1,15 @@
 # License Audit Report for Freedom Browser
 
 **Intended License:** MPL-2.0 (Mozilla Public License 2.0)
-**Audit Date:** 2026-09-10
-**Baseline:** `0.8.5`
+**Audit Date:** 2026-09-23
+**Baseline:** `0.8.6`
 **Auditor:** Automated analysis, re-derived from the installed tree
 
 > **DISCLAIMER:** This is a practical engineering audit, not legal advice. For final licensing decisions, consult a qualified attorney.
 
-> **What changed in this revision.** The previous revision (2026-08-19) described a pre-0.8.5 tree — electron 39.2.7, ant v0.5.21, libradicle 0.3.0, "downloaded binaries: 2", no Myotis, no Arti — and reported `Copyleft (GPL/AGPL/LGPL): 0`, which was already untrue of the tree it was written against. Because `release-process.md` §4's pre-tag license check reads these files, it was passing on stale data. This revision is re-derived from the installed dependency tree and from what `package.json`'s `build` config actually packages, and `licenses-audit.test.js` now fails the build when either drifts from what is written here.
+> **What changed in this revision.** Re-derived for the 0.8.6 cut against the installed tree. No component was added or removed since 0.8.5 and no upstream relicensed; ten shipped components moved version, and each one's license was re-read at the version being shipped rather than assumed from the last audit. npm: `@corpus-core/colibri-stateless` 2.0.6 → 3.0.0 (MIT), `@ethersphere/bee-js` 13.0.0 → 13.1.0 (BSD-3-Clause), `@ledgerhq/hw-app-eth` 7.8.17 → 7.8.19 (Apache-2.0), `@safe-global/protocol-kit` 8.0.6 → 8.0.7 (MIT), `@x402/core` and `@x402/evm` 2.25.0 → 2.27.0 (Apache-2.0), `electron` → 44.4.5 (MIT), `ethers` → 6.17.0 (MIT). Bundled binaries: Ant v0.5.44 → v0.5.45 (`MIT OR Apache-2.0`, both `LICENSE-MIT` and `LICENSE-APACHE` still present at the tag) and Myotis v0.1.7 → v0.1.11 (Apache-2.0; upstream's `NOTICE` is byte-identical to the one audited at v0.1.10, sha256 `ee84afd3…`, and `NOTICES` still reproduces it verbatim per section 4(d)). Arti 2.6.0, freedom-ipfs v0.4.3 and libradicle 0.7.1 are unchanged. The only copyleft that ships is still the LGPL-3.0 OpenLV bundle, on the same relinking terms as before.
+>
+> The previous revision (2026-08-19) described a pre-0.8.5 tree — electron 39.2.7, ant v0.5.21, libradicle 0.3.0, "downloaded binaries: 2", no Myotis, no Arti — and reported `Copyleft (GPL/AGPL/LGPL): 0`, which was already untrue of the tree it was written against. Because `release-process.md` §4's pre-tag license check reads these files, it was passing on stale data. Since 0.8.5 these files are re-derived from the installed dependency tree and from what `package.json`'s `build` config actually packages, and `licenses-audit.test.js` fails the build when either drifts from what is written here.
 
 ---
 
@@ -17,15 +19,16 @@
 
 ### Key Findings
 
-| Category                                                  | Count       | Status                                      |
-| --------------------------------------------------------- | ----------- | ------------------------------------------- |
-| Production npm packages (unique name@version)             | 273         | See distribution below                      |
-| Dev npm dependencies                                      | not bundled | Do not affect the distributed product       |
-| External binaries / native addons shipped in `resources/` | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti |
-| Vendored renderer bundles in `src/renderer/vendor/`       | 4           | OpenLV, highlight.js, marked, DOMPurify     |
-| Strong copyleft (GPL/AGPL)                                | 0           | One found and removed — see below           |
-| Weak copyleft (MPL-2.0)                                   | 13 packages | Compatible; MPL-2.0 is our own license      |
-| Weak copyleft (LGPL-3.0)                                  | 5 packages  | Compatible via the isolated OpenLV bundle   |
+| Category                                                    | Count       | Status                                                             |
+| ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
+| Production npm packages (unique name@version)               | 273         | See distribution below                                             |
+| Dev npm dependencies                                        | not bundled | Do not affect the distributed product                              |
+| External binaries / native addons shipped in `resources/`   | 5           | Ant, freedom-ipfs, libradicle, Myotis, Arti                        |
+| Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                            |
+| Strong copyleft (GPL/AGPL)                                  | 0           | One found and removed — see below                                  |
+| GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410) |
+| Weak copyleft (MPL-2.0)                                     | 13 packages | Compatible; MPL-2.0 is our own license                             |
+| Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                          |
 
 ### Resolved during this audit: a GPL-3.0 library was shipping
 
@@ -104,11 +107,11 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### Myotis (Native Wallet-Engine Addon) — _new in 0.8.5_
 
 - **Source:** https://github.com/biafra23/myotis
-- **Version:** `v0.1.10` (pin: `scripts/myotis-release.json` `releaseTag`)
+- **Version:** `v0.1.11` (pin: `scripts/myotis-release.json` `releaseTag`)
 - **License:** **Apache-2.0** (single-licensed, not dual)
 - **Risk:** **Yellow**
 - **Integration:** Native addon (`myotis-node.node`), run out-of-process under Freedom's own supervisor
-- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.10 (`7c962968`): unchanged; the existing attribution still matches.
+- **Action Required:** Apache-2.0 **section 4(d)** — upstream ships a `NOTICE` file, so its attribution text must be reproduced verbatim in any redistribution. Copyright 2026 Dirk Jäckel. Reproduced in `NOTICES` ✔. **Re-read the upstream `NOTICE` on every version bump.** Checked at v0.1.11 (sha256 `ee84afd3b5c6a7c9d1bd9f1c22c915f86a8b42886e3eea8c7cad283603de53e1`, byte-identical to v0.1.10): unchanged; the existing attribution still matches.
 
 ### Arti (Tor Client) — _new in 0.8.5_
 
@@ -150,7 +153,7 @@ This is met by construction, and deliberately so. `scripts/bundle-openlv.js` emi
 
 ## Electron Framework
 
-- **Version:** 44.4.1 (lockfile-resolved)
+- **Version:** 44.4.5 (lockfile-resolved)
 - **License:** MIT
 - **Risk:** Yellow (requires notice)
 - **Notes:** Electron bundles Chromium, which contains hundreds of third-party components under various permissive licenses.
@@ -221,13 +224,33 @@ Two paths put non-code files in the artifacts, and both are inventoried here. `b
 | Asset                                                                            | Ships via        | Type                               | License                                                        |
 | -------------------------------------------------------------------------------- | ---------------- | ---------------------------------- | -------------------------------------------------------------- |
 | `assets/icon.png`, `assets/icons/*.png`                                          | `extraResources` | Icons                              | Proprietary (Freedom Team)                                     |
-| `assets/adblock/*`                                                               | `extraResources` | Filter-list data                   | GPLv3+ or CC BY-SA 3.0+ — redistributed under the CC BY-SA arm |
+| `assets/adblock/*` (EasyList family)                                             | `extraResources` | Filter-list data                   | GPLv3+ or CC BY-SA 3.0+ — redistributed under the CC BY-SA arm |
+| `assets/adblock/ublock-filters.txt`, `resources.json`, `COPYING.GPL-3.0.txt`     | `extraResources` | uBlock filters, scriptlets         | GPL-3.0 / GPL-3.0-or-later — see _The GPL question_ below      |
 | `src/renderer/pages/images/home.png` (2.65 MB), `freedom-logo-{black,white}.svg` | `app.asar`       | Internal-page artwork and wordmark | Proprietary (Freedom Team)                                     |
 | `src/renderer/assets/chains/*.png` (3)                                           | `app.asar`       | Chain marks                        | Third-party marks — see below                                  |
 | `src/renderer/assets/tokens/*.png` (8)                                           | `app.asar`       | Token marks                        | Third-party marks — see below                                  |
 | `src/main/myotis/native/*.c`                                                     | `app.asar`       | Myotis supervisor sources          | MPL-2.0, Freedom's own                                         |
 
 The filter lists (EasyList, EasyPrivacy, Fanboy Cookiemonster, Fanboy Annoyances) are dual-licensed **data, not code**. Freedom takes the CC BY-SA arm, which needs attribution only; the GPL arm is not exercised. Attributed in `NOTICES`.
+
+### The GPL question: uBlock Origin filters and scriptlets (#410)
+
+Blocking YouTube's video ads needs scriptlets, and the rules that use them live in uBlock Origin's own lists. Two files in `assets/adblock/` are therefore **GPL-only**, with no CC BY-SA arm:
+
+- `ublock-filters.txt` — _uBlock filters_ plus _uBlock filters – Quick fixes_ from [uBlockOrigin/uAssets](https://github.com/uBlockOrigin/uAssets) (GPL-3.0). Freedom's build modifies it (evaluates `!#if` blocks, splices `!#include` files, concatenates the two lists) and says so in the file's header, as GPL-3.0 §5(a) requires. It is plain text and is its own source.
+- `resources.json` — uBlock Origin's scriptlets and redirect resources (GPL-3.0-or-later, [gorhill/uBlock](https://github.com/gorhill/uBlock) `src/js/resources/`), shipped unmodified in the form @ghostery/adblocker publishes, pinned by tag (`v2.18.2`) and sha256 in `scripts/fetch-adblock-lists.js`. Its script bodies are **minified**, so under GPL-3.0 §6 it is object code: `NOTICES` and the manifest name the exact corresponding source (see _Decided_ below).
+
+**Position.** These are separate works shipped next to Freedom, not combined with it: they sit outside `app.asar` as standalone files in `extraResources`, Freedom's MPL-2.0 code never links or includes them, and the MPL-2.0 engine (@ghostery/adblocker) only reads the list text as data and hands the scriptlet text to the web page it's injected into. That is an "aggregate" under GPL-3.0 §5's last paragraph, so the GPL applies to those files and not to Freedom. Brave (MPL-2.0) and Ghostery's own extension ship uBlock's lists and scriptlets the same way. Obligations met in this tree: licence text shipped (`COPYING.GPL-3.0.txt`, written by the same fetch script), copyright and source named in `NOTICES` and in the settings page's footer, and the modification notice in the list header.
+
+**Decided** (maintainer, [PR #412](https://github.com/solardev-xyz/freedom-browser/pull/412#issuecomment-5803316294)): do what Brave does.
+
+1. **The aggregation position stands.** Brave (MPL-2.0) ships uBlock Origin's lists as data straight from `uBlockOrigin/uAssets` ([`brave/adblock-resources`](https://github.com/brave/adblock-resources) `filter_lists/list_catalog.json`), and builds uBlock's scriptlets and redirect resources from a pinned uBlock source ([`brave/brave-core-crx-packager`](https://github.com/brave/brave-core-crx-packager): `submodules/uBlock` → `adblock-rs` `uBlockResources(...)`, `lib/adBlockRustUtils.js`), shipped as separate data files next to its MPL code. Freedom's arrangement is the same.
+2. **Corresponding source: point to the exact public source, don't mirror it.** Brave pins uBlock as a git submodule at an exact commit; Ghostery builds `resources.json` from a uBlock release. Freedom records the same kind of exact, verifiable pin, as permanent GitHub URLs at a tag or commit, in `NOTICES` and in `assets/adblock/manifest.json`:
+   - `resources.json` (sha256 `e14b498f…`): uBlock Origin [1.72.3rc4, commit `de31aee0`](https://github.com/gorhill/uBlock/tree/de31aee0fcd69dc89cde558f1a0638c1aa77b75e/src/js/resources) (`src/js/resources/`, `src/js/redirect-resources.js`, `src/web_accessible_resources/`; [1.73.0 stable](https://github.com/gorhill/uBlock/tree/1.73.0) has byte-identical copies), brought into @ghostery/adblocker by [commit `e08ecf7f`](https://github.com/ghostery/adblocker/commit/e08ecf7fe10f929d5053234017d72d65001640a6) via Ghostery's [asset build script at `v2.18.2`](https://github.com/ghostery/adblocker/blob/v2.18.2/packages/adblocker/assets/update.js). Ghostery doesn't label its build with a uBlock revision, so the revision was identified by content (scriptlet set and two dated source changes); the derivation is written next to the pin in `scripts/fetch-adblock-lists.js` and has to be redone on every @ghostery/adblocker bump.
+   - `ublock-filters.txt`: each build resolves uAssets' published branch (`gh-pages`) to one commit and downloads every file at that commit, recording it as `https://github.com/uBlockOrigin/uAssets/tree/<commit>` in the file's header and in the manifest (`categories.ublock.source`). If GitHub can't resolve the commit at build time, the build falls back to the Pages URL and records that plus the fetch date.
+3. **Sub-frame injection** (`nodeIntegrationInSubFrames`, needed for scriptlets in child frames) is accepted as established practice; see the comment at the site in `src/main/webcontents-setup.js`.
+
+Obligations met in this tree, then: licence text shipped, copyright and exact source named in `NOTICES` and the manifest, the modification notice in the list header. As with everything here, this is an engineering position, not legal advice (see the disclaimer above).
 
 `src/renderer/pages/images/` is Freedom's own internal-page artwork and wordmark, and `src/main/myotis/native/` is Freedom's own Myotis supervisor sources — original works under the same MPL-2.0 as the rest of the tree, needing no third-party notice. They are listed because the audit claims to describe what the artifact contains, and until this revision it named only `assets/`: a third-party file committed under `src/` outside `vendor/` was exactly how `qrious.min.js` shipped unnoticed.
 
@@ -280,7 +303,7 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 
 `src/renderer/vendor/qrious.min.js` (GPL-3.0) was shipping unreferenced; see _Resolved during this audit_ above. Nothing else in the production tree or the vendor directory is GPL or AGPL.
 
-The ad-blocking filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"; Freedom redistributes them under CC BY-SA, so no GPL obligation attaches.
+The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"; Freedom redistributes them under CC BY-SA, so no GPL obligation attaches. The uBlock Origin filters and scriptlets in `assets/adblock/` are GPL-only, shipped alongside Freedom as separate files rather than combined with it — see _The GPL question_ under _Assets_ for the position and the maintainer's decision.
 
 ### Weak copyleft: present and handled
 
@@ -344,4 +367,4 @@ Freedom Browser can be released under MPL-2.0, with these conditions:
 
 ---
 
-_Re-derived from the installed tree on 2026-09-10 against `0.8.5`. Kept honest by `licenses-audit.test.js`._
+_Re-derived from the installed tree on 2026-09-23 against `0.8.6`. Kept honest by `licenses-audit.test.js`._

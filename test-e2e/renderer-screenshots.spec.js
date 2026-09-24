@@ -48,6 +48,18 @@
 //
 // which copies every `*-actual.png` back over its baseline.
 //
+// The baselines also assume a checkout *without* the bundled ad-block filter
+// lists (`assets/adblock/`, git-ignored, fetched by `npm run adblock:download`).
+// CI's screenshots job never downloads them, so `40-settings-adblock` and
+// `44-settings-search` (whose `block` query lists Ad Blocking rows) depict the
+// no-lists state: the section's single "cannot run" notice with its controls
+// inactive (#274). With the lists present — e.g. after running
+// `settings-adblock.spec.js`, which needs them — those two surfaces render
+// live toggles, rule counts and a lists-present status line and fail with a
+// large diff unrelated to your change. Move `assets/adblock/` aside before
+// running or updating this spec locally, and never adopt those two baselines
+// from a run that had it.
+//
 // Both npm scripts set `FREEDOM_E2E_STABLE_TEXT=1`, which launches Electron
 // with `--disable-lcd-text --disable-font-subpixel-positioning`. Without it
 // Chromium flips a surface between subpixel and greyscale text antialiasing as

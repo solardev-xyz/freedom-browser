@@ -80,6 +80,22 @@ function resetProfileDeleteSims() {
   profileDeleteSims.clear();
 }
 
+// External-protocol launches (#406): recorded instead of handed to the OS, and
+// the OS handler lookup answered from here — a CI runner has no magnet:/mailto:
+// handler registered. See src/main/external-protocol.js.
+const externalOpens = [];
+const externalHandlers = new Map();
+
+function installExternalProtocolRecorder() {
+  globalThis.__FREEDOM_TEST_EXTERNAL_PROTOCOL__ = {
+    open: (url) => {
+      externalOpens.push(url);
+      log.info(`[test-harness] recorded external open (${String(url).split(':')[0]}:)`);
+    },
+    appNameFor: (scheme) => externalHandlers.get(scheme) || '',
+  };
+}
+
 function resetFixtures() {
   contentFixtures.clear();
   ensFixtures.clear();
@@ -530,6 +546,12 @@ function exposeGlobalShim() {
       );
     },
     clearProfileDeleteSims: resetProfileDeleteSims,
+    // External-protocol launches (see installExternalProtocolRecorder).
+    externalOpens: () => [...externalOpens],
+    setExternalHandler: (scheme, appName) => {
+      if (appName) externalHandlers.set(scheme, appName);
+      else externalHandlers.delete(scheme);
+    },
     state: () => ({
       content: [...contentFixtures.keys()],
       ens: [...ensFixtures.keys()],
@@ -555,6 +577,7 @@ function installTestHarness({ defaultSession }) {
   installProfileLaunchRecorder();
   installProfileFocusSimulator();
   installProfileDeleteSimulator();
+  installExternalProtocolRecorder();
   exposeGlobalShim();
   return true;
 }

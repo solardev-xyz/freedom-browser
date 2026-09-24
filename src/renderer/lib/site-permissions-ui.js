@@ -2,7 +2,8 @@
  * Site Permissions UI
  *
  * Two chrome surfaces for per-site web permissions (camera, mic,
- * notifications, clipboard-read, geolocation, MIDI):
+ * notifications, clipboard-read, geolocation, MIDI, and opening an
+ * external-protocol link — `external:<scheme>`, one key per scheme, #406):
  *
  * 1. The permission prompt anchored under the address bar. Main queues
  *    requests per requesting webContents (tab) and sends one per tab at
@@ -58,7 +59,26 @@ const PERMISSION_PHRASES = {
   midi: 'use your MIDI devices',
 };
 
-export const permissionLabel = (key) => PERMISSION_LABELS[key] || key;
+// External-protocol decisions are stored per scheme as `external:<scheme>`
+// (src/main/external-protocol.js), so their label and phrase are built from
+// the scheme rather than looked up.
+const EXTERNAL_KEY_PREFIX = 'external:';
+const externalScheme = (key) =>
+  typeof key === 'string' && key.startsWith(EXTERNAL_KEY_PREFIX)
+    ? key.slice(EXTERNAL_KEY_PREFIX.length)
+    : null;
+
+export const permissionLabel = (key) => {
+  const scheme = externalScheme(key);
+  if (scheme) return `Open ${scheme}: links`;
+  return PERMISSION_LABELS[key] || key;
+};
+
+const permissionPhrase = (key, appName) => {
+  const scheme = externalScheme(key);
+  if (scheme) return `open ${scheme}: links in ${appName || 'another app'}`;
+  return PERMISSION_PHRASES[key] || `use ${key}`;
+};
 
 /**
  * Build the "wants to …" phrase for a prompt's storage keys.
@@ -66,16 +86,17 @@ export const permissionLabel = (key) => PERMISSION_LABELS[key] || key;
  * else joins with "and".
  *
  * @param {string[]} keys
+ * @param {string|null} [appName] - OS handler for an external-protocol request
  * @returns {string}
  */
-export const describePermissionRequest = (keys = []) => {
+export const describePermissionRequest = (keys = [], appName = null) => {
   const unique = [...new Set(keys)];
   if (unique.includes('camera') && unique.includes('microphone')) {
     const rest = unique.filter((k) => k !== 'camera' && k !== 'microphone');
-    const phrases = ['use your camera and microphone', ...rest.map((k) => PERMISSION_PHRASES[k] || `use ${k}`)];
+    const phrases = ['use your camera and microphone', ...rest.map((k) => permissionPhrase(k, appName))];
     return phrases.join(' and ');
   }
-  const phrases = unique.map((k) => PERMISSION_PHRASES[k] || `use ${k}`);
+  const phrases = unique.map((k) => permissionPhrase(k, appName));
   return phrases.join(' and ') || 'use a device';
 };
 
@@ -179,7 +200,7 @@ const showNextPrompt = () => {
   } else {
     if (promptOriginEl) promptOriginEl.textContent = activePrompt.origin || 'This site';
     if (promptActionEl) {
-      promptActionEl.textContent = ` wants to ${describePermissionRequest(keys)}`;
+      promptActionEl.textContent = ` wants to ${describePermissionRequest(keys, activePrompt.appName)}`;
     }
     const note = permissionRequestNote(keys);
     if (promptNoteEl) {
