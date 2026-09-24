@@ -392,12 +392,13 @@ describe('settings-store', () => {
   });
 
   test('reverts a stored remap whose chord a newer default has claimed', () => {
+    const chord = process.platform === 'darwin' ? 'Cmd+0' : 'Ctrl+0';
     // Recorded when Ctrl+0 was free — the zoom entries claimed it later, so
     // keeping it would fire two actions on one press.
     fs.writeFileSync(
       path.join(userDataDir, 'settings.json'),
       JSON.stringify({
-        shortcutOverrides: { 'view.focusAddressBar': 'Ctrl+0', 'tab.new': 'Ctrl+Shift+U' },
+        shortcutOverrides: { 'view.focusAddressBar': chord, 'tab.new': 'Ctrl+Shift+U' },
       }),
       'utf-8'
     );
@@ -407,7 +408,7 @@ describe('settings-store', () => {
     expect(mod.loadSettings().shortcutOverrides).toEqual({ 'tab.new': 'Ctrl+Shift+U' });
     expect(mod.getRevertedShortcutOverrides()).toEqual({
       'view.focusAddressBar': {
-        accelerator: 'Ctrl+0',
+        accelerator: chord,
         conflictId: 'page.zoomReset',
         conflict: 'Actual size',
       },
@@ -430,25 +431,26 @@ describe('settings-store', () => {
   });
 
   test('a Reset that hands a default back never drops a sibling remap silently', () => {
+    const chord = process.platform === 'darwin' ? 'Cmd+R' : 'Ctrl+R';
     const { mod, logger } = loadSettingsStore({ userDataDir });
 
     // Two remaps the interactive path allows: Reload moves off Ctrl+R and
     // New Tab takes the freed chord.
     expect(
       mod.saveSettings({
-        shortcutOverrides: { 'page.reload': 'Ctrl+Shift+U', 'tab.new': 'Ctrl+R' },
+        shortcutOverrides: { 'page.reload': 'Ctrl+Shift+U', 'tab.new': chord },
       })
     ).toBe(true);
     expect(mod.loadSettings().shortcutOverrides).toEqual({
       'page.reload': 'Ctrl+Shift+U',
-      'tab.new': 'Ctrl+R',
+      'tab.new': chord,
     });
     expect(mod.getRevertedShortcutOverrides()).toEqual({});
     logger.warn.mockClear();
 
     // Reset on Reload's row — resetOverride saves the map minus that entry.
     // Ctrl+R goes back to Reload, so New Tab's remap cannot stay.
-    expect(mod.saveSettings({ shortcutOverrides: { 'tab.new': 'Ctrl+R' } })).toBe(true);
+    expect(mod.saveSettings({ shortcutOverrides: { 'tab.new': chord } })).toBe(true);
 
     const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
     expect(persisted.shortcutOverrides).toEqual({});
@@ -456,7 +458,7 @@ describe('settings-store', () => {
     // getShortcutState puts the notice on the New Tab row.
     expect(mod.getRevertedShortcutOverrides()).toEqual({
       'tab.new': {
-        accelerator: 'Ctrl+R',
+        accelerator: chord,
         conflictId: 'page.reload',
         conflict: 'Reload this page',
       },
