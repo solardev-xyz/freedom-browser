@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "chainId": 100,
+  "network": "gnosis",
+  "root": "0x31418dbdb1fa6f60e1ff776ac2d43e9ed32e49a2522ff4f032e8a83a19fb7ae7",
+  "slot": 30257136,
+  "verifiedAt": 1790279292744,
+  "sources": [
+    "https://checkpoint-sync-gnosis.dappnode.net",
+    "https://gnosis-beacon-api.publicnode.com"
+  ],
+  "finalizedEpoch": 1891071
+}

@@ -94,7 +94,8 @@ seats; three conflicting responses cannot cause a search for agreeable reserves.
 HTTP failures, malformed bodies and missing/lagging finality may be replaced.
 Clock-invalid or contradictory evidence is not treated as mere unavailability.
 The existing overall worker deadline bounds all replacement rounds. Gnosis requires
-both `checkpoint.gnosischain.com` and `checkpoint-sync-gnosis.dappnode.net`.
+two of three operators: `checkpoint.gnosischain.com`,
+`checkpoint-sync-gnosis.dappnode.net`, and `gnosis-beacon-api.publicnode.com`.
 Proofs still come from `mainnet1.colibri-proof.tech` and
 `gnosis.colibri-proof.tech`, respectively, and Colibri proof verification is
 mandatory. There is no reduced-threshold fallback to any prover or RPC server.
@@ -106,11 +107,16 @@ cover both chains; the WASM runtime remains mandatory.
 
 Each provider gets one vote for the exact requested slot/root only after an
 explicit finality endorsement. If its latest checkpoint has advanced, the
-Checkpointz finalized-history API can endorse the same older block. Mere block
+Checkpointz finalized-history API can endorse the same older block. Standard
+Beacon APIs can instead explicitly endorse finalized history with `finalized: true`
+and `execution_optimistic: false` on the requested block-root response. PublicNode
+must supply both flags, even for the current checkpoint; missing/malformed flags
+never count as a vote. The flag on a head-state response does not describe the
+requested block. Same-epoch conflicts and clock checks still apply. Mere block
 existence is insufficient. Publication lag or missing history is retryable;
 conflicting evidence that prevents quorum pauses recovery with an explanation
-and Retry. Ethereum can tolerate a dissenting or unavailable third source;
-Gnosis cannot recover while either source is unavailable.
+and Retry. Both networks tolerate a dissenting or unavailable third source when
+two others agree and Colibri verification succeeds.
 
 This is an external checkpoint trust policy. Security depends on sufficiently
 many independent operators being honest; domain names alone do not establish
@@ -143,8 +149,10 @@ state directory. Only an absent record or a validated native-retired record
 permits migration. A new directory is not a way around an unconfirmed old exit.
 
 Service unavailability, a checkpoint changing during verification, and an
-outdated checkpoint receive at most three automatic attempts, with 15-second
-and 60-second delays. Verification mismatch, clock disagreement, storage errors,
+outdated checkpoint retry after 15 seconds and 60 seconds, then every five minutes
+while the node is wanted in the active profile. **Retry sync** can start a fresh
+attempt immediately during a wait. Verification mismatch, quorum conflict,
+clock disagreement, storage errors,
 unconfirmed ownership, missing checkpoint-import capability, or restart failures
 stop automatic retries.
 Five minutes without read readiness shows **Syncing slowly** and explains that

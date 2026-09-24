@@ -21,6 +21,7 @@ const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
 const RECOVERY_COOLDOWN_MS = 15000;
 const RECOVERY_RETRY_MS = [15000, 60000];
+const RECOVERY_BACKGROUND_RETRY_MS = 5 * 60 * 1000;
 const RECOVERY_NOTICE_MS = 60 * 1000;
 const SYNC_NOTICE_MS = 5 * 60 * 1000;
 
@@ -277,7 +278,7 @@ function storageFailureReason(error) {
 function failRecovery(instance, reason, retry = false) {
   if (!instance.wanted || shuttingDown || instance.stopping) return;
   clearRecoveryTimer(instance);
-  const delay = retry ? RECOVERY_RETRY_MS[instance.recoveryAttempt - 1] : null;
+  const delay = retry ? (RECOVERY_RETRY_MS[instance.recoveryAttempt - 1] ?? RECOVERY_BACKGROUND_RETRY_MS) : null;
   const token = instance.lifecycleToken;
   instance.recovery = {
     phase: delay ? 'waiting' : 'blocked', reason,
@@ -287,6 +288,7 @@ function failRecovery(instance, reason, retry = false) {
   };
   if (!delay) clearRecoveryNotice(instance);
   instance.lastError = null;
+  log.warn(`[myotis] ${instance.name} recovery ${JSON.stringify(instance.recovery)}`);
   publishAvailability(instance, false, 'checkpoint-recovery-failed');
   publishStatus(publicStatus(instance.chainId));
   if (delay) {
@@ -420,14 +422,22 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
   const controller = new AbortController();
   instance.recoveryController = controller;
   instance.recoveryAttempt += 1;
+  log.info(`[myotis] ${instance.name} checkpoint attempt ${instance.recoveryAttempt}`);
   instance.recovery = { phase: 'checking', reason: null, attempt: instance.recoveryAttempt,
     nextRetryAt: null, canRetry: false };
   publishAvailability(instance, false, 'checkpoint-recovery', true);
   publishStatus(publicStatus(instance.chainId));
   const pending = (async () => {
     try {
-      const checkpoint = await acquireCheckpoint(instance.chainId, { signal: controller.signal });
+      const checkpoint = await acquireCheckpoint(instance.chainId, {
+        signal: controller.signal,
+        onDiagnostic: (diagnostic) => {
+          if (currentRun(instance, token) && !controller.signal.aborted)
+            log.info(`[myotis] checkpoint source ${JSON.stringify({ ...diagnostic, attempt: instance.recoveryAttempt })}`);
+        },
+      });
       if (!currentRun(instance, token) || controller.signal.aborted) return false;
+      log.info(`[myotis] ${instance.name} checkpoint attempt ${instance.recoveryAttempt} verified`);
       instance.recovery = { ...instance.recovery, phase: 'restarting' };
       publishStatus(publicStatus(instance.chainId));
       const previous = instance.client;

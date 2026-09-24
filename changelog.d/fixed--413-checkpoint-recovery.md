@@ -1,0 +1,1 @@
+- Sync recovery keeps retrying temporary checkpoint outages, with an additional Gnosis checkpoint provider and manual retry during waits ([#413](https://github.com/solardev-xyz/freedom-browser/issues/413))

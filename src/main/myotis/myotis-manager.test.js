@@ -52,6 +52,7 @@ describe('myotis-manager', () => {
     const dialog = { showMessageBox: jest.fn(async () => ({ response: 0 })) };
     const BrowserWindow = { getAllWindows: () => [], fromWebContents: jest.fn(() => win) };
     const dataDir = path.join('/profile', 'myotis');
+    const logger = { info: jest.fn(), warn: jest.fn() };
     const { mod } = loadMainModule(require.resolve('./myotis-manager'), {
       ipcMain, dialog, BrowserWindow, clipboard,
       extraMocks: {
@@ -59,7 +60,7 @@ describe('myotis-manager', () => {
         [require.resolve('./myotis-process')]: () => ({ MyotisProcess: MockProcess }),
         [require.resolve('./checkpoint-store')]: () => store,
         [require.resolve('./checkpoint-verifier')]: () => ({ acquireCheckpoint }),
-        [require.resolve('../logger')]: () => ({ info: jest.fn(), warn: jest.fn() }),
+        [require.resolve('../logger')]: () => logger,
         [require.resolve('../profile-paths')]: () => ({ getMyotisDataDir: (network) => path.join(dataDir, network) }),
         [require.resolve('../profile-resolver')]: () => ({
           getActiveProfile: () => profile,
@@ -70,7 +71,7 @@ describe('myotis-manager', () => {
       },
     });
     const gateStart = () => (startGate = {});
-    return { mod, clients, dataDir, ipcMain, status, event, win, dialog, acquireCheckpoint, store, profile, existsSync, clipboard,
+    return { mod, clients, dataDir, ipcMain, status, event, win, dialog, acquireCheckpoint, store, profile, existsSync, clipboard, logger,
       gateStart, releaseStart: (value) => startGate.release(value) };
   }
 
@@ -279,7 +280,7 @@ describe('myotis-manager', () => {
     expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
   });
 
-  test.each(['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE'])('retries %s twice, then waits for an explicit trusted retry', async (code) => {
+  test.each(['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE', 'CHECKPOINT_RACE', 'CHECKPOINT_STALE'])('retries %s quickly, then every five minutes; manual retry and stop work', async (code) => {
     const ctx = loadManager();
     ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('offline'), { code }));
     ctx.status.beaconState = 'STALE_ANCHOR';
@@ -289,28 +290,93 @@ describe('myotis-manager', () => {
     expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(2);
     await jest.advanceTimersByTimeAsync(60000);
     expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(3);
-    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'blocked', canRetry: true });
-    await jest.advanceTimersByTimeAsync(120000);
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', canRetry: true, nextRetryAt: Date.now() + 300000 });
+    await jest.advanceTimersByTimeAsync(299999);
     expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(3);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(4);
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', attempt: 4, nextRetryAt: Date.now() + 300000 });
     ctx.mod.registerMyotisIpc();
     ctx.ipcMain.handlers.get(IPC.MYOTIS_RETRY_CHECKPOINT)(ctx.event, 100); await flush();
-    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(4);
+    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(5);
     await ctx.mod.stopMyotis(100);
-    await jest.advanceTimersByTimeAsync(120000);
-    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(4);
+    await jest.advanceTimersByTimeAsync(600000);
+    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(5);
     expect(ctx.mod.publicStatus(100).state).toBe('off');
   });
 
-  test.each([['CHECKPOINT_MISMATCH', 'mismatch'], ['CHECKPOINT_QUORUM_CONFLICT', 'quorum-conflict']])('evidence %s stays blocked without automatic retries or a risk bypass', async (code, reason) => {
+  test.each([
+    ['CHECKPOINT_MISMATCH', 'mismatch'], ['CHECKPOINT_QUORUM_CONFLICT', 'quorum-conflict'],
+    ['CHECKPOINT_CLOCK', 'clock'], ['CHECKPOINT_STORAGE', 'storage'],
+    ['CHECKPOINT_STORAGE_IO', 'storage-io'], ['CHECKPOINT_OWNERSHIP', 'ownership'],
+    ['CHECKPOINT_INCOMPATIBLE', 'unsupported'],
+  ])('failure %s stays blocked without automatic retries or a risk bypass', async (code, reason) => {
     const ctx = loadManager();
     ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('invalid'), { code }));
     ctx.status.beaconState = 'STALE_ANCHOR';
     await ctx.mod.startMyotis({ chainId: 100 }); await flush();
-    await jest.advanceTimersByTimeAsync(120000);
+    await jest.advanceTimersByTimeAsync(600000);
     expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(1);
     expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
     expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'blocked', reason });
     await expect(ctx.mod.getAccount('0xabc', 100)).rejects.toThrow('not ready');
+  });
+
+  test('a slow background retry recovers when sources return, without a restart or user action', async () => {
+    const ctx = loadManager();
+    ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('offline'), { code: 'CHECKPOINT_QUORUM_UNAVAILABLE' }));
+    ctx.status.beaconState = 'STALE_ANCHOR';
+    await ctx.mod.startMyotis({ chainId: 100 }); await flush();
+    await jest.advanceTimersByTimeAsync(75000);
+    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(3);
+    expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', takingLonger: true });
+    ctx.acquireCheckpoint.mockResolvedValue(checkpoint);
+    ctx.status.beaconState = 'BOOTSTRAPPING';
+    await jest.advanceTimersByTimeAsync(300000);
+    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(4);
+    expect(ctx.store.replaceCheckpoint).toHaveBeenCalledTimes(1);
+    ctx.clients.at(-1).options.onStatus({ ...ctx.status, beaconState: 'SYNCED',
+      finalizedSlot: checkpoint.slot, finalizedRootHex: checkpoint.root.slice(2) });
+    expect(ctx.mod.isReady(100)).toBe(true);
+    expect(ctx.mod.publicStatus(100).recovery).toBeUndefined();
+    await jest.advanceTimersByTimeAsync(600000);
+    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(4);
+    expect(ctx.logger.info).toHaveBeenCalledWith('[myotis] gnosis checkpoint attempt 4 verified');
+  });
+
+  test.each(['profile-change', 'disabled', 'shutdown'])('a queued slow retry does not run after %s', async change => {
+    const ctx = loadManager();
+    ctx.acquireCheckpoint.mockRejectedValue(Object.assign(new Error('offline'), { code: 'CHECKPOINT_UNAVAILABLE' }));
+    ctx.status.beaconState = 'STALE_ANCHOR';
+    await ctx.mod.startMyotis({ chainId: 100 }); await flush();
+    await jest.advanceTimersByTimeAsync(75000);
+    if (change === 'profile-change') ctx.profile.id = 'different';
+    else if (change === 'disabled') ctx.profile.metadata.nodes.myotis.mode = 'disabled';
+    else await ctx.mod.stopAllMyotis({ shutdown: true });
+    await jest.advanceTimersByTimeAsync(600000);
+    expect(ctx.acquireCheckpoint).toHaveBeenCalledTimes(3);
+    expect(ctx.store.replaceCheckpoint).not.toHaveBeenCalled();
+  });
+
+  test('logs diagnostics for the active attempt and its retry decision without raw errors', async () => {
+    const ctx = loadManager();
+    let diagnosticCallback;
+    ctx.acquireCheckpoint.mockImplementation(async (_id, { onDiagnostic }) => {
+      diagnosticCallback = onDiagnostic;
+      onDiagnostic({ chainId: 100, source: 'https://checkpoint.gnosischain.com',
+        slot: 30000000, outcome: 'CHECKPOINT_UNAVAILABLE', failure: 'timeout', elapsedMs: 20000 });
+      throw Object.assign(new Error('sensitive error detail'), { code: 'CHECKPOINT_QUORUM_UNAVAILABLE' });
+    });
+    ctx.status.beaconState = 'STALE_ANCHOR';
+    await ctx.mod.startMyotis({ chainId: 100 }); await flush();
+    expect(ctx.logger.info).toHaveBeenCalledWith(expect.stringContaining('"failure":"timeout"'));
+    expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining('"reason":"quorum-unavailable"'));
+    expect(JSON.stringify(ctx.logger.warn.mock.calls)).not.toContain('sensitive');
+    await ctx.mod.stopMyotis(100);
+    const count = ctx.logger.info.mock.calls.length;
+    diagnosticCallback({ failure: 'late' });
+    expect(ctx.logger.info).toHaveBeenCalledTimes(count);
   });
 
   test('privileged retry rejects pages and subframes', async () => {
@@ -539,7 +605,7 @@ describe('myotis-manager', () => {
     await jest.advanceTimersByTimeAsync(60000);
     expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', takingLonger: true });
     await jest.advanceTimersByTimeAsync(15000);
-    expect(ctx.mod.publicStatus(100).recovery.phase).toBe('blocked');
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', takingLonger: true });
     ctx.mod.registerMyotisIpc();
     ctx.ipcMain.handlers.get(IPC.MYOTIS_RETRY_CHECKPOINT)(ctx.event, 100); await flush();
     expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', takingLonger: false });

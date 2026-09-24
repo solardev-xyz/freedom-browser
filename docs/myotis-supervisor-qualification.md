@@ -36,7 +36,8 @@ Qualification of the current product flow must cover:
 - Process restart using the same authenticated checkpoint/state generation,
   plus a later expiry requiring a fresh generation without deleting the old one.
 - Wrong evidence, unavailable services, outdated replies and clock disagreement;
-  only transient conditions retry automatically, with a three-attempt limit.
+  only transient conditions retry automatically: two quick retries followed by
+  five-minute background retries, with manual retry available during waits.
 - Legacy active/unknown ownership records must block migration, while absent or
   native-retired records permit it; no recovery action clears quarantine.
 - Storage corruption/write failure and incompatible addons: no state adoption,
