@@ -4,6 +4,8 @@ Date: 2026-09-14; updated 2026-09-25. Status: current main and managed nodes syn
 
 ## Implementation status
 
+**PPv2 spike preflight:** [Access and CLI comparison](ppv2-integration-preflight-2026-09-25.md) records the bounded integration start. Existing GitHub authentication returns 403 for the SDK and lacks `read:packages`; the referenced source repo returns 404. The exact PR HTTP and storage adapters can be tested without the SDK, but full execution awaits supported access and confirmation of the candidate under audit. Current Kohaku Railgun is an explicitly empty placeholder. The CLI remains our host/operation reference; its PPv1 defaults and recovery shortcuts are not a PPv2 integration specification.
+
 **Latest September 25 work:** [Reconciliation and PPv2 boundaries](privacy-reconciliation-and-ppv2-2026-09-25.md) records explicit review of unverified inclusion, reorg invalidation, restart recovery, bounded protocol reads, pinned local artifacts and forced worker termination. Full regression: 5,555 passed, 25 skipped, the same 3 baseline failures; final focused suites: 76 passed. Source Electron: 5 passed; packaged macOS: 6 passed. Open Kohaku PR #258 is now a concrete PPv2 candidate; its exact GitHub Packages SDK returns 401 without authentication. SDK access/provenance, deployment grants, actual prover egress/memory and recoverable shielded operations remain gates. The removed Railgun runtime is not the default continuation target.
 
 **Earlier September 25 work:** [Recovery and SDK follow-up](privacy-engineering-followup-2026-09-25.md) records main/node synchronization, the encrypted attempt journal and host HTTP transport. Its remaining-work list is superseded where the newer report records completion.

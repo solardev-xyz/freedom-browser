@@ -7,6 +7,8 @@
 
 Date: 2026-09-14. Status: source study and proposed implementation sequence.
 
+**September 25 preflight:** the CLI still resolves to this document's `e7d8e9d` snapshot. Rechecked host assembly, protocol lifecycle, storage and Tor behavior for the PPv2 spike. Kohaku master `cae3525` restores only an empty Railgun placeholder. SDK execution is gated by package/source access; actual PPv2 storage-adapter tests are added without installing the SDK. [Preflight and resume point](../docs/ppv2-integration-preflight-2026-09-25.md).
+
 This is a new study, not a reconstruction of the earlier document with this filename referenced by the July privacy roadmap. It incorporates the supplied message recommending Kohaku's SDK, plugin/host interfaces, and Kassandra's CLI.
 
 Scope: static inspection of source, tests, package manifests, and upstream issue discussion. No wallet was imported, no transaction was submitted, and no SDK proving, recovery, or Electron packaging test was executed. Findings about supported operations describe the inspected implementation, not independent production qualification. The older roadmap's legal and ecosystem claims were not revalidated.

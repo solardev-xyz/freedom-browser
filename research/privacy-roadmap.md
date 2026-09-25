@@ -9,6 +9,8 @@ The September revision updates transport and wallet planning from current PPv2 d
 
 **Latest September 25 continuation:** explicit reconciliation can release the next-send gate only after reviewing unverified inclusion and rechecking it; reorgs or disappearing receipts revoke that permission. Restricted private-account contract/log reads, local digest/size-checked artifacts and cancellable CPU workers are implemented. Open [Kohaku PR #258](https://github.com/ethereum/kohaku/pull/258) is the concrete PPv2 candidate: its optional `@0xbow-io/privacy-pools-v2-sdk@0.2.0-beta.0` uses GitHub Packages, which returned 401 unauthenticated. Source is inspectable, SDK execution remains gated. The actual PR HTTP adapter passes local host-transport checks. Its devnet uses stub proofs and is not real proving/recovery evidence. See [the latest implementation and next gates](../docs/privacy-reconciliation-and-ppv2-2026-09-25.md).
 
+**PPv2 spike checkpoint:** a bounded Sepolia integration through the existing Kohaku PR is approved while 0xbow completes its reported audit; mainnet activation waits for final qualification. Authenticated SDK access currently fails (403, existing token has no `read:packages` scope); source lookup returns 404. HTTP/storage adapter interoperability is testable meanwhile. See [the access checkpoint, CLI comparison and resume plan](../docs/ppv2-integration-preflight-2026-09-25.md). The audit-candidate SDK/deployment relationship still needs confirmation from 0xbow.
+
 ## 1. Threat model — six distinct adversaries
 
 Privacy work fails when features are matched to the wrong adversary. Freedom's map:
