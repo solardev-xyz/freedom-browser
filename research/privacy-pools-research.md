@@ -4,6 +4,10 @@
 **Scope:** Privacy Pools v2 (0xbow) as a built-in transactional-privacy layer for Freedom's EVM wallet.
 **Companion docs:** `kohaku-wallet-integration-research.md` (new September 14 source study; the earlier June document is not present), `privacy-roadmap.md` (T1–T6), `tor-circuit-isolation-research.md`, `nym-integration-research.md` (not present in this checkout).
 
+## September 25 update — source access and real offline proof
+
+The invitation is accepted and `v2.0` is cloned at `fe0244e3`. Root and SDK declare MIT; the SDK builds from its frozen lockfile, 96 upstream tests pass, and four Kohaku/signature/key-derivation cases match independent implementations. A real deposit proof verifies in a separate Node process. The old Kohaku PR lacks the new finality API and `EXIT_PENDING` handling; its prover dependency fails inside Freedom’s Node worker. See [the current qualification and implementation sequence](../docs/ppv2-sdk-qualification-2026-09-25.md). The SDK’s placeholder application identifier, transitive dependency distribution terms, final audit/deployment matching and full recovery remain gates. Historical access/license-unknown statements below describe earlier checks, not the present source-access status.
+
 ## September 25 update — concrete adapter candidate
 
 Open [Kohaku PR #258](https://github.com/ethereum/kohaku/pull/258), inspected at `6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e`, supplies a substantive PPv2 plugin, injected RPC/HTTP/storage adapters and sample apps. Its [manifest](https://github.com/ethereum/kohaku/blob/6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e/packages/privacy-pools/package.json) names `@0xbow-io/privacy-pools-v2-sdk@0.2.0-beta.0`; the repository routes this scope to GitHub Packages. An unauthenticated request to the correct package registry returned **401**. This corrects the earlier investigation's focus on `@privacy-pools-v2/sdk` at public npm; neither response establishes that PPv2 does not exist.

@@ -7,7 +7,7 @@
 
 Date: 2026-09-14. Status: source study and proposed implementation sequence.
 
-**September 25 preflight:** the CLI still resolves to this document's `e7d8e9d` snapshot. Rechecked host assembly, protocol lifecycle, storage and Tor behavior for the PPv2 spike. Kohaku master `cae3525` restores only an empty Railgun placeholder. SDK execution is gated by package/source access; actual PPv2 storage-adapter tests are added without installing the SDK. [Preflight and resume point](../docs/ppv2-integration-preflight-2026-09-25.md).
+**September 25 preflight:** the CLI still resolves to this document's `e7d8e9d` snapshot. Rechecked host assembly, protocol lifecycle, storage and Tor behavior for the PPv2 spike. Kohaku master `cae3525` restores only an empty Railgun placeholder. The initial checkpoint was gated by source access. After invitation acceptance, the v2.0 SDK builds and independent derivation plus a real separate-process proof pass. Full adapter typechecking finds missing finalized-block and `EXIT_PENDING` support; Node-worker proving fails in a transitive runtime. [Current SDK qualification](../docs/ppv2-sdk-qualification-2026-09-25.md). [Preflight and resume point](../docs/ppv2-integration-preflight-2026-09-25.md).
 
 This is a new study, not a reconstruction of the earlier document with this filename referenced by the July privacy roadmap. It incorporates the supplied message recommending Kohaku's SDK, plugin/host interfaces, and Kassandra's CLI.
 

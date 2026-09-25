@@ -1,0 +1,283 @@
+{
+  "kohakuRevision": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "sdkRevision": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+  "node": "v24.18.1",
+  "platform": "darwin-arm64",
+  "sdkEntrySha256": "963c7c23b2e87b562acc3793c69c2c55dbb9fc0cb120afd131d2675b0fc2d632",
+  "lockfileSha256": "d35079faf9158baa4e21f438873981c4461f4412059b59ff77d5081e4cbac421",
+  "appIdentifier": "TODO-privacy-pools-v2",
+  "applicationDependenciesChanged": false,
+  "auditCandidateConfirmed": false,
+  "liveNetworkTested": false,
+  "onchainTransactionSubmitted": false,
+  "sdkSources": [
+    {
+      "file": "LICENSE",
+      "sha256": "1bdd9b911117a1954631b58feebac82b7592d66934cb8fcb22b79b67c9745ba1"
+    },
+    {
+      "file": "packages/sdk/package.json",
+      "sha256": "0b28fda6a31817ad6d0ba5602d233db46f8ae19d472ee530786f92487f820776"
+    },
+    {
+      "file": "packages/sdk/src/constant/KeyDerivation.ts",
+      "sha256": "da16800203facdb5a777c021b959debbbdce4e21b39049500f7f2d1baa5723a8"
+    },
+    {
+      "file": "packages/sdk/src/constant/CircuitArtifacts.ts",
+      "sha256": "3d61c59edf1230e16ab712dc7a74a744cc52c2f4e9f88b532c5c6b0fd48e7e63"
+    },
+    {
+      "file": "packages/sdk/src/services/Groth16Prover.ts",
+      "sha256": "65dfca54cc091fe99f1ef86a63b66890e57351e013181843295890aefe9ca575"
+    },
+    {
+      "file": "packages/sdk/src/interfaces/IRPCInteractor.ts",
+      "sha256": "46ed0f3e75e5e53a48d5c306eb35505f85675e051b6f718ea7a1c6dc13ce477c"
+    },
+    {
+      "file": "packages/sdk/src/types/NoteStatus.ts",
+      "sha256": "e9f774c10a31f973eb1fd8187a2796d64b20165511edaf4afb008ea82bc28c7d"
+    },
+    {
+      "file": "apps/sample-web/src/secretDerivationPayload.ts",
+      "sha256": "3b3d572577a237d0e61e912ec831eff3337086ef8a04583341bf551e87740a17"
+    }
+  ],
+  "sourceDigests": [
+    {
+      "file": "packages/plugins/src/base.ts",
+      "sha256": "1ac1b93c617eb8347e74263566071ebba2bcc7caca5166f11dce0a293e766803"
+    },
+    {
+      "file": "packages/plugins/src/broadcaster/base.ts",
+      "sha256": "6d973ce3b0ea458aaf1613c7106d9fb8104eb2c18baa5fe9ea405fe1d6f940cf"
+    },
+    {
+      "file": "packages/plugins/src/errors.ts",
+      "sha256": "d0bb2f1e683912292ce1d5d4277f9cc977441105869596215a1644da488546b6"
+    },
+    {
+      "file": "packages/plugins/src/host/index.ts",
+      "sha256": "4a3578ceb42ae5138726e36de6bf2a9e7511ff73a8d592e6b494106be51a9814"
+    },
+    {
+      "file": "packages/plugins/src/host/memory-storage.ts",
+      "sha256": "44545fb28c53fa5b71b97131fec60ef5d02ea41676ce7e672c47046dc6edc85a"
+    },
+    {
+      "file": "packages/plugins/src/host/mnemonic-keystore.ts",
+      "sha256": "874418962f94c72b1bdb18d4be3d5b79e6daeb2fce6b7d47a2ed615c102423b8"
+    },
+    {
+      "file": "packages/plugins/src/index.ts",
+      "sha256": "acf925bebc48b1547fba1a8ceaf7e1c7422366eb340ca959582aa8c7b6db54a0"
+    },
+    {
+      "file": "packages/plugins/src/shared.ts",
+      "sha256": "c51d5160c0d63235c04ecc4b9ad2f6adbe3841fd01dcb0ebb154bdecf8bbc86f"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/account/.gitkeep",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/account/derivation.ts",
+      "sha256": "52c23bb9ea5b3dcff07a60df2261af78d3df93c5c014f5480cdb890ea933dcb1"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/account/keystore-record.ts",
+      "sha256": "0581c4f2e986fe3c8f6f74d77274af73576d1bb249e820680b5e30a4cc76a73f"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/adapters/http.adapter.ts",
+      "sha256": "067973077129e8e80f1fffd8120661807a2f44368b054ab60803bf4b875a1d2f"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/adapters/rpc.adapter.ts",
+      "sha256": "90b9e2758e9da02076603e4906fbfd4ca4fe89ca4a13bf35d042826dfd295a93"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/adapters/storage.adapter.ts",
+      "sha256": "01525897e96018f0ec067cd564f08af8e4cba899f66f905556f186d2f2eba73a"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/broadcaster.ts",
+      "sha256": "95223a4467e03f6faa4c057d07d6c9a698f56d35a0f7a61fe6375a3aaec8a8c0"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/index.ts",
+      "sha256": "eccbe9db599f12a430c24b27ce58b4fecdb01ee834765d1e62483453a93201d2"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/interfaces/errors.ts",
+      "sha256": "3a63b35e5b9649df350cb6bda9d59bc24f9b79857171ca4b40297a0e21cff02f"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/interfaces/operations.interface.ts",
+      "sha256": "1e397ee09bc43b78a6c4530c1e1a62257e7d4687b5422ac7d05faa5976a27bf8"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/interfaces/plugin.interface.ts",
+      "sha256": "d469ee31ff85b1381456f9fc099c42f953705a04ac36e8678e80fc603f78b1e8"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/internal/quotes.ts",
+      "sha256": "994a27f9327484d4a37bed098b7e1a873db316b2d602dce5d0679bebd76c64c6"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/internal/session-registry.ts",
+      "sha256": "5a593fcc22e570ce16aea746480b1d8bf0225b05b629a106ff2d4af7cba13ebe"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/mapping/assets.ts",
+      "sha256": "4f227ce830a76457beb1ccbb3e44caa3e174fed6a7a59f7669a3bf65f19b936d"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/mapping/status.ts",
+      "sha256": "6447bcad77cc97416e457dfc088ec42a7ea25f4ef6ae2b2dd5bfad2d70c55cb1"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/plugin.ts",
+      "sha256": "195200d79f60d0e24c5c4c5c186c5716a40a52ad07fd173c3fc01d549980c346"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/selection/.gitkeep",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/selection/note-selection.ts",
+      "sha256": "478708bf01174f5a881771e968789ab9f081101de3029927ee29802b6e40616a"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/session.ts",
+      "sha256": "eac2568da0a1e7f8fee529de29254ed5b69b65798f7434fdf633d6bfd61fdba1"
+    },
+    {
+      "file": "packages/provider/src/colibri/colibri-stateless.d.ts",
+      "sha256": "213c09ec9215af8d4bc1b170f547a956a1c0e3d66613bc2f280929344ca492d4"
+    },
+    {
+      "file": "packages/provider/src/colibri/index.ts",
+      "sha256": "b98ff83d61ac1c057a61e860cb6efcd5767e5bf7595ccc2b0ed4d9b1da671427"
+    },
+    {
+      "file": "packages/provider/src/ethers/index.ts",
+      "sha256": "f41babb5b492a2b202287afdcdf0e747816a7710c6fe0b45a3e2febde7f084ce"
+    },
+    {
+      "file": "packages/provider/src/ethers/signer.ts",
+      "sha256": "3bf880ca060bbcae7f44daa630da3f7843b1810132cb5649572354a967732c16"
+    },
+    {
+      "file": "packages/provider/src/helios/index.ts",
+      "sha256": "c4462376ff8f4b84baa11453ee04cf5217168b2b0c5a2d6d9b8de37892005446"
+    },
+    {
+      "file": "packages/provider/src/index.ts",
+      "sha256": "aab6b628727d95647c2e3ad37c77363344dbc66508e2e0989693f84c67df0ed6"
+    },
+    {
+      "file": "packages/provider/src/provider.ts",
+      "sha256": "77854bdb724102e9b211520e5546f3ea757ad95f9987a1f5af7cda19ee11245f"
+    },
+    {
+      "file": "packages/provider/src/raw/hex.ts",
+      "sha256": "845dc3f4605427827c25c780d22a509323584edbb6321eb62fa46514efd0442c"
+    },
+    {
+      "file": "packages/provider/src/raw/index.ts",
+      "sha256": "0595b8427724dcc0b52acd3875cd65ceb78c4c688b24cb6f498d126865fece42"
+    },
+    {
+      "file": "packages/provider/src/tx.ts",
+      "sha256": "704d93886d2a51168a65571f464ab14d317c67d4be1390b07c59bccca3257a91"
+    },
+    {
+      "file": "packages/provider/src/viem/index.ts",
+      "sha256": "5f4428aa703395a83490ff0dbc9ee6efdd901fbc89bb9cd033a69a8db9975d8d"
+    },
+    {
+      "file": "packages/provider/src/viem/signer.ts",
+      "sha256": "5c59f2dbf4da44bc8bbfbb0d782c5f454f4e2230e3a99920540c44611fb3270b"
+    }
+  ],
+  "adapterTypecheck": {
+    "passed": false,
+    "diagnostics": "../../../../..<scratch>/packages/privacy-pools/src/v2/adapters/rpc.adapter.ts(44,14): error TS2420: Class 'KohakuRpcInteractor' incorrectly implements interface 'IRPCInteractor'.\n  Property 'getFinalizedBlockNumber' is missing in type 'KohakuRpcInteractor' but required in type 'IRPCInteractor'.\n../../../../..<scratch>/packages/privacy-pools/src/v2/mapping/status.ts(14,53): error TS2366: Function lacks ending return statement and return type does not include 'undefined'.\n../../../../..<scratch>/packages/privacy-pools/src/v2/mapping/status.ts(48,52): error TS2366: Function lacks ending return statement and return type does not include 'undefined'.\n../../../../..<scratch>/packages/privacy-pools/src/v2/session.ts(87,28): error TS2345: Argument of type 'KohakuRpcInteractor' is not assignable to parameter of type 'IRPCInteractor'.\n  Property 'getFinalizedBlockNumber' is missing in type 'KohakuRpcInteractor' but required in type 'IRPCInteractor'.\n"
+  },
+  "derivation": {
+    "passed": true,
+    "cases": 4,
+    "independentSignature": "ethers",
+    "independentKdf": "node:crypto",
+    "canonicalPayloadMatched": true,
+    "accountsSeparated": true,
+    "rotationPreservesIdentity": true,
+    "productionIdentityFinalized": false
+  },
+  "artifacts": [
+    {
+      "name": "deposit.wasm",
+      "size": 2337270,
+      "sha256": "833e7b3c44a900a95496009a36284e11f57ba0385fab6b63f92075750817550a"
+    },
+    {
+      "name": "deposit.zkey",
+      "size": 1031707,
+      "sha256": "0e64b6d15ea540b3ab04d5596ab45d1ed6df0872e0261a850039372104837b30"
+    },
+    {
+      "name": "deposit.vkey.json",
+      "size": 3744,
+      "sha256": "cc0c1647983f2ca75b192e5c671b9b2932fd690709922bf32443a4053cd0912a"
+    }
+  ],
+  "workerProof": {
+    "verified": false,
+    "diagnostic": "PRIVATE_WORKER_FAILED"
+  },
+  "processProof": {
+    "verified": true,
+    "tamperedRejected": true,
+    "provingMs": 266,
+    "publicSignalCount": 4,
+    "networkAttempts": 0,
+    "rssBytes": 438304768
+  },
+  "cancellation": {
+    "tested": false,
+    "reason": "SDK cannot prove inside the existing Node worker boundary"
+  },
+  "limits": [
+    "Adapter type errors remain; no working full protocol session claimed.",
+    "Synthetic local deposit proof only; no transfer, unshield, chain recovery or audited deployment qualification.",
+    "Network tripwires are diagnostic, not a sandbox, and do not cover nested workers.",
+    "Separate-process proof success does not qualify an application process host or vault cancellation.",
+    "RSS is process-wide at result time, not peak prover memory; JS heap limit excludes WASM/native allocations.",
+    "No packaged Electron qualification or production keys."
+  ],
+  "checkedAt": "2026-09-25",
+  "sourceAccess": {
+    "repository": "0xbow-io/v2-monorepo",
+    "branch": "v2.0",
+    "account": "flotob",
+    "readAccess": true,
+    "licenseDeclared": "MIT",
+    "sdkVersion": "0.0.0",
+    "private": true
+  },
+  "validation": {
+    "sdkBuild": "passed with upstream declaration-bundler warnings",
+    "sdkFocusedTestsPassed": 96,
+    "freedomHostTestsPassed": 11,
+    "lint": "passed",
+    "fullFreedomSuiteRerun": false
+  },
+  "workerDiagnosis": {
+    "package": "web-worker@1.2.0",
+    "observed": "Worker is not a constructor",
+    "mechanism": "Non-main Node thread is treated as package bootstrap; workerData.mod is absent",
+    "upstreamModified": false
+  }
+}

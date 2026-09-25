@@ -2,7 +2,9 @@
 
 Date: 2026-09-25. Decision: begin a bounded internal Sepolia spike through Kohaku's PPv2 adapter; wait for audit/final deployment qualification before mainnet activation. Florian reports that 0xbow is awaiting its final security audit and otherwise considers PPv2 ready for mainnet. This is partner information, not an independently verified audit result or a claim that the inspected SDK commit matches the audited candidate.
 
-## Access checkpoint
+**Later September 25:** source access is now working after invitation acceptance. The `v2.0` SDK builds, independent derivation checks pass, and a real deposit proof verifies in a separate Node process. Kohaku needs finality/exit-state updates and the existing Node worker cannot host this prover. See [the current SDK qualification and next implementation slice](ppv2-sdk-qualification-2026-09-25.md). The checks below preserve the earlier access investigation.
+
+## Earlier access checkpoint (before invitation acceptance)
 
 | Check | Result |
 | --- | --- |
@@ -16,7 +18,7 @@ Date: 2026-09-25. Decision: begin a bounded internal Sepolia spike through Kohak
 
 The registry request used existing GitHub CLI authentication in memory, sent only to GitHub's package registry, with redirects disabled. No credential was printed, saved, committed, refreshed or given additional scopes. **The 403 does not establish that the account itself lacks package entitlement:** missing package-read scope is a known obstacle. The repository 404 also does not distinguish missing access from an obsolete repository location.
 
-Full SDK execution is blocked until a supported package/source access route is available. No package installation, proof generation, live relayer submission or wallet transaction was attempted. The request for access information is pending with Florian; no message was sent to maintainers.
+At this earlier checkpoint, full SDK execution was blocked until a supported package/source access route became available. No package installation, proof generation, live relayer submission or wallet transaction was attempted. The request for access information is pending with Florian; no message was sent to maintainers.
 
 Useful request to 0xbow, ready to forward:
 
@@ -56,7 +58,7 @@ Tests run the actual storage adapter against Freedom's encrypted store. They ver
 
 Reproduce by running the spike script against a checkout containing the PR commit. Set `FREEDOM_PP_V2_STORAGE_FIXTURE` to its `storageOutput` and `FREEDOM_PP_V2_HTTP_FIXTURE` to its `output`, then run `npm test -- -- --runInBand src/main/wallet/kohaku-storage.test.js src/main/networks/kohaku-network.test.js`. Source digests, fixture paths and access-check outcomes are in [the preflight report](qualification/ppv2-integration-preflight-2026-09-25.json).
 
-## Resume point
+## Original resume point (superseded by the SDK qualification)
 
 Once supported SDK access and the matching candidate are confirmed: install the reviewed dependencies only in the isolated spike, reproduce derivation vectors, connect the real host/prover, and attempt registration → shield → sync/ASP approval → reviewed unshield. Test restart, full-history reconstruction and rotated-key recovery separately. Stop for substantial API forks; keep production activation off until the completed audit/fixes and final deployment are reviewed.
 
