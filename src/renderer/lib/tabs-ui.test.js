@@ -195,6 +195,15 @@ const loadTabsModule = async (options = {}) => {
     // Mirrors `page-urls.js#isNewTabPageName`, the name-keyed form the
     // internal-page singleton rules consult.
     isNewTabPageName: (pageName) => pageName === 'home' || pageName === 'private',
+    // Mirrors `page-urls.js#isHomePageUrl`: anchored to the home page's own
+    // resolved URL, never an `/pages/home.html` suffix (#376).
+    isHomePageUrl: (url) => {
+      const base = options.homeUrl || HOME_URL;
+      return (
+        typeof url === 'string' &&
+        (url === base || url.startsWith(`${base}?`) || url.startsWith(`${base}#`))
+      );
+    },
   }));
 
   const mod = await import('./tabs.js');
@@ -1460,6 +1469,36 @@ describe('tabs ui behavior', () => {
     const focused = mod.openInNewTabWithTarget('freedom://settings', null);
     expect(focused.id).toBe(opened.id);
     expect(mod.getActiveTab().id).toBe(opened.id);
+  });
+
+  // #280: the sub-path depth `freedomInternalPageTarget` accepts has to match
+  // what `getInternalPageName` emits — a chain detail is
+  // `freedom://settings/chains/1`, so a link or a bookmark carrying that URL
+  // has to reach the Settings singleton with `chains/1` as its sub-path. A
+  // single-segment pattern fell through to the generic branch and opened it as
+  // an ordinary tab instead, on a URL nothing could load.
+  test('a freedom:// link with a multi-segment sub-path still reaches the singleton', async () => {
+    jest.useFakeTimers();
+    const { mod } = await loadTabsModule({
+      internalPages: { settings: 'file:///app/pages/settings.html' },
+    });
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    await mod.initTabs();
+
+    const opened = mod.openInNewTabWithTarget('freedom://settings/chains/1', null);
+    expect(mod.getTabs()).toHaveLength(2);
+    expect(opened.url).toBe('freedom://settings/chains/1');
+    // Resolved as the webview's initial src, so the tab never parks on
+    // about:blank — fragment carrying the whole sub-path.
+    expect(opened.webview.src).toBe('file:///app/pages/settings.html#chains/1');
+
+    // And it is the same singleton tab a bare `freedom://settings` reuses.
+    const reused = mod.openInNewTabWithTarget('freedom://settings/chains/1', null);
+    expect(reused.id).toBe(opened.id);
+    expect(mod.getTabs()).toHaveLength(2);
+    jest.runOnlyPendingTimers();
+    expect(onLoadTarget).toHaveBeenCalledWith('freedom://settings/chains/1', null, opened.webview);
   });
 
   // #325: the chrome paths (hamburger menu, address bar, bookmark, same-tab

@@ -75,7 +75,7 @@ Protocol and privileged logic belongs in the main process. The renderer talks to
 | `npm run radicle:download`    | Download the embedded libradicle addon for the current platform |
 | `npm run radicle:build-addon` | Build the libradicle addon from a sibling checkout              |
 | `npm run tor:download`        | Build the Arti Tor binary for the current platform              |
-| `npm run adblock:download`    | Download the packaged ad-blocking lists                         |
+| `npm run adblock:download`    | Download the packaged ad-blocking lists and scriptlet resources |
 | `npm run ipfs:native:smoke`   | Smoke-test the native IPFS addon and retrieval path             |
 | `npm run ant:smoke-upload`    | Exercise a Swarm buy/upload/download round trip                 |
 
@@ -136,7 +136,7 @@ Build an unpacked, unsigned application for the host platform with:
 npm run build -- --mac --unsigned
 ```
 
-Replace `--mac` with `--linux` or `--win` as appropriate. Native modules no longer need compiling for the target: `better-sqlite3` v13 ships prebuilt addons for every target we package (`darwin`/`linux`/`linuxmusl` x `x64`/`arm64`, plus `win32`), and each installer is built carrying only its own. Linux _distributables_ still use the Docker scripts, because the `.deb` target needs a system `fpm` (`USE_SYSTEM_FPM=true`) and its Ruby toolchain running in a container of the target architecture, which also fetches the arch-matched Radicle/IPFS/Myotis addons:
+Replace `--mac` with `--linux` or `--win` as appropriate. Native modules no longer need compiling for the target: `better-sqlite3` v13 ships prebuilt addons for every target we package (`darwin`/`linux`/`linuxmusl` x `x64`/`arm64`, plus `win32`), and each installer is built carrying only its own. Linux _distributables_ still use the Docker scripts, because the `.deb` and `.pacman` targets need a system `fpm` (`USE_SYSTEM_FPM=true`) and its Ruby toolchain running in a container of the target architecture, which also fetches the arch-matched Radicle/IPFS/Myotis addons:
 
 ```bash
 npm run dist:linux:x64:docker

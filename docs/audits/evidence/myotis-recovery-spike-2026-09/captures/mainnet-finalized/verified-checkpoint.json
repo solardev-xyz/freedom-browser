@@ -1,0 +1,24 @@
+{
+  "chainId": 1,
+  "network": "mainnet",
+  "root": "0x13262465a1a69d2ab579e8a06122dbe1b6f88a3ffb28d8218babaefe8d1a9124",
+  "slot": 15215808,
+  "ageSeconds": 868,
+  "verifiedAt": "2026-09-14T19:36:28.225Z",
+  "trustSource": "https://mainnet.checkpoint.sigp.io",
+  "finalitySource": "https://mainnet.checkpoint.sigp.io/eth/v1/beacon/states/head/finality_checkpoints",
+  "finalizedEpoch": "475494",
+  "proofSha256": "be345a4716e892f5a3e9370c87c5a0ce45ef097c02cec11d44e846722799ef5a",
+  "committeeKeyCount": 512,
+  "beaconHeader": {
+    "slot": "0xe82cc0",
+    "proposerIndex": "0x176731",
+    "parentRoot": "0xe24db3febea8428fa05629ba1c67d9649a35af3e84f88a3cd6698dafc00228ec",
+    "stateRoot": "0x85e4776e07d97cdcd56597cec27ddcb67f057a95398ea47600853e0b9ce3a0db",
+    "bodyRoot": "0x48a2e2a7c88a94de627b95271ba49a3c7a359793f79350605afde4efdf95ab6b"
+  },
+  "proofRequestLatestBlock": {
+    "number": "0x18c63e0",
+    "hash": "0x92d496621de7e134076710f60c5df2044021467bef1a8a8c50521c9535012850"
+  }
+}

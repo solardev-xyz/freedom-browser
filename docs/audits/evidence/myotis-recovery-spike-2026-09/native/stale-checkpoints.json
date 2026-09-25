@@ -1,0 +1,15 @@
+{
+  "sourceCommit": "d53e4e2d6de29308fba398a2b28c3c070bbc426c",
+  "sourceTag": "v0.1.7",
+  "sourcePath": "rust/myotis-net/src/sync.rs",
+  "mainnet": {
+    "root": "0xbe4ab798de3dce15ec3602dad3d27bb4af5d3b70524b90dce627ef5e372e9f89",
+    "slot": 14954528,
+    "embeddedDate": "2026-08-09"
+  },
+  "gnosis": {
+    "root": "0x5387a11e014d8d4a9e8ca072ccd6639be912ab9a15b14b3b1f2d49b79551d954",
+    "slot": 29458656,
+    "embeddedDate": "2026-08-09"
+  }
+}

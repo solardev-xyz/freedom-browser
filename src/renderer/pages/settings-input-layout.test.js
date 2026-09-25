@@ -34,6 +34,10 @@ const SIZING_WRAPPERS = [
   'search-provider-fields',
   'shortcut-toolbar',
   'profile-node-field',
+  // The page-wide "Search settings" field in the sidebar header (#281),
+  // which sizes itself against the nav below it the same way the Shortcuts
+  // search sizes itself against its "Restore defaults" button.
+  'sidebar-search',
 ];
 const INTRINSIC_WRAPPERS = ['row-control'];
 

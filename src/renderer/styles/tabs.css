@@ -10,9 +10,17 @@
 }
 
 .title-bar-spacer {
-  width: 76px; /* Space for traffic lights + 12px gap */
+  width: 12px;
   flex-shrink: 0;
   align-self: stretch;
+}
+
+/* macOS draws its traffic lights inside the window (titleBarStyle
+   'hiddenInset'), so reserve room for them + a 12px gap. Windows and Linux
+   (framed or frameless) keep the 12px default. data-platform is set by
+   platform-init.js before first paint, so the tabs never shift on startup. */
+html[data-platform='darwin'] .title-bar-spacer {
+  width: 76px;
 }
 
 .title-bar-drag {

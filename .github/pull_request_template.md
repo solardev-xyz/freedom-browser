@@ -6,6 +6,21 @@
 
 <!-- Use "Closes #123" when the PR should close an issue. -->
 
+## Changelog
+
+<!--
+A user-visible change adds one file, `changelog.d/<section>--<slug>.md`, whose
+body is the entry exactly as it should read under that heading. Never edit
+`CHANGELOG.md` in a feature pull request against `main` — one file per change
+is what stops two of them conflicting over the same lines. (The release-gate
+pull request against `release/<version>` is the exception: editing
+`CHANGELOG.md` is its whole job.) See changelog.d/README.md.
+-->
+
+- [ ] User-visible — a `changelog.d/` fragment is included
+- [ ] Not user-visible (developer-only fix, in-release polish, internal or
+      test-only work)
+
 ## Verification
 
 <!-- List the checks you actually ran. Do not check a box for a check you did not run. -->
@@ -21,8 +36,10 @@
 <!--
 Anything under `src/renderer/` (chrome, sidebar, internal pages, settings):
 before/after screenshots of every surface you touched, in **both themes** —
-required, not optional. Nothing else renders the light theme, which is how a
-month of dark-only Settings (#223) and a white-on-white sidebar (#249) shipped.
+required, not optional. CI renders both themes now and fails on contrast and
+on unintended repaints, but a changed screenshot baseline is only as good as
+the eye that approves it, and nothing in CI can see a new surface drifting from
+its siblings.
 
 The repo's own driver takes them:
 

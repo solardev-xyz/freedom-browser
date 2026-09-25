@@ -48,6 +48,13 @@ function isEnsHost(host) {
   );
 }
 
+function isPotentialEnsName(value) {
+  return typeof value === 'string' && value.includes('.') &&
+    !/[\s/:@?#%\\]/u.test(value) &&
+    !Array.from(value).some((c) => c.codePointAt(0) < 32 || c.codePointAt(0) === 127) &&
+    value.split('.').every((label) => label.length > 0);
+}
+
 function isTezosDomainHost(host) {
   if (!host || typeof host !== 'string') return false;
   const lower = host.toLowerCase();
@@ -142,4 +149,4 @@ function normalizeOrigin(origin) {
   return getPermissionKey(origin) || '';
 }
 
-module.exports = { getPermissionKey, isDwebNameHost, isEnsHost, isTezosDomainHost, normalizeOrigin };
+module.exports = { isPotentialEnsName, getPermissionKey, isDwebNameHost, isEnsHost, isTezosDomainHost, normalizeOrigin };

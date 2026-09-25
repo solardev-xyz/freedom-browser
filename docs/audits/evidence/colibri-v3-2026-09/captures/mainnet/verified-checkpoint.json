@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "chainId": 1,
+  "network": "mainnet",
+  "root": "0xdd239c62e2cf5c5621ab42ae898ea483a6662c29594edacdcfc7ef4843919e80",
+  "slot": 15241024,
+  "verifiedAt": 1789717671116,
+  "sources": [
+    "https://mainnet.checkpoint.sigp.io",
+    "https://beaconstate.ethstaker.cc",
+    "https://beaconstate-mainnet.chainsafe.io"
+  ],
+  "finalizedEpoch": 476282,
+  "colibriVersion": "3.0.0",
+  "proofRequest": {
+    "method": "eth_getBlockByNumber",
+    "params": [
+      "latest",
+      false
+    ],
+    "version": 196608,
+    "zk_proof": true
+  },
+  "proofSha256": "d522993401e852dc0b0a73971ca818a5b44a6da8f996b36d1037f7ef00d54431"
+}

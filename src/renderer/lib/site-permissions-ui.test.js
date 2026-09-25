@@ -35,6 +35,22 @@ describe('site-permissions-ui helpers', () => {
     });
   });
 
+  // #406: external-protocol decisions are keyed `external:<scheme>`.
+  describe('external-protocol keys', () => {
+    test('label and phrase are built from the scheme', () => {
+      expect(permissionLabel('external:magnet')).toBe('Open magnet: links');
+      expect(describePermissionRequest(['external:mailto'])).toBe(
+        'open mailto: links in another app'
+      );
+    });
+
+    test('the phrase names the OS handler when main knows it', () => {
+      expect(describePermissionRequest(['external:magnet'], 'Transmission')).toBe(
+        'open magnet: links in Transmission'
+      );
+    });
+  });
+
   describe('describePermissionRequest', () => {
     test('names single devices', () => {
       expect(describePermissionRequest(['camera'])).toBe('use your camera');
@@ -437,5 +453,100 @@ describe('site-permissions-ui popover revoke label', () => {
 
     buttons[0].dispatch('click');
     expect(api.revoke).toHaveBeenCalledWith('https://a.example', 'camera');
+  });
+});
+
+// #364: an embargoed permission is the one block the user never chose —
+// the site simply stopped asking after three dismissals. So it has to
+// reach the address-bar indicator (the popover is where it is explained
+// and lifted), and the row has to say why, or "Blocked (this session)"
+// reads as a decision the user made.
+describe('site-permissions-ui dismissal embargo', () => {
+  const originalDocument = global.document;
+  const originalWindow = global.window;
+
+  let els;
+  let api;
+
+  const mount = async (decisions) => {
+    _resetForTests();
+    els = {
+      'permission-prompt': createElement('div'),
+      'permission-prompt-origin': createElement('span'),
+      'permission-prompt-action': createElement('span'),
+      'permission-prompt-note': createElement('div'),
+      'permission-prompt-remember-label': createElement('label'),
+      'permission-prompt-remember': createElement('input'),
+      'permission-prompt-allow': createElement('button'),
+      'permission-prompt-block': createElement('button'),
+      'permission-indicator': createElement('button'),
+      'permission-popover': createElement('div'),
+      'permission-popover-title': createElement('div'),
+      'permission-popover-list': createElement('div'),
+    };
+    els['permission-prompt'].hidden = true;
+    els['permission-popover'].hidden = true;
+    global.document = createDocument({ elementsById: els });
+
+    api = {
+      onPromptRequest: jest.fn(),
+      onPromptCancel: jest.fn(),
+      onOsDenied: jest.fn(),
+      onChanged: jest.fn(),
+      respondToPrompt: jest.fn(() => Promise.resolve(true)),
+      getForOrigin: jest.fn(() => Promise.resolve(decisions)),
+      revoke: jest.fn(() => Promise.resolve(true)),
+    };
+    global.window = { sitePermissions: api, addEventListener: jest.fn() };
+    mockActiveWebview = { getWebContentsId: () => 1 };
+    getDisplayUrlForWebview.mockReturnValue('https://a.example/page');
+    initSitePermissionsUi();
+    // Let the indicator refresh kicked off by init resolve.
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  const indicatorHidden = () => els['permission-indicator'].classList.contains('hidden');
+  const rowStatuses = () =>
+    els['permission-popover-list']
+      .querySelectorAll('.permission-popover-row-status')
+      .map((el) => el.textContent);
+
+  afterEach(() => {
+    global.document = originalDocument;
+    global.window = originalWindow;
+    mockActiveWebview = null;
+    getDisplayUrlForWebview.mockReturnValue('');
+  });
+
+  test('an embargo shows the indicator and says it came from dismissals', async () => {
+    await mount({
+      notifications: { decision: 'deny', remembered: false, embargoed: true },
+    });
+
+    expect(indicatorHidden()).toBe(false);
+    els['permission-indicator'].dispatch('click');
+    expect(rowStatuses()).toEqual(['Blocked after repeated dismissals (this session)']);
+
+    // And the row's Remove is the reset: it revokes the embargoed key.
+    const buttons = els['permission-popover-list'].querySelectorAll('.permission-popover-revoke');
+    buttons[0].dispatch('click');
+    expect(api.revoke).toHaveBeenCalledWith('https://a.example', 'notifications');
+  });
+
+  test("a block the user chose keeps the status quo: no indicator, plain 'Blocked'", async () => {
+    await mount({
+      notifications: { decision: 'deny', remembered: false },
+      geolocation: { decision: 'deny', remembered: true },
+    });
+
+    expect(indicatorHidden()).toBe(true);
+    els['permission-indicator'].dispatch('click');
+    expect(rowStatuses()).toEqual(['Blocked (this session)', 'Blocked']);
+  });
+
+  test('a grant still shows the indicator', async () => {
+    await mount({ camera: { decision: 'allow', remembered: true } });
+    expect(indicatorHidden()).toBe(false);
   });
 });

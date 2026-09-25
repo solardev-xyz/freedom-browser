@@ -406,13 +406,41 @@ export const getRadicleDisplayUrl = (url) => {
   return null;
 };
 
+// Schemes whose host is a content-addressed root rather than a DNS name.
+// All three are registered as *standard* schemes in the renderer
+// (`registerSchemesAsPrivileged`, src/main/index.js), so Chromium's URL
+// canonicalization lower-cases that host — which is destructive here, unlike
+// for DNS: a CIDv0 base58 root
+// (`ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG`) folded to lower
+// case is no longer valid base58, let alone the same CID, and `ens-resolver.js`
+// emits exactly that form on purpose (byte-compatibility with bookmarks and
+// history written by the previous resolver). Node's URL treats these schemes
+// as opaque and leaves the host intact, so the fold — and this restore — only
+// happen in the renderer; `test-e2e/ens-history-traversal.spec.js` pins it
+// against real Chromium.
+const CONTENT_ADDRESSED_ROOT_RE = /^(bzz|ipfs|ipns):\/\/([^/?#]+)/i;
+
 export const applyEnsSuffix = (targetUri, suffix = '') => {
   if (!suffix) {
     return targetUri;
   }
 
   try {
-    return new URL(suffix, targetUri).toString();
+    const resolved = new URL(suffix, targetUri).toString();
+    const base = CONTENT_ADDRESSED_ROOT_RE.exec(targetUri);
+    if (!base) return resolved;
+    const rewritten = CONTENT_ADDRESSED_ROOT_RE.exec(resolved);
+    // Only ever put back a root the resolution kept, modulo case: a suffix
+    // that is itself an absolute URL legitimately moves off this root, and
+    // that is left alone.
+    if (
+      !rewritten ||
+      rewritten[2] === base[2] ||
+      rewritten[2].toLowerCase() !== base[2].toLowerCase()
+    ) {
+      return resolved;
+    }
+    return `${rewritten[1]}://${base[2]}${resolved.slice(rewritten[0].length)}`;
   } catch {
     return `${targetUri.replace(/\/+$/, '')}${suffix}`;
   }
@@ -428,6 +456,19 @@ export const extractEnsResolutionMetadata = (targetUri, ensName) => {
     resolvedProtocol = 'swarm';
   }
 
+  // A bzz root is hex, so `applyEnsNamePreservation` can fold both sides of the
+  // comparison losslessly — and does. IPFS/IPNS roots are stored, and matched,
+  // verbatim on purpose. `ens-resolver.js` emits them in base58 (CIDv0 `Qm…`,
+  // peer-ID multihash `12D3…`) for byte-compatibility with the history and
+  // bookmark entries the previous resolver wrote, and base58 case is
+  // load-bearing: a case-folded root is a *different*, unresolvable reference
+  // rather than a sloppier spelling of this name's content. `buildGatewayUrl`
+  // (src/main/ipfs/ipfs-protocol.js) answers a lowercased `Qm…`/`12D3…` host
+  // with a 400 for exactly that reason — checked against the handler itself on
+  // 2026-09-22 — and Chromium folds the host of every standard-scheme URL it
+  // parses, so a folded root only ever reaches the address bar attached to a
+  // page that cannot load. Matching these case-insensitively would paint an ENS
+  // name over that page; keep the comparison exact.
   const ipfsMatch = targetUri.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
   if (ipfsMatch) {
     knownEnsPairs.push([ipfsMatch[1], ensName]);

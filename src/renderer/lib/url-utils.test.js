@@ -13,6 +13,7 @@ import {
   applyEnsNamePreservation,
   buildEnsDisplayUri,
   isEnsBackedDisplay,
+  isIpfsGatewayFormUrl,
   normalizeLegacyEnsBookmarkUrl,
   isValidRadicleId,
   parseRadicleInput,
@@ -188,6 +189,24 @@ describe('url-utils', () => {
       const suffix = 'path/file.html';
       expect(composeTargetUrl(base, suffix)).toBe('not-a-valid-urlpath/file.html');
     });
+
+    test('keeps a colon-bearing first segment inside the base', () => {
+      // A bare `re:port` reference parses as scheme `re:`, not as a path
+      // relative to the base — the same RFC 3986 §4.2 trap
+      // `lib/gateway-location.js` guards against on the main-process side.
+      const base = 'http://127.0.0.1:1633/bzz/hash/';
+      expect(composeTargetUrl(base, '/re:port')).toBe('http://127.0.0.1:1633/bzz/hash/re:port');
+      expect(composeTargetUrl(base, 're:port/index.html')).toBe(
+        'http://127.0.0.1:1633/bzz/hash/re:port/index.html'
+      );
+    });
+
+    test('keeps a doubled leading slash inside the base', () => {
+      const base = 'http://127.0.0.1:1633/bzz/hash/';
+      expect(composeTargetUrl(base, '//evil.test/x')).toBe(
+        'http://127.0.0.1:1633/bzz/hash//evil.test/x'
+      );
+    });
   });
 
   describe('deriveBzzBaseFromUrl', () => {
@@ -270,6 +289,18 @@ describe('url-utils', () => {
       expect(result).toEqual({
         targetUrl: 'http://127.0.0.1:1633/bzz/1234567890abcdef/index.html',
         displayValue: 'bzz://1234567890abcdef/index.html',
+        baseUrl: 'http://127.0.0.1:1633/bzz/1234567890abcdef/',
+      });
+    });
+
+    test('formats a colon-bearing directory segment into the gateway path', () => {
+      // `:` is a legal Swarm manifest directory name; the composed gateway URL
+      // must stay under the base instead of becoming the bare `re:port` URL.
+      const input = 'bzz://1234567890abcdef/re:port/index.html';
+      const result = formatBzzUrl(input, BZZ_ROUTE_PREFIX);
+      expect(result).toEqual({
+        targetUrl: 'http://127.0.0.1:1633/bzz/1234567890abcdef/re:port/index.html',
+        displayValue: 'bzz://1234567890abcdef/re:port/index.html',
         baseUrl: 'http://127.0.0.1:1633/bzz/1234567890abcdef/',
       });
     });
@@ -763,6 +794,51 @@ describe('url-utils', () => {
       });
     });
 
+    describe('isIpfsGatewayFormUrl', () => {
+      // `loadTarget` consults `parseEnsInput` before `formatIpfsUrl`, and
+      // every gateway hostname above (`ipfs.io`, `dweb.link`, `127.0.0.1`,
+      // …) is a perfectly well-formed DNS name. Without this predicate the
+      // ENSv2 DNS-name branch claims them and the CID never loads — the
+      // regression this pins. Kept as the *same* matcher `parseIpfsInput`
+      // rewrites with, so the two can't drift.
+      test('recognises the forms parseIpfsInput rewrites', () => {
+        expect(isIpfsGatewayFormUrl(`ipfs://ipfs.io/ipfs/${CIDV0}`)).toBe(true);
+        expect(isIpfsGatewayFormUrl(`ipfs://dweb.link/ipfs/${CIDV1}/a/b`)).toBe(true);
+        expect(isIpfsGatewayFormUrl(`ipfs://127.0.0.1/ipfs/${CIDV1}`)).toBe(true);
+        expect(isIpfsGatewayFormUrl(`ipfs://localhost:8080/ipfs/${CIDV1}/page?q=1#top`)).toBe(true);
+        expect(isIpfsGatewayFormUrl(`ipns://ipfs.io/ipfs/${CIDV1}`)).toBe(true);
+        expect(
+          isIpfsGatewayFormUrl('ipfs://gateway.pinata.cloud/ipns/docs.ipfs.tech/install')
+        ).toBe(true);
+        expect(isIpfsGatewayFormUrl(`  ipfs://IPFS.IO/ipfs/${CIDV1}  `)).toBe(true);
+      });
+
+      test('leaves everything parseIpfsInput does not rewrite alone', () => {
+        // Gateway host but no gateway-form path, unknown gateway, DNSLink
+        // content host, a non-CID embedded ref, a bare CID, and the
+        // non-IPFS schemes — none of these are the rewrite's business, so
+        // the name parser stays free to claim them.
+        expect(isIpfsGatewayFormUrl('ipfs://ipfs.io/foo')).toBe(false);
+        expect(isIpfsGatewayFormUrl(`ipfs://my-gateway.example/ipfs/${CIDV1}`)).toBe(false);
+        expect(isIpfsGatewayFormUrl(`ipns://docs.ipfs.tech/ipfs/${CIDV1}`)).toBe(false);
+        expect(isIpfsGatewayFormUrl('ipfs://ipfs.io/ipfs/not-a-cid')).toBe(false);
+        expect(isIpfsGatewayFormUrl(`ipfs://${CIDV1}/page`)).toBe(false);
+        expect(isIpfsGatewayFormUrl('ipfs://gregskril.com/docs')).toBe(false);
+        expect(isIpfsGatewayFormUrl(`bzz://ipfs.io/ipfs/${CIDV1}`)).toBe(false);
+        expect(isIpfsGatewayFormUrl(`https://ipfs.io/ipfs/${CIDV1}`)).toBe(false);
+        expect(isIpfsGatewayFormUrl('')).toBe(false);
+        expect(isIpfsGatewayFormUrl(null)).toBe(false);
+      });
+
+      test('formatIpfsUrl still loads a gateway-form URL as its embedded CID', () => {
+        // End-to-end acceptance for the regression: the pasted gateway URL
+        // must come out as the canonical CID target, not an ENS lookup.
+        const result = formatIpfsUrl(`ipfs://ipfs.io/ipfs/${CIDV0}/readme`, IPFS_ROUTE_PREFIX);
+        expect(result.displayValue).toBe(`ipfs://${CIDV1}/readme`);
+        expect(result.targetUrl).toBe(`${IPFS_ROUTE_PREFIX}${CIDV1}/readme`);
+      });
+    });
+
     describe('CIDv1 base58btc (z…) canonicalisation', () => {
       // `z…` CIDs use base58btc encoding which, like CIDv0, is case-
       // sensitive. Convert to base32 (lowercase) so Chromium's standard-
@@ -1020,6 +1096,21 @@ describe('url-utils', () => {
         expect(result).toBe('ipfs://modern.eth/app');
       });
 
+      // The counterpart to the Swarm case-insensitivity test above: base58
+      // case is load-bearing, so a case-folded CIDv0 is a different,
+      // unresolvable reference (`buildGatewayUrl` answers it with a 400) and
+      // must not be painted with this name. See the note in
+      // `extractEnsResolutionMetadata`.
+      test('does not name-preserve a case-folded CIDv0 root', () => {
+        const cid = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+        const folded = cid.toLowerCase();
+        const ensNames = new Map([[cid, 'ipfsdapp.eth']]);
+
+        expect(applyEnsNamePreservation(`ipfs://${folded}/docs`, ensNames)).toBe(
+          `ipfs://${folded}/docs`
+        );
+      });
+
       test('returns original URL for unknown IPFS CID', () => {
         const cid = 'QmUnknownCidThatDoesNotExistInOurMap12345678901';
         const ensNames = new Map([['QmDifferentCid', 'other.eth']]);
@@ -1036,6 +1127,17 @@ describe('url-utils', () => {
 
         const result = applyEnsNamePreservation(`ipns://${ipnsId}`, ensNames);
         expect(result).toBe('ipns://dynamic.eth');
+      });
+
+      // Same rule as the CIDv0 case above, for a base58 peer-ID root.
+      test('does not name-preserve a case-folded base58 IPNS root', () => {
+        const ipnsId = '12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp';
+        const folded = ipnsId.toLowerCase();
+        const ensNames = new Map([[ipnsId, 'dynamic.eth']]);
+
+        expect(applyEnsNamePreservation(`ipns://${folded}/other`, ensNames)).toBe(
+          `ipns://${folded}/other`
+        );
       });
 
       test('preserves transport scheme + path for IPNS', () => {
@@ -1129,6 +1231,14 @@ describe('url-utils', () => {
   });
 
   describe('buildEnsDisplayUri', () => {
+    test('keeps DNS ENS names distinct from DNSLink across reloads and bookmarks', () => {
+      expect(buildEnsDisplayUri('ipns', 'example.com', '/docs')).toBe('ens://example.com/docs');
+      expect(normalizeLegacyEnsBookmarkUrl('ens://example.com/docs')).toBe('ens://example.com/docs');
+      expect(isEnsBackedDisplay('ens://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('ipfs://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('bzz://example.com/docs')).toBe(true);
+      expect(isEnsBackedDisplay('ipns://example.com/docs')).toBe(false);
+    });
     test('builds bzz transport display for Swarm-backed ENS', () => {
       expect(buildEnsDisplayUri('bzz', 'meinhard.eth')).toBe('bzz://meinhard.eth');
       expect(buildEnsDisplayUri('bzz', 'meinhard.eth', '/docs?q=1')).toBe(
@@ -1177,6 +1287,15 @@ describe('url-utils', () => {
       expect(isEnsBackedDisplay('ipfs://apoorv.gwei/page')).toBe(true);
       expect(isEnsBackedDisplay('ipfs://docs.example.tez/page')).toBe(true);
       expect(isEnsBackedDisplay('docs.example.tez/page')).toBe(true);
+    });
+
+    test('rejects gateway-form ipfs URLs whose host merely reads like a DNS name', () => {
+      // Mirrors the `parseEnsInput` carve-out: `ipfs.io`/`dweb.link` are
+      // gateways, not names, so this display is CID-backed content.
+      const cid = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
+      expect(isEnsBackedDisplay(`ipfs://ipfs.io/ipfs/${cid}`)).toBe(false);
+      expect(isEnsBackedDisplay(`ipfs://dweb.link/ipfs/${cid}/a`)).toBe(false);
+      expect(isEnsBackedDisplay('ipfs://ipfs.io/foo')).toBe(true);
     });
 
     test('rejects raw transport URLs (hash/CID hosts) and other schemes', () => {

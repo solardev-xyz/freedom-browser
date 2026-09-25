@@ -5,6 +5,33 @@
 // and the harness already gives us deterministic content.
 
 const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { cidV0ToV1Base32 } = require('../src/shared/cid-utils');
+
+for (const gateway of ['ipfs.io', 'dweb.link', '127.0.0.1', 'localhost:8080']) {
+  test(`gateway-form IPFS navigation through ${gateway} loads its CID without ENS lookup`, async ({
+    window,
+    harness,
+  }) => {
+    const cid = 'QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR';
+    const target = `ipfs://${cidV0ToV1Base32(cid)}/`;
+    await harness.setContentFixture(target, {
+      body: '<!doctype html><title>Gateway fixture</title><h1>Gateway CID loaded</h1>',
+    });
+    const dialogs = [];
+    window.on('dialog', async (dialog) => {
+      dialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    const input = window.locator('[data-test="address-input"]');
+    await input.fill(`ipfs://${gateway}/ipfs/${cid}`);
+    await input.press('Enter');
+    await expect
+      .poll(() => evalInActiveWebview(window, 'document.body.textContent'))
+      .toContain('Gateway CID loaded');
+    await expect(input).toHaveValue(target);
+    expect(dialogs).toEqual([]);
+  });
+}
 
 const evalInActiveWebview = (window, snippet) =>
   window.evaluate(async (source) => {
@@ -76,6 +103,40 @@ test('typing a bzz:// URL with a path preserves the path in the address bar', as
   await input.press('Enter');
 
   await expect(input).toHaveValue(`bzz://${SAMPLE_BZZ_HASH}/about`);
+});
+
+test('typing a bzz:// URL with a colon in a directory name navigates to it', async ({
+  window,
+  harness,
+}) => {
+  // `:` is a legal Swarm manifest directory name. The gateway URL the probe
+  // and the load are both built from is composed relative to
+  // `<bee-api>/bzz/<hash>/`, and a *bare* relative reference whose first
+  // segment carries a `:` parses as an absolute URL with that segment as its
+  // scheme (RFC 3986 §4.2) — which used to leave the composed target as the
+  // bare `re:port`, drop the navigation, and strand the tab on the page it
+  // was already showing.
+  const target = `bzz://${SAMPLE_BZZ_HASH}/re:port/`;
+  await harness.setContentFixture(target, {
+    body: '<!doctype html><title>colon dir</title><p data-test="colon-dir">colon directory served</p>',
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(target);
+  await input.press('Enter');
+
+  await expect(input).toHaveValue(target);
+  await expect
+    .poll(
+      () =>
+        evalInActiveWebview(
+          window,
+          'document.querySelector(\'[data-test="colon-dir"]\')?.textContent || null'
+        ),
+      { message: 'Waiting for the colon-named directory fixture to render', timeout: 10_000 }
+    )
+    .toBe('colon directory served');
 });
 
 test('typing a bare HTTPS domain auto-prefixes the scheme and stays inside the harness', async ({

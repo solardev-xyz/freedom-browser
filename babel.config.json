@@ -8,5 +8,13 @@
         }
       }
     ]
+  ],
+  "overrides": [
+    {
+      "test": "./src/main/webview-preload.js",
+      "parserOpts": {
+        "allowReturnOutsideFunction": true
+      }
+    }
   ]
 }

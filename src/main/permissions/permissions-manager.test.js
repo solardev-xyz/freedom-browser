@@ -153,7 +153,7 @@ describe('permissions-manager', () => {
   test('non-promptable permissions (hid, display-capture, unknown) are denied without a prompt', () => {
     load();
     const host = makeHost();
-    for (const permission of ['hid', 'display-capture', 'openExternal', 'unknown']) {
+    for (const permission of ['hid', 'display-capture', 'unknown']) {
       expect(request(permission, { host })).toHaveBeenCalledWith(false);
     }
     expect(host.send).not.toHaveBeenCalled();
@@ -289,6 +289,212 @@ describe('permissions-manager', () => {
     const second = request('notifications', { host });
     expect(second).not.toHaveBeenCalled();
     expect(lastPrompt(host)).not.toBeNull();
+  });
+
+  // #364: dismissal embargo (Chromium parity). A dismiss stays a deny-once
+  // that records nothing for the first two — the site can ask again — but
+  // the third in a row records a session-only deny, so a page cannot hold
+  // the prompt up forever by re-asking after every Escape.
+  describe('dismissal embargo', () => {
+    const ORIGIN = 'https://example.com';
+
+    const checkNotifications = () =>
+      session.checkHandler(null, 'notifications', ORIGIN, {
+        requestingUrl: 'https://example.com/page',
+      });
+
+    // Ask, then dismiss the prompt that appears. Returns false when no
+    // prompt was raised (the request was answered silently instead).
+    const askAndDismiss = async (host, { permission = 'notifications', guest } = {}) => {
+      host.send.mockClear();
+      const callback = request(permission, { host, guest });
+      const prompt = lastPrompt(host);
+      if (!prompt) return false;
+      await respond({ id: prompt.id, decision: 'dismiss' });
+      await flush();
+      expect(callback).toHaveBeenCalledWith(false);
+      return true;
+    };
+
+    test('the third dismissal embargoes: the next request is denied with no prompt', async () => {
+      load();
+      const host = makeHost();
+
+      // Dismissals one and two keep the status quo — nothing recorded, the
+      // site is asked again (the deny-once contract the e2e spec pins).
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(checkNotifications()).toBe(true);
+
+      // The third records the embargo as a session-only deny.
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+
+      // The fourth request is denied outright — no prompt is enqueued, and
+      // the check path reports denied so the page reads "denied".
+      host.send.mockClear();
+      const fourth = request('notifications', { host });
+      expect(fourth).toHaveBeenCalledWith(false);
+      expect(promptCount(host)).toBe(0);
+      expect(checkNotifications()).toBe(false);
+
+      // Nothing was persisted: the embargo dies with the run.
+      const storeCtx = loadMainModule(require.resolve('./permissions-store'), { userDataDir });
+      expect(storeCtx.mod.getAllDecisions()).toEqual({});
+    });
+
+    test('an allow resets the counter; a block neither counts nor carries one over', async () => {
+      load();
+      const host = makeHost();
+      const count = () => ctx.mod._getDismissCount(ORIGIN, 'notifications');
+
+      await askAndDismiss(host);
+      await askAndDismiss(host);
+      expect(count()).toBe(2);
+
+      // The user finally answers: Allow. Two dismissals ago is not two
+      // dismissals away from an embargo any more.
+      request('notifications', { host });
+      await respond({ id: lastPrompt(host).id, decision: 'allow', remember: false });
+      await flush();
+      expect(count()).toBe(0);
+
+      // Same for a Block: it is a decision, not a dismissal — it must not
+      // add to the count, nor leave an earlier one standing.
+      ctx.mod.revokeDecision(ORIGIN, 'notifications');
+      await askAndDismiss(host);
+      await askAndDismiss(host);
+      expect(count()).toBe(2);
+      request('notifications', { host });
+      await respond({ id: lastPrompt(host).id, decision: 'deny', remember: false });
+      await flush();
+      expect(count()).toBe(0);
+
+      // Three blocks in a row are three decisions, not three dismissals.
+      ctx.mod.revokeDecision(ORIGIN, 'notifications');
+      for (let i = 0; i < 3; i += 1) {
+        request('notifications', { host });
+        await respond({ id: lastPrompt(host).id, decision: 'deny', remember: false });
+        await flush();
+        ctx.mod.revokeDecision(ORIGIN, 'notifications');
+      }
+      expect(count()).toBe(0);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+    });
+
+    test('requests invalidated by navigation or a closing window are not dismissals', async () => {
+      load();
+      const host = makeHost();
+      const count = () => ctx.mod._getDismissCount(ORIGIN, 'notifications');
+
+      // Four documents in a row ask and are navigated away from before the
+      // user answers. None of that is a user dismissal.
+      for (let i = 0; i < 4; i += 1) {
+        const guest = makeGuest('https://example.com/page', host);
+        const callback = request('notifications', { host, guest });
+        expect(lastPrompt(host)).not.toBeNull();
+        guest.navigate('https://example.com/elsewhere');
+        expect(callback).toHaveBeenCalledWith(false);
+      }
+      expect(count()).toBe(0);
+
+      // Same for the window closing on a pending prompt.
+      const closingHost = makeHost();
+      const guest = makeGuest('https://example.com/page', closingHost);
+      request('notifications', { host: closingHost, guest });
+      closingHost.destroy();
+      expect(count()).toBe(0);
+
+      // So the site is still asked, and is still three real dismissals
+      // away from the embargo.
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(count()).toBe(2);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+    });
+
+    test('revokeDecision clears the counter as well as the deny, so the site can ask again', async () => {
+      load();
+      const host = makeHost();
+
+      for (let i = 0; i < 3; i += 1) await askAndDismiss(host);
+      host.send.mockClear();
+      expect(request('notifications', { host })).toHaveBeenCalledWith(false);
+      expect(promptCount(host)).toBe(0);
+
+      expect(ctx.mod.revokeDecision(ORIGIN, 'notifications')).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(0);
+
+      // Asking prompts again — and the next dismissal is the first of a
+      // fresh three, not the fourth of the old run (which would re-embargo
+      // the origin immediately and make "Remove" meaningless).
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+    });
+
+    test('revokeOrigin and revokeAll clear the counter too', async () => {
+      load();
+      const host = makeHost();
+
+      for (let i = 0; i < 3; i += 1) await askAndDismiss(host);
+      expect(ctx.mod.revokeOrigin(ORIGIN)).toBe(true);
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(0);
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+
+      for (let i = 0; i < 2; i += 1) await askAndDismiss(host);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toMatchObject({
+        notifications: { embargoed: true },
+      });
+      expect(ctx.mod.revokeAll()).toBe(true);
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(0);
+      expect(await askAndDismiss(host)).toBe(true);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+    });
+
+    test('the embargo is per permission key: dismissing one leaves the others askable', async () => {
+      load();
+      const host = makeHost();
+
+      for (let i = 0; i < 3; i += 1) await askAndDismiss(host, { permission: 'geolocation' });
+      host.send.mockClear();
+      expect(request('geolocation', { host })).toHaveBeenCalledWith(false);
+      expect(promptCount(host)).toBe(0);
+
+      // Notifications were never dismissed — still prompted for.
+      const callback = request('notifications', { host });
+      expect(callback).not.toHaveBeenCalled();
+      expect(lastPrompt(host).keys).toEqual(['notifications']);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({
+        geolocation: { decision: 'deny', remembered: false, embargoed: true },
+      });
+    });
+
+    test('dismissals are per origin', async () => {
+      load();
+      const host = makeHost();
+      const other = 'https://other.example';
+
+      for (let i = 0; i < 2; i += 1) await askAndDismiss(host);
+      host.send.mockClear();
+      const callback = request('notifications', { host, url: `${other}/page` });
+      await respond({ id: lastPrompt(host).id, decision: 'dismiss' });
+      await flush();
+      expect(callback).toHaveBeenCalledWith(false);
+
+      // example.com is at two, other.example at one — neither embargoed.
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(2);
+      expect(ctx.mod._getDismissCount(other, 'notifications')).toBe(1);
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(ctx.mod.getDecisionsForOrigin(other)).toEqual({});
+    });
   });
 
   test('one prompt at a time per tab; the queue advances on response', async () => {
@@ -488,42 +694,100 @@ describe('permissions-manager', () => {
     }
   });
 
-  test('check handler: only recorded allows pass; media checks use mediaType', async () => {
+  // #361: the check handler is boolean-only, so it answers false ONLY for a
+  // recorded deny. An undecided permission reports allowed — reporting it as
+  // denied made sites that gate on navigator.permissions.query (Google Meet)
+  // show their "blocked" state and never ask, so the prompt never fired.
+  test('check handler: only recorded denies fail; media checks use mediaType', async () => {
     load();
     const host = makeHost();
 
-    // Undecided → false (deny-by-default for synchronous checks).
-    expect(
-      session.checkHandler(null, 'notifications', 'https://example.com', {
+    const check = (permission, details = {}) =>
+      session.checkHandler(null, permission, 'https://example.com', {
         requestingUrl: 'https://example.com/page',
-      })
-    ).toBe(false);
+        ...details,
+      });
+
+    // Undecided → true, so the page proceeds to the request path (which
+    // prompts) instead of treating the site as blocked.
+    expect(check('notifications')).toBe(true);
+    expect(check('media', { mediaType: 'video' })).toBe(true);
+    expect(check('geolocation')).toBe(true);
 
     request('notifications', { host });
     await respond({ id: lastPrompt(host).id, decision: 'allow', remember: true });
     await flush();
 
-    expect(
-      session.checkHandler(null, 'notifications', 'https://example.com', {
-        requestingUrl: 'https://example.com/page',
-      })
-    ).toBe(true);
+    expect(check('notifications')).toBe(true);
     expect(session.checkHandler(null, 'pointerLock', 'https://example.com', {})).toBe(true);
+    // Non-promptable permissions stay denied regardless.
     expect(session.checkHandler(null, 'hid', 'https://example.com', {})).toBe(false);
+    expect(session.checkHandler(null, 'display-capture', 'https://example.com', {})).toBe(false);
+    // …as do origins that can never be prompted for.
+    expect(
+      session.checkHandler(null, 'notifications', 'file:///pages/settings.html', {
+        requestingUrl: 'file:///pages/settings.html',
+      })
+    ).toBe(false);
 
-    // Media check: camera allowed, mic not.
+    // A session-only deny (unremembered Block) fails the check.
+    request('geolocation', { host });
+    await respond({ id: lastPrompt(host).id, decision: 'deny', remember: false });
+    await flush();
+    expect(check('geolocation')).toBe(false);
+
+    // Media check: camera allowed, mic denied persistently.
     request('media', { host, details: { mediaTypes: ['video'] } });
     await respond({ id: lastPrompt(host).id, decision: 'allow', remember: true });
     await flush();
+    request('media', { host, details: { mediaTypes: ['audio'] } });
+    await respond({ id: lastPrompt(host).id, decision: 'deny', remember: true });
+    await flush();
+
     const details = (mediaType) => ({ requestingUrl: 'https://example.com/x', mediaType });
     expect(session.checkHandler(null, 'media', 'https://example.com', details('video'))).toBe(true);
+    // A persistent deny fails the check.
     expect(session.checkHandler(null, 'media', 'https://example.com', details('audio'))).toBe(
       false
     );
-    // No concrete device type → both must be allowed.
+    // No concrete device type → either device being denied answers the check.
     expect(session.checkHandler(null, 'media', 'https://example.com', details(undefined))).toBe(
       false
     );
+  });
+
+  test('check handler: an undecided media check passes even with no mediaType', () => {
+    load();
+    const details = (mediaType) => ({ requestingUrl: 'https://example.com/x', mediaType });
+    expect(session.checkHandler(null, 'media', 'https://example.com', details(undefined))).toBe(
+      true
+    );
+    expect(session.checkHandler(null, 'media', 'https://example.com', details('audio'))).toBe(true);
+  });
+
+  // Regression guard for #361: reporting undecided permissions as allowed in
+  // the CHECK path must not leak into the REQUEST path — an undecided media
+  // request still has to raise the anchored prompt rather than pass silently.
+  test('an undecided media request still prompts after the check-handler change', () => {
+    load();
+    const host = makeHost();
+    const guest = makeGuest('https://example.com/page', host);
+
+    expect(
+      session.checkHandler(null, 'media', 'https://example.com', {
+        requestingUrl: 'https://example.com/page',
+        mediaType: 'video',
+      })
+    ).toBe(true);
+
+    const callback = request('media', { host, guest, details: { mediaTypes: ['video', 'audio'] } });
+    expect(callback).not.toHaveBeenCalled();
+    expect(lastPrompt(host)).toMatchObject({
+      origin: 'https://example.com',
+      permission: 'media',
+      keys: ['camera', 'microphone'],
+      guestId: guest.id,
+    });
   });
 
   test('revoke IPC clears stored and session decisions', async () => {
@@ -644,6 +908,12 @@ describe('permissions-manager private windows', () => {
       },
       extraMocks: {
         [require.resolve('../logger')]: () => log,
+        // The indicator query resolves the asking window's scope through the
+        // private-window registry (BrowserWindow identity). These suites run
+        // no real windows, so senders name their partition directly.
+        [require.resolve('../private/private-windows')]: () => ({
+          getPartitionForWebContents: (webContents) => webContents?.privatePartition || null,
+        }),
       },
     });
     normalSession = makeFakeSession();
@@ -668,6 +938,14 @@ describe('permissions-manager private windows', () => {
   };
 
   const respond = (response) => ctx.ipcMain.invoke(IPC.PERMISSIONS_PROMPT_RESPONSE, response);
+
+  // The address-bar indicator/popover query, asked by ONE window's chrome:
+  // `partition` names a private window's scope, null a normal window's.
+  const decisionsIn = (partition, origin = 'https://example.com') =>
+    ctx.ipcMain.handlers.get(IPC.PERMISSIONS_GET_FOR_ORIGIN)(
+      { sender: { privatePartition: partition } },
+      origin
+    );
 
   beforeEach(() => {
     userDataDir = createTempUserDataDir();
@@ -747,11 +1025,9 @@ describe('permissions-manager private windows', () => {
         requestingUrl: 'https://example.com/page',
       })
     ).toBe(true);
-    expect(
-      normalSession.checkHandler(null, 'notifications', 'https://example.com', {
-        requestingUrl: 'https://example.com/page',
-      })
-    ).toBe(false);
+    // The normal window is undecided, which the boolean-only check path
+    // reports as allowed (#361) — the request path below is what proves the
+    // private grant did not leak.
 
     // A normal window still prompts for the same origin+permission.
     const normalHost = makeHost();
@@ -820,6 +1096,29 @@ describe('permissions-manager private windows', () => {
     expect(lastPrompt(host)).not.toBeNull();
   });
 
+  // #361: a deny made inside a private window fails the check in THAT
+  // partition only — a normal window that has never been asked is undecided,
+  // which the boolean-only check path reports as allowed.
+  test('a private-window deny fails the check there but not in a normal window', async () => {
+    load();
+    const host = makeHost();
+    requestOn(privateSession, 'notifications', host);
+    await respond({ id: lastPrompt(host).id, decision: 'deny', remember: true });
+    await flush();
+
+    const check = (session) =>
+      session.checkHandler(null, 'notifications', 'https://example.com', {
+        requestingUrl: 'https://example.com/page',
+      });
+    expect(check(privateSession)).toBe(false);
+    expect(check(normalSession)).toBe(true);
+
+    // …and the normal window still prompts rather than granting silently.
+    const normalHost = makeHost();
+    expect(requestOn(normalSession, 'notifications', normalHost)).not.toHaveBeenCalled();
+    expect(lastPrompt(normalHost)).not.toBeNull();
+  });
+
   // Inheritance-on-read is right when the user has NOT answered inside the
   // private window. Once they have, that answer is the more specific and
   // more recent expression of intent and must win — otherwise a normal
@@ -878,11 +1177,9 @@ describe('permissions-manager private windows', () => {
     };
 
     const expectRevoked = (host) => {
-      expect(
-        privateSession.checkHandler(null, 'notifications', 'https://example.com', {
-          requestingUrl: 'https://example.com/page',
-        })
-      ).toBe(false);
+      // A revoke leaves the origin undecided, which the boolean-only check
+      // path reports as allowed (#361) — the re-prompt below is what proves
+      // the grant is gone.
       // Re-prompts rather than silently allowing.
       host.send.mockClear();
       const again = requestOn(privateSession, 'notifications', host);
@@ -927,6 +1224,367 @@ describe('permissions-manager private windows', () => {
     });
   });
 
+  // #366: the address-bar popover lists what applies in THIS window, so its
+  // Remove has to lift exactly that — the asking window's own run-scoped tier
+  // (and the shared stored one), never the other scope's. Before this, a
+  // Remove clicked in a private window also cleared the normal profile's
+  // run-scoped decision for the same origin+key, with no trace in the window
+  // the user was looking at (and the reverse for a normal window's Remove).
+  describe('a window-scoped revoke reaches only the asking window (#366)', () => {
+    const ORIGIN = 'https://example.com';
+    const URL = 'https://example.com/page';
+
+    // The popover's Remove: `{ scope: 'window' }` marks it window-scoped and
+    // main resolves WHICH window from the sender, exactly as the preload
+    // sends it. `partition` names a private window's chrome, null a normal
+    // window's.
+    const revokeFrom = (partition, permission = 'notifications', origin = ORIGIN) =>
+      ctx.ipcMain.handlers.get(IPC.PERMISSIONS_REVOKE)(
+        { sender: { privatePartition: partition } },
+        origin,
+        permission,
+        { scope: 'window' }
+      );
+
+    const revokeOriginFrom = (partition, origin = ORIGIN) =>
+      ctx.ipcMain.handlers.get(IPC.PERMISSIONS_REVOKE_ORIGIN)(
+        { sender: { privatePartition: partition } },
+        origin,
+        { scope: 'window' }
+      );
+
+    const dismissOn = async (session, host) => {
+      host.send.mockClear();
+      const callback = requestOn(session, 'notifications', host);
+      const prompt = lastPrompt(host);
+      expect(prompt).not.toBeNull();
+      await respond({ id: prompt.id, decision: 'dismiss' });
+      await flush();
+      expect(callback).toHaveBeenCalledWith(false);
+    };
+
+    const embargo = async (session, host) => {
+      for (let i = 0; i < 3; i += 1) await dismissOn(session, host);
+    };
+
+    // Silently denied, no prompt — the embargo is still in force here.
+    const expectStillEmbargoed = (session, host) => {
+      host.send.mockClear();
+      expect(requestOn(session, 'notifications', host)).toHaveBeenCalledWith(false);
+      expect(lastPrompt(host)).toBeNull();
+      expect(session.checkHandler(null, 'notifications', ORIGIN, { requestingUrl: URL })).toBe(
+        false
+      );
+    };
+
+    // Undecided again: the site is asked, and is a full three dismissals
+    // away from the next embargo (the counter went with the decision).
+    const expectLifted = (session, host) => {
+      host.send.mockClear();
+      expect(requestOn(session, 'notifications', host)).not.toHaveBeenCalled();
+      expect(lastPrompt(host)).not.toBeNull();
+    };
+
+    test('Remove in a private window leaves the normal profile embargoed', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+      await embargo(normalSession, normalHost);
+      await embargo(privateSession, privateHost);
+
+      expect(await revokeFrom(PARTITION)).toBe(true);
+
+      // The private window's own embargo is lifted, counter and all…
+      expect(await decisionsIn(PARTITION)).toEqual({});
+      expect(
+        ctx.mod._getDismissCount(ORIGIN, 'notifications', { privatePartition: PARTITION })
+      ).toBe(0);
+      expectLifted(privateSession, privateHost);
+
+      // …and the normal window's is untouched: still denied silently, still
+      // shown in its own chrome, still at the embargo threshold (so its next
+      // dismissal is not re-embargoing a counter someone else reset).
+      expect(await decisionsIn(null)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(3);
+      expectStillEmbargoed(normalSession, normalHost);
+    });
+
+    test('Remove in a normal window leaves a live private-window decision standing', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+
+      // A grant the user made inside the private window…
+      requestOn(privateSession, 'notifications', privateHost);
+      await respond({ id: lastPrompt(privateHost).id, decision: 'allow', remember: true });
+      await flush();
+      // …and an embargo in a normal window, on the same origin+key.
+      await embargo(normalSession, normalHost);
+
+      expect(await revokeFrom(null)).toBe(true);
+
+      expect(await decisionsIn(null)).toEqual({});
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(0);
+      expectLifted(normalSession, normalHost);
+
+      // The private window keeps granting — silently, no re-prompt.
+      privateHost.send.mockClear();
+      const again = requestOn(privateSession, 'notifications', privateHost);
+      await flush();
+      expect(again).toHaveBeenCalledWith(true);
+      expect(lastPrompt(privateHost)).toBeNull();
+      expect(await decisionsIn(PARTITION)).toEqual({
+        notifications: { decision: 'allow', remembered: false },
+      });
+    });
+
+    // Same split for the whole-origin form behind `sitePermissions.revokeOrigin`
+    // — the popover's sibling entry point, marked window-scoped in the same
+    // preload, so it must not drift from the per-permission one.
+    test('a window-scoped revokeOrigin is scoped the same way', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+      await embargo(normalSession, normalHost);
+      await embargo(privateSession, privateHost);
+
+      expect(await revokeOriginFrom(PARTITION)).toBe(true);
+
+      expect(await decisionsIn(PARTITION)).toEqual({});
+      expectLifted(privateSession, privateHost);
+      expect(await decisionsIn(null)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+      expect(ctx.mod._getDismissCount(ORIGIN, 'notifications')).toBe(3);
+      expectStillEmbargoed(normalSession, normalHost);
+    });
+
+    // The store is the one tier BOTH windows read, and a private window's
+    // popover lists it because it inherits it — so a Remove there has to
+    // clear it, or the row the user clicked simply stays. That is #366's open
+    // question answered: a window-scoped revoke deletes from the shared
+    // stored tier, never from another window's run-scoped tier.
+    test('Remove in a private window clears the stored decision it inherited', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+
+      requestOn(normalSession, 'notifications', normalHost);
+      await respond({ id: lastPrompt(normalHost).id, decision: 'allow', remember: true });
+      await flush();
+      expect(await decisionsIn(PARTITION)).toEqual({
+        notifications: { decision: 'allow', remembered: true },
+      });
+
+      expect(await revokeFrom(PARTITION)).toBe(true);
+
+      const storeCtx = loadMainModule(require.resolve('./permissions-store'), { userDataDir });
+      expect(storeCtx.mod.getAllDecisions()).toEqual({});
+      expect(await decisionsIn(PARTITION)).toEqual({});
+      expect(await decisionsIn(null)).toEqual({});
+      expectLifted(privateSession, privateHost);
+    });
+
+    // The Settings path has no scope marker and stays profile-wide, including
+    // the sweep through live private partitions that "Revoke all" exists for
+    // — even when Settings is open INSIDE a private window (it lists the
+    // stored, profile-level tier either way).
+    test('the Settings revoke stays profile-wide, from a private window too', async () => {
+      load();
+      const normalHost = makeHost();
+      const privateHost = makeHost();
+
+      requestOn(privateSession, 'notifications', privateHost);
+      await respond({ id: lastPrompt(privateHost).id, decision: 'allow', remember: true });
+      await flush();
+      requestOn(normalSession, 'notifications', normalHost);
+      await respond({ id: lastPrompt(normalHost).id, decision: 'allow', remember: false });
+      await flush();
+
+      // No `{ scope: 'window' }` — this is webview-preload's settings call,
+      // here made by a settings page hosted in the private window.
+      expect(
+        await ctx.ipcMain.handlers.get(IPC.PERMISSIONS_REVOKE)(
+          { sender: { privatePartition: PARTITION } },
+          ORIGIN,
+          'notifications'
+        )
+      ).toBe(true);
+
+      expect(await decisionsIn(PARTITION)).toEqual({});
+      expect(await decisionsIn(null)).toEqual({});
+      expectLifted(privateSession, privateHost);
+      expectLifted(normalSession, normalHost);
+    });
+
+    // The scope marker says "this window"; it never says WHICH. A renderer
+    // naming another scope in the payload must not be able to aim a revoke
+    // at it — main resolves the partition from the sender, the same way
+    // `permissions:get-for-origin` does.
+    test('the partition comes from the sender, not from the renderer payload', async () => {
+      load();
+      const privateHost = makeHost();
+      await embargo(privateSession, privateHost);
+
+      expect(
+        await ctx.ipcMain.handlers.get(IPC.PERMISSIONS_REVOKE)(
+          { sender: { privatePartition: null } },
+          ORIGIN,
+          'notifications',
+          { scope: 'window', privatePartition: PARTITION }
+        )
+      ).toBe(false);
+
+      expect(await decisionsIn(PARTITION)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+      expect(
+        ctx.mod._getDismissCount(ORIGIN, 'notifications', { privatePartition: PARTITION })
+      ).toBe(3);
+      expectStillEmbargoed(privateSession, privateHost);
+    });
+  });
+
+  // #364: the dismissal embargo is a decision like any other private-window
+  // decision — partition-scoped, never persisted, gone when the window is.
+  describe('dismissal embargo in a private window', () => {
+    const ORIGIN = 'https://example.com';
+
+    const dismissOn = async (session, host) => {
+      host.send.mockClear();
+      const callback = requestOn(session, 'notifications', host);
+      const prompt = lastPrompt(host);
+      if (!prompt) return false;
+      await respond({ id: prompt.id, decision: 'dismiss' });
+      await flush();
+      expect(callback).toHaveBeenCalledWith(false);
+      return true;
+    };
+
+    test('embargoes the partition only — not the store, not normal windows', async () => {
+      load();
+      const privateHost = makeHost();
+
+      for (let i = 0; i < 3; i += 1)
+        expect(await dismissOn(privateSession, privateHost)).toBe(true);
+
+      // Denied silently inside the private window…
+      privateHost.send.mockClear();
+      const embargoed = requestOn(privateSession, 'notifications', privateHost);
+      expect(embargoed).toHaveBeenCalledWith(false);
+      expect(lastPrompt(privateHost)).toBeNull();
+      expect(
+        privateSession.checkHandler(null, 'notifications', ORIGIN, {
+          requestingUrl: 'https://example.com/page',
+        })
+      ).toBe(false);
+
+      // …and it is visible where it applies: an auto-block the user never
+      // chose is only discoverable and liftable from that window's own
+      // indicator popover (#365).
+      expect(await decisionsIn(PARTITION)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+
+      // …and nowhere else. Nothing in permissions.json, nothing in the
+      // normal-window session tier, nothing in a normal window's chrome:
+      // a normal window still prompts.
+      const storeCtx = loadMainModule(require.resolve('./permissions-store'), { userDataDir });
+      expect(storeCtx.mod.getAllDecisions()).toEqual({});
+      expect(ctx.mod.getDecisionsForOrigin(ORIGIN)).toEqual({});
+      expect(await decisionsIn(null)).toEqual({});
+      const normalHost = makeHost();
+      expect(requestOn(normalSession, 'notifications', normalHost)).not.toHaveBeenCalled();
+      expect(lastPrompt(normalHost)).not.toBeNull();
+      expect(
+        normalSession.checkHandler(null, 'notifications', ORIGIN, {
+          requestingUrl: 'https://example.com/page',
+        })
+      ).toBe(true);
+
+      // The origin a private window prompted for stays out of the
+      // persistent log, embargo line included (PRIVATE MODE GUARD).
+      const lines = log.info.mock.calls.map((call) => call.join(' ')).join('\n');
+      expect(lines).toContain('embargoed notifications');
+      expect(lines).not.toContain('example.com');
+    });
+
+    test('normal-window dismissals do not embargo the same origin in a private window', async () => {
+      load();
+      const normalHost = makeHost();
+      for (let i = 0; i < 3; i += 1) expect(await dismissOn(normalSession, normalHost)).toBe(true);
+
+      const privateHost = makeHost();
+      const callback = requestOn(privateSession, 'notifications', privateHost);
+      expect(callback).not.toHaveBeenCalled();
+      expect(lastPrompt(privateHost)).not.toBeNull();
+    });
+
+    // #365: and the private window's chrome must not claim otherwise. The
+    // embargo does not apply there — the site still prompts — so an
+    // indicator and a "Blocked after repeated dismissals" row would describe
+    // a block that is not in force, with a Remove that silently cleared the
+    // normal profile's embargo instead.
+    test('a normal-profile embargo is not painted into a private window', async () => {
+      load();
+      const normalHost = makeHost();
+      for (let i = 0; i < 3; i += 1) expect(await dismissOn(normalSession, normalHost)).toBe(true);
+
+      expect(await decisionsIn(null)).toEqual({
+        notifications: { decision: 'deny', remembered: false, embargoed: true },
+      });
+      expect(await decisionsIn(PARTITION)).toEqual({});
+    });
+
+    test('closing the window drops the embargo and its dismissal counter', async () => {
+      load();
+      const host = makeHost();
+      for (let i = 0; i < 3; i += 1) expect(await dismissOn(privateSession, host)).toBe(true);
+
+      expect(ctx.mod.clearPrivateDecisions(PARTITION)).toBe(true);
+      expect(
+        ctx.mod._getDismissCount(ORIGIN, 'notifications', { privatePartition: PARTITION })
+      ).toBe(0);
+
+      // A fresh private window on that partition asks again, and is a full
+      // three dismissals away from the next embargo.
+      expect(await dismissOn(privateSession, host)).toBe(true);
+      const again = requestOn(privateSession, 'notifications', host);
+      expect(again).not.toHaveBeenCalled();
+      expect(lastPrompt(host)).not.toBeNull();
+    });
+  });
+
+  // #365: the popover describes what applies in THIS window. A private-window
+  // answer wins over the profile store inside that window (the same way
+  // getEffectiveDecision resolves it), so that is what its chrome lists —
+  // while the normal window keeps showing the stored decision.
+  test('a private-window decision is what that window lists, not the stored one', async () => {
+    load();
+    const host = makeHost();
+
+    // Blocked inside the private window first, then allowed and remembered
+    // in a normal one — the order getEffectiveDecision's precedence exists
+    // for (a later profile-level allow must not override the answer the user
+    // gave in a still-open private window).
+    requestOn(privateSession, 'notifications', host);
+    await respond({ id: lastPrompt(host).id, decision: 'deny', remember: true });
+    await flush();
+
+    requestOn(normalSession, 'notifications', host);
+    await respond({ id: lastPrompt(host).id, decision: 'allow', remember: true });
+    await flush();
+
+    expect(await decisionsIn(null)).toEqual({
+      notifications: { decision: 'allow', remembered: true },
+    });
+    expect(await decisionsIn(PARTITION)).toEqual({
+      notifications: { decision: 'deny', remembered: false },
+    });
+  });
+
   test('clearPrivateDecisions drops the window decisions (close semantics)', async () => {
     load();
     const host = makeHost();
@@ -945,5 +1603,403 @@ describe('permissions-manager private windows', () => {
     const again = requestOn(privateSession, 'notifications', host);
     expect(again).not.toHaveBeenCalled();
     expect(lastPrompt(host)).not.toBeNull();
+  });
+});
+
+// #406: a link to an external protocol (magnet:, mailto:, …) arrives as an
+// `openExternal` request carrying `externalURL`. It used to be denied with no
+// prompt; it now goes through the same per-site prompt, keyed per scheme, and
+// an allow hands the URL to shell.openExternal — never to Electron's callback.
+describe('permissions-manager: external protocols (#406)', () => {
+  const PARTITION = 'private-ext-1';
+  let userDataDir;
+  let ctx;
+  let normalSession;
+  let privateSession;
+  let shell;
+  let log;
+  let external;
+
+  const load = () => {
+    log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    shell = { openExternal: jest.fn(() => Promise.resolve()) };
+    ctx = loadMainModule(require.resolve('./permissions-manager'), {
+      userDataDir,
+      electronOverrides: {
+        shell,
+        systemPreferences: { askForMediaAccess: jest.fn(() => Promise.resolve(true)) },
+      },
+      extraMocks: {
+        [require.resolve('../logger')]: () => log,
+        [require.resolve('../private/private-windows')]: () => ({
+          getPartitionForWebContents: (webContents) => webContents?.privatePartition || null,
+        }),
+      },
+    });
+    // Same module registry as the manager, so gestures recorded here are the
+    // ones it consumes.
+    external = require('../external-protocol');
+    normalSession = makeFakeSession();
+    privateSession = makeFakeSession();
+    ctx.mod.installPermissionHandlers(normalSession);
+    ctx.mod.installPermissionHandlers(privateSession, { privatePartition: PARTITION });
+    ctx.mod.registerPermissionsIpc();
+    return ctx;
+  };
+
+  // A guest whose page just got a real click (unless `gesture: false`).
+  const guestFor = (host, url = 'https://example.com/page', { gesture = true } = {}) => {
+    const guest = makeGuest(url, host);
+    external.trackUserGestures(guest);
+    if (gesture) guest.emit('input-event', {}, { type: 'mouseDown' });
+    return guest;
+  };
+
+  const clickGesture = (guest) => guest.emit('input-event', {}, { type: 'mouseDown' });
+
+  // Issue an openExternal request the way Electron does for a link click.
+  const openExternal = (
+    session,
+    guest,
+    externalURL,
+    { isMainFrame = true, requestingUrl = guest.getURL() } = {}
+  ) => {
+    const callback = jest.fn();
+    session.requestHandler(guest, 'openExternal', callback, {
+      externalURL,
+      isMainFrame,
+      requestingUrl,
+    });
+    return callback;
+  };
+
+  const prompts = (host) =>
+    host.send.mock.calls.filter(([ch]) => ch === IPC.PERMISSIONS_PROMPT_REQUEST).map(([, p]) => p);
+
+  const respond = (response) => ctx.ipcMain.invoke(IPC.PERMISSIONS_PROMPT_RESPONSE, response);
+
+  const allLogs = () => log.info.mock.calls.map((args) => args.join(' ')).join('\n');
+
+  beforeEach(() => {
+    userDataDir = createTempUserDataDir();
+    nextHostId = 1;
+    nextGuestId = 100;
+  });
+
+  afterEach(() => {
+    removeTempUserDataDir(userDataDir);
+  });
+
+  test('a magnet: link prompts, and Allow hands the URL to shell.openExternal', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    const url = 'magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=file';
+
+    const callback = openExternal(normalSession, guest, url);
+
+    // Electron's own launch path is never used.
+    expect(callback).toHaveBeenCalledWith(false);
+    const [prompt] = prompts(host);
+    expect(prompt).toMatchObject({
+      origin: 'https://example.com',
+      permission: 'openExternal',
+      keys: ['external:magnet'],
+      guestId: guest.id,
+    });
+    expect(shell.openExternal).not.toHaveBeenCalled();
+
+    await respond({ id: prompt.id, decision: 'allow', remember: false });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledWith(url);
+  });
+
+  test('Block opens nothing', async () => {
+    load();
+    const host = makeHost();
+    openExternal(normalSession, guestFor(host), 'mailto:someone@example.com');
+    const [prompt] = prompts(host);
+    expect(prompt.keys).toEqual(['external:mailto']);
+
+    await respond({ id: prompt.id, decision: 'deny', remember: false });
+    await flush();
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  test('a remembered allow opens without prompting; a remembered block stays silent', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    openExternal(normalSession, guest, 'mailto:first@example.com');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+    expect(ctx.ipcMain.handlers.get(IPC.PERMISSIONS_GET_ALL)()).toEqual({
+      'https://example.com': { 'external:mailto': 'allow' },
+    });
+
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'mailto:second@example.com');
+    await flush();
+    expect(prompts(host)).toHaveLength(1);
+    expect(shell.openExternal).toHaveBeenLastCalledWith('mailto:second@example.com');
+
+    // …and a remembered block on another site.
+    const other = guestFor(host, 'https://other.example/');
+    openExternal(normalSession, other, 'mailto:x@example.com');
+    await respond({ id: prompts(host)[1].id, decision: 'deny', remember: true });
+    clickGesture(other);
+    openExternal(normalSession, other, 'mailto:y@example.com');
+    await flush();
+    expect(prompts(host)).toHaveLength(2);
+    expect(shell.openExternal).toHaveBeenCalledTimes(2);
+  });
+
+  test('decisions are per scheme: allowing magnet: does not allow mailto:', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    openExternal(normalSession, guest, 'magnet:?xt=a');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'mailto:a@b.c');
+    expect(prompts(host)).toHaveLength(2);
+    expect(prompts(host)[1].keys).toEqual(['external:mailto']);
+  });
+
+  test('blocked schemes never prompt and never reach shell.openExternal, even with an allow on file', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    for (const url of [
+      'file:///etc/passwd',
+      'javascript:alert(1)',
+      'data:text/html,x',
+      'blob:https://example.com/x',
+      'about:blank',
+      'chrome://settings',
+      'devtools://devtools',
+      'view-source:https://example.com',
+      'freedom://settings',
+      'ms-msdt:/id PCWDiagnostic',
+      'search-ms:query=x',
+      'ms-officecmd:{}',
+    ]) {
+      clickGesture(guest);
+      expect(openExternal(normalSession, guest, url)).toHaveBeenCalledWith(false);
+    }
+    // A hand-edited permissions.json cannot unlock one either: blocked
+    // schemes have no key to look a decision up under.
+    clickGesture(guest);
+    openExternal(normalSession, guest, undefined);
+    await flush();
+    expect(prompts(host)).toHaveLength(0);
+    expect(shell.openExternal).not.toHaveBeenCalled();
+    expect(allLogs()).toContain('ms-msdt:<redacted> refused: blocked scheme');
+  });
+
+  test('no recent user input: no prompt, and no launch even with a remembered allow', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://example.com/', { gesture: false });
+
+    openExternal(normalSession, guest, 'magnet:?xt=a');
+    expect(prompts(host)).toHaveLength(0);
+    expect(allLogs()).toContain('refused: no recent user input');
+
+    // Allow it for real, then try again on load (no gesture).
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'magnet:?xt=a');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+
+    openExternal(normalSession, guest, 'magnet:?xt=b');
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+  });
+
+  test('one click buys one launch: a burst from a single gesture is cut to the first', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    openExternal(normalSession, guest, 'magnet:?xt=a');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+
+    clickGesture(guest);
+    for (let i = 0; i < 5; i += 1) openExternal(normalSession, guest, `magnet:?xt=${i}`);
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(2);
+  });
+
+  // R1-M1: requests used to coalesce by origin + key, so a second magnet:
+  // URL issued while the first prompt was up joined it, and one Allow
+  // launched both. Like Chrome, a tab with an external-app prompt pending
+  // gets no further external-protocol requests until it is answered.
+  test('a second request while a prompt is pending is refused, and Allow launches only the first URL', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host);
+    openExternal(normalSession, guest, 'magnet:?xt=first');
+    expect(prompts(host)).toHaveLength(1);
+
+    // Each with its own real click, same scheme and another one.
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'magnet:?xt=second');
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'mailto:a@b.c');
+    expect(prompts(host)).toHaveLength(1);
+    expect(allLogs()).toContain(
+      'magnet:<redacted> from https://example.com refused: an external-app prompt is already pending for this tab'
+    );
+    expect(allLogs()).toContain(
+      'mailto:<redacted> from https://example.com refused: an external-app prompt'
+    );
+
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: false });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+    expect(shell.openExternal).toHaveBeenCalledWith('magnet:?xt=first');
+    // Nothing was queued behind it either.
+    expect(prompts(host)).toHaveLength(1);
+
+    // Once answered, the tab can ask again.
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'mailto:a@b.c');
+    expect(prompts(host)).toHaveLength(2);
+  });
+
+  test('a pending prompt in one tab does not refuse requests from another tab', () => {
+    load();
+    const host = makeHost();
+    const first = guestFor(host);
+    const second = guestFor(host);
+    openExternal(normalSession, first, 'magnet:?xt=a');
+    openExternal(normalSession, second, 'magnet:?xt=b');
+    expect(prompts(host).map((p) => p.guestId)).toEqual([first.id, second.id]);
+  });
+
+  // The shape Electron 44 really delivers for a cross-origin iframe that sets
+  // `top.location = 'magnet:…'` after a click (probed for R1-M2; pinned end to
+  // end in test-e2e/external-protocol.spec.js): the main frame navigates, but
+  // the request is attributed to the initiating iframe.
+  test('a cross-origin subframe cannot ask; a same-origin one can', () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://example.com/page');
+
+    openExternal(normalSession, guest, 'magnet:?xt=a', {
+      isMainFrame: false,
+      requestingUrl: 'https://ads.example.net/frame',
+    });
+    expect(prompts(host)).toHaveLength(0);
+    expect(allLogs()).toContain('refused: cross-origin subframe');
+
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'magnet:?xt=a', {
+      isMainFrame: false,
+      requestingUrl: 'https://example.com/embed',
+    });
+    expect(prompts(host)).toHaveLength(1);
+    expect(prompts(host)[0].origin).toBe('https://example.com');
+  });
+
+  test('internal pages cannot launch external apps', () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'file:///app/pages/home.html');
+    openExternal(normalSession, guest, 'mailto:a@b.c');
+    expect(prompts(host)).toHaveLength(0);
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
+  test('private window: remember stays session-only, never persisted, never logged by origin', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://secret.example/page');
+    guest.privatePartition = PARTITION;
+
+    openExternal(privateSession, guest, 'mailto:hidden@secret.example');
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledWith('mailto:hidden@secret.example');
+    expect(ctx.ipcMain.handlers.get(IPC.PERMISSIONS_GET_ALL)()).toEqual({});
+
+    // Honoured again inside the private window…
+    clickGesture(guest);
+    openExternal(privateSession, guest, 'mailto:again@secret.example');
+    await flush();
+    expect(prompts(host)).toHaveLength(1);
+    expect(shell.openExternal).toHaveBeenCalledTimes(2);
+
+    // …but not in a normal window.
+    const normalGuest = guestFor(host, 'https://secret.example/page');
+    openExternal(normalSession, normalGuest, 'mailto:x@secret.example');
+    expect(prompts(host)).toHaveLength(2);
+
+    // The private window's origin and the mail address never reach the log.
+    const privateLines = log.info.mock.calls
+      .map((args) => args.join(' '))
+      .filter((line) => line.includes('<private>'));
+    expect(privateLines.length).toBeGreaterThan(0);
+    expect(allLogs()).not.toContain('hidden@secret.example');
+    expect(allLogs()).not.toContain('again@secret.example');
+  });
+
+  test('the prompt names the OS handler when one is registered', () => {
+    load();
+    ctx.app.getApplicationNameForProtocol = jest.fn(() => 'Transmission');
+    const host = makeHost();
+    openExternal(normalSession, guestFor(host), 'magnet:?xt=a');
+    expect(ctx.app.getApplicationNameForProtocol).toHaveBeenCalledWith('magnet:');
+    expect(prompts(host)[0].appName).toBe('Transmission');
+  });
+
+  test('requestOpenExternal (the window-open route) applies the same gates', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://example.com/page');
+
+    // A `target="_blank"` link inside a third-party frame: referrer is the frame.
+    expect(
+      ctx.mod.requestOpenExternal({
+        webContents: guest,
+        url: 'magnet:?xt=a',
+        isMainFrame: false,
+        requestingUrl: 'https://ads.example.net/',
+      })
+    ).toBe(false);
+
+    clickGesture(guest);
+    expect(
+      ctx.mod.requestOpenExternal({
+        webContents: guest,
+        url: 'ms-msdt:/id x',
+        isMainFrame: false,
+        requestingUrl: 'https://example.com/',
+      })
+    ).toBe(false);
+
+    expect(
+      ctx.mod.requestOpenExternal({
+        webContents: guest,
+        url: 'mailto:a@b.c',
+        isMainFrame: false,
+        requestingUrl: 'https://example.com/',
+      })
+    ).toBe(true);
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: false });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledWith('mailto:a@b.c');
+  });
+
+  test('the check path never reports openExternal as granted', () => {
+    load();
+    expect(
+      normalSession.checkHandler(null, 'openExternal', 'https://example.com', {
+        requestingUrl: 'https://example.com/',
+      })
+    ).toBe(false);
   });
 });

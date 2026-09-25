@@ -13,6 +13,22 @@
 import * as renderer from './origin-utils.js';
 const shared = require('../../shared/origin-utils');
 
+test.each([
+  ['gregskril.com', true],
+  ['🦇.eth', true],
+  ['bücher.eth', true],
+  ['a.co', true],
+  ['foo..eth', false],
+  ['https://gregskril.com', false],
+  ['name.eth/path', false],
+  ['alice@example.com', false],
+  ['', false],
+  [null, false],
+])('ENS candidate detection agrees across processes: %s', (value, expected) => {
+  expect(renderer.isPotentialEnsName(value)).toBe(expected);
+  expect(shared.isPotentialEnsName(value)).toBe(expected);
+});
+
 // Inputs span every code path + realistic edge cases.
 const INPUTS = [
   // ENS bare names
@@ -118,12 +134,8 @@ describe('renderer origin-utils vs shared origin-utils', () => {
     expect(renderer.getPermissionKey(`web3://${address}:100/swap`)).toBe(
       `web3://${address.toLowerCase()}:100`
     );
-    expect(renderer.getPermissionKey(`web3://${address}/`)).toBe(
-      `web3://${address.toLowerCase()}`
-    );
-    expect(
-      renderer.getPermissionKey(`web3://${address.toLowerCase()}.eip155-100/swap`)
-    ).toBe(
+    expect(renderer.getPermissionKey(`web3://${address}/`)).toBe(`web3://${address.toLowerCase()}`);
+    expect(renderer.getPermissionKey(`web3://${address.toLowerCase()}.eip155-100/swap`)).toBe(
       `web3://${address.toLowerCase()}:100`
     );
   });

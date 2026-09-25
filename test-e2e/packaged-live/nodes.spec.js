@@ -18,17 +18,19 @@
 // on one runner — from inheriting each other's node state.
 //
 // What is asserted is deliberately only "the manager reports running, within a
-// bounded time" (plus, for Ant, that its local HTTP API answers /health on the
-// port the app itself published). Peer counts and content retrieval depend on
-// peer discovery, which is slow and nondeterministic on a CI runner. Tor is the
-// one node whose "running" itself depends on reaching the network; see the
+// bounded time" — plus, for Ant, that its local HTTP API answers /health on the
+// port the app itself published, and for native IPFS, that quitting with the
+// node running exits 0 rather than aborting (issue #345, which reproduces in
+// the packaged build; see that test). Peer counts and content retrieval depend
+// on peer discovery, which is slow and nondeterministic on a CI runner. Tor is
+// the one node whose "running" itself depends on reaching the network; see the
 // comment in its test for how that is kept out of the release gate.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { test: liveTest, expect } = require('../live-fixtures');
+const { test: liveTest, expect, watchProcessExit } = require('../live-fixtures');
 
 // The embedded Radicle node binds a Unix socket at $RAD_HOME/node/control.sock,
 // and sockaddr_un caps that path at ~104 bytes on macOS. The live fixtures' own
@@ -74,6 +76,12 @@ const TOR_START_TIMEOUT_MS = 180_000;
 // ours.
 const HEALTH_TIMEOUT_MS = 30_000;
 const HEALTH_REQUEST_TIMEOUT_MS = 5_000;
+// How long the IPFS leg waits for the quit it drives itself to land. The
+// wind-down's own watchdog gives up at 20s (src/main/index.js
+// SHUTDOWN_WATCHDOG_MS) and quits regardless, so a process still alive well
+// past that is wedged, not slow — 60s is the same budget
+// live/ipfs-quit.spec.js uses, with room for a cold packaged teardown.
+const QUIT_TIMEOUT_MS = 60_000;
 
 // Every node off. Each test turns exactly one back on.
 const NODES_OFF = {
@@ -178,7 +186,14 @@ test.describe('packaged bundled nodes', () => {
   test.describe('native IPFS', () => {
     test.use({ seedSettings: { ...NODES_OFF, startIpfsAtLaunch: true } });
 
-    test('the bundled native IPFS node starts', async ({ window }) => {
+    test('the bundled native IPFS node starts and quits cleanly', async ({
+      window,
+      electronApp,
+    }) => {
+      // Armed before the node starts, so a fatal line printed anywhere in the
+      // run is captured. Asserted after the quit at the end of this test.
+      const expectCleanExit = watchProcessExit(electronApp, { timeout: QUIT_TIMEOUT_MS });
+
       await expectNodeRunning(window, 'ipfs', {
         label: 'native IPFS',
         timeout: NODE_START_TIMEOUT_MS,
@@ -191,6 +206,29 @@ test.describe('packaged bundled nodes', () => {
       const ipfs = await registryEntry(window, 'ipfs');
       expect(ipfs.mode).toBe('bundled');
       expect(ipfs.backend).toBe('freedom-ipfs');
+
+      // Teardown is an assertion here, not just cleanup. Issue #345 aborted
+      // the main process (SIGABRT out of the native event dispatcher) on quit
+      // with this node running, and it reproduces in the packaged build — a
+      // stale or wrong-arch freedom-ipfs addon in the artifact can behave
+      // differently on teardown while every other packaged leg stays green,
+      // because live/ipfs-quit.spec.js (source tree) is otherwise the only
+      // place exit status is checked at all. The live fixtures' own
+      // app.close() would swallow that: it is wrapped in try/catch and never
+      // looks at how the process went away.
+      //
+      // Only this leg quits explicitly. Ant, Radicle and Tor tear down through
+      // the fixture as before — #345 is an IPFS-dispatcher bug, the Tor leg can
+      // skip out mid-test, and giving all four a driven quit would add their
+      // SIGKILL budgets (10s Tor, 5s Ant) to every release smoke run.
+      try {
+        await electronApp.close();
+      } catch {
+        // A crashing quit can break the CDP connection before close() returns;
+        // the exit status is what this is asserting on.
+      }
+
+      await expectCleanExit();
     });
   });
 

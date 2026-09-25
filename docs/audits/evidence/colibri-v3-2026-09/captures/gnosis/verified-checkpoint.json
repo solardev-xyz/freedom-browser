@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "chainId": 100,
+  "network": "gnosis",
+  "root": "0xf9da4bb61af5f13e7a7e14e5417d2dd6fa65d959bf9a2a16d1f659fd00306348",
+  "slot": 30144816,
+  "verifiedAt": 1789717671292,
+  "sources": [
+    "https://checkpoint.gnosischain.com",
+    "https://checkpoint-sync-gnosis.dappnode.net"
+  ],
+  "finalizedEpoch": 1884051,
+  "colibriVersion": "3.0.0",
+  "proofRequest": {
+    "method": "eth_getBlockByNumber",
+    "params": [
+      "latest",
+      false
+    ],
+    "version": 196608,
+    "zk_proof": true
+  },
+  "proofSha256": "72808e037ad60896e88cc15943b62d0b693d1b3d3cad5bc85422ef5b1ded7481"
+}

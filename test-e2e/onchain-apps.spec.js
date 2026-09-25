@@ -545,3 +545,80 @@ test('blocks a page from reaching the onchain trust gate as a subresource', asyn
     )
     .toContain('/pages/onchain-unverified.html');
 });
+
+test("the trust gate's Go back button traverses, it does not re-navigate", async ({
+  window,
+  harness,
+}) => {
+  // The gate's "← Go back" is handled by the shell, not by
+  // `window.history.back()` in the page: a renderer-initiated traversal onto a
+  // custom-scheme entry is caught by the main process' `will-navigate`
+  // intercept and replayed through `loadTarget` as a *fresh* navigation. That
+  // restores the URL but pushes a new entry over the restored one, so the
+  // forward history — the app the user is backing out of — is gone. (On the
+  // ENS interstitials the same shape loops outright; see
+  // `ens-history-traversal.spec.js`.)
+  const app = { address: ethers.getAddress(ADDRESS), chainId: 1 };
+  const interstitialUrl = buildOnchainInterstitialUrl({
+    app,
+    provenance: {
+      version: 1,
+      chainId: 1,
+      network: 'Ethereum',
+      contract: app.address,
+      htmlHash: HTML_HASH,
+      trust: {
+        level: 'unverified',
+        method: 'direct',
+        agreed: ['rpc.example'],
+        dissented: [],
+        queried: ['rpc.example'],
+      },
+    },
+    requestUrl: APP_URL,
+    token: 'a'.repeat(43),
+  });
+  await harness.setContentFixture(APP_URL, {
+    status: 451,
+    body: 'This response must never become executable app content.',
+    headers: { [GATE_HEADER]: Buffer.from(interstitialUrl, 'utf8').toString('base64url') },
+  });
+  await harness.setContentFixture('ipfs://qmgateback/', {
+    body: '<html><body><h1>before the app</h1></body></html>',
+  });
+
+  const guestUrl = () =>
+    window.evaluate(
+      () => document.querySelector('webview.active, webview:not(.hidden)')?.getURL() || ''
+    );
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.fill('ipfs://qmgateback/');
+  await input.press('Enter');
+  await expect.poll(guestUrl, { timeout: 15_000 }).toMatch(/^ipfs:\/\/qmgateback/);
+
+  await input.fill(`web3://${ADDRESS}`);
+  await input.press('Enter');
+  await expect.poll(guestUrl, { timeout: 15_000 }).toContain('/pages/onchain-unverified.html');
+
+  await expect
+    .poll(
+      () =>
+        window.evaluate(async () => {
+          const webview = document.querySelector('webview.active, webview:not(.hidden)');
+          if (!webview?.executeJavaScript) return 'no-webview';
+          return await webview.executeJavaScript(
+            `(() => { const el = document.getElementById('back-btn');
+              if (!el) return 'missing'; el.click(); return 'clicked'; })()`,
+            true
+          );
+        }),
+      { timeout: 15_000 }
+    )
+    .toBe('clicked');
+
+  // A real traversal: the entry behind the gate is restored *and* the gated
+  // app is still ahead of it in this tab's history.
+  await expect.poll(guestUrl, { timeout: 15_000 }).toMatch(/^ipfs:\/\/qmgateback/);
+  await expect(window.locator('#forward-btn')).toBeEnabled();
+});

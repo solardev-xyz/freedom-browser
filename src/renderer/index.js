@@ -57,11 +57,15 @@ import {
   refreshCache as refreshAutocompleteCache,
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
-import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.js';
+import {
+  initGithubBridgeUi,
+  setOnOpenRadicleUrl,
+  closeGithubBridgePanel,
+} from './lib/github-bridge-ui.js';
 import { initDownloadsUi, setOnOpenDownloadsPage } from './lib/downloads-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
-import { initSitePermissionsUi } from './lib/site-permissions-ui.js';
+import { initSitePermissionsUi, closePermissionPopover } from './lib/site-permissions-ui.js';
 import { initFindBar } from './lib/find-bar.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import {
@@ -126,6 +130,9 @@ window.serviceRegistry?.getRegistry?.().then((registry) => {
   if (registry) {
     pushDebug(`[ServiceRegistry] Initial state: ${JSON.stringify(registry)}`);
     updateRegistry(registry);
+    // A profile already on an external IPFS gateway must have a usable toggle
+    // from the first paint, not only after the next registry broadcast.
+    updateIpfsToggleState();
   }
 });
 
@@ -153,11 +160,24 @@ setOnOpenDownloadsPage(openDownloadsPage);
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
 // When any popover/menu opens, dismiss other transient surfaces so we
-// don't end up with the autocomplete dropdown or the ENS trust popover
-// stacked on top of the nodes/main menu.
+// don't end up with the autocomplete dropdown or any of the address bar's
+// three no-backdrop surfaces -- the ENS trust popover, the permission
+// indicator's popover and the GitHub-bridge panel -- stacked on top of the
+// nodes/main menu.
+//
+// Every module that raises the backdrop for a menu chains this: the
+// hamburger and Nodes menus, the tab and bookmark context menus, the chrome
+// input menu, and the page context menu -- that last one raised from inside
+// the guest rather than from the chrome, which is how it was the one raiser
+// left off the chain (#67). The autocomplete dropdown is the deliberate
+// exception: it is the address bar's own surface and sits alongside the
+// three, so the backdrop *it* raises resets them on `mousedown` instead
+// (`closeAllOverlays`).
 const onAnyMenuOpening = () => {
   hideAutocomplete();
   closeTrustPopover();
+  closePermissionPopover();
+  closeGithubBridgePanel();
 };
 setOnMenuOpening(onAnyMenuOpening);
 setOnTabContextMenuOpening(onAnyMenuOpening);
@@ -168,10 +188,6 @@ async function initPlatformUI() {
   const platform = await electronAPI.getPlatform();
 
   if (platform === 'linux') {
-    // platform-linux governs the titlebar spacer width (shrinks the 76px macOS
-    // traffic-light gap to 12px), so it applies to Linux regardless of framing.
-    document.body.classList.add('platform-linux');
-
     // The window is only frameless when the user opts in to tabs-in-titlebar;
     // with the OS frame the system provides the controls, so skip the custom ones.
     const settings = await electronAPI.getSettings().catch(() => ({}));
@@ -305,6 +321,15 @@ function initExternalNodeCandidatesModal() {
       }
 
       details.append(name, endpoints);
+      // What the user gives up by choosing the external node (IPFS: content is
+      // no longer verified by Freedom). Supplied per candidate by the main
+      // process, so the prompt and the message-box fallback say the same thing.
+      if (candidate.trustNote) {
+        const trustNote = document.createElement('p');
+        trustNote.className = 'external-node-trust-note';
+        trustNote.textContent = candidate.trustNote;
+        details.append(trustNote);
+      }
       row.append(details, choice);
       list.append(row);
     }
@@ -689,10 +714,29 @@ const closeAllMenus = () => {
   hideChromeInputContextMenu();
 };
 
-// Close everything including autocomplete (used by backdrop)
+// Close everything including autocomplete and the address bar's three
+// no-backdrop surfaces (used by backdrop). The backdrop is the neutral surface:
+// a press on it resets every transient overlay, the mirror of
+// `onAnyMenuOpening` chaining the same set.
+//
+// None of the three -- the trust popover, the permission indicator's popover
+// and the GitHub-bridge panel -- raises a backdrop of its own, so any of them
+// can still be open under one another surface raised. Autocomplete is the
+// reachable case, since its `show()` closes the menus but, unlike every other
+// raiser, none of these. Closing them here, on the backdrop's `mousedown`, is
+// also what stops their dismissal depending on the document `click` listeners
+// (navigation.js for the trust popover, site-permissions-ui.js for the
+// permission one, github-bridge-ui.js for the panel): a press on the backdrop
+// released inside the guest produces no `click` in this document at all (the
+// pointer moves into the `<webview>`'s own frame, so the embedder never sees
+// the `mouseup`), which left the surface stranded with no menu, no dropdown and
+// no highlight on the control it hangs off. #67
 const closeAllOverlays = () => {
   closeAllMenus();
   hideAutocomplete();
+  closeTrustPopover();
+  closePermissionPopover();
+  closeGithubBridgePanel();
 };
 
 // Listen for close menus from main process (e.g., system menu clicked)
@@ -803,7 +847,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
   initAutocomplete(); // Address bar autocomplete
-  initPageContextMenu(); // Page context menu for webviews
+  initPageContextMenu({ onOpening: onAnyMenuOpening }); // Page context menu for webviews
   // Cut/Copy/Paste/Select All for every editable chrome text field — the
   // address bar, the find bar and the bookmark-edit dialog (#316). Passed in
   // explicitly rather than left to the module's fallback so the list of chrome

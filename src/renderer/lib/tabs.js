@@ -9,6 +9,7 @@ import {
   getInternalPageName,
   getOnchainInterstitialTarget,
   internalPages,
+  isHomePageUrl,
   isNewTabPageName,
   isNewTabPageUrl,
 } from './page-urls.js';
@@ -22,6 +23,7 @@ import {
   notifyFindBarTabClosed,
   notifyFindBarTabSwitched,
 } from './find-bar.js';
+import { consumeHistoryTraversal } from './history-traversal.js';
 import { matchesShortcut } from './shortcuts.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
@@ -61,7 +63,11 @@ export const updateTabFavicon = async (tabId, pageUrl) => {
   // Skip for internal pages or empty URLs — internal pages that want a
   // favicon declare it via <link rel="icon"> and are picked up by the
   // page-favicon-updated webview event instead of the HTTP fetch pipeline.
-  if (!pageUrl || pageUrl.startsWith('freedom://') || pageUrl.includes('/pages/')) {
+  // Anchored (isInternalPageUrl), not an `/pages/` substring: the sibling
+  // of the split in that handler, and with a substring test a remote
+  // `https://example.com/pages/about.html` blanks the strip on every paint,
+  // dropping the cached icon main just fetched for it (#376).
+  if (!pageUrl || isInternalPageUrl(pageUrl)) {
     tab.favicon = null;
     renderTabs();
     return;
@@ -125,6 +131,36 @@ let onHardReload = null;
 
 export const setWebviewEventHandler = (handler) => {
   onWebviewEvent = handler;
+};
+
+// Report a commit that Chromium produced for a back/forward traversal, so
+// navigation.js can re-verify an ENS-backed restored entry under today's
+// verification settings (#86). Reported for background tabs too — the regular
+// `did-navigate` forward above is active-tab-only, and a user who switches
+// tabs between pressing Back and the commit landing would otherwise keep the
+// stale trust object for the restored entry.
+//
+// `consumeHistoryTraversal` is called unconditionally (even with no handler
+// registered) so the mark can never outlive the commit it belongs to.
+//
+// `previousUrl` — the URL this tab was on before the restored entry
+// committed — rides along because the refresh needs it to tell "the user
+// pressed Back onto a blocked name" from "the user pressed Back *out of* the
+// interstitial we raised over that name". Re-raising it in the second case
+// puts the user in a loop they can only leave through the address bar.
+//
+// `wroteCommittedIdentity` — whether *this* commit actually updated the tab's
+// `committedDisplayUrl`. The refresh keys on that URL, so a commit that
+// deliberately leaves it alone — `about:blank`, or a tab that has already
+// gone away — must not be reported:
+// the refresh would re-resolve the entry the traversal just *left* and could
+// raise that name's interstitial over the restored entry, with the restored
+// entry's own forward history gone. Same reasoning as the same-document case
+// in `did-navigate-in-page`; there the identity is never written either.
+const reportHistoryTraversalCommit = (webview, tabId, previousUrl, wroteCommittedIdentity) => {
+  const traversed = consumeHistoryTraversal(webview);
+  if (!traversed || !wroteCommittedIdentity || !onWebviewEvent) return;
+  onWebviewEvent('history-traversal-committed', { tabId, previousUrl: previousUrl || '' });
 };
 
 export const setOnchainProvenanceChangeHandler = (handler) => {
@@ -296,6 +332,18 @@ const createNavigationState = () => ({
   // and `currentPageUrl`.
   committedDisplayUrl: '',
   committedNavigationSequence: 0,
+  // The commit counter's sibling, for the other half of the question an
+  // async landing site has to ask. `committedNavigationSequence` answers
+  // "has this tab moved on since I started?"; this one answers "is it about
+  // to?" — bumped by every navigation this guest has been *asked* for,
+  // whether or not it ever commits: Chromium's own main-frame,
+  // cross-document `did-start-navigation` (a back/forward traversal, a link
+  // click, any `loadURL`) and `loadTarget`'s entry, which records the intent
+  // before a name resolution that can take a second has produced a start
+  // event at all. Work that navigates the guest itself when it settles must
+  // compare this too, or it cancels the navigation the user asked for while
+  // it was in flight and takes the forward history with it (#86).
+  requestedNavigationSequence: 0,
   cachedWebContentsId: null,
   resolvingWebContentsId: null,
   pendingSwarmProbeId: null,
@@ -477,14 +525,19 @@ const createWebview = (tabId, initialUrl) => {
 
   // Create named event handlers so they can be removed later
   const handlers = {
-    // A main-frame, cross-document navigation started: record whether the
-    // find bar was open for this tab, which is what decides at commit
-    // whether the bar closes — Chrome's rule. Nothing visible happens here,
-    // because this navigation may never commit (a download link, Stop, an
-    // external protocol handler), and the user is then still on this page
+    // A main-frame, cross-document navigation started: bump the per-tab
+    // requested-navigation counter (see `createNavigationState`), and record
+    // whether the find bar was open for this tab, which is what decides at
+    // commit whether the bar closes — Chrome's rule. Nothing visible happens
+    // here, because this navigation may never commit (a download link, Stop,
+    // an external protocol handler), and the user is then still on this page
     // with a live search that must survive.
     'did-start-navigation': (event) => {
       if (event.isMainFrame === false || event.isInPlace) return;
+      const tab = tabState.tabs.find((t) => t.id === tabId);
+      if (tab?.navigationState) {
+        tab.navigationState.requestedNavigationSequence += 1;
+      }
       notifyFindBarNavigationStarted(webview);
     },
     'did-start-loading': () => {
@@ -594,11 +647,17 @@ const createWebview = (tabId, initialUrl) => {
     },
     'did-navigate': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
+      // Hoisted out of the block below so the traversal report at the tail
+      // can name the page this commit replaced, and can tell whether this
+      // commit wrote a new committed identity at all.
+      let previousCommittedUrl = null;
+      let wroteCommittedIdentity = false;
       if (tab) {
         // Use webview.getURL() for full URL (includes view-source: prefix)
         // event.url doesn't include the view-source: prefix
         const webviewUrl = webview.getURL();
         const previousUrl = tab.url;
+        previousCommittedUrl = previousUrl;
         tab.url = webviewUrl;
         tab.hasCertError = false; // Reset cert error on new navigation
         // Track view-source state directly on tab for reliable detection in page-title-updated
@@ -612,11 +671,24 @@ const createWebview = (tabId, initialUrl) => {
         // through about:blank during "open in new window" before the real
         // loadURL runs; clobbering the previous commit there would lose
         // the actual page identity.
-        if (tab.navigationState && event.url && event.url !== 'about:blank') {
-          const interstitialTarget = getOnchainInterstitialTarget(webviewUrl);
-          tab.navigationState.committedDisplayUrl =
-            formatOnchainAppDisplayUrl(interstitialTarget || webviewUrl) || webviewUrl;
+        //
+        // The sequence counter is *not* skipped with it. It answers a
+        // different question — "has this tab moved on since I started?" —
+        // which every async landing site that writes back into this tab
+        // compares against (the onchain provenance lookup below, the ENS
+        // trust refresh a traversal kicks off in navigation.js). An
+        // about:blank commit moves the tab on like any other, so leaving
+        // the counter behind let work started for the previous entry settle
+        // over the blank page: a re-resolution that came back `conflict`
+        // raised that entry's interstitial on top of it.
+        if (tab.navigationState && event.url) {
           tab.navigationState.committedNavigationSequence += 1;
+          if (event.url !== 'about:blank') {
+            const interstitialTarget = getOnchainInterstitialTarget(webviewUrl);
+            tab.navigationState.committedDisplayUrl =
+              formatOnchainAppDisplayUrl(interstitialTarget || webviewUrl) || webviewUrl;
+            wroteCommittedIdentity = true;
+          }
         }
         // A committed main-frame navigation replaces the document, so the
         // previous page's title must not survive it. Chromium fires
@@ -651,8 +723,13 @@ const createWebview = (tabId, initialUrl) => {
           tab.favicon = null;
           renderTabs();
         }
-        // Reset title to "New Tab" on home-page navigation (e.g., back button)
-        if (homeUrl && (event.url === homeUrl || event.url.endsWith('/pages/home.html'))) {
+        // Reset title to "New Tab" on home-page navigation (e.g., back button).
+        // Anchored (isHomePageUrl), not an `/pages/home.html` suffix: a remote
+        // page is free to serve that path, and the suffix test gave it the
+        // new-tab-page title treatment — the tab relabelled "New Tab" and the
+        // window title blanked over the site's own content (#376, same
+        // discipline as the internal-page split above).
+        if (isHomePageUrl(event.url)) {
           tab.title = 'New Tab';
           renderTabs();
           if (tabId === tabState.activeTabId) {
@@ -679,6 +756,7 @@ const createWebview = (tabId, initialUrl) => {
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate', { tabId, event });
       }
+      reportHistoryTraversalCommit(webview, tabId, previousCommittedUrl, wroteCommittedIdentity);
     },
     'did-navigate-in-page': (event) => {
       // A same-document navigation (an in-page anchor, a history.pushState
@@ -688,26 +766,126 @@ const createWebview = (tabId, initialUrl) => {
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate-in-page', { tabId, event });
       }
+      // A back/forward traversal mark is deliberately *not* read here: this
+      // event cannot tell the commit a traversal asked for apart from one the
+      // page made for itself, and guessing wrong is worse than not refreshing.
+      //
+      // Chromium reports both through the identical event. Probed against a
+      // real guest on Electron 44 (`did-start-navigation` / commit pairs
+      // logged while a back traversal to a deliberately slow page was in
+      // flight), a page's own `history.replaceState` and a same-document
+      // history traversal are indistinguishable from the embedder:
+      //
+      //   * both arrive as `did-navigate-in-page` with `isMainFrame: true`
+      //     and nothing else on the event (`url` and `isMainFrame` are its
+      //     only fields) — the subframe gate this replaces saw a main-frame
+      //     `replaceState` as the traversal's commit;
+      //   * both are preceded, 1-2ms earlier, by a main-frame
+      //     `did-start-navigation` carrying the same URL and `isInPlace:
+      //     true`, so the start event does not separate them either — and the
+      //     traversal's own start arrives *after* the first of the page's, so
+      //     "wait for a start before consuming" does not either;
+      //   * the session-history position, probed through `canGoToOffset`,
+      //     reports the *pending* traversal's target for the whole window, so
+      //     a page commit landing mid-traversal reads exactly the index the
+      //     traversal's own commit would.
+      //
+      // Letting any of them consume the mark is what a page on a timer
+      // exploited: a `replaceState` loop on the page being left ate the mark
+      // before the restored entry committed, so either the restored entry was
+      // never re-verified, or the refresh ran against `committedDisplayUrl` —
+      // still the outgoing entry, since this event does not write it — and
+      // raised *that* page's interstitial over the traversal, landing Back on
+      // `ens-conflict.html` for the page the user was walking away from with
+      // the forward history gone.
+      //
+      // So only a cross-document commit (`did-navigate`, above) reports a
+      // traversal. What that gives up is the refresh on a same-document
+      // traversal, which costs nothing real: the document is unchanged, so
+      // the restored entry carries the same origin and therefore the same
+      // name, and the verdict already on the shield is that name's.
+      //
+      // The mark such a traversal leaves standing is bounded by
+      // `clearHistoryTraversal` on every shell-initiated navigation, and
+      // otherwise by the next cross-document commit, which consumes it. That
+      // second bound means a commit the user never asked to be a traversal
+      // can be reported as one — but not one the refresh acts on, and the
+      // reason is worth writing down because it lives in another process:
+      //
+      //   * to reach the refresh at all, the committed URL has to parse as a
+      //     name, which means one of the dweb schemes (`bzz:`/`ipfs:`/
+      //     `ipns:`). Every page-driven navigation to one of those is
+      //     `preventDefault()`ed in the main process (`will-navigate` in
+      //     webcontents-setup.js) and re-routed through `navigate-to-url` →
+      //     `loadTarget`, which clears the mark before anything commits;
+      //   * a page-driven navigation to http(s) is *not* intercepted, so it
+      //     does consume a stale mark and is reported — and then
+      //     `parseEnsInput` declines its `https://…` URL and the refresh
+      //     returns having done nothing.
+      //
+      // Probed rather than reasoned (2026-09-22, harness): from an
+      // `ipfs://name.eth/` page, an in-page `pushState` hop then Back — which
+      // leaves the mark standing by design — followed by a page-driven
+      // `location.assign()` to `ipfs://name.eth/after` and, separately, to
+      // `https://example.com/after`. Neither produced a single "History
+      // traversal re-verifying" line; the dweb hop went through `loadTarget`,
+      // the http hop parsed as nothing. A control without the Back behaved
+      // identically. So this is a real bound, not a silent gap — but it rests
+      // on that main-process intercept: widen the refresh past committed
+      // display URLs, or drop a scheme from that list, and the stale mark
+      // becomes reachable.
+      //
+      // Narrowing it further is not available to the embedder anyway: nothing
+      // on a same-document commit, on its `did-start-navigation`, or in the
+      // session-history position separates a traversal's own same-document
+      // commit from the page's own (the probe above), so "the traversal
+      // already happened" is not knowable at the point the mark would have to
+      // be dropped. See history-traversal.js.
     },
     'page-favicon-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (!tab) return;
-      // Only honor this event for internal pages. External sites flow through
-      // the HTTP favicon pipeline (updateTabFavicon) which handles per-domain
-      // caching across sessions; letting this event override it would race
-      // with the cached value on subsequent loads.
-      if (!isInternalPageUrl(webview.getURL())) return;
       const icon = event.favicons?.[0];
       if (!icon) return;
-      tab.favicon = icon;
-      renderTabs();
+      const pageUrl = webview.getURL();
+      // Internal pages paint the reported URL straight into the strip: it is
+      // a URL out of our own bundle, so there is nothing to fetch or cache
+      // per domain. `isInternalPageUrl` is anchored to the shell's own
+      // resolved `pages/` base, so a remote path that merely looks like one
+      // (`https://example.com/pages/about.html`) takes the external branch
+      // and its icon still goes through the cached-copy path (#376).
+      if (isInternalPageUrl(pageUrl)) {
+        tab.favicon = icon;
+        renderTabs();
+        return;
+      }
+      // External sites: this event *is* Chromium's `<link rel="icon">` parse
+      // of the document the webview already downloaded, so it is what the
+      // main process now works from (#75). It does not become `tab.favicon`
+      // directly — the strip paints the per-domain cached copy that main
+      // fetches and stores, which is also what survives across sessions, so
+      // there is no race with the cached value on subsequent loads (the
+      // reason this event used to be ignored for external pages).
+      // Every tab forwards its report, not just the foreground one. Chromium
+      // emits this *after* did-stop-loading, so a switch inside that window
+      // would otherwise drop the report of the tab that just finished
+      // loading and leave that visit with no icon fetched at all (#376).
+      // Which tab it belongs to is carried in `tabId`: navigation.js pairs
+      // the report with the load half recorded for *that* tab, so a tab that
+      // recorded none (a background load, whose address bar never supplied a
+      // cache key, or any load in a private window) still fetches nothing.
+      if (onWebviewEvent) {
+        onWebviewEvent('page-favicon-updated', { tabId, pageUrl, iconUrl: icon });
+      }
     },
     'page-title-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
         const currentUrl = webview.getURL();
-        // For home page, always use "New Tab" regardless of what the page reports
-        if (homeUrl && (currentUrl === homeUrl || currentUrl.endsWith('/pages/home.html'))) {
+        // For home page, always use "New Tab" regardless of what the page
+        // reports — anchored the same way as the did-navigate reset above, so
+        // a remote `…/pages/home.html` keeps its own <title> (#376).
+        if (isHomePageUrl(currentUrl)) {
           if (tab.title !== 'New Tab') {
             tab.title = 'New Tab';
             renderTabs();
@@ -857,8 +1035,32 @@ const GLOBE_ICON_SVG = `<svg class="tab-icon-default" viewBox="0 0 24 24" fill="
 // Internal pages are served from the bundled renderer (freedom:// or
 // file:///…/pages/…). The HTTP favicon fetch pipeline skips them, so their
 // favicons come in via the webview's page-favicon-updated event.
-const isInternalPageUrl = (url) =>
-  typeof url === 'string' && (url.startsWith('freedom://') || url.includes('/pages/'));
+//
+// Anchored to the shell's *resolved* `pages/` base, never an `/pages/`
+// substring: an external site is free to serve
+// `https://example.com/pages/about.html`, and treating that as chrome makes
+// the page-favicon-updated handler below paint its remote icon URL straight
+// into the tab strip — a dial of the site from the chrome renderer, with the
+// per-domain cached copy bypassed entirely (#376). Same discipline as
+// page-urls.js#matchesInternalPage (#235).
+let internalPagesBase;
+const getInternalPagesBase = () => {
+  if (internalPagesBase === undefined) {
+    try {
+      internalPagesBase = new URL('pages/', window.location?.href).toString();
+    } catch {
+      internalPagesBase = null;
+    }
+  }
+  return internalPagesBase;
+};
+
+const isInternalPageUrl = (url) => {
+  if (typeof url !== 'string') return false;
+  if (url.startsWith('freedom://')) return true;
+  const base = getInternalPagesBase();
+  return Boolean(base) && url.startsWith(base);
+};
 
 // Loading spinner (same style as address bar)
 const SPINNER_HTML = `<span class="tab-icon-spinner"></span>`;
@@ -1740,13 +1942,21 @@ export const switchTab = (tabId, options = {}) => {
  * @param {{ background?: boolean }} [options] - opening disposition
  * @returns {object|null} the (possibly new) tab, or null on noop
  */
-// Parse a `freedom://<page>[/<sub>]` URL into `{ pageName, subPath }` when
-// `<page>` is a recognised internal page, else null. A single sub-path segment
-// is accepted (e.g. `freedom://settings/profile`) so deep links still resolve
-// to the page's singleton tab — the sub-path routes the (possibly reused) tab
-// to the right section. Anything deeper or unrecognised returns null.
+// Parse a `freedom://<page>[/<sub-path>]` URL into `{ pageName, subPath }` when
+// `<page>` is a recognised internal page, else null. A sub-path of any depth is
+// accepted (e.g. `freedom://settings/profile`, `freedom://settings/chains/1`) so
+// deep links still resolve to the page's singleton tab — the sub-path routes the
+// (possibly reused) tab to the right section. It is as deep as the page's own
+// fragment because that is what `page-urls.js#getInternalPageName` emits for it,
+// and that is what the address bar shows and a bookmark hands back; stopping at
+// one segment made the chrome's own chain-detail URL unroutable (#280). Keep in
+// step with `navigation.js#FREEDOM_PAGE_PATTERN`, the sibling copy the
+// address-bar branch uses. An unrecognised page, or anything outside
+// `[a-z0-9-]` segments, returns null.
 const freedomInternalPageTarget = (url) => {
-  const match = /^freedom:\/\/([a-z0-9-]+)(?:\/([a-z0-9-]+))?\/?$/i.exec(url || '');
+  const match = /^freedom:\/\/([a-z0-9-]+)(?:\/([a-z0-9-]+(?:\/[a-z0-9-]+)*))?\/?$/i.exec(
+    url || ''
+  );
   if (!match || !internalPages) return null;
   const pageName = match[1].toLowerCase();
   if (!Object.prototype.hasOwnProperty.call(internalPages, pageName)) return null;

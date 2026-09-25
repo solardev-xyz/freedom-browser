@@ -70,6 +70,18 @@ describe('send wallet review', () => {
     delete global.window;
   });
 
+  test('accepts DNS, subdomain and Unicode ENS candidates', async () => {
+    installDocument();
+    global.window = { location: { href: 'file:///app/index.html' }, internalPages: { routable: {} } };
+    const { isEnsLikeName } = await loadSendTestApi();
+    for (const name of ['ur.integration-tests.eth', 'test.offchaindemo.eth', 'gregskril.com', '🦇🔊.eth', 'RaFFY.eth']) {
+      expect(isEnsLikeName(name)).toBe(true);
+    }
+    for (const name of ['name', '.eth', 'foo..eth', 'name.eth/path', 'https://a.com', 'a@b.com', 'a b.eth', 'a\u0000.eth']) {
+      expect(isEnsLikeName(name)).toBe(false);
+    }
+  });
+
   test('maps unverified reverse lookup results to the warning render path', async () => {
     installDocument();
     global.window = {
@@ -136,6 +148,15 @@ const SEND_ELEMENT_IDS = [
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+// The review recipient is painted either as bare text (no name known) or as
+// a span list via replaceChildren; the fake DOM does not aggregate the two.
+const reviewRecipientText = (elements) => {
+  const el = elements['send-review-to'];
+  return el.children.length
+    ? el.children.map((child) => child.textContent || '').join('')
+    : el.textContent;
+};
+
 const deferred = () => {
   let resolve;
   const promise = new Promise((res) => { resolve = res; });
@@ -145,7 +166,7 @@ const deferred = () => {
 // Drives the real send screen against the real wallet-state/signature-flight
 // modules, so the shared sidebar lock under test is the same instance every
 // other approval surface would see.
-async function loadSendScreen() {
+async function loadSendScreen({ chains = [{ chainId: 100, name: 'Gnosis' }], reverseLookup = null } = {}) {
   jest.resetModules();
   // The screen arms focus/balance-refresh timers we don't care about here;
   // faking them keeps no handles alive past the test.
@@ -169,10 +190,13 @@ async function loadSendScreen() {
   global.window = {
     location: { href: 'file:///app/index.html' },
     internalPages: { routable: {} },
-    electronAPI: {},
+    electronAPI: reverseLookup ? { resolveEnsReverse: reverseLookup } : {},
     wallet: {
       parseAmount: jest.fn().mockResolvedValue({ success: true, value: '1000' }),
       sendTransaction: jest.fn(() => send.promise),
+      estimateGas: jest.fn().mockResolvedValue({ success: true, gasLimit: '21000' }),
+      getGasPrice: jest.fn().mockResolvedValue({ success: true, type: 'legacy', gasPrice: '1' }),
+      formatUnits: jest.fn(() => '0.000021'),
     },
     dispatchEvent: jest.fn(),
     CustomEvent: class {},
@@ -183,7 +207,7 @@ async function loadSendScreen() {
   jest.doMock('./balance-display.js', () => ({
     refreshBalances: jest.fn(),
     getTokensWithBalance: jest.fn(() => [token]),
-    getChainsWithBalance: jest.fn(() => [{ chainId: 100 }]),
+    getChainsWithBalance: jest.fn(() => chains),
     sortTokens: jest.fn((tokens) => tokens),
   }));
   jest.doMock('../tabs.js', () => ({ createTab: jest.fn() }));
@@ -192,8 +216,10 @@ async function loadSendScreen() {
   const flight = await import('./signature-flight.js');
   state.walletState.fullAddresses.wallet = ADDRESS;
   state.walletState.identityView = createElement('div');
-  state.walletState.selectedChainId = 100;
-  state.walletState.registeredChains = { 100: { name: 'Gnosis' } };
+  state.walletState.selectedChainId = chains[0].chainId;
+  state.walletState.registeredChains = Object.fromEntries(
+    chains.map((chain) => [chain.chainId, { name: chain.name }])
+  );
   // A hardware account: the send waits on a device prompt that cannot be
   // recalled, which is what makes the sidebar lock necessary.
   state.walletState.activeWalletIndex = 0;
@@ -258,6 +284,156 @@ describe('send screen sidebar ownership', () => {
     expect(elements['send-back'].disabled).toBe(false);
     state.hideAllSubscreens();
     expect(elements['sidebar-send'].classList.contains('hidden')).toBe(true);
+  });
+
+  test.each(['reverse', 'unlock'])('a network switch during %s preparation refuses the stale review', async (stage) => {
+    const reverse = deferred();
+    const { mod, state, elements } = await loadSendScreen({
+      chains: [
+        { chainId: 100, name: 'Gnosis' },
+        { chainId: 8453, name: 'Base' },
+      ],
+      reverseLookup: jest.fn(() => stage === 'reverse'
+        ? reverse.promise : Promise.resolve({ success: true, name: 'gnosis-only.eth' })),
+    });
+    if (stage === 'unlock') {
+      state.walletState.derivedWallets = [{ index: 0, type: 'software' }];
+      window.identity = { getStatus: jest.fn(() => reverse.promise) };
+    }
+
+    await mod.openSend({
+      chainId: 100,
+      tokenKey: 'gnosis-native',
+      recipient: ADDRESS,
+      amount: '1',
+    });
+
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    expect(window.electronAPI.resolveEnsReverse).toHaveBeenCalledWith(ADDRESS, 100);
+
+    if (stage === 'unlock') expect(window.identity.getStatus).toHaveBeenCalled();
+    // The user switches to Base while review preparation is still in flight.
+    elements['send-chain-btn'].dispatch('click');
+    elements['send-chain-list'].children[1].dispatch('click');
+
+    reverse.resolve(stage === 'reverse'
+      ? { success: true, name: 'gnosis-only.eth' } : { isUnlocked: true });
+    await flush();
+
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(true);
+    expect(elements['send-general-error'].textContent).toContain('Network changed');
+    expect(reviewRecipientText(elements)).not.toContain('gnosis-only.eth');
+  });
+
+  test('a reverse-lookup name that settles on the same chain still shows', async () => {
+    const { mod, elements } = await loadSendScreen({
+      reverseLookup: jest.fn().mockResolvedValue({ success: true, name: 'stable.eth' }),
+    });
+
+    await mod.openSend({
+      chainId: 100,
+      tokenKey: 'gnosis-native',
+      recipient: ADDRESS,
+      amount: '1',
+    });
+
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    await flush();
+
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(false);
+    expect(reviewRecipientText(elements)).toContain('stable.eth');
+    expect(reviewRecipientText(elements)).toContain(ADDRESS);
+  });
+
+  test.each([
+    ['gas', 'test.ses.eth'], ['unlock', 'test.ses.eth'], ['gas', ADDRESS],
+  ])('a network switch during %s preparation refuses review for %s', async (stage, recipient) => {
+    const pending = deferred();
+    const { mod, state, elements } = await loadSendScreen({
+      chains: [
+        { chainId: 100, name: 'Gnosis' },
+        { chainId: 8453, name: 'Base' },
+      ],
+    });
+    window.electronAPI.resolveEnsAddress = jest.fn().mockResolvedValue({
+      success: true, name: 'test.ses.eth', address: ADDRESS,
+    });
+    if (stage === 'gas') {
+      window.wallet.estimateGas.mockImplementationOnce(() => pending.promise);
+    } else {
+      state.walletState.derivedWallets = [{ index: 0, type: 'software' }];
+      window.identity = { getStatus: jest.fn(() => pending.promise) };
+    }
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient, amount: '1' });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    if (recipient !== ADDRESS) expect(window.electronAPI.resolveEnsAddress).toHaveBeenCalledWith(recipient, 100);
+    expect(stage === 'gas' ? window.wallet.estimateGas : window.identity.getStatus).toHaveBeenCalled();
+
+    elements['send-chain-btn'].dispatch('click');
+    elements['send-chain-list'].children[1].dispatch('click');
+    pending.resolve(stage === 'gas' ? { success: true, gasLimit: '21000' } : { isUnlocked: true });
+    await flush();
+
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(true);
+    expect(elements['send-general-error'].textContent).toContain('Network changed');
+    expect(elements['send-continue-btn'].disabled).toBe(false);
+    expect(window.wallet.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])('automatic Touch ID waits for an accepted review (network changed: %s)', async (changeNetwork) => {
+    const pending = deferred();
+    const { mod, state, elements } = await loadSendScreen({
+      chains: [{ chainId: 100, name: 'Gnosis' }, { chainId: 8453, name: 'Base' }],
+    });
+    state.walletState.derivedWallets = [{ index: 0, type: 'software' }];
+    window.identity = {
+      getStatus: jest.fn().mockResolvedValue({ isUnlocked: false }),
+      getVaultMeta: jest.fn(() => pending.promise),
+    };
+    window.quickUnlock = {
+      canUseTouchId: jest.fn().mockResolvedValue(true),
+      isEnabled: jest.fn().mockResolvedValue(true),
+      unlock: jest.fn().mockResolvedValue({ success: false, error: 'Touch ID cancelled' }),
+    };
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '1' });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    expect(window.identity.getVaultMeta).toHaveBeenCalled();
+    if (changeNetwork) {
+      elements['send-chain-btn'].dispatch('click');
+      elements['send-chain-list'].children[1].dispatch('click');
+    }
+    pending.resolve({ userKnowsPassword: true });
+    await flush();
+    await jest.advanceTimersByTimeAsync(100);
+    expect(window.quickUnlock.unlock).toHaveBeenCalledTimes(changeNetwork ? 0 : 1);
+    expect(elements['send-review-view'].classList.contains('hidden')).toBe(changeNetwork);
+  });
+
+  test('editing a reviewed address and changing networks replaces its previous primary name', async () => {
+    const { mod, elements } = await loadSendScreen({
+      chains: [{ chainId: 100, name: 'Gnosis' }, { chainId: 8453, name: 'Base' }],
+      reverseLookup: jest.fn()
+        .mockResolvedValueOnce({ success: true, name: 'gnosis-only.eth' })
+        .mockResolvedValueOnce({ success: true, name: 'base-only.eth' }),
+    });
+    await mod.openSend({ chainId: 100, tokenKey: 'gnosis-native', recipient: ADDRESS, amount: '1' });
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+    expect(reviewRecipientText(elements)).toContain('gnosis-only.eth');
+
+    elements['send-edit-btn'].dispatch('click');
+    elements['send-chain-btn'].dispatch('click');
+    elements['send-chain-list'].children[1].dispatch('click');
+    elements['send-continue-btn'].dispatch('click');
+    await flush();
+
+    expect(window.electronAPI.resolveEnsReverse).toHaveBeenLastCalledWith(ADDRESS, 8453);
+    expect(reviewRecipientText(elements)).toContain('base-only.eth');
+    expect(reviewRecipientText(elements)).not.toContain('gnosis-only.eth');
   });
 
   test('the send screen refuses to open over another surface\'s device confirmation', async () => {

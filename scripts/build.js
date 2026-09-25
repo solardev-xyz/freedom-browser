@@ -16,6 +16,10 @@
  *   --no-notarize           Disable built-in notarization (macOS dist only)
  *   --verbose               Enable electron-builder debug output
  *
+ * Environment (see scripts/publish-channel.js):
+ *   FREEDOM_UPDATE_CHANNEL  Update channel for a dist build (default: latest)
+ *   FREEDOM_UPDATE_URL      Update feed URL (default: package.json build.publish.url)
+ *
  * Examples:
  *   npm run build -- --mac --arm64
  *   npm run build -- --mac --arm64 --unsigned --verbose
@@ -29,6 +33,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { buildForTargets } = require('./build-myotis-supervisor');
+const { publishOverrideArgs } = require('./publish-channel');
 const {
   SOURCE_BUILD_ENV,
   pruneSourceBuildFallback,
@@ -144,10 +149,13 @@ if (noNotarize && platform === 'mac' && dist) {
   builderArgs.push('-c.mac.notarize=false');
 }
 
-// Windows publish channels (signed dist only)
-if (dist && platform === 'win') {
-  const winArch = archs[0] || 'x64';
-  builderArgs.push(`-c.publish.channel=latest-win-${winArch}`);
+// Update feed overrides (dist only — an unpacked build publishes nothing).
+// Unset, this is the stable feed from package.json plus the Windows
+// `latest-win-<arch>` channel pin this line has always applied. The release
+// workflow's nightly runs set FREEDOM_UPDATE_CHANNEL/FREEDOM_UPDATE_URL so a
+// nightly updates from the nightly feed and never writes to `latest`.
+if (dist) {
+  builderArgs.push(...publishOverrideArgs({ platform, archs }));
 }
 
 // 3. Environment

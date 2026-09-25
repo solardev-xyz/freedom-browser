@@ -130,6 +130,14 @@ function loadWebviewPreloadModule(options = {}) {
     matchMedia: jest.fn(() => prefersDarkQuery),
     fetch: windowFetch,
   };
+  // A main frame is its own top; `options.subframe` models an iframe, whose
+  // top is some other (cross-origin) window.
+  global.window.top = options.subframe === true ? {} : global.window;
+  // `options.parent` models a same-origin parent window (about:blank/srcdoc
+  // frames match on it); otherwise a sub-frame's parent is its top.
+  global.window.parent = options.parent || global.window.top;
+  // The document's origin (about:blank/srcdoc inherit their creator's).
+  if (options.origin !== undefined) global.origin = options.origin;
   global.location = location;
   global.navigator = {
     clipboard,
@@ -1608,5 +1616,295 @@ describe('webview-preload internal-page theme', () => {
     expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(IPC.GET_THEME);
     expect(documentElement.setAttribute).not.toHaveBeenCalled();
     expect(ipcRenderer.listeners.get(IPC.SETTINGS_UPDATED)).toBeUndefined();
+  });
+});
+
+// #410: filter-list scriptlets (`youtube.com##+js(json-prune, …)`) must run in
+// the page's main world before any page script, in the main frame and in
+// sub-frames — and a sub-frame gets nothing else from this preload.
+describe('webview-preload adblock scriptlets', () => {
+  const webLocation = {
+    href: 'https://www.youtube.com/watch?v=x',
+    protocol: 'https:',
+    pathname: '/watch',
+  };
+  const SCRIPT = 'window.__freedomScriptletRan = true;';
+
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    delete global.origin;
+    jest.restoreAllMocks();
+  });
+
+  const scriptletCalls = (contextBridge) =>
+    contextBridge.executeInMainWorld.mock.calls.filter(([{ func }]) =>
+      String(func).includes(SCRIPT)
+    );
+
+  test('asks the main process synchronously first, then runs the code in the main world', () => {
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      location: webLocation,
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+
+    // Before every other sync lookup, so nothing precedes it at document start.
+    expect(ipcRenderer.sendSync.mock.calls[0]).toEqual([
+      IPC.ADBLOCK_SCRIPTLETS,
+      { url: webLocation.href },
+    ]);
+    expect(scriptletCalls(contextBridge)).toHaveLength(1);
+    // …and the scriptlets are the first thing executed in the main world.
+    expect(String(contextBridge.executeInMainWorld.mock.calls[0][0].func)).toContain(SCRIPT);
+  });
+
+  test('injects nothing when the engine returns no script', () => {
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      location: webLocation,
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: '' } },
+    });
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.ADBLOCK_SCRIPTLETS, expect.any(Object));
+    expect(scriptletCalls(contextBridge)).toHaveLength(0);
+  });
+
+  test.each([
+    ['an internal page', 'file:///app/pages/history.html', 'file:', '/app/pages/history.html'],
+    ['a Swarm page', 'bzz://abc/index.html', 'bzz:', '/index.html'],
+    ['an IPFS page', 'ipfs://bafy/index.html', 'ipfs:', '/index.html'],
+  ])('never asks for scriptlets on %s', (_label, href, protocol, pathname) => {
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      location: { href, protocol, pathname },
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(
+      IPC.ADBLOCK_SCRIPTLETS,
+      expect.anything()
+    );
+    expect(scriptletCalls(contextBridge)).toHaveLength(0);
+  });
+
+  test('no answer from the main process leaves the rest of the preload working', () => {
+    const { contextBridge } = loadWebviewPreloadModule({ location: webLocation });
+    // sendSync returned undefined — nothing injected, providers still installed.
+    expect(scriptletCalls(contextBridge)).toHaveLength(0);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalled();
+  });
+
+  test('a sub-frame gets its scriptlets and nothing else', () => {
+    const { contextBridge, ipcRenderer, documentHandlers, windowCaptureHandlers } =
+      loadWebviewPreloadModule({
+        location: {
+          href: 'https://www.youtube-nocookie.com/embed/x',
+          protocol: 'https:',
+          pathname: '/embed/x',
+        },
+        subframe: true,
+        syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+      });
+
+    expect(scriptletCalls(contextBridge)).toHaveLength(1);
+    // No wallet provider, no freedomAPI, no other IPC, no listeners.
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(1);
+    expect(contextBridge.exposeInMainWorld).not.toHaveBeenCalled();
+    expect(ipcRenderer.sendSync).toHaveBeenCalledTimes(1);
+    expect(ipcRenderer.invoke).not.toHaveBeenCalled();
+    expect(ipcRenderer.on).not.toHaveBeenCalled();
+    expect(Object.keys(documentHandlers)).toHaveLength(0);
+    expect(Object.keys(windowCaptureHandlers)).toHaveLength(0);
+  });
+
+  // Same-origin inheriting documents: a page can reach into these
+  // (`iframe.contentWindow.JSON.parse`), so they get the scriptlets of the
+  // document they inherit from, matched on its URL.
+  test.each([
+    ['about:blank', 'about:blank', 'about:'],
+    ['about:srcdoc', 'about:srcdoc', 'about:'],
+    ['a blob: document', 'blob:https://www.youtube.com/0b3c', 'blob:'],
+  ])('%s inherits its same-origin parent’s scriptlets', (_label, href, protocol) => {
+    const parent = {
+      origin: 'https://www.youtube.com',
+      location: { href: webLocation.href, protocol: 'https:' },
+    };
+    parent.parent = parent;
+    const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+      location: { href, protocol, pathname: '' },
+      subframe: true,
+      parent,
+      origin: 'https://www.youtube.com',
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.ADBLOCK_SCRIPTLETS, {
+      url: webLocation.href,
+    });
+    expect(scriptletCalls(contextBridge)).toHaveLength(1);
+  });
+
+  test('about:blank nested in about:blank walks up to the web document', () => {
+    const top = {
+      origin: 'https://www.youtube.com',
+      location: { href: webLocation.href, protocol: 'https:' },
+    };
+    top.parent = top;
+    const middle = {
+      origin: 'https://www.youtube.com',
+      location: { href: 'about:blank', protocol: 'about:' },
+      parent: top,
+    };
+    const { ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'about:blank', protocol: 'about:', pathname: 'blank' },
+      subframe: true,
+      parent: middle,
+      origin: 'https://www.youtube.com',
+    });
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.ADBLOCK_SCRIPTLETS, {
+      url: webLocation.href,
+    });
+  });
+
+  test('an about:blank frame whose parent is another origin matches on its own origin', () => {
+    const parent = {
+      origin: 'https://blog.test',
+      get location() {
+        throw new Error('SecurityError: cross-origin');
+      },
+    };
+    parent.parent = parent;
+    const { ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'about:blank', protocol: 'about:', pathname: 'blank' },
+      subframe: true,
+      parent,
+      origin: 'https://www.youtube.com',
+    });
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.ADBLOCK_SCRIPTLETS, {
+      url: 'https://www.youtube.com/',
+    });
+  });
+
+  test('an opaque-origin about:blank/srcdoc frame (sandboxed, data:) asks for nothing', () => {
+    const { ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'about:srcdoc', protocol: 'about:', pathname: 'srcdoc' },
+      subframe: true,
+      origin: 'null',
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(
+      IPC.ADBLOCK_SCRIPTLETS,
+      expect.anything()
+    );
+  });
+
+  test('an about:blank frame inheriting an internal page’s origin asks for nothing', () => {
+    const { ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'about:blank', protocol: 'about:', pathname: 'blank' },
+      subframe: true,
+      origin: 'file://',
+    });
+    expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(
+      IPC.ADBLOCK_SCRIPTLETS,
+      expect.anything()
+    );
+  });
+
+  test('a main frame still installs everything else after its scriptlets', () => {
+    const { contextBridge } = loadWebviewPreloadModule({
+      location: webLocation,
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledWith('freedomAPI', expect.any(Object));
+    // Scriptlets + the ethereum provider.
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(2);
+  });
+});
+
+// The about:blank child-realm hook (inheritScriptletsIntoChildRealms) runs in
+// the page's main world and fires only when the page later reads
+// `iframe.contentWindow` — after page scripts have run. So it must not call
+// anything the page can replace in between. Two real V8 realms (node:vm)
+// stand in for the parent page and its about:blank child.
+describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile page', () => {
+  const vm = require('node:vm');
+  const SCRIPT = 'window.__freedomScriptletRan = (window.__freedomScriptletRan || 0) + 1;';
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    jest.restoreAllMocks();
+  });
+
+  function bundleSource() {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const { contextBridge } = loadWebviewPreloadModule({
+      location: {
+        href: 'https://www.youtube.com/watch?v=x',
+        protocol: 'https:',
+        pathname: '/watch',
+      },
+      syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: SCRIPT } },
+    });
+    return String(contextBridge.executeInMainWorld.mock.calls[0][0].func);
+  }
+
+  function makeRealms() {
+    const child = vm.createContext({});
+    vm.runInContext(
+      `var window = globalThis; var location = { href: 'about:blank' };
+       function HTMLIFrameElement() {}
+       var nativeGet = function () { return null; };
+       Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+         configurable: true, enumerable: true, get: nativeGet,
+       });`,
+      child
+    );
+    const parent = vm.createContext({ __child: vm.runInContext('globalThis', child) });
+    vm.runInContext(
+      `var window = globalThis;
+       var location = { href: 'https://www.youtube.com/watch?v=x' };
+       function HTMLIFrameElement() {}
+       Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+         configurable: true, enumerable: true, get() { return __child; },
+       });`,
+      parent
+    );
+    return { parent, child };
+  }
+
+  test.each([
+    ['an untouched page', ''],
+    ['String.prototype.startsWith replaced', 'String.prototype.startsWith = () => false;'],
+    ['String replaced', 'String = () => "https://evil.test/";'],
+    ['the Array iterator replaced', 'Array.prototype[Symbol.iterator] = function* () {};'],
+  ])('patches a same-origin about:blank child with %s', (_label, sabotage) => {
+    const src = bundleSource();
+    const { parent, child } = makeRealms();
+    vm.runInContext(`(${src})()`, parent);
+    // The parent's own scriptlets ran at install time.
+    expect(vm.runInContext('window.__freedomScriptletRan', parent)).toBe(1);
+    // Page script runs, then reaches into the child.
+    vm.runInContext(`${sabotage}\n new HTMLIFrameElement().contentWindow;`, parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+    // …and the hooks were installed in the child too, for nesting.
+    expect(
+      vm.runInContext(
+        "Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get !== nativeGet",
+        child
+      )
+    ).toBe(true);
+    // Adopted once per realm.
+    vm.runInContext('new HTMLIFrameElement().contentWindow;', parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
   });
 });

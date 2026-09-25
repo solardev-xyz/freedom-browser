@@ -3,9 +3,9 @@
 const { spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
-const https = require('https');
 const os = require('os');
 const path = require('path');
+const { downloadToFile, TIMEOUTS } = require('./lib/fetch-with-retry');
 
 const projectRoot = path.join(__dirname, '..');
 const addonDir = path.join(projectRoot, 'native', 'freedom-ipfs-node');
@@ -18,9 +18,6 @@ const rustRepo = process.env.FREEDOM_IPFS_RUST_REPO
   : path.resolve(projectRoot, '..', 'nodes', 'freedom-ipfs');
 const releaseTag = process.env.FREEDOM_IPFS_RELEASE_TAG || 'v0.4.3';
 const releaseBaseUrl = `https://github.com/solardev-xyz/freedom-ipfs/releases/download/${releaseTag}`;
-const REQUEST_TIMEOUT_MS = 60000;
-const MAX_DOWNLOAD_ATTEMPTS = 4;
-const MAX_REDIRECTS = 5;
 
 const prebuiltAssets = {
   'v0.4.3': {
@@ -148,63 +145,23 @@ function sha256(file) {
   });
 }
 
-function downloadOnce(url, destination, redirectsRemaining = MAX_REDIRECTS) {
-  return new Promise((resolve, reject) => {
-    const request = https.get(url, (response) => {
-      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-        response.resume();
-        if (!response.headers.location) {
-          reject(new Error(`download redirect missing Location header: ${url}`));
-          return;
-        }
-        if (redirectsRemaining <= 0) {
-          reject(new Error(`download exceeded ${MAX_REDIRECTS} redirects: ${url}`));
-          return;
-        }
-        const nextUrl = new URL(response.headers.location, url).toString();
-        downloadOnce(nextUrl, destination, redirectsRemaining - 1).then(resolve, reject);
-        return;
-      }
-      if (response.statusCode !== 200) {
-        response.resume();
-        reject(new Error(`download failed with HTTP ${response.statusCode}: ${url}`));
-        return;
-      }
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      const file = fs.createWriteStream(destination);
-      const fail = (err) => {
-        file.close(() => {
-          fs.unlink(destination, () => reject(err));
-        });
-      };
-      response.pipe(file);
-      file.on('finish', () => file.close(resolve));
-      file.on('error', fail);
-    });
-    request.on('error', reject);
-    request.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      request.destroy(new Error(`download timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`));
-    });
+/**
+ * Download one release archive through scripts/lib/fetch-with-retry.js: 5xx,
+ * 429, connection errors and per-attempt timeouts are retried with backoff,
+ * any other 4xx is not, and the archive is written to a temp path and renamed
+ * only once it is complete — the checksum step below must never be handed a
+ * half-written file from an interrupted attempt.
+ * @param {string} url
+ * @param {string} destination
+ * @param {object} [options] retry-loop overrides, used by the unit tests
+ */
+function download(url, destination, options = {}) {
+  return downloadToFile(url, destination, {
+    label: `[freedom-ipfs-native] ${path.basename(destination)}`,
+    headers: { 'User-Agent': 'Freedom-Updater' },
+    timeoutMs: TIMEOUTS.binary,
+    ...options,
   });
-}
-
-async function download(url, destination) {
-  let lastError;
-  for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt++) {
-    try {
-      return await downloadOnce(url, destination);
-    } catch (err) {
-      lastError = err;
-      if (attempt < MAX_DOWNLOAD_ATTEMPTS) {
-        const delayMs = 1000 * attempt;
-        console.warn(
-          `[freedom-ipfs-native] download attempt ${attempt} failed (${err.message}); retrying in ${delayMs}ms...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
-    }
-  }
-  throw lastError;
 }
 
 function prebuildDirForTarget(target) {
@@ -309,7 +266,21 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(`[freedom-ipfs-native] ${err.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`[freedom-ipfs-native] ${err.message}`);
+    process.exit(1);
+  });
+}
+
+// Exported for unit tests; `npm run ipfs:download` still runs main() above.
+module.exports = {
+  download,
+  sha256,
+  releaseTag,
+  releaseManifest,
+  prebuiltAssets,
+  currentPlatformKey,
+  packageTargetForPlatformKey,
+  main,
+};

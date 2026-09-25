@@ -38,7 +38,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
+const { withRetry, MAX_ATTEMPTS } = require('./lib/fetch-with-retry');
 
 // Pin a known-good Arti release. Bump deliberately and re-test the SOCKS flags
 // (`arti proxy -c <config>`) and the `arti.toml` keys tor-manager.js writes.
@@ -164,7 +165,104 @@ function checkRustVersion(cargoVersionOutput, artiVersion = ARTI_VERSION) {
   return false;
 }
 
-function main() {
+/**
+ * The network half of this script is cargo's: it resolves the index and
+ * downloads every crate in Arti's tree from crates.io. Those failures look
+ * nothing like an HTTP status, so the shared retry loop
+ * (scripts/lib/fetch-with-retry.js) is given a classifier that reads cargo's
+ * own words for them. Everything else — a compile error, a missing MSRV, the
+ * Windows `LNK1181` — fails on the first attempt: retrying a multi-minute
+ * build that is going to fail identically wastes a release runner's time and
+ * buries the real error four copies deep.
+ *
+ * Phrases observed from cargo 1.9x; `cargo` retries spurious network errors a
+ * few times itself before printing these, so reaching one means its own
+ * retries are already spent.
+ */
+const RETRYABLE_CARGO_OUTPUT =
+  /(spurious network error|failed to download|failed to fetch|network failure|error sending request|connection reset|connection closed|could not resolve host|temporary failure in name resolution|operation timed out|timed out|unexpected eof|failed to get 200 response|failed to update registry)/i;
+
+/**
+ * Deterministic failures, which *veto* the network match above. The tail is a
+ * window over the whole build, not just its last line, so a network hiccup
+ * cargo recovered from on its own ("warning: spurious network error (3 tries
+ * remaining)") can still be sitting in it when the build later dies of an MSRV
+ * or compile error — a positive network match alone would then spend four
+ * multi-minute attempts on a failure that reproduces identically. A build that
+ * got far enough to emit one of these reached rustc or the linker, so whatever
+ * the network did earlier it recovered from.
+ *
+ * Only markers that rustc, the linker or the MSRV check emit are listed.
+ * Cargo's own `failed to compile \`arti v2.6.0\`` wrapper is deliberately *not*
+ * here: `cargo install` wraps a crate *download* failure in it too, so vetoing
+ * on it would stop retrying the exact class this loop exists for.
+ */
+const DETERMINISTIC_CARGO_OUTPUT =
+  /(error\[E\d+\]|LNK\d{4}|requires rustc|could not compile|linking with .* failed)/i;
+
+/** @param {string} output cargo's stderr (tail) */
+function isRetryableCargoFailure(output) {
+  const text = String(output || '');
+  if (DETERMINISTIC_CARGO_OUTPUT.test(text)) return false;
+  return RETRYABLE_CARGO_OUTPUT.test(text);
+}
+
+// Enough of cargo's stderr to classify the failure, without holding a whole
+// build log in memory.
+const CARGO_STDERR_TAIL_BYTES = 64 * 1024;
+
+/**
+ * One `cargo install` run. stderr is teed rather than swallowed: the build
+ * takes minutes and its progress has to stay visible, but the tail is also
+ * kept so the failure can be classified.
+ * @param {string[]} args
+ * @param {{spawnFn?: typeof spawn}} [options]
+ */
+function runCargoInstall(args, options = {}) {
+  const spawnFn = options.spawnFn || spawn;
+  return new Promise((resolve, reject) => {
+    const child = spawnFn(CARGO_BIN, args, { stdio: ['inherit', 'inherit', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      process.stderr.write(chunk);
+      stderr = (stderr + chunk).slice(-CARGO_STDERR_TAIL_BYTES);
+    });
+    // A spawn failure (no cargo on PATH) is not a network blip.
+    child.on('error', (error) => reject(Object.assign(error, { retryable: false })));
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        Object.assign(new Error(`cargo install arti exited with code ${code}`), {
+          retryable: isRetryableCargoFailure(stderr),
+        })
+      );
+    });
+  });
+}
+
+/**
+ * Build Arti, retrying only crates.io/network failures.
+ * @param {string[]} args
+ * @param {object} [options] `spawnFn` plus retry-loop overrides, used by the tests
+ */
+function buildArti(args, options = {}) {
+  const attempts = options.attempts || MAX_ATTEMPTS;
+  return withRetry(
+    `cargo install arti ${ARTI_VERSION}`,
+    (attempt) => {
+      if (attempt > 1) {
+        console.warn(`\nRetrying the Arti build (attempt ${attempt} of ${attempts})...`);
+      }
+      return runCargoInstall(args, options);
+    },
+    options
+  );
+}
+
+async function main() {
   const cargoVersionOutput = readCargoVersionOutput();
   if (cargoVersionOutput === null) {
     console.error(
@@ -198,7 +296,7 @@ function main() {
       ' (this can take several minutes)...'
   );
   try {
-    execFileSync(CARGO_BIN, args, { stdio: 'inherit' });
+    await buildArti(args);
 
     const builtBin = path.join(installRoot, 'bin', binName);
     if (!fs.existsSync(builtBin)) {
@@ -226,7 +324,10 @@ function main() {
 }
 
 if (require.main === module) {
-  main();
+  main().catch((err) => {
+    console.error(`\nError: ${err.message}`);
+    process.exit(1);
+  });
 }
 
 // Exported for unit tests; `npm run tor:download` still runs main() above.
@@ -240,4 +341,7 @@ module.exports = {
   artiBinaryName,
   cargoFeatures,
   installArgs,
+  isRetryableCargoFailure,
+  runCargoInstall,
+  buildArti,
 };

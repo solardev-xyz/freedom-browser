@@ -52,7 +52,7 @@ const {
   resolveContentName,
 } = require('../content-name-resolver');
 const { serveNativeGatewayRequest } = require('../ipfs-manager');
-const { isDwebNameHost } = require('../../shared/origin-utils');
+const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const {
   runWithPrivateLogContext,
   redactForLog,
@@ -309,7 +309,10 @@ async function buildGatewayUrl(namespace, sourceUrl) {
     };
   }
 
-  if (isDwebNameHost(host) && !hasEmptyLabel(host)) {
+  if (
+    (isDwebNameHost(host) || (effectiveNs === 'ipfs' && isPotentialEnsName(host))) &&
+    !hasEmptyLabel(host)
+  ) {
     return resolveEnsToGatewayUrl(effectiveNs, host, { pathname, search: parsed.search }, gw);
   }
 
@@ -481,6 +484,109 @@ function jsonErrorResponse(status, message) {
   });
 }
 
+// Is this request a document load (top-level or frame navigation) rather
+// than a subresource fetch? `protocol.handle` gives us no `Sec-Fetch-Dest`
+// (Chromium does not send the Sec-Fetch-* family for custom schemes) and
+// both `Request.destination` and `Request.mode` are useless here —
+// empirically, on the Electron we ship, `destination` is always `''` and
+// `mode` is always `'cors'`, for navigations and subresources alike. What
+// does survive is Chromium's fixed navigation `Accept` header, whose first
+// media type is `text/html`; every subresource sends its own type-specific
+// Accept instead (`*/*` for scripts and fetch/XHR, `text/css,*/*;q=0.1`
+// for stylesheets, `image/…` for images). So Accept is the navigation
+// signal available, and it is the one used here.
+function isDocumentRequest(request) {
+  const accept = request?.headers?.get('accept') || '';
+  return accept.split(',')[0].trim().toLowerCase() === 'text/html';
+}
+
+// A bare UnixFS file has no filename from which the native gateway can
+// infer MIME. Render small UTF-8 text files as text, including ENS's gateway
+// checker fixture, without promoting any response to executable HTML.
+//
+// Navigations only: relabelling a response `text/plain` and adding
+// `nosniff` is exactly what makes Chromium *refuse* a subresource. An
+// existing dweb page that loads a small, extensionless, bare-CID script or
+// stylesheet (`<script src="ipfs://<cid>">`) gets `application/octet-stream`
+// with no nosniff today and executes; rewriting it here would silently
+// break that page. Nothing is gained either way — a subresource's MIME is
+// the page's business, and only a document load is rendered for a human.
+async function renderSmallTextResponse(response, method, request) {
+  const type = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  const size = Number(response.headers.get('content-length'));
+  if (
+    method !== 'GET' ||
+    !isDocumentRequest(request) ||
+    response.status !== 200 ||
+    !response.body ||
+    type !== 'application/octet-stream' ||
+    !Number.isInteger(size) ||
+    size <= 0 ||
+    size > 4096 ||
+    response.headers.has('content-disposition') ||
+    response.headers.has('x-content-type-options') ||
+    response.headers.has('content-range')
+  )
+    return response;
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  let done = false;
+  while (length <= 4096) {
+    const next = await reader.read();
+    if (next.done) {
+      done = true;
+      break;
+    }
+    chunks.push(next.value);
+    length += next.value.byteLength;
+  }
+  const headers = new Headers(response.headers);
+  if (done && length === size) {
+    const bytes = Buffer.concat(chunks);
+    try {
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      if (
+        !Array.from(text).some((c) => {
+          const code = c.codePointAt(0);
+          return code === 127 || (code < 32 && ![9, 10, 12, 13].includes(code));
+        })
+      ) {
+        headers.set('content-type', 'text/plain; charset=utf-8');
+        headers.set('x-content-type-options', 'nosniff');
+      }
+    } catch {
+      /* Binary data keeps its original MIME. */
+    }
+  }
+  return new Response(
+    new ReadableStream({
+      async pull(controller) {
+        if (chunks.length) {
+          controller.enqueue(chunks.shift());
+          return;
+        }
+        if (done) {
+          controller.close();
+          return;
+        }
+        try {
+          const next = await reader.read();
+          if (next.done) controller.close();
+          else controller.enqueue(next.value);
+        } catch (err) {
+          controller.error(err);
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    }),
+    { status: response.status, statusText: response.statusText, headers }
+  );
+}
+
 /**
  * Core handler, exported for testability. Production calls the native
  * freedom-ipfs request API. Tests may still inject `fetchImpl` to exercise
@@ -525,12 +631,13 @@ async function handleRequest(
       return jsonErrorResponse(400, `invalid ${namespace} reference`);
     }
     try {
-      return await requestImpl({
+      const response = await requestImpl({
         path: gatewayPath,
         method,
         headers,
         signal: request.signal,
       });
+      return await renderSmallTextResponse(response, method, request);
     } catch (err) {
       log.warn(
         `[${namespace}-protocol] native request failed for ${redactForLog(gatewayPath)}: ${err?.message || err}`
@@ -561,7 +668,7 @@ async function handleRequest(
   }
 
   try {
-    return await fetchImpl(built.url, init);
+    return await renderSmallTextResponse(await fetchImpl(built.url, init), method, request);
   } catch (err) {
     // Translate our attempt-level abort into a 504 with a useful message
     // (rather than letting the raw AbortError surface as a 502). If the

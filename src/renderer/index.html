@@ -11,11 +11,30 @@
     <title>Freedom</title>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./styles/sidebar.css" />
+    <!-- Classic (parser-blocking) on purpose: tags <html> with the OS before
+         first paint so per-platform layout never jumps. -->
+    <script src="./platform-init.js"></script>
   </head>
   <body>
     <!-- Download shelf (cards inserted dynamically) -->
     <div id="download-shelf" class="download-shelf" data-test="download-shelf"></div>
 
+    <div id="myotis-recovery-notice" class="update-toast" role="status" hidden>
+      <div class="update-toast-content">
+        <span id="myotis-recovery-notice-text"></span>
+        <button id="myotis-recovery-notice-open" class="update-toast-btn" type="button">
+          Open Nodes
+        </button>
+        <button
+          id="myotis-recovery-notice-close"
+          class="update-toast-close"
+          type="button"
+          aria-label="Dismiss sync notice"
+        >
+          ×
+        </button>
+      </div>
+    </div>
     <!-- Update Toast Notification -->
     <div id="update-toast" class="update-toast" hidden>
       <div class="update-toast-content">
@@ -700,6 +719,28 @@
             </span>
           </button>
           <div class="ipfs-info" id="myotis-info">
+            <p
+              id="myotis-recovery-message"
+              class="myotis-recovery-message"
+              role="status"
+              hidden
+            ></p>
+            <button
+              id="myotis-retry-checkpoint"
+              class="myotis-checkpoint-retry"
+              type="button"
+              hidden
+            >
+              Retry sync
+            </button>
+            <button
+              id="myotis-recovery-help"
+              class="myotis-checkpoint-retry"
+              type="button"
+              hidden
+            >
+              Get help
+            </button>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">State:</span>
               <span id="myotis-state-text">Off</span>
@@ -729,6 +770,28 @@
             </span>
           </button>
           <div class="ipfs-info" id="myotis-gnosis-info">
+            <p
+              id="myotis-gnosis-recovery-message"
+              class="myotis-recovery-message"
+              role="status"
+              hidden
+            ></p>
+            <button
+              id="myotis-gnosis-retry-checkpoint"
+              class="myotis-checkpoint-retry"
+              type="button"
+              hidden
+            >
+              Retry sync
+            </button>
+            <button
+              id="myotis-gnosis-recovery-help"
+              class="myotis-checkpoint-retry"
+              type="button"
+              hidden
+            >
+              Get help
+            </button>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">State:</span>
               <span id="myotis-gnosis-state-text">Off</span>

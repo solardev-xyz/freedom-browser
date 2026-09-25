@@ -21,6 +21,7 @@ const { fetchBuffer, fetchToFile } = require('./http-fetch');
 const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
 const { normalizeSocksEndpoint } = require('../shared/socks-endpoint');
+const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
 const {
   startProbe: startSwarmProbe,
   cancelProbe: cancelSwarmProbe,
@@ -218,46 +219,34 @@ function serializeProfileMutationResult(result) {
 
 const PROFILE_NODE_MODES = {
   bee: new Set(['managed', 'external', 'disabled']),
-  ipfs: new Set(['managed', 'disabled']),
+  ipfs: new Set(['managed', 'external', 'disabled']),
   myotis: new Set(['managed', 'disabled']),
   radicle: new Set(['managed', 'disabled']),
   tor: new Set(['managed', 'external', 'disabled']),
 };
 const PROFILE_NODE_FIELDS = {
   bee: ['mode', 'externalApi'],
-  ipfs: ['mode'],
+  ipfs: ['mode', 'externalGateway'],
   myotis: ['mode'],
   radicle: ['mode'],
   tor: ['mode', 'externalSocks'],
 };
 const EXTERNAL_FIELDS = {
   bee: ['externalApi'],
+  ipfs: ['externalGateway'],
   tor: ['externalSocks'],
 };
 const PROFILE_NODE_ENDPOINT_NORMALIZERS = {
   externalApi: normalizeProfileNodeEndpoint,
+  externalGateway: normalizeProfileNodeEndpoint,
   externalSocks: normalizeSocksEndpoint,
 };
 
+// The node managers normalize the stored endpoint with this same function
+// (see src/shared/http-endpoint.js), so a value accepted here is dialled
+// verbatim later — including the userinfo rejection undici's fetch requires.
 function normalizeProfileNodeEndpoint(rawValue) {
-  if (rawValue == null) return null;
-  const trimmed = String(rawValue).trim();
-  if (!trimmed) return null;
-
-  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-
-  try {
-    const parsed = new URL(withProtocol);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-    parsed.hash = '';
-    parsed.search = '';
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '');
-    return parsed.toString().replace(/\/+$/, '');
-  } catch {
-    return null;
-  }
+  return normalizeHttpEndpoint(rawValue);
 }
 
 function validateProfileNodeConfigUpdate(protocol, patch = {}) {
@@ -364,6 +353,15 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
     if (protocol === 'radicle') {
       const radicleManager = require('./radicle-manager');
       await radicleManager.syncProfileMode();
+    }
+    if (protocol === 'ipfs') {
+      // Publish the newly configured mode to the service registry. Nothing is
+      // restarted (the Settings hint tells the user to restart the node), but a
+      // profile switched to external mode has to become controllable from the
+      // nodes menu right away — otherwise, on a host where the native addon
+      // cannot load, the toggle stays disabled until the app is relaunched.
+      const ipfsManager = require('./ipfs-manager');
+      await ipfsManager.syncProfileMode();
     }
     return success({ profile });
   } catch (err) {

@@ -57,6 +57,33 @@ describe('colibri-runtime disables the native addon before the package loads', (
     delete process.env.C4_DISABLE_NATIVE;
     expect(loadWithEnvProbe()).toBe('1');
     expect(process.env.C4_DISABLE_NATIVE).toBe('1');
+    expect(require('./colibri-runtime').clientVersion).toBe(196608);
+  });
+
+  test('refuses to encode a client version outside the upstream three-byte shape', () => {
+    // 196608 above is the installed 3.0.0 build's own
+    // `_c4w_get_current_version_number()`; the encoding only reproduces it for
+    // `<major>.<minor>.<patch>` with every part <= 255. Any other shape must
+    // fail closed (the checkpoint worker rejects a non-integer clientVersion)
+    // rather than produce a wrong but plausible integer the prover routes on.
+    for (const version of ['3.0.0-rc.1', '3.1', '3.0.0.1', '3.256.0', '3.0.300', 'next']) {
+      jest.resetModules();
+      jest.doMock('@corpus-core/colibri-stateless', () => ({
+        __esModule: true,
+        default: class {},
+        Strategy: {},
+        decode_proof: () => {},
+      }));
+      jest.doMock('@corpus-core/colibri-stateless/package.json', () => ({ version }));
+      expect(require('./colibri-runtime').clientVersion).toBeNull();
+      jest.dontMock('@corpus-core/colibri-stateless/package.json');
+    }
+    // Control: the accepted shape still encodes, so the assertion above is not
+    // passing because every load now returns null.
+    jest.resetModules();
+    jest.doMock('@corpus-core/colibri-stateless/package.json', () => ({ version: '2.0.6' }));
+    expect(require('./colibri-runtime').clientVersion).toBe(131078);
+    jest.dontMock('@corpus-core/colibri-stateless/package.json');
   });
 
   test('overrides an inherited C4_DISABLE_NATIVE=0 rather than honoring it', () => {

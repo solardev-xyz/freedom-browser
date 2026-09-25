@@ -107,6 +107,20 @@
         flex-shrink: 0;
       }
 
+      /* Search settings (#281). The field sits in the sidebar header, where
+         Chrome keeps its own, and is the same control as `#shortcut-search`:
+         an `.rpc-input` in a flex wrapper that sizes it, with the page font
+         put back (a search box is not a URL or a key — see
+         docs/agent-playbooks/ui-consistency.md). */
+      .sidebar-search {
+        display: flex;
+      }
+
+      .sidebar-search input {
+        flex: 1;
+        font-family: inherit;
+      }
+
       /* Content */
       .content {
         padding: 48px 56px 80px 56px;
@@ -115,6 +129,12 @@
 
       .section {
         margin-bottom: 48px;
+        /* A search result that reveals a whole section aligns it to the top of
+           the view (`settingsSearchScrollBlock`). Without this the heading
+           lands flush against the window edge, 48px higher than the same
+           section sits after a nav click — this keeps `.content`'s own top
+           padding under it, so both ways in look the same. */
+        scroll-margin-top: 48px;
       }
 
       .section.hidden {
@@ -161,6 +181,32 @@
          also has to centre it against the button. */
       .section-header .section-title {
         margin: 0;
+      }
+
+      /* One search result: a `.row` that is also a button, so the whole line
+         is the target, plus the section it lives in on the right — the answer
+         to "I know the word, I don't know the section" (#281). */
+      .settings-search-result {
+        width: 100%;
+        border-left: 0;
+        border-right: 0;
+        border-top: 0;
+        background: transparent;
+        color: var(--text);
+        font-family: inherit;
+        font-size: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .settings-search-result:hover {
+        background: var(--bg-elev);
+      }
+
+      .settings-search-section {
+        flex-shrink: 0;
+        font-size: 12px;
+        color: var(--text-muted);
       }
 
       .card {
@@ -223,6 +269,28 @@
 
       .row.disabled {
         opacity: 0.55;
+      }
+
+      /* The ad-blocking category rows carry a help line only once the engine
+         reports a rule count; until then the empty paragraph would still add
+         its top margin under the label. */
+      #adblock .row-help:empty {
+        display: none;
+      }
+
+      /* The row a search result jumped to (#281), marked so the eye lands on
+         the control rather than on the section it is somewhere inside. The
+         accent wash alone is 12% alpha and disappears under `.row.sub`'s own
+         fill, hence the accent edge; the selector carries `.row` so it wins
+         against `.row.sub`, declared just above, and `.net-row` for the same
+         reason — a chain master-list row declares its own `background` far
+         below this rule, and one class each would leave the jumped-to chain
+         with the edge and no wash. */
+      .settings-search-hit,
+      .row.settings-search-hit,
+      .net-row.settings-search-hit {
+        background: var(--accent-muted);
+        box-shadow: inset 3px 0 0 var(--accent);
       }
 
       .resolver-list {
@@ -699,6 +767,13 @@
         font-size: 12px;
       }
 
+      .profile-node-note {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
       .profile-node-actions {
         display: flex;
         justify-content: flex-end;
@@ -833,6 +908,17 @@
           </svg>
           Settings
         </h2>
+        <div class="sidebar-search">
+          <input
+            type="search"
+            id="settings-search"
+            class="rpc-input"
+            placeholder="Search settings…"
+            spellcheck="false"
+            autocomplete="off"
+            aria-label="Search settings"
+          />
+        </div>
         <nav class="nav" id="nav">
           <button type="button" class="nav-item" data-target="appearance">
             <svg
@@ -1077,6 +1163,15 @@
       </aside>
 
       <main class="content">
+        <!-- Search results (#281). Not a nav target: it replaces whichever
+             section is open while the field has a query, and hands that
+             section back when the field is cleared. -->
+        <section class="section hidden" id="settings-search-results">
+          <h2 class="section-title">Search results</h2>
+          <p class="row-help" id="settings-search-summary" style="margin-bottom: 16px"></p>
+          <div class="card" id="settings-search-list"></div>
+        </section>
+
         <!-- Appearance -->
         <section class="section" id="appearance">
           <h2 class="section-title">Appearance</h2>
@@ -1149,9 +1244,7 @@
           <div class="card" style="margin-top: 12px">
             <div id="custom-search-provider-list"></div>
             <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" id="add-search-provider">
-                Add search engine
-              </button>
+              <button type="button" class="btn" id="add-search-provider">Add search engine</button>
             </div>
             <div class="rpc-block search-provider-form" id="search-provider-form" hidden>
               <div class="search-provider-fields">
@@ -1206,9 +1299,7 @@
           </div>
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" id="manage-profiles-link">
-                Manage profiles
-              </button>
+              <button type="button" class="btn" id="manage-profiles-link">Manage profiles</button>
             </div>
           </div>
           <p id="profile-save-status" class="rpc-status"></p>
@@ -1416,7 +1507,7 @@
         <section class="section" id="adblock">
           <h2 class="section-title">Ad Blocking</h2>
           <div class="card">
-            <div class="row">
+            <div class="row" id="adblock-enabled-row">
               <div class="row-body">
                 <p class="row-label">Enable ad blocking</p>
                 <p class="row-help" id="adblock-status">Loading…</p>
@@ -1431,7 +1522,7 @@
             <div class="row sub" id="adblock-ads-row">
               <div class="row-body">
                 <p class="row-label">Block ads</p>
-                <p class="row-help" id="adblock-ads-help">EasyList</p>
+                <p class="row-help" id="adblock-ads-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1443,7 +1534,7 @@
             <div class="row sub" id="adblock-privacy-row">
               <div class="row-body">
                 <p class="row-label">Block trackers</p>
-                <p class="row-help" id="adblock-privacy-help">EasyPrivacy</p>
+                <p class="row-help" id="adblock-privacy-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1455,7 +1546,7 @@
             <div class="row sub" id="adblock-cookies-row">
               <div class="row-body">
                 <p class="row-label">Block cookie banners</p>
-                <p class="row-help" id="adblock-cookies-help">Fanboy Cookiemonster</p>
+                <p class="row-help" id="adblock-cookies-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1467,7 +1558,7 @@
             <div class="row sub" id="adblock-annoyances-row">
               <div class="row-body">
                 <p class="row-label">Block other annoyances</p>
-                <p class="row-help" id="adblock-annoyances-help">Fanboy Annoyances</p>
+                <p class="row-help" id="adblock-annoyances-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1509,8 +1600,12 @@
             <div id="adblock-allowlist-list"></div>
           </div>
           <p class="row-help" style="margin-top: 16px">
-            Filter lists © The EasyList authors (https://easylist.to/), redistributed under CC
-            BY-SA.
+            Filter lists © the
+            <a href="https://easylist.to/" target="_blank" rel="noreferrer">EasyList authors</a>,
+            redistributed under CC BY-SA. uBlock filters and scriptlets © Raymond Hill and the
+            <a href="https://github.com/uBlockOrigin/uAssets" target="_blank" rel="noreferrer"
+              >uBlock Origin contributors</a
+            >; licence terms in NOTICES.
           </p>
         </section>
 
@@ -1679,9 +1774,11 @@
       };
 
       // id ties together the manifest category, the #adblock-<id>-row
-      // element, and the status field; field is the checkbox input.
+      // element, and the status field; field is the checkbox input. `lists`
+      // names the manifest categories the toggle covers when there's more
+      // than one: "Block ads" also switches the uBlock filters (#410).
       const ADBLOCK_CATEGORIES = [
-        { id: 'ads', field: fields.adblockAds },
+        { id: 'ads', field: fields.adblockAds, lists: ['ads', 'ublock'] },
         { id: 'privacy', field: fields.adblockPrivacy },
         { id: 'cookies', field: fields.adblockCookies },
         { id: 'annoyances', field: fields.adblockAnnoyances },
@@ -1971,13 +2068,6 @@
       const SECTIONS = navItems.map((i) => i.dataset.target).filter(Boolean);
       const DEFAULT_SECTION = SECTIONS[0] || 'appearance';
 
-      // The section is the part before any `/` sub-route, so a deep link
-      // like #chains/1 (a chain detail) still resolves to `chains`.
-      const resolveSection = (hash) => {
-        const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
-        return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
-      };
-
       const showSection = (section) => {
         for (const id of SECTIONS) {
           const el = document.getElementById(id);
@@ -2003,22 +2093,459 @@
         });
       });
 
-      window.addEventListener('hashchange', () => {
-        showSection(resolveSection(location.hash));
-      });
+      /* settings-hash routing: start */
+      // The section is the part before any `/` sub-route, so a deep link
+      // like #chains/1 (a chain detail) still resolves to `chains`.
+      const resolveSection = (hash) => {
+        const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
+        return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
+      };
 
-      // On first load, normalize the URL so freedom://settings becomes
-      // freedom://settings/appearance in the address bar. history.replaceState
-      // keeps this out of the back/forward stack.
-      const initialSection = resolveSection(location.hash);
-      const initialRawHash = location.hash.replace(/^#/, '').toLowerCase();
-      // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
-      const initialHashIsCanonical =
-        initialRawHash === initialSection || initialRawHash.startsWith(initialSection + '/');
-      if (!initialHashIsCanonical) {
-        history.replaceState(null, '', `#${initialSection}`);
-      }
-      showSection(initialSection);
+      // Normalize the URL onto the section that is actually on screen, so
+      // freedom://settings becomes freedom://settings/appearance and a hash
+      // naming no section at all — a stale bookmark, a typo, a link from an
+      // older build — stops promising one. history.replaceState keeps the
+      // rewrite out of the back/forward stack.
+      const canonicalizeHash = (section) => {
+        const rawHash = location.hash.replace(/^#/, '').toLowerCase();
+        // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
+        if (rawHash === section || rawHash.startsWith(section + '/')) return;
+        history.replaceState(null, '', `#${section}`);
+      };
+
+      // One path for every arrival at a hash — first load, a nav click, a
+      // back/forward, an outer-chrome deep link opened in an existing
+      // Settings tab (#280) — so no navigation can leave a hash the page
+      // resolved somewhere else standing in the address bar.
+      const applyHashSection = () => {
+        const section = resolveSection(location.hash);
+        canonicalizeHash(section);
+        showSection(section);
+      };
+      /* settings-hash routing: end */
+
+      window.addEventListener('hashchange', applyHashSection);
+      applyHashSection();
+
+      // ── Search settings (#281) ──────────────────────────────────────────
+      // Chrome has kept a persistent "Search settings" field in its header
+      // since 2016, and on a 14-section page that is how most people
+      // navigate. Freedom's page is the harder case, not the easier one:
+      // several settings are not under the heading their subject suggests
+      // (Tor's startup toggle is under Experimental, a chain's API keys under
+      // RPC Providers), so "I know the word, I don't know the section" is the
+      // normal state. Until #281 the page's only search box was the
+      // Shortcuts one, which searches that list and nothing else.
+      //
+      // The two helpers below are pure — an element and a query in, ranked
+      // entries out — so `settings-search.test.js` can lift them out of this
+      // file (it slices between the markers) and drive them over the shipped
+      // markup. They walk the tree with `children`, `classList.contains` and
+      // `textContent` only: no selector engine and nothing from this page's
+      // scope, which is what keeps that test reading the real code.
+      /* settings-search helpers: start */
+      const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+
+      // Markup that wears a setting's clothes without being one, marked by
+      // whoever renders it: a status message written as a row ("No saved
+      // permissions"), and the transient add-a-chain flow, whose own `<h2>`
+      // would otherwise answer for the Chains section it renders inside. The
+      // marker covers the whole subtree under it, so one on a wrapper takes
+      // a view out of the index entirely.
+      const SETTINGS_SEARCH_SKIP = 'settings-search-skip';
+
+      // Every element under `el` carrying one of `names` (a class, or a list
+      // of them), not descending into a match: rows never nest, and a
+      // `.row-help` belongs to the row it is under.
+      const settingsSearchCollect = (el, names, out = []) => {
+        const wanted = Array.isArray(names) ? names : [names];
+        for (const child of Array.from(el?.children || [])) {
+          if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
+          if (wanted.some((name) => child.classList?.contains(name))) out.push(child);
+          else settingsSearchCollect(child, names, out);
+        }
+        return out;
+      };
+
+      const settingsSearchFirst = (el, names) => settingsSearchCollect(el, names)[0] || null;
+
+      // What counts as one setting: a card row, the drag-to-reorder rows of
+      // Name Resolution's method list and a chain's read/broadcast order, and
+      // the `.resolver-config` panel a method opens under itself (Colibri's
+      // prover endpoint, the quorum agreement threshold) — all of which carry
+      // the same `.row-label` / `.row-help` pair without the `.row` class.
+      // Those are where "Colibri", "RPC quorum", "Myotis" and the two
+      // resolver settings are named, so leaving them out would make the whole
+      // resolution policy unsearchable.
+      // The chain master list is the fourth: its `.net-row` buttons are the
+      // only place a chain — a custom one above all, which exists nowhere
+      // else on the page — is named, so leaving them out makes a chain
+      // unfindable by the name the user gave it.
+      const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-row'];
+
+      // What names a row, and what describes it under that name. A `.net-row`
+      // carries the same pair under its own class names (`Gnosis` / `chain
+      // 100`) rather than the `.row-label` / `.row-help` every other row on
+      // the page uses.
+      const SETTINGS_SEARCH_LABELS = ['row-label', 'net-row-name'];
+      const SETTINGS_SEARCH_HELP = ['row-help', 'net-row-sub'];
+
+      // A row this build has switched off is not a setting the user has, and
+      // offering it would jump to nothing: the `[data-tor]` rows on a build
+      // that bundles no Arti binary and the `[data-linux-only]` row off Linux
+      // are hidden by writing `style.display`, while the Myotis startup rows
+      // on a build with no Myotis support are hidden through the `hidden`
+      // attribute (`launchRow.hidden = !supported`). Both shapes read here.
+      const settingsSearchHidden = (row) => Boolean(row?.hidden) || row?.style?.display === 'none';
+
+      // The rows a section contributes to the index, in document order, each
+      // with the label it is found by. Shared with the page's `locateRow` so
+      // the two walk the same rows: a result is "the nth row in this section
+      // labelled X", which is the only thing that tells two same-labelled
+      // rows apart (a chain lists "Direct RPC" in both its read order and its
+      // broadcast order) once the view they came from has repainted.
+      const settingsSearchRows = (section) =>
+        settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)
+          .filter((row) => !settingsSearchHidden(row))
+          .map((row) => ({
+            row,
+            label: settingsSearchText(settingsSearchFirst(row, SETTINGS_SEARCH_LABELS)),
+          }))
+          .filter((entry) => entry.label);
+
+      // One entry per section plus one per labelled row, in document order.
+      // `sectionLabels` maps a section id to its nav label, the fallback for
+      // the sections whose `<h2>` comes from a view template that has not
+      // rendered yet (Chains, RPC Providers, Site Permissions).
+      //
+      // The heading is read from the section's *live* DOM, which is only the
+      // right answer if a hidden section's markup still describes where its
+      // rows are. That is the controllers' side of the contract: a view
+      // rendered per sub-route has to render itself back when the sub-route
+      // is left, or its heading and its rows both go on answering for the
+      // section after the user has gone (see Chains' `hashchange` below).
+      const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {}) => {
+        const index = [];
+        for (const section of Array.from(content?.children || [])) {
+          if (section.tagName !== 'SECTION' || !section.classList?.contains('section')) continue;
+          if (!section.id || skip.includes(section.id)) continue;
+          const sectionLabel =
+            settingsSearchText(settingsSearchFirst(section, 'section-title')) ||
+            sectionLabels[section.id] ||
+            section.id;
+          // A section's own intro paragraph is a direct child, outside every
+          // card, so it describes the section rather than any one row.
+          const intro = Array.from(section.children)
+            .filter((child) => child.classList?.contains('row-help'))
+            .map(settingsSearchText)
+            .join(' ');
+          index.push({
+            sectionId: section.id,
+            section: sectionLabel,
+            label: sectionLabel,
+            help: intro,
+            element: section,
+          });
+          const seen = new Map();
+          for (const { row, label } of settingsSearchRows(section)) {
+            const labelIndex = seen.get(label) || 0;
+            seen.set(label, labelIndex + 1);
+            index.push({
+              sectionId: section.id,
+              section: sectionLabel,
+              label,
+              labelIndex,
+              help: settingsSearchCollect(row, SETTINGS_SEARCH_HELP)
+                .map(settingsSearchText)
+                .join(' '),
+              element: row,
+            });
+          }
+        }
+        return index;
+      };
+
+      // Case-insensitive substring, no fuzzy matching. A label the query
+      // starts ranks above a label that merely contains it, which ranks above
+      // a hit in the help line under it; ties keep document order, so the
+      // list reads in the order the page does. Every match is listed — a
+      // silent top-N would read as "that setting does not exist".
+      const matchSettingsSearch = (index, rawQuery) => {
+        const query = (rawQuery || '').trim().toLowerCase();
+        if (!query) return [];
+        const hits = [];
+        index.forEach((entry, order) => {
+          const label = (entry.label || '').toLowerCase();
+          const rank = label.startsWith(query)
+            ? 0
+            : label.includes(query)
+              ? 1
+              : (entry.help || '').toLowerCase().includes(query)
+                ? 2
+                : -1;
+          if (rank >= 0) hits.push({ entry, rank, order });
+        });
+        hits.sort((a, b) => a.rank - b.rank || a.order - b.order);
+        return hits.map(({ entry, rank }) => ({ ...entry, rank }));
+      };
+
+      // Where a revealed element should sit in the view. `center` is right for
+      // a row — the answer lands in the middle with its neighbours around it.
+      // It is wrong for anything taller than the window: `center` lines the
+      // element's own middle up with the viewport's, so the top goes above the
+      // fold. A section entry reveals the whole `<section>`, and Name
+      // Resolution is already taller than a default window — centring it put
+      // the `<h2>` that names it off screen, leaving the user who asked where
+      // that section is looking at a view with no title on it. Those are
+      // aligned to their top instead, which is where clicking the nav item
+      // puts them.
+      const settingsSearchScrollBlock = (element, viewportHeight) => {
+        if (element?.tagName === 'SECTION') return 'start';
+        const height = element?.getBoundingClientRect?.().height;
+        return height > viewportHeight ? 'start' : 'center';
+      };
+      /* settings-search helpers: end */
+
+      // A section that filters rows out of its own DOM has to put them back
+      // before the index is read, and not only on the way out (`hashchange`):
+      // the page-wide field can be used without leaving the section at all —
+      // the results panel hides the sections without touching the hash — and
+      // a row the index cannot see is a setting this page reports as missing.
+      // Shortcuts' "Search shortcuts…" is the one view like that; it registers
+      // its reset here and the search calls it before every index build. Only
+      // a filter belongs in this list: it is a query the page-wide field is
+      // superseding, so dropping it loses nothing, which is not true of the
+      // half-filled forms Chains and RPC Providers park in the same way.
+      const settingsSearchResets = [];
+
+      (() => {
+        const input = $('settings-search');
+        const panel = $('settings-search-results');
+        const list = $('settings-search-list');
+        const summary = $('settings-search-summary');
+        const content = document.querySelector('main.content');
+        if (!input || !panel || !list || !summary || !content) return;
+
+        const NAV_LABELS = Object.fromEntries(
+          navItems.map((item) => [item.dataset.target, settingsSearchText(item)])
+        );
+
+        let results = [];
+        let showing = false;
+        let highlighted = null;
+        let pending = null; // reveal waiting on the hash change it asked for
+        let revealToken = 0; // invalidates the retries of an earlier reveal
+
+        // The highlight stays up while it is still the answer to the query on
+        // screen — the way Chrome keeps its own — and is dropped on the next
+        // search, on Escape, and when the user navigates somewhere else.
+        const clearHighlight = () => {
+          highlighted?.classList.remove('settings-search-hit');
+          highlighted = null;
+        };
+
+        const resultRow = (result, position) => {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'row settings-search-result';
+          row.dataset.result = String(position);
+          const body = document.createElement('div');
+          body.className = 'row-body';
+          const label = document.createElement('p');
+          label.className = 'row-label';
+          label.textContent = result.label;
+          body.appendChild(label);
+          if (result.help) {
+            const help = document.createElement('p');
+            help.className = 'row-help';
+            help.textContent = result.help;
+            body.appendChild(help);
+          }
+          const section = document.createElement('span');
+          section.className = 'settings-search-section';
+          section.textContent = result.section;
+          row.append(body, section);
+          return row;
+        };
+
+        // The index is rebuilt from the live DOM on every keystroke, so a
+        // section that paints later from IPC state is searchable as soon as
+        // it is there. It is a few hundred elements — cheaper than keeping a
+        // cache honest against four views that repaint on their own.
+        const render = () => {
+          for (const reset of settingsSearchResets) reset();
+          const query = input.value.trim();
+          results = matchSettingsSearch(
+            buildSettingsSearchIndex(content, { sectionLabels: NAV_LABELS, skip: [panel.id] }),
+            query
+          );
+          list.replaceChildren(...results.map(resultRow));
+          list.hidden = results.length === 0;
+          summary.textContent = results.length
+            ? `${results.length} ${results.length === 1 ? 'setting matches' : 'settings match'} “${query}”.`
+            : `No settings match “${query}”.`;
+        };
+
+        // While the field has a query the results replace whichever section
+        // is open; clearing it hands that section back.
+        const openResults = () => {
+          revealToken += 1;
+          clearHighlight();
+          render();
+          for (const id of SECTIONS) document.getElementById(id)?.classList.add('hidden');
+          panel.classList.remove('hidden');
+          showing = true;
+          window.scrollTo({ top: 0 });
+        };
+
+        const closeResults = ({ restoreSection = true } = {}) => {
+          results = [];
+          list.replaceChildren();
+          panel.classList.add('hidden');
+          if (showing && restoreSection) showSection(resolveSection(location.hash));
+          showing = false;
+        };
+
+        // Re-found rather than kept as a node: Chains, RPC Providers and Site
+        // Permissions rebuild their view from IPC state on `hashchange`, so
+        // the node the result was built from can be gone. A label alone does
+        // not identify it — a chain names "Direct RPC" once in its read order
+        // and again in its broadcast order — so the result's position among
+        // its section's same-labelled rows picks which one it was, walking
+        // the same rows the index was built from. If the repaint left fewer
+        // of them than there were, the first is still better than nothing.
+        const locateRow = (result) => {
+          const section = document.getElementById(result.sectionId);
+          if (!section) return null;
+          if (result.element === section) return section;
+          const matches = settingsSearchRows(section).filter(
+            (entry) => entry.label === result.label
+          );
+          return (matches[result.labelIndex || 0] || matches[0])?.row || null;
+        };
+
+        // A row is centred, a section entry (what `locateRow` returns when the
+        // result *is* the section) and anything else too tall to fit is
+        // aligned to its top — see `settingsSearchScrollBlock` above.
+        const applyHighlight = (row) => {
+          clearHighlight();
+          row.scrollIntoView({ block: settingsSearchScrollBlock(row, window.innerHeight) });
+          row.classList.add('settings-search-hit');
+          highlighted = row;
+        };
+
+        // Those same views repaint *after* this runs — the nav's own
+        // `hashchange` handler is registered first, and a repaint can be one
+        // await away — which would rebuild the highlight away. So a highlight
+        // that stops being connected is re-applied, bounded to four tries
+        // over ~0.5s, after which the open section is the answer.
+        const revealResult = (result, token, attempt = 0) => {
+          if (token !== revealToken) return;
+          const row = locateRow(result);
+          if (row) applyHighlight(row);
+          if (attempt >= 3) return;
+          setTimeout(() => {
+            if (token === revealToken && !highlighted?.isConnected) {
+              revealResult(result, token, attempt + 1);
+            }
+          }, 150);
+        };
+
+        // Jumping to a result leaves the result list behind and opens the
+        // section the control is in, the way clicking its nav item would.
+        const reveal = (result) => {
+          if (!result?.sectionId) return;
+          closeResults({ restoreSection: false });
+          revealToken += 1;
+          const current = location.hash.replace(/^#/, '').toLowerCase();
+          if (current === result.sectionId || current.startsWith(result.sectionId + '/')) {
+            showSection(result.sectionId);
+            revealResult(result, revealToken);
+            return;
+          }
+          // The hash change repaints and scrolls the content to the top, so
+          // the scroll-and-flash waits for it (see the handler below).
+          pending = { result, token: revealToken };
+          location.hash = result.sectionId;
+        };
+
+        const clearSearch = () => {
+          input.value = '';
+          revealToken += 1;
+          closeResults();
+          clearHighlight();
+        };
+
+        window.addEventListener('hashchange', () => {
+          const queued = pending;
+          pending = null;
+          if (queued) {
+            revealResult(queued.result, queued.token);
+            return;
+          }
+          // The user went somewhere else (a nav item, back/forward, a deep
+          // link from the outer chrome): the search is about a query they
+          // have moved on from, so the field, the results and the highlight
+          // all go. Closing the results is this handler's job and not
+          // `showSection`'s — the panel is deliberately not one of
+          // `SECTIONS`, so nothing else on the page can hide it, and left up
+          // it would stack a stale result list above the section the nav's
+          // own handler just opened.
+          clearSearch();
+        });
+
+        // A nav item whose section the hash already names changes no hash at
+        // all — its own click handler returns early — so no `hashchange`
+        // reaches the handler above and the click has to close the results
+        // itself: clicking "Appearance" while the results cover an open
+        // `#appearance` is a user asking for that section back. Registered
+        // after the nav's own listener, so by the time this runs
+        // `location.hash` already reads the section being opened.
+        navItems.forEach((item) => {
+          if (!item.dataset.target) return;
+          item.addEventListener('click', () => {
+            if (showing || input.value) clearSearch();
+          });
+        });
+
+        // An emptied field is a cleared search however it was emptied — the
+        // `<input type="search">` clear button and a selection deleted by
+        // hand both land here rather than on the Escape handler below.
+        input.addEventListener('input', () => {
+          if (input.value.trim()) openResults();
+          else {
+            revealToken += 1;
+            closeResults();
+            clearHighlight();
+          }
+        });
+
+        input.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            clearSearch();
+          } else if (event.key === 'Enter') {
+            event.preventDefault();
+            if (results.length) reveal(results[0]);
+          } else if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            list.firstElementChild?.focus();
+          }
+        });
+
+        list.addEventListener('click', (event) => {
+          const row = event.target.closest?.('.settings-search-result');
+          if (!row) return;
+          reveal(results[Number(row.dataset.result)]);
+        });
+
+        list.addEventListener('keydown', (event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          clearSearch();
+          input.focus();
+        });
+      })();
 
       // The Tor rows follow the bundled Arti binary, not the platform: every
       // platform the release workflow builds compiles Arti (Windows x64
@@ -2066,8 +2593,19 @@
         {
           protocol: 'ipfs',
           label: 'IPFS',
-          modes: ['managed', 'disabled'],
-          endpointLines: () => ['Embedded freedom-ipfs native node'],
+          modes: ['managed', 'external', 'disabled'],
+          externalFields: [
+            { key: 'externalGateway', label: 'Gateway', placeholder: 'http://127.0.0.1:8080' },
+          ],
+          // Shown under the gateway field whenever "Use external node" is
+          // selected: the embedded node verifies what it retrieves, an external
+          // gateway is trusted for the bytes it serves.
+          externalNote:
+            'Freedom does not verify content integrity in this mode — the gateway is trusted for every ipfs:// page it serves.',
+          endpointLines: (config) =>
+            config?.externalGateway
+              ? [config.externalGateway]
+              : ['Embedded freedom-ipfs native node'],
         },
         {
           protocol: 'myotis',
@@ -2124,9 +2662,22 @@
         return mode.charAt(0).toUpperCase() + mode.slice(1);
       };
 
+      // A node config keeps its external endpoint across a switch back to
+      // managed (the catalog merges node config updates rather than clamping
+      // them), so the stored value is only the endpoint in use while the mode
+      // actually is 'external'. Hide it otherwise, for every row, or a managed
+      // node advertises an address it is not serving from.
+      const withoutStoredExternalFields = (definition, config) => {
+        const stripped = { ...(config || {}) };
+        for (const field of definition.externalFields || []) delete stripped[field.key];
+        return stripped;
+      };
+
       const endpointLines = (definition, config, service) => {
         if (config?.mode === 'disabled') return [];
-        return definition.endpointLines?.(config, service) || [];
+        const effective =
+          config?.mode === 'external' ? config : withoutStoredExternalFields(definition, config);
+        return definition.endpointLines?.(effective, service) || [];
       };
 
       const externalFields = (definition, config) =>
@@ -2161,9 +2712,14 @@
             </div>`
         );
 
+        const note = definition?.externalNote
+          ? `<p class="profile-node-note">${esc(definition.externalNote)}</p>`
+          : '';
+
         return `
           <div class="profile-node-editor" data-external-editor ${mode === 'external' ? '' : 'hidden'}>
             ${fields.join('')}
+            ${note}
           </div>`;
       };
 
@@ -2429,15 +2985,38 @@
         applyAdblockGating();
       };
 
+      // With no filter lists the engine cannot run, so the section's controls
+      // do nothing — say so once (in the status line) and disable them, rather
+      // than leaving six live toggles above a line that says blocking is
+      // inactive (#274). Lists can still arrive later through the Swarm list
+      // updater, which only runs with the master and auto-update switches on
+      // and only fetches the categories switched on (update-scheduler.js,
+      // update-manager.js). So a control stays usable while switching it on
+      // is the way out: the master switch when it is off, and the category
+      // switches when none of them is on. The auto-update switch is never
+      // frozen: switching it on is a way out, and switching it off is the
+      // only way to stop the updater's background Swarm fetches while the
+      // master is held on. Anything else is frozen in place until lists exist.
+      let adblockUnavailable = false;
+
       const applyAdblockGating = () => {
+        const freeze = (row, field, keepUsable) => {
+          if (!adblockUnavailable || keepUsable) return;
+          row?.classList.add('disabled');
+          if (field) field.disabled = true;
+        };
+        fields.adblockEnabled.disabled = false;
+        $('adblock-enabled-row')?.classList.remove('disabled');
+        freeze($('adblock-enabled-row'), fields.adblockEnabled, !fields.adblockEnabled.checked);
+
+        const noCategoryOn = ADBLOCK_CATEGORIES.every(({ field }) => !field.checked);
         for (const { id, field } of ADBLOCK_CATEGORIES) {
-          setFieldEnabled(fields.adblockEnabled, $(`adblock-${id}-row`), field);
+          const row = $(`adblock-${id}-row`);
+          setFieldEnabled(fields.adblockEnabled, row, field);
+          freeze(row, field, noCategoryOn);
         }
-        setFieldEnabled(
-          fields.adblockEnabled,
-          $('adblock-autoupdate-row'),
-          fields.adblockAutoUpdate
-        );
+        const autoUpdateRow = $('adblock-autoupdate-row');
+        setFieldEnabled(fields.adblockEnabled, autoUpdateRow, fields.adblockAutoUpdate);
       };
 
       // Rule counts / list version come from the main-process engine, not
@@ -2446,26 +3025,43 @@
       const renderAdblockStatus = async () => {
         try {
           const status = await freedomAPI.adblockGetStatus();
+          // Before the first engine build has looked for lists, "no version"
+          // means "not checked yet", not "no lists" — keep the section live.
+          const listsPending = status.listsResolved === false;
+          adblockUnavailable = !listsPending && !status.engineReady && !status.listsVersion;
           $('adblock-status').textContent = status.engineReady
             ? `Filter lists ${status.listsVersion} · engine active`
             : status.listsVersion
               ? `Filter lists ${status.listsVersion} · engine preparing…`
-              : 'No filter lists bundled — blocking is inactive.';
-          for (const { id } of ADBLOCK_CATEGORIES) {
-            const meta = status.categories?.[id];
-            if (meta?.ruleCount) {
-              $(`adblock-${id}-help`).textContent =
-                `${meta.title} · ${meta.ruleCount.toLocaleString()} rules`;
+              : listsPending
+                ? 'Checking filter lists…'
+                : 'No filter lists available. Ad blocking cannot run.';
+          // A row can cover more than one list ("Block ads" is EasyList plus
+          // the uBlock filters that carry the YouTube scriptlets, #410); its
+          // helper is their combined rule count, no list names (#274).
+          for (const { id, lists = [id] } of ADBLOCK_CATEGORIES) {
+            const ruleCount = lists.reduce(
+              (sum, list) => sum + (status.categories?.[list]?.ruleCount || 0),
+              0
+            );
+            if (ruleCount) {
+              $(`adblock-${id}-help`).textContent = `${ruleCount.toLocaleString()} rules`;
             }
           }
+          applyAdblockGating();
+          // Keep watching while there is nothing to run: the list updater (or
+          // a first engine build still resolving at startup) can supply lists
+          // at any time, and the section should come alive when it does.
+          if (listsPending) refreshAdblockStatusSoon(1500);
+          else if (adblockUnavailable) refreshAdblockStatusSoon(5000);
         } catch {
           $('adblock-status').textContent = 'Status unavailable.';
         }
       };
       let adblockStatusTimer = null;
-      const refreshAdblockStatusSoon = () => {
+      const refreshAdblockStatusSoon = (delay = 1500) => {
         clearTimeout(adblockStatusTimer);
-        adblockStatusTimer = setTimeout(renderAdblockStatus, 1500);
+        adblockStatusTimer = setTimeout(renderAdblockStatus, delay);
       };
 
       const renderAdblockAllowlist = async () => {
@@ -2636,11 +3232,15 @@
       });
       for (const { field } of ADBLOCK_CATEGORIES) {
         field.addEventListener('change', () => {
+          applyAdblockGating();
           save();
           refreshAdblockStatusSoon();
         });
       }
-      fields.adblockAutoUpdate.addEventListener('change', save);
+      fields.adblockAutoUpdate.addEventListener('change', () => {
+        applyAdblockGating();
+        save();
+      });
       $('adblock-allowlist-add').addEventListener('click', addAllowlistHostFromInput);
       $('adblock-allowlist-input').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') addAllowlistHostFromInput();
@@ -2727,6 +3327,7 @@
         let conflictState = null; // { id, accelerator, formatted, conflict }
         let rowNotice = null; // { id, message } transient validation notice
         let recordingHandler = null;
+        let recordingFocusHandler = null;
 
         const REASON_MESSAGES = {
           reserved: 'That combination is reserved and cannot be assigned.',
@@ -2861,6 +3462,10 @@
             window.removeEventListener('keydown', recordingHandler, true);
             recordingHandler = null;
           }
+          if (recordingFocusHandler) {
+            document.removeEventListener('focusin', recordingFocusHandler, true);
+            recordingFocusHandler = null;
+          }
           recordingId = null;
         };
 
@@ -2888,6 +3493,21 @@
           setStatus('');
           recordingId = id;
           render();
+
+          // Chrome's own recorder gives up when the row it is recording loses
+          // focus, and here it has to: the `keydown` listener below is on
+          // `window` in the capture phase, so it sees every keystroke on the
+          // page and calls `preventDefault()` on each one. A recording still
+          // armed once the user has clicked into another field eats what they
+          // type there — the page-wide search field included, where the first
+          // swallowed key is the one that would have covered this section and
+          // told the recording it was over.
+          recordingFocusHandler = (event) => {
+            if (view.contains(event.target)) return;
+            stopRecording();
+            render();
+          };
+          document.addEventListener('focusin', recordingFocusHandler, true);
 
           recordingHandler = async (event) => {
             event.preventDefault();
@@ -2978,6 +3598,34 @@
           render();
         });
 
+        // This section stays in the DOM when it is hidden, and the page-wide
+        // search reads every section's live markup (`buildSettingsSearchIndex`
+        // above): a filter still applied here keeps every shortcut it excludes
+        // out of that index, so "zoom" answers "No settings match" from
+        // anywhere else on the page for the rest of the session — and a filter
+        // that matched nothing takes the whole section with it. So the view is
+        // put back whenever it is not the one on screen: on the way out of the
+        // section (the contract Chains and RPC Providers keep below) and
+        // before the page-wide field reads the page, which it can do without
+        // the hash ever changing. The transient row state goes the same way —
+        // a conflict banner is a `.row-label` the index would offer as a
+        // setting — and so does an armed recording, whose window-level
+        // `keydown` capture would otherwise go on swallowing every keystroke
+        // on the page.
+        const resetView = () => {
+          if (!query && !recordingId && !conflictState && !rowNotice) return;
+          stopRecording();
+          conflictState = null;
+          rowNotice = null;
+          query = '';
+          if (searchInput) searchInput.value = '';
+          render();
+        };
+        settingsSearchResets.push(resetView);
+        window.addEventListener('hashchange', () => {
+          if (resolveSection(location.hash) !== 'shortcuts') resetView();
+        });
+
         restoreBtn?.addEventListener('click', async () => {
           stopRecording();
           conflictState = null;
@@ -3024,6 +3672,11 @@
         let endpointForm = null; // null | { mode, id, url } — chain is the open detail; role is always rpc
         let endpointSaveInFlight = false; // guards against a double-click adding two 'user-<Date.now()>' sources
         let addState = null; // null | { mode: 'search'|'manual', results, picked } — the add-chain flow
+
+        // Shown when a chain-detail deep link names a chain the registry does
+        // not have (#280). Named so the notice can be recognized again and
+        // cleared when the user navigates on.
+        const CHAIN_GONE_STATUS = 'That chain is no longer configured.';
 
         const setStatus = (msg, kind) => {
           if (!statusEl) return;
@@ -3174,26 +3827,38 @@
             )
             .join('');
           view.innerHTML = `
-            <button type="button" class="back-link" data-action="add-back">‹ Search</button>
-            <h2 class="section-title">${esc(c.name)}</h2>
-            <p class="row-help" style="margin-bottom: 16px">Review and confirm.</p>
-            <div class="card">${rowsHtml}</div>
-            ${addState.error ? `<p class="rpc-status error" style="margin: 8px 0 0">${esc(addState.error)}</p>` : ''}
-            ${cardButton('Add chain', 'confirm-add')}`;
+            <div class="settings-search-skip">
+              <button type="button" class="back-link" data-action="add-back">‹ Search</button>
+              <h2 class="section-title">${esc(c.name)}</h2>
+              <p class="row-help" style="margin-bottom: 16px">Review and confirm.</p>
+              <div class="card">${rowsHtml}</div>
+              ${addState.error ? `<p class="rpc-status error" style="margin: 8px 0 0">${esc(addState.error)}</p>` : ''}
+              ${cardButton('Add chain', 'confirm-add')}
+            </div>`;
         };
 
+        // The flow is a form the user opened, not settings this page has, and
+        // it is rendered *into* the Chains section without a hash of its own:
+        // its `<h2>` would become that section's index label (so "chains"
+        // stops finding Chains and "add a chain" offers the form as a
+        // section) and its confirmation rows would be offered as settings.
+        // Hence the skip marker on the wrapper — a plain block box, so the
+        // view lays out as it did — rather than on each piece, which the next
+        // line added to either render would silently miss.
         const renderAdd = () => {
           if (addState.picked) {
             renderAddConfirm();
             return;
           }
           view.innerHTML = `
-            <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
-            <h2 class="section-title">Add a chain</h2>
-            <p class="row-help" style="margin-bottom: 16px">
-              Search the public chain catalogue, or enter a chain manually.
-            </p>
-            ${addState.mode === 'manual' ? manualHtml() : searchHtml()}`;
+            <div class="settings-search-skip">
+              <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
+              <h2 class="section-title">Add a chain</h2>
+              <p class="row-help" style="margin-bottom: 16px">
+                Search the public chain catalogue, or enter a chain manually.
+              </p>
+              ${addState.mode === 'manual' ? manualHtml() : searchHtml()}
+            </div>`;
           $(addState.mode === 'manual' ? 'man-chainid' : 'chain-search-input')?.focus();
         };
 
@@ -3277,8 +3942,19 @@
             if (cid !== '1' && cid !== '100') return 'Unsupported';
             const status = myotisStatuses[cid];
             if (!status) return 'Status unknown';
+            if (
+              status.recovery?.reason === 'installation' ||
+              status.recovery?.reason === 'unsupported'
+            )
+              return 'Update or reinstall — open Nodes';
             if (status.state === 'ready') return 'Ready';
             if (status.state === 'syncing') return 'Syncing';
+            if (status.state === 'recovering') return 'Updating checkpoint';
+            if (status.state === 'recovery-blocked') {
+              return status.recovery?.reason === 'stalled'
+                ? 'Syncing slowly — open Nodes'
+                : 'Sync paused — open Nodes';
+            }
             if (status.state === 'off') return 'Off';
             if (status.state === 'disabled') return 'Profile disabled';
             return 'Unavailable';
@@ -3423,14 +4099,40 @@
             ${isCustom ? cardButton('Remove this chain', 'remove-chain', 'danger') : ''}`;
         };
 
-        const render = () => {
+        // The notice answers one hash and one view: the chain list standing
+        // in for a chain the registry does not have. Every re-render is a
+        // chance for that view to be replaced, so clearing it belongs here
+        // rather than only on `hashchange` — the add-chain form opens on the
+        // same hash, so no `hashchange` fires for it.
+        const clearChainGoneStatus = () => {
+          if (statusEl && statusEl.textContent === CHAIN_GONE_STATUS) setStatus('');
+        };
+
+        // `fresh` marks a render driven by a config just read from the
+        // registry. Only such a render may conclude that a chain named in the
+        // hash is gone: a hash change re-renders off the cached config first,
+        // and that copy can simply predate a chain added in another window.
+        const render = ({ fresh = false } = {}) => {
+          clearChainGoneStatus(); // the branch below re-raises it if it still holds
           if (addState) {
             renderAdd();
             return;
           }
           const cid = openChainId();
-          if (cid && config.networks[cid]) renderDetail(cid);
-          else renderList();
+          if (cid && config.networks[cid]) {
+            renderDetail(cid);
+            return;
+          }
+          if (cid && fresh) {
+            // The chain is not configured — removed here or in another
+            // window, or a typo. Rendering the list under the detail hash
+            // leaves the URL promising a chain nothing on screen names, so
+            // put the URL back on the list and say what happened.
+            // replaceState keeps the dead link out of the back/forward stack.
+            history.replaceState(null, '', '#chains');
+            setStatus(CHAIN_GONE_STATUS, 'error');
+          }
+          renderList();
         };
 
         const reload = async () => {
@@ -3446,7 +4148,7 @@
             }
             config = { networks: res.networks || {}, sources: res.sources || [] };
             myotisStatuses = { 1: ethereumMyotis, 100: gnosisMyotis };
-            render();
+            render({ fresh: true });
           } catch {
             setStatus('Failed to load network configuration', 'error');
           }
@@ -3842,16 +4544,28 @@
           }
         });
 
-        // The hash drives list↔detail; entering the section also re-syncs
-        // (config may have changed elsewhere). The transient add/edit form
-        // is cleared on any navigation.
+        // The hash drives list↔detail, so every hash change re-renders —
+        // leaving the section included, not only entering it. The section
+        // stays in the DOM when it is hidden and `render()` reads the
+        // sub-route off the hash, which by now names somewhere else, so this
+        // is what puts the view back to the chain list. Returning early
+        // instead parks the visited chain's detail in the hidden section for
+        // the rest of the session, and the page-wide search indexes every
+        // section's live markup: it would go on offering that chain's
+        // endpoint rows as results that jump to a list holding no such row,
+        // under an `<h2>` reading the chain's name where the section's own
+        // "Chains" heading belongs. Only the re-sync is gated on entering —
+        // leaving is not a visit. The transient add/edit form is cleared on
+        // any navigation either way.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'chains') return;
+          const entering = resolveSection(location.hash) === 'chains';
           clearTimeout(searchTimer);
           endpointForm = null;
           addState = null;
+          // The "no longer configured" notice is cleared by `render()` below:
+          // the user has navigated past the hash it explains.
           render(); // instant list<->detail swap from cached config
-          reload(); // then re-sync in case it changed elsewhere
+          if (entering) reload(); // then re-sync in case it changed elsewhere
         });
 
         reload();
@@ -3948,6 +4662,8 @@
 
           if (!myotisStatus) {
             setBadge('myotis', 'Status unknown', 'warning');
+          } else if (['installation', 'unsupported'].includes(myotisStatus.recovery?.reason)) {
+            setBadge('myotis', 'Update or reinstall — open Nodes', 'warning');
           } else if (myotisStatus.state === 'unavailable') {
             setBadge('myotis', 'Unavailable');
           } else if (myotisStatus.state === 'disabled') {
@@ -3956,6 +4672,16 @@
             setBadge('myotis', 'Off');
           } else if (myotisStatus.state === 'error') {
             setBadge('myotis', 'Error', 'warning');
+          } else if (myotisStatus.state === 'recovering') {
+            setBadge('myotis', 'Updating checkpoint', 'warning');
+          } else if (myotisStatus.state === 'recovery-blocked') {
+            setBadge(
+              'myotis',
+              myotisStatus.recovery?.reason === 'stalled'
+                ? 'Syncing slowly — open Nodes'
+                : 'Sync paused — open Nodes',
+              'warning'
+            );
           } else if (myotisStatus.state === 'ready') {
             setBadge('myotis', 'Ready', 'ready');
           } else {
@@ -4348,8 +5074,12 @@
                 : disabled
                   ? 'Disabled for this profile under Settings → Nodes.'
                   : supported && !available
-                    ? 'Addon not installed — run "npm run myotis:download" and restart.'
-                    : defaultLaunchHelp;
+                    ? 'Sync component missing. Update or reinstall Freedom; open Nodes for help.'
+                    : myotisStatus.state === 'recovery-blocked'
+                      ? 'Sync recovery needs attention. Open Nodes in the toolbar for recovery actions and help.'
+                      : myotisStatus.state === 'recovering'
+                        ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
+                        : defaultLaunchHelp;
             }
           }
           if (gnosisLaunchRow && gnosisLaunchToggle) {
@@ -4365,8 +5095,12 @@
                 : disabled
                   ? 'Disabled for this profile under Settings → Nodes.'
                   : supported && !available
-                    ? 'Addon not installed — run "npm run myotis:download" and restart.'
-                    : defaultGnosisLaunchHelp;
+                    ? 'Sync component missing. Update or reinstall Freedom; open Nodes for help.'
+                    : myotisGnosisStatus.state === 'recovery-blocked'
+                      ? 'Sync recovery needs attention. Open Nodes in the toolbar for recovery actions and help.'
+                      : myotisGnosisStatus.state === 'recovering'
+                        ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
+                        : defaultGnosisLaunchHelp;
             }
           }
           updateMethodStatuses();
@@ -4548,9 +5282,19 @@
           }
         });
 
-        // Re-sync on navigation into this section.
+        // Re-sync on navigation into this section. Navigating *away* drops
+        // the open key field too — the same shape as Chains above: this
+        // section stays in the DOM when hidden, so an abandoned edit would
+        // otherwise sit there with a typed API key in it until the user came
+        // back.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'rpc') return;
+          if (resolveSection(location.hash) !== 'rpc') {
+            if (keyFor !== null) {
+              keyFor = null;
+              render();
+            }
+            return;
+          }
           keyFor = null;
           reload();
         });
@@ -4576,15 +5320,25 @@
           geolocation: 'Location',
           midi: 'MIDI devices',
         };
-        const label = (key) => PERMISSION_LABELS[key] || key;
+        // `external:<scheme>` — one decision per external-protocol scheme
+        // (#406); mirrors permissionLabel in lib/site-permissions-ui.js.
+        const label = (key) =>
+          key.startsWith('external:')
+            ? `Open ${key.slice('external:'.length)}: links`
+            : PERMISSION_LABELS[key] || key;
 
         const render = (all) => {
           const origins = Object.keys(all || {}).sort();
 
           if (revokeAll) revokeAll.disabled = origins.length === 0;
 
+          // The empty state and the error state below are status messages in
+          // a row's clothing, so both carry the page-wide search's skip
+          // marker: indexed, "No saved permissions" is offered as a setting
+          // to jump to and marked with the accent edge that means "here is
+          // your control" (#281).
           if (origins.length === 0) {
-            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+            view.innerHTML = `<div class="card"><div class="row settings-search-skip"><div class="row-body">
                  <p class="row-label">No saved permissions</p>
                  <p class="row-help">Sites you allow or block with
                  “Remember for this site” appear here.</p>
@@ -4640,7 +5394,7 @@
             // this replaces, so the error render has to disable it itself —
             // offering to wipe state the page just said it cannot read.
             if (revokeAll) revokeAll.disabled = true;
-            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+            view.innerHTML = `<div class="card"><div class="row settings-search-skip"><div class="row-body">
               <p class="row-label">Could not load site permissions</p>
               <p class="row-help">${esc(err?.message || String(err))}</p>
             </div></div></div>`;

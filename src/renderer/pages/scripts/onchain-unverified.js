@@ -46,12 +46,15 @@ if (isConflict) {
   };
 }
 
+// Shell-driven traversal, not `window.history.back()`: see the comment on the
+// same button in `ens-conflict.js`. This page's entry behind it is usually an
+// ordinary web page, where the two behave alike — but when it is a
+// custom-scheme one (the user walked here from `ipfs://…`), a
+// renderer-initiated hop back is caught by the main process' `will-navigate`
+// intercept and replayed as a fresh navigation, which restores the URL but
+// drops the forward history a traversal keeps.
 document.getElementById('back-btn').onclick = () => {
-  if (window.history.length > 1) {
-    window.history.back();
-  } else {
-    window.location.href = 'home.html';
-  }
+  window.freedomAPI?.interstitialGoBack?.();
 };
 
 document.getElementById('settings-btn').onclick = () => {

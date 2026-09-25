@@ -107,6 +107,14 @@ function buildNodeConfig(ports) {
   };
 }
 
+// IPFS is a native node that may also be pointed at an external gateway. Keep a
+// persisted `external` (and `disabled`) choice across profile rebases/fills
+function normalizeIpfsMode(mode, fallback = 'managed') {
+  if (mode === 'disabled') return 'disabled';
+  if (mode === 'external') return 'external';
+  return fallback;
+}
+
 function rebaseNodeConfig(nodes = {}, ports) {
   const defaults = buildNodeConfig(ports);
   return {
@@ -117,7 +125,8 @@ function rebaseNodeConfig(nodes = {}, ports) {
     },
     ipfs: {
       ...defaults.ipfs,
-      mode: nodes.ipfs?.mode === 'disabled' ? 'disabled' : defaults.ipfs.mode,
+      mode: normalizeIpfsMode(nodes.ipfs?.mode, defaults.ipfs.mode),
+      externalGateway: nodes.ipfs?.externalGateway || null,
       backend: 'freedom-ipfs',
     },
     myotis: {
@@ -153,7 +162,9 @@ function fillMissingNodeConfig(nodes = {}, ports) {
     },
     ipfs: {
       ...defaults.ipfs,
-      mode: nodes.ipfs?.mode === 'disabled' ? 'disabled' : defaults.ipfs.mode,
+      ...(nodes.ipfs || {}),
+      mode: normalizeIpfsMode(nodes.ipfs?.mode, defaults.ipfs.mode),
+      externalGateway: nodes.ipfs?.externalGateway || null,
       backend: 'freedom-ipfs',
     },
     myotis: {
@@ -788,12 +799,20 @@ function updateProfileNodeConfig(profile, protocol, updates) {
     ipfs: 'freedom-ipfs',
     myotis: 'myotis-native',
   }[protocol];
-  const normalizedUpdates = nativeBackend
+  // Myotis is native-only, so its mode is clamped to managed/disabled. IPFS is
+  // native too, but may instead be pointed at an external HTTP gateway, so it
+  // keeps its full field set (mode, externalGateway, the external-candidate
+  // prompt marker) and merges like the non-native nodes.
+  // Clamping IPFS here would silently drop `external` and the gateway.
+  const forceNativeManaged = Boolean(nativeBackend) && protocol !== 'ipfs';
+  const normalizedUpdates = forceNativeManaged
     ? {
         mode: updates?.mode === 'disabled' ? 'disabled' : 'managed',
         backend: nativeBackend,
       }
-    : updates;
+    : nativeBackend
+      ? { ...updates, backend: nativeBackend }
+      : updates;
 
   return withCatalogWriteLock(profile.appRoot, () => {
     const catalog = loadCatalog(profile.appRoot);
@@ -801,7 +820,7 @@ function updateProfileNodeConfig(profile, protocol, updates) {
 
     if (record) {
       record.nodes = record.nodes || {};
-      record.nodes[protocol] = nativeBackend
+      record.nodes[protocol] = forceNativeManaged
         ? normalizedUpdates
         : {
             ...(record.nodes[protocol] || {}),
@@ -816,7 +835,7 @@ function updateProfileNodeConfig(profile, protocol, updates) {
       : { ...profile.metadata };
 
     metadata.nodes = metadata.nodes || {};
-    metadata.nodes[protocol] = nativeBackend
+    metadata.nodes[protocol] = forceNativeManaged
       ? normalizedUpdates
       : {
           ...(metadata.nodes[protocol] || {}),

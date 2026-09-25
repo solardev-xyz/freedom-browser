@@ -1,0 +1,2 @@
+- The tab strip on Windows no longer starts behind an empty gap
+  - The first tab sat about 76px in from the left edge, a space reserved for macOS's window buttons; it now starts 12px in, as on Linux

@@ -67,6 +67,20 @@ const readNativeVersion = (diagnostics = {}) => {
 // no diagnostics) shows the menu's shared 'Unknown' placeholder (#253) but does
 // NOT mark the version fetched, so later polls keep upgrading it instead of
 // locking in the placeholder forever.
+// Identity label for an external gateway: the detected node version when the
+// RPC answered, otherwise the gateway endpoint. Falls back to the registry's
+// configured endpoint when no diagnostics are at hand (immediate UI updates that
+// don't carry a stats poll). `externalGateway` is the configured endpoint and is
+// published in external mode whether or not the node is serving; `gateway` only
+// appears while it actually is (see publishExternalIpfsMode in main/ipfs-manager.js).
+const externalIdentityLabel = (diagnostics) => {
+  if (diagnostics?.externalVersion) return diagnostics.externalVersion;
+  const registryIpfs = state.registry?.ipfs;
+  const gateway =
+    diagnostics?.externalGateway || registryIpfs?.externalGateway || registryIpfs?.gateway || '';
+  return gateway ? `External · ${gateway.replace(/^https?:\/\//, '')}` : 'External gateway';
+};
+
 const updateVersionFromDiagnostics = (diagnostics) => {
   if (state.ipfsVersionFetched) return;
   const version = readNativeVersion(diagnostics);
@@ -106,7 +120,13 @@ const fetchNativeStats = async () => {
     if (ipfsDataRead) {
       ipfsDataRead.textContent = formatBytes(stats.bytes_read || 0);
     }
-    updateVersionFromDiagnostics(status?.diagnostics);
+    if (state.registry?.ipfs?.mode === 'external') {
+      if (ipfsVersionText) {
+        ipfsVersionText.textContent = externalIdentityLabel(status?.diagnostics);
+      }
+    } else {
+      updateVersionFromDiagnostics(status?.diagnostics);
+    }
   } catch {
     if (ipfsActiveRequestsCount) ipfsActiveRequestsCount.textContent = '0';
     if (ipfsDataRead) ipfsDataRead.textContent = '';
@@ -137,6 +157,10 @@ export const updateIpfsUi = (status, error) => {
   updateIpfsStatusLine();
   updateIpfsToggleState();
 
+  // NOTE: the external-mode identity/version line is owned solely by the stats
+  // poll (fetchNativeStats), which has the diagnostics to show the detected node
+  // version. Setting it here too made the label flicker between identity/version
+  // and the endpoint.
   if (!ipfsToggleBtn || !ipfsToggleSwitch) return;
 
   // While a toggle is pending (ipfsDesiredRunning !== null) the switch follows
@@ -160,20 +184,6 @@ export const updateIpfsUi = (status, error) => {
     } else if (!state.ipfsInfoInterval) {
       startIpfsInfoPolling();
     }
-  }
-};
-
-const setToggleDisabled = (disabled) => {
-  if (!ipfsToggleBtn) return;
-
-  if (disabled) {
-    ipfsToggleBtn.classList.add('disabled');
-    ipfsToggleBtn.setAttribute('disabled', 'true');
-    ipfsToggleBtn.setAttribute('title', 'IPFS binary not found');
-  } else {
-    ipfsToggleBtn.classList.remove('disabled');
-    ipfsToggleBtn.removeAttribute('disabled');
-    ipfsToggleBtn.removeAttribute('title');
   }
 };
 
@@ -202,18 +212,43 @@ export const updateIpfsStatusLine = () => {
   }
 };
 
-// Update toggle disabled state based on node mode
+// Sole writer of the toggle's disabled/external/title state: it reads BOTH
+// inputs — the native-addon availability probe and the registry mode — so
+// neither can clobber the other's decision regardless of which lands first. (A
+// separate binary-probe writer used to disable the toggle unconditionally,
+// re-disabling an external gateway the registry had just declared controllable.)
 export const updateIpfsToggleState = () => {
   if (!ipfsToggleBtn) return;
 
   const mode = state.registry?.ipfs?.mode;
-  const isReused = mode === 'reused';
 
-  if (isReused) {
-    ipfsToggleBtn.classList.add('external');
-    ipfsToggleBtn.setAttribute('title', 'Using existing node — cannot be controlled from Freedom');
-  } else if (ipfsBinaryAvailable) {
-    ipfsToggleBtn.classList.remove('external');
+  // A user-configured external gateway is controllable and needs no native
+  // addon, so it stays enabled even when the binary probe came back negative —
+  // it is the escape hatch for exactly the hosts where the addon can't load.
+  const disabled = !ipfsBinaryAvailable && mode !== 'external';
+
+  ipfsToggleBtn.classList.toggle('disabled', disabled);
+  if (disabled) {
+    ipfsToggleBtn.setAttribute('disabled', 'true');
+  } else {
+    ipfsToggleBtn.removeAttribute('disabled');
+  }
+
+  // An auto-detected node Freedom didn't start is shown as external but can't
+  // be controlled (the click handler declines it).
+  ipfsToggleBtn.classList.toggle('external', mode === 'reused');
+
+  const title =
+    mode === 'reused'
+      ? 'Using existing node — cannot be controlled from Freedom'
+      : mode === 'external'
+        ? 'Using an external IPFS gateway'
+        : disabled
+          ? 'IPFS binary not found'
+          : null;
+  if (title) {
+    ipfsToggleBtn.setAttribute('title', title);
+  } else {
     ipfsToggleBtn.removeAttribute('title');
   }
 };
@@ -282,7 +317,10 @@ export const initIpfsUi = () => {
   if (window.ipfs) {
     window.ipfs.checkBinary().then(({ available }) => {
       ipfsBinaryAvailable = available;
-      setToggleDisabled(!available);
+      // Re-derive the toggle state from both inputs rather than disabling
+      // outright: the profile may be on an external gateway, which the missing
+      // addon says nothing about.
+      updateIpfsToggleState();
       if (!available) {
         pushDebug('IPFS binary not found - toggle disabled');
       }
@@ -294,11 +332,13 @@ export const initIpfsUi = () => {
 
   // Toggle button listener
   ipfsToggleBtn?.addEventListener('click', () => {
-    if (!ipfsBinaryAvailable) return;
-
-    // Don't allow toggling when using an external node
+    // Don't allow toggling when reusing an auto-detected node it can't control.
     const mode = state.registry?.ipfs?.mode;
     if (mode === 'reused') return;
+
+    // A user-configured external gateway is controllable and does not need the
+    // native addon.
+    if (!ipfsBinaryAvailable && mode !== 'external') return;
 
     // Flip to the opposite of whatever the switch currently shows (the pending
     // target if one is set, otherwise live status), so each click reverses the

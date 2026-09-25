@@ -2,7 +2,8 @@
  * Site Permissions UI
  *
  * Two chrome surfaces for per-site web permissions (camera, mic,
- * notifications, clipboard-read, geolocation, MIDI):
+ * notifications, clipboard-read, geolocation, MIDI, and opening an
+ * external-protocol link — `external:<scheme>`, one key per scheme, #406):
  *
  * 1. The permission prompt anchored under the address bar. Main queues
  *    requests per requesting webContents (tab) and sends one per tab at
@@ -11,15 +12,25 @@
  *    while that tab is the active one — a background tab's request is
  *    held and surfaces when the user switches to it. The answer goes
  *    back via `permissions:prompt-response`. Dismissing (Esc, clicking
- *    away) denies once without recording anything. Navigation-driven
+ *    away) denies once without recording anything — until the third
+ *    dismissal in a row for the same site + permission, which main
+ *    embargoes for the rest of the run so the page cannot re-raise the
+ *    prompt indefinitely (#364). Navigation-driven
  *    invalidation is owned by main: it watches the REQUESTING
  *    webContents and withdraws its prompts via
  *    `permissions:prompt-cancel`, so navigating the active tab never
  *    dismisses a background tab's pending request.
  *
  * 2. The address-bar indicator + popover: a small icon when the current
- *    site holds granted permissions, listing decisions with quick revoke.
- *    Mirrors the ENS trust shield's popover interaction pattern.
+ *    site holds granted permissions (or an embargoed one), listing
+ *    decisions with quick revoke. Mirrors the ENS trust shield's popover
+ *    interaction pattern. Both the list and its Remove are scoped to the
+ *    window they are shown in: main answers `permissions:get-for-origin`
+ *    from the asking window's own tier, and `sitePermissions.revoke` is
+ *    marked window-scoped in the preload so a Remove clicked in a private
+ *    window cannot clear the normal profile's run-scoped decision, or
+ *    vice versa (#365, #366). Profile-wide removal is Settings > Site
+ *    Permissions.
  */
 
 import { getActiveWebview, getDisplayUrlForWebview } from './tabs.js';
@@ -48,7 +59,26 @@ const PERMISSION_PHRASES = {
   midi: 'use your MIDI devices',
 };
 
-export const permissionLabel = (key) => PERMISSION_LABELS[key] || key;
+// External-protocol decisions are stored per scheme as `external:<scheme>`
+// (src/main/external-protocol.js), so their label and phrase are built from
+// the scheme rather than looked up.
+const EXTERNAL_KEY_PREFIX = 'external:';
+const externalScheme = (key) =>
+  typeof key === 'string' && key.startsWith(EXTERNAL_KEY_PREFIX)
+    ? key.slice(EXTERNAL_KEY_PREFIX.length)
+    : null;
+
+export const permissionLabel = (key) => {
+  const scheme = externalScheme(key);
+  if (scheme) return `Open ${scheme}: links`;
+  return PERMISSION_LABELS[key] || key;
+};
+
+const permissionPhrase = (key, appName) => {
+  const scheme = externalScheme(key);
+  if (scheme) return `open ${scheme}: links in ${appName || 'another app'}`;
+  return PERMISSION_PHRASES[key] || `use ${key}`;
+};
 
 /**
  * Build the "wants to …" phrase for a prompt's storage keys.
@@ -56,16 +86,17 @@ export const permissionLabel = (key) => PERMISSION_LABELS[key] || key;
  * else joins with "and".
  *
  * @param {string[]} keys
+ * @param {string|null} [appName] - OS handler for an external-protocol request
  * @returns {string}
  */
-export const describePermissionRequest = (keys = []) => {
+export const describePermissionRequest = (keys = [], appName = null) => {
   const unique = [...new Set(keys)];
   if (unique.includes('camera') && unique.includes('microphone')) {
     const rest = unique.filter((k) => k !== 'camera' && k !== 'microphone');
-    const phrases = ['use your camera and microphone', ...rest.map((k) => PERMISSION_PHRASES[k] || `use ${k}`)];
+    const phrases = ['use your camera and microphone', ...rest.map((k) => permissionPhrase(k, appName))];
     return phrases.join(' and ');
   }
-  const phrases = unique.map((k) => PERMISSION_PHRASES[k] || `use ${k}`);
+  const phrases = unique.map((k) => permissionPhrase(k, appName));
   return phrases.join(' and ') || 'use a device';
 };
 
@@ -169,7 +200,7 @@ const showNextPrompt = () => {
   } else {
     if (promptOriginEl) promptOriginEl.textContent = activePrompt.origin || 'This site';
     if (promptActionEl) {
-      promptActionEl.textContent = ` wants to ${describePermissionRequest(keys)}`;
+      promptActionEl.textContent = ` wants to ${describePermissionRequest(keys, activePrompt.appName)}`;
     }
     const note = permissionRequestNote(keys);
     if (promptNoteEl) {
@@ -234,6 +265,18 @@ const setPopoverOpen = (open) => {
   }
 };
 
+// Public hook so the chrome's shared dismissal paths (index.js's
+// `closeAllOverlays` on the menu backdrop, and `onAnyMenuOpening`) can put
+// this popover away, the mirror of navigation.js' `closeTrustPopover`. Only
+// the indicator popover: the prompt is deliberately held across every one of
+// those gestures (see the click-away and blur handlers below), since closing
+// it is an answer to the page, not a dismissal of chrome.
+export const closePermissionPopover = () => {
+  if (popoverEl && !popoverEl.hidden) {
+    setPopoverOpen(false);
+  }
+};
+
 const renderPopover = () => {
   if (!popoverEl || !popoverTitleEl || !popoverListEl) return;
 
@@ -257,7 +300,13 @@ const renderPopover = () => {
     if (entry.decision === 'allow') {
       status.textContent = `Allowed${scope}`;
     } else {
-      status.textContent = `Blocked${scope}`;
+      // An embargoed permission (#364) is blocked for the rest of the run
+      // because the prompt was dismissed three times, not because the user
+      // chose Block — say so, or "Blocked (this session)" reads as a
+      // decision they never made.
+      status.textContent = entry.embargoed
+        ? 'Blocked after repeated dismissals (this session)'
+        : `Blocked${scope}`;
       status.classList.add('blocked');
     }
 
@@ -287,7 +336,8 @@ const renderPopover = () => {
 /**
  * Recompute the indicator for the active tab's committed origin.
  * Shown when the site holds at least one granted permission (stored or
- * session-scoped); the popover lists blocks too once open.
+ * session-scoped), or one under the dismissal embargo; the popover lists
+ * blocks too once open.
  */
 const refreshIndicator = async () => {
   if (!indicatorBtn) return;
@@ -314,8 +364,15 @@ const refreshIndicator = async () => {
   indicatorOrigin = origin;
   indicatorDecisions = decisions;
 
+  // The indicator shows for a site that holds a grant — and for one under
+  // the dismissal embargo (#364), which is the only kind of block the user
+  // never chose: the site simply stopped asking. The popover is where they
+  // see why and lift it, so it has to be reachable. A Block they made
+  // themselves keeps the status quo (no indicator); Settings > Site
+  // Permissions lists those.
   const hasGrant = Object.values(decisions).some((entry) => entry?.decision === 'allow');
-  indicatorBtn.classList.toggle('hidden', !hasGrant);
+  const hasEmbargo = Object.values(decisions).some((entry) => entry?.embargoed === true);
+  indicatorBtn.classList.toggle('hidden', !hasGrant && !hasEmbargo);
 
   if (!popoverEl?.hidden) {
     if (Object.keys(decisions).length === 0) {

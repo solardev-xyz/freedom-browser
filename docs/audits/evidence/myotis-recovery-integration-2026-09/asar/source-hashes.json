@@ -1,0 +1,5 @@
+{
+  "src/main/myotis/checkpoint-verifier.js": "104452f2bbcb5d15606adad1557ca64781bbb8dd35a2256f78a34a1899e25fdb",
+  "src/main/myotis/checkpoint-verifier-worker.js": "9e80a67b1442d7d5e3feb02fe372e14dea8ef323e7f64082f9c0ca7eac60df88",
+  "src/main/ens/colibri-runtime.js": "d17a7aae7a0ae85dc26b2498ac2395e619e1edd89e498a5e517328ff2de2d4a6"
+}

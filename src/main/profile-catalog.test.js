@@ -6,6 +6,7 @@ const {
   deleteProfile,
   ensureProfile,
   getCatalogLockPaths,
+  updateProfileNodeConfig,
   validateProfileDeletion,
   withCatalogWriteLock,
 } = require('./profile-catalog');
@@ -187,6 +188,105 @@ describe('profile catalog', () => {
     expect(metadata.nodes.tor).toMatchObject({
       mode: 'managed',
       socksPort: 19150,
+    });
+  });
+
+  test('updateProfileNodeConfig keeps the IPFS external gateway but clamps Myotis to native', () => {
+    const appRoot = track(makeTempDir());
+    const profileDir = path.join(appRoot, 'Profiles', 'default');
+    fs.mkdirSync(profileDir, { recursive: true });
+    const { metadata } = ensureProfile(appRoot, 'default', { defaultProfileDir: profileDir });
+    const profile = { id: 'default', appRoot, userDataDir: profileDir, metadata };
+
+    // IPFS is native but may point at an external gateway: mode, endpoint, and
+    // the prompt marker must survive, with the native backend stamped.
+    const ipfsResult = updateProfileNodeConfig(profile, 'ipfs', {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+      externalCandidatePrompt: { choice: 'external' },
+    });
+    expect(ipfsResult.metadata.nodes.ipfs).toMatchObject({
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+      externalCandidatePrompt: { choice: 'external' },
+      backend: 'freedom-ipfs',
+    });
+    const persistedIpfs = JSON.parse(
+      fs.readFileSync(path.join(profileDir, 'profile.json'), 'utf-8')
+    ).nodes.ipfs;
+    expect(persistedIpfs).toMatchObject({
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+    });
+
+    // Myotis stays native-only: external is clamped to managed and endpoints dropped.
+    const myotisResult = updateProfileNodeConfig(profile, 'myotis', {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:9000',
+    });
+    expect(myotisResult.metadata.nodes.myotis).toEqual({
+      mode: 'managed',
+      backend: 'myotis-native',
+    });
+  });
+
+  test('ensureProfile preserves a persisted IPFS external gateway across reboots', () => {
+    const appRoot = track(makeTempDir());
+    const profileDir = path.join(appRoot, 'Profiles', 'default');
+    fs.mkdirSync(profileDir, { recursive: true });
+
+    const nodes = {
+      ipfs: {
+        mode: 'external',
+        externalGateway: 'http://127.0.0.1:8080',
+        backend: 'freedom-ipfs',
+      },
+    };
+    const record = {
+      id: 'default',
+      displayName: 'Default',
+      dir: profileDir,
+      slot: 0,
+      createdAt: '2026-05-25T00:00:00.000Z',
+      lastOpenedAt: '2026-05-25T00:00:00.000Z',
+      nodes,
+    };
+    fs.writeFileSync(
+      path.join(appRoot, 'profile-registry.json'),
+      JSON.stringify({ version: 1, profiles: [record] }, null, 2)
+    );
+    fs.writeFileSync(
+      path.join(profileDir, 'profile.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          id: 'default',
+          displayName: 'Default',
+          createdAt: record.createdAt,
+          lastOpenedAt: record.lastOpenedAt,
+          slot: 0,
+          nodes,
+        },
+        null,
+        2
+      )
+    );
+
+    // ensureProfile runs on every launch and normalizes node config; the external
+    // gateway must not be clamped back to the managed default.
+    const result = ensureProfile(appRoot, 'default', { defaultProfileDir: profileDir });
+    expect(result.metadata.nodes.ipfs).toMatchObject({
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+      backend: 'freedom-ipfs',
+    });
+
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(profileDir, 'profile.json'), 'utf-8')
+    ).nodes.ipfs;
+    expect(persisted).toMatchObject({
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
     });
   });
 

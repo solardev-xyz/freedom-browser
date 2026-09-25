@@ -1,0 +1,8 @@
+{"chainId":1,"checkpoint":{"schemaVersion":2,"chainId":1,"network":"mainnet","root":"0x6e0948324f5065674b569a5683448e40a677a7dfdd6e744bd153211b07ea7570","slot":15226848,"verifiedAt":1789547352125,"sources":["https://mainnet.checkpoint.sigp.io","https://beaconstate.ethstaker.cc","https://beaconstate-mainnet.chainsafe.io"],"finalizedEpoch":475839}}
+CHECKPOINT_QUORUM_UNAVAILABLE Not enough checkpoint sources could confirm a recent checkpoint. Try again. Error: Not enough checkpoint sources could confirm a recent checkpoint. Try again.
+    at checkpointError (/private/tmp/myotis-asar-LOurkI/app.asar/src/main/myotis/checkpoint-verifier.js:57:17)
+    at Worker.<anonymous> (/private/tmp/myotis-asar-LOurkI/app.asar/src/main/myotis/checkpoint-verifier.js:195:18)
+    at Worker.emit (node:events:514:28)
+    at MessagePort.<anonymous> (node:internal/worker:350:14)
+    at [nodejs.internal.kHybridDispatch] (node:internal/event_target:856:20)
+    at MessagePort.<anonymous> (node:internal/per_context/messageport:23:28)

@@ -1213,6 +1213,78 @@ describe('ipc-handlers', () => {
     );
   });
 
+  test('updates IPFS profile node config through external gateway validation', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      isDev: false,
+      metadata: {
+        slot: 1,
+        nodes: {
+          ipfs: { mode: 'managed', externalGateway: null },
+        },
+      },
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile });
+
+    ctx.mod.registerBaseIpcHandlers();
+
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'ipfs',
+        config: {
+          mode: 'external',
+          externalGateway: 'http://127.0.0.1:8080/',
+        },
+      })
+    ).resolves.toEqual(
+      success({
+        profile: expect.objectContaining({
+          nodes: expect.objectContaining({
+            ipfs: expect.objectContaining({
+              mode: 'external',
+              externalGateway: 'http://127.0.0.1:8080',
+            }),
+          }),
+        }),
+      })
+    );
+
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledWith('ipfs', {
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+    });
+
+    // External mode with no gateway is rejected before any write.
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'ipfs',
+        config: { mode: 'external' },
+      })
+    ).resolves.toEqual(
+      failure('MISSING_PROFILE_NODE_ENDPOINT', 'External node mode requires endpoints', {
+        fields: ['externalGateway'],
+      })
+    );
+
+    // A credentialed URL is rejected at the boundary rather than stored: the
+    // fetch stack that dials it refuses to build a Request from one, so
+    // accepting it would fail every later request as "unreachable" instead.
+    // Same normalizer as the node managers use (src/shared/http-endpoint.js).
+    for (const protocol of ['ipfs', 'bee']) {
+      const field = protocol === 'ipfs' ? 'externalGateway' : 'externalApi';
+      await expect(
+        ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+          protocol,
+          config: { mode: 'external', [field]: 'http://user:pass@127.0.0.1:8080' },
+        })
+      ).resolves.toEqual(
+        failure('INVALID_PROFILE_NODE_ENDPOINT', 'Invalid profile node endpoint', { field })
+      );
+    }
+  });
+
   test('rejects invalid active profile node updates', async () => {
     const ctx = loadIpcHandlersModule({
       activeProfile: {
@@ -1236,14 +1308,16 @@ describe('ipc-handlers', () => {
       })
     );
 
+    // IPFS supports external mode, but it requires the gateway endpoint — passing
+    // an unrelated field (externalApi) leaves externalGateway missing.
     await expect(
       ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
         protocol: 'ipfs',
         config: { mode: 'external', externalApi: '127.0.0.1:5001' },
       })
     ).resolves.toEqual(
-      failure('INVALID_PROFILE_NODE_MODE', 'Unsupported profile node mode', {
-        mode: 'external',
+      failure('MISSING_PROFILE_NODE_ENDPOINT', 'External node mode requires endpoints', {
+        fields: ['externalGateway'],
       })
     );
 

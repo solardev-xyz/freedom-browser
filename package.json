@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.6-dev",
+  "version": "0.8.7-dev",
   "license": "MPL-2.0",
   "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
@@ -28,6 +28,7 @@
     "test:e2e:onboarding": "playwright test --project=live test-e2e/live/onboarding-identity.spec.js",
     "test:e2e:tor": "FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/tor-onion.spec.js",
     "lint": "eslint .",
+    "changelog:assemble": "node scripts/assemble-changelog.js",
     "styles:inventory": "node scripts/update-renderer-color-literals.js",
     "test:e2e:theme-parity": "playwright test --project=harness test-e2e/theme-parity.spec.js",
     "test:e2e:theme-parity:update": "THEME_CONTRAST_UPDATE=1 playwright test --project=harness test-e2e/theme-parity.spec.js",
@@ -43,8 +44,8 @@
     "dist:mac:notary-status": "dotenv -- node scripts/macos-notary.js status",
     "dist:mac:notary-log": "dotenv -- node scripts/macos-notary.js log",
     "dist:mac:staple-notary": "dotenv -- node scripts/macos-notary.js staple",
-    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
-    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils libarchive-tools curl git ca-certificates && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
@@ -99,11 +100,15 @@
       "icon": "assets/icon.png",
       "identity": "Solar Dev Ltd (46XPHRBLH5)",
       "hardenedRuntime": true,
-      "binaries": ["Contents/Resources/myotis-node/myotis-supervisor"],
+      "binaries": [
+        "Contents/Resources/myotis-node/myotis-supervisor"
+      ],
       "sign": "./scripts/sign-myotis-helper.js",
       "gatekeeperAssess": false,
       "extendInfo": {
-        "LSMultipleInstancesProhibited": false
+        "LSMultipleInstancesProhibited": false,
+        "NSCameraUsageDescription": "Freedom needs camera access so websites you allow can use it for video calls.",
+        "NSMicrophoneUsageDescription": "Freedom needs microphone access so websites you allow can use it for video calls."
       },
       "entitlements": "config/entitlements.mac.plist",
       "entitlementsInherit": "config/entitlements.mac.plist",
@@ -135,7 +140,8 @@
     "linux": {
       "target": [
         "deb",
-        "AppImage"
+        "AppImage",
+        "pacman"
       ],
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
@@ -168,6 +174,20 @@
             "**/*"
           ]
         }
+      ]
+    },
+    "pacman": {
+      "synopsis": "A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols",
+      "depends": [
+        "gtk3",
+        "libnotify",
+        "nss",
+        "libxss",
+        "libxtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "alsa-lib",
+        "libsecret"
       ]
     },
     "nsis": {
@@ -269,7 +289,7 @@
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^44.2.0",
+    "electron": "^44.4.5",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
     "eslint": "^10.4.0",
@@ -280,7 +300,7 @@
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
-    "@corpus-core/colibri-stateless": "2.0.6",
+    "@corpus-core/colibri-stateless": "3.0.0",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",
     "@ghostery/adblocker": "^2.18.1",
@@ -296,7 +316,7 @@
     "better-sqlite3": "^13.0.3",
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.3",
-    "ethers": "^6.16.0",
+    "ethers": "^6.17.0",
     "micro-key-producer": "^0.10.0",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4"

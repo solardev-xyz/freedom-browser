@@ -1,8 +1,10 @@
+import { isPotentialEnsName } from './origin-utils.js';
+
 // EIP-681 "ethereum:" URI parser — native-asset subset.
 // https://eips.ethereum.org/EIPS/eip-681
 //
 // Accepts:
-//   ethereum:<0xAddress | .eth / .box / .wei / .gwei name>[@<chainId>][?value=<wei>][&label=<str>]
+//   ethereum:<0xAddress | ENS name>[@<chainId>][?value=<wei>][&label=<str>]
 //
 // Rejects function-call variants ("ethereum:<token>@<chain>/transfer?...")
 // explicitly so a tip link can never be confused with an ERC-20 transfer.
@@ -65,7 +67,7 @@ export function parseEthereumUri(raw) {
   if (!target) return { ok: false, reason: 'MALFORMED' };
 
   const isAddress = /^0x[a-fA-F0-9]{40}$/.test(target);
-  const isEnsLike = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(eth|box|wei|gwei)$/i.test(target);
+  const isEnsLike = isPotentialEnsName(target);
   if (!isAddress && !isEnsLike) return { ok: false, reason: 'MALFORMED' };
 
   const params = new URLSearchParams(queryStr);

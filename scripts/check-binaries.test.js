@@ -3,11 +3,32 @@ jest.mock('fs', () => ({
   mkdirSync: jest.fn(),
 }));
 
+jest.mock('./fetch-myotis', () => ({ validateInstalledAddon: jest.fn(() => null) }));
+const { validateInstalledAddon } = require('./fetch-myotis');
 const fs = require('fs');
 const path = require('path');
 const packageJson = require('../package.json');
 const { checkBinaries, ensureOptionalArti } = require('./check-binaries');
 const { platformKey } = require('./fetch-radicle-addon');
+
+describe('ad-blocking build inputs', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // #410: a lists dir fetched by the old script has a manifest but no
+  // scriptlet resources or GPL-3.0 text — packaging it would silently ship
+  // without YouTube ad blocking.
+  test.each(['resources.json', 'COPYING.GPL-3.0.txt'])('flags a stale lists dir missing %s', (file) => {
+    fs.existsSync.mockImplementation((target) => !target.endsWith(path.join('adblock', file)));
+    expect(checkBinaries([])).toEqual([expect.stringContaining(`adblock ${file}`)]);
+  });
+
+  test('a missing lists dir is reported once, as before', () => {
+    fs.existsSync.mockImplementation((target) => !target.includes(path.join('assets', 'adblock')));
+    expect(checkBinaries([])).toEqual([expect.stringContaining('adblock filter lists')]);
+  });
+});
 
 describe('Radicle build inputs', () => {
   beforeEach(() => {
@@ -68,6 +89,13 @@ describe('Myotis supervisor build inputs', () => {
       ]);
     }
   );
+  test('refuses a vanilla or modified addon without valid checkpoint provenance', () => {
+    fs.existsSync.mockReturnValue(true);
+    validateInstalledAddon.mockReturnValueOnce('checkpoint-addon checksum mismatch');
+    expect(checkBinaries([{ os: 'mac', arch: 'arm64' }])).toEqual([
+      expect.stringContaining('myotis checkpoint addon for mac-arm64: checkpoint-addon checksum mismatch'),
+    ]);
+  });
   test('packages both helper names and only adds the mac helper to explicit signing', () => {
     const resource = packageJson.build.extraResources.find(({ to }) => to === 'myotis-node');
     expect(resource.filter).toEqual(['myotis-node.node', 'myotis-supervisor', 'myotis-supervisor.exe']);

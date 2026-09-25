@@ -1,0 +1,166 @@
+{
+  "platform": "macOS arm64",
+  "baseCommit": "18fb892aba49fa237b622730dc32985a6d200c29",
+  "sourceSha256": {
+    "package-lock.json": "4120a6c92f3fc33930488f987a70d4c4012b6cec5ca3289f882667102a3db24e",
+    "src/main/ens/colibri-runtime.js": "fe52d0731b2e383b6a291913329efa95fe725b00272f8bd4e6d4954a17595f4d",
+    "src/main/myotis/checkpoint-verifier-worker.js": "3a767725c32fe72501ad150ec9ce9c0140b0052ed13f578fb7b29e5467dbb804",
+    "src/main/myotis/checkpoint-verifier.js": "8e16ee69ca7933517e59017149673fdd40c90b55844455c734d3477482b456f6",
+    "src/main/myotis/myotis-manager.js": "c03b7c009f8aa41b42ede8c3f65b25e163574e0a15f24a34bd73616aad379945",
+    "docs/audits/evidence/colibri-v3-2026-09/electron-main.cjs": "22988e76fe093527f49a74deda5e79ce9cdc2a0bd1841cb91a7a4b3e7da33661",
+    "myotis-bin/mac-arm64/myotis-supervisor": "5f196d453b2417cd0c6ffacd446e423f916fdb4554738c4d0adb692be831e203"
+  },
+  "runs": [
+    {
+      "chainId": 1,
+      "success": true,
+      "colibri": "3.0.0",
+      "electron": "44.4.1",
+      "node": "24.21.0",
+      "addonSha256": "d75e6433cc50fcffd23ca2aa93f5475ea64c0666df12a05891a0fd196c4647c1",
+      "qualification": {
+        "type": "qualification",
+        "at": "2026-09-18T08:00:14.111Z",
+        "elapsedMs": 84917,
+        "chainId": 1,
+        "success": true,
+        "sawStale": true,
+        "verifiedReplacement": true,
+        "initialRead": true,
+        "firstStop": true,
+        "restarted": true,
+        "restartRead": true,
+        "sameGenerationOnRestart": true,
+        "snapshotFiles": [],
+        "finalCheckpoint": {
+          "schemaVersion": 2,
+          "chainId": 1,
+          "network": "mainnet",
+          "root": "0x600d8e330d32a2aa28b4c4d106c5d8e352c8c4a56e68ab7b33a16bf502ce4c62",
+          "slot": 15241088,
+          "verifiedAt": 1789718332751,
+          "sources": [
+            "https://mainnet.checkpoint.sigp.io",
+            "https://beaconstate.ethstaker.cc",
+            "https://beaconstate-mainnet.chainsafe.io"
+          ],
+          "finalizedEpoch": 476284
+        }
+      },
+      "verifiedReads": [
+        {
+          "phase": "recovery",
+          "at": "2026-09-18T07:59:31.645Z",
+          "blockNumber": 26002987,
+          "peerProofValid": true,
+          "blsVerified": true,
+          "beaconChainVerified": true,
+          "failReason": null
+        },
+        {
+          "phase": "restart",
+          "at": "2026-09-18T08:00:14.110Z",
+          "blockNumber": 26002987,
+          "peerProofValid": true,
+          "blsVerified": true,
+          "beaconChainVerified": true,
+          "failReason": null
+        }
+      ],
+      "callerTimeouts": 2,
+      "ownershipControls": [
+        {
+          "kind": "active",
+          "passed": true
+        },
+        {
+          "kind": "unknown",
+          "passed": true
+        }
+      ],
+      "finalStop": {
+        "type": "final-stop",
+        "at": "2026-09-18T08:00:14.127Z",
+        "elapsedMs": 84933,
+        "chainId": 1,
+        "stopped": [true, true]
+      },
+      "resultSha256": "79db9d47806a36b768987b4e4cd75c3c2b255cc8badb0e21822635a19b6df7a6"
+    },
+    {
+      "chainId": 100,
+      "success": true,
+      "colibri": "3.0.0",
+      "electron": "44.4.1",
+      "node": "24.21.0",
+      "addonSha256": "d75e6433cc50fcffd23ca2aa93f5475ea64c0666df12a05891a0fd196c4647c1",
+      "qualification": {
+        "type": "qualification",
+        "at": "2026-09-18T07:59:12.183Z",
+        "elapsedMs": 21740,
+        "chainId": 100,
+        "success": true,
+        "sawStale": true,
+        "verifiedReplacement": true,
+        "initialRead": true,
+        "firstStop": true,
+        "restarted": true,
+        "restartRead": true,
+        "sameGenerationOnRestart": true,
+        "snapshotFiles": [],
+        "finalCheckpoint": {
+          "schemaVersion": 2,
+          "chainId": 100,
+          "network": "gnosis",
+          "root": "0x46ee0417c94da18362343e35ab7b4ea630ea426330c7e3f99dc17f9b7f0b156d",
+          "slot": 30144944,
+          "verifiedAt": 1789718331495,
+          "sources": [
+            "https://checkpoint.gnosischain.com",
+            "https://checkpoint-sync-gnosis.dappnode.net"
+          ],
+          "finalizedEpoch": 1884059
+        }
+      },
+      "verifiedReads": [
+        {
+          "phase": "recovery",
+          "at": "2026-09-18T07:59:04.805Z",
+          "blockNumber": 48310248,
+          "peerProofValid": true,
+          "blsVerified": true,
+          "beaconChainVerified": true,
+          "failReason": null
+        },
+        {
+          "phase": "restart",
+          "at": "2026-09-18T07:59:12.181Z",
+          "blockNumber": 48310249,
+          "peerProofValid": true,
+          "blsVerified": true,
+          "beaconChainVerified": true,
+          "failReason": null
+        }
+      ],
+      "callerTimeouts": 0,
+      "ownershipControls": [
+        {
+          "kind": "active",
+          "passed": true
+        },
+        {
+          "kind": "unknown",
+          "passed": true
+        }
+      ],
+      "finalStop": {
+        "type": "final-stop",
+        "at": "2026-09-18T07:59:12.222Z",
+        "elapsedMs": 21779,
+        "chainId": 100,
+        "stopped": [true, true]
+      },
+      "resultSha256": "279813ad4cdec295ec5c8cad988d3c6669e2ab8d05865191d1a76ef43c357a85"
+    }
+  ]
+}

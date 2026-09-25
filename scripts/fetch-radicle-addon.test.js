@@ -9,6 +9,12 @@
  *    it ships from the same mutable release as the addon, and the addon is
  *    loaded into the main process and shipped inside signed packages.
  *
+ * The bounding and retrying now come from scripts/lib/fetch-with-retry.js,
+ * whose own suite pins the policy (which failures are retried, the backoff,
+ * the two timeouts). What stays here is what is specific to this script: the
+ * target selection, the trust root, and that neither checksum comparison is
+ * ever retried.
+ *
  * `https` is mocked rather than served for real (fetch-ant.test.js
  * convention): the code under test hardcodes https:// and refuses to
  * downgrade across a redirect, so a plain local listener can't stand in.
@@ -16,7 +22,7 @@
 
 const https = require('https');
 const crypto = require('crypto');
-const { EventEmitter } = require('events');
+const { PassThrough } = require('stream');
 
 jest.mock('https');
 jest.mock('fs');
@@ -24,40 +30,41 @@ jest.mock('fs');
 const fs = require('fs');
 const {
   platformKey,
-  fetchBuffer,
-  withRetries,
+  downloadAsset,
   main,
   PINNED_SHA256SUMS,
-  REQUEST_TIMEOUT_MS,
   MAX_ATTEMPTS,
 } = require('./fetch-radicle-addon');
+const { TIMEOUTS, IDLE_TIMEOUT_MS } = require('./lib/fetch-with-retry');
 const { RADICLE_ADDON_RELEASE_TAG } = require('../src/shared/radicle-addon-version');
 
 // Build a fake `https.get` that replays scripted responses in order and
 // records the url and the request objects it handed back.
 function mockResponses(responses) {
   const calls = [];
-  https.get.mockImplementation((url, callback) => {
-    calls.push({ url });
-    const scripted = responses[calls.length - 1];
+  https.get.mockImplementation((url, options, callback) => {
+    const scripted = responses[calls.length];
+    const req = new PassThrough();
+    req.setTimeout = jest.fn((ms) => {
+      req.idleTimeoutMs = ms;
+    });
+    req.destroy = jest.fn();
+    calls.push({ url, req });
     if (!scripted) throw new Error(`Unexpected request #${calls.length} to ${url}`);
 
-    const req = new EventEmitter();
-    req.setTimeout = jest.fn();
-    req.destroy = jest.fn();
-    calls[calls.length - 1].req = req;
-
-    const res = new EventEmitter();
-    res.statusCode = scripted.statusCode;
-    res.headers = scripted.headers || {};
-    res.resume = jest.fn();
-
     process.nextTick(() => {
+      if (scripted.requestError) {
+        req.emit('error', scripted.requestError);
+        return;
+      }
+      const res = new PassThrough();
+      res.statusCode = scripted.statusCode;
+      res.headers = scripted.headers || {};
+      res.complete = true;
       callback(res);
       process.nextTick(() => {
-        if (scripted.error) return res.emit('error', scripted.error);
-        if (scripted.body !== undefined) res.emit('data', Buffer.from(scripted.body));
-        res.emit('end');
+        if (scripted.body !== undefined) res.write(Buffer.from(scripted.body));
+        res.end();
       });
     });
     return req;
@@ -65,6 +72,7 @@ function mockResponses(responses) {
   return calls;
 }
 
+const noWait = { sleep: () => Promise.resolve(), log: () => {} };
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
 // The SHA256SUMS asset published with the pinned libradicle release,
@@ -81,7 +89,6 @@ const RELEASE_SHA256SUMS = [
 
 afterEach(() => {
   jest.resetAllMocks();
-  jest.useRealTimers();
 });
 
 describe('platform key', () => {
@@ -92,85 +99,41 @@ describe('platform key', () => {
   });
 });
 
-describe('fetchBuffer', () => {
-  test('bounds every request with a timeout', async () => {
+describe('downloadAsset', () => {
+  test('bounds each attempt with an inactivity timeout and an asset-sized deadline', async () => {
     const calls = mockResponses([{ statusCode: 200, body: 'payload' }]);
-    await expect(fetchBuffer('https://example.test/asset')).resolves.toEqual(
+    await expect(downloadAsset('libradicle-linux-x64.node', noWait)).resolves.toEqual(
       Buffer.from('payload')
     );
-    expect(calls[0].req.setTimeout).toHaveBeenCalledWith(REQUEST_TIMEOUT_MS, expect.any(Function));
-  });
-
-  test('destroys the request when the timeout fires', async () => {
-    const calls = mockResponses([{ statusCode: 200, body: 'payload' }]);
-    const pending = fetchBuffer('https://example.test/asset');
-    await pending;
-    const [, onTimeout] = calls[0].req.setTimeout.mock.calls[0];
-    onTimeout();
-    expect(calls[0].req.destroy).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining('timed out') })
+    expect(calls[0].url).toBe(
+      `https://github.com/solardev-xyz/libradicle/releases/download/${RADICLE_ADDON_RELEASE_TAG}/libradicle-linux-x64.node`
     );
+    expect(calls[0].req.idleTimeoutMs).toBe(IDLE_TIMEOUT_MS);
+    // A 20 MB addon gets the binary deadline; the sums file gets the short one.
+    expect(TIMEOUTS.binary).toBeGreaterThan(TIMEOUTS.metadata);
   });
 
-  test.each([301, 302, 303, 307, 308])('follows a %i redirect', async (statusCode) => {
+  test('retries a 5xx and a dropped connection, then succeeds', async () => {
     const calls = mockResponses([
-      { statusCode, headers: { location: '/moved/asset' } },
+      { statusCode: 503 },
+      { requestError: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) },
       { statusCode: 200, body: 'payload' },
     ]);
-    await expect(fetchBuffer('https://example.test/asset')).resolves.toEqual(
-      Buffer.from('payload')
-    );
-    expect(calls[1].url).toBe('https://example.test/moved/asset');
+    await expect(downloadAsset('SHA256SUMS', noWait)).resolves.toEqual(Buffer.from('payload'));
+    expect(calls).toHaveLength(3);
   });
 
-  test('refuses a redirect that downgrades to plain HTTP', async () => {
-    mockResponses([{ statusCode: 302, headers: { location: 'http://example.test/asset' } }]);
-    await expect(fetchBuffer('https://example.test/asset')).rejects.toThrow(
-      /non-HTTPS redirect/
+  test(`gives up after ${MAX_ATTEMPTS} attempts, naming the URL and the count`, async () => {
+    mockResponses(Array.from({ length: MAX_ATTEMPTS }, () => ({ statusCode: 500 })));
+    await expect(downloadAsset('SHA256SUMS', noWait)).rejects.toThrow(
+      /failed after 4 attempt\(s\) of 4: HTTP 500 for https:\/\/github\.com\/.*SHA256SUMS/
     );
   });
 
-  test('gives up after too many redirects instead of looping forever', async () => {
-    mockResponses(
-      Array.from({ length: 8 }, () => ({
-        statusCode: 302,
-        headers: { location: 'https://example.test/loop' },
-      }))
-    );
-    await expect(fetchBuffer('https://example.test/asset')).rejects.toThrow(/too many redirects/);
-  });
-
-  test('surfaces a non-200 status', async () => {
-    mockResponses([{ statusCode: 404 }]);
-    await expect(fetchBuffer('https://example.test/asset')).rejects.toThrow(/HTTP 404/);
-  });
-});
-
-describe('withRetries', () => {
-  test('retries a transient failure and resolves', async () => {
-    jest.useFakeTimers();
-    let attempts = 0;
-    const run = withRetries('Test', async () => {
-      attempts += 1;
-      if (attempts < 3) throw new Error('ECONNRESET');
-      return 'ok';
-    });
-    await jest.advanceTimersByTimeAsync(10000);
-    await expect(run).resolves.toBe('ok');
-    expect(attempts).toBe(3);
-  });
-
-  test(`gives up after ${MAX_ATTEMPTS} attempts`, async () => {
-    jest.useFakeTimers();
-    let attempts = 0;
-    const run = withRetries('Test', async () => {
-      attempts += 1;
-      throw new Error('ECONNRESET');
-    });
-    const assertion = expect(run).rejects.toThrow('ECONNRESET');
-    await jest.advanceTimersByTimeAsync(30000);
-    await assertion;
-    expect(attempts).toBe(MAX_ATTEMPTS);
+  test('never retries a 404 — a missing asset is an answer, not weather', async () => {
+    const calls = mockResponses([{ statusCode: 404 }]);
+    await expect(downloadAsset('SHA256SUMS', noWait)).rejects.toThrow(/HTTP 404/);
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -188,15 +151,18 @@ describe('SHA256SUMS trust root', () => {
 
   // Acceptance: the real published sums file clears the pin, so the run
   // proceeds to the per-asset checksum comparison (the fixture binary is
-  // not the real addon, so that is where it stops).
+  // not the real addon, so that is where it stops). Exactly two requests are
+  // scripted, so a retry of the mismatch would fail the test with
+  // "Unexpected request #3" — the checksum check is outside the retry loop.
   test('accepts the published SHA256SUMS and verifies the asset against it', async () => {
-    mockResponses([
+    const calls = mockResponses([
       { statusCode: 200, body: Buffer.from('not-the-real-addon') },
       { statusCode: 200, body: RELEASE_SHA256SUMS },
     ]);
     await expect(main([], 'linux', 'x64')).rejects.toThrow(
       /checksum mismatch for libradicle-linux-x64\.node/
     );
+    expect(calls).toHaveLength(2);
     expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
 
@@ -207,11 +173,12 @@ describe('SHA256SUMS trust root', () => {
     const binary = Buffer.from('malicious-addon-bytes');
     const asset = `libradicle-${platformKey([], 'linux', 'x64')}.node`;
     const sums = `${sha256(binary)}  ${asset}\n`;
-    mockResponses([
+    const calls = mockResponses([
       { statusCode: 200, body: binary },
       { statusCode: 200, body: sums },
     ]);
     await expect(main([], 'linux', 'x64')).rejects.toThrow(/pinned digest/);
+    expect(calls).toHaveLength(2);
     expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
 });

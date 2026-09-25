@@ -9,7 +9,10 @@
 // the bug was reported against.
 //
 // The Tor section's label is asserted here as well: it reads "Tor", like every
-// other bare product name in that menu (#323).
+// other bare product name in that menu (#323) — and, since #349, so is what the
+// section renders beneath that label while the node is off, which is nothing.
+// This is the only harness spec that turns the Tor integration on, so it is the
+// only one that can see either.
 
 const { test, expect } = require('./fixtures');
 
@@ -111,6 +114,54 @@ test('the Nodes menu scrolls inside itself instead of scrolling the chrome', asy
 
   // Scrolling the menu to its end still has not moved the chrome.
   await expect.poll(() => window.evaluate(() => document.documentElement.scrollTop)).toBe(0);
+});
+
+/**
+ * What the Tor section actually renders, read the same generic way every other
+ * node section could be: the info block is the toggle button's next sibling.
+ *
+ * `height > 0` rather than a class check on purpose — it is the rendered
+ * result, in real Chromium, of both halves of the fix (the class `tor-ui.js`
+ * toggles and the `display: none` rule `services.css` grew for it).
+ */
+const torSection = (window) =>
+  window.evaluate(() => {
+    const btn = document.getElementById('tor-toggle-btn');
+    const panel = btn.nextElementSibling;
+    const shown = (el) => Boolean(el) && el.getBoundingClientRect().height > 0;
+    return {
+      // `running`/`starting` are appended to the switch's class attribute.
+      on: document.getElementById('tor-toggle-switch').classList.contains('running'),
+      infoShown: shown(panel),
+      versionShown: shown(document.getElementById('tor-version-text')),
+    };
+  });
+
+test('Tor renders nothing beneath its toggle while the node is off', async ({ window }) => {
+  // #349: Tor was the one section that showed a `Version: Arti <n>` row while
+  // its toggle was off — its info block had no hide rule at all, by an earlier
+  // deliberate choice, while the other five gate theirs on the node running.
+  await window.locator('#bee-menu-button').click();
+  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/open/);
+
+  expect(await torSection(window)).toEqual({
+    on: false,
+    infoShown: false,
+    versionShown: false,
+  });
+
+  // Read again past both of the Tor section's own timers: the one-shot
+  // `getVersion` and the 5s status poll. The row used to be (re-)rendered from
+  // the version fetch landing, with nothing in that path consulting the run
+  // state — so a check that only looks at the first paint is not looking at
+  // where the bug lived.
+  await window.waitForTimeout(6_000);
+
+  expect(await torSection(window)).toEqual({
+    on: false,
+    infoShown: false,
+    versionShown: false,
+  });
 });
 
 test('the hamburger menu and its Profiles flyout stay inside the window', async ({
@@ -490,8 +541,7 @@ const sweepRows = (window, menuSelector) =>
       // A node whose binary is missing is deliberately inert
       // (`.bee-toggle.disabled` etc. in services.css) — it has nothing to
       // swallow. Recorded rather than silently dropped.
-      const inert =
-        row.disabled === true || window.getComputedStyle(row).pointerEvents === 'none';
+      const inert = row.disabled === true || window.getComputedStyle(row).pointerEvents === 'none';
       out.push({
         id: row.id || row.className,
         inert,
@@ -560,9 +610,7 @@ test('every row of the bounded hamburger and Nodes menus still takes a click and
   // rather than named.
   const liveNodeRow = nodes.find((row) => !row.inert && row.id);
   expect(liveNodeRow).toBeDefined();
-  expect(await activatesOnEnter(window, '#bee-menu-dropdown', liveNodeRow.id)).toBe(
-    liveNodeRow.id
-  );
+  expect(await activatesOnEnter(window, '#bee-menu-dropdown', liveNodeRow.id)).toBe(liveNodeRow.id);
 });
 
 // #328: an Electron `<webview>` guest taking the keyboard fires a window

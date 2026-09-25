@@ -1,0 +1,12 @@
+{
+  "src/main/myotis/myotis-manager.js": "5e55dd74472ce0ba145d73a9eb944c8eaa58e829f73cc651ca40bb5d19473257",
+  "src/main/myotis/myotis-process.js": "8c300541c214ba649f2459be107b7341518d93c861c7e6ecd9f9133ac1363381",
+  "src/main/myotis/myotis-child.js": "51c2b0fec5f1d1dfb2f93a7cc244dec4e43d0173b6d1a9e0a2ef07c6c07c206a",
+  "src/main/myotis/checkpoint-store.js": "70a8922ea8da499b925323be513cb9d38a7e2521ba830c6318311648aa1dc859",
+  "src/main/myotis/checkpoint-verifier.js": "8e16ee69ca7933517e59017149673fdd40c90b55844455c734d3477482b456f6",
+  "src/main/myotis/checkpoint-verifier-worker.js": "4ba592d5f9bd3259fa7ec31fb1eb96fd39a4a3dafb924d325ef12e9a66ed29bd",
+  "scripts/fetch-myotis.js": "01f63950c59461f55e47a9b45c73d0689a53f7ca0b6b1e5c1a6c782c9c33fcc1",
+  "scripts/myotis-release.json": "71588c2a49f8ab366972244d16b082ea89725486f1e4dab34617413b1ed68869",
+  "scripts/verify-myotis-checkpoint-addon.js": "c87f9bdfb81147664b56aec41fd13a52f496dfcd534594fbfc2704076490f8aa",
+  "docs/audits/evidence/myotis-v0110-2026-09/electron-main.js": "e7cfd53b700aebc9bb3e1e450685f2e605776915af70059858a3ae5037aafec2"
+}

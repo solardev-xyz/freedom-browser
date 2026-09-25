@@ -15,10 +15,10 @@ test('requires explicit disposable opt-in, fixed argument shape and absolute evi
 
 test('rejects host Node, wrong Electron and missing runtime opt-in', () => {
   const runtime = { env: { ELECTRON_RUN_AS_NODE: '1', FREEDOM_MYOTIS_DISPOSABLE: '1' },
-    versions: { electron: '43.0.0' }, platform: 'linux' };
+    versions: { electron: require('../package-lock.json').packages['node_modules/electron'].version }, platform: 'linux' };
   expect(() => requireRuntime(runtime)).not.toThrow();
-  expect(() => requireRuntime({ ...runtime, versions: {} })).toThrow('Electron 43');
-  expect(() => requireRuntime({ ...runtime, versions: { electron: '42.0.0' } })).toThrow('Electron 43');
+  expect(() => requireRuntime({ ...runtime, versions: {} })).toThrow('locked Electron');
+  expect(() => requireRuntime({ ...runtime, versions: { electron: '42.0.0' } })).toThrow('locked Electron');
   expect(() => requireRuntime({ ...runtime, platform: 'win32' })).toThrow('Windows x64');
   expect(() => requireRuntime({ ...runtime, env: { ELECTRON_RUN_AS_NODE: '1' } })).toThrow('opt-in');
 });

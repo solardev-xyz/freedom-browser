@@ -17,6 +17,9 @@ let beeClientUrl = null;
  * Get or create the Bee client. Recreates if the Bee API URL has changed.
  */
 function getBee() {
+  // bee-js brings its own HTTP stack, which does not honour `session.setProxy`
+  // — an external Ant API on a `.onion` host is not reached over Tor. Tracked
+  // with the other Swarm call sites in #360.
   const url = getAntApiUrl();
   if (!url) {
     throw new Error('Swarm node is not ready');

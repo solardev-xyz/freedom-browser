@@ -308,8 +308,14 @@ function normalizeParams(method, params) {
 }
 
 function nativeResult(payload, ...keys) {
-  if (!payload || payload.error || payload.status === 'error') {
-    throw new Error(payload?.error || payload?.message || 'Myotis request failed');
+  if (payload?.status === 'revert') {
+    const error = new Error('execution reverted');
+    error.code = 3;
+    error.data = typeof payload.dataHex === 'string' ? payload.dataHex : '0x';
+    throw error;
+  }
+  if (!payload || payload.error || ['error', 'unavailable'].includes(payload.status)) {
+    throw new SourceUnavailableError('Myotis native read unavailable');
   }
   for (const key of keys) {
     if (payload[key] != null) return payload[key];
@@ -382,11 +388,18 @@ function assertMyotisBlockTag(method, blockTag) {
 }
 
 // The engine executes a call as `from`/`to`/`data`/`value` against its verified
-// head: the block argument it takes is discarded (`_block`, never read — the
-// servable-window gate is a host obligation), and the addon exposes no
-// state-override entry point. Any call carrying more than that has to go to a
-// source that can honour it, rather than being answered — as `verified` — from
-// head state without it.
+// head, and the addon exposes no state-override entry point. Any call carrying
+// more than that has to go to a source that can honour it, rather than being
+// answered — as `verified` — from head state without it.
+//
+// Engine ABI 27 (Myotis v0.1.11) started enforcing the block argument instead
+// of discarding it: `latest`, `pending`, `safe`, `finalized` and an empty block
+// still run against head state, a number from 64 below to 16 above the verified
+// head runs against head state too, and anything else is refused rather than
+// answered from the head. We only ever send `latest` — `assertMyotisBlockTag`
+// above already refuses every other tag at the router — so the enforcement is
+// a backstop here, not a behaviour change. It does mean the servable-window
+// gate is no longer a host obligation alone.
 const MYOTIS_UNSUPPORTED_CALL_FIELDS = [
   'gas',
   'gasPrice',
@@ -458,7 +471,9 @@ async function requestMyotis(chainId, method, params) {
       data: call.data || '0x',
       value: decimal(call.value),
     });
-    return quantity(nativeResult(result, 'gasLimit', 'result'));
+    const gas = nativeResult(result, 'gas');
+    if (!Number.isSafeInteger(gas) || gas < 0) throw new SourceUnavailableError('Myotis returned invalid gas');
+    return quantity(gas);
   }
 
   if (method === 'eth_gasPrice' || method === 'eth_maxPriorityFeePerGas') {
@@ -1005,6 +1020,7 @@ async function request(
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
+      if (source === 'myotis' && err.code === 3) throw err;
       if (source === 'quorum') {
         if (err.directFallback) directFallback = err.directFallback;
         if (Array.isArray(err.directAttemptedUrls)) {
@@ -1083,7 +1099,12 @@ async function broadcastRawTransaction(chainId, rawTransaction) {
       if (source === 'myotis') {
         if (!myotis.isReady(chainId)) throw new SourceUnavailableError('Myotis is not ready');
         const payload = await myotis.sendRawTransaction(rawTransaction, chainId);
-        result = nativeResult(payload, 'txHash', 'result');
+        try { result = nativeResult(payload, 'txHash', 'result'); }
+        catch {
+          const error = new Error('Myotis broadcast outcome uncertain; reconcile the original signed transaction');
+          error.code = 'MYOTIS_BROADCAST_UNCERTAIN';
+          throw error;
+        }
       } else if (source === 'direct') {
         result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction]);
       } else {

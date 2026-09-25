@@ -13,6 +13,7 @@ let torStatusLabel = null;
 let torStatusValue = null;
 let torVersionRow = null;
 let torVersionText = null;
+let torInfoPanel = null;
 let torNodesSection = null;
 
 // Binary availability state
@@ -23,6 +24,40 @@ let torVersionFetched = false;
 let torVersionValue = '';
 
 const isExternalTorMode = () => state.registry?.tor?.mode === 'external';
+
+// Sole writer of `.tor-info`'s `visible` class, and the only thing that decides
+// whether anything renders beneath the Tor toggle.
+//
+// The block used to be shown unconditionally whenever the integration was on,
+// so a stopped Tor still carried a `Version: Arti <n>` row while Swarm, IPFS,
+// Ethereum, Gnosis and Radicle all show nothing beneath an off toggle (#349).
+// It now follows the node's run state, like the Radicle/IPFS info panels.
+//
+// `error` is the one state that keeps the block, and only while the registry
+// has something to put in it ("Tor failed to start", "External Tor
+// unreachable"): that message is the user's only in-menu sign that a start
+// attempt failed. An errored node with nothing to say renders
+// nothing, same as a stopped one — never a lone version row, which is the shape
+// this issue was about.
+//
+// Known gap, tracked in #377: one refusal path reports STOPPED rather than
+// `error` and so loses its message here — a profile with Tor mode `disabled`
+// answers a start click via `startDisabledTor()` (tor-manager.js), which sets
+// "Tor disabled for this profile" with STATUS.STOPPED. That predates this gate
+// (the pre-existing `stopped` branch in `updateTorUi` already stripped the
+// status row's `visible` class), and closing it means changing what the main
+// process reports or adding a second writer here, so it is deliberately not
+// carved out below.
+const updateTorInfoVisibility = () => {
+  if (!torInfoPanel) return;
+  const status = state.currentTorStatus;
+  const visible =
+    state.enableTorIntegration === true &&
+    (status === 'running' ||
+      status === 'starting' ||
+      (status === 'error' && Boolean(getDisplayMessage('tor'))));
+  torInfoPanel.classList.toggle('visible', visible);
+};
 
 const renderTorVersionLine = () => {
   const showBundledVersion = state.enableTorIntegration === true && !isExternalTorMode();
@@ -62,11 +97,13 @@ const updateTorSectionVisibility = () => {
   if (!enabled) {
     torToggleSwitch?.classList.remove('running');
   }
+  updateTorInfoVisibility();
 };
 
 export const updateTorUi = (status, error) => {
   if (!state.enableTorIntegration) {
     state.currentTorStatus = 'stopped';
+    updateTorInfoVisibility();
     return;
   }
   if (state.suppressTorRunningStatus && status === 'running') {
@@ -79,6 +116,9 @@ export const updateTorUi = (status, error) => {
   state.currentTorStatus = status;
 
   updateTorStatusLine();
+  // Also called from updateTorStatusLine, which bails early when the status-row
+  // elements are missing; the run state still has to reach the panel.
+  updateTorInfoVisibility();
 
   if (!torToggleBtn || !torToggleSwitch) return;
 
@@ -153,6 +193,10 @@ export const updateTorStatusLine = () => {
     torStatusValue.textContent = '';
     torStatusRow.classList.remove('visible');
   }
+
+  // A registry broadcast can add or drop the status message without any status
+  // change, and on `error` that message is what keeps the block up.
+  updateTorInfoVisibility();
 };
 
 export const initTorUi = () => {
@@ -163,6 +207,7 @@ export const initTorUi = () => {
   torStatusValue = document.getElementById('tor-status-value');
   torVersionText = document.getElementById('tor-version-text');
   torVersionRow = torVersionText?.closest?.('.tor-info-row') || null;
+  torInfoPanel = document.querySelector('.tor-info');
   torNodesSection = document.getElementById('tor-nodes-section');
   updateTorSectionVisibility();
 

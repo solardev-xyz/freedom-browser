@@ -14,12 +14,11 @@ continueBtn.onclick = () => {
   window.freedomAPI?.ensContinueUnverified?.(name);
 };
 
+// Shell-driven traversal, not `window.history.back()`: see the comment on the
+// same button in `ens-conflict.js` — a renderer-initiated hop back onto the
+// blocked name is replayed through `loadTarget` and re-raises this page.
 document.getElementById('back-btn').onclick = () => {
-  if (window.history.length > 1) {
-    window.history.back();
-  } else {
-    window.location.href = 'home.html';
-  }
+  window.freedomAPI?.interstitialGoBack?.();
 };
 
 document.getElementById('settings-btn').onclick = () => {

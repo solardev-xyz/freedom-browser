@@ -17,21 +17,13 @@
  * `npm run radicle:build-addon` with a sibling libradicle checkout.
  */
 
-const https = require('https');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { RADICLE_ADDON_RELEASE_TAG } = require('../src/shared/radicle-addon-version');
+const { fetchBuffer, TIMEOUTS, MAX_ATTEMPTS } = require('./lib/fetch-with-retry');
 
 const RELEASE_BASE = `https://github.com/solardev-xyz/libradicle/releases/download/${RADICLE_ADDON_RELEASE_TAG}`;
-
-// Bound every request and retry transient failures — this runs inside the
-// `dist:linux:*:docker` release recipes, where a stalled GitHub connection
-// would otherwise hang until the outer CI timeout (fetch-ant / fetch-myotis
-// convention: 60s per request, 4 attempts).
-const REQUEST_TIMEOUT_MS = 60000;
-const MAX_ATTEMPTS = 4;
-const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
 // In-repo trust root for the pinned release: sha256 of that release's
 // SHA256SUMS asset, recorded at pin time. SHA256SUMS ships from the same
@@ -70,70 +62,22 @@ function platformKey(
   return `${os}-${arch}`;
 }
 
-function fetchBuffer(url, redirects = 0) {
-  return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error('too many redirects'));
-    let settled = false;
-    const fail = (err) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
-    };
-    const req = https
-      .get(url, (res) => {
-        res.on('error', fail);
-        if (REDIRECT_CODES.has(res.statusCode)) {
-          let location;
-          try {
-            location = new URL(res.headers.location, url);
-          } catch {
-            res.resume();
-            return fail(new Error(`invalid redirect from ${url}`));
-          }
-          if (location.protocol !== 'https:') {
-            res.resume();
-            return fail(new Error(`refusing non-HTTPS redirect from ${url}`));
-          }
-          // The redirected request owns completion from here; this response
-          // is deliberately drained, so its late errors are not ours.
-          settled = true;
-          res.resume();
-          return fetchBuffer(location.href, redirects + 1).then(resolve, reject);
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          return fail(new Error(`HTTP ${res.statusCode} for ${url}`));
-        }
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
-          if (settled) return;
-          settled = true;
-          resolve(Buffer.concat(chunks));
-        });
-      })
-      .on('error', fail);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error(`request timed out after ${REQUEST_TIMEOUT_MS}ms: ${url}`));
-    });
+/**
+ * Download one release asset, bounded and retried by
+ * scripts/lib/fetch-with-retry.js — this runs inside the `dist:linux:*:docker`
+ * release recipes, where a stalled GitHub connection would otherwise hang
+ * until the outer CI timeout, and a single 5xx would fail the build.
+ * @param {string} assetName
+ * @param {object} [options] retry-loop overrides, used by the unit tests
+ */
+function downloadAsset(assetName, options = {}) {
+  return fetchBuffer(`${RELEASE_BASE}/${assetName}`, {
+    label: `libradicle ${assetName} (${RADICLE_ADDON_RELEASE_TAG})`,
+    headers: { 'User-Agent': 'Freedom-Updater' },
+    // SHA256SUMS is a handful of lines; the addon is tens of megabytes.
+    timeoutMs: assetName === 'SHA256SUMS' ? TIMEOUTS.metadata : TIMEOUTS.binary,
+    ...options,
   });
-}
-
-async function withRetries(label, fn) {
-  let lastErr;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (attempt < MAX_ATTEMPTS) {
-        const delayMs = 1000 * attempt;
-        console.warn(`${label} attempt ${attempt} failed (${err.message}); retrying in ${delayMs}ms…`);
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
-    }
-  }
-  throw lastErr;
 }
 
 async function main(...platformArgs) {
@@ -150,10 +94,13 @@ async function main(...platformArgs) {
 
   console.log(`Downloading ${assetName} (${RADICLE_ADDON_RELEASE_TAG})…`);
   const [binary, sums] = await Promise.all([
-    withRetries('Addon download', () => fetchBuffer(`${RELEASE_BASE}/${assetName}`)),
-    withRetries('SHA256SUMS download', () => fetchBuffer(`${RELEASE_BASE}/SHA256SUMS`)),
+    downloadAsset(assetName),
+    downloadAsset('SHA256SUMS'),
   ]);
 
+  // Both checksum comparisons below sit outside the retry loop on purpose: a
+  // mismatch means corruption or tampering, not weather, and asking the same
+  // release three more times would only delay the failure.
   const sumsDigest = crypto.createHash('sha256').update(sums).digest('hex');
   if (sumsDigest !== PINNED_SHA256SUMS.digest) {
     throw new Error(
@@ -193,10 +140,8 @@ if (require.main === module) {
 
 module.exports = {
   platformKey,
-  fetchBuffer,
-  withRetries,
+  downloadAsset,
   main,
   PINNED_SHA256SUMS,
-  REQUEST_TIMEOUT_MS,
   MAX_ATTEMPTS,
 };

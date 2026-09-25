@@ -2,16 +2,59 @@ name: CI
 
 on:
   push:
+    # A same-repo branch push and the `pull_request` event for the same head
+    # are two separate runs of this workflow — `github.ref` differs
+    # (`refs/heads/<branch>` against `refs/pull/N/merge`), so the `concurrency`
+    # group below does not collapse them — and both gate jobs short-circuit to
+    # true on anything that is not a pull request. An unfiltered `push:`
+    # therefore ran the whole matrix on every *feature* branch push alongside
+    # the pull request run, gate or no gate, and that duplicate is what this
+    # filter drops.
+    #
+    # What it must not drop is a ref that takes commits with no pull request
+    # of its own. `main` and the release tags are the obvious two.
+    # `release/**` and `hotfix/**` are the third: `release-process.md` §1 puts
+    # each `npm version <x>-rc.N` bump straight onto the release branch and §8
+    # expects same-cycle `fix(build): …` commits there, and even the fixes that
+    # do arrive as pull requests (§0) land as a merge commit whose tree no
+    # `pull_request` run ever saw. §4 then gates the pre-tag "CI is green"
+    # check on exactly these runs — "every push to the release branch runs the
+    # full CI matrix", read off the Actions tab, since §8 makes the pull
+    # request into `main` optional and there is often no `gh pr checks` to ask.
+    # Counted 2026-09-22 over the runs still in Actions retention,
+    # release/0.8.5 took 13 of these runs and release/0.8.0 took 8. Dropping
+    # them would leave `release.yml` — which does not gate on CI —
+    # publishing a tagged pre-release to testers while the first CI signal
+    # for that tree was still running.
+    #
+    # `scripts/ci/ci-gate.test.js` pins this by matching real branch names
+    # against the list rather than the list's text, so a rename of the release
+    # convention has to update both.
+    branches:
+      - main
+      - 'release/**'
+      - 'hotfix/**'
+    tags: ['v*']
   pull_request:
+  # A merge queue is not a workflow-free settings change, which is what the
+  # `branches:` filter above turns it into. A queue pushes its candidate head
+  # to `gh-readonly-queue/<base>/pr-<n>-<sha>`, and that name matches none of
+  # the patterns above — deliberately, since a queue branch is machinery, not
+  # a ref anyone develops on. Without this trigger the queue head would get no
+  # run of this workflow at all, so `ci-ok` (and every other context) would
+  # never report on it and every queued pull request would sit waiting for
+  # checks that cannot arrive until the queue's own timeout evicted it.
+  #
+  # Both gates short-circuit to "changed" on any event that is not a
+  # `pull_request`, so a queue run is never classified as prose and always
+  # runs the full matrix — which is the right answer for a merged-result
+  # check, and is what `$EVENT != "pull_request"` already gives it. Pinned in
+  # `scripts/ci/ci-gate.test.js` along with the rest of the trigger set.
+  merge_group:
   workflow_dispatch:
     inputs:
-      myotis_force_live:
-        description: >-
-          Run the myotis-native-e2e live spec even though issue #200 keeps it
-          skipped (sets MYOTIS_E2E_IGNORE_KNOWN_STALL=1). This is how we check
-          whether a newer addon clears the upstream beacon wedge; a still-wedged
-          addon now aborts on the spec's stall guard in a few minutes rather
-          than burning the readiness budget.
+      myotis_live:
+        description: 'Run real Myotis reads on all platforms (requires fresh checkpoints; never accepts stale-anchor risk)'
         type: boolean
         default: false
 
@@ -25,6 +68,93 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Is there anything in this pull request that the *gated* suites below could
+  # possibly be testing? A changelog fragment, a playbook or a doc cannot
+  # change what the app does, and re-running 40 Playwright, native-addon and
+  # cross-platform jobs to prove that costs 10-14 minutes per push. Anything
+  # else, including an unrecognised path, runs the full suite: the filter
+  # defaults to "code changed", never the other way round.
+  #
+  # What that does and does not buy: the filter reads the pull request's whole
+  # diff against its base, so it fires only on a pull request that is prose all
+  # the way down. A code pull request still runs everything on every push, an
+  # update-branch commit included — so this job does nothing for a four-PR
+  # merge train of code changes; what shortened that is `changelog.d/`
+  # fragments no longer manufacturing a conflict per merge. What this job buys
+  # is the prose-only pull request: about two minutes instead of 10-14.
+  #
+  # That default has to survive this job *failing* too, which is why every
+  # gated job below reads `!= 'false'` behind `!cancelled()` rather than the
+  # obvious `== 'true'`. A job skipped by its own `if`, or skipped because a
+  # job it `needs` failed, reports **Success** to branch protection — only a
+  # whole workflow skipped by a path/branch filter sits pending. So with
+  # `== 'true'`, a `code-changed` that died on a transient `checkout`/`git
+  # fetch` error or a lost runner would skip all sixteen suites and hand the
+  # pull request a green merge button with no Playwright, native-addon or
+  # cross-platform job having run. `!= 'false'` fails open instead: a gate
+  # that never wrote `code=` leaves the output empty and everything runs;
+  # only a gate that positively concluded "prose only" skips anything.
+  # `!cancelled()` rather than `always()` so `cancel-in-progress` still
+  # cancels the suites. `scripts/ci/ci-gate.test.js` pins the shape, because
+  # a copy-pasted `== 'true'` on the next gated job reopens this silently.
+  #
+  # The `test` job is deliberately *not* gated on this one, because prose is
+  # not inert here — it is an input to the jest suite. This repo's doc<->code
+  # guards read the very files this filter calls prose: `docs/features.md`
+  # (`src/shared/shortcuts.test.js`'s shortcut-registry guard and
+  # `settings-search.test.js`), `CHANGELOG.md` (`settings-search.test.js`),
+  # `docs/agent-playbooks/ui-consistency.md` (`renderer-copy.test.js`),
+  # `docs/audits/evidence/` (`checkpoint-verifier-worker.test.js`) — and two
+  # `*.test.js` files live under `docs/` outright, where jest's `**/*.test.js`
+  # picks them up and `eslint .` lints them. Skipping `test` on a docs-only
+  # pull request would let exactly the drift those guards exist to catch merge
+  # green and leave `main` red for the next PR. It is the cheap job anyway
+  # (~100s against 10-14 minutes), and `scripts/ci/ci-gate.test.js` pins that
+  # it stays ungated for as long as the jest suite reads prose.
+  code-changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether anything outside the docs changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "not a pull request — running everything"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE"
+          changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
+          echo "$changed"
+          # Prose only: the changelog and its fragments, docs/, and the
+          # top-level markdown. One path outside that list is enough to run
+          # the full suite.
+          # `grep` drains its input and its output is discarded, rather than
+          # `grep -q`: `-q` exits at the first hit, and once `$changed`
+          # outgrows the 64 KiB pipe buffer the still-writing `echo` dies of
+          # SIGPIPE, `set -o pipefail` makes the pipeline 141 and the `else`
+          # branch writes `code=false` for a pull request whose first changed
+          # path was code. That is the one shape the fail-open `if` on the
+          # gated jobs cannot cover, since the gate positively concluded.
+          if echo "$changed" | grep -vE '^(CHANGELOG\.md|changelog\.d/|docs/|[A-Z_]+\.md$)' >/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Lint plus the whole jest suite, doc<->code guards included — which is why
+  # this is the one suite `code-changed` does not gate. See the note there.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -40,7 +170,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Run lint
         run: npm run lint
@@ -62,6 +194,8 @@ jobs:
   # resolver/paths suites must be green on Windows and macOS too — not just the
   # ubuntu-only `test` job. Pure jest, no display or native nodes required.
   migration-cross-platform:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -80,7 +214,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Run migration + profile suites
         run: npm run test:migration
@@ -90,6 +226,8 @@ jobs:
   # artifact, loads it in Node, starts native freedom-ipfs, and retrieves a real
   # IPNS page through the native request API.
   freedom-ipfs-native-addon:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -116,7 +254,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Assert shipped native-addon target
         run: node -e "const target = process.platform + '-' + process.arch; const expected = process.env.EXPECTED_TARGET; if (target !== expected) { console.error('Expected ' + expected + ' runner, got ' + target); process.exit(1); } console.log(target);"
@@ -150,6 +290,8 @@ jobs:
   # downloaded and checksum-verified on windows-latest (a foreign-arch library
   # cannot be dlopen'ed), which is what catches a missing or re-published asset.
   radicle-addon-load:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -183,7 +325,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
       - name: Download this runner's libradicle addon
         run: npm run radicle:download -- ${{ matrix.flags }}
@@ -202,6 +346,8 @@ jobs:
   # shipped OS; this fast matrix closes the packaging gap for Intel macOS and
   # ARM64 Linux without multiplying the expensive cold-sync workload.
   myotis-addon-load:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -222,7 +368,7 @@ jobs:
             target: win32-x64
             addon: myotis-bin/win-x64/myotis-node.node
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -235,16 +381,21 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
 
-      - name: Download this runner's Myotis addon
+      - name: Download this runner's official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
 
       - name: Load addon and verify ABI
-        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==22) throw new Error('Expected ABI 22, got '+abi); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
+        # The expected ABI comes from the release pin, not a literal repeated
+        # here: on the v0.1.11 bump this step still said 26 and would have
+        # failed every platform against a correctly pinned addon.
+        run: node -e "const {abi:expected}=require('./scripts/myotis-release.json'); const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==expected) throw new Error('Expected ABI '+expected+', got '+abi); if(typeof addon.createWithCheckpoint!=='function') throw new Error('Missing checkpoint import API'); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
         env:
           MYOTIS_ADDON: ${{ matrix.addon }}
 
@@ -260,21 +411,14 @@ jobs:
   # out first attempt still preserves its cleanly-stopped partial sync; a
   # re-run continues from that snapshot instead of starting from zero.
   #
-  # CURRENTLY SKIPPED at the spec level, see issue #200: myotis v0.1.7 (the
-  # newest published release) bootstraps every cold start from a checkpoint
-  # embedded in the binary and then wedges — the catch-up applies beacon
-  # periods 1825 -> 1840 and can never obtain the update for period 1840, so
-  # readiness is unreachable. The job stayed green only while the cache chain
-  # carried a pre-stall warm snapshot forward; GitHub evicted it after 7 idle
-  # days and a cold start can no longer re-warm it. The remaining steps still
-  # cost a few minutes each, so the budgets below are sized for a real run
-  # (MYOTIS_E2E_IGNORE_KNOWN_STALL=1) rather than the 190-minute worst case
-  # that burned ~4 h of CI per push.
+  # The pinned v0.1.10 release carries the catch-up stall fix that first landed
+  # in v0.1.9 (observed as of 2026-09). Run the live spec normally;
+  # stale anchors fail explicitly and never receive automatic risk consent.
   myotis-native-e2e:
-    # A feature branch with an open PR otherwise launches this 30-40 minute
-    # live-network matrix twice (push + pull_request), doubling cost and exposure
-    # to transient peer selection. Keep PR/manual gates and post-merge coverage on main.
-    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    # Live peers and expiring trust anchors need an explicit qualification run.
+    # Unit and native-load checks still run on ordinary PRs; the separate
+    # Windows supervisor workflow retains its existing push/manual triggers.
+    if: github.event_name == 'workflow_dispatch' && inputs.myotis_live
     strategy:
       fail-fast: false
       matrix:
@@ -308,13 +452,13 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Download Myotis release addons
+      - name: Download official Myotis addon
         run: npm run myotis:download
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -346,9 +490,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/myotis-data
-          key: myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-
+            myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-
 
       - name: Download IPFS native addon
         run: npm run ipfs:download
@@ -369,9 +513,7 @@ jobs:
           # The stall window keeps its 3-minute default, which must stay below
           # the readiness budget above for the guard to be reachable at all
           # (test-e2e/live/myotis-sync-guard.js owns and unit-tests that
-          # invariant). Empty unless a maintainer forces the run from the
-          # workflow_dispatch input.
-          MYOTIS_E2E_IGNORE_KNOWN_STALL: ${{ inputs.myotis_force_live && '1' || '' }}
+          # invariant).
           FREEDOM_TEST_HIDE_WINDOW: '1'
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -388,7 +530,7 @@ jobs:
       # Evidence for each branch, so a future reader knows what is proven:
       #   present=true  — ubuntu-latest and macos-14 (run 33450528176, cache
       #                   restore hit), and windows-latest via a forced
-      #                   `myotis_force_live` dispatch, which populates the data
+      #                   manual dispatch, which populates the data
       #                   dir before the stall guard aborts.
       #   present=false — windows-latest (run 33450528176: cache miss + skip,
       #                   the case that would have failed the job outright under
@@ -419,7 +561,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/myotis-data
-          key: myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: myotis-${{ hashFiles('scripts/fetch-myotis.js', 'scripts/myotis-release.json') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -437,6 +579,8 @@ jobs:
   # sidebar markup, broken transitions, and Myotis policy regressions cannot
   # pass unit-only CI.
   e2e-settings:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -454,13 +598,17 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
       - name: Download adblock filter lists
         run: npm run adblock:download
+        env:
+          # The uBlock lists are pinned to a uAssets commit resolved through
+          # GitHub's API; the token avoids its anonymous rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run settings E2E
         run: xvfb-run -a npm run test:e2e -- test-e2e/settings.spec.js test-e2e/settings-adblock.spec.js
@@ -483,6 +631,8 @@ jobs:
   # regression in it cannot pass unit-only CI (previously they ran locally
   # only — see #180).
   e2e-shortcuts-zoom:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -500,7 +650,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -518,6 +668,47 @@ jobs:
             playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+
+  # Whether a request honours `session.setProxy` — the `.onion` PAC in
+  # `src/main/tor-proxy.js` — is decided by Chromium's network stack, which no
+  # jest mock can stand in for (that is exactly how #355 happened: the external
+  # IPFS gateway proxy used undici, whose sockets never see the session). This
+  # runs the one suite that spawns a real Electron process to check it. The
+  # suite self-skips wherever the Electron binary cannot be resolved;
+  # `FREEDOM_ELECTRON_NET_TEST=1` makes a missing binary a failure here rather
+  # than a silent skip. (`--ignore-scripts` is not what decides that: the
+  # `electron` package has no postinstall, so `require('electron')` downloads
+  # the binary on first use in whichever job asks for it — including the
+  # `test` job, where it lands uncached.)
+  ipfs-gateway-proxy:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Electron system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run the external gateway proxy integration test
+        env:
+          FREEDOM_ELECTRON_NET_TEST: '1'
+        run: npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
 
   # Tab activation, link dispositions and menu dismissal are all about *focus*
   # — which of the shell and the guest `<webview>` owns the keyboard — and no
@@ -539,7 +730,20 @@ jobs:
   # actual BrowserWindow and reads laid-out geometry (a menu's bottom edge, the
   # chrome document's scrollHeight, where a context menu lands relative to the
   # pointer), none of which a jsdom-less unit fake can produce (#324).
+  #
+  # `permissions.spec.js` belongs to the same family and was likewise in no
+  # job's list: the anchored prompt is decided by real input and focus routing
+  # (Escape and click-away as a deny-once, a background tab's prompt held
+  # rather than dismissed, a modal <dialog> taking the Escape instead), and it
+  # drives the indicator popover the dismissal embargo is surfaced and lifted
+  # in — including the private-window scoping, which needs two real windows on
+  # two real sessions (#364, #365). `external-protocol.spec.js` rides the same
+  # prompt for magnet:/mailto: links (#406), and its user-gesture gate reads
+  # real input events on the guest webContents — a scripted click must not
+  # count, so only a real input path can prove it.
   e2e-tabs:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -557,12 +761,12 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -570,13 +774,75 @@ jobs:
             test-e2e/menus.spec.js \
             test-e2e/chrome-popovers.spec.js \
             test-e2e/bookmarks.spec.js \
-            test-e2e/page-context-menu.spec.js
+            test-e2e/page-context-menu.spec.js \
+            test-e2e/permissions.spec.js \
+            test-e2e/external-protocol.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-tabs-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Name resolution reaches the user through two surfaces that only the real
+  # main → preload → renderer round trip exercises: the address bar (what a
+  # typed name or `ipfs://` URL resolves to, and what gets painted back into
+  # the bar) and the wallet's Send recipient field (which chain a name is
+  # resolved for, and which address the review screen commits to).
+  #
+  # `ensv2.spec.js` drives the wallet DNS/Unicode-recipient flow and asserts
+  # each lookup is requested for the selected chain; its second describe —
+  # the native-IPFS ENS checker — self-skips unless `ENSV2_UI_LIVE=1`, so
+  # this job stays offline and deterministic. `address-bar.spec.js` covers
+  # the scheme/gateway-form rewrites the name parser has to decline, plus the
+  # typed-draft rules from #305/#310/#313/#314. Neither spec was in any job's
+  # curated list, so a regression in either shipped green — the #319 lesson.
+  # `ens-history-traversal.spec.js` joins them for the same reason: it drives
+  # the toolbar's Back/Forward through the real webview session history and
+  # asserts the trust badge re-verifies for the restored entry (#86), which no
+  # unit-level dispatch can exercise.
+  e2e-address-bar-ens:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run address-bar + ENSv2 E2E
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/address-bar.spec.js \
+            test-e2e/ensv2.spec.js \
+            test-e2e/ens-history-traversal.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-address-bar-ens-traces
           path: |
             test-results/
             playwright-report/
@@ -591,6 +857,8 @@ jobs:
   # keys/swarm.key; it has no LevelDB statestore, but the wizard's
   # stop→wipe→reinject→restart flow is still exercised.)
   e2e-onboarding-identity:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -613,7 +881,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -658,6 +926,60 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Issue #345 — quitting with the bundled native IPFS node running aborted the
+  # main process (SIGABRT, `Error::ThrowAsJavaScriptException napi_throw`) on
+  # most quits. Live, because FREEDOM_TEST_MODE stubs the node managers away:
+  # under `harness` or `packaged` no freedom-ipfs event dispatcher worker
+  # exists at all, so the quit path this guards is never taken and the bug
+  # would ship green. No network is needed — the spec starts the node, waits
+  # for it to report running, and quits — so this job only downloads the addon.
+  e2e-ipfs-quit:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Download freedom-ipfs native addon
+        # Version pinned in scripts/fetch-freedom-ipfs-native.js so CI tests
+        # exactly what releases ship.
+        run: npm run ipfs:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run the IPFS clean-quit E2E (headless)
+        run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/ipfs-quit.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ipfs-quit-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Standalone Ant live E2E: prove the bundled antd node starts, connects to the
   # Swarm network (peer count climbs), and serves real content the browser
   # requests — `meinhard.eth` is a Swarm-hosted (bzz://) site. This is the
@@ -665,6 +987,8 @@ jobs:
   # downloads. Linux-only to keep CI cheap; the cross-platform spawn proof lives
   # in e2e-onboarding-identity above.
   e2e-ant:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -683,7 +1007,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -713,8 +1037,111 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Ad blocking through the real webRequest pipeline and the webview preload:
+  # network blocking + element hiding (adblock.spec.js, which no job ran
+  # before), and filter-list scriptlets pruning YouTube-shaped player data at
+  # document start in a page and its cross-origin iframe (#410). Local fixture
+  # servers only; the scriptlet spec downloads the sha256-pinned resources
+  # file itself when `npm run adblock:download` hasn't run.
+  e2e-adblock:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run ad blocking E2E (headless)
+        run: >-
+          xvfb-run -a npm run test:e2e:live --
+          test-e2e/live/adblock.spec.js test-e2e/live/adblock-scriptlets.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-adblock-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Issue #346 — a Chrome Web Store page killed the browser process on Electron
+  # 44.3.0: Chromium 152 exposes `chrome.webstorePrivate` to ordinary web pages
+  # on the store origin, and Electron has no delegate behind it. Live, because
+  # the exposure is keyed on the real origin — no fixture page can stand in for
+  # it. Unlike e2e-ant this needs no bundled node, so there is nothing to
+  # download first and the spec seeds node autostart off.
+  e2e-chrome-webstore:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      # electron 44 ships no postinstall script: `node_modules/electron/index.js`
+      # downloads the binary on the first `require('electron')`, which is what
+      # Playwright does when it launches the app. Pull it here so a cold
+      # download cannot eat into the fixture's 60s launch budget — and so this
+      # step, not a test failure, is what reports a broken download.
+      - name: Warm the Electron binary download
+        run: node -e "require('electron')"
+
+      - name: Run Chrome Web Store live E2E (headless)
+        run: xvfb-run -a npm run test:e2e:live -- test-e2e/live/chrome-webstore.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-chrome-webstore-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
   e2e-address-bar-clipboard:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -737,7 +1164,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -763,10 +1190,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Profile lifecycle (create / use / manage / delete) across all desktop
-  # platforms. Runs the in-process harness in catalog mode (no real nodes, no
-  # second-process spawn — see test-e2e/profiles-fixtures.js).
-  e2e-profiles:
+  # Issue #97 — Cmd/Ctrl+W must close the active tab, not the window. The
+  # accelerator is resolved by the platform's own menu layer, so the ownership
+  # half runs on all three (that is where macOS and Windows/Linux differed);
+  # the real-keypress half needs X11 key injection and runs on Linux only,
+  # which is where the bug shipped.
+  e2e-close-tab-shortcut:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -789,7 +1220,70 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-playwright-deps
+
+      # xdotool sends the real Ctrl+W: Playwright's own key dispatch goes
+      # through CDP into the renderer and never reaches a menu accelerator.
+      # Through the shared apt wrapper, like every other apt call on Linux CI.
+      - name: Install xdotool
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install xdotool
+
+      - name: Run close-tab shortcut E2E
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js
+          else
+            npm run test:e2e -- test-e2e/close-tab-shortcut.spec.js
+          fi
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-close-tab-shortcut-${{ matrix.os }}-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Profile lifecycle (create / use / manage / delete) across all desktop
+  # platforms. Runs the in-process harness in catalog mode (no real nodes, no
+  # second-process spawn — see test-e2e/profiles-fixtures.js).
+  e2e-profiles:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
@@ -821,7 +1315,10 @@ jobs:
   # a change that touches the renderer, its harness, or the specs themselves,
   # and a screenshot job that runs on every backend-only PR is a job people
   # learn to ignore. On a push (not a PR) they always run, so `main` keeps the
-  # baselines honest even when nobody opened a PR.
+  # baselines honest even when nobody opened a PR. Both read `!= 'false'`
+  # behind `!cancelled()` for the same reason the `code-changed` consumers do
+  # — see the note on that job: a gate that fails must run the suites, not
+  # skip them into a reported Success.
   renderer-changed:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -846,7 +1343,7 @@ jobs:
             exit 0
           fi
           git fetch --no-tags origin "$BASE"
-          changed=$(git diff --name-only "origin/$BASE...HEAD")
+          changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
           echo "$changed"
           # Everything the two visual jobs read, not just the renderer: the
           # specs, the fixtures, the gate that can turn them into no-ops, the
@@ -857,7 +1354,10 @@ jobs:
           # only `__screenshots__/` or the contrast baseline, and skipping both
           # jobs on it would land the new pixels unchecked. `package.json` is in
           # the list because the npm scripts are how the jobs launch the specs.
-          if echo "$changed" | grep -Eq '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate|screenshot-baselines)\.js|test-e2e/theme-contrast-baseline\.json|test-e2e/__screenshots__/|package\.json|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)'; then
+          # No `-q`, for the same reason as the `code-changed` filter above:
+          # `-q` exits at the first hit and a >64 KiB path list then kills the
+          # `echo` with SIGPIPE, which `pipefail` turns into `renderer=false`.
+          if echo "$changed" | grep -E '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate|screenshot-baselines)\.js|test-e2e/theme-contrast-baseline\.json|test-e2e/__screenshots__/|package\.json|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)' >/dev/null; then
             echo "renderer=true" >> "$GITHUB_OUTPUT"
           else
             echo "renderer=false" >> "$GITHUB_OUTPUT"
@@ -869,7 +1369,7 @@ jobs:
   # #249 (white-on-white permission origin).
   e2e-theme-parity:
     needs: renderer-changed
-    if: needs.renderer-changed.outputs.renderer == 'true'
+    if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -887,7 +1387,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -917,7 +1417,7 @@ jobs:
   # Locally: `xvfb-run -a npm run test:e2e:screenshots:update`.
   e2e-renderer-screenshots:
     needs: renderer-changed
-    if: needs.renderer-changed.outputs.renderer == 'true'
+    if: ${{ !cancelled() && needs.renderer-changed.outputs.renderer != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -935,7 +1435,7 @@ jobs:
         uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
-        run: npm ci
+        uses: ./.github/actions/install-node-deps
 
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
@@ -953,3 +1453,56 @@ jobs:
             playwright-report/
           if-no-files-found: ignore
           retention-days: 14
+
+  # The single check branch protection should require. A skipped job does not
+  # leave a required context pending — it reports Success — which is exactly
+  # why naming the individual contexts is the weaker arrangement: on a
+  # docs-only pull request nine of today's ten required contexts pass without
+  # running, and nothing in that set can see the gate job's own result. This
+  # job can: it waits on every job in the workflow, `code-changed` and
+  # `renderer-changed` included, and goes red the moment any of them fails or
+  # is cancelled, whatever the gates decided to skip.
+  ci-ok:
+    if: always()
+    needs:
+      [
+        code-changed,
+        e2e-adblock,
+        e2e-address-bar-clipboard,
+        e2e-address-bar-ens,
+        e2e-ant,
+        e2e-chrome-webstore,
+        e2e-close-tab-shortcut,
+        e2e-ipfs-quit,
+        e2e-onboarding-identity,
+        e2e-profiles,
+        e2e-renderer-screenshots,
+        e2e-settings,
+        e2e-shortcuts-zoom,
+        e2e-tabs,
+        e2e-theme-parity,
+        freedom-ipfs-native-addon,
+        ipfs-gateway-proxy,
+        migration-cross-platform,
+        myotis-addon-load,
+        myotis-native-e2e,
+        radicle-addon-load,
+        renderer-changed,
+        test,
+      ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report whether every job that ran succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "a required job did not pass"
+              exit 1
+            fi
+          done
+          echo "all jobs passed or were skipped"

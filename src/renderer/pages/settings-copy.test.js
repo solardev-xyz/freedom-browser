@@ -128,7 +128,9 @@ describe('settings.html button labels carry no glyphs (#278)', () => {
   });
 
   test('no button or link label is suffixed with a literal `→`', () => {
-    const anchors = [...SOURCE.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/g)].map(([, body]) => textOf(body));
+    // `</a\n>` is how Prettier wraps a long anchor; without `\s*` the match
+    // runs on to the next anchor's `</a>` and sweeps the page in between.
+    const anchors = [...SOURCE.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/g)].map(([, body]) => textOf(body));
     // The ENS method rows render their link text from a `linkLabel` field
     // rather than as markup, so it is swept from the registry too.
     const linkLabels = [...SOURCE.matchAll(/linkLabel:\s*'([^']*)'/g)].map(([, label]) => label);

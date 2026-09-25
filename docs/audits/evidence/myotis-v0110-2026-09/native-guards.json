@@ -1,0 +1,24 @@
+{
+  "revision": "v0.1.10 official darwin-arm64 addon",
+  "base": "/var/folders/yk/vgp12b9s3hz7l4vh92hr5r8w0000gn/T/myotis442-check-tSSWP2",
+  "checks": [
+    "ABI 26; invalid input rejected without creating directory",
+    "mainnet: fresh import, active-handle refusal, same-anchor restart, mismatch/foreign snapshot/invalid marker refusal",
+    "gnosis: fresh import, active-handle refusal, same-anchor restart, mismatch/foreign snapshot/invalid marker refusal",
+    "sepolia: fresh import, active-handle refusal, same-anchor restart, mismatch/foreign snapshot/invalid marker refusal"
+  ],
+  "findings": [
+    {
+      "case": "symlink alias to directory owned by live embedded-anchor handle",
+      "expected": -1,
+      "actual": -1,
+      "markerWritten": false
+    },
+    {
+      "case": "dangling marker symlink treated as absent",
+      "expected": -3,
+      "actual": -3,
+      "symlinkReplaced": false
+    }
+  ]
+}
