@@ -25,78 +25,92 @@ Smoke-test refinements are implemented: expandable folders, live filename search
 that resets to the prior tree when cleared, automatic wrapping and Markdown
 rendering in file views. Generated output and dependencies are browsable without
 changing checkpoint exclusions; ordinary search omits dependency/cache contents.
+The header uses the existing refresh icon with an accessible label and tooltip;
+closing remains the normal tab action, with no duplicate Close button.
+
+The user smoke-tested the viewers and accepted the UI refinements. Delivery
+commits are `01edf4c2` (viewers/recovery), `256a8a6d` (file-tree refinements) and
+`3435fa45` (header controls). They are committed locally on the feature branch
+and have not been pushed. This UI acceptance does not qualify interrupted
+filesystem/Git recovery.
 
 See [the viewer contract, limits and tests](../docs/agent-project-viewer.md).
-Local lint and focused checks pass; disposable-Electron renderer checks pass
-in both themes and layouts. Real-Git fault qualification on the designated Mac mini is pending: automatic approval
+Validation by change: the initial viewer implementation passed 302 tests across
+12 suites; file-tree refinements passed 84 tests across six suites; the final
+header change passed six viewer tests. Lint and all four disposable-Electron
+viewer cases passed on the final header revision, in both themes and layouts.
+These are separate runs, not an aggregate unique-test count.
+Real-Git fault qualification on the designated Mac mini is pending: automatic approval
 review rejected the prepared private-source transfer and explicit user approval
 has been requested. No new remote/native qualification is claimed yet.
 
-Broader history ingestion limits, advanced rename detection, rich document
-formats and general external Git rollback remain follow-ups; the previous backlog
-below records the planning baseline, not outstanding versions of this work.
+### Current backlog and next decision — 2026-09-25
 
-
-### Current backlog and next decision — 2026-09-21
-
-This September 21 index is the planning baseline; the September 25 delivery above
-supersedes its viewer/history items. Dated implementation and qualification
-records below remain historical evidence, not a queue of unfinished work.
-The feature remains unreleased. Merge `30167ed7` is pushed to
-`feature/freedom-automation-kernel`; the accepted viewer-header follow-up is
-committed as `4b20cfbc` (lint and 17 relevant tests passed).
+This is the active backlog. The dated implementation records below preserve
+historical scope and test evidence; older statements of “next” or “remaining”
+must be read against this index. The feature remains unreleased.
 
 **Completed for the accepted development workflow:** provider-manager redesign
 and adapters; browser competence improvements; native WebMCP execution and page
 action discovery; managed project creation/build/preview/publication; existing
 project access with repository-native commits; proactive managed-workspace
-checkpoints; actionable tool recovery; and bounded command access review in
-**Ask when needed**. This does not imply every provider, platform or edge case
-has been qualified. Saved-server restart/reattachment and the accepted Vite HMR
-workflow are also implemented, not a new capability to build.
+checkpoints; actionable tool recovery; bounded command access review in
+**Ask when needed**; and the project viewers summarized above. Saved-server
+restart/reattachment and the accepted Vite HMR workflow are already implemented.
+This does not imply every provider, platform or edge case has been qualified.
 
-**Current focus:** hands-on UI refinement. Files, Changes and Commits viewer
-headers now continue the active tab's background in both layouts and themes.
-Further viewer changes should follow the user's concrete feedback; additional
-formats, richer comparisons and history recovery are separate scope decisions.
+**Next product candidates — discussion, not implementation authorization:**
 
-**Open product candidates (not yet selected for implementation):**
+| Candidate | Concrete first slice | User benefit / scope |
+| --- | --- | --- |
+| Saved-server management | Rename, edit and remove saved command/directory/port definitions. Define active-process behavior explicitly; removal must not silently stop a process or erase project files. | Smaller continuation: keep the Workspace panel useful as projects accumulate servers. Restart/reattach already exists. |
+| Broader existing-project support | First support linked Git worktrees and their separately located metadata through explicit, validated ownership. Individual file grants and multiple writable projects are separate subsequent slices. | Useful for real development repositories; requires careful metadata and writer-coordination work. |
+| Subagents | One bounded worker through the existing model connection, explicit task/context, attributable progress/result, shared budgets, parent/child approval ownership and reliable Stop. Expand concurrency only after that lifecycle works. | Largest new capability: delegate independent research, review or implementation without requiring a second provider. Parallel writes need ownership/conflict rules. |
+| Workspace/history scale | Raise managed checkpoint limits with explicit storage/retention and large-file behavior; improve rename matching where actual projects justify it. | Makes larger projects practical. Current checkpoint ingestion remains 200 files, 64 KiB per file and 512 KiB total; pagination, comparisons and selected restore are already implemented. |
+| Browser/WebMCP coverage | Choose a real blocked website/tool schema, then add the missing schema constraints or frame-scoped tools with origin/approval checks. Embedded or ambiguous-source dialogs remain a separate gap. | Broader compatibility, driven by real tasks rather than speculative API breadth. |
 
-- **Subagents:** bounded workers using existing model connections, attributable
-  results, coordinated tab/file ownership, shared budgets and descendant Stop.
-  The optional Jev worker remains a later extension, not a prerequisite.
-- **Project/history and preview refinements:** broader history limits, pagination,
-  richer comparisons, recovery after partial restores or uncertain external Git
-  updates; saved-server editing/removal, SSE and separate HMR ports where real
-  projects need them. Branch/remotes/push workflows and automatic crash restart
-  remain separate from the implemented local commits and explicit server restart.
-- **Browser/WebMCP coverage:** remaining embedded/ambiguous-source dialog cases,
-  frame-scoped page tools and additional JSON Schema support. A WebMCP-facing
-  `window.swarm` integration is an exploratory product direction, not implemented
-  or a reason to bypass existing wallet/publication approval boundaries.
-- **Provider/privacy qualification:** real-account authentication, streaming, long
-  tool conversations, rate limits and Stop across added providers; independent
-  attestation and full payload encryption remain distinct unfinished protections.
-- **Privileged integrations:** bounded embedded Radicle requests, Agent support
-  for Safe signing/transfers, and an evidence-based node-effect evaluation corpus.
-  Widget creation depends on the separately owned widget platform and its
-  authoring/install contract.
+**Recommendation for discussion:** saved-server management is the smallest useful
+continuation. Subagents are the strongest candidate for the next substantial
+capability; start with one worker and a complete lifecycle before parallel code
+editing. Broader existing-project support takes priority if linked worktrees or
+multiple project contexts are blocking the user's everyday workflow. No next
+implementation slice is selected by this roadmap update.
 
-**Maintenance and release gates:** four existing full-suite failures are recorded
-in the integration result below. Retain macOS detached-descendant/resource limits,
-exact-candidate native lifecycle and packaged-release checks, provider/vision
-coverage and Windows containment as explicit limitations. The user's deferred
-Windows/Linux qualification work is not being restarted by this roadmap update.
+**Additional open candidates:**
+
+- Preview transport for SSE and separate HMR ports; automatic crash restart is a
+  separate policy/lifecycle decision, not part of existing explicit restart.
+- Richer document formats and Markdown rendering, advanced history comparisons,
+  branch/remotes/push workflows and general external Git rollback. The current
+  external recovery UI only finalizes an exactly matching interrupted commit.
+- Provider qualification using authorized test accounts: authentication,
+  streaming, long tool conversations, rate limits and Stop. Independent hardware
+  attestation and full Agent-payload encryption remain unfinished protections.
+- Bounded embedded Radicle requests, Agent support for Safe signing/transfers,
+  and a node-effect evaluation corpus. Agent-created widgets depend on the
+  separately owned widget platform and authoring/install contract.
+- A WebMCP-facing `window.swarm` integration remains exploratory and must retain
+  wallet/publication approvals.
+
+**Pending validation and maintenance:**
+
+- Run the new real-Git interrupted-commit/finalization fixtures on the designated
+  Mac mini after explicit source-transfer approval. Current local protocol and
+  renderer tests do not replace this qualification; do not claim recovery is
+  fully qualified from viewer smoke tests.
+- Recheck the four full-suite failures recorded at the September 21 integration
+  before release; they were reproduced on the pre-merge revision and have not
+  been resolved by this viewer work. No fresh full-suite result is claimed here.
+- Retain macOS detached-descendant/resource limits, exact-candidate native
+  lifecycle and packaged-release checks, provider/vision coverage and Windows
+  containment as explicit release limitations. Windows/Linux qualification
+  remains on the user's backburner; this update does not restart it.
+- The accepted viewer commits remain local; pushing is a separate pending action.
 
 **Explicitly deferred:** Full access, Jev acceleration, bundled developer tools,
-embedded `llama.cpp`, packaged CLI/external MCP, and evidence-free expansion of
-the runtime architecture. Core Agent work must remain usable with one supported
-model connection.
-
-Recommendation for discussion: finish the observed viewer/UI issues, then choose
-one substantial product slice. Subagents are a candidate if parallel work is the
-next user need; project/history refinement is the smaller continuation of the
-workflow just accepted. Neither is selected merely by being listed here.
+embedded `llama.cpp`, packaged CLI/external MCP, and runtime architecture expansion
+without evidence of need. Core Agent and initial subagent work must remain usable
+with one supported model connection.
 
 ### Existing-projects integration — 2026-09-21
 
