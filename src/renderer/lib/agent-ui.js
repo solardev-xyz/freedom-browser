@@ -3313,23 +3313,30 @@ function finishToolRow(event) {
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
   }
   renderToolPage(record, event, true);
-  if (event.operation === 'delegate_task' && event.subagent) {
-    const receipt = event.subagent;
-    const details = document.createElement('details');
-    details.className = 'agent-subagent-report';
-    const summary = document.createElement('summary');
-    summary.textContent = record.label.textContent;
-    const note = document.createElement('p');
-    const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
-    note.textContent = `Read-only helper · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
-    const report = document.createElement('p');
-    report.textContent = typeof receipt.report === 'string' && receipt.report
-      ? receipt.report.slice(0, 12000) : 'No complete report was returned.';
-    details.appendChild(summary);
-    details.appendChild(note);
-    details.appendChild(report);
-    record.label.replaceChildren(details);
-    if (receipt.state === 'cancelled') {
+  if (event.operation === 'delegate_task' && (event.subagent || event.subagents)) {
+    const receipts = Array.isArray(event.subagents) ? event.subagents.slice(0, 2) : [event.subagent];
+    const label = record.label.textContent;
+    record.label.replaceChildren();
+    for (const receipt of receipts) {
+      const details = document.createElement('details');
+      details.className = 'agent-subagent-report';
+      const summary = document.createElement('summary');
+      const state = { completed: 'Report received', cancelled: 'Stopped', failed: 'Could not finish',
+        timed_out: 'Timed out', limited: 'Limit reached' }[receipt.state] || 'Incomplete';
+      summary.textContent = event.subagents ? `${state} — ${receipt.title}` : label;
+      const note = document.createElement('p');
+      const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
+      note.textContent = `Read-only helper · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
+      const report = document.createElement('p');
+      report.textContent = typeof receipt.report === 'string' && receipt.report
+        ? receipt.report.slice(0, 12000) : 'No complete report was returned.';
+      details.appendChild(summary);
+      details.appendChild(note);
+      details.appendChild(report);
+      record.label.appendChild(details);
+    }
+    if (receipts.every(receipt => ['completed', 'cancelled'].includes(receipt.state)) &&
+        receipts.some(receipt => receipt.state === 'cancelled')) {
       record.state.textContent = '•';
       record.row.classList.remove('failed');
       record.row.classList.add('cancelled');
@@ -3695,7 +3702,10 @@ function handleAgentEvent(event) {
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_finished') {
     finishToolRow(event);
-    if (event.status === 'failed') {
+    if (event.operation === 'delegate_task' && (event.subagents || [event.subagent]).every(item => item && ['completed', 'cancelled'].includes(item.state))) {
+      setMessage(elements.runMessage, event.label || 'Helper work finished.');
+      setLiveStatus(event.runId, 'Reviewing helper results…');
+    } else if (event.status === 'failed') {
       setMessage(
         elements.runMessage,
         event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER'

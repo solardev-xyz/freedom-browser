@@ -20,4 +20,28 @@ function normalizeSubagentReceipt(value) {
   });
 }
 
-module.exports = { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt };
+function normalizeSubagentReceipts(values) {
+  if (!Array.isArray(values) || !values.length || values.length > 2) return null;
+  const receipts = values.map(normalizeSubagentReceipt);
+  if (receipts.some(value => !value) || new Set(receipts.map(value => value.taskId)).size !== receipts.length) return null;
+  return Object.freeze(receipts);
+}
+
+function summarizeSubagents(receipts) {
+  const count = state => receipts.filter(receipt => receipt?.state === state).length;
+  const reports = count('completed');
+  const stopped = count('cancelled');
+  const incomplete = receipts.length - reports - stopped;
+  const parts = [];
+  if (reports) parts.push(`${reports} ${reports === 1 ? 'report' : 'reports'} received`);
+  if (stopped) parts.push(`${stopped} ${stopped === 1 ? 'task' : 'tasks'} stopped`);
+  if (incomplete) parts.push(`${incomplete} ${incomplete === 1 ? 'task' : 'tasks'} incomplete`);
+  return {
+    headline: reports ? (reports === 1 ? 'Helper report received' : 'Helper reports received')
+      : incomplete ? 'Delegated task incomplete' : 'Delegated tasks stopped',
+    detail: parts.join(' · '),
+    tone: incomplete ? 'caution' : 'neutral',
+  };
+}
+
+module.exports = { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts, summarizeSubagents };

@@ -174,7 +174,7 @@ test('does not drop user constraints to fit input or accept invalid assignments'
   expect((await f.run({ title: 'Review', task: '' })).details.subagent.state).toBe('failed');
 });
 
-test('installed Pi runs parent → isolated child → scoped read → report → parent with no external provider', () => {
+test.each([false, true])('installed Pi completes isolated delegation (parallel=%s) without an external provider', parallel => {
   const { execFileSync } = require('node:child_process');
   const script = `
     (async () => {
@@ -190,40 +190,172 @@ test('installed Pi runs parent → isolated child → scoped read → report →
         models: [{ id: 'test', name: 'Test', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 1024,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsDeveloperRole: false } }] });
       await runtime.setRuntimeApiKey('delegate-test', 'fixture-not-a-credential');
+      const parallel = ${parallel};
       const requests = [];
+      let childStarts = 0; let release;
+      const barrier = new Promise(resolve => { release = resolve; });
       globalThis.fetch = async (_url, init) => {
         const body = JSON.parse(init.body); requests.push(body);
         const index = requests.length;
-        const args = index === 1 ? { title: 'Inspect', task: 'Read README.md and report', context: 'selected context' } : { path: 'README.md' };
-        const delta = index <= 2 ? { tool_calls: [{ index: 0, id: 'call-' + index, type: 'function',
-          function: { name: index === 1 ? 'delegate_task' : 'read', arguments: JSON.stringify(args) } }] }
-          : { content: index === 3 ? 'README.md describes a solar-system app.' : 'The helper inspected the README.' };
+        const parent = body.tools.some(tool => tool.function.name === 'delegate_task');
+        const hasResult = body.messages.some(message => message.role === 'tool');
+        const call = !hasResult;
+        const args = parent ? (parallel ? { tasks: [
+          { title: 'First', task: 'Read README.md', context: 'context-first' },
+          { title: 'Second', task: 'Read README.md', context: 'context-second' },
+        ] } : { title: 'Inspect', task: 'Read README.md and report', context: 'selected context' }) : { path: 'README.md' };
+        if (!parent && call && parallel) {
+          if (++childStarts === 2) release();
+          await barrier; // Both real Pi sessions must reach the transport concurrently.
+        }
+        const delta = call ? { tool_calls: [{ index: 0, id: 'call-' + index, type: 'function',
+          function: { name: parent ? 'delegate_task' : 'read', arguments: JSON.stringify(args) } }] }
+          : { content: parent ? 'The helpers inspected the README.' : 'README.md describes a solar-system app.' };
         const chunk = { id: 'response-' + index, object: 'chat.completion.chunk', created: 1, model: 'test',
-          choices: [{ index: 0, delta, finish_reason: index <= 2 ? 'tool_calls' : 'stop' }] };
+          choices: [{ index: 0, delta, finish_reason: call ? 'tool_calls' : 'stop' }] };
         return new Response('data: ' + JSON.stringify(chunk) + '\\n\\ndata: [DONE]\\n\\n', { headers: { 'content-type': 'text/event-stream' } });
       };
       const owner = { userText: 'Inspect this project', subagentAbortController: new AbortController() };
       const model = runtime.getModel('delegate-test', 'test');
       let reads = 0; let receipt;
       const tool = createSubagentTool({ sdk, model, modelRuntime: runtime, getOwner: () => owner,
-        onResult: (_owner, outcome) => { receipt = outcome.subagent; },
+        onResult: (_owner, outcome) => { receipt = outcome.subagents || [outcome.subagent]; },
         createTools: async () => [trustBuiltInToolOverride({ name: 'read', label: 'Read', description: 'Read the granted project',
           parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
           execute: async (_id, args) => { assert.equal(args.path, 'README.md'); reads++; return { content: [{ type: 'text', text: '# Solar system' }] }; } })] });
       const parent = await createIsolatedPiSession({ sdk, model, modelRuntime: runtime, customTools: [tool],
         enableBuiltInSkills: false, systemPrompt: 'Parent-only system instructions.' });
       await parent.session.prompt('Parent-private transcript marker. Delegate a read-only review.');
-      assert.equal(reads, 1); assert.equal(requests.length, 4);
+      assert.equal(reads, parallel ? 2 : 1); assert.equal(requests.length, parallel ? 6 : 4);
       assert.deepEqual(requests[1].tools.map(t => t.function.name), ['read']);
       assert.ok(!JSON.stringify(requests[1]).includes('Parent-private transcript marker'));
       assert.ok(!JSON.stringify(requests[1]).includes('Parent-only system instructions'));
-      assert.ok(JSON.stringify(requests[1]).includes('selected context'));
-      assert.equal(receipt.state, 'completed'); assert.equal(receipt.toolCalls, 1);
-      assert.ok(JSON.stringify(requests[3]).includes('README.md describes a solar-system app.'));
+      assert.ok(JSON.stringify(requests[1]).includes(parallel ? 'context-first' : 'selected context'));
+      if (parallel) {
+        assert.ok(!JSON.stringify(requests[1]).includes('context-second'));
+        assert.ok(!JSON.stringify(requests[2]).includes('context-first'));
+      }
+      assert.equal(receipt.length, parallel ? 2 : 1);
+      assert.ok(receipt.every(item => item.state === 'completed' && item.toolCalls === 1));
+      assert.ok(JSON.stringify(requests.at(-1)).includes('README.md describes a solar-system app.'));
       parent.session.dispose(); process.stdout.write('passed');
     })().catch(error => { console.error(error); process.exit(1); });
   `;
   expect(execFileSync(process.execPath, ['-e', script], {
     cwd: require('node:path').resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 20000,
   })).toBe('passed');
+});
+
+describe('parallel read-only assignments', () => {
+  const tasks = [
+    { title: 'Structure', task: 'Inspect structure', context: 'structure-only context' },
+    { title: 'Accessibility', task: 'Inspect accessibility', context: 'accessibility-only context' },
+  ];
+  function parallelFixture(limits = {}) {
+    const children = [];
+    const f = fixture({ limits, createSession: jest.fn(async settings => {
+      const done = deferred();
+      let listener;
+      const child = {
+        settings, done, emit: event => listener?.(event),
+        finish: (text, tokens = 1) => {
+          listener?.({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop',
+            content: [{ type: 'text', text }], usage: { totalTokens: tokens } } });
+          done.resolve();
+        },
+        session: { subscribe: jest.fn(fn => { listener = fn; return jest.fn(); }),
+          prompt: jest.fn(() => done.promise), abort: jest.fn(async () => {}), dispose: jest.fn() },
+      };
+      children.push(child);
+      return { session: child.session };
+    }) });
+    return { ...f, children, batch: () => f.run({ tasks }) };
+  }
+
+  test('both helpers start before either finishes; contexts and reports remain independent and ordered', async () => {
+    const f = parallelFixture();
+    const pending = f.batch(); await flush();
+    expect(f.children).toHaveLength(2);
+    expect(f.children.every(child => child.session.prompt.mock.calls.length === 1)).toBe(true);
+    expect(f.children[0].session.prompt.mock.calls[0][0]).not.toContain('accessibility-only');
+    expect(f.children[1].session.prompt.mock.calls[0][0]).not.toContain('structure-only');
+    expect((await f.run()).details.subagent.state).toBe('limited');
+    f.children[1].finish('Accessibility report'); await flush();
+    expect(f.options.onResult).toHaveBeenCalledTimes(1); // Rejected third helper only.
+    f.children[0].finish('Structure report');
+    const result = await pending;
+    expect(result.details.subagents.map(item => item.report)).toEqual(['Structure report', 'Accessibility report']);
+    expect(new Set(result.details.subagents.map(item => item.taskId)).size).toBe(2);
+    expect(result.isError).toBe(false);
+  });
+
+  test('rejects mixed forms, malformed batches and insufficient remaining task budget before starting either helper', async () => {
+    const f = parallelFixture({ tasks: 1 });
+    expect((await f.batch()).details.subagent.state).toBe('limited');
+    for (const input of [{ tasks, title: 'mixed' }, { tasks: [tasks[0]] }, { tasks: [...tasks, tasks[0]] }, { tasks: [tasks[0], { title: 'Empty' }] }]) {
+      expect((await f.run(input)).details.subagent.state).toBe('failed');
+    }
+    expect(f.children).toHaveLength(0);
+  });
+
+  test('one failed helper does not discard the successful sibling report', async () => {
+    const f = parallelFixture(); const pending = f.batch(); await flush();
+    f.children[0].done.resolve();
+    f.children[1].finish('Useful findings');
+    const result = await pending;
+    expect(result.details.subagents.map(item => item.state)).toEqual(['failed', 'completed']);
+    expect(result.details.subagents[1].report).toBe('Useful findings');
+  });
+
+  test('Stop cancels both helpers and ignores late results', async () => {
+    const f = parallelFixture(); const pending = f.batch(); await flush();
+    f.children.forEach(child => child.session.abort.mockImplementation(() => new Promise(() => {})));
+    f.owner.subagentAbortController.abort();
+    expect((await pending).details.subagents.map(item => item.state)).toEqual(['cancelled', 'cancelled']);
+    f.children.forEach(child => child.finish('Late result'));
+    await flush();
+    expect(f.options.onResult).toHaveBeenCalledTimes(1);
+    expect(f.children.every(child => child.session.dispose.mock.calls.length === 1)).toBe(true);
+  });
+
+  test('a completed report survives cancellation of the remaining helper', async () => {
+    const f = parallelFixture(); const pending = f.batch(); await flush();
+    f.children[0].finish('Completed before steering'); await flush();
+    f.owner.subagentAbortController.abort();
+    expect((await pending).details.subagents.map(item => item.state)).toEqual(['completed', 'cancelled']);
+  });
+
+  test('reported tokens are shared while both helpers are still active', async () => {
+    const f = parallelFixture({ totalTokens: 20 }); const pending = f.batch(); await flush();
+    for (const child of f.children) child.emit({ type: 'message_end', message: { role: 'assistant',
+      stopReason: 'toolUse', content: [], usage: { totalTokens: 12 } } });
+    expect((await pending).details.subagents.map(item => item.state)).toEqual(['limited', 'limited']);
+    expect((await f.batch()).details.subagent.state).toBe('limited');
+    expect(f.children).toHaveLength(2);
+  });
+
+  test('the shared tool-call ceiling stops both helpers without executing the excess call', async () => {
+    const f = parallelFixture({ totalToolCalls: 3 }); const pending = f.batch(); await flush();
+    const reads = f.children.map(child => child.settings.customTools.find(tool => tool.name === 'read'));
+    await reads[0].execute('1', { path: 'a' });
+    await reads[1].execute('1', { path: 'b' });
+    await reads[0].execute('2', { path: 'c' });
+    await expect(reads[1].execute('2', { path: 'd' })).rejects.toThrow('Shared helper tool budget');
+    expect((await pending).details.subagents.map(item => item.state)).toEqual(['limited', 'limited']);
+    expect(f.read.execute).toHaveBeenCalledTimes(3);
+  });
+
+  test('cumulative time counts both active helpers and rebalances when one finishes', async () => {
+    jest.useFakeTimers();
+    try {
+      const f = parallelFixture({ totalDurationMs: 60, timeoutMs: 1000 });
+      const pending = f.batch(); await flush();
+      jest.advanceTimersByTime(10);
+      f.children[0].finish('Done'); await flush();
+      jest.advanceTimersByTime(39); await flush();
+      expect(f.children[1].session.abort).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(2);
+      expect((await pending).details.subagents.map(item => item.state)).toEqual(['completed', 'limited']);
+    } finally { jest.useRealTimers(); }
+  });
 });

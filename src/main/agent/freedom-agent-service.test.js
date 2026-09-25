@@ -141,22 +141,28 @@ describe('delegated task ownership', () => {
     } finally { await service.dispose(); }
   });
 
-  test.each(['stop', 'pause', 'steer'])('%s cancels the owned helper even when its provider is unresponsive', async action => {
+  test.each(['stop', 'pause', 'steer'].flatMap(action => [1, 2].map(count => [action, count])))('%s cancels %s owned helpers even when providers are unresponsive', async (action, count) => {
     const parent = createFakeSession();
-    const child = createFakeSession();
-    child.session.abort.mockImplementation(() => new Promise(() => {}));
+    const children = Array.from({ length: count }, () => createFakeSession());
+    children.forEach(child => child.session.abort.mockImplementation(() => new Promise(() => {})));
+    let index = 0;
     const { service, dependencies } = createService(parent, {
-      createSubagentSession: jest.fn(async () => ({ session: child.session })),
+      createSubagentSession: jest.fn(async () => ({ session: children[index++].session })),
     });
     try {
       await service.start(startOptions());
       const tool = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
-      const pending = tool.execute('child', { title: 'Review', task: 'Inspect' });
+      const task = { title: 'Review', task: 'Inspect' };
+      const pending = tool.execute('child', count === 2 ? { tasks: [task, task] } : task);
       for (let i = 0; i < 8; i++) await Promise.resolve();
       await service[action]('run_test', ...(action === 'steer' ? ['Stop reviewing; explain the plan instead'] : []));
-      expect((await pending).details.subagent.state).toBe('cancelled');
-      expect(child.session.abort).toHaveBeenCalled();
-      expect(child.session.dispose).toHaveBeenCalled();
+      const result = await pending;
+      const receipts = result.details.subagents || [result.details.subagent];
+      expect(receipts.map(item => item.state)).toEqual(Array(count).fill('cancelled'));
+      for (const child of children) {
+        expect(child.session.abort).toHaveBeenCalled();
+        expect(child.session.dispose).toHaveBeenCalled();
+      }
     } finally { await service.dispose(); }
   });
 });

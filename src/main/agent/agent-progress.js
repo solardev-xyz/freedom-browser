@@ -3,7 +3,7 @@
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
-const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt } = require('./subagent-receipt');
+const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts, summarizeSubagents } = require('./subagent-receipt');
 const {
   classifyProviderFailure,
   providerFailurePresentation,
@@ -813,6 +813,7 @@ function activityProgress(operation, receipt = {}) {
   const publication = normalizePublicationReceipt(receipt.publication);
   const workspace = normalizeWorkspaceReceipt(receipt.workspace);
   const subagent = normalizeSubagentReceipt(receipt.subagent);
+  const subagents = normalizeSubagentReceipts(receipt.subagents);
 
   if (operation === SUBAGENT_TOOL_NAME) {
     const title = subagent?.title || boundedString(receipt.title, 100);
@@ -821,6 +822,7 @@ function activityProgress(operation, receipt = {}) {
       ? ({ cancelled: 'Helper stopped', timed_out: 'Helper timed out', limited: 'Helper reached its limit', failed: 'Helper could not finish' }[subagent.state])
       : copy.completed;
     if (title) label += ` — ${title}`;
+    if (subagents) { intent = 'Delegating two read-only tasks'; label = summarizeSubagents(subagents).detail; }
   }
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
@@ -1033,6 +1035,7 @@ function activityProgress(operation, receipt = {}) {
     ...(publication && { publication }),
     ...(workspace && { workspace }),
     ...(subagent && { subagent }),
+    ...(subagents && { subagents }),
   });
 }
 
@@ -1606,11 +1609,11 @@ function buildAgentOutcome(activity, status, error) {
     }
     const delegated = items.filter(item => item.operation === SUBAGENT_TOOL_NAME);
     if (delegated.length) {
-      const reports = delegated.filter(item => item.subagent?.state === 'completed').length;
+      const receipts = delegated.flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)]);
+      const summary = summarizeSubagents(receipts);
       return Object.freeze({
-        kind: 'completed', verification: 'delegated_report', tone: 'caution',
-        headline: reports ? 'Helper report received' : 'Delegated task incomplete',
-        detail: `${reports} of ${delegated.length} delegated tasks returned a report. Helpers had read-only access. Their findings are model-generated and require review.`,
+        kind: 'completed', verification: 'delegated_report', ...summary,
+        detail: `${summary.detail}. Read-only, model-generated findings.`,
         destinations, counts,
       });
     }

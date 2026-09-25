@@ -43,6 +43,12 @@ test('helper history persists reports and marks crash-left work interrupted in r
       { toolCallId: 'first', operation: 'delegate_task', status: 'succeeded', label: 'Received helper report',
         subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Check README.md', toolCalls: 1 } },
     ] });
+    store.updateTurnActivity({ conversationId: 'helper-history', runId: 'finished', activity: [
+      { toolCallId: 'batch', operation: 'delegate_task', status: 'failed', subagents: [
+        { taskId: 'delegate_' + 'a'.repeat(24), title: 'First', state: 'completed', report: 'Check README.md' },
+        { taskId: 'delegate_' + 'b'.repeat(24), title: 'Second', state: 'cancelled', report: '' },
+      ] },
+    ] });
     const lateWrite = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'finished', running: true, activity: [] });
     store.startTurn({ conversationId: 'helper-history', runId: 'interrupted', position: 1, userText: 'Review more', approvalMode: 'every_interaction' });
     const runningSaved = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'interrupted', running: true, activity: [
@@ -57,7 +63,8 @@ test('helper history persists reports and marks crash-left work interrupted in r
   }, repositoryRoot);
   expect(result.lateWrite).toBe(false);
   expect(result.runningSaved).toBe(true);
-  expect(result.transcript[0].activity[0].subagent.report).toBe('Check README.md');
+  expect(result.transcript[0].activity[0].subagents[0].report).toBe('Check README.md');
+  expect(result.transcript[0].activity[0].subagents[1].state).toBe('cancelled');
   expect(result.transcript[1]).toMatchObject({ status: 'interrupted', activity: [
     { operation: 'delegate_task', status: 'failed', label: 'Helper interrupted' },
   ] });
@@ -83,13 +90,19 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
-    emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: 'Received helper report — Review planet controls',
-      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review planet controls', state: 'completed', toolCalls: 3,
-        report: 'app/SolarScene.tsx: Pause and speed controls are wired correctly.\nKeyboard focus needs a visible style. No tests were run.\n<img src="https://invalid.test/tracker"> is shown as source text.' } });
+    emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '2 reports received',
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Review planet controls', state: 'completed', toolCalls: 3,
+        report: 'app/SolarScene.tsx: Pause and speed controls are wired correctly.\nKeyboard focus needs a visible style. No tests were run.\n<img src="https://invalid.test/tracker"> is shown as source text.' },
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, report: 'Add a visible keyboard focus style.' }] });
     emit({ type: 'tool_started', toolCallId: 'stopped', operation: 'delegate_task', intent: 'Delegating: Check labels' });
     emit({ type: 'tool_finished', toolCallId: 'stopped', operation: 'delegate_task', status: 'failed', label: 'Helper stopped — Check labels',
       subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Check labels', state: 'cancelled', toolCalls: 0, report: '' } });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 2000, actionCount: 2, outcome: { kind: 'completed', verification: 'delegated_report', tone: 'neutral', headline: 'Helper reports received', detail: '2 reports received · 1 task stopped. Read-only, model-generated findings.' } });
   });
+  await expect(window.locator('.agent-subagent-report')).toHaveCount(3);
+  await expect(window.locator('.agent-turn-outcome.neutral')).toContainText('2 reports received · 1 task stopped');
+  await expect(window.locator('.agent-turn-outcome.caution')).toHaveCount(0);
+  await window.locator('.agent-turn-activity > summary').click();
   const report = window.locator('.agent-subagent-report').first();
   await report.locator('summary').click();
   await expect(report.locator('p').last()).toBeVisible();

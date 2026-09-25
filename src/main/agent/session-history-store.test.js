@@ -22,6 +22,15 @@ test('retains bounded helper evidence without runtime objects or extra fields', 
   expect(item.subagent.session).toBeUndefined();
 });
 
+test('retains individual parallel reports and rejects oversized or duplicate receipt collections', () => {
+  const a = { taskId: `delegate_${'a'.repeat(24)}`, title: 'First', state: 'completed', report: 'First report' };
+  const b = { ...a, taskId: `delegate_${'b'.repeat(24)}`, title: 'Second', state: 'cancelled', report: '' };
+  const item = subagents => normalizeActivity([{ operation: 'delegate_task', subagents }])[0];
+  expect(item([a, b]).subagents.map(receipt => receipt.state)).toEqual(['completed', 'cancelled']);
+  expect(item([a, a]).subagents).toBeUndefined();
+  expect(item([a, b, a]).subagents).toBeUndefined();
+});
+
 test('reviewer approval provenance survives history normalization without its private decision data', () => {
   const [item] = normalizeActivity([{ operation: 'request_permissions', approval: 'reviewer_approved',
     status: 'succeeded', reviewer: { reason: 'private review', root: '/private/path' }, isCurrent: () => true }]);

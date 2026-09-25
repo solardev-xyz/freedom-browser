@@ -483,6 +483,22 @@ async function loadAgentUi(options = {}) {
 }
 
 describe('Agent UI', () => {
+  test('renders separate parallel reports and neutral completion/stopping without a recovery warning', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', intent: 'Delegating two read-only tasks' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', status: 'failed',
+      label: '1 report received · 1 task stopped', subagents: [
+        { title: 'Structure', state: 'completed', report: '<script>untrusted()</script>', toolCalls: 2 },
+        { title: 'Accessibility', state: 'cancelled', report: '', toolCalls: 1 },
+      ] });
+    const reports = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
+    expect(reports.length).toBe(2);
+    expect(reports[0].children[0].textContent).toBe('Report received — Structure');
+    expect(reports[1].children[0].textContent).toBe('Stopped — Accessibility');
+    expect(reports[0].children[2].textContent).toBe('<script>untrusted()</script>');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('1 report received · 1 task stopped');
+  });
   test('renders helper reports as expandable inert text and labels interruptions without browser errors', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'Review the project' });

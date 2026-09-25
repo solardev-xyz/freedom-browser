@@ -18,9 +18,22 @@ describe('Agent progress projection', () => {
     const subagent = { taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', report: 'Looks good' };
     const item = { operation: 'delegate_task', status: 'succeeded', ...activityProgress('delegate_task', { subagent }) };
     expect(item.label).toBe('Received helper report — Review');
-    expect(buildAgentOutcome([item], 'completed')).toMatchObject({ verification: 'delegated_report', tone: 'caution' });
+    expect(buildAgentOutcome([item], 'completed')).toMatchObject({ verification: 'delegated_report', tone: 'neutral' });
     expect(buildAgentOutcome([item], 'completed').detail).not.toContain('browser');
     expect(activityProgress('delegate_task', { subagent: { ...subagent, state: 'cancelled' } }).label).toBe('Helper stopped — Review');
+  });
+  test.each([
+    [['completed', 'cancelled'], 'neutral', '1 report received · 1 task stopped'],
+    [['completed', 'completed'], 'neutral', '2 reports received'],
+    [['cancelled', 'cancelled'], 'neutral', '2 tasks stopped'],
+    [['completed', 'failed'], 'caution', '1 report received · 1 task incomplete'],
+    [['timed_out', 'limited'], 'caution', '2 tasks incomplete'],
+  ])('summarizes helper states %s without treating intentional stops as failures', (states, tone, detail) => {
+    const subagents = states.map((state, i) => ({ taskId: `delegate_${String(i).repeat(24)}`, state, title: `Task ${i}` }));
+    const item = { operation: 'delegate_task', status: 'succeeded', ...activityProgress('delegate_task', { subagents }) };
+    expect(buildAgentOutcome([item], 'completed')).toMatchObject({ tone, detail: `${detail}. Read-only, model-generated findings.` });
+    const separate = subagents.map(subagent => ({ operation: 'delegate_task', subagent }));
+    expect(buildAgentOutcome(separate, 'completed').detail).toBe(`${detail}. Read-only, model-generated findings.`);
   });
   test('reports real repository commits without checkpoint terminology', () => {
     const workspace = { kind: 'history', command: 'Project history: commit', workingDirectory: '.',

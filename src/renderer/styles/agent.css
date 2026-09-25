@@ -3229,6 +3229,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-subagent-report { min-width: 0; overflow-wrap: anywhere; }
+.agent-subagent-report + .agent-subagent-report { margin-top: 8px; }
 .agent-subagent-report summary { cursor: pointer; }
 .agent-subagent-report summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .agent-subagent-report p { margin: 8px 0; white-space: pre-wrap; line-height: 1.5; }

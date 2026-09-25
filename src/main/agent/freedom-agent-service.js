@@ -17,7 +17,7 @@ const {
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
 const { createConversationAttachmentTools } = require('./pi-attachment-tools');
 const { createSubagentTool, DELEGATION_SYSTEM_PROMPT } = require('./pi-subagent-tools');
-const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt } = require('./subagent-receipt');
+const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts } = require('./subagent-receipt');
 const {
   createWorkspaceTools,
   isSkillReadPath,
@@ -389,7 +389,7 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       ? workspaceToolAction(event.toolName, event.args)
       : '';
     const progress = activityProgress(String(event.toolName), {
-      title: event.toolName === SUBAGENT_TOOL_NAME ? event.args?.title : undefined,
+      title: event.toolName === SUBAGENT_TOOL_NAME ? (Array.isArray(event.args?.tasks) ? 'Two read-only tasks' : event.args?.title) : undefined,
       origin:
         event.toolName === 'browser_create_tab' || event.toolName === 'browser_navigate'
           ? event.args?.url
@@ -415,12 +415,13 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
   }
   if (event.type === 'tool_execution_end') {
     const subagent = normalizeSubagentReceipt(toolOutcome?.subagent || event.result?.details?.subagent);
-    const failed = event.isError || toolOutcome?.status === 'failed' || (subagent && subagent.state !== 'completed');
+    const subagents = normalizeSubagentReceipts(toolOutcome?.subagents || event.result?.details?.subagents);
+    const failed = subagents?.some(item => item.state !== 'completed') || event.isError || toolOutcome?.status === 'failed' || (subagent && subagent.state !== 'completed');
     const errorCode = failed ? toolOutcome?.errorCode : undefined;
     const operation = String(event.toolName);
     const attachment = normalizeAttachmentReceipt(event.result?.details, operation);
     const progress =
-      toolOutcome?.progress || activityProgress(operation, { attachment, subagent });
+      toolOutcome?.progress || activityProgress(operation, { attachment, subagent, subagents });
     return {
       type: 'tool_finished',
       toolCallId: String(event.toolCallId),
@@ -439,6 +440,7 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(attachment && { attachment }),
       ...(subagent && { subagent }),
+      ...(subagents && { subagents }),
       ...(errorCode && { errorCode }),
     };
   }
@@ -2449,6 +2451,7 @@ class FreedomAgentService {
     if (normalized.workspace) item.workspace = normalized.workspace;
     if (normalized.attachment) item.attachment = normalized.attachment;
     if (normalized.subagent) item.subagent = normalized.subagent;
+    if (normalized.subagents) item.subagents = normalized.subagents;
     if (normalized.artifacts) item.artifacts = normalized.artifacts;
     if (item.approval) normalized.approval = item.approval;
     return true;
@@ -2518,6 +2521,7 @@ class FreedomAgentService {
       }),
       ...(workspace && { workspace }),
       ...(normalizeSubagentReceipt(outcome.subagent) && { subagent: normalizeSubagentReceipt(outcome.subagent) }),
+      ...(normalizeSubagentReceipts(outcome.subagents) && { subagents: normalizeSubagentReceipts(outcome.subagents) }),
       ...(Array.isArray(outcome.artifacts) && {
         artifacts: outcome.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100),
       }),
@@ -2537,6 +2541,7 @@ class FreedomAgentService {
         publication: outcome.publication,
         workspace: outcome.workspace,
         subagent: outcome.subagent,
+        subagents: outcome.subagents,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);

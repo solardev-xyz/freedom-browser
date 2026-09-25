@@ -4,7 +4,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const log = require('../logger');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
-const { normalizeSubagentReceipt } = require('./subagent-receipt');
+const { normalizeSubagentReceipt, normalizeSubagentReceipts } = require('./subagent-receipt');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
 const {
   normalizeArtifact,
@@ -79,6 +79,7 @@ function normalizeActivity(activity) {
       const publication = normalizePublicationReceipt(item.publication);
       const workspace = normalizeWorkspaceReceipt(item.workspace);
       const subagent = normalizeSubagentReceipt(item.subagent);
+      const subagents = normalizeSubagentReceipts(item.subagents);
       const artifacts = Array.isArray(item.artifacts)
         ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
         : [];
@@ -103,6 +104,7 @@ function normalizeActivity(activity) {
         ...(publication && { publication }),
         ...(workspace && { workspace }),
         ...(subagent && { subagent }),
+        ...(subagents && { subagents }),
         ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }
