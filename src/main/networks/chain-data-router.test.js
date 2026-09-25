@@ -1200,3 +1200,45 @@ describe('chain-data-router', () => {
     expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 });
+
+
+describe('Ant bridge cancellation', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearAdaptiveRoutingForTest();
+    mockRegistry.getNetwork.mockReturnValue({ access: {
+      readOrder: ['myotis', 'direct'], broadcastOrder: ['myotis', 'direct'],
+    } });
+    mockMyotis.isReady.mockReturnValue(true);
+    global.fetch = jest.fn();
+  });
+  afterEach(() => { global.fetch = originalFetch; });
+
+  test.each(['read', 'broadcast'])('does not fall through after a cancelled %s', async (kind) => {
+    const controller = new AbortController();
+    const waiting = deferred();
+    const native = kind === 'read' ? mockMyotis.getAccount : mockMyotis.sendRawTransaction;
+    native.mockReturnValue(waiting.promise);
+    const pending = kind === 'read'
+      ? request(100, 'eth_getBalance', ['0xabc', 'latest'], { signal: controller.signal })
+      : broadcastRawTransaction(100, '0xsigned', { signal: controller.signal });
+    await flushMicrotasks();
+    controller.abort();
+    waiting.reject(new Error('node stopped'));
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('does not broadcast at a second RPC after cancellation', async () => {
+    mockRegistry.getNetwork.mockReturnValue({ access: { broadcastOrder: ['direct'] } });
+    mockRegistry.getEndpoints.mockReturnValue(['https://one.example', 'https://two.example']);
+    const controller = new AbortController();
+    global.fetch.mockImplementation(async () => {
+      controller.abort();
+      throw new Error('disconnected');
+    });
+    await expect(broadcastRawTransaction(100, '0xsigned', { signal: controller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+});

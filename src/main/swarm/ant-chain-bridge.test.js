@@ -1,0 +1,239 @@
+const http = require('node:http');
+const { EventEmitter } = require('node:events');
+const { Wallet } = require('ethers');
+const { startAntChainBridge } = require('./ant-chain-bridge');
+
+function post(url, body, headers = {}, method = 'POST') {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      url,
+      {
+        method,
+        headers: { 'content-type': 'application/json', ...headers },
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () =>
+          resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks)) })
+        );
+      }
+    );
+    req.on('error', reject);
+    req.end(typeof body === 'string' ? body : JSON.stringify(body));
+  });
+}
+const rpc = (method = 'eth_getBalance', params = ['0xabc', 'latest']) => ({
+  jsonrpc: '2.0',
+  id: 7,
+  method,
+  params,
+});
+let bridge, router, log;
+beforeEach(async () => {
+  router = {
+    request: jest.fn().mockResolvedValue({ result: '0x12', source: 'myotis' }),
+    broadcastRawTransaction: jest.fn().mockResolvedValue({ result: '0xhash', source: 'direct' }),
+  };
+  log = { info: jest.fn(), warn: jest.fn() };
+  bridge = await startAntChainBridge({ router, log });
+});
+afterEach(async () => {
+  await bridge.close();
+});
+
+test('routes exact Gnosis requests and unwraps result without promoting trust', async () => {
+  const response = await post(bridge.url, rpc());
+  expect(response).toEqual({ status: 200, body: { jsonrpc: '2.0', id: 7, result: '0x12' } });
+  expect(router.request).toHaveBeenCalledWith(100, 'eth_getBalance', ['0xabc', 'latest'], {
+    signal: expect.any(AbortSignal),
+  });
+  router.request.mockResolvedValue({ result: [], source: 'direct', verified: false });
+  expect(
+    (await post(bridge.url, rpc('eth_getLogs', [{ fromBlock: '0x1', toBlock: '0x2' }]))).body.result
+  ).toEqual([]);
+  expect(log.info).toHaveBeenLastCalledWith('[Ant chain] eth_getLogs via direct');
+});
+
+test.each(
+  [
+    ['wrong token', {}, 'POST', true],
+    ['origin', { origin: 'https://evil.example' }],
+    ['null origin', { origin: 'null' }],
+    ['fetch metadata', { 'sec-fetch-site': 'same-origin' }],
+    ['rebound host', { host: 'evil.example' }],
+    ['preflight', {}, 'OPTIONS'],
+    ['form', { 'content-type': 'text/plain' }],
+  ].map(([name, headers, method = 'POST', wrongToken = false]) => [
+    name,
+    headers,
+    method,
+    wrongToken,
+  ])
+)('refuses %s before routing', async (_name, headers, method, wrongToken) => {
+  const result = await post(wrongToken ? bridge.url + '0' : bridge.url, rpc(), headers, method);
+  expect(result.status).toBeGreaterThanOrEqual(400);
+  expect(router.request).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['{', -32700],
+  [[rpc()], -32600],
+  [{ ...rpc(), id: undefined }, -32600],
+  [rpc('personal_sign'), -32601],
+  [rpc('eth_sendTransaction'), -32601],
+  [rpc('eth_sendRawTransaction', ['0x12']), -32601],
+  [' '.repeat(256 * 1024 + 1), -32600],
+])('rejects unsupported or malformed requests', async (body, code) => {
+  expect((await post(bridge.url, body)).body.error.code).toBe(code);
+  expect(router.request).not.toHaveBeenCalled();
+  expect(router.broadcastRawTransaction).not.toHaveBeenCalled();
+});
+
+test('coverage failure stays an error, never an empty log result', async () => {
+  router.request.mockRejectedValue(
+    Object.assign(new Error('private upstream details'), { code: -32000 })
+  );
+  const response = await post(bridge.url, rpc('eth_getLogs', [{}]));
+  expect(response.body.error.code).toBe(-32000);
+  expect(response.body).not.toHaveProperty('result');
+  expect(JSON.stringify(response)).not.toContain('private upstream');
+  expect(router.request).toHaveBeenCalledTimes(1);
+});
+
+test('preserves revert code and hex data', async () => {
+  router.request.mockRejectedValue(Object.assign(new Error('revert'), { code: 3, data: '0xabcd' }));
+  expect((await post(bridge.url, rpc('eth_call', [{}]))).body.error).toEqual({
+    code: 3,
+    message: 'Execution reverted',
+    data: '0xabcd',
+  });
+});
+
+test('light mode only broadcasts signed Gnosis transactions, once', async () => {
+  await bridge.close();
+  bridge = await startAntChainBridge({ router, log, allowBroadcast: true });
+  const wallet = Wallet.createRandom();
+  const base = { to: wallet.address, value: 0, nonce: 0, gasLimit: 21000, gasPrice: 1 };
+  for (const chainId of [1, 0]) {
+    const raw = await wallet.signTransaction({ ...base, chainId });
+    expect((await post(bridge.url, rpc('eth_sendRawTransaction', [raw]))).body.error.code).toBe(
+      -32602
+    );
+  }
+  const raw = await wallet.signTransaction({ ...base, chainId: 100 });
+  expect((await post(bridge.url, rpc('eth_sendRawTransaction', [raw]))).body.result).toBe('0xhash');
+  expect(router.broadcastRawTransaction).toHaveBeenCalledTimes(1);
+  expect(router.broadcastRawTransaction).toHaveBeenCalledWith(100, raw, {
+    signal: expect.any(AbortSignal),
+  });
+  expect(JSON.stringify(log.info.mock.calls)).not.toContain(raw);
+});
+
+test('stop revokes the capability and aborts pending routing', async () => {
+  let entered;
+  const began = new Promise((resolve) => {
+    entered = resolve;
+  });
+  router.request.mockImplementation(
+    (_chain, _method, _params, { signal }) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+        entered();
+      })
+  );
+  const response = post(bridge.url, rpc()).catch(() => null);
+  await began;
+  await bridge.close();
+  expect(await response).toBeNull();
+  await expect(post(bridge.url, rpc())).rejects.toThrow();
+});
+
+test('deadline aborts routing and frees no capacity until work settles', async () => {
+  await bridge.close();
+  bridge = await startAntChainBridge({ router, log, timeoutMs: 30 });
+  let signal;
+  router.request.mockImplementation((_c, _m, _p, options) => {
+    signal = options.signal;
+    return new Promise((resolve) =>
+      signal.addEventListener('abort', () => resolve({ result: null }))
+    );
+  });
+  const response = await post(bridge.url, rpc());
+  expect(response.body.error.code).toBe(-32002);
+  expect(signal.aborted).toBe(true);
+});
+
+test('buffers split child log tokens and drops oversized lines', () => {
+  const stream = new EventEmitter();
+  const write = jest.fn();
+  const token = bridge.url.split('/').pop();
+  bridge.pipeLog(stream, write);
+  stream.emit('data', `failed http://127.0.0.1/ant-chain/${token.slice(0, 20)}`);
+  stream.emit('data', token.slice(20) + '\n');
+  stream.emit('data', 'a'.repeat(65537));
+  stream.emit('data', token + '\nclean\n');
+  expect(write.mock.calls).toEqual([['failed http://127.0.0.1/ant-chain/[redacted]'], ['clean']]);
+});
+
+test('bounds simultaneous requests including work still settling', async () => {
+  let count = 0;
+  let entered;
+  const began = new Promise((resolve) => {
+    entered = resolve;
+  });
+  router.request.mockImplementation(
+    (_c, _m, _p, { signal }) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('stopped')));
+        if (++count === 8) entered();
+      })
+  );
+  const pending = Array.from({ length: 8 }, () => post(bridge.url, rpc()).catch(() => null));
+  await began;
+  expect((await post(bridge.url, rpc())).status).toBe(503);
+  expect(router.request).toHaveBeenCalledTimes(8);
+  await bridge.close();
+  await Promise.all(pending);
+});
+
+test('restart uses a fresh capability and rejects the previous one', async () => {
+  const oldPath = new URL(bridge.url).pathname;
+  await bridge.close();
+  bridge = await startAntChainBridge({ router, log });
+  expect(new URL(bridge.url).pathname).not.toBe(oldPath);
+  const oldCapabilityAtNewPort = new URL(oldPath, bridge.url).href;
+  expect((await post(oldCapabilityAtNewPort, rpc())).status).toBe(403);
+  expect(router.request).not.toHaveBeenCalled();
+});
+
+test('oversized and missing answers fail instead of producing partial data', async () => {
+  router.request.mockResolvedValue({ result: 'x'.repeat(16 * 1024 * 1024) });
+  expect((await post(bridge.url, rpc())).body.error.code).toBe(-32002);
+  router.request.mockResolvedValue({ source: 'direct' });
+  expect((await post(bridge.url, rpc())).body.error.code).toBe(-32002);
+});
+
+test('uncertain broadcasts and real RPC rejections are never retried by the bridge', async () => {
+  await bridge.close();
+  bridge = await startAntChainBridge({ router, log, allowBroadcast: true });
+  const wallet = Wallet.createRandom();
+  const raw = await wallet.signTransaction({
+    to: wallet.address,
+    nonce: 0,
+    value: 0,
+    chainId: 100,
+    gasLimit: 21000,
+    gasPrice: 1,
+  });
+  for (const code of ['MYOTIS_BROADCAST_UNCERTAIN', -32000]) {
+    router.broadcastRawTransaction.mockRejectedValue(
+      Object.assign(new Error('private details'), { code })
+    );
+    const response = await post(bridge.url, rpc('eth_sendRawTransaction', [raw]));
+    expect(response.body).not.toHaveProperty('result');
+    expect(response.body.error.code).toBe(typeof code === 'number' ? code : -32002);
+    if (typeof code === 'string') expect(response.body.error.message).toContain('uncertain');
+  }
+  expect(router.broadcastRawTransaction).toHaveBeenCalledTimes(2);
+});

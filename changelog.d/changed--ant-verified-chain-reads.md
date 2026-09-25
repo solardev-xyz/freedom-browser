@@ -1,0 +1,1 @@
+- The bundled Swarm node uses Freedom's chain verification and fallback settings for balances, postage and chequebook reads.

@@ -864,7 +864,7 @@ async function requestDirect(
   chainId,
   method,
   params,
-  { includeTrust = false, directFallback = null, attemptedUrls = [] } = {}
+  { includeTrust = false, directFallback = null, attemptedUrls = [], signal } = {}
 ) {
   const network = registry.getNetwork(chainId) || {};
   const timeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
@@ -883,11 +883,13 @@ async function requestDirect(
   const attempted = new Set(attemptedUrls);
   let lastError;
   for (const url of urls) {
+    signal?.throwIfAborted();
     if (attempted.has(url)) continue;
     try {
-      const result = await requestRpcUrl(url, method, params, timeoutMs);
+      const result = await requestRpcUrl(url, method, params, timeoutMs, { signal });
       return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
+      signal?.throwIfAborted();
       lastError = err;
     }
   }
@@ -932,6 +934,7 @@ async function requestSource(
     directAttemptedUrls = [],
     allowDirectFallback = false,
     deadlineMs = null,
+    signal,
   } = {}
 ) {
   if (source === 'myotis') {
@@ -956,6 +959,7 @@ async function requestSource(
       includeTrust,
       directFallback,
       attemptedUrls: directAttemptedUrls,
+      signal,
     });
   }
   throw new SourceUnavailableError(`Unknown chain source: ${source}`);
@@ -965,7 +969,7 @@ async function request(
   chainId,
   method,
   rawParams = [],
-  { includeTrust = false, routingContext = null } = {}
+  { includeTrust = false, routingContext = null, signal } = {}
 ) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
   const network = registry.getNetwork(chainId);
@@ -983,6 +987,7 @@ async function request(
   let directFallback = null;
   let directAttemptedUrls = [];
   for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
+    signal?.throwIfAborted();
     const source = order[sourceIndex];
     if (DIRECT_ONLY_METHODS.has(method) && source !== 'direct') continue;
     const routeKey = source === 'myotis' || source === 'colibri' || source === 'quorum'
@@ -994,6 +999,7 @@ async function request(
     }
     try {
       const sourceResult = await requestSource(source, Number(chainId), method, params, {
+        signal,
         includeTrust,
         routeKey,
         directFallback: source === 'direct' ? directFallback : null,
@@ -1004,6 +1010,7 @@ async function request(
           hasFallbackSource: sourceIndex + 1 < order.length,
         }),
       });
+      signal?.throwIfAborted();
       recordAdaptiveSuccess(routeKey);
       const result = includeTrust ? sourceResult.result : sourceResult;
       return {
@@ -1013,6 +1020,7 @@ async function request(
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
+      signal?.throwIfAborted();
       if (source === 'myotis' && err.code === 3) throw err;
       if (source === 'quorum') {
         if (err.directFallback) directFallback = err.directFallback;
@@ -1079,7 +1087,7 @@ async function getFeeQuote(chainId) {
   throw new Error(`All chain sources failed for fee quote (${failures.join('; ')})`);
 }
 
-async function broadcastRawTransaction(chainId, rawTransaction) {
+async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {}) {
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
   const order = network.access?.broadcastOrder ||
@@ -1087,6 +1095,7 @@ async function broadcastRawTransaction(chainId, rawTransaction) {
   const failures = [];
   let lastRpcError = null;
   for (const source of order) {
+    signal?.throwIfAborted();
     try {
       let result;
       if (source === 'myotis') {
@@ -1099,12 +1108,13 @@ async function broadcastRawTransaction(chainId, rawTransaction) {
           throw error;
         }
       } else if (source === 'direct') {
-        result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction]);
+        result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction], { signal });
       } else {
         throw new SourceUnavailableError(`${source} cannot broadcast transactions`);
       }
       return { result, source };
     } catch (err) {
+      signal?.throwIfAborted();
       if (err.code === 'MYOTIS_BROADCAST_UNCERTAIN') throw err;
       failures.push(`${source}: ${err.message}`);
       // A node rejection (`nonce too low`, `already known`, …) carries a
