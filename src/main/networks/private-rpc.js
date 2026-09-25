@@ -13,7 +13,8 @@ function createPrivateRpc(handle, role, { signal } = {}) {
   if (!require('../settings-store').isWalletTorExperimentAvailable()) {
     throw privacyError('PRIVACY_TRANSPORT_UNAVAILABLE', 'Experimental wallet transport is unavailable');
   }
-  if (subject.chainId !== 11155111 || subject.kind !== 'public-address' || subject.role !== role ||
+  const allowedSubject = role === 'protocol-rpc' ? subject.kind === 'private-account' : subject.kind === 'public-address';
+  if (subject.chainId !== 11155111 || !allowedSubject || subject.role !== role ||
       requirements.content !== 'public' || requirements.correctness !== 'any' || requirements.maxAgeMs !== null) {
     throw privacyError('UNSUPPORTED_PRIVACY_REQUIREMENTS', 'Experimental RPC cannot meet these requirements');
   }

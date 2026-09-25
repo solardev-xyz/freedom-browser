@@ -1,10 +1,18 @@
 # Privacy Pools v2 × Freedom Browser — Integration Research
 
-**Date:** 2026-07-08 · **Updated:** 2026-09-14 · **Status:** research, no code
+**Date:** 2026-07-08 · **Updated:** 2026-09-25 · **Status:** source research and host-boundary tests; full protocol execution unqualified
 **Scope:** Privacy Pools v2 (0xbow) as a built-in transactional-privacy layer for Freedom's EVM wallet.
 **Companion docs:** `kohaku-wallet-integration-research.md` (new September 14 source study; the earlier June document is not present), `privacy-roadmap.md` (T1–T6), `tor-circuit-isolation-research.md`, `nym-integration-research.md` (not present in this checkout).
 
-## September 14 update — current decision
+## September 25 update — concrete adapter candidate
+
+Open [Kohaku PR #258](https://github.com/ethereum/kohaku/pull/258), inspected at `6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e`, supplies a substantive PPv2 plugin, injected RPC/HTTP/storage adapters and sample apps. Its [manifest](https://github.com/ethereum/kohaku/blob/6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e/packages/privacy-pools/package.json) names `@0xbow-io/privacy-pools-v2-sdk@0.2.0-beta.0`; the repository routes this scope to GitHub Packages. An unauthenticated request to the correct package registry returned **401**. This corrects the earlier investigation's focus on `@privacy-pools-v2/sdk` at public npm; neither response establishes that PPv2 does not exist.
+
+The PR HTTP adapter passes Freedom's controlled SOCKS/TLS tests without installing the SDK. Its RPC shape informs our restricted read provider. The sample devnet uses a stub prover and incomplete chain reconstruction, so it cannot establish real proving or seed/from-chain recovery. The sample also describes an older SDK/staging transfer mismatch; current compatibility must be reproduced, not inferred from the PR body. The PR remains an unmerged candidate and must be compared against current Kohaku after the Rust deprecation.
+
+Next: SDK access/provenance, exact deployment/derivation/artifact qualification, controlled prover and operation-scoped receipts/relayer recovery, then a recoverable Sepolia shield/sync/unshield. No PPv1 detour is required. [Engineering details, source links and evidence](../docs/privacy-reconciliation-and-ppv2-2026-09-25.md).
+
+## September 14 update — historical source snapshot
 
 **PPv2 exists. Keep it as the product target; PPv1 is not a required shipping milestone.** My earlier recommendation to begin with PPv1 referred to the available Kohaku implementation, not the existence of the v2 protocol. A PPv1 adapter may still help test the host contract, but must not consume a full product phase just because Kohaku's v2 adapter is missing.
 

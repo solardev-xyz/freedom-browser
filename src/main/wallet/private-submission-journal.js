@@ -10,6 +10,20 @@ const { getPrivacyContext, privacyError } = require('../networks/privacy-context
 const journals = new WeakMap();
 const HASH = /^0x[0-9a-f]{64}$/;
 const KEY = 'submissions-v1';
+const unresolved = (records) => records.some((record) => !record.resolution);
+function snapshot(record) {
+  if (record.observation) Object.freeze(record.observation);
+  if (record.resolution) Object.freeze(record.resolution);
+  return Object.freeze(record);
+}
+function validObservation(value) {
+  return value && ['unknown', 'pending', 'included', 'reverted', 'reorged'].includes(value.status) &&
+    value.trust === 'unverified' && Number.isSafeInteger(value.observedAt) && value.observedAt >= 0 &&
+    Number.isSafeInteger(value.confirmations) && value.confirmations >= 0 &&
+    (['included', 'reverted'].includes(value.status)
+      ? typeof value.blockHash === 'string' && HASH.test(value.blockHash) && Number.isSafeInteger(value.blockNumber) && value.blockNumber >= 0 && value.confirmations > 0
+      : value.blockHash === null && value.blockNumber === null && value.confirmations === 0);
+}
 
 function createSubmissionJournal({ handle, directory, key }) {
   const context = getPrivacyContext(handle);
@@ -31,6 +45,12 @@ function createSubmissionJournal({ handle, directory, key }) {
             !Number.isSafeInteger(record.nonce) || record.nonce < 0 ||
             !['attempted', 'submitted'].includes(record.state) ||
             !Number.isSafeInteger(record.attemptedAt) || record.attemptedAt < 0) throw invalid();
+        if (record.revision !== undefined && (!Number.isSafeInteger(record.revision) || record.revision < 0)) throw invalid();
+        if (record.observation !== undefined && !validObservation(record.observation)) throw invalid();
+        if (record.resolution && (!record.observation || record.resolution.blockHash !== record.observation.blockHash ||
+            !Number.isSafeInteger(record.resolution.minimumConfirmations) || record.resolution.minimumConfirmations < 1 ||
+            record.observation.confirmations < record.resolution.minimumConfirmations ||
+            !Number.isSafeInteger(record.resolution.reviewedAt) || record.resolution.reviewedAt < 0)) throw invalid();
         hashes.add(record.hash);
       }
       return data.records;
@@ -40,13 +60,13 @@ function createSubmissionJournal({ handle, directory, key }) {
     getPrivacyContext(handle);
     const value = await storage.get(KEY);
     getPrivacyContext(handle);
-    return decode(value).map((record) => Object.freeze({ ...record }));
+    return decode(value).map(snapshot);
   }
   function modify(change) {
     return storage.update(KEY, (value) => JSON.stringify({ version: 1, records: change(decode(value)) }));
   }
   async function assertCanSubmit() {
-    if ((await list()).length) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
+    if (unresolved(await list())) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
   }
   return Object.freeze({
     list, assertCanSubmit,
@@ -58,10 +78,44 @@ function createSubmissionJournal({ handle, directory, key }) {
           throw Object.assign(privacyError('PRIVATE_BROADCAST_ALREADY_ATTEMPTED', 'Query the existing submission before any further action'), { transactionHash: hash });
         }
         // Conservatively serialize all sends for this account. Unverified RPC
-        // receipts cannot clear the gate; a later explicit recovery policy must.
-        if (records.length) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
+        // receipts alone cannot clear the gate; an explicit review must.
+        if (unresolved(records)) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
+        if (records.length >= 64) throw privacyError('PRIVATE_TRANSACTION_LIMIT', 'Submission history capacity reached');
+        if (records.some((record) => record.nonce >= nonce)) throw privacyError('PRIVATE_NONCE_REUSE_REFUSED', 'Nonce must advance beyond recorded submissions');
         return [...records, { hash, nonce, state: 'attempted', attemptedAt: Date.now() }];
       });
+    },
+    async observe(hash, observation, revision) {
+      if (!validObservation(observation)) throw invalid();
+      let updated;
+      await modify((records) => {
+        const record = records.find((entry) => entry.hash === hash);
+        if (!record || (record.revision || 0) !== revision) throw privacyError('PRIVATE_RECONCILIATION_STALE', 'Submission observation was superseded');
+        if (!Number.isSafeInteger(revision + 1)) throw invalid();
+        const previous = record.observation;
+        record.observation = { ...observation }; record.revision = revision + 1;
+        if (record.resolution && (record.resolution.blockHash !== observation.blockHash || previous?.status !== observation.status ||
+            previous?.blockNumber !== observation.blockNumber || observation.confirmations < record.resolution.minimumConfirmations)) record.resolution = null;
+        updated = record;
+        return records;
+      });
+      getPrivacyContext(handle);
+      return snapshot(updated);
+    },
+    async resolve(hash, revision, minimumConfirmations) {
+      let updated;
+      await modify((records) => {
+        const record = records.find((entry) => entry.hash === hash);
+        if (!record || record.revision !== revision) throw privacyError('PRIVATE_RECONCILIATION_STALE', 'Submission observation was superseded');
+        if (!Number.isSafeInteger(minimumConfirmations) || minimumConfirmations < 1 ||
+            !Number.isSafeInteger(revision + 1) || !['included', 'reverted'].includes(record.observation?.status) ||
+            record.observation.confirmations < minimumConfirmations) throw invalid();
+        record.resolution = { blockHash: record.observation.blockHash, minimumConfirmations, reviewedAt: Date.now() };
+        record.revision += 1; updated = record;
+        return records;
+      });
+      getPrivacyContext(handle);
+      return snapshot(updated);
     },
     async markSubmitted(hash) {
       await modify((records) => {

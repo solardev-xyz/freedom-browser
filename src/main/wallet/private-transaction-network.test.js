@@ -21,6 +21,7 @@ const params = { chainId: 11155111, to: `0x${'2'.repeat(40)}`, value: '1', gasLi
 let scope, handle, network, tor, journalDirectory;
 let requests;
 let receipt;
+let nonce;
 let responseHook;
 let signer;
 beforeEach(() => {
@@ -31,14 +32,15 @@ beforeEach(() => {
   journalDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'private-send-fixture-'));
   mockJournals.set(handle, createSubmissionJournal({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) }));
   network = getPrivateTransactionNetwork(handle);
-  requests = []; receipt = null; responseHook = null;
+  requests = []; receipt = null; nonce = '0x0'; responseHook = null;
   signer = { getAddress: async () => wallet.address, signTransaction: jest.fn((tx) => wallet.signTransaction(tx)) };
   mockRequest.mockImplementation(async (context, _url, options) => {
     expect(context).toBe(handle);
     const call = JSON.parse(options.body); requests.push(call);
     if (responseHook) await responseHook(call);
-    const result = { eth_chainId: '0xaa36a7', eth_gasPrice: '0x64', eth_getTransactionCount: '0x0',
-      eth_estimateGas: '0x5208', eth_call: '0x', eth_getTransactionReceipt: receipt, eth_blockNumber: '0x11' }[call.method];
+    const result = { eth_chainId: '0xaa36a7', eth_gasPrice: '0x64', eth_getTransactionCount: nonce,
+      eth_estimateGas: '0x5208', eth_call: '0x', eth_getTransactionReceipt: receipt, eth_getTransactionByHash: null,
+      eth_getBlockByNumber: { number: '0x10', hash: `0x${'c'.repeat(64)}` }, eth_blockNumber: '0x11' }[call.method];
     return { status: 200, body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id,
       result: call.method === 'eth_sendRawTransaction' ? Transaction.from(call.params[0]).hash : result })) };
   });
@@ -50,9 +52,9 @@ test('fees, gas, simulation, nonce, signing, submission and receipts use only th
   expect(await service.estimateGas({ ...params, from: wallet.address }, options)).toEqual({ gasLimit: '25200' });
   await network.request(11155111, 'eth_call', [{ from: wallet.address, to: params.to, value: '0x1' }, 'latest']);
   const sent = await service.signAndSendTransaction(params, signer, options);
-  receipt = { transactionHash: sent.hash, status: '0x1', blockNumber: '0x10', gasUsed: '0x5208', effectiveGasPrice: '0x64' };
-  expect(await service.waitForTransaction(sent.hash, 11155111, 2, options)).toMatchObject({ status: 'confirmed', blockNumber: 16 });
-  expect(requests.map((r) => r.method)).toEqual(['eth_chainId', 'eth_estimateGas', 'eth_call', 'eth_gasPrice', 'eth_getTransactionCount', 'eth_sendRawTransaction', 'eth_getTransactionReceipt', 'eth_blockNumber']);
+  receipt = { transactionHash: sent.hash, from: wallet.address, blockHash: `0x${'c'.repeat(64)}`, status: '0x1', blockNumber: '0x10', gasUsed: '0x5208', effectiveGasPrice: '0x64' };
+  expect(await service.waitForTransaction(sent.hash, 11155111, 2, options)).toMatchObject({ status: 'included', blockNumber: 16, confirmations: 2, verified: false });
+  expect(requests.map((r) => r.method)).toEqual(['eth_chainId', 'eth_estimateGas', 'eth_call', 'eth_gasPrice', 'eth_getTransactionCount', 'eth_sendRawTransaction', 'eth_getTransactionReceipt', 'eth_getBlockByNumber', 'eth_blockNumber']);
   expect(chainData.request).not.toHaveBeenCalled();
   expect(chainData.broadcastRawTransaction).not.toHaveBeenCalled();
 });
@@ -78,7 +80,7 @@ test('a lost broadcast response preserves deterministic hash and refuses a dupli
   expect(error).toMatchObject({ code: 'PRIVATE_BROADCAST_UNCERTAIN', submissionStatus: 'unknown', transactionHash: Transaction.from(signed).hash });
   await expect(network.broadcastRawTransaction(11155111, signed)).rejects.toMatchObject({ code: 'PRIVATE_BROADCAST_ALREADY_ATTEMPTED' });
   responseHook = null;
-  expect(await service.getTransactionStatus(error.transactionHash, 11155111, { privacyContext: handle, review: async () => true })).toMatchObject({ status: 'pending' });
+  expect(await service.getTransactionStatus(error.transactionHash, 11155111, { privacyContext: handle, review: async () => true })).toMatchObject({ status: 'unknown' });
   expect(requests.filter((r) => r.method === 'eth_sendRawTransaction')).toHaveLength(1);
 });
 
@@ -134,7 +136,7 @@ test('restart recovers a lost-response hash for receipt queries and blocks a new
   await expect(service.signAndSendTransaction({ ...params, value: '2' }, signer, { privacyContext: handle, review: async () => true }))
     .rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
   expect(signer.signTransaction).not.toHaveBeenCalled();
-  expect(await service.getTransactionStatus(error.transactionHash, 11155111, { privacyContext: handle })).toMatchObject({ status: 'pending' });
+  expect(await service.getTransactionStatus(error.transactionHash, 11155111, { privacyContext: handle })).toMatchObject({ status: 'unknown' });
   expect(requests.filter((r) => r.method === 'eth_sendRawTransaction')).toHaveLength(1);
 });
 
@@ -153,4 +155,29 @@ test('disk failure before broadcast sends no bytes; a failed acknowledgment keep
     expect(error).toMatchObject({ code: 'PRIVATE_BROADCAST_UNCERTAIN', submissionStatus: 'unknown' });
     expect(await network.listSubmissions()).toEqual([expect.objectContaining({ hash: error.transactionHash, state: 'attempted' })]);
   } finally { jest.restoreAllMocks(); }
+});
+
+test('a reviewed resolution allows one new nonce; a reorg before signing or during signing closes the gate', async () => {
+  const options = { privacyContext: handle, review: async () => true };
+  const first = await service.signAndSendTransaction(params, signer, options);
+  const included = { transactionHash: first.hash, from: wallet.address, blockHash: `0x${'c'.repeat(64)}`, status: '0x1', blockNumber: '0x10' };
+  const policy = { minimumConfirmations: 2, review: async () => ({ allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' }) };
+  receipt = included;
+  await network.resolveSubmission(first.hash, policy);
+  receipt = null; signer.signTransaction.mockClear(); nonce = '0x1';
+  await expect(service.signAndSendTransaction(params, signer, options)).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+  expect(signer.signTransaction).not.toHaveBeenCalled();
+  receipt = included;
+  await network.resolveSubmission(first.hash, policy);
+  signer.signTransaction.mockImplementation(async (tx) => { receipt = null; return wallet.signTransaction(tx); });
+  await expect(service.signAndSendTransaction(params, signer, options)).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+  expect(requests.filter((call) => call.method === 'eth_sendRawTransaction')).toHaveLength(1);
+  receipt = included;
+  await network.resolveSubmission(first.hash, policy);
+  signer.signTransaction.mockImplementation((tx) => wallet.signTransaction(tx));
+  const second = await service.signAndSendTransaction(params, signer, options);
+  expect(second.hash).not.toBe(first.hash);
+  expect(requests.filter((call) => call.method === 'eth_sendRawTransaction')).toHaveLength(2);
+  expect(await network.listSubmissions()).toHaveLength(2);
+  await expect(network.assertCanSubmit()).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
 });

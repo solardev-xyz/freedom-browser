@@ -104,3 +104,18 @@ const upstreamClient = process.env.FREEDOM_KOHAKU_CLIENT_FIXTURE;
   await client.withdraw(`${origin}/`, { proof: 'synthetic-local-fixture' });
   expect(seen.map(({ url }) => url)).toEqual(['/status', '/v1/tornadoWithdraw']);
 });
+
+const ppv2Http = process.env.FREEDOM_PP_V2_HTTP_FIXTURE;
+(ppv2Http ? test : test.skip)('the pinned PPv2 PR HTTP adapter uses the host for JSON, binary and cancellation', async () => {
+  const { KohakuHttpClient } = require(ppv2Http);
+  const client = new KohakuHttpClient(network);
+  const ambient = jest.spyOn(globalThis, 'fetch').mockImplementation(() => { throw new Error('ambient fetch'); });
+  expect(await client.get(`${origin}/tree`)).toEqual({ ok: true, success: true });
+  expect(await client.post(`${origin}/relay`, { fixture: true })).toEqual({ ok: true, success: true });
+  expect(Buffer.from(await client.getBinary(`${origin}/artifact`)).toString()).toBe('{"ok":true,"success":true}');
+  await expect(client.get(`${origin}/stall`, { timeout: 20 })).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  await expect(client.get(`${origin}/tree`, { headers: { authorization: 'fixture' } }))
+    .rejects.toMatchObject({ code: 'PRIVATE_SDK_REQUEST_REFUSED' });
+  expect(ambient).not.toHaveBeenCalled();
+  expect(seen.map(({ url }) => url)).toEqual(['/tree', '/relay', '/artifact', '/stall']);
+});

@@ -486,6 +486,12 @@ async function signAndSendTransaction(params, signer, options = {}) {
 async function getTransactionStatus(txHash, chainId, options = {}) {
   const network = transactionNetwork(options);
   try {
+    if (options.privacyContext) {
+      network.assertActive(chainId);
+      const record = await network.reconcileSubmission(txHash);
+      return { hash: record.hash, ...record.observation, submissionState: record.state,
+        requiresReconciliation: !record.resolution, verified: false };
+    }
     const { result: receipt } = await network.request(chainId, 'eth_getTransactionReceipt', [txHash]);
 
     if (!receipt) {
@@ -529,6 +535,7 @@ async function waitForTransaction(txHash, chainId, confirmations = 1, options = 
     const deadline = Date.now() + 60000;
     while (Date.now() < deadline) {
       const status = await getTransactionStatus(txHash, chainId, options);
+      if (options.privacyContext && ['included', 'reverted'].includes(status.status) && status.confirmations >= confirmations) return status;
       if (status.status === 'failed') return status;
       if (status.status === 'confirmed') {
         if (confirmations <= 1) return status;

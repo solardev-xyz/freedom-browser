@@ -16,6 +16,17 @@ function getPrivateTransactionNetwork(handle) {
   const context = getPrivacyContext(handle);
   const { chainId, principal } = context.subject;
   const journal = () => require('./private-submission-journal').getPrivateSubmissionJournal(handle);
+  let reconciler;
+  const reconciliation = () => reconciler ||= require('./private-submission-reconciler').createSubmissionReconciler({
+    rpc, journal: journal(), principal, assertActive,
+  });
+  async function assertCanSubmit() {
+    assertActive();
+    await journal().assertCanSubmit();
+    for (const record of await journal().list()) await reconciliation().observe(record.hash);
+    await journal().assertCanSubmit();
+    assertActive();
+  }
 
   function assertActive(requestChain = chainId) {
     getPrivacyContext(handle, requestChain);
@@ -81,6 +92,8 @@ function getPrivateTransactionNetwork(handle) {
       }
     };
     assertDeadline();
+    if (await journal().has(txHash)) throw Object.assign(privacyError('PRIVATE_BROADCAST_ALREADY_ATTEMPTED', 'Query the existing submission before any further action'), { transactionHash: txHash });
+    await assertCanSubmit();
     await rpc.ready();
     assertActive(); assertDeadline();
     // Atomic encrypted write + fsync must succeed before transport sees bytes.
@@ -98,7 +111,9 @@ function getPrivateTransactionNetwork(handle) {
     }
   }
   const client = Object.freeze({ request, getFeeQuote, broadcastRawTransaction, assertSigner, assertActive, signal: rpc.signal,
-    assertCanSubmit: () => journal().assertCanSubmit(), listSubmissions: () => journal().list() });
+    assertCanSubmit, listSubmissions: () => journal().list(),
+    reconcileSubmission: (hash) => reconciliation().observe(hash),
+    resolveSubmission: (hash, policy) => reconciliation().resolve(hash, policy) });
   clients.set(handle, client);
   return client;
 }

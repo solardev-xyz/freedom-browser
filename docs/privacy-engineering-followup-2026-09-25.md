@@ -2,6 +2,8 @@
 
 Date: 2026-09-25. Follow-up to the [September 14 foundation](privacy-engineering-status.md). Production activation remains disabled; this work adds no wallet UI or live fund movement.
 
+**Later September 25 follow-up:** [Reconciliation and PPv2 boundaries](privacy-reconciliation-and-ppv2-2026-09-25.md) supersedes this report's reconciliation/provider/artifact/worker TODOs with scoped implementations. It also identifies open Kohaku PR #258 and the actual GitHub Packages SDK name; the npm 404 below refers only to the earlier documentation name. This report retains the evidence for the preceding commit.
+
 ## Main and managed nodes
 
 Merged `origin/main` at `2983dc62` into `feat/wallet-privacy-foundation` in `39003e39`. The only textual conflict was shutdown: privacy-session revocation now runs first inside main's revised `windDown()`. The new settings-search test was reconciled with our experimental row. Main's profile, node and renderer changes are retained.
