@@ -4,6 +4,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const log = require('../logger');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
+const { normalizeSubagentReceipt } = require('./subagent-receipt');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
 const {
   normalizeArtifact,
@@ -77,6 +78,7 @@ function normalizeActivity(activity) {
       const attachment = normalizeAttachmentReceipt(item.attachment, item.operation);
       const publication = normalizePublicationReceipt(item.publication);
       const workspace = normalizeWorkspaceReceipt(item.workspace);
+      const subagent = normalizeSubagentReceipt(item.subagent);
       const artifacts = Array.isArray(item.artifacts)
         ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
         : [];
@@ -100,6 +102,7 @@ function normalizeActivity(activity) {
         ...(attachment && { attachment }),
         ...(publication && { publication }),
         ...(workspace && { workspace }),
+        ...(subagent && { subagent }),
         ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }
@@ -186,7 +189,9 @@ function rowToTurn(row) {
     approvalMode: normalizeAgentApprovalMode(row.approval_mode) || 'every_interaction',
     startedAt: row.started_at,
     ...(Number.isFinite(row.duration_ms) && { durationMs: row.duration_ms }),
-    activity: normalizeActivity(safeJsonParse(row.activity_json, [])),
+    activity: normalizeActivity(safeJsonParse(row.activity_json, [])).map(item =>
+      row.status === 'interrupted' && item.operation === 'delegate_task' && item.status === 'running'
+        ? { ...item, status: 'failed', label: 'Helper interrupted' } : item),
     attachments: normalizeAttachments(safeJsonParse(row.attachments_json, [])),
     guidance,
     ...(error && { error }),
@@ -317,6 +322,10 @@ class AgentSessionHistoryStore {
       updateTurnActivity: db.prepare(`
         UPDATE agent_turns SET activity_json = ?
         WHERE id = ? AND session_id = ? AND status != 'running'
+      `),
+      updateRunningTurnActivity: db.prepare(`
+        UPDATE agent_turns SET activity_json = ?
+        WHERE id = ? AND session_id = ? AND status = 'running'
       `),
       touchSessionTime: db.prepare(`
         UPDATE agent_sessions SET updated_at = ? WHERE id = ?
@@ -457,7 +466,9 @@ class AgentSessionHistoryStore {
     const sessionId = requiredString(entry?.conversationId, 'Agent conversation ID', 160);
     const runId = requiredString(entry?.runId, 'Agent run ID', 160);
     const activity = normalizeActivity(entry?.activity);
-    const result = this.#getStatements().updateTurnActivity.run(
+    const statement = entry.running === true
+      ? this.#getStatements().updateRunningTurnActivity : this.#getStatements().updateTurnActivity;
+    const result = statement.run(
       JSON.stringify(activity),
       runId,
       sessionId

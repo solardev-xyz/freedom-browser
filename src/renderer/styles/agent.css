@@ -3228,6 +3228,11 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   text-align: center;
 }
 
+.agent-subagent-report { min-width: 0; overflow-wrap: anywhere; }
+.agent-subagent-report summary { cursor: pointer; }
+.agent-subagent-report summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.agent-subagent-report p { margin: 8px 0; white-space: pre-wrap; line-height: 1.5; }
+
 .agent-tool-page { display: flex; align-items: flex-start; gap: 7px; min-width: 0; flex: 1; }
 .agent-tool-page-icon { display: grid; flex: 0 0 14px; width: 14px; height: 14px; margin-top: 2px; }
 .agent-tool-page-icon svg, .agent-tool-page-icon img { grid-area: 1 / 1; width: 14px; height: 14px; object-fit: contain; }

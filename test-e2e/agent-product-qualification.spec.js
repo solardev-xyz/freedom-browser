@@ -34,6 +34,7 @@ const CLASSIFICATION = Object.freeze({
 });
 
 const EXPECTED_TOOL_NAMES = Object.freeze([
+  'delegate_task',
   'read',
   'attachment_list',
   'attachment_read',

@@ -112,6 +112,55 @@ function createHistoryStore(overrides = {}) {
   };
 }
 
+describe('delegated task ownership', () => {
+  test('keeps child messages out of the parent transcript and persists attributable reports', async () => {
+    const parent = createFakeSession();
+    const child = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service, dependencies } = createService(parent, {
+      historyStore, createSubagentSession: jest.fn(async () => ({ session: child.session })),
+    });
+    try {
+      await service.start(startOptions());
+      const tool = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+      parent.emit({ type: 'tool_execution_start', toolName: tool.name, toolCallId: 'child', args: { title: 'Review' } });
+      const pending = tool.execute('child', { title: 'Review', task: 'Review supplied evidence' });
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      child.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'private child draft' } });
+      child.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Bounded report' }] } });
+      child.prompt.resolve();
+      const result = await pending;
+      parent.emit({ type: 'tool_execution_end', toolName: tool.name, toolCallId: 'child', result });
+      parent.prompt.resolve();
+      await service.waitForIdle();
+      const turn = historyStore.finishTurn.mock.calls[0][0];
+      expect(turn.assistantText).not.toContain('private child draft');
+      expect(turn.activity).toEqual([expect.objectContaining({ operation: 'delegate_task', status: 'succeeded',
+        subagent: expect.objectContaining({ state: 'completed', report: 'Bounded report' }) })]);
+      expect(historyStore.updateTurnActivity).toHaveBeenCalled();
+    } finally { await service.dispose(); }
+  });
+
+  test.each(['stop', 'pause', 'steer'])('%s cancels the owned helper even when its provider is unresponsive', async action => {
+    const parent = createFakeSession();
+    const child = createFakeSession();
+    child.session.abort.mockImplementation(() => new Promise(() => {}));
+    const { service, dependencies } = createService(parent, {
+      createSubagentSession: jest.fn(async () => ({ session: child.session })),
+    });
+    try {
+      await service.start(startOptions());
+      const tool = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+      const pending = tool.execute('child', { title: 'Review', task: 'Inspect' });
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      await service[action]('run_test', ...(action === 'steer' ? ['Stop reviewing; explain the plan instead'] : []));
+      expect((await pending).details.subagent.state).toBe('cancelled');
+      expect(child.session.abort).toHaveBeenCalled();
+      expect(child.session.dispose).toHaveBeenCalled();
+    } finally { await service.dispose(); }
+  });
+});
+
 describe('independent command access review', () => {
   const permissionRequest = () => ({ action: 'workspace_permission', operation: 'request_permissions', label: 'Run the task',
     workspacePermission: { kind: 'command_access', command: 'node --version', workingDirectory: '.',
@@ -404,7 +453,7 @@ describe('FreedomAgentService', () => {
       model: { id: 'model_test', provider: 'test' },
       modelRuntime: { kind: 'model-runtime' },
       thinkingLevel: 'low',
-      customTools: [{ name: 'browser_snapshot' }],
+      customTools: [{ name: 'browser_snapshot' }, expect.objectContaining({ name: 'delegate_task' })],
       enableBuiltInSkills: true,
       systemPrompt: expect.stringContaining('You are Freedom Agent inside Freedom Browser'),
     });
@@ -695,6 +744,7 @@ describe('FreedomAgentService', () => {
       { name: 'browser_snapshot' },
       { name: 'attachment_list' },
       { name: 'attachment_read' },
+      expect.objectContaining({ name: 'delegate_task' }),
     ]);
     expect(fake.session.prompt.mock.calls[0][0]).toContain('attachment_aaaaaaaaaaaaaaaaaaaa');
     expect(fake.session.prompt.mock.calls[0][0]).not.toContain('/Users/');
@@ -774,6 +824,7 @@ describe('FreedomAgentService', () => {
         { name: 'grep' },
         { name: 'find' },
         { name: 'ls' },
+        { name: 'delegate_task' },
       ],
       systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
     });

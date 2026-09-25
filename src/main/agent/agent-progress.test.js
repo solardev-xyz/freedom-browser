@@ -14,6 +14,14 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('helper receipts remain model reports, not browser verification', () => {
+    const subagent = { taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', report: 'Looks good' };
+    const item = { operation: 'delegate_task', status: 'succeeded', ...activityProgress('delegate_task', { subagent }) };
+    expect(item.label).toBe('Received helper report — Review');
+    expect(buildAgentOutcome([item], 'completed')).toMatchObject({ verification: 'delegated_report', tone: 'caution' });
+    expect(buildAgentOutcome([item], 'completed').detail).not.toContain('browser');
+    expect(activityProgress('delegate_task', { subagent: { ...subagent, state: 'cancelled' } }).label).toBe('Helper stopped — Review');
+  });
   test('reports real repository commits without checkpoint terminology', () => {
     const workspace = { kind: 'history', command: 'Project history: commit', workingDirectory: '.',
       backend: 'freedom-workspace-files', state: 'completed',

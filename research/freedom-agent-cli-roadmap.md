@@ -59,22 +59,27 @@ checkpoints; actionable tool recovery; bounded command access review in
 restart/reattachment and the accepted Vite HMR workflow are already implemented.
 This does not imply every provider, platform or edge case has been qualified.
 
-**Next product candidates — discussion, not implementation authorization:**
+**Active experiment — subagents:** selected by the user on 2026-09-25. The new
+`experiment/agent-subagents` branch implements the first foreground read-only
+helper: same model connection, scoped project/attachment reads, bounded
+task/context/report, cancellation on Stop/Pause/steering, visible reports and
+history. Real-model smoke acceptance is pending. See the
+[implementation contract and smoke steps](../docs/agent-subagents.md).
+
+**Other product candidates — not implementation authorization:**
 
 | Candidate | Concrete first slice | User benefit / scope |
 | --- | --- | --- |
 | Saved-server management | Rename, edit and remove saved command/directory/port definitions. Define active-process behavior explicitly; removal must not silently stop a process or erase project files. | Smaller continuation: keep the Workspace panel useful as projects accumulate servers. Restart/reattach already exists. |
 | Broader existing-project support | First support linked Git worktrees and their separately located metadata through explicit, validated ownership. Individual file grants and multiple writable projects are separate subsequent slices. | Useful for real development repositories; requires careful metadata and writer-coordination work. |
-| Subagents | One bounded worker through the existing model connection, explicit task/context, attributable progress/result, shared budgets, parent/child approval ownership and reliable Stop. Expand concurrency only after that lifecycle works. | Largest new capability: delegate independent research, review or implementation without requiring a second provider. Parallel writes need ownership/conflict rules. |
+| Subagents (active experiment) | First read-only helper implemented; next qualify with real models, then bounded parallel reads and continuation/messaging. Browser ownership and delegated writes follow separately. | A focused review/inspection through the existing connection. No extra provider required; reports are evidence for the parent to review. |
 | Workspace/history scale | Raise managed checkpoint limits with explicit storage/retention and large-file behavior; improve rename matching where actual projects justify it. | Makes larger projects practical. Current checkpoint ingestion remains 200 files, 64 KiB per file and 512 KiB total; pagination, comparisons and selected restore are already implemented. |
 | Browser/WebMCP coverage | Choose a real blocked website/tool schema, then add the missing schema constraints or frame-scoped tools with origin/approval checks. Embedded or ambiguous-source dialogs remain a separate gap. | Broader compatibility, driven by real tasks rather than speculative API breadth. |
 
-**Recommendation for discussion:** saved-server management is the smallest useful
-continuation. Subagents are the strongest candidate for the next substantial
-capability; start with one worker and a complete lifecycle before parallel code
-editing. Broader existing-project support takes priority if linked worktrees or
-multiple project contexts are blocking the user's everyday workflow. No next
-implementation slice is selected by this roadmap update.
+**Selected direction:** build and qualify the subagent lifecycle before parallel
+code editing. Saved-server management remains a smaller independent candidate;
+broader existing-project support remains relevant if linked worktrees or multiple
+project contexts block everyday work.
 
 **Additional open candidates:**
 
@@ -2581,11 +2586,16 @@ The numbered inventory below records completed foundations and remaining capabil
 
 #### TODO — Subagents and parallel delegation
 
-Added 2026-09-17. Future capability; implementation priority and first delivery
-scope remain to be selected.
+Added 2026-09-17; implementation authorized 2026-09-25 on
+`experiment/agent-subagents`. First delivery is an isolated foreground read-only
+Pi helper with existing provider access, explicit tasks/context, scoped tools,
+bounded usage/results, cancellation and persisted activity reports. Deterministic
+SDK and UI coverage is implemented; real-model acceptance remains pending.
+See [the contract, upstream inspiration and smoke steps](../docs/agent-subagents.md).
+The broader items below remain the direction, not a claim they all shipped.
 
 - Let the main Agent delegate bounded subtasks to specialized child agents, run independent work in parallel, and incorporate their results into the parent conversation. Initial use cases include parallel research, code review, and independent project tasks.
-- First support workers using existing model connections. Keep the delegation contract independent of the worker's internal decision loop so the [deferred Jev proposal](#2026-09-18--jev-browser-acceleration-research-deferred) can later become an optional specialized browser worker using the same permissions, budgets, progress, cancellation, and result handling. A Pi delegation tool may invoke it; no second provider is required for core Agent or initial subagent functionality. This records the intended fit, not authorization to start either implementation now.
+- First support workers using existing model connections. Keep the delegation contract independent of the worker's internal decision loop so the [deferred Jev proposal](#2026-09-18--jev-browser-acceleration-research-deferred) can later become an optional specialized browser worker using the same permissions, budgets, progress, cancellation, and result handling. A Pi delegation tool may invoke it; no second provider is required for core Agent or initial subagent functionality. Subagents are now authorized; Jev integration remains deferred.
 - Give each child an explicit task, selected context and accountable result. Define parent/child messaging, follow-up work, result attribution and history persistence; avoid copying the entire conversation or unrelated private data by default.
 - Keep every child behind Freedom's existing automation and approval boundaries. Delegation may narrow the parent's permissions, never expand them. Define exclusive tab-control leases and coordinated workspace writes so agents cannot race on the same page or overwrite each other's work. Sensitive actions retain their existing approval requirements.
 - Show delegated tasks, status, results and failures in the parent conversation, with details available on demand. Support stopping an individual child; stopping the parent must cancel its descendants, pending model/tool requests and approvals, and reconcile any effects already performed.

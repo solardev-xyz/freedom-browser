@@ -11,6 +11,17 @@ jest.mock('better-sqlite3', () =>
 
 const { AgentSessionHistoryStore, DB_FILE, normalizeActivity } = require('./session-history-store');
 
+test('retains bounded helper evidence without runtime objects or extra fields', () => {
+  const [item] = normalizeActivity([{ operation: 'delegate_task', status: 'succeeded', subagent: {
+    taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', toolCalls: 3,
+    report: 'x'.repeat(13000), credential: 'not persisted', session: { live: true },
+  } }]);
+  expect(item.subagent.report.length).toBe(12000);
+  expect(item.subagent.toolCalls).toBe(3);
+  expect(item.subagent.credential).toBeUndefined();
+  expect(item.subagent.session).toBeUndefined();
+});
+
 test('reviewer approval provenance survives history normalization without its private decision data', () => {
   const [item] = normalizeActivity([{ operation: 'request_permissions', approval: 'reviewer_approved',
     status: 'succeeded', reviewer: { reason: 'private review', root: '/private/path' }, isCurrent: () => true }]);
@@ -475,13 +486,16 @@ describe('AgentSessionHistoryStore', () => {
       userText: 'Task',
       approvalMode: 'every_interaction',
     });
+    store.updateTurnActivity({ conversationId: 'conversation_one', runId: 'run_one', running: true, activity: [
+      { toolCallId: 'helper', operation: 'delegate_task', status: 'running', label: 'Delegating: Review' },
+    ] });
     now = 5_000;
 
     expect(store.markStaleRunningAsInterrupted()).toEqual({ sessions: 1, turns: 1 });
     expect(store.getSession('conversation_one')).toMatchObject({
       status: 'interrupted',
       updatedAt: 5_000,
-      transcript: [{ status: 'interrupted' }],
+      transcript: [{ status: 'interrupted', activity: [{ operation: 'delegate_task', status: 'failed', label: 'Helper interrupted' }] }],
     });
   });
 

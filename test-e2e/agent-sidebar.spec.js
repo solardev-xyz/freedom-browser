@@ -28,6 +28,84 @@ const test = baseTest.extend({
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
+test('helper history persists reports and marks crash-left work interrupted in real SQLite', async ({ electronApp }) => {
+  const result = await electronApp.evaluate(({ app }, root) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const path = require('path');
+    const fs = require('fs');
+    const { AgentSessionHistoryStore } = require(path.join(root, 'src/main/agent/session-history-store'));
+    const userDataDir = path.join(app.getPath('userData'), 'helper-history-fixture');
+    fs.mkdirSync(userDataDir, { recursive: true });
+    let store = new AgentSessionHistoryStore({ userDataDir });
+    store.createSession({ conversationId: 'helper-history', title: 'Review', approvalMode: 'every_interaction' });
+    store.startTurn({ conversationId: 'helper-history', runId: 'finished', userText: 'Review', approvalMode: 'every_interaction' });
+    store.finishTurn({ conversationId: 'helper-history', runId: 'finished', status: 'completed', assistantText: 'Reviewed', activity: [
+      { toolCallId: 'first', operation: 'delegate_task', status: 'succeeded', label: 'Received helper report',
+        subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Check README.md', toolCalls: 1 } },
+    ] });
+    const lateWrite = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'finished', running: true, activity: [] });
+    store.startTurn({ conversationId: 'helper-history', runId: 'interrupted', position: 1, userText: 'Review more', approvalMode: 'every_interaction' });
+    const runningSaved = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'interrupted', running: true, activity: [
+      { toolCallId: 'second', operation: 'delegate_task', status: 'running', label: 'Delegating: Review more' },
+    ] });
+    store.close();
+    store = new AgentSessionHistoryStore({ userDataDir });
+    store.markStaleRunningAsInterrupted();
+    const transcript = store.getSession('helper-history').transcript;
+    store.close();
+    return { lateWrite, runningSaved, transcript };
+  }, repositoryRoot);
+  expect(result.lateWrite).toBe(false);
+  expect(result.runningSaved).toBe(true);
+  expect(result.transcript[0].activity[0].subagent.report).toBe('Check README.md');
+  expect(result.transcript[1]).toMatchObject({ status: 'interrupted', activity: [
+    { operation: 'delegate_task', status: 'failed', label: 'Helper interrupted' },
+  ] });
+});
+
+test('delegated reports are expandable, inert and coherent in both themes and layouts', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
+  await window.locator('#agent-ollama-url').fill(ollamaServer);
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
+    emit({ type: 'run_started', userText: 'Review the solar-system project' });
+    emit({ type: 'tool_started', toolCallId: 'helper', operation: 'delegate_task', intent: 'Delegating: Review planet controls' });
+  });
+  await expect(window.locator('.agent-tool-list')).toContainText('Delegating: Review planet controls');
+  await window.screenshot({ path: testInfo.outputPath('helper-running.png') });
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
+    emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: 'Received helper report — Review planet controls',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review planet controls', state: 'completed', toolCalls: 3,
+        report: 'app/SolarScene.tsx: Pause and speed controls are wired correctly.\nKeyboard focus needs a visible style. No tests were run.\n<img src="https://invalid.test/tracker"> is shown as source text.' } });
+    emit({ type: 'tool_started', toolCallId: 'stopped', operation: 'delegate_task', intent: 'Delegating: Check labels' });
+    emit({ type: 'tool_finished', toolCallId: 'stopped', operation: 'delegate_task', status: 'failed', label: 'Helper stopped — Check labels',
+      subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Check labels', state: 'cancelled', toolCalls: 0, report: '' } });
+  });
+  const report = window.locator('.agent-subagent-report').first();
+  await report.locator('summary').click();
+  await expect(report.locator('p').last()).toBeVisible();
+  await expect(report.locator('img, script')).toHaveCount(0);
+  await expect(window.locator('.agent-tool-item.cancelled')).toContainText('Helper stopped');
+  for (const layout of ['browser', 'agent']) {
+    if (layout === 'agent') await window.locator('[data-test="agent-first-toggle"]').click();
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
+      await expect(report).toBeVisible();
+      expect(await report.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await window.screenshot({ path: testInfo.outputPath(`helper-report-${layout}-${theme}.png`) });
+    }
+  }
+});
+
 // Presentation coverage only: a main-process fixture emits the same bounded
 // events as the service. Authority/grant application is covered by production
 // qualification and unit tests; this test does not grant project access.

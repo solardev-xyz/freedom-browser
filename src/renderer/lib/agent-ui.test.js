@@ -483,6 +483,24 @@ async function loadAgentUi(options = {}) {
 }
 
 describe('Agent UI', () => {
+  test('renders helper reports as expandable inert text and labels interruptions without browser errors', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'Review the project' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', intent: 'Delegating: Review' });
+    ctx.emit({ type: 'run_progress', runId: 'run_test', source: 'subagent', message: 'Helper is inspecting: Review' });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-live-status').children[1].textContent).toBe('Helper is inspecting: Review');
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task',
+      status: 'succeeded', label: 'Received helper report — Review',
+      subagent: { state: 'completed', toolCalls: 2, report: '<img src="https://invalid.test/track">README.md needs an example.' } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(report.children[0].textContent).toBe('Received helper report — Review');
+    expect(report.children[2].textContent).toContain('<img');
+    expect(report.querySelector('img')).toBeNull();
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task',
+      status: 'failed', label: 'Helper stopped — Review', subagent: { state: 'cancelled', report: '' } });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-subagent-report').children[2].textContent).toBe('No complete report was returned.');
+    expect(ctx.elements['agent-run-message'].textContent).not.toContain('Browser');
+  });
   afterEach(() => {
     delete global.document;
     delete global.window;

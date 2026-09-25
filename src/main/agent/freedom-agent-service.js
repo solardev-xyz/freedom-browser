@@ -16,6 +16,8 @@ const {
 } = require('../automation/origin-scoped-controller');
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
 const { createConversationAttachmentTools } = require('./pi-attachment-tools');
+const { createSubagentTool, DELEGATION_SYSTEM_PROMPT } = require('./pi-subagent-tools');
+const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt } = require('./subagent-receipt');
 const {
   createWorkspaceTools,
   isSkillReadPath,
@@ -387,6 +389,7 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       ? workspaceToolAction(event.toolName, event.args)
       : '';
     const progress = activityProgress(String(event.toolName), {
+      title: event.toolName === SUBAGENT_TOOL_NAME ? event.args?.title : undefined,
       origin:
         event.toolName === 'browser_create_tab' || event.toolName === 'browser_navigate'
           ? event.args?.url
@@ -411,12 +414,13 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
     };
   }
   if (event.type === 'tool_execution_end') {
-    const failed = event.isError || toolOutcome?.status === 'failed';
+    const subagent = normalizeSubagentReceipt(toolOutcome?.subagent || event.result?.details?.subagent);
+    const failed = event.isError || toolOutcome?.status === 'failed' || (subagent && subagent.state !== 'completed');
     const errorCode = failed ? toolOutcome?.errorCode : undefined;
     const operation = String(event.toolName);
     const attachment = normalizeAttachmentReceipt(event.result?.details, operation);
     const progress =
-      toolOutcome?.progress || activityProgress(operation, attachment ? { attachment } : {});
+      toolOutcome?.progress || activityProgress(operation, { attachment, subagent });
     return {
       type: 'tool_finished',
       toolCallId: String(event.toolCallId),
@@ -434,6 +438,7 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       ...(toolOutcome?.workspace && { workspace: toolOutcome.workspace }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(attachment && { attachment }),
+      ...(subagent && { subagent }),
       ...(errorCode && { errorCode }),
     };
   }
@@ -922,6 +927,7 @@ class FreedomAgentService {
     this.createAttachmentTools = options.createAttachmentTools || createConversationAttachmentTools;
     this.createWorkspaceTools = options.createWorkspaceTools || createWorkspaceTools;
     this.createSession = options.createSession || createIsolatedPiSession;
+    this.createSubagentSession = options.createSubagentSession || createIsolatedPiSession;
     this.attachmentStore = options.attachmentStore || null;
     if (
       this.attachmentStore &&
@@ -1538,6 +1544,7 @@ class FreedomAgentService {
       declinedAccessRequests: new Set(),
       pendingWalletRequests: new Set(),
       workspaceAbortController: new AbortController(),
+      subagentAbortController: new AbortController(),
       finished: false,
       providerId: existingConversation?.providerId || options.model?.provider || '',
       providerLabel:
@@ -1692,8 +1699,44 @@ class FreedomAgentService {
               },
             })
           : [];
-        const customTools = [...browserTools, ...attachmentTools, ...workspaceTools];
-        let systemPrompt = DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT;
+        const delegationTool = createSubagentTool({
+          sdk, model: options.model, modelRuntime: options.modelRuntime,
+          thinkingLevel: options.thinkingLevel, createSession: this.createSubagentSession,
+          getOwner: () => {
+            const active = activeConversationRun();
+            return active?.status === 'running' ? active : null;
+          },
+          getUserInstructions: (owner) => ({
+            priorUserRequests: (this.conversations.get(owner.conversationId)?.turns || [])
+              .filter(turn => turn !== owner).map(turn => ({ userRequest: turn.userText,
+                guidance: (turn.guidance || []).filter(item => item.status !== 'cancelled').map(item => item.text) })),
+            userRequest: owner.userText,
+            guidance: owner.guidance.filter(item => item.status !== 'cancelled').map(item => item.text),
+          }),
+          createTools: async (owner) => {
+            // Separate tool closures keep child evidence out of the parent's activity
+            // and bind every read to its original conversation, never a later run.
+            const projectTools = this.workspaceController
+              ? await this.createWorkspaceTools({
+                  sdk, controller: this.workspaceController, conversationId: owner.conversationId,
+                  getRunSignal: () => owner.workspaceAbortController.signal,
+                  requestApproval: () => { throw new Error('Helper access is unavailable. Ask the parent to request project access; helpers cannot enable a workspace.'); },
+                }) : [];
+            const sharedTools = this.attachmentStore
+              ? await this.createAttachmentTools({ sdk, store: this.attachmentStore,
+                  conversationId: owner.conversationId, visionEnabled }) : [];
+            return [...projectTools, ...sharedTools];
+          },
+          onResult: (owner, outcome) => { if (owner) this.#handleToolOutcome(owner, outcome); },
+          onProgress: (owner, title) => {
+            if (this.activeRun === owner && !owner.finished) this.#emit(owner, {
+              type: 'run_progress', source: 'subagent',
+              message: `Helper is inspecting: ${title.replace(/\p{Cc}/gu, ' ').slice(0, 100)}`,
+            });
+          },
+        });
+        const customTools = [...browserTools, ...attachmentTools, ...workspaceTools, delegationTool];
+        let systemPrompt = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}\n\n${DELEGATION_SYSTEM_PROMPT}`;
         if (this.attachmentStore) {
           systemPrompt = `${systemPrompt}\n\n${ATTACHMENT_SYSTEM_PROMPT}`;
         }
@@ -1880,6 +1923,7 @@ class FreedomAgentService {
     if (!run || (runId !== undefined && run.runId !== runId)) return false;
     this.#diagnostic(run, 'stop_requested');
     run.stopRequested = true;
+    run.subagentAbortController.abort();
     run.workspaceAbortController.abort();
     this.#resolveApproval(run, 'declined');
     try {
@@ -1930,6 +1974,8 @@ class FreedomAgentService {
     const run = this.activeRun;
     if (!run || run.runId !== runId || run.status !== 'running' || !run.execution) return false;
     run.pauseRequested = true;
+    run.subagentAbortController.abort();
+    run.subagentAbortController = new AbortController();
     run.pendingAccessReview?.abort();
     run.status = 'pausing';
     this.#resolveApproval(run, 'withdrawn');
@@ -1957,6 +2003,8 @@ class FreedomAgentService {
     const run = this.activeRun;
     if (!run || run.runId !== runId || run.status !== 'running' || !run.execution) return null;
     const guidance = this.#createGuidance(run, validateGuidanceText(text), 'queued');
+    run.subagentAbortController.abort();
+    run.subagentAbortController = new AbortController();
     run.pendingAccessReview?.abort();
     this.workspaceController?.clearTurnPermissions?.(run.conversationId);
     try {
@@ -2364,6 +2412,9 @@ class FreedomAgentService {
       if (toolOutcome) run.pendingWorkspaceOutcomes.delete(normalized.toolCallId);
       if (!applied) return;
     }
+    if (normalized.operation === SUBAGENT_TOOL_NAME) this.#persistHistory('updateTurnActivity', {
+      conversationId: run.conversationId, runId: run.runId, activity: run.activity, running: true,
+    });
     this.#emit(run, normalized);
   }
 
@@ -2397,6 +2448,7 @@ class FreedomAgentService {
     if (normalized.publication) item.publication = normalized.publication;
     if (normalized.workspace) item.workspace = normalized.workspace;
     if (normalized.attachment) item.attachment = normalized.attachment;
+    if (normalized.subagent) item.subagent = normalized.subagent;
     if (normalized.artifacts) item.artifacts = normalized.artifacts;
     if (item.approval) normalized.approval = item.approval;
     return true;
@@ -2465,6 +2517,7 @@ class FreedomAgentService {
         publication: normalizePublicationReceipt(outcome.publication),
       }),
       ...(workspace && { workspace }),
+      ...(normalizeSubagentReceipt(outcome.subagent) && { subagent: normalizeSubagentReceipt(outcome.subagent) }),
       ...(Array.isArray(outcome.artifacts) && {
         artifacts: outcome.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100),
       }),
@@ -2483,6 +2536,7 @@ class FreedomAgentService {
         diagnostic: outcome.diagnostic,
         publication: outcome.publication,
         workspace: outcome.workspace,
+        subagent: outcome.subagent,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
@@ -2890,9 +2944,15 @@ class FreedomAgentService {
 
   async #finish(run, status, error) {
     if (run.finished) return;
+    run.subagentAbortController.abort();
     run.pendingAccessReview?.abort();
     this.#diagnostic(run, 'run_finished', { status });
     this.#reconcileToolOutcomes(run);
+    for (const item of run.activity.filter(item => item.operation === SUBAGENT_TOOL_NAME && item.status === 'running')) {
+      item.status = 'failed';
+      item.label = 'Helper interrupted';
+      this.#emit(run, { ...item, type: 'tool_finished' });
+    }
     run.toolOutcomes.clear();
     run.pendingWorkspaceOutcomes.clear();
     this.#resolveApproval(run, 'declined');

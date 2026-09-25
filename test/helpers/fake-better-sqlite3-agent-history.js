@@ -140,7 +140,8 @@ class FakeBetterSqlite3AgentHistoryDatabase {
 
     if (
       query ===
-      "UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ? AND status != 'running'"
+      "UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ? AND status != 'running'" ||
+      query === "UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ? AND status = 'running'"
     ) {
       return {
         run: (activityJson, id, sessionId) => {
@@ -148,7 +149,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
             (candidate) =>
               candidate.id === id &&
               candidate.session_id === sessionId &&
-              candidate.status !== 'running'
+              (query.includes("status !=") ? candidate.status !== 'running' : candidate.status === 'running')
           );
           if (!row) return { changes: 0 };
           row.activity_json = activityJson;

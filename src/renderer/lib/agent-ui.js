@@ -2944,6 +2944,7 @@ function formatOperation(operation) {
 }
 
 function formatToolError(code, operation) {
+  if (operation === 'delegate_task') return 'The delegated task did not complete';
   const labels = {
     TAB_NOT_FOUND: 'Page is no longer open',
     NAVIGATION_FAILED: 'Page could not be opened',
@@ -3230,7 +3231,7 @@ function addToolRow(event) {
   const state = document.createElement('span');
   state.className = 'agent-tool-state';
   state.textContent = '•';
-  const label = document.createElement('span');
+  const label = document.createElement(event.operation === 'delegate_task' ? 'div' : 'span');
   label.textContent = event.intent || event.label || formatOperation(event.operation);
   const approval = document.createElement('span');
   approval.className = 'agent-tool-approval';
@@ -3307,11 +3308,33 @@ function finishToolRow(event) {
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
   record.row.title = '';
-  if (event.status === 'failed') {
+  if (event.status === 'failed' && event.operation !== 'delegate_task') {
     record.row.title = formatToolError(event.errorCode, event.operation);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
   }
   renderToolPage(record, event, true);
+  if (event.operation === 'delegate_task' && event.subagent) {
+    const receipt = event.subagent;
+    const details = document.createElement('details');
+    details.className = 'agent-subagent-report';
+    const summary = document.createElement('summary');
+    summary.textContent = record.label.textContent;
+    const note = document.createElement('p');
+    const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
+    note.textContent = `Read-only helper · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
+    const report = document.createElement('p');
+    report.textContent = typeof receipt.report === 'string' && receipt.report
+      ? receipt.report.slice(0, 12000) : 'No complete report was returned.';
+    details.appendChild(summary);
+    details.appendChild(note);
+    details.appendChild(report);
+    record.label.replaceChildren(details);
+    if (receipt.state === 'cancelled') {
+      record.state.textContent = '•';
+      record.row.classList.remove('failed');
+      record.row.classList.add('cancelled');
+    }
+  }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
   if (userCancelled) {
     record.approval.textContent = 'Cancelled by you';
@@ -3623,7 +3646,7 @@ function handleAgentEvent(event) {
     setLiveStatus(event.runId, 'Responding…');
   } else if (
     event.type === 'run_progress' &&
-    event.source === 'reasoning_heading' &&
+    ['reasoning_heading', 'subagent'].includes(event.source) &&
     typeof event.message === 'string'
   ) {
     setLiveStatus(event.runId, event.message);

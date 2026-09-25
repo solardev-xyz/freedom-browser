@@ -3,6 +3,7 @@
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
+const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt } = require('./subagent-receipt');
 const {
   classifyProviderFailure,
   providerFailurePresentation,
@@ -37,6 +38,11 @@ const WORKSPACE_OPERATIONS = Object.freeze({
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
 const OPERATION_PROGRESS = Object.freeze({
+  [SUBAGENT_TOOL_NAME]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Delegating a read-only task',
+    completed: 'Received helper report',
+  },
   [WORKSPACE_OPERATIONS.HISTORY]: {
     effect: ACTIVITY_EFFECTS.MANAGED,
     intent: 'Checking project history',
@@ -806,6 +812,16 @@ function activityProgress(operation, receipt = {}) {
   const attachment = normalizeAttachmentReceipt(receipt.attachment, operation);
   const publication = normalizePublicationReceipt(receipt.publication);
   const workspace = normalizeWorkspaceReceipt(receipt.workspace);
+  const subagent = normalizeSubagentReceipt(receipt.subagent);
+
+  if (operation === SUBAGENT_TOOL_NAME) {
+    const title = subagent?.title || boundedString(receipt.title, 100);
+    intent = title ? `Delegating: ${title}` : copy.intent;
+    label = subagent && subagent.state !== 'completed'
+      ? ({ cancelled: 'Helper stopped', timed_out: 'Helper timed out', limited: 'Helper reached its limit', failed: 'Helper could not finish' }[subagent.state])
+      : copy.completed;
+    if (title) label += ` — ${title}`;
+  }
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -1016,6 +1032,7 @@ function activityProgress(operation, receipt = {}) {
     ...(attachment && { attachment }),
     ...(publication && { publication }),
     ...(workspace && { workspace }),
+    ...(subagent && { subagent }),
   });
 }
 
@@ -1173,6 +1190,7 @@ function buildAgentOutcome(activity, status, error) {
     .map((item) => normalizeWorkspaceReceipt(item?.workspace))
     .filter(Boolean);
   const nonBrowserObservations = new Set([
+    SUBAGENT_TOOL_NAME,
     OPERATIONS.NODE_STATUS,
     OPERATIONS.NODE_REQUEST,
     OPERATIONS.NODE_OPERATION_STATUS,
@@ -1584,6 +1602,16 @@ function buildAgentOutcome(activity, status, error) {
         detail: `Freedom recorded ${browserActionCopy}. No browser change was made.${approvalNote}${destinationNote}${recoveryNote}`,
         destinations,
         counts,
+      });
+    }
+    const delegated = items.filter(item => item.operation === SUBAGENT_TOOL_NAME);
+    if (delegated.length) {
+      const reports = delegated.filter(item => item.subagent?.state === 'completed').length;
+      return Object.freeze({
+        kind: 'completed', verification: 'delegated_report', tone: 'caution',
+        headline: reports ? 'Helper report received' : 'Delegated task incomplete',
+        detail: `${reports} of ${delegated.length} delegated tasks returned a report. Helpers had read-only access. Their findings are model-generated and require review.`,
+        destinations, counts,
       });
     }
     if (!items.length) {
