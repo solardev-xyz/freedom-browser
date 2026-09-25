@@ -21,6 +21,11 @@ interrupted-restore recovery. External Git recovery inspects actual state and
 permits confirmed finalization only for the exact retained branch/index/owned-lock
 combination; it does not add repository rollback or rewrite history.
 
+Smoke-test refinements are implemented: expandable folders, live filename search
+that resets to the prior tree when cleared, automatic wrapping and Markdown
+rendering in file views. Generated output and dependencies are browsable without
+changing checkpoint exclusions; ordinary search omits dependency/cache contents.
+
 See [the viewer contract, limits and tests](../docs/agent-project-viewer.md).
 Local lint and focused checks pass; disposable-Electron renderer checks pass
 in both themes and layouts. Real-Git fault qualification on the designated Mac mini is pending: automatic approval

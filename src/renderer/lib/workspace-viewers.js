@@ -27,12 +27,13 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
     return response.result;
   }
   const history = (session, type, options = {}) => request(session, 'agentWorkspaceHistory', type, options);
-  const inspect = (session, type, path = '.', options = {}) => request(session, 'inspectAgentWorkspace', type, path, false, options);
+  const inspect = (session, type, path = '.', options = {}) => request(session, 'inspectAgentWorkspace', type, path, type === 'tree', options);
   const current = (session, sequence) => !session.closed && session.sequence === sequence && conversation === session.conversationId;
   const fileOptions = session => ({ versionId: session.version?.id, baseId: session.baseId || undefined });
 
   function shell(session, subtitle) {
     session.documentScroll = session.document?.scrollTop ?? session.documentScroll ?? 0;
+    clearTimeout(session.searchTimer);
     const sequence = ++session.sequence; session.readSequence += 1;
     const header = node('header', 'workspace-viewer-heading');
     const identity = node('div', 'workspace-viewer-identity');
@@ -104,10 +105,128 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
     }
   }
 
+  async function projectTree(session, ui) {
+    session.expanded ||= new Set();
+    const pages = new Map(), loading = new Map(), errors = new Map();
+    let searchPages = null, searchExpanded = null, searchSequence = 0;
+    const list = node('nav', 'workspace-viewer-files'); list.setAttribute('aria-label', 'Project files');
+    const search = node('input', 'workspace-viewer-search'); search.type = 'search'; search.placeholder = 'Search files…'; search.setAttribute('aria-label', 'Search project filenames'); search.maxLength = 200;
+    search.value = session.fileQuery || ''; list.appendChild(search);
+    const tree = node('div', 'workspace-viewer-tree'); tree.setAttribute('role', 'tree'); tree.setAttribute('aria-label', 'Project files'); list.appendChild(tree);
+    session.list = list; session.buttons = []; resize(session, list, ui);
+    session.document = node('div', 'workspace-viewer-document'); ui.body.appendChild(session.document);
+    session.document.appendChild(node('p', 'workspace-viewer-message', 'Choose a file to view.'));
+
+    const paint = () => {
+      if (!ui.valid()) return;
+      const focus = tree.contains(document.activeElement) ? document.activeElement.dataset.path : null;
+      const scroll = list.scrollTop;
+      tree.replaceChildren(); session.buttons = [];
+      const source = searchPages || pages, expanded = searchPages ? searchExpanded : session.expanded;
+      const branch = (path, depth) => {
+        const page = source.get(path);
+        for (const entry of page?.entries || []) {
+          const folder = entry.type === 'directory', open = folder && expanded.has(entry.path);
+          const button = action('', async () => {
+            if (folder) {
+              if (open) expanded.delete(entry.path); else expanded.add(entry.path);
+              paint();
+              if (!open && !searchPages) await load(entry.path);
+            } else {
+              session.documentScroll = session.selected === entry.path ? session.document.scrollTop : 0;
+              session.selected = entry.path; await readFile(session, ui, entry);
+            }
+          }, 'workspace-viewer-file workspace-viewer-tree-item');
+          button.dataset.path = entry.path; button.dataset.parent = path; button.title = entry.path;
+          button.style.paddingLeft = `${10 + depth * 16}px`;
+          button.setAttribute('role', 'treeitem'); button.setAttribute('aria-level', String(depth + 1));
+          button.setAttribute('aria-selected', String(!folder && session.selected === entry.path));
+          if (folder) button.setAttribute('aria-expanded', String(open));
+          const chevron = node('span', 'workspace-tree-chevron'); chevron.setAttribute('aria-hidden', 'true');
+          if (folder) chevron.classList.add(open ? 'expanded' : 'collapsed');
+          button.appendChild(chevron); button.appendChild(node('span', 'workspace-viewer-path', entry.name));
+          session.buttons.push(button); tree.appendChild(button);
+          if (open) branch(entry.path, depth + 1);
+        }
+        if (loading.has(path)) tree.appendChild(node('p', 'workspace-viewer-caption', 'Loading folder…'));
+        if (errors.has(path)) {
+          tree.appendChild(node('p', 'workspace-viewer-message', errors.get(path)));
+          tree.appendChild(action('Retry folder', () => load(path, page?.nextOffset || 0)));
+        } else if (page?.nextOffset) tree.appendChild(action('Load more files', () => load(path, page.nextOffset)));
+        else if (page?.limitReached) tree.appendChild(node('p', 'workspace-viewer-caption', 'Folder listing limit reached.'));
+        else if (page && !page.entries.length && !loading.has(path)) tree.appendChild(node('p', 'workspace-viewer-caption', path === '.' ? 'No files found.' : 'Empty folder'));
+      };
+      branch('.', 0); list.scrollTop = scroll;
+      session.buttons.find(button => button.dataset.path === focus)?.focus();
+    };
+    const load = async (path, offset = 0) => {
+      if (!ui.valid()) return;
+      if (loading.has(path)) return loading.get(path);
+      if (!offset && pages.has(path) && !errors.has(path)) return;
+      const work = (async () => {
+        try {
+          const result = await inspect(session, 'tree', path, { offset });
+          if (!result || !ui.valid()) return;
+          const entries = (result.entries || []).filter(entry => entry.type !== 'other').map(entry => ({ ...entry, path: path === '.' ? entry.name : `${path}/${entry.name}` }));
+          pages.set(path, { ...result, entries: [...(offset ? pages.get(path)?.entries || [] : []), ...entries] }); errors.delete(path);
+        } catch (error) { if (ui.valid()) errors.set(path, error.message); }
+        finally { loading.delete(path); paint(); }
+      })();
+      loading.set(path, work); paint(); await work;
+      // Reload only previously expanded folders, never the entire project.
+      for (const entry of pages.get(path)?.entries || []) if (entry.type === 'directory' && session.expanded.has(entry.path) && !searchPages) await load(entry.path);
+    };
+    const runSearch = async (sequence, query) => {
+      if (!ui.valid() || sequence !== searchSequence) return;
+      if (!query) { searchPages = null; searchExpanded = null; ui.message.textContent = ''; paint(); await load('.'); return; }
+      ui.message.textContent = 'Searching…';
+      try {
+        const result = await inspect(session, 'search', '.', { query });
+        if (!result || !ui.valid() || sequence !== searchSequence) return;
+        searchPages = new Map([['.', { entries: [] }]]); searchExpanded = new Set();
+        for (const entry of result.entries || []) {
+          const parts = entry.path.split('/'); let parent = '.';
+          for (let i = 0; i < parts.length; i += 1) {
+            const path = parent === '.' ? parts[i] : `${parent}/${parts[i]}`, folder = i < parts.length - 1;
+            if (!searchPages.get(parent).entries.some(item => item.path === path)) searchPages.get(parent).entries.push({ path, name: parts[i], type: folder ? 'directory' : 'file' });
+            if (folder) { if (!searchPages.has(path)) searchPages.set(path, { entries: [] }); searchExpanded.add(path); }
+            parent = path;
+          }
+        }
+        for (const page of searchPages.values()) page.entries.sort((a, b) => (a.type === 'directory' ? 0 : 1) - (b.type === 'directory' ? 0 : 1) || a.name.localeCompare(b.name));
+        paint(); ui.message.textContent = result.limitReached ? 'Showing bounded search results. Refine your search.' : `${result.entries.length} ${result.entries.length === 1 ? 'file' : 'files'} found`;
+      } catch (error) { if (ui.valid() && sequence === searchSequence) ui.message.textContent = error.message; }
+    };
+    search.addEventListener('input', () => {
+      session.fileQuery = search.value; const sequence = ++searchSequence;
+      clearTimeout(session.searchTimer);
+      const query = search.value.trim().slice(0, 200);
+      if (!query) void runSearch(sequence, '');
+      else session.searchTimer = setTimeout(() => void runSearch(sequence, query), 180);
+    });
+    tree.addEventListener('keydown', event => {
+      const active = document.activeElement, index = session.buttons.indexOf(active);
+      if (index < 0 || !['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      if (event.key === 'ArrowDown') session.buttons[Math.min(index + 1, session.buttons.length - 1)]?.focus();
+      if (event.key === 'ArrowUp') session.buttons[Math.max(0, index - 1)]?.focus();
+      if (event.key === 'Home') session.buttons[0]?.focus();
+      if (event.key === 'End') session.buttons.at(-1)?.focus();
+      if (event.key === 'ArrowRight') { if (active.getAttribute('aria-expanded') === 'false') active.click(); else if (active.getAttribute('aria-expanded') === 'true') session.buttons[index + 1]?.focus(); }
+      if (event.key === 'ArrowLeft') { if (active.getAttribute('aria-expanded') === 'true') active.click(); else session.buttons.find(button => button.dataset.path === active.dataset.parent)?.focus(); }
+    });
+    await load('.'); if (!ui.valid()) return;
+    ui.message.textContent = '';
+    if (session.fileQuery?.trim()) await runSearch(++searchSequence, session.fileQuery.trim().slice(0, 200));
+    if (!ui.valid()) return;
+    const entry = [...pages.values()].flatMap(page => page.entries).find(entry => entry.path === session.selected && entry.type === 'file');
+    if (entry) await readFile(session, ui, entry);
+  }
+
   async function readFile(session, ui, entry) {
     const sequence = ++session.readSequence;
     const valid = () => ui.valid() && sequence === session.readSequence;
-    for (const button of session.buttons || []) button.setAttribute('aria-pressed', String(button.dataset.path === entry.path));
+    for (const button of session.buttons || []) button.setAttribute(button.getAttribute('role') === 'treeitem' ? 'aria-selected' : 'aria-pressed', String(button.dataset.path === entry.path));
     const pane = session.document; pane.replaceChildren();
     const heading = node('div', 'workspace-viewer-file-heading', entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path);
     const tools = node('div', 'workspace-viewer-document-tools');
@@ -134,12 +253,11 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
       }
       const paint = () => {
         if (!valid()) return;
+        if ((!comparison || fullFile) && /\.(?:md|markdown)$/i.test(entry.path)) { renderMarkdown(code, text, { query: session.find || '' }); return; }
         renderDocument(code, rows, { split: comparison && !fullFile && session.split, query: session.find || '', highlight: /\.(?:[cm]?[jt]sx?|json|css|py|sh|ya?ml)$/.test(entry.path), collapse: comparison && !fullFile });
-        code.classList.toggle('workspace-code-wrap', Boolean(session.wrap));
       };
       const search = node('input', 'workspace-viewer-search'); search.type = 'search'; search.placeholder = 'Find in file…'; search.setAttribute('aria-label', 'Find in file'); search.value = session.find || '';
       search.addEventListener('input', () => { session.find = search.value; paint(); code.querySelector('mark')?.scrollIntoView?.({ block: 'center' }); }); tools.appendChild(search);
-      tools.appendChild(action('Wrap', () => { session.wrap = !session.wrap; paint(); }));
       tools.appendChild(action('Copy', async () => { try { await navigator.clipboard.writeText(text); if (valid()) note.textContent = 'Copied.'; } catch { if (valid()) note.textContent = 'Copy unavailable. Select the text and copy it.'; } }));
       if (comparison) {
         tools.appendChild(action('Side by side', () => { session.split = !session.split; paint(); }));
@@ -152,9 +270,6 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
           if (!file || !valid()) return;
           fullFile = true; text = file.text || ''; rows = text.split('\n').map((line, index) => ({ kind: 'context', text: line, newLine: index + 1 })); note.textContent = file.message || (file.truncated ? 'Full file preview is limited to 64 KiB.' : 'Full file'); paint();
         }));
-      }
-      if (!comparison && /\.md$/i.test(entry.path)) {
-        let preview = false; tools.appendChild(action('Markdown preview', () => { preview = !preview; if (preview) renderMarkdown(code, text); else paint(); }));
       }
       if (!historical && /\.(png|jpe?g|gif|webp)$/i.test(entry.path)) tools.appendChild(action('Preview image', async () => {
         const image = await inspect(session, 'image', entry.path); if (!image || !valid()) return;
@@ -253,30 +368,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
         }
         return;
       }
-      if (session.mode === 'files') {
-        const directory = session.directory || '.';
-        ui.controls.appendChild(action('Up', () => { session.directory = directory.includes('/') ? directory.slice(0, directory.lastIndexOf('/')) : '.'; session.selected = null; session.filter = ''; void show(session); }));
-        ui.controls.appendChild(node('span', 'workspace-viewer-caption', directory));
-        const search = node('input', 'workspace-viewer-search'); search.type = 'search'; search.placeholder = 'Search project files…'; search.setAttribute('aria-label', 'Search project filenames');
-        search.addEventListener('keydown', async event => {
-          if (event.key !== 'Enter' || !search.value.trim()) return;
-          event.preventDefault();
-          const sequence = ++session.readSequence;
-          try {
-            const found = await inspect(session, 'search', '.', { query: search.value.trim().slice(0, 200) });
-            if (!found || !ui.valid() || sequence !== session.readSequence) return;
-            fileList(session, ui, found.entries); ui.message.textContent = found.limitReached ? 'Search is bounded. Refine the filename to narrow results.' : `${found.entries.length} files found`;
-          } catch (error) { if (ui.valid()) ui.message.textContent = error.message; }
-        }); ui.controls.appendChild(search);
-        const result = await inspect(session, 'tree', directory); if (!result || !ui.valid()) return;
-        const entries = page => (page.entries || []).filter(entry => entry.type !== 'other').map(entry => ({ ...entry, path: directory === '.' ? entry.name : `${directory}/${entry.name}` }));
-        fileList(session, ui, entries(result)); ui.message.textContent = result.hiddenCount ? 'Generated folders are hidden.' : '';
-        let offset = result.nextOffset;
-        if (offset) {
-          const more = action('Load more files', async () => { more.disabled = true; try { const next = await inspect(session, 'tree', directory, { offset }); if (!next || !ui.valid()) return; fileList(session, ui, entries(next), { append: true }); offset = next.nextOffset; more.hidden = !offset; } catch (error) { if (ui.valid()) ui.message.textContent = error.message; } finally { more.disabled = false; } }); ui.controls.appendChild(more);
-        }
-        return;
-      }
+      if (session.mode === 'files') { await projectTree(session, ui); return; }
       ui.controls.appendChild(select('Changes to show', [['all', 'All changes'], ['staged', 'Staged changes'], ['unstaged', 'Unstaged changes']], session.scope || 'all', value => { session.scope = value; session.selected = null; void show(session); }));
       const changes = await inspect(session, 'changes', '.', { scope: session.scope || 'all' });
       if (!changes || !ui.valid()) return;
@@ -334,7 +426,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
             event.preventDefault(); event.stopPropagation(); session.document?.querySelector('input[type="search"]')?.focus();
           }
         });
-        session.tab = openTab({ key, conversationId, title: session.title, content: session.content, onClose: () => { session.closed = true; sessions.delete(key); } });
+        session.tab = openTab({ key, conversationId, title: session.title, content: session.content, onClose: () => { session.closed = true; clearTimeout(session.searchTimer); sessions.delete(key); } });
         sessions.set(key, session); void show(session);
       } else openTab({ key, conversationId, title: session.title, content: session.content });
       onOpenViewer(); return session.tab;

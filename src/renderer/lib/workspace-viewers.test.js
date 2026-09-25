@@ -25,7 +25,42 @@ describe('read-only workspace viewers', () => {
     closeTab = jest.fn((id) => { const tab = tabs.find((entry) => entry.id === id); tab.onClose(); tab.content.remove(); tabs = tabs.filter((entry) => entry !== tab); });
     viewers = createWorkspaceViewers({ openTab, closeTab }); viewers.setConversation('one');
   });
-  afterEach(() => { viewers.setConversation(null); delete global.document; delete global.window; });
+  afterEach(() => { viewers.setConversation(null); jest.useRealTimers(); delete global.document; delete global.window; });
+
+  test('expands folders inline and restores the tree when live search clears, ignoring stale results', async () => {
+    jest.useFakeTimers();
+    let finishOld;
+    inspect.mockImplementation(async (conversationId, type, path, _generated, options) => {
+      const result = type === 'tree' ? { entries: path === '.' ? [{ name: 'src', type: 'directory' }, { name: 'README.md', type: 'file' }] : [{ name: 'planet.js', type: 'file' }] }
+        : type === 'search' ? options.query === 'old' ? await new Promise(resolve => { finishOld = resolve; }) : { entries: [{ path: 'other/moon.js', type: 'file' }] }
+          : { text: '# Project\nSafe documentation' };
+      return { ok: true, conversationId, result };
+    });
+    viewers.open('one', null, null, 'files'); await flush();
+    const host = tabs[0].content;
+    const paths = () => host.querySelectorAll('.workspace-viewer-tree-item').map(button => button.dataset.path);
+    const folder = () => host.querySelectorAll('.workspace-viewer-tree-item').find(button => button.dataset.path === 'src');
+    expect(paths()).toEqual(['src', 'README.md']);
+    expect(inspect).toHaveBeenCalledWith('one', 'tree', '.', true, { offset: 0 });
+    folder().dispatch('click'); await flush();
+    expect(paths()).toEqual(['src', 'src/planet.js', 'README.md']);
+    host.querySelectorAll('.workspace-viewer-tree-item').find(button => button.dataset.path === 'README.md').dispatch('click'); await flush();
+    const pane = host.querySelector('.workspace-viewer-document');
+    expect(pane.querySelector('.workspace-markdown')).not.toBeNull();
+    expect(find(host, 'Wrap')).toBeUndefined(); expect(find(host, 'Markdown preview')).toBeUndefined(); expect(find(host, 'Up')).toBeUndefined();
+    const search = host.querySelector('.workspace-viewer-search');
+    search.value = 'old'; search.dispatch('input'); jest.advanceTimersByTime(180); await flush();
+    search.value = 'moon'; search.dispatch('input'); jest.advanceTimersByTime(180); await flush();
+    expect(paths()).toEqual(['other', 'other/moon.js']);
+    search.value = ''; search.dispatch('input'); await flush();
+    expect(paths()).toEqual(['src', 'src/planet.js', 'README.md']);
+    finishOld({ entries: [{ path: 'stale.js', type: 'file' }] }); await flush();
+    expect(paths()).toEqual(['src', 'src/planet.js', 'README.md']);
+    expect(host.querySelector('.workspace-viewer-document')).toBe(pane);
+    folder().dispatch('click'); await flush(); expect(paths()).toEqual(['src', 'README.md']);
+    folder().dispatch('click'); await flush(); expect(paths()).toContain('src/planet.js');
+    expect(inspect.mock.calls.filter(args => args[1] === 'tree' && args[2] === 'src')).toHaveLength(1);
+  });
 
   test('opens separate reusable Changes and checkpoint tabs and renders code only as text', async () => {
     viewers.open('one'); viewers.open('one', version); await flush();

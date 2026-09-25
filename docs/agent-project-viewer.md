@@ -6,9 +6,14 @@ and discards pending responses. It does not load project HTML or execute scripts
 
 ## Browsing and comparisons
 
-- **Files** opens from Workspace and browses directories, including unchanged
-  source files. Search project filenames with Enter; filter the listed files
-  separately. Generated/private paths, links and credential files are excluded.
+- **Files** opens from Workspace with an expandable, lazy-loaded file tree.
+  Folders retain their expanded state while opening files or switching views.
+  One live filename search shows matches with their parent folders; clearing it
+  immediately restores the previous tree. Arrow keys expand/collapse folders
+  and move through visible entries. Generated output and dependencies are
+  browsable; ordinary search skips dependency and cache directories. Credential
+  paths, Git internals and unsafe links remain excluded. Browsing generated
+  content does not change checkpoint eligibility.
 - **Changes** distinguishes all, staged and unstaged changes. An external folder
   without Git shows only directly recorded edits, explicitly labelled as such.
 - **History** is available from the Commits menu's **Browse history** entry or
@@ -16,13 +21,15 @@ and discards pending responses. It does not load project HTML or execute scripts
   opens on its changes against its first parent (or an empty tree for the first
   commit); choose another loaded commit as the base, or browse its saved files.
 - Text comparisons support unified and side-by-side views, old/new line numbers,
-  next/previous change, collapsed unchanged context, search and wrapping. Exact,
+  next/previous change, collapsed unchanged context, search and automatic wrapping. Exact,
   unambiguous same-content renames are recognized in commit comparisons; more
   complex renames remain additions/deletions. Git status supplies working-tree
   rename information. Merge commits default to their first parent.
 - Plain text has line numbers and lightweight syntax highlighting for common
-  source extensions. Markdown preview supports headings, paragraphs and fenced
-  code; raw HTML, links and image syntax stay literal. PNG/JPEG/GIF/WebP previews
+  source extensions. Markdown files render automatically, including historical
+  file views, while diffs show source. Rendering supports headings, paragraphs
+  and fenced code, with search highlighting; raw HTML, links and image syntax
+  stay literal. PNG/JPEG/GIF/WebP previews
   load only explicit bounded local image bytes, never project URLs or SVG code.
 - **Compare with current** compares a historical file to the current complete
   text preview. Missing/binary/oversized files are reported, not treated as empty.
@@ -96,6 +103,11 @@ Local validation passed: lint, 302 tests across 12 focused Jest suites, and all
 four disposable-Electron viewer cases. Native external-Git fault qualification
 on the Mac mini remains pending approval to transfer the candidate source and
 fixtures; the mocked protocol and renderer checks do not replace that step.
+
+The subsequent file-tree refinement passed 84 tests across six focused suites
+and the four expanded Electron cases: lazy expansion, keyboard navigation,
+live-search reset/stale responses, wrapped long lines, automatic Markdown,
+generated-file visibility and retained credential/checkpoint protections.
 
 Focused Jest checks cover tree/text comparison, selected restores, durable
 partial-restore recovery and intervening edits, preview freshness, IPC ownership

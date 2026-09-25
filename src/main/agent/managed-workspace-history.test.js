@@ -316,7 +316,7 @@ describe('managed workspace checkpoints and restore', () => {
     expect(status.changes[0]).toMatchObject({ staged: true, unstaged: true });
     write('src/components/Planet.js', 'export default 8;'); write('.env', 'PRIVATE=not-for-preview');
     const search = await controller.inspectWorkspace('conversation_one', { kind: 'search', path: '.', query: 'planet' });
-    expect(search.entries).toEqual([{ name: 'src/components/Planet.js', path: 'src/components/Planet.js', type: 'file' }]);
+    expect(search.entries).toEqual([{ name: 'Planet.js', path: 'src/components/Planet.js', type: 'file' }]);
     const entries = await controller.inspectWorkspace('conversation_one', { kind: 'tree', path: '.' });
     expect(entries.entries.some(file => file.name === '.env')).toBe(false);
   });

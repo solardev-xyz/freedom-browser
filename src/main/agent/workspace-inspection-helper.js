@@ -67,7 +67,8 @@ function gitChanges(scope = 'all') {
 }
 
 function inspectText(relativePath, options = {}) {
-  if (historyPathReason(relativePath)) fail('WORKSPACE_PROTECTED_PATH');
+  // Browsing generated output does not enroll it in checkpoint history.
+  if (historyPathReason(relativePath, true)) fail('WORKSPACE_PROTECTED_PATH');
   const { target } = targetPath(inspectPath(relativePath));
   regularFile(target);
   const fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
@@ -110,13 +111,25 @@ function diffPreview(text, options) {
 function inspectWorkspace(options) {
   const kind = options.kind;
   const relativePath = inspectPath(relative, kind === 'tree' || kind === 'changes' || kind === 'search');
+  if (relativePath !== '.' && historyPathReason(relativePath, true)) fail('WORKSPACE_PROTECTED_PATH');
   if (kind === 'search') {
-    const entries = [];
-    const scan = walkFiles('.', (_filename, name) => {
-      if (!historyPathReason(name) && name.toLocaleLowerCase().includes(options.query.toLocaleLowerCase())) entries.push({ path: name, name, type: 'file' });
-      return entries.length < 200;
-    });
-    return { entries, limitReached: scan.scanLimitReached || entries.length >= 200 };
+    const entries = [], pending = ['.']; let seen = 0, limitReached = false;
+    const caches = new Set(['node_modules', '.vite', '.next', '.nuxt', '.cache', '.parcel-cache', '.turbo', '.svelte-kit', '.pytest_cache', '.mypy_cache', '.ruff_cache', '__pycache__', '.venv', 'venv']);
+    while (pending.length && seen < 50000 && entries.length < 200) {
+      const parent = pending.shift(); const { target } = targetPath(parent, true); directory(target);
+      const listing = boundedDirectoryNames(target, Math.min(10000, 50000 - seen));
+      limitReached ||= listing.limitReached;
+      for (const name of listing.names.sort((a, b) => a.localeCompare(b))) {
+        if (++seen > 50000 || entries.length >= 200) { limitReached = true; break; }
+        const candidate = parent === '.' ? name : parent + '/' + name;
+        if (historyPathReason(candidate, true) || caches.has(name.toLowerCase()) || name === '.DS_Store') continue;
+        const stats = fs.lstatSync(path.join(target, name));
+        if (stats.isSymbolicLink()) continue;
+        if (stats.isDirectory()) pending.push(candidate);
+        else if (stats.isFile() && stats.nlink === 1 && candidate.toLocaleLowerCase().includes(options.query.toLocaleLowerCase())) entries.push({ path: candidate, name, type: 'file' });
+      }
+    }
+    return { entries, limitReached: limitReached || pending.length > 0 || entries.length >= 200 };
   }
   if (kind === 'tree') {
     const { target } = targetPath(relativePath, true);
@@ -128,7 +141,7 @@ function inspectWorkspace(options) {
     let hiddenCount = 0;
     for (const name of listing.names) {
       if (!options.showGenerated && generated.has(name)) { hiddenCount += 1; continue; }
-      if (historyPathReason(relativePath === '.' ? name : relativePath + '/' + name)) continue;
+      if (historyPathReason(relativePath === '.' ? name : relativePath + '/' + name, true)) continue;
       const stats = fs.lstatSync(path.join(target, name));
       const type = stats.isSymbolicLink() || (stats.isFile() && stats.nlink !== 1) ? 'other' : stats.isDirectory() ? 'directory' : stats.isFile() ? 'file' : 'other';
       entries.push({ name, type });

@@ -61,6 +61,7 @@ describe('sandboxed workspace inspection', () => {
         { name: 'index.html', type: 'file' },
       ],
       hiddenCount: 1,
+      nextOffset: null,
       limitReached: false,
     });
     expect(
@@ -80,11 +81,32 @@ describe('sandboxed workspace inspection', () => {
     expect(inspect('changes')).toEqual({
       available: true,
       branch: 'main',
-      changes: [{ path: 'game.js', status: 'added' }],
+      changes: [{ path: 'game.js', status: 'added', staged: false, unstaged: true }],
       limitReached: false,
     });
     expect(inspect('diff', 'game.js').text).toContain('+hello\n+world');
-    expect(inspect('diff', '.env').text).toBe('');
+    expect(() => inspect('diff', '.env')).toThrow();
+  });
+
+  test('browses generated output without weakening credential or checkpoint exclusions', () => {
+    const { historyPathReason } = require('./workspace-history-policy');
+    for (const folder of ['dist', 'node_modules', '.cache']) {
+      fs.mkdirSync(path.join(workspace, folder));
+      fs.writeFileSync(path.join(workspace, folder, 'planet.js'), 'export const planet = "Earth";');
+      fs.writeFileSync(path.join(workspace, folder, '.env'), 'SECRET=private');
+      expect(inspect('file', `${folder}/planet.js`).text).toContain('Earth');
+      expect(() => inspect('file', `${folder}/.env`)).toThrow();
+      expect(inspect('tree', folder, { showGenerated: true }).entries.map(entry => entry.name)).toEqual(['planet.js']);
+      expect(historyPathReason(`${folder}/planet.js`)).toBeTruthy();
+      expect(['ordinary.js', `${folder}/planet.js`].some(historyPathReason)).toBe(true);
+    }
+    fs.mkdirSync(path.join(workspace, 'secrets'));
+    fs.writeFileSync(path.join(workspace, 'secrets', 'planet.js'), 'private');
+    fs.writeFileSync(path.join(workspace, 'dist', 'credentials.js'), 'const api_key = "real-secret-value-12345678";');
+    expect(() => inspect('file', 'dist/credentials.js')).toThrow();
+    expect(() => inspect('tree', 'secrets')).toThrow();
+    expect(inspect('tree', '.', { showGenerated: true }).entries.map(entry => entry.name)).toEqual(['.cache', 'dist', 'node_modules']);
+    expect(inspect('search', '.', { query: 'planet' }).entries.map(entry => entry.path)).toEqual(['dist/planet.js']);
   });
 
   test('shows tracked modifications, deletions and staged additions against HEAD without updating the index', () => {
@@ -106,9 +128,9 @@ describe('sandboxed workspace inspection', () => {
     git('add', 'new.txt');
     const index = fs.readFileSync(path.join(workspace, '.git/index'));
     expect(inspect('changes').changes).toEqual([
-      { path: 'game.js', status: 'modified' },
-      { path: 'new.txt', status: 'added' },
-      { path: 'old.txt', status: 'deleted' },
+      { path: 'game.js', status: 'modified', staged: false, unstaged: true },
+      { path: 'new.txt', status: 'added', staged: true, unstaged: false },
+      { path: 'old.txt', status: 'deleted', staged: false, unstaged: true },
     ]);
     expect(inspect('diff', 'game.js').text).toContain('-before\n+after');
     expect(inspect('diff', 'old.txt').text).toContain('-old');
@@ -122,7 +144,8 @@ describe('sandboxed workspace inspection', () => {
     expect(inspect('file', 'binary.bin')).toMatchObject({ binary: true, text: '' });
     expect(inspect('file', 'large.txt')).toMatchObject({ truncated: true });
     expect(inspect('file', 'large.txt').text).toHaveLength(65536);
-    expect(inspect('diff', 'large.txt').text).toBe('');
+    expect(inspect('diff', 'large.txt')).toMatchObject({ truncated: true, nextOffset: 65536 });
+    expect(inspect('diff', 'binary.bin').text).toBe('');
   });
 
   test('rejects traversal, protected metadata, symlinks and hardlinks without exposing outside data', () => {
@@ -143,11 +166,13 @@ describe('sandboxed workspace inspection', () => {
   });
 
   test('treats metacharacters as literal filenames', () => {
-    const name = ':(glob)* $x " odd\nname.txt';
+    const name = ':(glob)* $x " odd name.txt';
     fs.writeFileSync(path.join(workspace, name), 'literal\n');
-    expect(inspect('changes').changes).toEqual([{ path: name, status: 'added' }]);
+    expect(inspect('changes').changes).toEqual([{ path: name, status: 'added', staged: false, unstaged: true }]);
     expect(inspect('diff', name).text).toContain('+literal');
     expect(inspect('file', name).text).toBe('literal\n');
+    fs.writeFileSync(path.join(workspace, 'line\nbreak.txt'), 'literal');
+    expect(() => inspect('file', 'line\nbreak.txt')).toThrow();
   });
 
   test('does not execute workspace-configured filters and keeps files usable if Git is unavailable', () => {

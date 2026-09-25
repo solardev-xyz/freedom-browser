@@ -66,7 +66,7 @@ function content(text, query, highlight) {
 }
 
 export function renderDocument(host, rows, { split = false, query = '', highlight = false, collapse = true, start = 0 } = {}) {
-  host.replaceChildren(); host.classList.toggle('workspace-code-split', split);
+  host.replaceChildren(); host.classList.remove('workspace-markdown'); host.classList.toggle('workspace-code-split', split);
   if (query && start === 0) {
     const match = rows.findIndex(row => row.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
     if (match >= 2000) start = Math.floor(match / 2000) * 2000;
@@ -126,13 +126,14 @@ export function renderDocument(host, rows, { split = false, query = '', highligh
   return group;
 }
 
-export function renderMarkdown(host, text) {
-  host.replaceChildren(); let code = null;
+export function renderMarkdown(host, text, { query = '' } = {}) {
+  host.replaceChildren(); host.classList.remove('workspace-code-split'); host.classList.add('workspace-markdown'); let code = null;
   for (const line of text.split('\n')) {
     if (/^```/.test(line)) { if (code) code = null; else { code = element('pre', ''); host.appendChild(code); } continue; }
-    if (code) { code.textContent += `${line}\n`; continue; }
+    if (code) { code.appendChild(content(`${line}\n`, query, false)); continue; }
     const heading = /^(#{1,6})\s+(.*)/.exec(line);
     // Raw HTML, URLs and images remain literal text; no resource loads or scripts.
-    host.appendChild(element(heading ? `h${heading[1].length}` : 'p', '', heading ? heading[2] : line));
+    const block = element(heading ? `h${heading[1].length}` : 'p', '');
+    block.appendChild(content(heading ? heading[2] : line, query, false)); host.appendChild(block);
   }
 }

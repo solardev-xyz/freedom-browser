@@ -6,7 +6,9 @@ const HISTORY_LIMITS = Object.freeze({ files: 200, fileBytes: 64 * 1024, totalBy
 // Parent-process coverage counters cannot be serialized into that child. The
 // history suite still exercises these functions under coverage via the helper.
 /* istanbul ignore next */
-function historyPathReason(value) {
+function historyPathReason(value, includeGenerated = false) {
+  // Only explicit viewer reads opt in; Array.some passes a numeric index here.
+  includeGenerated = includeGenerated === true;
   if (
     typeof value !== 'string' ||
     !value ||
@@ -20,7 +22,7 @@ function historyPathReason(value) {
   }
   const parts = value.toLowerCase().split('/');
   if (
-    parts.some((part) =>
+    parts.includes('.git') || (!includeGenerated && parts.some((part) =>
       [
         '.git',
         'node_modules',
@@ -43,7 +45,7 @@ function historyPathReason(value) {
         'target',
         '.idea',
       ].includes(part)
-    )
+    ))
   )
     return 'generated or private directory';
   if (
@@ -60,7 +62,7 @@ function historyPathReason(value) {
     /\.(?:pem|key|p12|pfx|keystore)$/.test(name)
   )
     return 'secret file';
-  if (/\.(?:log|map|zip|tar|gz|tgz|7z|db|sqlite|sqlite3)$/.test(name) || name === '.ds_store')
+  if (!includeGenerated && (/\.(?:log|map|zip|tar|gz|tgz|7z|db|sqlite|sqlite3)$/.test(name) || name === '.ds_store'))
     return 'generated or archive file';
   return null;
 }
