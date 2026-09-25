@@ -696,8 +696,12 @@ function registerFreedomAgentIpc(options = {}) {
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
         typeof payload.conversationId !== 'string' || payload.conversationId.length > 160 ||
-        !['tree', 'changes', 'file', 'diff'].includes(payload.kind) ||
+        !['tree', 'changes', 'file', 'diff', 'image', 'search'].includes(payload.kind) ||
         typeof payload.path !== 'string' || payload.path.length > 1024 ||
+        (payload.offset !== undefined && (!Number.isSafeInteger(payload.offset) || payload.offset < 0 || payload.offset > 1048576)) ||
+        (payload.revision !== undefined && !/^[a-f0-9]{64}$/.test(payload.revision)) ||
+        (payload.query !== undefined && (typeof payload.query !== 'string' || !payload.query.trim() || payload.query.length > 200)) ||
+        (payload.scope !== undefined && !['all', 'staged', 'unstaged'].includes(payload.scope)) ||
         (payload.showGenerated !== undefined && typeof payload.showGenerated !== 'boolean')) {
       return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid workspace inspection');
     }
@@ -707,7 +711,7 @@ function registerFreedomAgentIpc(options = {}) {
     try {
       const ownerAtStart = owner;
       const result = await service.inspectWorkspace(payload.conversationId, {
-        kind: payload.kind, path: payload.path, showGenerated: payload.showGenerated === true,
+        kind: payload.kind, path: payload.path, showGenerated: payload.showGenerated === true, offset: payload.offset, scope: payload.scope, revision: payload.revision, query: payload.query,
       });
       if (owner !== ownerAtStart || owner.conversationId !== payload.conversationId) return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Workspace ownership changed');
       return { ok: true, conversationId: payload.conversationId, result };
@@ -720,18 +724,24 @@ function registerFreedomAgentIpc(options = {}) {
     if (!owner || owner.sender !== event?.sender || !payload || typeof payload !== 'object' || Array.isArray(payload) || payload.conversationId !== owner.conversationId) {
       return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The sender does not own this workspace');
     }
-    const { conversationId, action, versionId, label, path, token, reason } = payload;
-    if (!['list', 'files', 'file', 'save', 'prepare_restore', 'restore', 'include', 'exclude'].includes(action) ||
-        (['files', 'file', 'prepare_restore'].includes(action) && !/^[a-f0-9]{40}$/.test(versionId || '')) ||
-        (['file', 'include', 'exclude'].includes(action) && (typeof path !== 'string' || !path || path.length > 1024)) ||
+    const { conversationId, action, versionId, label, path, token, reason, baseId, cursor, offset, paths } = payload;
+    if (!['list', 'files', 'file', 'comparison', 'comparison_file', 'recovery', 'save', 'prepare_restore', 'prepare_recovery', 'repair_commit', 'restore', 'include', 'exclude'].includes(action) ||
+        (['files', 'file', 'comparison', 'comparison_file', 'prepare_restore'].includes(action) && !/^[a-f0-9]{40}$/.test(versionId || '')) ||
+        (['file', 'comparison_file', 'include', 'exclude'].includes(action) && (typeof path !== 'string' || !path || path.length > 1024)) ||
         (['include', 'exclude'].includes(action) && (typeof reason !== 'string' || !reason.trim() || reason.length > 160)) ||
+        (baseId !== undefined && baseId !== null && !/^[a-f0-9]{40}$/.test(baseId)) ||
+        (cursor !== undefined && cursor !== null && !/^[a-f0-9]{40}$/.test(cursor)) ||
+        (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0 || offset > 1048576)) ||
+        (path !== undefined && (typeof path !== 'string' || path.length > 1024)) ||
+        (paths !== undefined && (action !== 'prepare_restore' || !Array.isArray(paths) || !paths.length || paths.length > 200 || paths.some(value => typeof value !== 'string' || !value || value.length > 1024))) ||
         (action === 'save' && (typeof label !== 'string' || !label.trim() || label.length > 80)) ||
+        (action === 'repair_commit' && !/^[a-f0-9]{64}$/.test(token || '')) ||
         (action === 'restore' && !/^restore_[a-f0-9]{32}$/.test(token || ''))) {
       return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid workspace version request');
     }
     const ownerAtStart = owner;
     try {
-      const result = await service.workspaceHistory(conversationId, { action, versionId, label, path, token, reason });
+      const result = await service.workspaceHistory(conversationId, { action, versionId, label, path, token, reason, baseId, cursor, offset, paths });
       if (owner !== ownerAtStart || owner.conversationId !== conversationId) return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Workspace ownership changed');
       return { ok: true, conversationId, result };
     } catch (error) { return safeServiceError(error); }

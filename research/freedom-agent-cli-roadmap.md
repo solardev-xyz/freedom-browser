@@ -1,18 +1,41 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-21
+Last updated: 2026-09-25
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-21
+## Current working status — 2026-09-25
+
+### Project viewer and recovery implementation — 2026-09-25
+
+The approved viewer plan is implemented on `feature/freedom-automation-kernel`:
+shared Files/Changes/History navigation, directory/filename browsing, staged and
+unstaged changes, real commit comparisons, explicit comparison bases, line-numbered
+unified/split diffs, history pagination, file history, bounded previews, local
+Markdown/raster display, selected-file managed restoration and persistent
+interrupted-restore recovery. External Git recovery inspects actual state and
+permits confirmed finalization only for the exact retained branch/index/owned-lock
+combination; it does not add repository rollback or rewrite history.
+
+See [the viewer contract, limits and tests](../docs/agent-project-viewer.md).
+Local lint and focused checks pass; disposable-Electron renderer checks pass
+in both themes and layouts. Real-Git fault qualification on the designated Mac mini is pending: automatic approval
+review rejected the prepared private-source transfer and explicit user approval
+has been requested. No new remote/native qualification is claimed yet.
+
+Broader history ingestion limits, advanced rename detection, rich document
+formats and general external Git rollback remain follow-ups; the previous backlog
+below records the planning baseline, not outstanding versions of this work.
+
 
 ### Current backlog and next decision — 2026-09-21
 
-This section is the current planning index. Dated implementation and qualification
+This September 21 index is the planning baseline; the September 25 delivery above
+supersedes its viewer/history items. Dated implementation and qualification
 records below remain historical evidence, not a queue of unfinished work.
 The feature remains unreleased. Merge `30167ed7` is pushed to
 `feature/freedom-automation-kernel`; the accepted viewer-header follow-up is

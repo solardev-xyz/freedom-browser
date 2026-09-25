@@ -137,8 +137,10 @@ project's `index.lock` may contain the prepared index; never blindly delete it o
 retry the commit. Inspect actual HEAD, log, status, index and candidate tree in a
 Git client. Repair staging deliberately without overwriting newer user changes.
 Only after reconciliation should the user archive the recovery record and remove
-confirmed stale owned locks. This experimental version has no automatic repair
-UI. Deleting its conversation waits for its active history operation to settle and
+confirmed stale owned locks. The History viewer now offers read-only recovery inspection and explicit
+finalization only when the original branch, index and owned lock still match the
+retained operation. Other outcomes still require Git-client reconciliation. See
+[project viewers and recovery](agent-project-viewer.md). Deleting its conversation waits for its active history operation to settle and
 preserves private pending recovery evidence at the original path. It removes the
 conversation association and access grant, not that unresolved recovery record. Existing same-user filesystem races remain a
 limitation; this is not isolation from a malicious host process.

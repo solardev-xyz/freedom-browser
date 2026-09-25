@@ -30,6 +30,48 @@ qualified('external project Git integration', () => {
   });
   afterEach(() => fs.rmSync(temporary, { recursive: true, force: true }));
 
+  test('compares actual commit deltas, exact renames and file history', async () => {
+    const first = git('rev-parse', 'HEAD');
+    git('mv', 'other.txt', 'renamed.txt'); write('README.md', 'updated'); git('add', '.'); git('commit', '-qm', 'Update');
+    const second = git('rev-parse', 'HEAD'); const instance = service();
+    const comparison = await instance.inspect({ action: 'comparison', versionId: second });
+    expect(comparison.baseId).toBe(first);
+    expect(comparison.files).toContainEqual({ path: 'renamed.txt', oldPath: 'other.txt', status: 'renamed' });
+    expect(await instance.inspect({ action: 'comparison_file', versionId: second, path: 'README.md' })).toMatchObject({ before: { text: 'original\n' }, after: { text: 'updated' } });
+    const filtered = await instance.list({ path: 'README.md' }); expect(filtered.versions).toHaveLength(2);
+    const older = await instance.list({ cursor: first }); expect(older.versions[0].id).toBe(first);
+    await expect(instance.inspect({ action: 'comparison', versionId: second, baseId: 'a'.repeat(40) })).rejects.toThrow();
+  });
+
+  test('recovery finalizes only the exact owned pending index and preserves working files', async () => {
+    write('README.md', 'changed'); write('other.txt', 'unrelated staged'); git('add', 'other.txt');
+    const instance = service(); const real = instance.git.bind(instance);
+    instance.git = async (args, options) => { const result = await real(args, options); if (args[0] === 'update-ref') throw new Error('Lost completion'); return result; };
+    await expect(instance.commit([review('README.md', 'changed')], await instance.baseline(), 'Change', async () => {})).rejects.toThrow('uncertain');
+    const fresh = service(); const state = await fresh.recovery();
+    expect(state).toMatchObject({ pending: true, state: 'committed', repairable: true });
+    write('README.md', 'later working edit');
+    await expect(fresh.repairCommit('0'.repeat(64))).rejects.toThrow('changed');
+    expect((await fresh.repairCommit(state.token)).repaired).toBe(true);
+    expect(fs.readFileSync(path.join(root, 'README.md'), 'utf8')).toBe('later working edit');
+    expect(git('diff', '--cached', '--name-only')).toBe('other.txt');
+    expect(await fresh.recovery()).toEqual({ pending: false });
+    expect(authorize).toHaveBeenCalledWith(true);
+  });
+
+  test('recovery refuses replacement locks and changed staging', async () => {
+    write('README.md', 'changed');
+    const instance = service(); const real = instance.git.bind(instance);
+    instance.git = async (args, options) => { const result = await real(args, options); if (args[0] === 'update-ref') throw new Error('Lost completion'); return result; };
+    await expect(instance.commit([review('README.md', 'changed')], await instance.baseline(), 'Change', async () => {})).rejects.toThrow();
+    const state = await service().recovery();
+    fs.renameSync(path.join(root, '.git/index.lock'), path.join(root, '.git/saved-test-lock'));
+    fs.writeFileSync(path.join(root, '.git/index.lock'), 'foreign lock');
+    expect((await service().recovery()).repairable).toBe(false);
+    await expect(service().repairCommit(state.token)).rejects.toThrow('changed');
+    expect(fs.readFileSync(path.join(root, '.git/index.lock'), 'utf8')).toBe('foreign lock');
+  });
+
   test('commits in the actual branch, preserves unrelated staging and shows native history', async () => {
     const parent = git('rev-parse', 'HEAD'); const config = fs.readFileSync(path.join(root, '.git/config'));
     write('other.txt', 'staged other\n'); git('add', 'other.txt'); write('other.txt', 'unstaged other\n');

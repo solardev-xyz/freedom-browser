@@ -3684,3 +3684,67 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-page-actions-explore { background: var(--accent); color: var(--bg); border: 0; border-radius: 8px; padding: 8px 12px; font: inherit; cursor: pointer; }
 .agent-page-action:focus-visible, .agent-page-actions-more:focus-visible, .agent-page-actions-hint button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 [data-theme='light'] .agent-page-actions-explore { color: var(--agent-on-accent); }
+
+/* Project viewer: the tab/header share chrome, while documents keep their own surface. */
+.workspace-viewer-heading { padding: 12px 16px; gap: 12px; }
+.workspace-viewer-identity strong { font-size: 15px; }
+.workspace-viewer-caption { font-size: 12px; line-height: 1.5; }
+.workspace-viewer-tabs, .workspace-viewer-controls, .workspace-viewer-document-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.workspace-viewer-tabs .workspace-viewer-action { border-color: transparent; background: transparent; }
+.workspace-viewer-tabs [aria-pressed='true'] { background: var(--bg); color: var(--accent); }
+.workspace-viewer-controls { padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.workspace-viewer-controls:empty { display: none; }
+.workspace-viewer-action, .workspace-viewer-select { font-size: 12px; padding: 6px 10px; }
+.workspace-viewer-select { max-width: min(100%, 300px); border: 1px solid var(--border); border-radius: 6px; background: var(--toolbar); color: var(--text); }
+.workspace-viewer-action:focus-visible, .workspace-viewer-file:focus-visible, .workspace-viewer-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.workspace-viewer-files { flex: 0 0 auto; min-width: 150px; padding: 8px; border-right: 0; }
+.workspace-viewer-file { padding: 9px 10px; font-size: 13px; gap: 4px; }
+.workspace-viewer-file[hidden] { display: none; }
+.workspace-viewer-search { min-width: 80px; width: 150px; max-width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 7px 9px; font: inherit; font-size: 12px; }
+.workspace-viewer-search:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.workspace-viewer-files > .workspace-viewer-search { width: 100%; margin-bottom: 8px; }
+.workspace-viewer-resize { flex: 0 0 5px; cursor: col-resize; border-left: 1px solid var(--border); }
+.workspace-viewer-resize:hover { background: var(--border); }
+.workspace-viewer-document { overflow: auto; }
+.workspace-viewer-file-heading { font-size: 13px; font-weight: 550; padding: 12px 16px; }
+.workspace-viewer-document-tools { padding: 8px 12px; }
+.workspace-viewer-message { font-size: 12px; }
+.workspace-viewer-code { flex: none; padding: 8px 0 16px; min-width: 100%; width: max-content; box-sizing: border-box; font-size: 13px; line-height: 1.7; overflow: visible; }
+.workspace-code-row { display: grid; grid-template-columns: 4ch 4ch minmax(0, 1fr); min-height: 1.7em; }
+.workspace-line-number { text-align: right; padding-right: 1ch; color: var(--muted); user-select: none; font-size: 11px; }
+.workspace-code-text { display: block; white-space: pre; padding: 0 14px; }
+.workspace-code-added { background: color-mix(in srgb, var(--secure-fg) 12%, transparent); box-shadow: inset 2px 0 var(--secure-fg); }
+.workspace-code-deleted { background: color-mix(in srgb, var(--danger) 10%, transparent); box-shadow: inset 2px 0 var(--danger); }
+.workspace-code-hunk, .workspace-code-meta { color: var(--muted); font-size: 11px; }
+.workspace-code-hunk { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.workspace-code-fold { padding: 4px 0; color: var(--muted); }
+.workspace-code-fold > summary { padding: 3px 16px; cursor: pointer; font: 12px/1.5 system-ui; }
+.workspace-code-fold .workspace-code-row { color: var(--text); }
+.workspace-code-token { color: var(--accent); }
+.workspace-viewer-code mark { color: var(--text); background: color-mix(in srgb, var(--warning-fg) 35%, var(--bg)); }
+.workspace-code-wrap { width: 100%; }
+.workspace-code-wrap .workspace-code-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.workspace-code-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.workspace-code-pair .workspace-code-row { grid-template-columns: 4ch minmax(0, 1fr); overflow: hidden; }
+.workspace-code-pair .workspace-code-old .workspace-line-number:nth-child(2), .workspace-code-pair .workspace-code-new .workspace-line-number:first-child { display: none; }
+.workspace-code-pair .workspace-code-new { border-left: 1px solid var(--border); }
+.workspace-code-split { width: 100%; }
+.workspace-code-split .workspace-code-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.workspace-viewer-code > p, .workspace-viewer-code > h1, .workspace-viewer-code > h2, .workspace-viewer-code > h3, .workspace-viewer-code > pre { margin: 12px 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.workspace-viewer-code > p { font: 14px/1.7 system-ui; }
+.workspace-viewer-image { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; margin: auto; }
+.workspace-viewer-restore { width: 100%; }
+.workspace-viewer-restore-file { display: flex; gap: 8px; align-items: center; padding: 12px 0; font-weight: 600; }
+.workspace-viewer-recovery { margin: 16px; padding: 16px; border: 1px solid var(--warning-fg); border-radius: 8px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+@container (max-width: 540px) {
+  .workspace-viewer-heading { padding: 10px 12px; }
+  .workspace-viewer-tabs { order: 2; width: 100%; }
+  .workspace-viewer-files { width: 100% !important; max-height: 180px; box-sizing: border-box; border-bottom: 1px solid var(--border); }
+  .workspace-viewer-resize { display: none; }
+  .workspace-viewer-document { min-height: 120px; }
+  .workspace-viewer-file { flex-direction: column; }
+  .workspace-viewer-code { font-size: 12px; }
+}
+.workspace-viewer-document-tools > .workspace-viewer-action { background: transparent; border-color: transparent; }
+.workspace-viewer-document-tools > .workspace-viewer-action:hover { background: var(--toolbar); }
+.workspace-viewer-code > h1, .workspace-viewer-code > h2, .workspace-viewer-code > h3, .workspace-viewer-code > h4, .workspace-viewer-code > h5, .workspace-viewer-code > h6 { font-family: system-ui; }

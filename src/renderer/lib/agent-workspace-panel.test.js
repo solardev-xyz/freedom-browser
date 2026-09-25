@@ -14,8 +14,8 @@ describe('workspace summary and popovers', () => {
     inspector.setWorkspace('one', { name: 'Project', connected: true, mode: 'write' });
     jest.advanceTimersByTime(250); await flush();
     const rows = panel.querySelectorAll('.agent-workspace-summary');
-    expect(rows[2].children[0].textContent).toBe('Commits');
-    rows[2].dispatch('click');
+    expect(rows[3].children[0].textContent).toBe('Commits');
+    rows[3].dispatch('click');
     expect(find(popup(), 'Commit settings')).toBeUndefined();
   });
   beforeEach(() => {
@@ -32,12 +32,12 @@ describe('workspace summary and popovers', () => {
   test('shows only two summary rows with no file tree, checkpoint list or redundant subtitle', async () => {
     await start();
     for (const host of [panel, compact]) {
-      expect(host.querySelectorAll('.agent-workspace-summary')).toHaveLength(2);
+      expect(host.querySelectorAll('.agent-workspace-summary')).toHaveLength(3);
       expect(host.querySelector('.agent-workspace-checkpoint')).toBeNull();
       expect(host.querySelector('.agent-workspace-baseline')).toBeNull();
       expect(host.querySelector('.agent-workspace-inspector-tab')).toBeNull();
-      expect(host.querySelectorAll('.agent-workspace-summary')[0].children[1].textContent).toBe('0 files');
-      expect(host.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe('1');
+      expect(host.querySelector('[data-workspace-focus="changes"]').children[1].textContent).toBe('0 files');
+      expect(host.querySelector('[data-workspace-focus="commits"]').children[1].textContent).toBe('1');
     }
     expect(api).toHaveBeenCalledWith('one', 'changes', '.', false);
     expect(api).toHaveBeenCalledTimes(1);
@@ -85,14 +85,14 @@ describe('workspace summary and popovers', () => {
 
   test('opens changes as a viewer and commits as a non-modal anchored list', async () => {
     await start();
-    panel.querySelectorAll('.agent-workspace-summary')[0].dispatch('click');
-    expect(mockViewers.open).toHaveBeenCalledWith('one', null, expect.any(Function));
-    compact.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    panel.querySelector('[data-workspace-focus="changes"]').dispatch('click');
+    expect(mockViewers.open).toHaveBeenCalledWith('one', null, expect.any(Function), 'changes');
+    compact.querySelector('[data-workspace-focus="commits"]').dispatch('click');
     expect(popup().attributes['aria-modal']).toBeUndefined();
     expect(popup().attributes['aria-label']).toBe('Commits');
     expect(popup().querySelectorAll('.agent-workspace-checkpoint')).toHaveLength(1);
     popup().querySelector('.agent-workspace-checkpoint').dispatch('click');
-    expect(mockViewers.open).toHaveBeenLastCalledWith('one', checkpoint, expect.any(Function));
+    expect(mockViewers.open).toHaveBeenLastCalledWith('one', checkpoint, expect.any(Function), 'history');
     expect(popup()).toBeNull();
   });
 
@@ -103,7 +103,7 @@ describe('workspace summary and popovers', () => {
       if (action === 'include') exclusions = [];
       return { ok: true, conversationId, result: { versions: [checkpoint], exclusions } };
     });
-    await start(); panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    await start(); panel.querySelector('[data-workspace-focus="commits"]').dispatch('click');
     find(popup(), 'Commit settings').dispatch('click');
     const form = popup().querySelector('.agent-workspace-version-save');
     form.children[0].value = 'private.csv'; form.children[1].value = 'Private data'; form.children[2].dispatch('click'); await flush();
@@ -114,7 +114,7 @@ describe('workspace summary and popovers', () => {
   });
 
   test('dismisses popovers on Escape and clears conversation-owned viewers on switch', async () => {
-    await start(); panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    await start(); panel.querySelector('[data-workspace-focus="commits"]').dispatch('click');
     const event = { key: 'Escape', preventDefault: jest.fn(), stopImmediatePropagation: jest.fn() };
     document.handlers.keydown(event);
     expect(popup()).toBeNull(); expect(event.stopImmediatePropagation).toHaveBeenCalled();
@@ -124,7 +124,7 @@ describe('workspace summary and popovers', () => {
 
   test('does not turn failed inspection into a clean zero', async () => {
     api.mockResolvedValue({ ok: false }); await start();
-    expect(panel.querySelectorAll('.agent-workspace-summary')[0].children[1].textContent).toBe('Unavailable');
+    expect(panel.querySelector('[data-workspace-focus="changes"]').children[1].textContent).toBe('Unavailable');
   });
 
   test.each([false, true])('counts available commits with a history notice (limit reached: %s)', async (limitReached) => {
@@ -132,9 +132,9 @@ describe('workspace summary and popovers', () => {
     historyApi.mockImplementation(async (conversationId) => ({ ok: true, conversationId, result: { versions: [checkpoint], notice, limitReached } }));
     await start();
     for (const host of [panel, compact]) {
-      expect(host.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe(limitReached ? '1+' : '1');
+      expect(host.querySelector('[data-workspace-focus="commits"]').children[1].textContent).toBe(limitReached ? '1+' : '1');
     }
-    panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    panel.querySelector('[data-workspace-focus="commits"]').dispatch('click');
     expect(popup().querySelectorAll('.agent-workspace-checkpoint')).toHaveLength(1);
     if (!limitReached) expect(popup().querySelector('.agent-workspace-note').textContent).toBe(notice);
   });
@@ -142,11 +142,11 @@ describe('workspace summary and popovers', () => {
   test('distinguishes a failed history request from an available empty history and recovers', async () => {
     historyApi.mockRejectedValueOnce(new Error('History busy'));
     await start();
-    expect(panel.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe('Unavailable');
-    panel.querySelectorAll('.agent-workspace-summary')[1].dispatch('click');
+    expect(panel.querySelector('[data-workspace-focus="commits"]').children[1].textContent).toBe('Unavailable');
+    panel.querySelector('[data-workspace-focus="commits"]').dispatch('click');
     expect(popup().querySelector('.agent-workspace-note').textContent).toBe('Commits could not be refreshed. Try again.');
     historyApi.mockImplementation(async (conversationId) => ({ ok: true, conversationId, result: { versions: [], notice: 'Later edits remain outside saved history.' } }));
     await start();
-    expect(panel.querySelectorAll('.agent-workspace-summary')[1].children[1].textContent).toBe('0');
+    expect(panel.querySelector('[data-workspace-focus="commits"]').children[1].textContent).toBe('0');
   });
 });

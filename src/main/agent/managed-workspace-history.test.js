@@ -259,6 +259,77 @@ describe('managed workspace checkpoints and restore', () => {
     expect((await history({ action: 'list' })).versions[0].kind).toBe('backup');
   });
 
+  test('compares commit changes and restores only selected files without losing other history', async () => {
+    write('one.txt', 'old one'); write('two.txt', 'old two');
+    const first = await checkpoint(['one.txt', 'two.txt'], 'First');
+    write('one.txt', 'new one'); write('two.txt', 'new two');
+    const second = await checkpoint(['one.txt', 'two.txt'], 'Second');
+    const comparison = await history({ action: 'comparison', versionId: second.id });
+    expect(comparison.baseId).toBe(first.id);
+    expect(comparison.files.map(file => file.path)).toEqual(['one.txt', 'two.txt']);
+    expect(await history({ action: 'comparison_file', versionId: second.id, path: 'one.txt' })).toMatchObject({ before: { text: 'old one' }, after: { text: 'new one' } });
+    write('two.txt', 'unreviewed unrelated edit');
+    const plan = await history({ action: 'prepare_restore', versionId: first.id, paths: ['one.txt'] });
+    expect(plan.changes).toHaveLength(1);
+    expect(plan.changes[0]).toMatchObject({ before: { text: 'new one' }, after: { text: 'old one' } });
+    await history({ action: 'restore', token: plan.token });
+    expect(fs.readFileSync(path.join(root, 'one.txt'), 'utf8')).toBe('old one');
+    expect(fs.readFileSync(path.join(root, 'two.txt'), 'utf8')).toBe('unreviewed unrelated edit');
+    expect(git('show', 'HEAD:two.txt')).toBe('new two');
+    expect(await history({ action: 'recovery' })).toEqual({ pending: false });
+  });
+
+  test('durably recovers a partial restore, but refuses intervening user edits', async () => {
+    write('a.txt', 'old a'); write('b.txt', 'old b');
+    const first = await checkpoint(['a.txt', 'b.txt'], 'First');
+    write('a.txt', 'new a'); write('b.txt', 'new b');
+    await checkpoint(['a.txt', 'b.txt'], 'Second');
+    const plan = await history({ action: 'prepare_restore', versionId: first.id });
+    const execute = executor.execute.getMockImplementation(); let mutations = 0;
+    executor.execute.mockImplementation(async (policy, request) => request.args[6] === 'history_restore' && ++mutations === 2
+      ? { state: 'failed', exitCode: 73, stdout: '', stderr: 'FREEDOM_FILE_ERROR:WORKSPACE_WRITE_FAILED' }
+      : execute(policy, request));
+    await expect(history({ action: 'restore', token: plan.token })).rejects.toThrow('Before restore');
+    executor.execute.mockImplementation(execute);
+    expect(fs.readFileSync(path.join(root, 'a.txt'), 'utf8')).toBe('old a');
+    controller.historyNotices.clear(); controller.restorePlans.clear();
+    expect(await new ManagedWorkspaceHistory(root).recovery()).toMatchObject({ pending: true });
+    write('a.txt', 'user edit');
+    await expect(history({ action: 'prepare_recovery' })).rejects.toThrow('outside the interrupted restore');
+    expect(fs.readFileSync(path.join(root, 'a.txt'), 'utf8')).toBe('user edit');
+    write('a.txt', 'old a');
+    const recovery = await history({ action: 'prepare_recovery' });
+    await history({ action: 'restore', token: recovery.token });
+    expect(fs.readFileSync(path.join(root, 'a.txt'), 'utf8')).toBe('new a');
+    expect(fs.readFileSync(path.join(root, 'b.txt'), 'utf8')).toBe('new b');
+    expect(await history({ action: 'recovery' })).toEqual({ pending: false });
+  });
+
+  test('working comparisons distinguish staged and unstaged content and filename search', async () => {
+    write('readme.txt', 'base\n'); await checkpoint(['readme.txt'], 'Base');
+    write('readme.txt', 'staged\n'); git('add', 'readme.txt'); write('readme.txt', 'working\n');
+    const staged = await controller.inspectWorkspace('conversation_one', { kind: 'diff', path: 'readme.txt', scope: 'staged' });
+    const unstaged = await controller.inspectWorkspace('conversation_one', { kind: 'diff', path: 'readme.txt', scope: 'unstaged' });
+    expect(staged.text).toContain('+staged'); expect(staged.text).not.toContain('+working');
+    expect(unstaged.text).toContain('-staged'); expect(unstaged.text).toContain('+working');
+    const status = await controller.inspectWorkspace('conversation_one', { kind: 'changes', path: '.' });
+    expect(status.changes[0]).toMatchObject({ staged: true, unstaged: true });
+    write('src/components/Planet.js', 'export default 8;'); write('.env', 'PRIVATE=not-for-preview');
+    const search = await controller.inspectWorkspace('conversation_one', { kind: 'search', path: '.', query: 'planet' });
+    expect(search.entries).toEqual([{ name: 'src/components/Planet.js', path: 'src/components/Planet.js', type: 'file' }]);
+    const entries = await controller.inspectWorkspace('conversation_one', { kind: 'tree', path: '.' });
+    expect(entries.entries.some(file => file.name === '.env')).toBe(false);
+  });
+
+  test('working text pages reject changed content rather than mixing revisions', async () => {
+    write('large.txt', 'ä'.repeat(70000));
+    const page = await controller.inspectWorkspace('conversation_one', { kind: 'file', path: 'large.txt' });
+    const next = await controller.inspectWorkspace('conversation_one', { kind: 'file', path: 'large.txt', offset: page.nextOffset, revision: page.revision });
+    expect(page.text + next.text).toBe('ä'.repeat(70000));
+    write('large.txt', 'changed');
+    await expect(controller.inspectWorkspace('conversation_one', { kind: 'file', path: 'large.txt', offset: page.nextOffset, revision: page.revision })).rejects.toThrow('Refresh the viewer');
+  });
+
   test('missing installed Git disables history while ordinary file editing still works', async () => {
     const access = jest.spyOn(fs, 'accessSync').mockImplementation(() => { throw new Error('Git unavailable'); });
     try {

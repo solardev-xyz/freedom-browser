@@ -114,9 +114,9 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
     return response.result;
   }
 
-  function openViewer(version = null) {
+  function openViewer(version = null, mode = version ? 'history' : 'changes') {
     closePopup(false);
-    try { viewers.open(conversationId, version, () => void refresh()); }
+    try { viewers.open(conversationId, version, () => void refresh(), mode); }
     catch (cause) { error = cause.message; render(); }
   }
 
@@ -136,7 +136,8 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
       row.appendChild(time);
       ui.body.appendChild(row);
     }
-    if (history?.limitReached) ui.fail('Showing the latest 100 commits.');
+    ui.body.appendChild(button('Browse history', () => openViewer(null, 'history')));
+    if (history?.limitReached) ui.fail('Showing the latest 100 commits. Browse history to load more.');
     if (!project) {
       const actions = element('div', 'agent-workspace-checkpoint-actions');
       actions.appendChild(button('Commit settings', showSettings));
@@ -222,6 +223,7 @@ export function createWorkspaceInspector(hosts, viewerOptions = {}, { compactHos
       const count = changes?.changes?.length || 0;
       if (project) summary(project.name, project.connected ? project.mode === 'write' ? 'Can edit' : 'Read only' : 'Reconnect', 'project', showProject);
       if (project && !project.connected) { host.appendChild(body); continue; }
+      summary('Files', 'Browse project', 'files', () => openViewer(null, 'files'));
       summary(changes?.recordedEditsOnly ? 'Recorded edits' : 'Changes', changes?.available ? `${count}${changes.limitReached ? '+' : ''} ${count === 1 ? 'file' : 'files'}` : loading ? 'Loading…' : 'Unavailable', 'changes', () => openViewer());
       summary('Commits', history ? `${history.versions.length}${history.limitReached ? '+' : ''}` : loading ? 'Loading…' : 'Unavailable', 'commits', showCommits);
       if (error) body.appendChild(element('p', 'agent-workspace-note', error));

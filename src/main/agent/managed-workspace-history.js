@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { compareEntries, textPreview } = require('./workspace-comparison');
 const path = require('path');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
@@ -302,31 +303,79 @@ class ManagedWorkspaceHistory {
       ? this.snapshot(id) : { files: [], excluded: [], excludedCount: 0 };
   }
 
-  async list() {
+  async list(request = {}) {
     await this.validate();
+    if (request.path && historyPathReason(request.path)) throw new WorkspaceHistoryError('That file is excluded from history');
     const records = [];
-    let id = await this.currentId();
-    while (id && records.length < 100) {
+    let id = request.cursor || await this.currentId();
+    if (request.cursor) await this.ownedRecord(request.cursor);
+    let scanned = 0;
+    while (id && records.length < 100 && scanned++ < 1000) {
       const record = await this.record(id);
-      records.push({
-        id,
-        label: record.label,
-        reviewed: record.reviewed === true,
-        kind: record.kind,
-        createdAt: record.createdAt,
-        fileCount: record.files.length,
+      const parent = record.parent ? await this.record(record.parent) : { files: [] };
+      if (!request.path || compareEntries(parent.files, record.files).some(file => file.path === request.path || file.oldPath === request.path)) records.push({
+        id, label: record.label, reviewed: record.reviewed === true,
+        kind: record.kind, createdAt: record.createdAt, fileCount: record.files.length,
         excludedCount: record.excludedCount || 0,
       });
       id = record.parent;
     }
-    return { versions: records, limitReached: Boolean(id) };
+    return { versions: records, limitReached: Boolean(id), nextCursor: id || null };
   }
 
   async ownedRecord(id) {
-    const listing = await this.list();
-    if (!listing.versions.some((version) => version.id === id))
-      throw new WorkspaceHistoryError('That version is outside the available workspace history');
-    return this.record(id);
+    await this.validate();
+    let current = await this.currentId();
+    for (let count = 0; current && count < 10000; count += 1) {
+      const record = await this.record(current);
+      if (current === id) return record;
+      current = record.parent;
+    }
+    throw new WorkspaceHistoryError('That version is outside the available workspace history');
+  }
+
+  async previewFile(id, filename, offset = 0) {
+    const record = await this.ownedRecord(id);
+    const file = record.files.find(entry => entry.path === filename);
+    if (!file) return { text: '', missing: true };
+    const size = Number((await this.git(['cat-file', '-s', file.oid])).toString());
+    if (size > HISTORY_LIMITS.fileBytes) throw new WorkspaceHistoryError('Stored file exceeds the history limit');
+    const bytes = await this.git(['cat-file', 'blob', file.oid]);
+    if (historyContainsSecret(bytes)) throw new WorkspaceHistoryError('This file may contain credentials and cannot be previewed');
+    return textPreview(bytes, offset);
+  }
+
+  async comparison(request) {
+    const after = await this.ownedRecord(request.versionId);
+    const baseId = request.baseId || after.parent || null;
+    const before = baseId ? await this.ownedRecord(baseId) : { files: [] };
+    const files = compareEntries(before.files, after.files);
+    if (request.action === 'comparison') return { files, baseId, versionId: after.id };
+    const file = files.find(entry => entry.path === request.path);
+    if (!file) throw new WorkspaceHistoryError('This file is not in the comparison. Refresh changes.');
+    return { baseId, versionId: after.id,
+      before: baseId ? await this.previewFile(baseId, file.oldPath || file.path, request.offset) : { text: '', missing: true },
+      after: await this.previewFile(after.id, file.path, request.offset) };
+  }
+
+  async recovery() {
+    await this.validate();
+    try {
+      const record = JSON.parse(await readMetadata(path.join(this.recordsDirectory, 'restore-recovery.json')));
+      if (!record.pending) return { pending: false };
+      if (!OID.test(record.backupId || '') || !OID.test(record.targetId || '') ||
+          !Array.isArray(record.paths) || record.paths.length > 400 || record.paths.some(historyPathReason) || !Array.isArray(record.changedPaths) || record.changedPaths.some(name => !record.paths.includes(name))) throw new Error();
+      return record;
+    } catch (error) {
+      if (error.code === 'ENOENT') return { pending: false };
+      throw new WorkspaceHistoryError('Restore recovery information could not be read. Inspect saved backups before restoring again.');
+    }
+  }
+
+  async setRecovery(record) {
+    await atomicMetadata(path.join(this.recordsDirectory, 'restore-recovery.json'), Buffer.from(JSON.stringify(record)));
+    const directory = await fs.promises.open(this.recordsDirectory, 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
   }
 
   async snapshot(id) {

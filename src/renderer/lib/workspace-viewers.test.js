@@ -15,9 +15,9 @@ describe('read-only workspace viewers', () => {
   beforeEach(() => {
     global.document = createDocument({ createElementOverride: renderElement });
     inspect = jest.fn(async (conversationId, type) => ({ ok: true, conversationId, result: type === 'changes'
-      ? { available: true, changes: [{ path: 'game.js', status: 'modified' }] } : { text: '+<script>untrusted</script>' } }));
+      ? { available: true, changes: [{ path: 'game.js', status: 'modified' }] } : { text: '@@ -0,0 +1 @@\n+<script>untrusted</script>' } }));
     history = jest.fn(async (conversationId, type) => ({ ok: true, conversationId, result: type === 'list' ? { versions: [version], running: false }
-      : type === 'files' ? { files: [{ path: 'game.js' }] } : type === 'file' ? { text: '<script>untrusted</script>' }
+      : ['files', 'comparison'].includes(type) ? { files: [{ path: 'game.js' }] } : type === 'comparison_file' ? { before: { text: '' }, after: { text: '<script>untrusted</script>' } } : type === 'file' ? { text: '<script>untrusted</script>' }
         : type === 'prepare_restore' ? { token: 'plan_one', changes: [{ path: 'game.js', action: 'write' }] } : { restored: true } }));
     global.window = { electronAPI: { inspectAgentWorkspace: inspect, agentWorkspaceHistory: history } };
     tabs = [];
@@ -30,10 +30,10 @@ describe('read-only workspace viewers', () => {
   test('opens separate reusable Changes and checkpoint tabs and renders code only as text', async () => {
     viewers.open('one'); viewers.open('one', version); await flush();
     expect(tabs).toHaveLength(2);
-    expect(tabs[0].content.querySelector('.workspace-viewer-code').children[0].textContent).toContain('<script>');
-    expect(tabs[1].content.querySelector('.workspace-viewer-code').children[0].textContent).toContain('<script>');
+    expect(tabs[0].content.querySelectorAll('.workspace-code-text').some(row => row.textContent.includes('<script>') || row.children.some(child => child.textContent.includes('<script>')))).toBe(true);
+    expect(tabs[1].content.querySelectorAll('.workspace-code-text').some(row => row.textContent.includes('<script>') || row.children.some(child => child.textContent.includes('<script>')))).toBe(true);
     expect(tabs[1].content.querySelector('.workspace-viewer-code').attributes.contenteditable).toBeUndefined();
-    expect(history).toHaveBeenCalledWith('one', 'file', { versionId: version.id, path: 'game.js' });
+    expect(history).toHaveBeenCalledWith('one', 'comparison_file', { versionId: version.id, baseId: undefined, path: 'game.js' });
     viewers.open('one'); expect(tabs).toHaveLength(2);
     expect(tabs[0].content.querySelectorAll('.workspace-viewer-file')).toHaveLength(1);
   });
@@ -54,14 +54,14 @@ describe('read-only workspace viewers', () => {
     viewers.open('one', { ...version, reviewed: false }); await flush();
     expect(find(tabs[0].content, 'Restore…').disabled).toBe(true);
     closeTab(tabs[0].id);
-    history.mockImplementation(async (conversationId, type) => ({ ok: true, conversationId, result: type === 'list' ? { running: true } : type === 'files' ? { files: [] } : {} }));
+    history.mockImplementation(async (conversationId, type) => ({ ok: true, conversationId, result: type === 'list' ? { running: true } : ['files', 'comparison'].includes(type) ? { files: [] } : {} }));
     viewers.open('one', version); await flush();
     expect(find(tabs[0].content, 'Restore…').disabled).toBe(true);
   });
 
   test('external repository commits are viewable without a restore action', async () => {
     history.mockImplementation(async (conversationId, type) => ({ ok: true, conversationId,
-      result: type === 'list' ? { restorable: false, source: 'repository' } : type === 'files' ? { files: [] } : {} }));
+      result: type === 'list' ? { restorable: false, source: 'repository' } : ['files', 'comparison'].includes(type) ? { files: [] } : {} }));
     viewers.open('one', { ...version, source: 'repository' }); await flush();
     expect(find(tabs[0].content, 'Restore…')).toBeUndefined();
     expect(tabs[0].content.querySelector('.workspace-viewer-caption').textContent).toContain('Read-only commit');

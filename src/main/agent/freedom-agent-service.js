@@ -1159,8 +1159,9 @@ class FreedomAgentService {
         throw new Error('Conversation changed during inspection');
       }
       return result;
-    } catch {
-      throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'This workspace item could not be read');
+    } catch (error) {
+      const messages = { WORKSPACE_FILE_CHANGED: 'This file changed while loading. Refresh the viewer before loading more.', WORKSPACE_PROTECTED_PATH: 'This file is excluded from previews. Choose another file.', WORKSPACE_PATH_NOT_FOUND: 'This file no longer exists. Refresh the file list.', PROJECT_RECONNECT_REQUIRED: 'Reconnect the project from the project menu, then refresh the viewer.' };
+      throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, messages[error?.code] || 'This project item could not be read. Refresh the viewer or inspect it in your editor.');
     } finally {
       this.workspaceInspectionCount -= 1;
     }
@@ -1168,7 +1169,7 @@ class FreedomAgentService {
 
   async workspaceHistory(conversationId, request) {
     const conversation = this.conversation;
-    const mutation = ['save', 'prepare_restore', 'restore', 'include', 'exclude'].includes(request?.action);
+    const mutation = ['save', 'prepare_restore', 'prepare_recovery', 'repair_commit', 'restore', 'include', 'exclude'].includes(request?.action);
     if (this.disposed || !conversation || conversation.conversationId !== conversationId ||
         typeof this.workspaceController?.workspaceHistory !== 'function') {
       throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'This workspace history is unavailable');
@@ -1184,6 +1185,8 @@ class FreedomAgentService {
       if (this.disposed || this.conversation !== conversation) throw new Error('Conversation changed');
       return result;
     } catch (error) {
+      if (error?.code === 'PROJECT_READ_ONLY') throw new FreedomAgentError(error.code, 'Project is read-only. Choose Allow editing in the project menu, then reopen History and review recovery again.');
+      if (['PROJECT_RECONNECT_REQUIRED', 'PROJECT_CHANGED'].includes(error?.code)) throw new FreedomAgentError(error.code, 'Reconnect the original project from the project menu, then refresh History. No recovery was applied.');
       throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT,
         error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE' ? error.message : 'Workspace history could not be read or updated. Current files have not been rolled back.');
     } finally {

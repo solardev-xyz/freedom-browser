@@ -1,0 +1,56 @@
+'use strict';
+// Pure recovery protocol tests; native Git fault fixtures stay on the Mac mini.
+const fs = require('fs');
+const crypto = require('crypto');
+const { ExternalProjectGit } = require('./external-project-git');
+const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+
+describe('external commit recovery protocol', () => {
+  let service, record, current, lock, inode, rename, controller;
+  beforeEach(() => {
+    controller = new AbortController(); lock = Buffer.from('prepared index'); inode = 42;
+    record = { root: '/fixture', candidate: 'a'.repeat(40), baseline: { id: 'b'.repeat(40), head: 'ref: refs/heads/main\n', index: digest('original index') }, preparedIndex: digest(lock), indexLock: { dev: 1, ino: 42 } };
+    current = { ...record.baseline, id: record.candidate };
+    service = new ExternalProjectGit('/fixture', { temporaryRoot: '/private-fixture', authorize: jest.fn(async () => {}), signal: controller.signal, globalConfigFiles: [] });
+    service.validate = jest.fn(async () => true); service.checkMetadataIdentity = jest.fn(async () => {});
+    service.baseline = jest.fn(async () => ({ ...current }));
+    service.read = jest.fn(async name => name.endsWith('git-commit-pending.json') ? Buffer.from(JSON.stringify(record)) : name.endsWith('index.lock') ? lock : null);
+    jest.spyOn(fs.promises, 'lstat').mockResolvedValue({ dev: 1, get ino() { return inode; } });
+    jest.spyOn(fs, 'existsSync').mockImplementation(name => name.endsWith('index.lock') && Boolean(lock));
+    rename = jest.spyOn(fs.promises, 'rename').mockResolvedValue();
+  });
+  afterEach(() => jest.restoreAllMocks());
+  test('inspection is read-only; confirmed repair finalizes only the index and archives evidence', async () => {
+    const state = await service.recovery(); expect(state).toMatchObject({ pending: true, state: 'committed', repairable: true });
+    expect(rename).not.toHaveBeenCalled();
+    await expect(service.repairCommit(state.token)).resolves.toMatchObject({ repaired: true, id: record.candidate });
+    expect(rename).toHaveBeenCalledWith('/fixture/.git/index.lock', '/fixture/.git/index');
+    expect(rename).toHaveBeenCalledWith('/private-fixture/git-commit-pending.json', expect.stringMatching(/git-commit-recovered-/));
+    expect(rename).toHaveBeenCalledTimes(2); expect(service.authorize).toHaveBeenCalledWith(true);
+  });
+  test.each(['branch', 'index', 'lock', 'token', 'permission', 'cancel'])('refuses changed %s without mutating anything', async change => {
+    const state = await service.recovery();
+    if (change === 'branch') current.head = 'ref: refs/heads/other\n';
+    if (change === 'index') current.index = digest('new user staging');
+    if (change === 'lock') inode = 43;
+    if (change === 'permission') service.authorize.mockRejectedValue(Object.assign(new Error('Read only'), { code: 'PROJECT_READ_ONLY' }));
+    if (change === 'cancel') controller.abort();
+    await expect(service.repairCommit(change === 'token' ? '0'.repeat(64) : state.token)).rejects.toThrow();
+    expect(rename).not.toHaveBeenCalled();
+  });
+  test('rechecks immediately before finalization and declines changed state', async () => {
+    const state = await service.recovery();
+    service.authorize.mockImplementation(async write => { if (write) { current.index = digest('concurrent staging'); } });
+    await expect(service.repairCommit(state.token)).rejects.toThrow(); expect(rename).not.toHaveBeenCalled();
+  });
+  test('recognizes an already finalized index without rewriting it', async () => {
+    lock = null; current.index = record.preparedIndex;
+    const state = await service.recovery(); expect(state.repairable).toBe(true);
+    await service.repairCommit(state.token); expect(rename).toHaveBeenCalledTimes(1);
+    expect(rename.mock.calls[0][0]).toBe('/private-fixture/git-commit-pending.json');
+  });
+  test('leaves not-applied and uncertain branch states for deliberate reconciliation', async () => {
+    current.id = record.baseline.id; expect(await service.recovery()).toMatchObject({ state: 'not_applied', repairable: false });
+    current.id = 'c'.repeat(40); expect(await service.recovery()).toMatchObject({ state: 'uncertain', repairable: false });
+  });
+});

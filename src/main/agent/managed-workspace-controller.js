@@ -444,7 +444,7 @@ try {
     fail('INVALID_WORKSPACE_REQUEST');
   }
 } catch (error) {
-  const allowed = new Set(['INVALID_WORKSPACE_REQUEST', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_FILE_UNSAFE', 'WORKSPACE_PATH_TYPE_MISMATCH', 'WORKSPACE_PROTECTED_PATH', 'WORKSPACE_HISTORY_CHANGED', 'WORKSPACE_HISTORY_TOO_LARGE']);
+  const allowed = new Set(['INVALID_WORKSPACE_REQUEST', 'WORKSPACE_FILE_CHANGED', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_FILE_UNSAFE', 'WORKSPACE_PATH_TYPE_MISMATCH', 'WORKSPACE_PROTECTED_PATH', 'WORKSPACE_HISTORY_CHANGED', 'WORKSPACE_HISTORY_TOO_LARGE']);
   const native = new Map([
     ['ENOENT', 'WORKSPACE_PATH_NOT_FOUND'],
     ['ENOTDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
@@ -514,6 +514,7 @@ function workspaceFileErrorMessage(code) {
       INVALID_WORKSPACE_REQUEST: 'The workspace request is invalid',
       WORKSPACE_FILE_TOO_LARGE: 'The requested workspace file exceeds the supported size limit',
       WORKSPACE_FILE_UNAVAILABLE: 'The requested workspace file could not be accessed',
+      WORKSPACE_FILE_CHANGED: 'The file changed while loading. Refresh the viewer before loading more.',
       WORKSPACE_FILE_UNSAFE: 'The requested workspace path is not a safe regular file or directory',
       WORKSPACE_PATH_NOT_FOUND: 'The requested workspace path does not exist',
       WORKSPACE_PATH_TYPE_MISMATCH: 'The requested workspace path has the wrong file type',
@@ -1428,6 +1429,7 @@ class ManagedWorkspaceController {
         'INVALID_WORKSPACE_REQUEST',
         'WORKSPACE_FILE_TOO_LARGE',
         'WORKSPACE_FILE_UNAVAILABLE',
+        'WORKSPACE_FILE_CHANGED',
         'WORKSPACE_FILE_UNSAFE',
         'WORKSPACE_PATH_NOT_FOUND',
         'WORKSPACE_PATH_TYPE_MISMATCH',
@@ -1622,26 +1624,27 @@ class ManagedWorkspaceController {
   }
 
   async workspaceHistory(conversationId, request = {}) {
+    if ((request.offset !== undefined && (!Number.isSafeInteger(request.offset) || request.offset < 0 || request.offset > 1048576)) || (request.baseId && !/^[a-f0-9]{40}$/.test(request.baseId)) || (request.cursor && !/^[a-f0-9]{40}$/.test(request.cursor))) throw new WorkspaceHistoryError('Invalid history range. Refresh history.');
     if (this.store.getForConversation(conversationId)?.project) {
-      if (!['list', 'files', 'file'].includes(request.action)) throw new WorkspaceHistoryError('Use your Git client to restore or configure external repository history.');
+      if (!['list', 'files', 'file', 'comparison', 'comparison_file', 'recovery', 'repair_commit'].includes(request.action)) throw new WorkspaceHistoryError('Use your Git client to restore or configure external repository history.');
+      if (request.action === 'repair_commit' && (this.listProcesses(conversationId).length || [...this.activeCommands.values()].some(command => command.conversationId === conversationId))) throw new WorkspaceHistoryError('Stop project commands before repairing commit finalization.');
+      if (request.action === 'repair_commit') return this.#withHistory(conversationId, history => history.repairCommit(request.token));
       const { workspace, lease, grant } = await this.#enabledLease(conversationId);
       return (await this.#projectGit(workspace, lease, grant)).inspect(request);
     }
     if (['exclude', 'include'].includes(request.action)) return this.reviewWorkspaceHistory(conversationId, request);
     const perform = async (history) => {
       if (request.action === 'list') {
-        return { ...(await history.list()), exclusions: await history.exclusions(), notice: this.historyNotices.get(conversationId) || '', running: this.listProcesses(conversationId).length > 0 };
+        return { ...(await history.list(request)), exclusions: await history.exclusions(), notice: this.historyNotices.get(conversationId) || '', running: this.listProcesses(conversationId).length > 0 };
       }
+      if (request.action === 'recovery') return history.recovery();
+      if (['comparison', 'comparison_file'].includes(request.action)) return history.comparison(request);
       if (request.action === 'files') {
         const record = await history.ownedRecord(request.versionId);
         return { files: record.files.map((file) => ({ path: file.path })), label: record.label, excluded: record.excluded || [] };
       }
       if (request.action === 'file') {
-        const snapshot = await history.snapshot(request.versionId);
-        const file = snapshot.files.find((file) => file.path === request.path);
-        if (!file) throw new WorkspaceHistoryError('Version file not found');
-        const bytes = Buffer.from(file.content, 'base64');
-        return { text: bytes.includes(0) ? '' : bytes.toString('utf8'), binary: bytes.includes(0) };
+        return history.previewFile(request.versionId, request.path, request.offset);
       }
       if (request.action === 'save') {
         const snapshot = await history.currentSnapshot();
@@ -1653,18 +1656,36 @@ class ManagedWorkspaceController {
         this.historyNotices.delete(conversationId);
         return result;
       }
-      if (!['prepare_restore', 'restore'].includes(request.action)) throw new WorkspaceHistoryError('Unknown workspace history operation');
+      if (!['prepare_restore', 'prepare_recovery', 'restore'].includes(request.action)) throw new WorkspaceHistoryError('Unknown workspace history operation');
       if (this.listProcesses(conversationId).length || [...this.activeCommands.values()].some((command) => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Stop workspace processes before restoring');
-      if (request.action === 'prepare_restore') {
+      if (['prepare_restore', 'prepare_recovery'].includes(request.action)) {
+        const recovery = await history.recovery();
+        const recovering = request.action === 'prepare_recovery';
+        if (recovering && !recovery.pending) throw new WorkspaceHistoryError('There is no interrupted restore to recover. Refresh history.');
+        if (!recovering && recovery.pending) throw new WorkspaceHistoryError('An interrupted restore needs recovery first. Open History and inspect recovery.');
+        if (recovering) request = { ...request, versionId: recovery.backupId };
         const latest = await history.currentSnapshot();
         if ((await history.ownedRecord(request.versionId)).reviewed !== true) throw new WorkspaceHistoryError('This older automatic version was not reviewed. Inspect its files and create a reviewed commit before restoring');
-        const target = await history.snapshot(request.versionId);
+        let target = await history.snapshot(request.versionId);
         const exclusions = await history.exclusions();
         latest.files = latest.files.filter((file) => !exclusions.some((entry) => entry.path === file.path));
         if (target.files.some((file) => exclusions.some((entry) => entry.path === file.path))) throw new WorkspaceHistoryError('This version contains a currently excluded file; review exclusions first');
+        const selectedPaths = recovering ? recovery.paths : request.paths;
+        let retained = [];
+        if (selectedPaths) {
+          if (!Array.isArray(selectedPaths) || !selectedPaths.length || selectedPaths.length > 400 || selectedPaths.some(historyPathReason)) throw new WorkspaceHistoryError('Select valid files to restore.');
+          const selected = new Set(selectedPaths);
+          retained = latest.files.filter(file => !selected.has(file.path));
+          latest.files = latest.files.filter(file => selected.has(file.path));
+          target = { ...target, files: target.files.filter(file => selected.has(file.path)) };
+        }
         const paths = [...new Set([...latest.files, ...target.files].map((file) => file.path))];
         const current = await this.#stableHistorySnapshot(conversationId, paths);
-        if (current.excludedCount || fingerprint(current) !== fingerprint(latest)) throw new WorkspaceHistoryError('Review and commit current changes before restoring. Unreviewed files cannot be backed up or overwritten');
+        if (recovering) {
+          const interrupted = await history.snapshot(recovery.targetId);
+          const allowed = [...target.files, ...interrupted.files.filter(file => recovery.changedPaths?.includes(file.path))];
+          if (current.excludedCount || current.files.some(file => !allowed.some(candidate => candidate.path === file.path && candidate.content === file.content && candidate.mode === file.mode)) || paths.some(name => !current.files.some(file => file.path === name) && target.files.some(file => file.path === name) && (interrupted.files.some(file => file.path === name) || !recovery.changedPaths.includes(name)))) throw new WorkspaceHistoryError('Files changed outside the interrupted restore. Inspect them and the backup before recovery; no files were changed.');
+        } else if (current.excludedCount || fingerprint(current) !== fingerprint(latest)) throw new WorkspaceHistoryError('Review and commit current changes before restoring. Unreviewed files cannot be backed up or overwritten');
         const byPath = new Map(current.files.map((file) => [file.path, file]));
         const desired = new Map(target.files.map((file) => [file.path, file]));
         const operations = [];
@@ -1680,8 +1701,8 @@ class ManagedWorkspaceController {
         await this.#fileOperation(conversationId, 'history_validate', '.', preflight);
         for (const [id, plan] of this.restorePlans) if (plan.conversationId === conversationId || plan.expires < Date.now()) this.restorePlans.delete(id);
         const token = 'restore_' + crypto.randomBytes(16).toString('hex');
-        this.restorePlans.set(token, { conversationId, versionId: request.versionId, fingerprint: fingerprint(current), operations, target, paths, head: await history.currentId(), preflight, expires: Date.now() + 60000 });
-        return { token, changes: operations.map((entry) => ({ path: entry.path, action: entry.action })), excludedCount: current.excludedCount || 0 };
+        this.restorePlans.set(token, { conversationId, versionId: request.versionId, fingerprint: fingerprint(current), operations, target, retained, paths, head: await history.currentId(), preflight, expires: Date.now() + 5 * 60000 });
+        return { token, changes: operations.map((entry) => ({ path: entry.path, action: entry.action, before: byPath.get(entry.path) ? { text: Buffer.from(byPath.get(entry.path).content, 'base64').toString('utf8') } : { text: '', missing: true }, after: desired.get(entry.path) ? { text: Buffer.from(desired.get(entry.path).content, 'base64').toString('utf8') } : { text: '', missing: true } })), excludedCount: current.excludedCount || 0 };
       }
       const plan = this.restorePlans.get(request.token);
       this.restorePlans.delete(request.token);
@@ -1690,7 +1711,9 @@ class ManagedWorkspaceController {
       const current = await this.#stableHistorySnapshot(conversationId, plan.paths);
       if (current.excludedCount || fingerprint(current) !== plan.fingerprint) throw new WorkspaceHistoryError('Workspace changed; review the restore again');
       await this.#fileOperation(conversationId, 'history_validate', '.', plan.preflight);
-      const backup = await history.save(current, { label: 'Before restore', kind: 'backup', reviewed: true });
+      const preservedSnapshot = snapshot => ({ ...snapshot, files: [...plan.retained, ...snapshot.files].sort((a, b) => a.path.localeCompare(b.path)) });
+      const backup = await history.save(preservedSnapshot(current), { label: 'Before restore', kind: 'backup', reviewed: true });
+      await history.setRecovery({ pending: true, backupId: backup.id, targetId: plan.versionId, paths: plan.paths, changedPaths: plan.operations.map(operation => operation.path), createdAt: Date.now() });
       const deadline = Date.now() + 15000;
       try {
         for (const operation of plan.operations) {
@@ -1699,7 +1722,8 @@ class ManagedWorkspaceController {
         }
         const restored = await this.#stableHistorySnapshot(conversationId, plan.paths);
         if (fingerprint(restored) !== fingerprint(plan.target)) throw new WorkspaceHistoryError('Workspace changed during restore');
-        const result = await history.save(restored, { label: 'Restored version', kind: 'restore', reviewed: true });
+        const result = await history.save(preservedSnapshot(restored), { label: 'Restored version', kind: 'restore', reviewed: true });
+        await history.setRecovery({ pending: false });
         this.historyNotices.delete(conversationId);
         return { ...result, backupId: backup.id };
       } catch {
@@ -1707,7 +1731,7 @@ class ManagedWorkspaceController {
         throw new WorkspaceHistoryError('Restore did not finish. Use the “Before restore” version to recover.');
       }
     };
-    if (['list', 'files', 'file'].includes(request.action)) {
+    if (['list', 'files', 'file', 'comparison', 'comparison_file', 'recovery'].includes(request.action)) {
       const { lease } = await this.#enabledLease(conversationId);
       return perform(new ManagedWorkspaceHistory(lease.workspaceRoot));
     }
@@ -1715,17 +1739,19 @@ class ManagedWorkspaceController {
   }
 
   async inspectWorkspace(conversationId, options = {}) {
-    if (!['tree', 'changes', 'file', 'diff'].includes(options.kind)) {
+    if (!['tree', 'changes', 'file', 'diff', 'image', 'search'].includes(options.kind)) {
       throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'Unknown workspace inspection');
     }
+    if ((options.offset !== undefined && (!Number.isSafeInteger(options.offset) || options.offset < 0 || options.offset > 1048576)) || (options.scope !== undefined && !['all', 'staged', 'unstaged'].includes(options.scope))) throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'Invalid preview range or comparison. Refresh the viewer.');
+    if ((options.revision !== undefined && !/^[a-f0-9]{64}$/.test(options.revision)) || (options.kind === 'search' && (typeof options.query !== 'string' || !options.query.trim() || options.query.length > 200))) throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'Enter a filename to search.');
     const relativePath = validateWorkspacePath(options.path ?? '.', {
-      allowRoot: ['tree', 'changes'].includes(options.kind),
+      allowRoot: ['tree', 'changes', 'search'].includes(options.kind),
     });
     if (relativePath.split('/').some((part) => part.toLowerCase() === '.git')) {
       throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'Git metadata is private');
     }
     const result = await this.#structuredFileOperation(conversationId, 'workspace_inspect', relativePath, {
-      kind: options.kind,
+      kind: options.kind, offset: options.offset || 0, scope: options.scope || 'all', revision: options.revision, query: options.query,
       showGenerated: options.showGenerated === true,
     }, { signal: options.signal });
     const workspace = this.store.getForConversation(conversationId);

@@ -216,9 +216,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   claimAgentTab: (rendererTabId) => ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
   agentWorkspaceHistory: (conversationId, action, options = {}) =>
     ipcRenderer.invoke('agent:workspace:history', { conversationId, action,
-      versionId: options.versionId, label: options.label, path: options.path, token: options.token, reason: options.reason }),
-  inspectAgentWorkspace: (conversationId, kind, path = '.', showGenerated = false) =>
-    ipcRenderer.invoke('agent:workspace:inspect', { conversationId, kind, path, showGenerated }),
+      versionId: options.versionId, label: options.label, path: options.path, token: options.token, reason: options.reason,
+      baseId: options.baseId, cursor: options.cursor, offset: options.offset, paths: options.paths }),
+  inspectAgentWorkspace: (conversationId, kind, path = '.', showGenerated = false, options = {}) =>
+    ipcRenderer.invoke('agent:workspace:inspect', { conversationId, kind, path, showGenerated, offset: options.offset, scope: options.scope, revision: options.revision, query: options.query }),
   stopAgentProcess: (processId) => ipcRenderer.invoke('agent:process:stop', { processId }),
   openAgentProcessPreview: (processId) =>
     ipcRenderer.invoke('agent:process:preview-open', { processId }),

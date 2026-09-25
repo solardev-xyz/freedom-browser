@@ -1,5 +1,7 @@
 'use strict';
 
+const { compareEntries, textPreview } = require('./workspace-comparison');
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -121,19 +123,21 @@ class ExternalProjectGit {
     return { head, id, metadata: `${stat.dev}:${stat.ino}`, index: digest(await this.read(path.join(this.directory, 'index'), true)) };
   }
 
-  async list() {
+  async list(request = {}) {
     if (!await this.validate()) return { versions: [], noRepository: true, source: 'repository', restorable: false };
     const { id } = await this.baseline();
     if (!id) return { versions: [], source: 'repository', restorable: false };
-    const output = await this.git(['log', '-101', '--no-show-signature', '--no-decorate', '--format=%H%x00%ct%x00%s', 'HEAD', '--']);
-    const rows = output.toString().trimEnd().split('\n');
+    if (request.cursor) await this.entries(request.cursor);
+    if (request.path && historyPathReason(request.path)) fail('That file is excluded from history.');
+    const output = await this.git(['log', '-101', '--no-show-signature', '--no-decorate', '--format=%H%x00%ct%x00%s', request.cursor || id, '--', ...(request.path ? [request.path] : [])]);
+    const rows = output.toString().trimEnd().split('\n').filter(Boolean);
     const versions = rows.slice(0, 100).map((line) => {
       const [id, seconds, ...label] = line.split('\0');
       if (!OID.test(id) || !/^\d+$/.test(seconds)) fail('Invalid Git history result.');
       // eslint-disable-next-line no-control-regex
       return { id, label: label.join(' ').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 240), createdAt: Number(seconds) * 1000, source: 'repository' };
     });
-    return { versions, limitReached: rows.length > 100, source: 'repository', restorable: false };
+    return { versions, limitReached: rows.length > 100, nextCursor: rows[100]?.split('\0')[0] || null, source: 'repository', restorable: false };
   }
 
   async entries(id) {
@@ -148,19 +152,82 @@ class ExternalProjectGit {
   }
 
   async inspect(request) {
-    if (request.action === 'list') return this.list();
+    if (request.action === 'list') return this.list(request);
+    if (request.action === 'recovery') return this.recovery();
+    if (request.action === 'repair_commit') return this.repairCommit(request.token);
     if (!await this.validate()) fail('This folder has no Git repository. No history has been created.');
     const entries = await this.entries(request.versionId);
     const files = entries.filter(entry => !historyPathReason(entry.path) && ['100644', '100755'].includes(entry.mode));
-    if (request.action === 'files') return { files: files.slice(0, 500).map(({ path }) => ({ path })), truncated: files.length > 500 };
+    if (['comparison', 'comparison_file'].includes(request.action)) {
+      const parents = (await this.git(['rev-list', '--parents', '-1', request.versionId])).toString().trim().split(' ');
+      const baseId = request.baseId || parents[1] || null;
+      const before = baseId ? (await this.entries(baseId)).filter(entry => !historyPathReason(entry.path) && ['100644', '100755'].includes(entry.mode)) : [];
+      const changes = compareEntries(before, files);
+      if (request.action === 'comparison') return { files: changes.slice(request.offset || 0, (request.offset || 0) + 200), nextOffset: changes.length > (request.offset || 0) + 200 ? (request.offset || 0) + 200 : null, truncated: changes.length > (request.offset || 0) + 200, baseId, versionId: request.versionId };
+      const change = changes.find(entry => entry.path === request.path);
+      if (!change) fail('This file is not in the comparison. Refresh changes.');
+      const read = async (list, name) => {
+        const entry = list.find(file => file.path === name);
+        return entry ? this.previewBlob(entry.oid, request.offset) : { text: '', missing: true };
+      };
+      return { before: await read(before, change.oldPath || change.path), after: await read(files, change.path), baseId, versionId: request.versionId };
+    }
+    if (request.action === 'files') return { files: files.slice(request.offset || 0, (request.offset || 0) + 200).map(({ path }) => ({ path })), nextOffset: files.length > (request.offset || 0) + 200 ? (request.offset || 0) + 200 : null, truncated: files.length > (request.offset || 0) + 200 };
     if (request.action !== 'file') fail('Use your Git client to restore or change repository history.');
     const file = files.find(entry => entry.path === request.path);
     if (!file) fail('Commit file is unavailable or excluded.');
-    const size = Number((await this.git(['cat-file', '-s', file.oid])).toString());
-    if (size > 65536) return { text: '', truncated: true, message: 'File exceeds the 64 KiB preview limit.' };
-    const bytes = await this.git(['cat-file', 'blob', file.oid]);
+    return this.previewBlob(file.oid, request.offset);
+  }
+
+  async previewBlob(oid, offset = 0) {
+    const size = Number((await this.git(['cat-file', '-s', oid])).toString());
+    if (size > 1024 * 1024) return { text: '', truncated: true, message: 'File exceeds the 1 MiB preview limit. Open it in your editor.' };
+    const bytes = await this.git(['cat-file', 'blob', oid]);
     if (historyContainsSecret(bytes)) fail('This file may contain credentials and cannot be previewed.');
-    return { text: bytes.includes(0) ? '' : bytes.toString(), binary: bytes.includes(0) };
+    return textPreview(bytes, offset);
+  }
+
+  async recovery() {
+    if (!await this.validate()) return { pending: false };
+    const bytes = await this.read(path.join(this.temporaryRoot, 'git-commit-pending.json'), true, 65536);
+    if (!bytes) return { pending: false };
+    const record = JSON.parse(bytes);
+    if (record.root !== this.root || !OID.test(record.candidate || '') || !record.baseline) fail('Recovery record is invalid. Inspect it with your Git client.');
+    const current = await this.baseline();
+    const lockPath = path.join(this.directory, 'index.lock');
+    const lock = await this.read(lockPath, true);
+    const lockStat = lock ? await fs.promises.lstat(lockPath) : null;
+    const ownedLock = Boolean(lockStat && lockStat.dev === record.indexLock?.dev && lockStat.ino === record.indexLock?.ino && digest(lock) === record.preparedIndex);
+    const repairable = current.id === record.candidate && current.head === record.baseline.head &&
+      ((ownedLock && current.index === record.baseline.index) || (!lock && current.index === record.preparedIndex));
+    const token = digest(JSON.stringify({ journal: digest(bytes), current, lock: lock ? digest(lock) : null, inode: lockStat?.ino }));
+    const state = current.id === record.candidate ? 'committed' : current.id === record.baseline.id && current.head === record.baseline.head ? 'not_applied' : 'uncertain';
+    return { pending: true, state, repairable, token, candidate: record.candidate, currentId: current.id,
+      message: state === 'committed' ? 'The commit exists. Staging finalization still needs inspection.' : state === 'not_applied' ? 'The branch still matches its starting revision. Inspect staging before retrying.' : 'The repository changed after the interrupted operation. Reconcile it in your Git client.',
+      steps: ['Inspect Git log, status and staged changes in your Git client.', 'Preserve unrelated edits and staging. Do not delete index.lock or retry the commit blindly.', 'Reconcile the retained commit recovery record before making another Agent commit.'] };
+  }
+
+  async repairCommit(token) {
+    await this.authorize(true);
+    const state = await this.recovery();
+    if (!state.repairable || state.token !== token) fail('Repository recovery state changed. Inspect recovery again; no repair was applied.');
+    const journalPath = path.join(this.temporaryRoot, 'git-commit-pending.json');
+    const record = JSON.parse(await this.read(journalPath, false, 65536));
+    for (const name of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer']) {
+      if (fs.existsSync(path.join(this.directory, name))) fail('Finish the other Git operation before recovering this commit.');
+    }
+    await this.authorize(true);
+    const rechecked = await this.recovery();
+    if (!rechecked.repairable || rechecked.token !== token) fail('Repository recovery state changed. Inspect recovery again.');
+    if (this.signal?.aborted || Date.now() >= this.deadline) fail('Recovery was stopped. Inspect recovery again before retrying.');
+    await this.checkMetadataIdentity();
+    if (this.signal?.aborted) fail('Recovery was stopped. Inspect recovery again before retrying.');
+    const lockPath = path.join(this.directory, 'index.lock');
+    if (fs.existsSync(lockPath)) await fs.promises.rename(lockPath, path.join(this.directory, 'index'));
+    // Archive our journal, retaining evidence. Never remove an unrelated lock or
+    // write working files. A failed archive can be finalized by inspecting again.
+    await fs.promises.rename(journalPath, path.join(this.temporaryRoot, `git-commit-recovered-${record.candidate}-${crypto.randomBytes(8).toString('hex')}.json`));
+    return { repaired: true, id: record.candidate, message: 'Commit finalization completed. Working files were not changed.' };
   }
 
   async configuration() {

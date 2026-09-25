@@ -1057,6 +1057,10 @@ describe('Freedom agent IPC', () => {
     for (const [sender, payload] of [[ctx.otherSender, input], [ctx.sender, { ...input, conversationId: 'foreign' }],
       [ctx.sender, { ...input, action: 'restore', token: 'bad' }], [ctx.sender, { ...input, action: 'prepare_restore', versionId: '../other' }],
       [ctx.sender, { ...input, action: 'save', label: 'a'.repeat(81) }],
+      [ctx.sender, { ...input, action: 'comparison', versionId: 'a'.repeat(40), baseId: '--all' }],
+      [ctx.sender, { ...input, offset: -1 }], [ctx.sender, { ...input, cursor: '../HEAD' }],
+      [ctx.sender, { ...input, action: 'repair_commit', token: 'bad' }],
+      [ctx.sender, { ...input, action: 'prepare_recovery', paths: ['one'] }],
       [ctx.sender, { ...input, action: 'exclude', path: 'customer.csv', reason: 'x'.repeat(161) }]]) {
       await expect(call({ sender }, payload)).resolves.toMatchObject({ ok: false });
     }
@@ -1075,6 +1079,7 @@ describe('Freedom agent IPC', () => {
     await expect(inspect({ sender: ctx.sender }, { ...input, conversationId: 'other' })).resolves.toMatchObject({ ok: false });
     await expect(inspect({ sender: ctx.sender }, { ...input, path: 'x'.repeat(1025) })).resolves.toMatchObject({ ok: false });
     await expect(inspect({ sender: ctx.sender }, { ...input, kind: 'write' })).resolves.toMatchObject({ ok: false });
+    for (const extra of [{ offset: -1 }, { offset: 1048577 }, { scope: 'reset' }, { revision: 'HEAD' }, { query: 'x'.repeat(201) }]) await expect(inspect({ sender: ctx.sender }, { ...input, ...extra })).resolves.toMatchObject({ ok: false });
     expect(ctx.service.inspectWorkspace).not.toHaveBeenCalled();
     await expect(inspect({ sender: ctx.sender }, input)).resolves.toMatchObject({ ok: true, conversationId: 'conversation_test', result: { entries: [] } });
     expect(ctx.service.inspectWorkspace).toHaveBeenCalledWith('conversation_test', { kind: 'tree', path: '.', showGenerated: false });

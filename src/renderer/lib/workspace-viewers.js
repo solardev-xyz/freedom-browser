@@ -1,174 +1,343 @@
-// Read-only chrome surfaces. Content is rendered as text, never as a page or HTML.
+import { compareText, parsePatch, renderDocument, renderMarkdown } from './workspace-document.js';
+
 function node(tag, className, text) {
-  const result = document.createElement(tag);
-  result.className = className;
+  const result = document.createElement(tag); result.className = className;
   if (text !== undefined) result.textContent = text;
   return result;
 }
 function action(label, handler, className = 'workspace-viewer-action') {
-  const result = node('button', className, label);
-  result.type = 'button';
-  result.addEventListener('click', handler);
-  return result;
+  const result = node('button', className, label); result.type = 'button';
+  result.addEventListener('click', event => {
+    Promise.resolve().then(() => handler(event)).catch(error => { const message = result.closest?.('.workspace-viewer')?.querySelector('.workspace-viewer-message'); if (message) message.textContent = error.message; });
+  }); return result;
+}
+function select(label, choices, value, handler) {
+  const input = node('select', 'workspace-viewer-select'); input.setAttribute('aria-label', label);
+  for (const [id, title] of choices) { const option = node('option', '', title); option.value = id; input.appendChild(option); }
+  input.value = value;
+  input.addEventListener('change', () => handler(input.value)); return input;
 }
 
-export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () => {} } = {}) {
-  const sessions = new Map();
-  let conversation = null;
-
-  async function request(session, api, ...args) {
-    const response = await window.electronAPI[api](session.conversationId, ...args);
+export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () => {}, api = window.electronAPI } = {}) {
+  const sessions = new Map(); let conversation = null;
+  async function request(session, method, ...args) {
+    const response = await api[method](session.conversationId, ...args);
     if (session.closed || conversation !== session.conversationId) return null;
-    if (!response?.ok || response.conversationId !== session.conversationId) throw new Error(response?.error?.message || 'Workspace content is unavailable.');
+    if (!response?.ok || response.conversationId !== session.conversationId) throw new Error(response?.error?.message || 'Project content is unavailable. Refresh to try again.');
     return response.result;
   }
   const history = (session, type, options = {}) => request(session, 'agentWorkspaceHistory', type, options);
-  const inspect = (session, type, path = '.') => request(session, 'inspectAgentWorkspace', type, path, false);
+  const inspect = (session, type, path = '.', options = {}) => request(session, 'inspectAgentWorkspace', type, path, false, options);
   const current = (session, sequence) => !session.closed && session.sequence === sequence && conversation === session.conversationId;
+  const fileOptions = session => ({ versionId: session.version?.id, baseId: session.baseId || undefined });
 
   function shell(session, subtitle) {
-    const sequence = ++session.sequence;
-    session.readSequence += 1;
+    session.documentScroll = session.document?.scrollTop ?? session.documentScroll ?? 0;
+    const sequence = ++session.sequence; session.readSequence += 1;
     const header = node('header', 'workspace-viewer-heading');
     const identity = node('div', 'workspace-viewer-identity');
-    identity.appendChild(node('strong', '', session.title));
-    identity.appendChild(node('span', 'workspace-viewer-caption', subtitle));
-    header.appendChild(identity);
-    const close = action('Close', () => closeTab(session.tab.id));
-    header.appendChild(close);
-    const message = node('p', 'workspace-viewer-message', 'Loading…');
+    identity.appendChild(node('strong', '', session.mode === 'history' ? 'History' : session.mode === 'files' ? 'Files' : 'Changes'));
+    identity.appendChild(node('span', 'workspace-viewer-caption', subtitle)); header.appendChild(identity);
+    const tabs = node('nav', 'workspace-viewer-tabs'); tabs.setAttribute('aria-label', 'Project views');
+    for (const [mode, title] of [['files', 'Files'], ['changes', 'Changes'], ['history', 'History']]) {
+      const button = action(title, () => {
+        session.viewState ||= {};
+        session.viewState[session.mode] = { selected: session.selected, filter: session.filter, documentScroll: session.document?.scrollTop || 0 };
+        session.mode = mode; session.version = null; session.historyPath = null; session.document = null;
+        Object.assign(session, { selected: null, filter: '', documentScroll: 0 }, session.viewState[mode]);
+        void show(session);
+      });
+      button.setAttribute('aria-pressed', String(session.mode === mode)); tabs.appendChild(button);
+    }
+    header.appendChild(tabs);
+    header.appendChild(action('Refresh', () => void show(session)));
+    header.appendChild(action('Close', () => closeTab(session.tab.id)));
+    const controls = node('div', 'workspace-viewer-controls');
+    const message = node('p', 'workspace-viewer-message', 'Loading…'); message.setAttribute('role', 'status');
     const body = node('div', 'workspace-viewer-body');
-    session.content.replaceChildren(header, message, body);
-    return { sequence, header, message, body, valid: () => current(session, sequence) };
+    session.content.replaceChildren(header, controls, message, body);
+    return { sequence, header, controls, message, body, valid: () => current(session, sequence) };
   }
 
-  async function readFile(session, ui, entry, content, buttons) {
-    const readSequence = ++session.readSequence;
-    for (const button of buttons) button.setAttribute('aria-pressed', String(button.dataset.path === entry.path));
-    const heading = node('div', 'workspace-viewer-file-heading', entry.path);
-    const note = node('p', 'workspace-viewer-message', 'Loading file…');
-    const pre = node('pre', 'workspace-viewer-code');
-    pre.tabIndex = 0;
-    content.replaceChildren(heading, note, pre);
-    try {
-      const result = session.version
-        ? await history(session, 'file', { versionId: session.version.id, path: entry.path })
-        : await inspect(session, entry.preview === 'file' ? 'file' : 'diff', entry.path);
-      if (!result || !ui.valid() || readSequence !== session.readSequence) return;
-      note.textContent = result.message || (result.binary ? 'Binary file — text preview unavailable.'
-        : result.truncated ? 'Limited preview — file content was truncated.' : '');
-      const lines = result.binary ? [] : (result.text || '').split('\n');
-      if (lines.length > 2000) note.textContent = 'Showing the first 2,000 lines.';
-      for (const line of lines.slice(0, 2000)) {
-        const row = node('span', !session.version && line.startsWith('+') ? 'agent-diff-added'
-          : !session.version && line.startsWith('-') ? 'agent-diff-deleted'
-            : !session.version && line.startsWith('@@') ? 'agent-diff-hunk' : '', `${line}\n`);
-        pre.appendChild(row);
-      }
-    } catch (cause) {
-      if (ui.valid() && readSequence === session.readSequence) note.textContent = cause.message;
+  function resize(session, list, ui) {
+    list.style.width = `${session.listWidth || 220}px`;
+    const handle = node('div', 'workspace-viewer-resize'); handle.tabIndex = 0;
+    handle.setAttribute('role', 'separator'); handle.setAttribute('aria-orientation', 'vertical'); handle.setAttribute('aria-label', 'Resize file list');
+    const width = value => { session.listWidth = Math.max(150, Math.min(420, value)); list.style.width = `${session.listWidth}px`; handle.setAttribute('aria-valuenow', String(session.listWidth)); };
+    handle.setAttribute('aria-valuemin', '150'); handle.setAttribute('aria-valuemax', '420'); width(session.listWidth || 220);
+    handle.addEventListener('keydown', event => { if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); width((session.listWidth || 220) + (event.key === 'ArrowLeft' ? -20 : 20)); } });
+    handle.addEventListener('pointerdown', event => { const start = event.clientX, initial = session.listWidth; handle.setPointerCapture(event.pointerId); handle.onpointermove = next => width(initial + next.clientX - start); handle.onpointerup = () => { handle.onpointermove = null; }; });
+    ui.body.appendChild(list); ui.body.appendChild(handle);
+  }
+
+  function fileList(session, ui, entries, { append = false } = {}) {
+    if (!append) {
+      session.buttons = []; ui.body.replaceChildren();
+      const list = node('nav', 'workspace-viewer-files'); list.setAttribute('aria-label', 'Project files');
+      const search = node('input', 'workspace-viewer-search'); search.type = 'search'; search.placeholder = 'Filter files…'; search.setAttribute('aria-label', 'Filter listed files');
+      search.value = session.filter || '';
+      search.addEventListener('input', () => { session.filter = search.value; for (const button of session.buttons) button.hidden = !button.dataset.path.toLocaleLowerCase().includes(search.value.toLocaleLowerCase()); });
+      list.appendChild(search); session.list = list; resize(session, list, ui);
+      session.document = node('div', 'workspace-viewer-document'); ui.body.appendChild(session.document);
+      list.addEventListener('keydown', event => {
+        if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+        const buttons = session.buttons.filter(button => !button.hidden); const index = buttons.indexOf(document.activeElement);
+        if (index < 0) return; event.preventDefault(); buttons[(index + (event.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+      });
     }
-  }
-
-  function fileList(session, ui, entries) {
-    const list = node('nav', 'workspace-viewer-files');
-    list.setAttribute('aria-label', session.version ? 'Commit files' : 'Changed files');
-    const content = node('div', 'workspace-viewer-document');
-    const buttons = [];
     for (const entry of entries) {
-      const button = action('', () => void readFile(session, ui, entry, content, buttons), 'workspace-viewer-file');
-      button.dataset.path = entry.path;
-      button.title = entry.path;
-      button.appendChild(node('span', 'workspace-viewer-path', entry.path));
-      if (entry.status) button.appendChild(node('span', `agent-workspace-file-status ${entry.status}`,
-        { added: 'Added', modified: 'Modified', deleted: 'Deleted', conflicted: 'Conflict' }[entry.status] || 'Changed'));
+      const button = action('', () => {
+        if (entry.type === 'directory') { session.directory = entry.path; session.selected = null; session.filter = ''; void show(session); }
+        else { session.documentScroll = session.selected === entry.path ? session.document.scrollTop : 0; session.selected = entry.path; void readFile(session, ui, entry); }
+      }, 'workspace-viewer-file');
+      button.dataset.path = entry.path; button.title = entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path;
+      button.appendChild(node('span', 'workspace-viewer-path', `${entry.type === 'directory' ? '▸ ' : ''}${entry.name || entry.path}`));
+      if (entry.status) button.appendChild(node('span', `agent-workspace-file-status ${entry.status}`, `${entry.status}${entry.staged && entry.unstaged ? ' · staged + unstaged' : entry.staged ? ' · staged' : entry.unstaged ? ' · unstaged' : ''}`));
       if (entry.agentEdited) button.appendChild(node('span', 'workspace-viewer-caption', 'Agent edited'));
-      buttons.push(button);
-      list.appendChild(button);
+      button.hidden = Boolean(session.filter && !entry.path.toLocaleLowerCase().includes(session.filter.toLocaleLowerCase()));
+      session.buttons.push(button); session.list.appendChild(button);
     }
-    ui.body.appendChild(list);
-    ui.body.appendChild(content);
-    if (entries.length) void readFile(session, ui, entries[0], content, buttons);
-    else content.appendChild(node('p', 'workspace-viewer-message', session.version ? 'No files in this commit' : session.project ? 'No changes to show' : 'No changes since the latest commit'));
+    if (!append) {
+      const entry = entries.find(item => item.path === session.selected) || entries.find(item => item.type !== 'directory');
+      if (entry) { session.selected = entry.path; void readFile(session, ui, entry); }
+      else session.document.appendChild(node('p', 'workspace-viewer-message', entries.length ? 'Choose a folder to browse its files.' : 'No files to show.'));
+    }
+  }
+
+  async function readFile(session, ui, entry) {
+    const sequence = ++session.readSequence;
+    const valid = () => ui.valid() && sequence === session.readSequence;
+    for (const button of session.buttons || []) button.setAttribute('aria-pressed', String(button.dataset.path === entry.path));
+    const pane = session.document; pane.replaceChildren();
+    const heading = node('div', 'workspace-viewer-file-heading', entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path);
+    const tools = node('div', 'workspace-viewer-document-tools');
+    const note = node('p', 'workspace-viewer-message', 'Loading file…');
+    const code = node('div', 'workspace-viewer-code'); code.tabIndex = 0;
+    pane.appendChild(heading); pane.appendChild(tools); pane.appendChild(note); pane.appendChild(code);
+    try {
+      const comparison = session.mode !== 'files' && !session.browse && entry.preview !== 'file';
+      let result, rows, text = '', offset = null, fullFile = false, beforeText = '', afterText = '';
+      const historical = Boolean(session.version);
+      if (historical && comparison) {
+        result = await history(session, 'comparison_file', { ...fileOptions(session), path: entry.path });
+        if (!result || !valid()) return;
+        beforeText = result.before.text || ''; afterText = result.after.text || '';
+        rows = compareText(beforeText, afterText); text = afterText;
+        offset = result.before.nextOffset || result.after.nextOffset;
+        note.textContent = result.before.message || result.after.message || (result.before.binary || result.after.binary ? 'Binary file — text comparison unavailable.' : result.before.truncated || result.after.truncated ? 'Comparison is limited to the first 64 KiB of each file.' : '');
+      } else {
+        result = historical ? await history(session, 'file', { versionId: session.version.id, path: entry.path }) : await inspect(session, comparison ? 'diff' : 'file', entry.path, { scope: session.scope || 'all' });
+        if (!result || !valid()) return;
+        text = result.text || ''; offset = result.nextOffset;
+        rows = comparison ? parsePatch(text) : text.split('\n').map((line, index) => ({ kind: 'context', text: line, newLine: index + 1 }));
+        note.textContent = result.message || (result.binary ? 'Binary file — text preview unavailable.' : result.truncated ? 'Showing a bounded preview.' : '');
+      }
+      const paint = () => {
+        if (!valid()) return;
+        renderDocument(code, rows, { split: comparison && !fullFile && session.split, query: session.find || '', highlight: /\.(?:[cm]?[jt]sx?|json|css|py|sh|ya?ml)$/.test(entry.path), collapse: comparison && !fullFile });
+        code.classList.toggle('workspace-code-wrap', Boolean(session.wrap));
+      };
+      const search = node('input', 'workspace-viewer-search'); search.type = 'search'; search.placeholder = 'Find in file…'; search.setAttribute('aria-label', 'Find in file'); search.value = session.find || '';
+      search.addEventListener('input', () => { session.find = search.value; paint(); code.querySelector('mark')?.scrollIntoView?.({ block: 'center' }); }); tools.appendChild(search);
+      tools.appendChild(action('Wrap', () => { session.wrap = !session.wrap; paint(); }));
+      tools.appendChild(action('Copy', async () => { try { await navigator.clipboard.writeText(text); if (valid()) note.textContent = 'Copied.'; } catch { if (valid()) note.textContent = 'Copy unavailable. Select the text and copy it.'; } }));
+      if (comparison) {
+        tools.appendChild(action('Side by side', () => { session.split = !session.split; paint(); }));
+        let index = -1;
+        const jump = direction => { const changes = [...code.querySelectorAll('[data-change]')]; if (changes.length) { index = (index + direction + changes.length) % changes.length; changes[index].scrollIntoView?.({ block: 'center' }); } };
+        tools.appendChild(action('Previous change', () => jump(-1))); tools.appendChild(action('Next change', () => jump(1)));
+        tools.appendChild(action('Full file', async () => {
+          if (fullFile) { fullFile = false; await readFile(session, ui, entry); return; }
+          const file = historical ? await history(session, 'file', { versionId: session.version.id, path: entry.path }) : await inspect(session, 'file', entry.path);
+          if (!file || !valid()) return;
+          fullFile = true; text = file.text || ''; rows = text.split('\n').map((line, index) => ({ kind: 'context', text: line, newLine: index + 1 })); note.textContent = file.message || (file.truncated ? 'Full file preview is limited to 64 KiB.' : 'Full file'); paint();
+        }));
+      }
+      if (!comparison && /\.md$/i.test(entry.path)) {
+        let preview = false; tools.appendChild(action('Markdown preview', () => { preview = !preview; if (preview) renderMarkdown(code, text); else paint(); }));
+      }
+      if (!historical && /\.(png|jpe?g|gif|webp)$/i.test(entry.path)) tools.appendChild(action('Preview image', async () => {
+        const image = await inspect(session, 'image', entry.path); if (!image || !valid()) return;
+        if (!image.dataUrl) { note.textContent = image.message; return; }
+        const img = node('img', 'workspace-viewer-image'); img.alt = entry.path; img.src = image.dataUrl; code.replaceChildren(img); note.textContent = '';
+      }));
+      tools.appendChild(action('File history', () => { session.historyPath = entry.path; session.mode = 'history'; session.version = null; session.versions = []; void show(session); }));
+      if (historical) tools.appendChild(action('Compare with current', async () => {
+        const currentFile = await inspect(session, 'file', entry.path); const old = await history(session, 'file', { versionId: session.version.id, path: entry.path });
+        if (!currentFile || !old || !valid()) return;
+        if (currentFile.binary || old.binary || currentFile.truncated || old.truncated) { note.textContent = 'This comparison requires two complete text previews.'; return; }
+        rows = compareText(old.text, currentFile.text); note.textContent = `${session.version.id.slice(0, 7)} → current file`; renderDocument(code, rows, { split: session.split });
+      }));
+      if (offset !== null && offset !== undefined) {
+        const more = action('Load more', async () => {
+          more.disabled = true;
+          try {
+            if (historical && comparison) {
+              const next = await history(session, 'comparison_file', { ...fileOptions(session), path: entry.path, offset });
+              if (!next || !valid()) return;
+              beforeText += next.before.text || ''; afterText += next.after.text || ''; text = afterText;
+              offset = next.before.nextOffset || next.after.nextOffset; rows = compareText(beforeText, afterText); paint(); more.hidden = !offset; note.textContent = offset ? 'Showing a bounded comparison.' : ''; return;
+            }
+            const file = historical ? await history(session, 'file', { versionId: session.version.id, path: entry.path, offset }) : await inspect(session, comparison ? 'diff' : 'file', entry.path, { offset, revision: result.revision, scope: session.scope || 'all' });
+            if (!file || !valid()) return;
+            text += file.text || ''; offset = file.nextOffset; rows = comparison ? parsePatch(text) : text.split('\n').map((line, index) => ({ kind: 'context', text: line, newLine: index + 1 })); paint(); more.hidden = !offset; note.textContent = file.truncated ? 'Showing a bounded preview.' : '';
+          } catch (error) { if (valid()) note.textContent = error.message; }
+          finally { more.disabled = false; }
+        }); tools.appendChild(more);
+      }
+      paint(); pane.scrollTop = session.documentScroll || 0;
+    } catch (error) { if (valid()) note.textContent = error.message; }
+  }
+
+  async function showHistory(session, ui, cursor = null) {
+    const state = await history(session, 'list', { ...(cursor && { cursor }), ...(session.historyPath && { path: session.historyPath }) });
+    if (!state || !ui.valid()) return;
+    session.versions = cursor ? [...session.versions, ...(state.versions || [])] : state.versions || [];
+    ui.message.textContent = state.noRepository ? 'This folder has no Git repository.' : session.historyPath ? `History of ${session.historyPath}` : '';
+    ui.body.replaceChildren();
+    const list = node('nav', 'workspace-viewer-files'); list.setAttribute('aria-label', 'Commits'); resize(session, list, ui);
+    const detail = node('div', 'workspace-viewer-document'); detail.appendChild(node('p', 'workspace-viewer-message', 'Choose a commit to review its changes.')); ui.body.appendChild(detail);
+    for (const version of session.versions) {
+      const button = action('', () => { session.version = version; session.selected = null; session.browse = false; session.baseId = null; void show(session); }, 'workspace-viewer-file');
+      button.appendChild(node('strong', 'workspace-viewer-path', version.label));
+      button.appendChild(node('span', 'workspace-viewer-caption', `${version.id.slice(0, 7)} · ${new Date(version.createdAt).toLocaleString()}`)); list.appendChild(button);
+    }
+    if (state.nextCursor) { const more = action('Load older commits', async () => { more.disabled = true; try { await showHistory(session, ui, state.nextCursor); } finally { more.disabled = false; } }); list.appendChild(more); }
+    if (!session.versions.length) detail.replaceChildren(node('p', 'workspace-viewer-message', 'No commits to show.'));
+    const recovery = await history(session, 'recovery'); if (!recovery || !ui.valid() || !recovery.pending) return;
+    const card = node('div', 'workspace-viewer-recovery'); card.appendChild(node('strong', '', 'An interrupted operation needs attention'));
+    card.appendChild(node('p', '', recovery.message || 'A restore did not finish. Review the saved backup before recovering.'));
+    for (const step of recovery.steps || []) card.appendChild(node('p', '', step));
+    if (recovery.candidate) card.appendChild(node('code', '', `Commit ${recovery.candidate}`));
+    if (recovery.repairable) card.appendChild(action('Review finalization', () => {
+      card.appendChild(node('p', '', 'The commit is already on the original branch. Freedom will finalize its prepared staging index and archive its recovery record. Working files stay unchanged. Editing access is required.'));
+      const confirm = action('Finalize this commit', async () => {
+        if (!ui.valid() || confirm.disabled) return; confirm.disabled = true;
+        const result = await history(session, 'repair_commit', { token: recovery.token });
+        if (result && ui.valid()) { session.onChanged?.(); await show(session); }
+      }); card.appendChild(confirm);
+    }));
+    if (recovery.backupId) card.appendChild(action('Review recovery', () => void reviewRestore(session, true)));
+    detail.prepend(card);
   }
 
   async function show(session) {
-    const ui = shell(session, session.version ? `Read-only commit · ${new Date(session.version.createdAt).toLocaleString()}` : 'Read-only · Changes since the latest commit');
-    ui.header.insertBefore(action('Refresh', () => void show(session)), ui.header.lastChild);
+    const subtitle = session.version ? `Read-only commit · ${session.version.id.slice(0, 7)} · ${session.version.label}` : session.mode === 'changes' ? (session.scope === 'staged' ? 'Staged changes vs latest commit' : session.scope === 'unstaged' ? 'Working files vs staged version' : 'Current files vs latest commit') : 'Read-only project browser';
+    const ui = shell(session, subtitle);
     try {
+      if (session.mode === 'history' && !session.version) { await showHistory(session, ui); return; }
       if (session.version) {
-        const [files, state] = await Promise.all([history(session, 'files', { versionId: session.version.id }), history(session, 'list')]);
-        if (!files || !state || !ui.valid()) return;
-        ui.message.textContent = '';
-        const restore = action('Restore…', () => void reviewRestore(session));
-        restore.disabled = state.running || session.version.reviewed === false;
-        restore.title = state.running ? 'Stop running processes before restoring' : session.version.reviewed === false ? 'This older snapshot must be reviewed before restoring' : 'Review the affected files before confirming';
-        if (state.restorable !== false) ui.header.insertBefore(restore, ui.header.lastChild);
-        fileList(session, ui, files.files);
-      } else {
-        const changes = await inspect(session, 'changes');
-        if (!changes || !ui.valid()) return;
-        if (!changes.available) { ui.message.textContent = changes.message; return; }
-        session.project = changes.project === true;
-        ui.message.textContent = changes.project
-          ? changes.recordedEditsOnly ? 'No Git baseline. Showing direct file edits recorded in this chat; commands and outside edits may change other files.'
-            : 'Project changes include work from before this chat. “Agent edited” marks files directly edited in this chat; commands may change other files.'
-          : changes.limitReached ? 'Showing the first 500 changes. Ignored files are excluded.' : '';
-        fileList(session, ui, changes.changes);
+        const [result, state] = await Promise.all([history(session, session.browse ? 'files' : 'comparison', fileOptions(session)), history(session, 'list')]);
+        if (!result || !state || !ui.valid()) return;
+        session.versions = [...new Map([...(session.versions || []), ...(state.versions || [])].map(version => [version.id, version])).values()];
+        ui.controls.appendChild(action('All commits', () => { session.version = null; void show(session); }));
+        ui.controls.appendChild(action(session.browse ? 'Show changes' : 'Browse files at this commit', () => { session.browse = !session.browse; void show(session); }));
+        ui.controls.appendChild(select('Compare from', [['', 'Parent commit'], ...session.versions.filter(version => version.id !== session.version.id).map(version => [version.id, `${version.id.slice(0, 7)} · ${version.label}`])], session.baseId || '', value => { session.baseId = value; session.browse = false; void show(session); }));
+        if (state.restorable !== false) {
+          const restore = action('Restore…', () => void reviewRestore(session)); restore.disabled = state.running || session.version.reviewed === false; restore.title = restore.disabled ? 'Stop processes and review current files before restoring.' : 'Review the exact changes before restoring.'; ui.controls.appendChild(restore);
+          const restoreFile = action('Restore file…', () => session.selected ? reviewRestore(session, false, [session.selected]) : Promise.resolve());
+          restoreFile.disabled = restore.disabled; restoreFile.title = 'Review restoring only the selected file'; ui.controls.appendChild(restoreFile);
+        }
+        ui.message.textContent = result.truncated ? 'More files are available below.' : session.browse ? 'Files saved in this commit' : `${result.baseId?.slice(0, 7) || 'Empty project'} → ${session.version.id.slice(0, 7)}`;
+        fileList(session, ui, result.files || []);
+        let offset = result.nextOffset;
+        if (offset) {
+          const more = action('Load more files', async () => {
+            more.disabled = true;
+            try {
+              const next = await history(session, session.browse ? 'files' : 'comparison', { ...fileOptions(session), offset });
+              if (!next || !ui.valid()) return;
+              fileList(session, ui, next.files || [], { append: true }); offset = next.nextOffset; more.hidden = !offset;
+            } finally { more.disabled = false; }
+          }); ui.controls.appendChild(more);
+        }
+        return;
       }
-    } catch (cause) {
-      if (ui.valid()) ui.message.textContent = cause.message;
-    }
+      if (session.mode === 'files') {
+        const directory = session.directory || '.';
+        ui.controls.appendChild(action('Up', () => { session.directory = directory.includes('/') ? directory.slice(0, directory.lastIndexOf('/')) : '.'; session.selected = null; session.filter = ''; void show(session); }));
+        ui.controls.appendChild(node('span', 'workspace-viewer-caption', directory));
+        const search = node('input', 'workspace-viewer-search'); search.type = 'search'; search.placeholder = 'Search project files…'; search.setAttribute('aria-label', 'Search project filenames');
+        search.addEventListener('keydown', async event => {
+          if (event.key !== 'Enter' || !search.value.trim()) return;
+          event.preventDefault();
+          const sequence = ++session.readSequence;
+          try {
+            const found = await inspect(session, 'search', '.', { query: search.value.trim().slice(0, 200) });
+            if (!found || !ui.valid() || sequence !== session.readSequence) return;
+            fileList(session, ui, found.entries); ui.message.textContent = found.limitReached ? 'Search is bounded. Refine the filename to narrow results.' : `${found.entries.length} files found`;
+          } catch (error) { if (ui.valid()) ui.message.textContent = error.message; }
+        }); ui.controls.appendChild(search);
+        const result = await inspect(session, 'tree', directory); if (!result || !ui.valid()) return;
+        const entries = page => (page.entries || []).filter(entry => entry.type !== 'other').map(entry => ({ ...entry, path: directory === '.' ? entry.name : `${directory}/${entry.name}` }));
+        fileList(session, ui, entries(result)); ui.message.textContent = result.hiddenCount ? 'Generated folders are hidden.' : '';
+        let offset = result.nextOffset;
+        if (offset) {
+          const more = action('Load more files', async () => { more.disabled = true; try { const next = await inspect(session, 'tree', directory, { offset }); if (!next || !ui.valid()) return; fileList(session, ui, entries(next), { append: true }); offset = next.nextOffset; more.hidden = !offset; } catch (error) { if (ui.valid()) ui.message.textContent = error.message; } finally { more.disabled = false; } }); ui.controls.appendChild(more);
+        }
+        return;
+      }
+      ui.controls.appendChild(select('Changes to show', [['all', 'All changes'], ['staged', 'Staged changes'], ['unstaged', 'Unstaged changes']], session.scope || 'all', value => { session.scope = value; session.selected = null; void show(session); }));
+      const changes = await inspect(session, 'changes', '.', { scope: session.scope || 'all' });
+      if (!changes || !ui.valid()) return;
+      if (!changes.available) { ui.message.textContent = changes.message; return; }
+      ui.message.textContent = changes.recordedEditsOnly ? 'No Git baseline. Only direct edits recorded in this conversation are listed.' : changes.limitReached ? 'Showing the first 500 changes.' : changes.project ? 'Includes existing project edits. “Agent edited” identifies direct edits in this conversation.' : '';
+      if (changes.recordedEditsOnly) { ui.controls.querySelector('select').disabled = true; ui.header.querySelector('.workspace-viewer-caption').textContent = 'Recorded edits in this conversation'; }
+      fileList(session, ui, changes.changes || []);
+    } catch (error) { if (ui.valid()) ui.message.textContent = error.message; }
   }
 
-  async function reviewRestore(session) {
-    const ui = shell(session, 'Review restore');
-    ui.header.insertBefore(action('Back', () => void show(session)), ui.header.firstChild);
+  async function reviewRestore(session, recovering = false, selectedPaths = null) {
+    const ui = shell(session, recovering ? 'Review recovery' : 'Review restore');
+    ui.controls.appendChild(action('Back', () => void show(session)));
     try {
-      const plan = await history(session, 'prepare_restore', { versionId: session.version.id });
+      const plan = await history(session, recovering ? 'prepare_recovery' : 'prepare_restore', recovering ? {} : { versionId: session.version.id, ...(selectedPaths && { paths: selectedPaths }) });
       if (!plan || !ui.valid()) return;
-      ui.message.textContent = 'Freedom backs up already-reviewed current versions before applying these changes. Unreviewed changes must be reviewed first. Other project files are left alone.';
-      const review = node('div', 'workspace-viewer-restore');
-      for (const change of plan.changes) review.appendChild(node('p', '', `${change.action === 'remove' ? 'Remove' : 'Write'} · ${change.path}`));
+      ui.message.textContent = 'Review the changes below. Freedom saves reviewed current files before applying them. Unrelated files are left alone.';
+      const review = node('div', 'workspace-viewer-restore'); const selected = new Set(plan.changes.map(change => change.path));
+      for (const change of plan.changes) {
+        const label = node('label', 'workspace-viewer-restore-file'); const check = node('input', ''); check.type = 'checkbox'; check.checked = true; check.disabled = recovering;
+        check.addEventListener('change', () => { if (check.checked) selected.add(change.path); else selected.delete(change.path); });
+        label.appendChild(check); label.appendChild(node('span', '', `${change.action === 'remove' ? 'Remove' : 'Write'} · ${change.path}`)); review.appendChild(label);
+        const code = node('div', 'workspace-viewer-code'); renderDocument(code, compareText(change.before?.text, change.after?.text)); review.appendChild(code);
+      }
       const confirm = action('Back up reviewed work and restore', async () => {
         if (!ui.valid() || confirm.disabled) return;
-        confirm.disabled = true;
-        ui.message.textContent = 'Backing up reviewed work and restoring…';
+        if (!selected.size && !recovering) { ui.message.textContent = 'Select at least one file.'; return; }
+        if (!recovering && selected.size !== plan.changes.length) { await reviewRestore(session, false, [...selected]); return; }
+        confirm.disabled = true; ui.message.textContent = 'Saving backup and restoring…';
         try {
           const result = await history(session, 'restore', { token: plan.token });
           if (result && ui.valid()) { await show(session); session.onChanged?.(); }
-        } catch (cause) {
-          if (ui.valid()) ui.message.textContent = cause.message;
-          // A restore can have partially applied. Never retry the consumed plan.
+        } catch (error) {
+          if (ui.valid()) { ui.message.textContent = error.message; review.appendChild(action('Inspect recovery', () => { session.mode = 'history'; session.version = null; void show(session); })); }
         }
       }, 'workspace-viewer-action workspace-viewer-restore-confirm');
-      confirm.disabled = !plan.changes.length;
+      confirm.disabled = !plan.changes.length && !recovering;
+      if (recovering && !plan.changes.length) confirm.textContent = 'Finish recovery';
       if (!plan.changes.length) review.appendChild(node('p', '', 'The eligible files already match this commit.'));
-      review.appendChild(confirm);
-      ui.body.appendChild(review);
-    } catch (cause) {
-      if (ui.valid()) ui.message.textContent = cause.message;
-    }
+      review.appendChild(confirm); ui.body.appendChild(review);
+    } catch (error) { if (ui.valid()) ui.message.textContent = error.message; }
   }
 
   return {
-    setConversation(next) {
-      conversation = next;
-      for (const session of [...sessions.values()]) if (session.conversationId !== next) closeTab?.(session.tab.id);
-    },
-    open(conversationId, version = null, onChanged = null) {
-      if (conversationId !== conversation || !conversationId || typeof openTab !== 'function') throw new Error('Workspace viewers are unavailable.');
-      const key = version ? `commit:${version.id}` : 'changes';
+    setConversation(next) { conversation = next; for (const session of [...sessions.values()]) if (session.conversationId !== next) closeTab?.(session.tab.id); },
+    open(conversationId, version = null, onChanged = null, mode = version ? 'history' : 'changes') {
+      if (conversationId !== conversation || !conversationId || typeof openTab !== 'function') throw new Error('Project viewers are unavailable.');
+      const key = version ? `commit:${version.id}` : mode;
       let session = sessions.get(key);
       if (!session) {
-        session = { key, conversationId, version, title: version ? version.label : 'Changes', content: node('section', 'workspace-viewer'), sequence: 0, readSequence: 0, closed: false, onChanged };
+        session = { key, conversationId, version, mode, title: version ? version.label : { files: 'Files', history: 'History', changes: 'Changes' }[mode], content: node('section', 'workspace-viewer'), sequence: 0, readSequence: 0, closed: false, onChanged };
         session.content.setAttribute('aria-label', session.title);
+        session.content.addEventListener('keydown', event => {
+          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+            event.preventDefault(); event.stopPropagation(); session.document?.querySelector('input[type="search"]')?.focus();
+          }
+        });
         session.tab = openTab({ key, conversationId, title: session.title, content: session.content, onClose: () => { session.closed = true; sessions.delete(key); } });
-        sessions.set(key, session);
-        void show(session);
+        sessions.set(key, session); void show(session);
       } else openTab({ key, conversationId, title: session.title, content: session.content });
-      onOpenViewer();
-      return session.tab;
+      onOpenViewer(); return session.tab;
     },
   };
 }
