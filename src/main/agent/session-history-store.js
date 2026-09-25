@@ -191,9 +191,15 @@ function rowToTurn(row) {
     approvalMode: normalizeAgentApprovalMode(row.approval_mode) || 'every_interaction',
     startedAt: row.started_at,
     ...(Number.isFinite(row.duration_ms) && { durationMs: row.duration_ms }),
-    activity: normalizeActivity(safeJsonParse(row.activity_json, [])).map(item =>
-      row.status === 'interrupted' && item.operation === 'delegate_task' && item.status === 'running'
-        ? { ...item, status: 'failed', label: 'Helper interrupted' } : item),
+    activity: normalizeActivity(safeJsonParse(row.activity_json, [])).map(item => {
+      if (row.status !== 'interrupted' || item.operation !== 'delegate_task') return item;
+      const receipts = item.subagents || (item.subagent ? [item.subagent] : []);
+      if (item.status !== 'running' && !receipts.some(receipt => receipt.state === 'running')) return item;
+      const interrupt = receipt => receipt.state === 'running' ? { ...receipt, state: 'cancelled', report: 'Interrupted when Freedom closed. This helper was not restarted.' } : receipt;
+      return { ...item, status: 'failed', label: 'Helper interrupted',
+        ...(item.subagent && { subagent: interrupt(item.subagent) }),
+        ...(item.subagents && { subagents: item.subagents.map(interrupt) }) };
+    }),
     attachments: normalizeAttachments(safeJsonParse(row.attachments_json, [])),
     guidance,
     ...(error && { error }),

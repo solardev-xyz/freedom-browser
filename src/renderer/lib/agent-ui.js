@@ -2945,6 +2945,7 @@ function formatOperation(operation) {
 
 function formatToolError(code, operation) {
   if (operation === 'delegate_task') return 'The delegated task did not complete';
+  if (operation === 'helper_task') return 'The helper request could not be completed';
   const labels = {
     TAB_NOT_FOUND: 'Page is no longer open',
     NAVIGATION_FAILED: 'Page could not be opened',
@@ -3303,6 +3304,7 @@ function finishToolRow(event) {
   const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
   const publicationCancelled = event.errorCode === 'SWARM_PUBLICATION_CANCELLED_BY_USER';
   const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled;
+  const expandedHelpers = new Set([...record.label.querySelectorAll('.agent-subagent-report[open]')].map(details => details.dataset.taskId));
   record.label.textContent = event.label || record.label.textContent;
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
@@ -3320,8 +3322,10 @@ function finishToolRow(event) {
     for (const receipt of receipts) {
       const details = document.createElement('details');
       details.className = 'agent-subagent-report';
+      details.dataset.taskId = receipt.taskId;
+      details.open = expandedHelpers.has(receipt.taskId);
       const summary = document.createElement('summary');
-      const state = { completed: 'Report received', cancelled: 'Stopped', failed: 'Could not finish',
+      const state = { running: 'Working', completed: 'Report received', cancelled: 'Stopped', failed: 'Could not finish',
         timed_out: 'Timed out', limited: 'Limit reached' }[receipt.state] || 'Incomplete';
       summary.textContent = event.subagents ? `${state} — ${receipt.title}` : label;
       const note = document.createElement('p');
@@ -3329,11 +3333,15 @@ function finishToolRow(event) {
       note.textContent = `Read-only helper · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
       const report = document.createElement('p');
       report.textContent = typeof receipt.report === 'string' && receipt.report
-        ? receipt.report.slice(0, 12000) : 'No complete report was returned.';
+        ? receipt.report.slice(0, 12000) : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
       details.appendChild(summary);
       details.appendChild(note);
       details.appendChild(report);
       record.label.appendChild(details);
+    }
+    if (receipts.some(receipt => receipt.state === 'running')) {
+      record.state.textContent = '•';
+      record.row.classList.remove('failed');
     }
     if (receipts.every(receipt => ['completed', 'cancelled'].includes(receipt.state)) &&
         receipts.some(receipt => receipt.state === 'cancelled')) {
@@ -3702,7 +3710,10 @@ function handleAgentEvent(event) {
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_finished') {
     finishToolRow(event);
-    if (event.operation === 'delegate_task' && (event.subagents || [event.subagent]).every(item => item && ['completed', 'cancelled'].includes(item.state))) {
+    if (event.operation === 'delegate_task' && (event.subagents || [event.subagent]).some(item => item?.state === 'running')) {
+      setMessage(elements.runMessage, event.label || 'Helpers are working.');
+      setLiveStatus(event.runId, 'Helpers are working…');
+    } else if (event.operation === 'delegate_task' && (event.subagents || [event.subagent]).every(item => item && ['completed', 'cancelled'].includes(item.state))) {
       setMessage(elements.runMessage, event.label || 'Helper work finished.');
       setLiveStatus(event.runId, 'Reviewing helper results…');
     } else if (event.status === 'failed') {

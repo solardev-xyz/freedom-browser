@@ -64,8 +64,9 @@ This does not imply every provider, platform or edge case has been qualified.
 helper: same model connection, scoped project/attachment reads, bounded
 task/context/report, cancellation on Stop/Pause/steering, visible reports and
 history. The user accepted single-helper review, steering and Stop smokes on
-2026-09-25. Two concurrent read-only assignments and neutral success/stop summaries
-are now implemented; parallel real-model smoke acceptance remains pending. See the
+2026-09-25, followed by parallel-helper acceptance. Background parent continuation,
+same-session helper follow-ups, individual report persistence and neutral summaries
+are implemented; background/messaging real-model smoke acceptance remains pending. See the
 [implementation contract and smoke steps](../docs/agent-subagents.md).
 
 **Other product candidates — not implementation authorization:**
@@ -74,7 +75,7 @@ are now implemented; parallel real-model smoke acceptance remains pending. See t
 | --- | --- | --- |
 | Saved-server management | Rename, edit and remove saved command/directory/port definitions. Define active-process behavior explicitly; removal must not silently stop a process or erase project files. | Smaller continuation: keep the Workspace panel useful as projects accumulate servers. Restart/reattach already exists. |
 | Broader existing-project support | First support linked Git worktrees and their separately located metadata through explicit, validated ownership. Individual file grants and multiple writable projects are separate subsequent slices. | Useful for real development repositories; requires careful metadata and writer-coordination work. |
-| Subagents (active experiment) | Single-helper smokes accepted; two parallel read-only helpers implemented with shared budgets and individual reports. Next: parallel smoke acceptance, then continuation/messaging. Browser ownership and delegated writes follow separately. | A focused review/inspection through the existing connection. No extra provider required; reports are evidence for the parent to review. |
+| Subagents (active experiment) | Single and parallel-helper smokes accepted. Background continuation and bounded same-session follow-ups implemented with shared limits and individual report persistence. Next: background/messaging smoke acceptance. Browser ownership and delegated writes follow separately. | A focused review/inspection through the existing connection. No extra provider required; reports are evidence for the parent to review. |
 | Workspace/history scale | Raise managed checkpoint limits with explicit storage/retention and large-file behavior; improve rename matching where actual projects justify it. | Makes larger projects practical. Current checkpoint ingestion remains 200 files, 64 KiB per file and 512 KiB total; pagination, comparisons and selected restore are already implemented. |
 | Browser/WebMCP coverage | Choose a real blocked website/tool schema, then add the missing schema constraints or frame-scoped tools with origin/approval checks. Embedded or ambiguous-source dialogs remain a separate gap. | Broader compatibility, driven by real tasks rather than speculative API breadth. |
 
@@ -2593,9 +2594,10 @@ Added 2026-09-17; implementation authorized 2026-09-25 on
 Pi helper with existing provider access, explicit tasks/context, scoped tools,
 bounded usage/results, cancellation and persisted activity reports. Deterministic
 SDK and UI coverage is implemented. Single-helper review, steering and Stop were
-accepted in user smokes on 2026-09-25. The next slice adds two parallel read-only
-helpers, shared live usage limits and neutral success/stop summaries; real-model
-parallel acceptance is pending.
+accepted in user smokes on 2026-09-25, followed by two parallel read-only helpers.
+Background parent continuation, status/wait/message controls, same-session follow-ups,
+shared limits and per-helper report persistence are implemented; background/messaging
+real-model acceptance is pending.
 See [the contract, upstream inspiration and smoke steps](../docs/agent-subagents.md).
 The broader items below remain the direction, not a claim they all shipped.
 

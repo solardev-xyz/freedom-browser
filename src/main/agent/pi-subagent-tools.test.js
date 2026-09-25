@@ -6,6 +6,172 @@ const { trustBuiltInToolOverride, isTrustedBuiltInToolOverride } = require('./pi
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
+function backgroundFixture(limits = {}) {
+  const children = [];
+  const f = fixture({ limits, createSession: jest.fn(async settings => {
+    let listener;
+    const passes = [];
+    const child = { settings, passes,
+      finish: (text = 'Report', tokens = 1) => {
+        listener?.({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text }], usage: { totalTokens: tokens } } });
+        passes.at(-1).resolve();
+      },
+      session: { subscribe: jest.fn(fn => { listener = fn; return () => { listener = null; }; }),
+        prompt: jest.fn(() => { const pass = deferred(); passes.push(pass); return pass.promise; }),
+        abort: jest.fn(async () => {}), dispose: jest.fn() },
+    };
+    children.push(child);
+    return { session: child.session };
+  }) });
+  const start = () => f.run({ title: 'Review', task: 'Inspect project', background: true });
+  const control = (action, taskId, message) => f.tool.controlTools[0].execute('control', { action, taskId, ...(message !== undefined && { message }) });
+  return { ...f, start, control, children };
+}
+
+describe('background delegation and messages', () => {
+  test('returns before the helper finishes and delivers each result only once', async () => {
+    const f = backgroundFixture();
+    const started = await f.start(); await flush();
+    const id = started.details.subagent.taskId;
+    expect(started.details.subagent.state).toBe('running');
+    expect((await f.control('status', id)).details.helper.state).toBe('running');
+    expect(f.tool.hasPending(f.owner)).toBe(true);
+    const collected = f.tool.collect(f.owner);
+    f.children[0].finish('Untrusted findings');
+    expect(await collected).toEqual([expect.objectContaining({ report: 'Untrusted findings', state: 'completed' })]);
+    expect(await f.tool.collect(f.owner)).toEqual([]);
+    expect(f.options.onResult).toHaveBeenCalledWith(f.owner, expect.objectContaining({ background: true, subagent: expect.objectContaining({ state: 'completed' }) }));
+    f.owner.subagentAbortController.abort(); await flush();
+    expect(f.children[0].session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test('wait exposes a completed report without a second automatic delivery', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
+    const waiting = f.control('wait', started.details.subagent.taskId);
+    f.children[0].finish();
+    expect((await waiting).details.helper.state).toBe('completed');
+    expect(await f.tool.collect(f.owner)).toEqual([]);
+    f.owner.subagentAbortController.abort();
+  });
+
+  test('queues active messages between passes, preserving context without concurrent prompts', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
+    const id = started.details.subagent.taskId;
+    expect((await f.control('message', id, 'Also inspect keyboard access')).isError).toBe(false);
+    expect(f.children[0].session.prompt).toHaveBeenCalledTimes(1);
+    f.children[0].finish('First pass'); await flush();
+    expect(f.children[0].session.prompt).toHaveBeenCalledTimes(2);
+    expect(f.children[0].session.prompt.mock.calls[1][0]).toContain('Also inspect keyboard access');
+    expect(f.options.onResult).not.toHaveBeenCalled();
+    f.children[0].finish('Combined report');
+    expect((await f.tool.collect(f.owner))[0].report).toBe('Combined report');
+    expect(f.options.createSession).toHaveBeenCalledTimes(1);
+    f.owner.subagentAbortController.abort();
+  });
+
+  test('resumes a completed helper in the same Pi session with fresh scoped tool closures', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
+    const id = started.details.subagent.taskId;
+    f.children[0].finish('Original report'); await f.tool.collect(f.owner);
+    expect((await f.control('message', id, 'Check the evidence in README.md')).isError).toBe(false); await flush();
+    const read = f.children[0].settings.customTools.find(tool => tool.name === 'read');
+    await read.execute('follow-up-read', { path: 'README.md' });
+    expect(f.read.execute).toHaveBeenCalledTimes(1);
+    expect(isTrustedBuiltInToolOverride(read)).toBe(true);
+    expect(f.options.createSession).toHaveBeenCalledTimes(1);
+    f.children[0].finish('Checked README.md');
+    expect((await f.tool.collect(f.owner))[0]).toMatchObject({ taskId: id, report: 'Checked README.md', toolCalls: 1 });
+    f.owner.subagentAbortController.abort(); await flush();
+    await expect(read.execute('late-read', { path: 'README.md' })).rejects.toThrow('stopped');
+  });
+
+  test('messages cannot bypass task, concurrency, or shared message limits', async () => {
+    const f = backgroundFixture({ tasks: 1, messages: 1 }); const started = await f.start(); await flush();
+    const id = started.details.subagent.taskId;
+    expect((await f.control('message', id, 'A follow-up')).isError).toBe(false);
+    expect((await f.control('message', id, 'Another follow-up')).isError).toBe(true);
+    f.children[0].finish(); await flush(); f.children[0].finish(); await f.tool.collect(f.owner);
+    expect((await f.control('message', id, 'Resume')).isError).toBe(true);
+    f.owner.subagentAbortController.abort();
+  });
+
+  test('completed follow-ups consume the shared task budget', async () => {
+    const f = backgroundFixture({ tasks: 1 }); const started = await f.start(); await flush();
+    f.children[0].finish(); await f.tool.collect(f.owner);
+    expect((await f.control('message', started.details.subagent.taskId, 'Resume')).isError).toBe(true);
+    f.owner.subagentAbortController.abort();
+  });
+
+  test('a follow-up does not reset the per-helper tool-call ceiling', async () => {
+    const f = backgroundFixture({ toolCalls: 1 }); const started = await f.start(); await flush();
+    const read = f.children[0].settings.customTools.find(tool => tool.name === 'read');
+    await read.execute('first', { path: 'README.md' });
+    f.children[0].finish(); await f.tool.collect(f.owner);
+    await f.control('message', started.details.subagent.taskId, 'Inspect again'); await flush();
+    await expect(read.execute('second', { path: 'README.md' })).rejects.toThrow('budget');
+    expect((await f.tool.collect(f.owner))[0].state).toBe('limited');
+    expect(f.read.execute).toHaveBeenCalledTimes(1);
+    f.owner.subagentAbortController.abort();
+  });
+
+  test('cancelling one wait releases the tool call without losing the owned background job', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
+    const signal = new AbortController();
+    const waiting = f.tool.controlTools[0].execute('wait', { action: 'wait', taskId: started.details.subagent.taskId }, signal.signal);
+    signal.abort();
+    expect((await waiting).isError).toBe(true);
+    expect(f.tool.hasPending(f.owner)).toBe(true);
+    f.children[0].finish('Still available');
+    expect((await f.tool.collect(f.owner))[0].report).toBe('Still available');
+    f.owner.subagentAbortController.abort();
+  });
+
+  test('a completed helper cannot resume while both slots are occupied', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
+    f.children[0].finish(); await f.tool.collect(f.owner);
+    await f.run({ background: true, tasks: [{ title: 'B', task: 'Inspect B' }, { title: 'C', task: 'Inspect C' }] }); await flush();
+    expect((await f.control('message', started.details.subagent.taskId, 'Check again')).isError).toBe(true);
+    expect(f.options.createSession).toHaveBeenCalledTimes(3);
+    f.owner.subagentAbortController.abort(); await flush();
+  });
+
+  test('Stop releases background waits even with an unresponsive provider and fences old task IDs', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
+    const id = started.details.subagent.taskId;
+    const waiting = f.control('wait', id);
+    const collected = f.tool.collect(f.owner);
+    f.owner.subagentAbortController.abort();
+    f.owner.subagentAbortController = new AbortController();
+    expect((await waiting).isError).toBe(true);
+    expect(await collected).toEqual([]);
+    expect((await f.control('message', id, 'Revive')).isError).toBe(true);
+    f.children[0].finish('Late report'); await flush();
+    expect(f.options.onResult.mock.calls.at(-1)[1].subagent.state).toBe('cancelled');
+    expect(f.children[0].session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test('rejects unknown task IDs, malformed messages and access from a different owner', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
+    const id = started.details.subagent.taskId;
+    for (const message of ['', 'x'.repeat(8001), '\u0000'.repeat(8000), null]) expect((await f.control('message', id, message)).isError).toBe(true);
+    expect((await f.control('wait', 'delegate_' + 'f'.repeat(24))).isError).toBe(true);
+    f.options.getOwner.mockReturnValue({ subagentAbortController: new AbortController() });
+    expect((await f.control('message', id, 'Escape')).isError).toBe(true);
+    f.owner.subagentAbortController.abort();
+  });
+
+  test('publishes one sibling report while the other is still active', async () => {
+    const f = backgroundFixture();
+    await f.run({ background: true, tasks: [{ title: 'A', task: 'Read A' }, { title: 'B', task: 'Read B' }] }); await flush();
+    f.children[0].finish('A report');
+    expect((await f.tool.collect(f.owner)).map(receipt => receipt.report)).toEqual(['A report']);
+    expect(f.options.onResult.mock.calls.at(-1)[1].subagents.map(receipt => receipt.state)).toEqual(['completed', 'running']);
+    f.children[1].finish('B report');
+    expect((await f.tool.collect(f.owner)).map(receipt => receipt.report)).toEqual(['B report']);
+    f.owner.subagentAbortController.abort();
+  });
+});
+
 function fixture(overrides = {}) {
   let listener;
   const owner = { userText: 'Review my project', subagentAbortController: new AbortController() };
@@ -174,7 +340,7 @@ test('does not drop user constraints to fit input or accept invalid assignments'
   expect((await f.run({ title: 'Review', task: '' })).details.subagent.state).toBe('failed');
 });
 
-test.each([false, true])('installed Pi completes isolated delegation (parallel=%s) without an external provider', parallel => {
+test.each(['single', 'parallel', 'background'])('installed Pi completes isolated delegation (%s) without an external provider', mode => {
   const { execFileSync } = require('node:child_process');
   const script = `
     (async () => {
@@ -190,7 +356,9 @@ test.each([false, true])('installed Pi completes isolated delegation (parallel=%
         models: [{ id: 'test', name: 'Test', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 1024,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsDeveloperRole: false } }] });
       await runtime.setRuntimeApiKey('delegate-test', 'fixture-not-a-credential');
-      const parallel = ${parallel};
+      const mode = ${JSON.stringify(mode)};
+      const parallel = mode !== "single";
+      const background = mode === "background";
       const requests = [];
       let childStarts = 0; let release;
       const barrier = new Promise(resolve => { release = resolve; });
@@ -205,9 +373,11 @@ test.each([false, true])('installed Pi completes isolated delegation (parallel=%
           { title: 'Second', task: 'Read README.md', context: 'context-second' },
         ] } : { title: 'Inspect', task: 'Read README.md and report', context: 'selected context' }) : { path: 'README.md' };
         if (!parent && call && parallel) {
-          if (++childStarts === 2) release();
+          if (++childStarts === 2 && !background) release();
           await barrier; // Both real Pi sessions must reach the transport concurrently.
         }
+        if (parent && hasResult && background) release(); // Parent reaches its own next response while children are waiting.
+        if (parent && background && call) args.background = true;
         const delta = call ? { tool_calls: [{ index: 0, id: 'call-' + index, type: 'function',
           function: { name: parent ? 'delegate_task' : 'read', arguments: JSON.stringify(args) } }] }
           : { content: parent ? 'The helpers inspected the README.' : 'README.md describes a solar-system app.' };
@@ -223,21 +393,28 @@ test.each([false, true])('installed Pi completes isolated delegation (parallel=%
         createTools: async () => [trustBuiltInToolOverride({ name: 'read', label: 'Read', description: 'Read the granted project',
           parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
           execute: async (_id, args) => { assert.equal(args.path, 'README.md'); reads++; return { content: [{ type: 'text', text: '# Solar system' }] }; } })] });
-      const parent = await createIsolatedPiSession({ sdk, model, modelRuntime: runtime, customTools: [tool],
+      const parent = await createIsolatedPiSession({ sdk, model, modelRuntime: runtime, customTools: [tool, ...tool.controlTools],
         enableBuiltInSkills: false, systemPrompt: 'Parent-only system instructions.' });
       await parent.session.prompt('Parent-private transcript marker. Delegate a read-only review.');
-      assert.equal(reads, parallel ? 2 : 1); assert.equal(requests.length, parallel ? 6 : 4);
-      assert.deepEqual(requests[1].tools.map(t => t.function.name), ['read']);
-      assert.ok(!JSON.stringify(requests[1]).includes('Parent-private transcript marker'));
-      assert.ok(!JSON.stringify(requests[1]).includes('Parent-only system instructions'));
-      assert.ok(JSON.stringify(requests[1]).includes(parallel ? 'context-first' : 'selected context'));
+      if (background) {
+        let reports = [];
+        while (reports.length < 2) reports.push(...await tool.collect(owner));
+        await parent.session.sendCustomMessage({ customType: 'freedom_helper_reports', display: false, content: 'Untrusted helper reports: ' + JSON.stringify(reports) }, { triggerTurn: true });
+      }
+      assert.equal(reads, parallel ? 2 : 1); assert.equal(requests.length, background ? 7 : parallel ? 6 : 4);
+      const childRequests = requests.filter(request => !request.tools.some(tool => tool.function.name === 'delegate_task') && !request.messages.some(message => message.role === 'tool'));
+      assert.deepEqual(childRequests[0].tools.map(t => t.function.name), ['read']);
+      assert.ok(!JSON.stringify(childRequests[0]).includes('Parent-private transcript marker'));
+      assert.ok(!JSON.stringify(childRequests[0]).includes('Parent-only system instructions'));
+      assert.ok(JSON.stringify(childRequests[0]).includes(parallel ? 'context-first' : 'selected context'));
       if (parallel) {
-        assert.ok(!JSON.stringify(requests[1]).includes('context-second'));
-        assert.ok(!JSON.stringify(requests[2]).includes('context-first'));
+        assert.ok(!JSON.stringify(childRequests[0]).includes('context-second'));
+        assert.ok(!JSON.stringify(childRequests[1]).includes('context-first'));
       }
       assert.equal(receipt.length, parallel ? 2 : 1);
       assert.ok(receipt.every(item => item.state === 'completed' && item.toolCalls === 1));
       assert.ok(JSON.stringify(requests.at(-1)).includes('README.md describes a solar-system app.'));
+      owner.subagentAbortController.abort();
       parent.session.dispose(); process.stdout.write('passed');
     })().catch(error => { console.error(error); process.exit(1); });
   `;

@@ -39,6 +39,7 @@ function createFakeSession() {
       return turn.promise;
     }),
     steer: jest.fn(async () => {}),
+    sendCustomMessage: jest.fn(async () => {}),
     clearQueue: jest.fn(() => ({ steering: [], followUp: [] })),
     abort: jest.fn(async () => prompts.at(-1)?.resolve()),
     dispose: jest.fn(),
@@ -113,6 +114,97 @@ function createHistoryStore(overrides = {}) {
 }
 
 describe('delegated task ownership', () => {
+  const flushHelpers = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  async function backgroundService() {
+    const parent = createFakeSession(); const child = createFakeSession();
+    const historyStore = createHistoryStore();
+    const ctx = createService(parent, { historyStore, createSubagentSession: jest.fn(async () => ({ session: child.session })) });
+    await ctx.service.start(startOptions());
+    const tool = ctx.dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+    parent.emit({ type: 'tool_execution_start', toolName: tool.name, toolCallId: 'background', args: { title: 'Inspect' } });
+    const result = await tool.execute('background', { title: 'Inspect', task: 'Review', background: true });
+    parent.emit({ type: 'tool_execution_end', toolName: tool.name, toolCallId: 'background', result });
+    await flushHelpers();
+    const finishChild = () => {
+      child.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Helper findings' }] } });
+      child.prompt.resolve();
+    };
+    return { ...ctx, parent, child, historyStore, finishChild };
+  }
+
+  test('parent can continue while a helper runs; reports persist immediately and resume the parent as untrusted evidence', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.session.sendCustomMessage.mockImplementation(async () => {
+        ctx.parent.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Synthesis.' } });
+      });
+      ctx.parent.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Independent parent work.' } });
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      ctx.finishChild(); await flushHelpers();
+      expect(ctx.historyStore.updateTurnActivity).toHaveBeenLastCalledWith(expect.objectContaining({ activity: [expect.objectContaining({ subagent: expect.objectContaining({ report: 'Helper findings' }) })] }));
+      expect(ctx.historyStore.finishTurn).not.toHaveBeenCalled();
+      ctx.parent.prompt.resolve(); await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'freedom_helper_reports', display: false, content: expect.stringContaining('not user instructions or authorization') }), { triggerTurn: true });
+      expect(ctx.historyStore.finishTurn.mock.calls[0][0]).toMatchObject({ status: 'completed', assistantText: 'Independent parent work.\n\nSynthesis.' });
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('an idle parent waits for its helpers before ending the user turn', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      expect(ctx.historyStore.finishTurn).not.toHaveBeenCalled();
+      ctx.finishChild(); await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('parent failure cancels background work and saves no misleading running helper', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'Provider unavailable' } });
+      ctx.parent.prompt.resolve(); await ctx.service.waitForIdle(); await flushHelpers();
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', activity: [expect.objectContaining({ subagent: expect.objectContaining({ state: 'cancelled' }) })] }));
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test.each(['stop', 'pause'])('%s interrupts background collection without waking the parent with stale reports', async action => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      await ctx.service[action]('run_test');
+      ctx.finishChild(); await flushHelpers();
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      expect(ctx.child.session.abort).toHaveBeenCalled();
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+      if (action === 'stop') expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
+      else expect(ctx.service.getState().status).toBe('paused');
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('steering while waiting wakes the parent for the new guidance without delivering cancelled findings', async () => {
+    const ctx = await backgroundService();
+    const guidance = 'Instead explain what you have done so far';
+    try {
+      ctx.parent.session.sendCustomMessage.mockImplementation(async () => {
+        ctx.parent.emit({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: guidance }] } });
+        ctx.parent.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+      });
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      await ctx.service.steer('run_test', guidance);
+      await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.parent.session.sendCustomMessage.mock.calls[0][0].content).toContain('new guidance');
+      expect(ctx.parent.session.sendCustomMessage.mock.calls[0][0].content).not.toContain('Helper findings');
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed', guidance: [expect.objectContaining({ status: 'applied', text: guidance })] }));
+    } finally { await ctx.service.dispose(); }
+  });
+
   test('keeps child messages out of the parent transcript and persists attributable reports', async () => {
     const parent = createFakeSession();
     const child = createFakeSession();
@@ -459,7 +551,7 @@ describe('FreedomAgentService', () => {
       model: { id: 'model_test', provider: 'test' },
       modelRuntime: { kind: 'model-runtime' },
       thinkingLevel: 'low',
-      customTools: [{ name: 'browser_snapshot' }, expect.objectContaining({ name: 'delegate_task' })],
+      customTools: [{ name: 'browser_snapshot' }, expect.objectContaining({ name: 'delegate_task' }), expect.objectContaining({ name: 'helper_task' })],
       enableBuiltInSkills: true,
       systemPrompt: expect.stringContaining('You are Freedom Agent inside Freedom Browser'),
     });
@@ -751,6 +843,7 @@ describe('FreedomAgentService', () => {
       { name: 'attachment_list' },
       { name: 'attachment_read' },
       expect.objectContaining({ name: 'delegate_task' }),
+      expect.objectContaining({ name: 'helper_task' }),
     ]);
     expect(fake.session.prompt.mock.calls[0][0]).toContain('attachment_aaaaaaaaaaaaaaaaaaaa');
     expect(fake.session.prompt.mock.calls[0][0]).not.toContain('/Users/');
@@ -831,6 +924,7 @@ describe('FreedomAgentService', () => {
         { name: 'find' },
         { name: 'ls' },
         { name: 'delegate_task' },
+        { name: 'helper_task' },
       ],
       systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
     });

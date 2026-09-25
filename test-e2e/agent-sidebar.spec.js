@@ -52,7 +52,10 @@ test('helper history persists reports and marks crash-left work interrupted in r
     const lateWrite = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'finished', running: true, activity: [] });
     store.startTurn({ conversationId: 'helper-history', runId: 'interrupted', position: 1, userText: 'Review more', approvalMode: 'every_interaction' });
     const runningSaved = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'interrupted', running: true, activity: [
-      { toolCallId: 'second', operation: 'delegate_task', status: 'running', label: 'Delegating: Review more' },
+      { toolCallId: 'second', operation: 'delegate_task', status: 'succeeded', label: '1 report received · 1 helper working', subagents: [
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Finished sibling', state: 'completed', report: 'Retained before crash' },
+        { taskId: 'delegate_' + 'd'.repeat(24), title: 'Active sibling', state: 'running', report: '' },
+      ] },
     ] });
     store.close();
     store = new AgentSessionHistoryStore({ userDataDir });
@@ -66,7 +69,9 @@ test('helper history persists reports and marks crash-left work interrupted in r
   expect(result.transcript[0].activity[0].subagents[0].report).toBe('Check README.md');
   expect(result.transcript[0].activity[0].subagents[1].state).toBe('cancelled');
   expect(result.transcript[1]).toMatchObject({ status: 'interrupted', activity: [
-    { operation: 'delegate_task', status: 'failed', label: 'Helper interrupted' },
+    { operation: 'delegate_task', status: 'failed', label: 'Helper interrupted', subagents: [
+      { state: 'completed', report: 'Retained before crash' }, { state: 'cancelled', report: expect.stringContaining('not restarted') },
+    ] },
   ] });
 });
 
@@ -89,6 +94,18 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await window.screenshot({ path: testInfo.outputPath('helper-running.png') });
   await electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    window.webContents.send('agent:event', { runId: 'run_helper_ui', type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '1 report received · 1 helper working',
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Review planet controls', state: 'completed', report: 'First report, while the other helper works.' },
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'running', report: '' }] });
+  });
+  await expect(window.locator('.agent-subagent-report')).toHaveCount(2);
+  await window.locator('.agent-subagent-report').first().locator('summary').click();
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
+    await window.screenshot({ path: testInfo.outputPath(`helper-background-${theme}.png`) });
+  }
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
     emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '2 reports received',
       subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Review planet controls', state: 'completed', toolCalls: 3,
@@ -104,7 +121,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await expect(window.locator('.agent-turn-outcome.caution')).toHaveCount(0);
   await window.locator('.agent-turn-activity > summary').click();
   const report = window.locator('.agent-subagent-report').first();
-  await report.locator('summary').click();
+  await expect(report).toHaveAttribute('open', '');
   await expect(report.locator('p').last()).toBeVisible();
   await expect(report.locator('img, script')).toHaveCount(0);
   await expect(window.locator('.agent-tool-item.cancelled')).toContainText('Helper stopped');

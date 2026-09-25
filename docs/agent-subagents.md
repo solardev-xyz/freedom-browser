@@ -1,8 +1,8 @@
-# Freedom subagents: bounded parallel inspections
+# Freedom subagents: background inspections and follow-ups
 
 Branch: `experiment/agent-subagents`, started from
-`feature/freedom-automation-kernel` on 2026-09-25. Foreground read-only delegation now supports two concurrent helpers. Parent
-continuation, messaging and delegated changes remain later slices.
+`feature/freedom-automation-kernel` on 2026-09-25. Read-only delegation supports two concurrent helpers, parent continuation,
+and follow-up messages. Delegated changes and browser ownership remain later slices.
 
 ## User behavior
 
@@ -15,6 +15,21 @@ For parallel inspection, pass `tasks` containing exactly two independent
 slots and task allowances are reserved before either session starts. Each helper
 receives only its own selected context; the parent receives reports in assignment
 order after both settle. One failure does not discard the other helper's report.
+
+Set `background: true` to receive task IDs immediately and let the parent do
+independent work. `helper_task` accepts `status`, `wait`, or `message` with one of
+those IDs. Status and wait return the latest report; retrieving it prevents a
+duplicate automatic delivery. A message is queued after the helper's current
+pass, or resumes a completed helper in the same isolated Pi session. Follow-ups
+are limited to the same user turn and retain the helper's read-only ceiling.
+Stopped, failed or expired helpers cannot be resumed.
+
+Reports appear in activity and are persisted as each background helper finishes,
+even while its sibling or the parent is working. Freedom automatically delivers
+unread reports through Pi custom messages between parent passes, clearly marked
+as untrusted evidence, and keeps the user turn alive while helpers remain. The
+parent can use `wait` to receive a report sooner. Completed sessions are retained
+only until the parent turn ends; they are not durable background jobs.
 
 Successful reports and intentional stops use a neutral summary, such as
 “1 report received · 1 task stopped.” Failed, timed-out or limited helpers are
@@ -60,14 +75,17 @@ only display the existing activity events and persisted receipts.
   it cannot guarantee a remote provider stopped billing immediately. Cleanup
   does not wait indefinitely on an unresponsive provider. A separate context is
   **not** a separate process sandbox.
-- The parent waits for the tool result. Up to two helpers may run at a time; no
+- Foreground calls wait for all results; background calls return immediately.
+  The parent can work concurrently, but up to two helpers may run at a time; no
   detached jobs can outlive a completed parent turn. Files can still change due
   to existing background processes or external editors; reports are not atomic
-  project snapshots.
+  project snapshots. The parent can also edit while helpers read; it must coordinate
+  work and verify findings against current file revisions before editing.
 
 ## Limits and recovery
 
-Defaults are four helpers per user turn, two active helpers, 24 tool calls and
+Defaults are four helper starts per user turn (resuming a completed helper counts
+as another start), two active helpers, 24 tool calls and
 12 assistant responses per helper, and a shared ceiling of 48 tool calls per
 turn. Time limits are three minutes per helper and six minutes of cumulative
 helper time per turn. Simultaneous helpers both consume that time allowance;
@@ -78,13 +96,18 @@ with explicit truncation metadata. Reported token usage has a cumulative
 120,000-token stop threshold across helpers in the turn. Usage is checked at
 message boundaries when available; this is not a guaranteed monetary cap or a
 preflight reservation for a provider response. Parent usage is separate.
+Per-helper counters and active time accumulate across follow-ups; shared budgets
+never reset when a helper resumes. There are at most eight follow-up messages per
+user turn, each bounded to 8,000 characters. Idle retained sessions consume no
+active time allowance. Messages wait until the current helper pass finishes;
+they do not interrupt an in-flight model response.
 
-Results distinguish completed, cancelled, timed out, limited and failed.
+Results distinguish running, completed, cancelled, timed out, limited and failed.
 Errors include a parent-facing next step. Cancellation does not automatically
-retry the assignment. Reports are delivered and persisted when the whole call
-settles; an application crash before that can lose an already-finished sibling
-report. Active task labels are saved when delegation starts;
-after a crash, history labels unfinished tasks interrupted. No job is replayed
+retry the assignment. Foreground reports are persisted when the call settles;
+background reports are persisted individually. Active task labels and running
+receipts are saved when delegation starts. After a crash, history preserves
+completed sibling reports and labels only unfinished tasks interrupted. No job is replayed
 on restart. Full child transcripts, resuming a child after restart and retrieval
 of old child reports through a dedicated model tool are not implemented.
 
@@ -110,31 +133,40 @@ budgets, sibling failures, Stop/Pause/steering,
 parent transcript isolation, history normalization and crash interruption.
 Renderer coverage checks inert expandable reports; disposable Electron coverage
 exercises both layouts and themes, plus real SQLite persistence and interrupted
-task recovery. The initial delivery passed 387 targeted tests; the parallel
-update passed 311 tests across six affected suites, both affected Electron checks,
-and lint. The installed-SDK fixture
-holds each helper at a barrier until both have reached the model transport,
-so it verifies concurrency as well as final results. Provider scheduling may
+task recovery. Background coverage adds parent continuation, automatic delivery,
+same-session follow-ups with refreshed scoped tool closures, message limits,
+shared budget preservation, interruption while waiting, and stale task IDs.
+The installed-SDK fixture holds background helpers at a transport barrier until
+the parent reaches its own next response, proving parent continuation.
+It also verifies two foreground helpers reach the transport concurrently. Provider scheduling may
 still serialize requests, especially for local models.
 
+Validation for this slice: 355 targeted tests across seven suites, both affected
+Electron checks, and lint passed. These deterministic checks do not establish a
+real model's delegation judgment or report quality.
+
 **User acceptance, 2026-09-25:** single-helper project review, steering to a new
-assignment and standalone Stop all passed manual smoke tests. Parallel behavior
-still needs real-model smoke acceptance.
+assignment, standalone Stop and two parallel read-only helpers all passed manual
+smoke tests. Background continuation and messaging still need real-model acceptance.
 
 Manual smoke:
 
-1. Attach an existing project with read access and a connected model. Ask:
-   “Use two helpers in parallel: one reviews this project's structure, the other
-   reviews accessibility. Combine their findings. Do not change files.”
-2. Confirm both helper reports appear separately and the parent combines them. Reopen the conversation and check the report is retained.
-3. Start a longer review, then Stop. Repeat with a steering instruction changing
-   the task. Both old helpers should stop and cannot append late successes. A report that
-   finished before Stop should be retained.
-4. With no project attached, request a project review: the helper must report the
-   access blocker; it must not create a replacement project or grant itself access.
+1. Attach a project and ask: “Start two read-only helpers in the background:
+   one reviews structure, one reviews accessibility. While they work, inspect the
+   README yourself. Combine the findings without changing files.”
+2. Ask within the same task: “Start a background helper to review this project.
+   After its report, send that helper a follow-up asking it to support its most
+   important finding with file references. Summarize the revised report.”
+3. Confirm reports update separately, expanded reports stay open when a sibling
+   finishes, and the parent combines findings. Reopen the chat to check history.
+4. Repeat a long background task with Stop, Pause and steering, including while
+   the parent says it is waiting for reports. Old helpers should stop; steering
+   should continue with the new request rather than end the turn or replay work.
+5. With no project attached, request inspection: the helper reports the access
+   blocker and cannot create a replacement project or grant itself access.
 
-Next: smoke-test parallel assignments with real models, then add parent
-continuation/messaging; then define browser tab ownership
+Next: smoke-test background continuation and messaging with real models, then
+define browser tab ownership
 and delegated editing with one writer before broader concurrency. Model/role
 selection, nested delegation, remote execution and optional Jev workers remain
 later work.

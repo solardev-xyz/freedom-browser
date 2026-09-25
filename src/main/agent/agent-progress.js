@@ -38,6 +38,11 @@ const WORKSPACE_OPERATIONS = Object.freeze({
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
 const OPERATION_PROGRESS = Object.freeze({
+  helper_task: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Checking or messaging a helper',
+    completed: 'Checked helper task',
+  },
   [SUBAGENT_TOOL_NAME]: {
     effect: ACTIVITY_EFFECTS.MANAGED,
     intent: 'Delegating a read-only task',
@@ -819,10 +824,14 @@ function activityProgress(operation, receipt = {}) {
     const title = subagent?.title || boundedString(receipt.title, 100);
     intent = title ? `Delegating: ${title}` : copy.intent;
     label = subagent && subagent.state !== 'completed'
-      ? ({ cancelled: 'Helper stopped', timed_out: 'Helper timed out', limited: 'Helper reached its limit', failed: 'Helper could not finish' }[subagent.state])
+      ? ({ running: 'Helper working', cancelled: 'Helper stopped', timed_out: 'Helper timed out', limited: 'Helper reached its limit', failed: 'Helper could not finish' }[subagent.state])
       : copy.completed;
     if (title) label += ` — ${title}`;
     if (subagents) { intent = 'Delegating two read-only tasks'; label = summarizeSubagents(subagents).detail; }
+  }
+  if (operation === 'helper_task') {
+    const labels = { status: ['Checking helper status', 'Checked helper status'], wait: ['Waiting for a helper', 'Received helper result'], message: ['Messaging a helper', 'Sent helper message'] };
+    if (labels[receipt.helperAction]) [intent, label] = labels[receipt.helperAction];
   }
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {

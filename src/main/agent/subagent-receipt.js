@@ -1,7 +1,7 @@
 'use strict';
 
 const SUBAGENT_TOOL_NAME = 'delegate_task';
-const SUBAGENT_STATES = ['completed', 'cancelled', 'timed_out', 'limited', 'failed'];
+const SUBAGENT_STATES = ['running', 'completed', 'cancelled', 'timed_out', 'limited', 'failed'];
 
 function normalizeSubagentReceipt(value) {
   if (!value || !/^delegate_[a-f0-9]{24}$/.test(value.taskId) ||
@@ -31,10 +31,12 @@ function summarizeSubagents(receipts) {
   const count = state => receipts.filter(receipt => receipt?.state === state).length;
   const reports = count('completed');
   const stopped = count('cancelled');
-  const incomplete = receipts.length - reports - stopped;
+  const running = count('running');
+  const incomplete = receipts.length - reports - stopped - running;
   const parts = [];
   if (reports) parts.push(`${reports} ${reports === 1 ? 'report' : 'reports'} received`);
   if (stopped) parts.push(`${stopped} ${stopped === 1 ? 'task' : 'tasks'} stopped`);
+  if (running) parts.push(`${running} ${running === 1 ? 'helper' : 'helpers'} working`);
   if (incomplete) parts.push(`${incomplete} ${incomplete === 1 ? 'task' : 'tasks'} incomplete`);
   return {
     headline: reports ? (reports === 1 ? 'Helper report received' : 'Helper reports received')
