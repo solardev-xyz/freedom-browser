@@ -10,7 +10,10 @@ const MAX_BYTES = 4 * 1024 * 1024;
 
 function createPrivacyStorage({ handle, directory, key }) {
   const context = getPrivacyContext(handle);
-  if (context.subject.kind !== 'private-account' || context.subject.role !== 'storage' ||
+  const permitted = (context.subject.kind === 'private-account' && context.subject.role === 'storage') ||
+    (context.subject.kind === 'public-address' && context.subject.role === 'transaction-rpc' &&
+      context.subject.operation === null && context.subject.protocol === null && context.subject.deployment === null);
+  if (!permitted ||
       !Buffer.isBuffer(key) || key.length !== 32 || !path.isAbsolute(directory)) {
     throw privacyError('PRIVATE_STORAGE_INVALID', 'Invalid privacy storage configuration');
   }
@@ -46,6 +49,40 @@ function createPrivacyStorage({ handle, directory, key }) {
       throw privacyError('PRIVATE_STORAGE_UNREADABLE', 'Privacy state could not be authenticated or decoded');
     }
   }
+  // One synchronous read/modify/rename turn also serializes separate adapters
+  // targeting this file in the owning main process. Updaters cannot await.
+  function update(name, change) {
+    validKey(name); assertActive();
+    const values = read();
+    const value = change(Object.hasOwn(values, name) ? values[name] : null);
+    if (typeof value !== 'string' || Buffer.byteLength(value) > 1024 * 1024) throw privacyError('PRIVATE_STORAGE_LIMIT', 'Privacy value is too large');
+    Object.defineProperty(values, name, { value, enumerable: true, configurable: true, writable: true });
+    const plaintext = Buffer.from(JSON.stringify(values));
+    try {
+      if (Object.keys(values).length > 256 || plaintext.length > MAX_BYTES) throw privacyError('PRIVATE_STORAGE_LIMIT', 'Privacy state is too large');
+      const iv = randomBytes(12);
+      const cipher = createCipheriv('aes-256-gcm', secret, iv);
+      cipher.setAAD(aad);
+      const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+      const serialized = JSON.stringify({ version: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') });
+      assertActive();
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+      const fd = fs.openSync(temporary, 'wx', 0o600);
+      try { fs.writeFileSync(fd, serialized); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      // Synchronous rename keeps the lifetime check and commit in one main
+      // event-loop turn. Interrupted writes leave only encrypted temp files.
+      assertActive();
+      fs.renameSync(temporary, file);
+      if (process.platform !== 'win32') {
+        const parent = fs.openSync(directory, 'r');
+        try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+      }
+    } catch (error) {
+      if (error.code?.startsWith('PRIVATE_') || error.code?.startsWith('PRIVACY_')) throw error;
+      throw privacyError('PRIVATE_STORAGE_WRITE_FAILED', 'Privacy state could not be saved');
+    } finally { plaintext.fill(0); }
+  }
   return Object.freeze({
     _brand: 'Storage',
     async get(name) {
@@ -54,37 +91,8 @@ function createPrivacyStorage({ handle, directory, key }) {
       assertActive();
       return Object.hasOwn(values, name) ? values[name] : null;
     },
-    async set(name, value) {
-      validKey(name); assertActive();
-      if (typeof value !== 'string' || Buffer.byteLength(value) > 1024 * 1024) throw privacyError('PRIVATE_STORAGE_LIMIT', 'Privacy value is too large');
-      const values = read();
-      Object.defineProperty(values, name, { value, enumerable: true, configurable: true, writable: true });
-      const plaintext = Buffer.from(JSON.stringify(values));
-      try {
-        if (Object.keys(values).length > 256 || plaintext.length > MAX_BYTES) throw privacyError('PRIVATE_STORAGE_LIMIT', 'Privacy state is too large');
-        const iv = randomBytes(12);
-        const cipher = createCipheriv('aes-256-gcm', secret, iv);
-        cipher.setAAD(aad);
-        const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-        const serialized = JSON.stringify({ version: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') });
-        assertActive();
-        fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-        const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
-        const fd = fs.openSync(temporary, 'wx', 0o600);
-        try { fs.writeFileSync(fd, serialized); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-        // Synchronous rename keeps the lifetime check and commit in one main
-        // event-loop turn. Interrupted writes leave only encrypted temp files.
-        assertActive();
-        fs.renameSync(temporary, file);
-        if (process.platform !== 'win32') {
-          const parent = fs.openSync(directory, 'r');
-          try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
-        }
-      } catch (error) {
-        if (error.code?.startsWith('PRIVATE_') || error.code?.startsWith('PRIVACY_')) throw error;
-        throw privacyError('PRIVATE_STORAGE_WRITE_FAILED', 'Privacy state could not be saved');
-      } finally { plaintext.fill(0); }
-    },
+    async set(name, value) { update(name, () => value); },
+    async update(name, change) { update(name, change); },
   });
 }
 module.exports = { createPrivacyStorage };

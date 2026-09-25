@@ -1,5 +1,8 @@
 # Kohaku host integration for Freedom's wallet
 
+> September 25 update: the source analysis below is the September 14 snapshot. Current upstream deprecated its Rust implementations and removed the previous Railgun package in commit `8ac0c528f63e1d43be7b662a1f2f7c15514ca61e`. Freedom now has a tested bounded host network adapter, but full protocol qualification remains open. See the [current implementation and source follow-up](../docs/privacy-engineering-followup-2026-09-25.md).
+
+
 Date: 2026-09-14. Status: source study and proposed implementation sequence.
 
 This is a new study, not a reconstruction of the earlier document with this filename referenced by the July privacy roadmap. It incorporates the supplied message recommending Kohaku's SDK, plugin/host interfaces, and Kassandra's CLI.

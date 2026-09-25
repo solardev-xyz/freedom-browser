@@ -1,6 +1,8 @@
 # Wallet privacy engineering status
 
-Updated 2026-09-14. Local implementation and qualification work; no production activation or shielded-wallet release. The [implementation plan](wallet-privacy-implementation-plan.md) remains the acceptance checklist. UI/UX is provisional and will be discussed separately.
+September 14 baseline. **Latest update:** [September 25 recovery and SDK transport](privacy-engineering-followup-2026-09-25.md) supersedes the pending-journal and current-Railgun assumptions below.
+
+Local implementation and qualification work; no production activation or shielded-wallet release. The [implementation plan](wallet-privacy-implementation-plan.md) remains the acceptance checklist. UI/UX is provisional and will be discussed separately.
 
 ## What works now
 

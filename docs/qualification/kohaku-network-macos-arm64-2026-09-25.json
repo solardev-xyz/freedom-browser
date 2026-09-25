@@ -1,0 +1,16 @@
+{
+  "revision": "8ac0c528f63e1d43be7b662a1f2f7c15514ca61e",
+  "source": "packages/tornado-cash/src/relayer/relayer-client.ts",
+  "sourceSha256": "998a80f019868c568fa735b529cdf34b66edfb0e71ed515f75a9a04d695287a0",
+  "compiledSha256": "261030d8da9a4aa3788be503a340126bf71a7f514cfaedc5449dc8bb17696ccc",
+  "esbuild": "0.28.2",
+  "scope": "Host-network interop with synthetic SOCKS/TLS fixtures only; no on-chain or real relayer submission",
+  "date": "2026-09-25",
+  "platform": "darwin-arm64",
+  "interop": {
+    "statusGet": "passed",
+    "syntheticWithdrawPost": "passed",
+    "transport": "controlled authenticated SOCKS and TLS",
+    "liveRelayerContacted": false
+  }
+}

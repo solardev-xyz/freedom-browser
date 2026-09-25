@@ -298,6 +298,7 @@ async function signAndSendTransaction(params, signer, options = {}) {
     if (typeof options.review !== 'function') {
       throw privacyError('PRIVATE_REVIEW_REQUIRED', 'A main-owned transaction review is required');
     }
+    await network.assertCanSubmit();
     network.assertSigner(await privateStep(() => signer.getAddress(), network));
   }
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params;
@@ -362,6 +363,7 @@ async function signAndSendTransaction(params, signer, options = {}) {
     });
 
     let signedTransaction;
+    let expiresAt;
     if (options.privacyContext) {
       network.assertActive(chainId);
       Object.freeze(tx);
@@ -369,7 +371,7 @@ async function signAndSendTransaction(params, signer, options = {}) {
       if (!Number.isInteger(reviewMs) || reviewMs < 1 || reviewMs > 120000) {
         throw privacyError('PRIVATE_REVIEW_INVALID', 'Invalid review lifetime');
       }
-      const expiresAt = Date.now() + reviewMs;
+      expiresAt = Date.now() + reviewMs;
       const deadline = new AbortController();
       const timer = setTimeout(() => deadline.abort(), reviewMs);
       timer.unref();
@@ -389,7 +391,9 @@ async function signAndSendTransaction(params, signer, options = {}) {
       } finally { clearTimeout(timer); }
     } else signedTransaction = await signer.signTransaction(tx);
     const parsedTransaction = Transaction.from(signedTransaction);
-    const broadcast = await network.broadcastRawTransaction(chainId, signedTransaction);
+    const broadcast = options.privacyContext
+      ? await network.broadcastRawTransaction(chainId, signedTransaction, { expiresAt })
+      : await network.broadcastRawTransaction(chainId, signedTransaction);
     if (
       parsedTransaction.hash &&
       String(broadcast.result).toLowerCase() !== parsedTransaction.hash.toLowerCase()

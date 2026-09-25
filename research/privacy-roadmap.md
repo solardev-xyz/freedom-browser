@@ -1,9 +1,11 @@
 # Freedom Browser — Privacy Roadmap (synthesis)
 
-**Date:** 2026-07-08 · **Updated:** 2026-09-14 (PPv2, wallet circuit isolation, Ethereum Reads/anon-rpc) · **Status:** context/transport/balances implemented locally; scoped live Arti and packaged macOS checks passed; transaction and Kohaku host/runtime prototypes tested; full SDK egress/recovery and production activation pending
+**Date:** 2026-07-08 · **Updated:** 2026-09-25 (main/node refresh, durable submission tracking, current Kohaku transport) · **Status:** context/transport/balances implemented locally; scoped live Arti and packaged macOS checks passed; durable transaction tracking and bounded Kohaku host transport tested; reconciliation, full SDK egress and production activation pending
 **Companion docs:** `services-consent-spec.md` (Outbound Services Gateway), `nym-integration-research.md`, `fingerprinting-defense-research.md`, `privacy-pools-research.md`, `kohaku-wallet-integration-research.md`, `daily-driver-roadmap.md`, plus in-flight PRs: adblock #144, Tor/Arti #112, permission prompts #152, private windows #157.
 
 The September revision updates transport and wallet planning from current PPv2 docs, Kohaku source, Tor specifications, and Ethereum Reads/anon-rpc. See `tor-circuit-isolation-research.md`, `ethereum-reads-anon-rpc-research.md`, and the September update in `privacy-pools-research.md`. Other July claims and PR references remain historical and have not been comprehensively revalidated. Several named companion documents are absent from this checkout; establish their status before relying on them.
+
+**September 25 implementation:** current main is merged and its locked dependencies/node installations refreshed. Submission hashes are durably encrypted before broadcast, survive real Electron restart, and block new sends pending explicit reconciliation. A bounded current Kohaku network capability passes SOCKS/TLS and actual upstream client interoperability tests. Upstream deprecated the Rust implementations and removed the prior Railgun package on September 24; the original WASM spike is historical, and maintained protocol selection must be revisited. PPv2 remains the target; no PPv1 or Tornado shipping phase was added. See [the current engineering follow-up](../docs/privacy-engineering-followup-2026-09-25.md) for exact evidence and remaining gates.
 
 ## 1. Threat model — six distinct adversaries
 

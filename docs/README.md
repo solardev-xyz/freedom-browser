@@ -16,6 +16,7 @@ Freedom's README is the short project overview. Use these guides for detailed se
 
 - [Contributing](../CONTRIBUTING.md) — contribution policy and pull request workflow.
 - [Development](development.md) — local setup, scripts, tests, debugging, and builds.
+- [Wallet privacy recovery and SDK follow-up](privacy-engineering-followup-2026-09-25.md) — current main/node synchronization, durable submission tracking and current Kohaku host transport.
 - [Wallet privacy engineering status](privacy-engineering-status.md) — tested behavior, qualification evidence, remaining technical work and product boundaries.
 - [Wallet privacy implementation plan](wallet-privacy-implementation-plan.md) — staged wallet transport, Kohaku, and PPv2 work with acceptance criteria.
 - [Native IPFS desktop integration](freedom-ipfs-native-desktop.md) — native addon architecture and packaging.

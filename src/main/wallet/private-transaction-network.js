@@ -15,7 +15,7 @@ function getPrivateTransactionNetwork(handle) {
   const rpc = createPrivateRpc(handle, 'transaction-rpc');
   const context = getPrivacyContext(handle);
   const { chainId, principal } = context.subject;
-  const attempted = new Set();
+  const journal = () => require('./private-submission-journal').getPrivateSubmissionJournal(handle);
 
   function assertActive(requestChain = chainId) {
     getPrivacyContext(handle, requestChain);
@@ -45,7 +45,7 @@ function getPrivateTransactionNetwork(handle) {
         (method === 'eth_estimateGas' ? params.length === 1 : params.length === 2 && params[1] === 'latest');
       if (method === 'eth_call') validate = data;
     } else if (['eth_getTransactionReceipt', 'eth_getTransactionByHash'].includes(method)) {
-      allowed = params.length === 1 && hash(params[0]) && attempted.has(params[0].toLowerCase());
+      allowed = params.length === 1 && hash(params[0]) && await journal().has(params[0].toLowerCase());
       validate = (value) => value === null || (value && !Array.isArray(value) && (
         method === 'eth_getTransactionReceipt'
           ? value.transactionHash?.toLowerCase() === params[0].toLowerCase() &&
@@ -63,7 +63,7 @@ function getPrivateTransactionNetwork(handle) {
     // Product fee presets remain on the established ordinary-wallet path.
     return { type: 'legacy', gasPrice: BigInt(result).toString(), effectiveGasPrice: BigInt(result).toString(), source: 'direct', verified: false };
   }
-  async function broadcastRawTransaction(requestChain, signed) {
+  async function broadcastRawTransaction(requestChain, signed, { expiresAt } = {}) {
     assertActive(requestChain);
     if (!data(signed)) throw privacyError('PRIVATE_SIGNED_TX_INVALID', 'Invalid signed transaction');
     let transaction;
@@ -75,20 +75,30 @@ function getPrivateTransactionNetwork(handle) {
     }
     assertSigner(transaction.from);
     const txHash = transaction.hash.toLowerCase();
-    if (attempted.has(txHash)) throw Object.assign(privacyError('PRIVATE_BROADCAST_ALREADY_ATTEMPTED', 'Query the existing submission before any further action'), { transactionHash: txHash });
-    if (attempted.size >= 64) throw privacyError('PRIVATE_TRANSACTION_LIMIT', 'Transaction context capacity reached');
+    const assertDeadline = () => {
+      if (expiresAt !== undefined && (!Number.isSafeInteger(expiresAt) || Date.now() >= expiresAt)) {
+        throw privacyError('PRIVATE_REVIEW_EXPIRED', 'Transaction review expired');
+      }
+    };
+    assertDeadline();
     await rpc.ready();
-    assertActive();
-    // Record BEFORE handing bytes to transport. A dropped response never
-    // means permission to sign or submit another transaction automatically.
-    attempted.add(txHash);
+    assertActive(); assertDeadline();
+    // Atomic encrypted write + fsync must succeed before transport sees bytes.
+    // If the process dies at any later instruction, recovery treats this hash
+    // as possibly submitted. The journal never contains the signed bytes.
+    await journal().begin(txHash, transaction.nonce);
     try {
-      return await rpc.request('eth_sendRawTransaction', [signed], (result) => hash(result) && result.toLowerCase() === txHash);
+      assertActive(); assertDeadline();
+      const response = await rpc.request('eth_sendRawTransaction', [signed], (result) => hash(result) && result.toLowerCase() === txHash);
+      await journal().markSubmitted(txHash);
+      assertActive();
+      return response;
     } catch {
       throw Object.assign(privacyError('PRIVATE_BROADCAST_UNCERTAIN', 'Transaction submission outcome is unknown'), { transactionHash: txHash, submissionStatus: 'unknown' });
     }
   }
-  const client = Object.freeze({ request, getFeeQuote, broadcastRawTransaction, assertSigner, assertActive, signal: rpc.signal });
+  const client = Object.freeze({ request, getFeeQuote, broadcastRawTransaction, assertSigner, assertActive, signal: rpc.signal,
+    assertCanSubmit: () => journal().assertCanSubmit(), listSubmissions: () => journal().list() });
   clients.set(handle, client);
   return client;
 }

@@ -1,8 +1,10 @@
 # Wallet privacy implementation plan
 
-Date: 2026-09-14. Status: Steps 1–3 implemented locally; scoped live Arti and packaged macOS checks passed; Steps 4–5 have tested technical prototypes. Production activation, complete SDK egress and recoverable shielded flows remain pending.
+Date: 2026-09-14; updated 2026-09-25. Status: merged current main and refreshed its node/runtime installations; durable submission tracking and a bounded Kohaku host network adapter now have unit and Electron coverage. Production activation, reconciliation and a complete recoverable shielded flow remain pending.
 
 ## Implementation status
+
+**September 25:** [Recovery and SDK follow-up](privacy-engineering-followup-2026-09-25.md) records the newest work and tests. The transaction attempt journal is now durable across restart; explicit reconciliation/finality/replacement policy remains open. Current Kohaku removed its Rust Railgun implementation on September 24, so the old WASM spike is historical evidence. Re-evaluate the maintained protocol adapter before the first shielded flow; PPv2 remains the target. The bounded `host.network.fetch` adapter and a current upstream client pass controlled SOCKS/TLS tests, but provider, sync, artifact and worker coverage remain gates.
 
 **Latest engineering handoff:** [Wallet privacy engineering status](privacy-engineering-status.md) records live circuit evidence, packaged results, transaction hooks, Kohaku host/runtime findings and the next technical tasks. Latest regression: 4,357 passed, 10 skipped and the same 3 baseline failures; lint passes. The chronological Step 1–3 notes below preserve their original test counts and scope.
 
@@ -124,7 +126,7 @@ Acceptance: packaged loading, derivation vectors, authenticated encrypted persis
 
 ### PR 6 — First shielded protocol flow
 
-Use Railgun as the currently implemented Kohaku reference: Sepolia shield, sync, note/spendability status, reviewed unshield, and restart/independent restore. Add private transfer and POI qualification explicitly. Resolve the sponsored broadcast path's raw-key/signer mismatch before enabling it; never hand it the existing public-account private key for convenience. Keep receive/change semantics, fee reserves, and operation tracking explicit.
+The September 14 proposal used Railgun as the Kohaku reference; after the September 24 Rust deprecation, select and qualify a maintained Railgun adapter or accessible PPv2 implementation first. The intended flow remains: Sepolia shield, sync, note/spendability status, reviewed unshield, and restart/independent restore. Add private transfer and POI qualification explicitly. Resolve the sponsored broadcast path's raw-key/signer mismatch before enabling it; never hand it the existing public-account private key for convenience. Keep receive/change semantics, fee reserves, and operation tracking explicit.
 
 The smallest user-facing scope is one software privacy account, one qualified test chain, explicit public/private balances, shield, and unshield to a chosen Freedom account. Follow the existing UI/approval patterns and test both themes. This milestone depends on the complete relevant egress and approval boundaries, not just PR 3's balance-read success.
 
@@ -144,6 +146,6 @@ anon-rpc compatibility, PIR, Nym, additional chains, hardware private spending, 
 
 For each code PR, read the active ESLint configuration and run `npm run lint`; run `npm test` for changes to tested modules, including existing router, balance, transaction, identity, and Tor suites as applicable. Add behavioral tests for the security boundaries above. Renderer work also follows the UI playbook's both-theme, style, and Linux screenshot checks. Use deterministic SOCKS/HTTP fixtures for routine tests and separate controlled live tests for circuit and packaged egress claims. Record the exact tested dependency/artifact/platform versions.
 
-Steps 1–3 and the scoped live/packaged macOS probes are complete locally. Steps 4–5 have working technical prototypes; their full acceptance gates remain open. Next: durable transaction recovery, SDK network mediation, approved dependency/artifact inputs, real protocol storage/restore, and broader egress/platform qualification. These tasks can continue independently of final UI design; see the engineering handoff for sequencing and access constraints.
+Steps 1–3 and the scoped live/packaged macOS probes are complete locally. Steps 4–5 have working technical prototypes; their full acceptance gates remain open. Next: explicit transaction reconciliation on top of durable tracking, complete SDK provider/sync/artifact/worker mediation, maintained protocol selection and approved dependency/artifact inputs, real protocol storage/restore, and broader egress/platform qualification. These tasks can continue independently of final UI design; see the engineering handoff for sequencing and access constraints.
 
 Research basis (versioned with this feature branch): `research/privacy-roadmap.md`, `research/kohaku-wallet-integration-research.md`, `research/privacy-pools-research.md`, `research/tor-circuit-isolation-research.md`, and `research/ethereum-reads-anon-rpc-research.md`. These five research files are tracked explicitly; the general research-ignore policy remains unchanged. Public references: [Kohaku](https://github.com/ethereum/kohaku), [PPv2 documentation](https://privacy-pools-v2-docs.vercel.app/), [Tor isolation](https://spec.torproject.org/path-spec/stream-isolation.html), [Reads](https://reads.ethereum.foundation/), [anon-rpc](https://github.com/ethereum/anon-rpc).

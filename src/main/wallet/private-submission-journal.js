@@ -1,0 +1,102 @@
+/** Main-owned write-ahead journal. No signed bytes or keys are persisted.
+ * Every durable attempt is possibly submitted, including after a crash before
+ * transport handoff. Observations never authorize retries or erase attempts.
+ */
+const { createHash, createHmac } = require('crypto');
+const path = require('path');
+const { mnemonicToSeedSync } = require('@scure/bip39');
+const { createPrivacyStorage } = require('./privacy-storage');
+const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
+const journals = new WeakMap();
+const HASH = /^0x[0-9a-f]{64}$/;
+const KEY = 'submissions-v1';
+
+function createSubmissionJournal({ handle, directory, key }) {
+  const context = getPrivacyContext(handle);
+  const { subject } = context;
+  if (subject.kind !== 'public-address' || subject.role !== 'transaction-rpc' ||
+      subject.chainId !== 11155111 || subject.operation !== null || subject.protocol !== null || subject.deployment !== null) {
+    throw privacyError('PRIVATE_JOURNAL_SCOPE', 'Unsupported submission journal scope');
+  }
+  const storage = createPrivacyStorage({ handle, directory, key });
+  const invalid = () => privacyError('PRIVATE_JOURNAL_INVALID', 'Submission state could not be validated');
+  function decode(value) {
+    if (value === null) return [];
+    try {
+      const data = JSON.parse(value);
+      if (data.version !== 1 || !Array.isArray(data.records) || data.records.length > 64) throw invalid();
+      const hashes = new Set();
+      for (const record of data.records) {
+        if (!HASH.test(record.hash) || hashes.has(record.hash) ||
+            !Number.isSafeInteger(record.nonce) || record.nonce < 0 ||
+            !['attempted', 'submitted'].includes(record.state) ||
+            !Number.isSafeInteger(record.attemptedAt) || record.attemptedAt < 0) throw invalid();
+        hashes.add(record.hash);
+      }
+      return data.records;
+    } catch { throw invalid(); }
+  }
+  async function list() {
+    getPrivacyContext(handle);
+    const value = await storage.get(KEY);
+    getPrivacyContext(handle);
+    return decode(value).map((record) => Object.freeze({ ...record }));
+  }
+  function modify(change) {
+    return storage.update(KEY, (value) => JSON.stringify({ version: 1, records: change(decode(value)) }));
+  }
+  async function assertCanSubmit() {
+    if ((await list()).length) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
+  }
+  return Object.freeze({
+    list, assertCanSubmit,
+    async has(hash) { return (await list()).some((record) => record.hash === hash?.toLowerCase()); },
+    async begin(hash, nonce) {
+      if (!HASH.test(hash) || !Number.isSafeInteger(nonce) || nonce < 0) throw invalid();
+      await modify((records) => {
+        if (records.some((record) => record.hash === hash)) {
+          throw Object.assign(privacyError('PRIVATE_BROADCAST_ALREADY_ATTEMPTED', 'Query the existing submission before any further action'), { transactionHash: hash });
+        }
+        // Conservatively serialize all sends for this account. Unverified RPC
+        // receipts cannot clear the gate; a later explicit recovery policy must.
+        if (records.length) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
+        return [...records, { hash, nonce, state: 'attempted', attemptedAt: Date.now() }];
+      });
+    },
+    async markSubmitted(hash) {
+      await modify((records) => {
+        const record = records.find((entry) => entry.hash === hash);
+        if (!record) throw invalid();
+        record.state = 'submitted';
+        return records;
+      });
+    },
+  });
+}
+
+// Derive only a domain-separated local encryption key from the active vault.
+// Reopening the same profile/account after restart reconstructs the same key;
+// other profiles/accounts/chains cannot authenticate this journal's contents.
+function getPrivateSubmissionJournal(handle) {
+  const context = getPrivacyContext(handle);
+  if (journals.has(handle)) return journals.get(handle);
+  const profile = require('../profile-resolver').getActiveProfile();
+  const vault = require('../identity/vault');
+  const signal = vault.getSessionSignal();
+  if (!profile?.id || !profile.userDataDir || signal.aborted || !vault.getMnemonic()) {
+    throw privacyError('PRIVATE_JOURNAL_UNAVAILABLE', 'An unlocked active profile is required');
+  }
+  const profileId = createHash('sha256').update(JSON.stringify([profile.id, profile.userDataDir])).digest('hex');
+  if (profileId !== context.profileId) throw privacyError('PRIVATE_JOURNAL_SCOPE', 'Submission context belongs to another profile');
+  const seed = mnemonicToSeedSync(vault.getMnemonic());
+  let key;
+  try {
+    key = createHmac('sha256', seed).update('Freedom wallet submission journal v1\0')
+      .update(JSON.stringify([profileId, context.subject])).digest();
+    const journal = createSubmissionJournal({ handle, directory: path.join(profile.userDataDir, 'wallet-private-submissions'), key });
+    journals.set(handle, journal);
+    return journal;
+  } finally { seed.fill(0); key?.fill(0); }
+}
+
+module.exports = { createSubmissionJournal, getPrivateSubmissionJournal };

@@ -3,6 +3,12 @@ jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mockEndpoint 
 jest.mock('../networks/network-registry', () => ({ getNetwork: () => ({}), getEndpoints: () => ['https://rpc.example'], getEndpointSources: () => [{ keyed: false, coverage: { '11155111': 'https://rpc.example' } }] }));
 jest.mock('../networks/wallet-tor-transport', () => ({ createWalletTorTransport: () => ({ request: mockRequest }) }));
 jest.mock('../networks/chain-data-router', () => ({ request: jest.fn(), broadcastRawTransaction: jest.fn(), getFeeQuote: jest.fn() }));
+jest.mock('./private-submission-journal', () => ({ getPrivateSubmissionJournal: (context) => mockJournals.get(context) }));
+const mockJournals = new WeakMap();
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { createSubmissionJournal } = jest.requireActual('./private-submission-journal');
 const mockRequest = jest.fn();
 let mockEndpoint;
 const { Wallet, Transaction } = require('ethers');
@@ -12,7 +18,7 @@ const service = require('./transaction-service');
 const chainData = require('../networks/chain-data-router');
 const wallet = new Wallet(`0x${'1'.repeat(64)}`); // Public synthetic fixture only.
 const params = { chainId: 11155111, to: `0x${'2'.repeat(40)}`, value: '1', gasLimit: '21000' };
-let scope, handle, network, tor;
+let scope, handle, network, tor, journalDirectory;
 let requests;
 let receipt;
 let responseHook;
@@ -22,6 +28,8 @@ beforeEach(() => {
   tor = new AbortController(); mockEndpoint = { signal: tor.signal };
   scope = createPrivacyScope({ profileId: 'test', signal: new AbortController().signal });
   handle = scope.getContext({ kind: 'public-address', principal: wallet.address, chainId: 11155111, role: 'transaction-rpc' });
+  journalDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'private-send-fixture-'));
+  mockJournals.set(handle, createSubmissionJournal({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) }));
   network = getPrivateTransactionNetwork(handle);
   requests = []; receipt = null; responseHook = null;
   signer = { getAddress: async () => wallet.address, signTransaction: jest.fn((tx) => wallet.signTransaction(tx)) };
@@ -110,4 +118,39 @@ test('explicit invalid contexts and absent review never reach ordinary networkin
   await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle })).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_REQUIRED' });
   expect(chainData.getFeeQuote).not.toHaveBeenCalled();
   expect(mockRequest).not.toHaveBeenCalled();
+});
+
+
+test('restart recovers a lost-response hash for receipt queries and blocks a new signature', async () => {
+  responseHook = async (call) => { if (call.method === 'eth_sendRawTransaction') throw new Error('lost'); };
+  const error = await service.signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true }).catch((error) => error);
+  scope.close();
+  scope = createPrivacyScope({ profileId: 'test', signal: new AbortController().signal });
+  handle = scope.getContext({ kind: 'public-address', principal: wallet.address, chainId: 11155111, role: 'transaction-rpc' });
+  mockJournals.set(handle, createSubmissionJournal({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) }));
+  network = getPrivateTransactionNetwork(handle);
+  expect(await network.listSubmissions()).toEqual([expect.objectContaining({ hash: error.transactionHash, state: 'attempted' })]);
+  responseHook = null; signer.signTransaction.mockClear();
+  await expect(service.signAndSendTransaction({ ...params, value: '2' }, signer, { privacyContext: handle, review: async () => true }))
+    .rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+  expect(signer.signTransaction).not.toHaveBeenCalled();
+  expect(await service.getTransactionStatus(error.transactionHash, 11155111, { privacyContext: handle })).toMatchObject({ status: 'pending' });
+  expect(requests.filter((r) => r.method === 'eth_sendRawTransaction')).toHaveLength(1);
+});
+
+test('disk failure before broadcast sends no bytes; a failed acknowledgment keeps a recoverable unknown outcome', async () => {
+  const rename = jest.spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('disk full'); });
+  try {
+    await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true }))
+      .rejects.toMatchObject({ code: 'PRIVATE_STORAGE_WRITE_FAILED' });
+    expect(requests.some((r) => r.method === 'eth_sendRawTransaction')).toBe(false);
+  } finally { rename.mockRestore(); }
+  responseHook = async (call) => {
+    if (call.method === 'eth_sendRawTransaction') jest.spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error('disk full'); });
+  };
+  try {
+    const error = await service.signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true }).catch((error) => error);
+    expect(error).toMatchObject({ code: 'PRIVATE_BROADCAST_UNCERTAIN', submissionStatus: 'unknown' });
+    expect(await network.listSubmissions()).toEqual([expect.objectContaining({ hash: error.transactionHash, state: 'attempted' })]);
+  } finally { jest.restoreAllMocks(); }
 });
