@@ -51,8 +51,10 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
       button.setAttribute('aria-pressed', String(session.mode === mode)); tabs.appendChild(button);
     }
     header.appendChild(tabs);
-    header.appendChild(action('Refresh', () => void show(session)));
-    header.appendChild(action('Close', () => closeTab(session.tab.id)));
+    const refresh = action('', () => void show(session), 'agent-workspace-refresh');
+    refresh.setAttribute('aria-label', 'Refresh'); refresh.title = 'Refresh';
+    refresh.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>';
+    header.appendChild(refresh);
     const controls = node('div', 'workspace-viewer-controls');
     const message = node('p', 'workspace-viewer-message', 'Loading…'); message.setAttribute('role', 'status');
     const body = node('div', 'workspace-viewer-body');
