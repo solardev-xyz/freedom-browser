@@ -8,14 +8,26 @@ proof verification, the checkpoint quorum and Colibri checks remain required.
 
 ## What ships and how it starts
 
-`src/main/myotis/seeds/mainnet.json` contains the five supplied mainnet addresses;
-`gnosis.json` contains the eighteen supplied Gnosis addresses. They are copied
-from [freedom-browser-ios a247d32](https://github.com/solardev-xyz/freedom-browser-ios/commit/a247d32),
-dated 2026-09-24, and ship inside the existing `src/**/*` app resource boundary.
-The mainnet candidates were individually engine-probed by the mobile team.
-Gnosis candidates came from serving (`snapok`) peer caches plus TCP checks;
-they were not individually engine-probed. Desktop live results and limitations
-are in [the seed-pin audit](audits/evidence/myotis-seed-pins-2026-09/README.md).
+`src/main/myotis/seeds/mainnet.json` contains five mainnet addresses from
+[freedom-browser-ios a247d32](https://github.com/solardev-xyz/freedom-browser-ios/commit/a247d32).
+`gnosis.json` contains the four Gnosis addresses retained by the mobile team's
+2026-09-25 pool-admission probe ([ca470e3](https://github.com/solardev-xyz/freedom-browser-ios/commit/ca470e3),
+on `feat/gnosis-seed-probe`, not yet merged when adopted here). Both lists ship
+inside the existing `src/**/*` app resource boundary.
+
+The five mainnet candidates each served the Universal Resolver call alone on a
+cold engine in the mobile team's probe. The original eighteen Gnosis candidates
+came from `snapok` caches and TCP checks. With all eighteen pinned, four
+connected and were admitted at the anchored head; the other fourteen failed at
+transport or handshake. This does **not** individually qualify the four for
+verified reads: built-in Gnosis bootnodes could answer during single-pin tests.
+Two retained addresses, `141.94.97.22` and `141.94.97.74`, are those serving
+bootnodes. The mobile team observed serving readiness within one second and
+30–70 ms balance reads with or without pins; that is a platform/run observation,
+not a desktop timing guarantee or evidence that the pins caused the improvement.
+The two other retained addresses provide additional discovery candidates, not a
+proven outage guarantee. Earlier desktop measurements used the original eighteen
+pins and remain recorded as such in [the seed-pin audit](audits/evidence/myotis-seed-pins-2026-09/README.md).
 
 The host accepts lowercase 128-hex-key enodes with numeric IPv4 addresses and
 ports 1–65535. Malformed entries, DNS, IPv6, ambiguous IPv4 octets and query strings
@@ -73,7 +85,11 @@ serve today's anchored head. Before bundling, probe each candidate alone using
 a one-entry per-network override on a fresh disposable profile: wait for
 `snapServingPeers > 0`, make a real verified read, record elapsed time and
 confirm the native process stopped. On mainnet use the generic Universal
-Resolver `eth_call` / `vitalik.eth`; a Myotis account read can qualify Gnosis.
+Resolver `eth_call` / `vitalik.eth`; use a Myotis account read on Gnosis.
+A one-entry override does not disable built-in bootnodes or ordinary discovery:
+attribute the successful read to the candidate using engine logs before claiming
+individual qualification. Otherwise report only pool admission and the aggregate
+read result, as in the Gnosis probe above.
 Count only successful verified reads, never a fallback or an open TCP port.
 Then replace the matching JSON list and rerun the parser, launch/recovery and
 live checks. The audit contains a repeatable desktop cold/recovery driver.
@@ -84,7 +100,7 @@ Bundling addresses directs fresh installs toward the same endpoints. Operators
 see those connections, endpoints can become unavailable, and several addresses
 may belong to the same operator (two mainnet addresses even share a key).
 These lists establish no operator quorum or anonymity property. Shuffling
-spreads first-dial preference; with the current 5/18 entries the subset includes
+spreads first-dial preference; with the current 5/4 entries the subset includes
 the whole list. Once there are more than 20 candidates it also varies membership.
 Ordinary discovery continues, and dead pins remain subject to engine backoff.
 Refresh lists based on measured service, without treating them as trusted chain

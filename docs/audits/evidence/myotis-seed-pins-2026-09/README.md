@@ -95,3 +95,17 @@ are in [myotis-seed-pins.md](../../../myotis-seed-pins.md).
 
 Only macOS arm64 was executed live. There is no new renderer surface or dependency,
 and no signed-package or new Linux/Windows native execution claim.
+
+## Four-peer Gnosis update — 2026-09-25
+
+The current bundle retains four Gnosis addresses from the mobile team's pool
+admission probe (iOS `ca470e3`); mainnet stays at five. The measurements above
+remain historical evidence for the original eighteen-entry list.
+
+A new disposable-profile desktop run accepted four pins, reached one serving
+peer at **8.225 s**, and returned a verified account at **8.279 s** (**54 ms**
+read). All three proof flags were true; the child and supervisor retired cleanly.
+See [gnosis-four.json](gnosis-four.json). This verifies aggregate service, not
+individual peer quality or a speed improvement caused by pinning. Built-in
+Gnosis bootnodes remain enabled. The reproduction driver now reads the expected
+count from the bundled JSON.

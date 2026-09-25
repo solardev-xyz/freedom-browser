@@ -42,8 +42,9 @@ async function main() {
         assert(result.peerProofValid && result.blsVerified && result.beaconChainVerified);
         emit('account', { firstReadyMs: firstReady, ms: Date.now() - before, result });
         const log = await fs.readFile(path.join(runDir, 'logs', 'main.log'), 'utf8');
-        assert(log.includes('[myotis] gnosis seed pins (18) applied'));
-        assert(!log.includes('seed pins (18) refused'));
+        const pinCount = require(path.join(repo, 'src/main/myotis/seeds/gnosis.json')).length;
+        assert(log.includes(`[myotis] gnosis seed pins (${pinCount}) applied`));
+        assert(!log.includes(`seed pins (${pinCount}) refused`));
         success = true;
         return;
       } catch (error) {

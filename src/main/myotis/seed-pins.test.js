@@ -64,7 +64,7 @@ test('selects a shuffled, deterministic subset without mutating the list', () =>
 
 test.each([
   ['mainnet', 5],
-  ['gnosis', 18],
+  ['gnosis', 4],
 ])('bundled %s pins parse unchanged and ship in src resources', (network, count) => {
   const pins = JSON.parse(
     fs.readFileSync(path.join(__dirname, 'seeds', `${network}.json`), 'utf8')
