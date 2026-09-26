@@ -276,10 +276,17 @@ function storageFailureReason(error) {
     CHECKPOINT_STORAGE_IO: 'storage-io' })[error.code] || 'startup';
 }
 
-function failRecovery(instance, reason, retry = false) {
+// `background` keeps retrying slowly after the fast schedule runs out. Only
+// checkpoint *acquisition* failures (a source outage) opt in: they cost a few
+// requests each. A checkpoint that verified and imported but still reports a
+// stale anchor must stay bounded — every retry of that path creates a new
+// verified generation and restarts the native child.
+function failRecovery(instance, reason, retry = false, { background = false } = {}) {
   if (!instance.wanted || shuttingDown || instance.stopping) return;
   clearRecoveryTimer(instance);
-  const delay = retry ? (RECOVERY_RETRY_MS[instance.recoveryAttempt - 1] ?? RECOVERY_BACKGROUND_RETRY_MS) : null;
+  const delay = retry
+    ? (RECOVERY_RETRY_MS[instance.recoveryAttempt - 1] ?? (background ? RECOVERY_BACKGROUND_RETRY_MS : null))
+    : null;
   const token = instance.lifecycleToken;
   instance.recovery = {
     phase: delay ? 'waiting' : 'blocked', reason,
@@ -483,7 +490,7 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
         CHECKPOINT_INCOMPATIBLE: 'unsupported',
       };
       const retry = ['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE', 'CHECKPOINT_RACE', 'CHECKPOINT_STALE'].includes(error.code);
-      failRecovery(instance, reasons[error.code] || 'unavailable', retry);
+      failRecovery(instance, reasons[error.code] || 'unavailable', retry, { background: retry });
       return false;
     }
   })();

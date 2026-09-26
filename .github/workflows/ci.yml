@@ -577,7 +577,10 @@ jobs:
   # Settings navigation, persistence, and chain policy are shipped control
   # surfaces. Exercise their real renderer/webview integration so malformed
   # sidebar markup, broken transitions, and Myotis policy regressions cannot
-  # pass unit-only CI.
+  # pass unit-only CI. `myotis-recovery.spec.js` joins them for the Nodes-menu
+  # side of the same Myotis policy: synthetic checkpoint-recovery states drive
+  # the real renderer, so the retry button's visibility while a background
+  # retry waits and the notice clearing on success are asserted in CI.
   e2e-settings:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -611,7 +614,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Run settings E2E
-        run: xvfb-run -a npm run test:e2e -- test-e2e/settings.spec.js test-e2e/settings-adblock.spec.js
+        run: >-
+          xvfb-run -a npm run test:e2e --
+          test-e2e/settings.spec.js
+          test-e2e/settings-adblock.spec.js
+          test-e2e/myotis-recovery.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

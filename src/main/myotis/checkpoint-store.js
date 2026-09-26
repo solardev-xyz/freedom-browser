@@ -194,7 +194,19 @@ async function inheritPeerCaches(baseDir, chainId, dataDir) {
         // Bound untrusted cache input; readBytes rejects symlinks/non-files and
         // checks the opened inode. Exclusive creation never replaces a cache.
         const bytes = await readBytes(path.join(source, name), 4 * 1024 * 1024);
-        await writeBytes(path.join(dataDir, name), bytes);
+        const target = path.join(dataDir, name);
+        const handle = await fs.open(target, 'wx', 0o600);
+        try {
+          await handle.writeFile(bytes);
+          await handle.sync();
+          await handle.close();
+        } catch (error) {
+          // We created this file: never leave a truncated cache behind, so the
+          // next source (or none) is used instead of a partial one.
+          await handle.close().catch(() => {});
+          await fs.rm(target, { force: true }).catch(() => {});
+          throw error;
+        }
         break;
       } catch (error) {
         if (error.code === 'EEXIST') break;

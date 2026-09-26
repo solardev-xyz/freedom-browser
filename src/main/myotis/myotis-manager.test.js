@@ -459,6 +459,11 @@ describe('myotis-manager', () => {
     await jest.advanceTimersByTimeAsync(1000);
     expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'waiting', reason: 'stale' });
     expect(ctx.mod.isReady(100)).toBe(false);
+    // The fast schedule runs out and the loop stops: no background retry
+    // minting a fresh generation and restarting the child every 5 minutes.
+    await jest.advanceTimersByTimeAsync(2 * 60 * 60 * 1000);
+    expect(ctx.store.replaceCheckpoint).toHaveBeenCalledTimes(3);
+    expect(ctx.mod.publicStatus(100).recovery).toMatchObject({ phase: 'blocked', reason: 'stale', attempt: 3 });
     await ctx.mod.stopMyotis(100);
   });
 

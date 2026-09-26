@@ -179,6 +179,29 @@ describe('checkpoint generation store on the real filesystem', () => {
     }
   );
 
+  test('a failed mid-write removes the partial cache and falls back to the next source', async () => {
+    const old = await loadOrCreateState(baseDir, 1);
+    await fs.writeFile(path.join(old.dataDir, 'peers.cache'), 'current generation peers');
+    await fs.writeFile(path.join(baseDir, 'peers.cache'), 'legacy peers');
+    const open = fs.open.bind(fs);
+    let failed = false;
+    jest.spyOn(fs, 'open').mockImplementation(async (filename, flags, ...args) => {
+      const handle = await open(filename, flags, ...args);
+      if (!failed && path.basename(filename) === 'peers.cache' && flags === 'wx') {
+        failed = true;
+        const writeFile = handle.writeFile.bind(handle);
+        handle.writeFile = async (bytes) => {
+          await writeFile(bytes.subarray(0, 3));
+          throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+        };
+      }
+      return handle;
+    });
+    const created = await replaceCheckpoint(baseDir, 1, checkpoint());
+    expect(failed).toBe(true);
+    expect(await fs.readFile(path.join(created.dataDir, 'peers.cache'), 'utf8')).toBe('legacy peers');
+  });
+
   test('legacy peers are inherited while snapshots remain outside the new bundled generation', async () => {
     await fs.mkdir(baseDir);
     const legacy = {
