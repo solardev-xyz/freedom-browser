@@ -49,8 +49,8 @@ function antShrinksLogScanOn(message) {
 
 // Mirrors chain-data-router's ERROR_RANK (pinned equal by
 // ant-chain-bridge.router.test.js); kept local so the bridge does not load the
-// router just for three numbers.
-const RANK = Object.freeze({ ENDPOINT: 0, TIMEOUT: 1, REQUEST: 2 });
+// router just for four numbers.
+const RANK = Object.freeze({ ENDPOINT: 0, HINT: 1, TIMEOUT: 2, REQUEST: 3 });
 const TIMEOUT_TEXT = /time(?:d)?[\s-]?out/i;
 // Ant's needles are broad ("limit", "exceed", "more than", "10000"), so a
 // matching reply is not evidence of a range limit by itself: throttles such
@@ -63,7 +63,7 @@ const TIMEOUT_TEXT = /time(?:d)?[\s-]?out/i;
 // "range" is not enough: "block range extends beyond current head block"
 // (reth) names the range but describes how far the endpoint has synced.
 const RANGE_SIZE_TEXT =
-  /(?:max(?:imum)?|allowed|permitted) (?:block )?range|exceeds? (?:the )?(?:block )?range|(?:block )?range (?:is |of )?(?:too\b|larger|greater|wider|bigger|longer|more than|limit|exceed|limited|capped|size|span)|(?:limited to|up to) (?:an? )?[\w,.]+ (?:block )?range/i;
+  /(?:max(?:imum)?|allowed|permitted) (?:block )?range|exceeds? (?:the )?(?:block )?range|(?:block )?range (?:is |of )?(?:too\b|larger|greater|wider|bigger|longer|more than|limit|exceed|limited|capped|size|span)|(?:limited to|up to) (?:an? )?[\w,.]+ (?:blocks? )?range/i;
 const REQUEST_LIMIT_TEXT =
   /too many (?:results|logs|blocks)|response size|logs? matched|(?:returned )?more than [\d,]+ (?:results|logs|blocks)|(?:max(?:imum)?|too many) (?:number of )?(?:results|logs|blocks)|result(?:s| set)? (?:size |limit|too large|exceed)/i;
 // Wordings that describe the endpoint, not the query, checked first so a
@@ -87,13 +87,19 @@ const ENDPOINT_STATE_TEXT =
 //   so it ends the request and reaches Ant with its code and text intact.
 // - TIMEOUT: a client, source or upstream timeout. Ant halves on it too, but
 //   another endpoint or a longer retry may still answer.
+// - HINT: any other coded reply whose text matches Ant's needles and names
+//   neither a throttle nor a lagging endpoint ("query exceeds limit of 10000
+//   logs", EIP-1474 "limit exceeded", "eth_getLogs is limited to a 10,000
+//   blocks range"). It may be a range cap worded outside the lists above, so
+//   it is kept over any endpoint failure and reaches Ant with its text intact
+//   unless something better turns up, but, since it may also be a throttle,
+//   later endpoints are still asked.
 // - ENDPOINT: everything else (method not found, internal error, rate limits
 //   and other throttles, HTTP errors, transport failures, a source that is not
 //   ready, an endpoint behind the chain head). The router keeps going and
 //   never lets it displace a better error. When a throttle is what finally
 //   reaches Ant, the bridge strips Ant's needles from it (antErrorReply) so
-//   Ant does not halve on it; any other wording is forwarded as is, since it
-//   may still be a range cap worded outside the lists above.
+//   Ant does not halve on it.
 function rankLogScanError(error) {
   const message = typeof error?.message === 'string' ? error.message : '';
   if (
@@ -110,10 +116,10 @@ function rankLogScanError(error) {
   ) {
     return RANK.ENDPOINT;
   }
-  return (RANGE_SIZE_TEXT.test(message) || REQUEST_LIMIT_TEXT.test(message)) &&
-    antShrinksLogScanOn(message)
+  if (!antShrinksLogScanOn(message)) return RANK.ENDPOINT;
+  return RANGE_SIZE_TEXT.test(message) || REQUEST_LIMIT_TEXT.test(message)
     ? RANK.REQUEST
-    : RANK.ENDPOINT;
+    : RANK.HINT;
 }
 
 // Forward the upstream wording (Ant keys retry decisions on it, e.g. "query

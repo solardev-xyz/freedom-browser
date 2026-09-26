@@ -70,6 +70,7 @@ const ERIGON_LAG = {
 };
 // A range cap worded outside the bridge's REQUEST list.
 const LOG_CAP = { code: -32005, message: 'query exceeds limit of 10000 logs' };
+const RANGES_OVER = { code: -32000, message: 'ranges over 10000 blocks are not supported' };
 
 const originalFetch = global.fetch;
 
@@ -98,6 +99,8 @@ function behave(step, signal) {
         return rpcReply({ error: ERIGON_LAG });
       case 'logCap':
         return rpcReply({ error: LOG_CAP });
+      case 'rangesOver':
+        return rpcReply({ error: RANGES_OVER });
       case '429':
         return Promise.resolve({ ok: false, status: 429, json: async () => ({}) });
       case 'down':
@@ -524,4 +527,49 @@ describe('PR #419 review findings', () => {
       });
     }
   );
+
+  // Round 9 (PR #419 R3-F1): an unrecognised coded cap is not final, but no
+  // later endpoint failure (refused, 429, throttle) may hide it from Ant.
+  test.each([
+    ['logCap', LOG_CAP, 'down'],
+    ['logCap', LOG_CAP, '429'],
+    ['logCap', LOG_CAP, 'throttle'],
+    ['limitExceeded', LIMIT_EXCEEDED, 'down'],
+    ['limitExceeded', LIMIT_EXCEEDED, '429'],
+    ['rangesOver', RANGES_OVER, 'down'],
+  ])(
+    'R3-F1: a -32005 %s from one RPC reaches Ant over the others answering %s',
+    async (kind, error, others) => {
+      const expected = {
+        code: error.code,
+        message: `Chain request failed: ${error.message}`,
+        shrinks: true,
+        at: 0,
+      };
+      // First in quorum, and as the untried Direct RPC.
+      for (const rpcs of [
+        { a: kind, b: others, c: others, d: others },
+        { a: others, b: others, c: others, d: kind, e: others },
+      ]) {
+        const got = await scan({ rpcs });
+        expect(got).toMatchObject(expected);
+        // Not final: every RPC is still asked.
+        expect(new Set(got.fetches.map((entry) => entry.split('@')[0]))).toEqual(
+          new Set(Object.keys(rpcs))
+        );
+      }
+    }
+  );
+
+  test('R3-F1: a possible cap still loses to a later timeout and to a real answer', async () => {
+    const timedOut = await scan({ rpcs: { a: 'logCap', b: 'timeoutReply', c: 'down', d: 'down' } });
+    expect(timedOut).toMatchObject({ ...gotTimeoutReply, at: 0 });
+    const answered = await scan({ rpcs: { a: 'logCap', b: 'down', c: 'down', d: 'success' } });
+    expect(answered).toMatchObject({ ...gotLogs, at: 0 });
+  });
+
+  test('R3-F1: a lagging endpoint is still not kept over a later transport failure', async () => {
+    const got = await scan({ rpcs: { a: 'rethLag', b: 'down', c: 'down', d: 'down' } });
+    expect(got).toMatchObject({ shrinks: false });
+  });
 });

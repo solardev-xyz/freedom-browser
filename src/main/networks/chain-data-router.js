@@ -138,17 +138,24 @@ const ERROR_RANK = Object.freeze({
   // Depends on the endpoint, the caller cannot act on it (method not found,
   // internal error, rate limit, HTTP 5xx, transport failure, source not ready).
   ENDPOINT: 0,
+  // An endpoint's own reply the caller may act on, though it cannot tell it
+  // apart from an endpoint-dependent one (Ant: a range cap worded outside the
+  // bridge's known list). Other endpoints are still asked, but it is reported
+  // over any endpoint failure, so a later 429 or refused connection cannot
+  // hide it.
+  HINT: 1,
   // A timeout: the caller can shrink the request and try again.
-  TIMEOUT: 1,
+  TIMEOUT: 2,
   // Depends on the request itself (a range limit): no other endpoint or retry
   // is expected to do better, so it ends the request at once.
-  REQUEST: 2,
+  REQUEST: 3,
 });
 
 // The single error rule for a ranked request: keep the most useful failure
 // seen so far across every tier, endpoint and retry. A later failure replaces
 // it only when it ranks strictly higher, so an earlier range limit survives a
-// later timeout or 429 and an earlier timeout survives a later -32601. The
+// later timeout or 429, an earlier timeout survives a later -32601 and a
+// possible range cap (HINT) survives a later transport failure. The
 // one equal-rank replacement is timeout by timeout: the later one is the
 // attempt that actually ended the request (Direct's widened retry after
 // quorum's 5 s cut), so its budget is what the caller and logs should see.

@@ -156,7 +156,7 @@ test('Ant reads are background work and wide log scans get a longer direct budge
 });
 
 // The router keeps the most useful error by this rank: range-limit (depends
-// on the query, final) > timeout > endpoint-dependent.
+// on the query, final) > timeout > possible range cap > endpoint-dependent.
 test.each([
   ['range limit', { code: -32005, message: 'query exceeds max block range 50000' }, 'REQUEST'],
   [
@@ -194,8 +194,16 @@ test.each([
     { code: -32005, message: 'project ID request rate exceeded' },
     'ENDPOINT',
   ],
-  ['EIP-1474 limit exceeded', { code: -32005, message: 'limit exceeded' }, 'ENDPOINT'],
-  ['a coded needle-only reply', { code: -32000, message: 'more than allowed' }, 'ENDPOINT'],
+  // Coded replies matching Ant's needles without naming a throttle or the
+  // query's size: possibly a range cap, kept over endpoint failures (R3-F1).
+  ['EIP-1474 limit exceeded', { code: -32005, message: 'limit exceeded' }, 'HINT'],
+  ['a coded needle-only reply', { code: -32000, message: 'more than allowed' }, 'HINT'],
+  ['log count cap', { code: -32005, message: 'query exceeds limit of 10000 logs' }, 'HINT'],
+  [
+    'ranges over N blocks',
+    { code: -32000, message: 'ranges over 10000 blocks are not supported' },
+    'HINT',
+  ],
   [
     'result count cap',
     { code: -32005, message: 'logs matched by query exceeds limit of 10000' },
@@ -218,6 +226,11 @@ test.each([
     'REQUEST',
   ],
   [
+    'QuickNode blocks range cap',
+    { code: -32602, message: 'eth_getLogs is limited to a 10,000 blocks range' },
+    'REQUEST',
+  ],
+  [
     'reth behind head',
     {
       code: -32000,
@@ -234,7 +247,8 @@ test.each([
     },
     'ENDPOINT',
   ],
-  ['invalid range params', { code: -32602, message: 'invalid block range params' }, 'ENDPOINT'],
+  ['invalid range params', { code: -32602, message: 'invalid block range params' }, 'HINT'],
+  ['coded, no needle', { code: -32000, message: 'header not found' }, 'ENDPOINT'],
   ['HTTP 429', { message: 'HTTP 429' }, 'ENDPOINT'],
   ['HTTP 503', { message: 'HTTP 503' }, 'ENDPOINT'],
   ['transport', { name: 'TypeError', message: 'fetch failed' }, 'ENDPOINT'],

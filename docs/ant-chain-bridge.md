@@ -40,31 +40,36 @@ as `rankLogScanError`; the router side is `createErrorKeeper` in
 range 50000`, `query returned more than 10000 results`, `response size
 exceeded`. It depends on the query, not the endpoint. Ant's needles alone
      are too broad to decide this (`limit`, `exceed`, `more than`), so a coded
-     reply that matches them without naming the query's size is
-     endpoint-dependent.
+     reply that matches them without naming the query's size is at most a
+     possible range cap (below).
    - _Timeout_: a client timeout (`RPC query timeout after Nms`), a source
      deadline (Colibri, quorum) or an upstream `query timeout` reply. Ant
      halves on it too, but another endpoint or a longer attempt may answer.
+   - _Possible range cap_: any other coded reply whose text matches Ant's
+     needles and names neither a throttle nor a lagging endpoint, e.g. a cap
+     worded outside the list above (`-32005 query exceeds limit of 10000
+logs`, `ranges over 10000 blocks are not supported`) or EIP-1474's
+     ambiguous `-32005 limit exceeded`. It may be a throttle, so later
+     endpoints are still asked, but no endpoint-dependent failure replaces
+     it: if nothing better turns up Ant gets it with its code and text and
+     halves, as it would against that RPC directly.
    - _Endpoint-dependent_ (lowest): everything else, which Ant cannot act on:
      `-32601` method not found, `-32603` internal error, rate limits and
      throttles (`-32005 rate limit exceeded`, Infura's `-32005 project ID
 request rate exceeded`), an endpoint behind the chain head (reth's `block
 range extends beyond current head block`, Erigon's `... is beyond latest
 executed block N (node is still syncing)` — they name a range but a synced
-     endpoint may answer), a coded reply whose wording names neither a throttle
-     nor the query's size (EIP-1474's `-32005 limit exceeded`), HTTP 429/5xx,
-     transport failures, a source that is not ready or does not serve logs.
-     If such an error is what finally reaches Ant, the bridge keeps its code
-     and text, except that a recognised throttle, or a source/transport failure
-     with no JSON-RPC code, whose text would match Ant's needles is replaced
-     with `endpoint unavailable`, so Ant does not halve its window on a
-     throttle. Any other wording is forwarded, so a range cap worded outside
-     the list above (`query exceeds limit of 10000 logs`) still makes Ant halve
-     once no endpoint answered better, as it would against that RPC directly.
+     endpoint may answer), HTTP 429/5xx, transport failures, a source that is
+     not ready or does not serve logs. If such an error is what finally
+     reaches Ant, the bridge keeps its code and text, except that a
+     recognised throttle, or a source/transport failure with no JSON-RPC
+     code, whose text would match Ant's needles is replaced with `endpoint
+unavailable`, so Ant does not halve its window on a throttle.
 2. **Keep the most useful failure seen so far**, across every tier (Myotis,
    Colibri, each quorum member, each Direct attempt and retry). A later
    failure replaces it only if it ranks strictly higher, so a range limit
-   survives a later timeout or 429, and a timeout survives a later `-32601`.
+   survives a later timeout or 429, a timeout survives a later `-32601`, and
+   a possible range cap survives a later 429 or refused connection.
    The one exception is timeout by timeout: the later one replaces the
    earlier, since it is the attempt that actually ended the request (Direct's
    60 s widened retry after quorum's 5 s cut reports `after 60000ms`).
