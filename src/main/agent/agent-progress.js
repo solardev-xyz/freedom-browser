@@ -827,7 +827,7 @@ function activityProgress(operation, receipt = {}) {
       ? ({ running: 'Helper working', cancelled: 'Helper stopped', timed_out: 'Helper timed out', limited: 'Helper reached its limit', failed: 'Helper could not finish' }[subagent.state])
       : copy.completed;
     if (title) label += ` — ${title}`;
-    if (subagents) { intent = subagents.some(item => item.mode === 'edit') ? 'Delegating editing and review' : 'Delegating two read-only tasks'; label = summarizeSubagents(subagents).detail; }
+    if (subagents) { intent = subagents.some(item => item.mode === 'browser') ? 'Delegating browser tasks' : subagents.some(item => item.mode === 'edit') ? 'Delegating editing and review' : 'Delegating two read-only tasks'; label = summarizeSubagents(subagents).detail; }
   }
   if (operation === 'helper_task') {
     const labels = { status: ['Checking helper status', 'Checked helper status'], wait: ['Waiting for a helper', 'Received helper result'], message: ['Messaging a helper', 'Sent helper message'] };
@@ -1119,6 +1119,19 @@ function errorExplanation(code) {
 }
 
 function buildAgentOutcome(activity, status, error) {
+  const items = Array.isArray(activity) ? activity : [];
+  const helpers = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .filter(receipt => receipt?.mode === 'browser');
+  const actions = helpers.flatMap(receipt => receipt.browserActions);
+  const outcome = buildAgentOutcomeFromReceipts([...items, ...actions], status, error);
+  if (!helpers.length) return outcome;
+  return Object.freeze({ ...outcome,
+    detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs. Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim(),
+  });
+}
+
+function buildAgentOutcomeFromReceipts(activity, status, error) {
   const items = Array.isArray(activity) ? activity : [];
   const editingHelpers = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
     .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
@@ -1628,7 +1641,7 @@ function buildAgentOutcome(activity, status, error) {
       const summary = summarizeSubagents(receipts);
       return Object.freeze({
         kind: 'completed', verification: 'delegated_report', ...summary,
-        detail: `${summary.detail}.${helperEditNote || ' Read-only, model-generated findings.'}`,
+        detail: `${summary.detail}.${helperEditNote || (receipts.some(receipt => receipt?.mode === 'browser') ? ' Model-generated findings.' : ' Read-only, model-generated findings.')}`,
         destinations, counts,
       });
     }

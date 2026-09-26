@@ -390,13 +390,13 @@ describe('independent command access review', () => {
     const ctx = await setup('sensitive_actions', () => deferred.promise);
     const request = permissionRequest();
     const pending = ctx.request(request);
-    expect(await ctx.request(permissionRequest())).toBe('declined');
     if (change === 'stop') await stop(ctx);
     if (change === 'pause') await ctx.service.pause('run_test');
     if (change === 'steer') await ctx.service.steer('run_test', 'Stop installing; inspect files only');
     if (change === 'mutate') request.workspacePermission.command = 'node other.js';
+    else expect(await pending).toBe('withdrawn'); // Do not wait for an unresponsive reviewer.
     deferred.resolve({ decision: 'approve_once' });
-    expect(await pending).toBe('declined');
+    expect(await pending).toBe(change === 'mutate' ? 'declined' : 'withdrawn');
     expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
     if (change !== 'stop') await stop(ctx);
   });
@@ -2549,7 +2549,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
-  test('declines a pending approval when the user takes over', async () => {
+  test('withdraws a pending approval when the user takes over', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
     await service.start(startOptions());
@@ -2558,7 +2558,7 @@ describe('FreedomAgentService', () => {
 
     await service.stop('run_test');
 
-    await expect(decision).resolves.toBe('declined');
+    await expect(decision).resolves.toBe('withdrawn');
     await service.waitForIdle();
   });
 
@@ -3755,5 +3755,61 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
 
     expect(events.map((event) => event.type)).toEqual(['run_started', 'run_finished']);
+  });
+});
+
+describe('concurrent helper approvals', () => {
+  const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  test('queues exact requests instead of declining while another sheet is open', async () => {
+    const fake = createFakeSession(); const { service, dependencies } = createService(fake);
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const request = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const first = request({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'First helper' });
+    const second = request({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'Second helper' });
+    const prompts = () => events.filter(event => event.type === 'approval_requested');
+    expect(prompts()).toHaveLength(1);
+    await service.decideApproval('run_test', prompts()[0].approvalId, false);
+    expect(await first).toBe('declined'); await flush();
+    expect(prompts()).toHaveLength(2);
+    expect(prompts()[1].label).toBe('Second helper');
+    await service.decideApproval('run_test', prompts()[1].approvalId, true);
+    expect(await second).toBe('approved');
+    await service.stop('run_test'); await service.waitForIdle();
+  });
+
+  test('Stop withdraws queued requests without opening a later sheet', async () => {
+    const fake = createFakeSession(); const { service, dependencies } = createService(fake);
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const request = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const requests = [request({ action: 'form_submission', label: 'First' }), request({ action: 'form_submission', label: 'Second' })];
+    await service.stop('run_test');
+    expect(await Promise.all(requests)).toEqual(['withdrawn', 'withdrawn']);
+    expect(events.filter(event => event.type === 'approval_requested')).toHaveLength(1);
+    await service.waitForIdle();
+  });
+
+  test('browser helpers get scoped tools, route approval through the parent and withdraw their own sheet on cancellation', async () => {
+    const parent = createFakeSession(); const child = createFakeSession();
+    const browser = { controller: { execute: jest.fn() }, recordOutcome: jest.fn(), evidence: () => ({ tabIds: [], browserActions: [] }), release: jest.fn() };
+    const createBrowser = jest.fn(() => browser);
+    const { service, dependencies } = createService(parent, {
+      createControllerScope: jest.fn(async () => ({ execute: jest.fn(), prepareResume: async () => ({ ok: true }), createDelegatedBrowser: createBrowser })),
+      createSubagentSession: jest.fn(async () => ({ session: child.session })),
+    });
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const delegate = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+    await delegate.execute('browser-helper', { title: 'Browse', task: 'Inspect a page', mode: 'browser', background: true }); await flush();
+    expect(dependencies.createTools.mock.calls[1][0]).toMatchObject({ controller: browser.controller, tabId: null });
+    const { signal, requestApproval } = createBrowser.mock.calls[0][0];
+    const decision = requestApproval({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'Helper click' });
+    expect(events.at(-1).label).toBe('Helper click');
+    await service.stop('run_test'); await flush();
+    expect(signal.aborted).toBe(true);
+    expect(await decision).toBe('withdrawn');
+    expect(browser.release).toHaveBeenCalled();
+    await service.waitForIdle();
   });
 });

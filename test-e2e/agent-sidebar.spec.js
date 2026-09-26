@@ -224,7 +224,7 @@ test('helper history persists reports and marks crash-left work interrupted in r
     const runningSaved = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'interrupted', running: true, activity: [
       { toolCallId: 'second', operation: 'delegate_task', status: 'succeeded', label: '1 report received · 1 helper working', subagents: [
         { taskId: 'delegate_' + 'c'.repeat(24), title: 'Finished sibling', state: 'completed', report: 'Retained before crash' },
-        { taskId: 'delegate_' + 'd'.repeat(24), title: 'Active sibling', state: 'running', report: '' },
+        { taskId: 'delegate_' + 'd'.repeat(24), title: 'Active sibling', mode: 'browser', tabIds: ['tab_helper'], browserActions: [{ operation: 'browser_snapshot', status: 'succeeded', pageTitle: 'Fixture', origin: 'https://helper.test' }], state: 'running', report: '' },
       ] },
     ] });
     store.close();
@@ -240,7 +240,7 @@ test('helper history persists reports and marks crash-left work interrupted in r
   expect(result.transcript[0].activity[0].subagents[1].state).toBe('cancelled');
   expect(result.transcript[1]).toMatchObject({ status: 'interrupted', activity: [
     { operation: 'delegate_task', status: 'failed', label: 'Helper interrupted', subagents: [
-      { state: 'completed', report: 'Retained before crash' }, { state: 'cancelled', report: expect.stringContaining('not restarted') },
+      { state: 'completed', report: 'Retained before crash' }, { mode: 'browser', tabIds: ['tab_helper'], browserActions: [expect.objectContaining({ pageTitle: 'Fixture' })], state: 'cancelled', report: expect.stringContaining('not restarted') },
     ] },
   ] });
 });
@@ -283,7 +283,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
         { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, report: 'Add a visible keyboard focus style.' }] });
     emit({ type: 'tool_started', toolCallId: 'stopped', operation: 'delegate_task', intent: 'Delegating: Check labels' });
     emit({ type: 'tool_finished', toolCallId: 'stopped', operation: 'delegate_task', status: 'failed', label: 'Helper stopped — Check labels',
-      subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Check labels', state: 'cancelled', toolCalls: 0, report: '' } });
+      subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Check labels', mode: 'browser', state: 'cancelled', toolCalls: 2, browserPending: true, browserActions: [{ operation: 'browser_snapshot', label: 'Read page', status: 'succeeded', pageTitle: 'Planet preview' }, { operation: 'browser_click', label: 'Clicked on page', status: 'failed', pageTitle: '<img src=x> Untrusted title' }], report: '' } });
     emit({ type: 'run_finished', status: 'completed', durationMs: 2000, actionCount: 2, outcome: { kind: 'completed', verification: 'delegated_report', tone: 'neutral', headline: 'Helper reports received', detail: '2 reports received · 1 task stopped. Editing helpers recorded 1 changed file. Review current changes before testing or committing; stopped tasks can leave partial edits.' } });
   });
   await expect(window.locator('.agent-subagent-report')).toHaveCount(3);
@@ -295,13 +295,21 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await expect(report.locator('p').last()).toBeVisible();
   await expect(report.locator('img, script')).toHaveCount(0);
   await expect(window.locator('.agent-tool-item.cancelled')).toContainText('Helper stopped');
+  const browserReport = window.locator('.agent-subagent-report').last();
+  await browserReport.locator('summary').click();
+  await expect(browserReport).toContainText('Browser helper');
+  await expect(browserReport).toContainText('Planet preview');
+  await expect(browserReport.locator('img')).toHaveCount(0);
   for (const layout of ['browser', 'agent']) {
     if (layout === 'agent') await window.locator('[data-test="agent-first-toggle"]').click();
     for (const theme of ['dark', 'light']) {
       await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
       await expect(report).toBeVisible();
       expect(await report.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await report.scrollIntoViewIfNeeded();
       await window.screenshot({ path: testInfo.outputPath(`helper-report-${layout}-${theme}.png`) });
+      await browserReport.scrollIntoViewIfNeeded();
+      await window.screenshot({ path: testInfo.outputPath(`helper-browser-${layout}-${theme}.png`) });
     }
   }
 });
@@ -987,4 +995,98 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   } finally {
     await reopened.close();
   }
+});
+
+test('browser helpers use separate real pages with approval, handoff and Stop', async ({ electronApp, window, harness }) => {
+  await expect(window.locator('body')).toBeVisible();
+  const urls = ['parent', 'approved', 'declined', 'stopped'].map(name => `https://helper-browser.test/${name}`);
+  for (const url of urls) await harness.setContentFixture(url, { body: `<!doctype html><title>Helper fixture</title>
+    <button onclick="globalThis.clicks++;document.querySelector('output').textContent=globalThis.clicks">Increment</button>
+    <output>0</output><script>globalThis.clicks=0</script>` });
+  const result = await electronApp.evaluate(async ({ webContents }, { root, urls }) => {
+    const req = file => process.mainModule.require(root + '/src/main/' + file);
+    const { WebContentsPageAdapter } = req('automation/adapters/web-contents-page-adapter');
+    const { AutomationController } = req('automation/automation-controller');
+    const { createInitialAutomationPolicy } = req('automation/policy-controller');
+    const { createOriginScopedAutomationController } = req('automation/origin-scoped-controller');
+    const { createFreedomBrowserTools } = req('agent/pi-browser-tools');
+    const { createSubagentTool } = req('agent/pi-subagent-tools');
+    const { loadPiSdk } = req('agent/pi-sdk');
+    const sdk = await loadPiSdk();
+    const controller = new AutomationController({ policyController: createInitialAutomationPolicy() });
+    const pages = new Map(); const nativeIds = []; const approvals = []; const deniedParentReads = [];
+    const createPage = async url => {
+      nativeIds.push(await globalThis.__FREEDOM_TEST_HARNESS__.createHiddenAutomationPage(url));
+      const content = webContents.getAllWebContents().find(w => w.getURL() === url);
+      const adapter = new WebContentsPageAdapter(content); const id = controller.registerPage(adapter);
+      pages.set(id, { content, adapter }); return id;
+    };
+    controller.setPageLifecycle({ createPage, closePage: async id => pages.get(id)?.content.close() });
+    const parentTab = await createPage(urls[0]);
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: parentTab,
+      approvalMode: 'every_interaction', createWorkspacePage: createPage });
+    const owner = { userText: 'Test browser helpers', subagentAbortController: new AbortController() };
+    let reachedApproval; const approvalReached = new Promise(resolve => { reachedApproval = resolve; });
+    let releaseApproval; const pendingApproval = new Promise(resolve => { releaseApproval = resolve; });
+    const delegate = createSubagentTool({ sdk, getOwner: () => owner,
+      createBrowser: (_owner, signal) => scoped.createDelegatedBrowser({ signal, requestApproval: request => {
+        approvals.push(request);
+        const url = pages.get(request.tabId)?.content.getURL();
+        if (url === urls[3]) { reachedApproval(); return pendingApproval; }
+        return url === urls[2] ? 'declined' : 'approved';
+      } }),
+      createTools: (_owner, _writer, browser) => createFreedomBrowserTools({ sdk, controller: browser.controller,
+        tabId: null, onToolOutcome: outcome => browser.recordOutcome(outcome) }),
+      createSession: async ({ customTools }) => {
+        let listener;
+        const tool = name => customTools.find(item => item.name === name);
+        return { session: { subscribe: fn => { listener = fn; return () => {}; }, abort: async () => {}, dispose: () => {},
+          prompt: async prompt => {
+            const url = JSON.parse(prompt).assignment;
+            const opened = await tool('browser_create_tab').execute('open', { url });
+            const tabId = opened.details.envelope.result.tab.tabId;
+            deniedParentReads.push(!(await scoped.execute('browser_snapshot', { tabId })).ok);
+            const observation = await tool('browser_snapshot').execute('read', {});
+            const ref = observation.details.envelope.result.elements.find(element => element.name === 'Increment').ref;
+            await tool('browser_click').execute('click', { ref, intent: 'Increment the fixture counter' });
+            listener({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Inspected fixture; review tool receipts.' }] } });
+          },
+        } };
+      },
+    });
+    try {
+      const running = delegate.execute('parallel', { tasks: [
+        { title: 'Approved page', task: urls[1], mode: 'browser' }, { title: 'Declined page', task: urls[2], mode: 'browser' },
+      ] });
+      const parentRead = await scoped.execute('browser_snapshot', { tabId: parentTab });
+      const reports = (await running).details.subagents;
+      const returned = await scoped.execute('browser_list_tabs');
+      const stopping = delegate.execute('stopped', { title: 'Stopped page', task: urls[3], mode: 'browser' });
+      await approvalReached; owner.subagentAbortController.abort();
+      const stopped = (await stopping).details.subagent;
+      releaseApproval('approved');
+      for (let i = 0; i < 25; i++) await new Promise(resolve => setTimeout(resolve, 10));
+      const counts = {};
+      for (const { content } of pages.values()) counts[content.getURL()] = await content.executeJavaScript('globalThis.clicks');
+      return { parentRead: parentRead.ok, deniedParentReads, reports, stopped, counts,
+        returnedTabs: returned.result.tabs.length, activeUnchanged: scoped.getActiveTabId() === parentTab,
+        approvals: approvals.length, remainingOwners: scoped.delegatedBrowsers.size };
+    } finally {
+      owner.subagentAbortController.abort();
+      for (const { adapter } of pages.values()) adapter.dispose();
+      for (const id of nativeIds) globalThis.__FREEDOM_TEST_HARNESS__.closeHiddenAutomationPage(id);
+    }
+  }, { root: repositoryRoot, urls });
+  expect(result.parentRead).toBe(true);
+  expect(result.deniedParentReads).toEqual([true, true, true]);
+  expect(result.counts).toEqual({ [urls[0]]: 0, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0 });
+  expect(result.returnedTabs).toBe(3);
+  expect(result.activeUnchanged).toBe(true);
+  expect(result.approvals).toBe(3);
+  expect(result.remainingOwners).toBe(0);
+  expect(result.reports[0]).toMatchObject({ mode: 'browser', state: 'completed', browserActions: expect.arrayContaining([
+    expect.objectContaining({ operation: 'browser_click', status: 'succeeded' }),
+  ]) });
+  expect(result.reports[1].browserActions).toContainEqual(expect.objectContaining({ operation: 'browser_click', status: 'failed' }));
+  expect(result.stopped).toMatchObject({ mode: 'browser', state: 'cancelled', browserPending: true });
 });

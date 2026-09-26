@@ -3340,13 +3340,27 @@ function finishToolRow(event) {
       summary.textContent = event.subagents ? `${state} — ${receipt.title}` : label;
       const note = document.createElement('p');
       const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
-      note.textContent = `${receipt.mode === 'edit' ? 'Editing helper' : 'Read-only helper'} · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
+      note.textContent = `${receipt.mode === 'browser' ? 'Browser helper' : receipt.mode === 'edit' ? 'Editing helper' : 'Read-only helper'} · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
       const report = document.createElement('p');
       report.textContent = typeof receipt.report === 'string' && receipt.report
         ? receipt.report.slice(0, 12000) : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
       details.appendChild(summary);
       details.appendChild(note);
       details.appendChild(report);
+      if (receipt.mode === 'browser') {
+        const actions = document.createElement('ul');
+        for (const action of (receipt.browserActions || []).slice(0, 48)) {
+          const item = document.createElement('li');
+          item.textContent = `${action.status === 'succeeded' ? '✓' : '×'} ${action.label || action.operation.replace(/^browser_/, '').replaceAll('_', ' ')}${action.pageTitle || action.origin ? ` — ${action.pageTitle || action.origin}` : ''}`;
+          actions.appendChild(item);
+        }
+        details.appendChild(actions);
+        if (receipt.browserPending) {
+          const pending = document.createElement('p');
+          pending.textContent = 'A browser operation was still settling. Review the returned tabs before continuing; stopping does not undo page actions.';
+          details.appendChild(pending);
+        }
+      }
       if (receipt.mode === 'edit') {
         const changes = document.createElement('p');
         const paths = Array.isArray(receipt.changedFiles) ? receipt.changedFiles.slice(0, 20) : [];

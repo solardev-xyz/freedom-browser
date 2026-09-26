@@ -46,6 +46,16 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.STOP_LOADING,
 ]);
 const SCOPED_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:', 'freedom-preview:']);
+// Helpers receive page capabilities only, never node, wallet, transfer or
+// publication tools. The ordinary scope still decides each page approval.
+const DELEGATED_BROWSER_OPERATIONS = new Set([
+  OPERATIONS.LIST_TABS, OPERATIONS.CREATE_TAB, OPERATIONS.GET_TAB, OPERATIONS.FOCUS_TAB,
+  OPERATIONS.CLOSE_TAB, OPERATIONS.SNAPSHOT, OPERATIONS.LIST_FRAMES, OPERATIONS.READ_FRAME,
+  OPERATIONS.TARGET_POINT, OPERATIONS.SCREENSHOT, OPERATIONS.NAVIGATE, OPERATIONS.CLICK,
+  OPERATIONS.TYPE, OPERATIONS.SELECT, OPERATIONS.LIST_PAGE_TOOLS, OPERATIONS.CALL_PAGE_TOOL,
+  OPERATIONS.GET_DIALOG, OPERATIONS.HANDLE_DIALOG, OPERATIONS.PRESS, OPERATIONS.SCROLL,
+  OPERATIONS.WAIT, OPERATIONS.STOP_LOADING,
+]);
 const TRUSTED_INPUT_EFFECT_SETTLE_MS = 50;
 const MIN_AUTONOMOUS_INTERACTION_CONFIDENCE = 0.85;
 const INTERACTION_CLASSIFICATION_KINDS = new Set([
@@ -188,6 +198,7 @@ class OriginScopedAutomationController {
     this.declinedDiagnostics = new Set();
     this.resumeObservation = null;
     this.externalApprovalBarriers = new Set();
+    this.delegatedBrowsers = new Set();
   }
 
   setApprovalMode(value) {
@@ -196,6 +207,7 @@ class OriginScopedAutomationController {
       throw new TypeError('Origin-scoped automation requires a supported approval mode');
     }
     this.approvalMode = approvalMode;
+    for (const child of this.delegatedBrowsers) child.setApprovalMode(approvalMode);
     return approvalMode;
   }
 
@@ -223,12 +235,13 @@ class OriginScopedAutomationController {
 
   getWorkspaceState() {
     return {
-      tabIds: [...this.ownedTabs.keys()],
+      tabIds: [...this.ownedTabs.keys(), ...[...this.delegatedBrowsers].flatMap(child => [...child.ownedTabs.keys()])],
       activeTabId: this.activeTabId,
     };
   }
 
   releaseTab(tabId) {
+    for (const child of this.delegatedBrowsers) if (child.releaseTab(tabId)) return true;
     if (typeof tabId !== 'string' || !this.ownedTabs.has(tabId)) return false;
     this.ownedTabs.delete(tabId);
     if (this.activeTabId === tabId) this.activeTabId = this.#fallbackTabId();
@@ -236,6 +249,7 @@ class OriginScopedAutomationController {
   }
 
   setExternalApprovalBarrier(promise) {
+    for (const child of this.delegatedBrowsers) child.setExternalApprovalBarrier(promise);
     const barrier = Promise.resolve(promise).catch(() => undefined);
     this.externalApprovalBarriers.add(barrier);
     void barrier.finally(() => {
@@ -245,6 +259,99 @@ class OriginScopedAutomationController {
 
   async execute(operation, input = {}, execution = {}) {
     return this.#execute(operation, input, execution);
+  }
+
+  getTabController(tabId) {
+    return [...this.delegatedBrowsers].find(child => child.ownedTabs.has(tabId)) ||
+      (this.ownedTabs.has(tabId) ? this : null);
+  }
+
+  createDelegatedBrowser({ signal, requestApproval }) {
+    let closed = false;
+    let pending = 0;
+    let created = 0;
+    const tabIds = new Set();
+    const actions = [];
+    const cancelled = () => errorEnvelope(null, ERROR_CODES.USER_CANCELLED,
+      'Browser helper stopped. Return to the parent and review any earlier page actions; do not retry.');
+    const available = () => !closed && !signal?.aborted;
+    // Check again at the raw dispatch boundary, including after classification
+    // or approval awaits. A cancelled helper must never dispatch a late click.
+    const guarded = new Proxy(this.controller, {
+      get: (target, key) => typeof target[key] !== 'function' ? target[key] : (...args) => {
+        if (!available()) return Promise.resolve(cancelled());
+        if (['execute', 'inspectAction'].includes(key) && args[1]?.tabId &&
+            !child.ownedTabs.has(args[1].tabId)) return Promise.resolve(errorEnvelope(null, ERROR_CODES.POLICY_DENIED,
+          'This helper no longer owns that tab. Return to the parent; do not reuse earlier references.'));
+        if (key === 'execute') args[2] = { ...args[2], signal };
+        const value = target[key](...args);
+        if (key === 'execute' && args[0] === OPERATIONS.CREATE_TAB) return Promise.resolve(value).then(result => {
+          if (result?.ok && result.result?.tab?.tabId) rememberTab(result.result.tab.tabId);
+          return result;
+        });
+        return value;
+      },
+    });
+    const child = new OriginScopedAutomationController({
+      controller: guarded, tabId: null, initialState: null, approvalMode: this.approvalMode,
+      requestApproval, classifyEffect: this.classifyEffect, classifyInteraction: this.classifyInteraction,
+      transferOwnerId: this.transferOwnerId,
+      createWorkspacePage: this.createWorkspacePage && (async url => {
+        if (!available()) throw new Error('Browser helper stopped');
+        const tabId = await this.createWorkspacePage(url);
+        if (typeof tabId === 'string' && tabId) rememberTab(tabId);
+        return tabId;
+      }),
+      onWorkspaceTabCreated: tabId => rememberTab(tabId),
+    });
+    child.delegationSignal = signal;
+    for (const barrier of this.externalApprovalBarriers) child.setExternalApprovalBarrier(barrier);
+    const rememberTab = tabId => {
+      child.ownedTabs.set(tabId, { created: true });
+      if (!tabIds.has(tabId)) { tabIds.add(tabId); this.#notifyWorkspaceTabCreated(tabId); }
+      if (!available()) stopTab(tabId);
+    };
+    this.delegatedBrowsers.add(child);
+    const handBack = () => {
+      if (!closed || pending) return;
+      for (const [tabId, metadata] of child.ownedTabs) this.ownedTabs.set(tabId, metadata);
+      child.ownedTabs.clear();
+      child.activeTabId = null;
+      this.delegatedBrowsers.delete(child);
+    };
+    const stopTab = tabId => {
+      pending++;
+      Promise.resolve().then(() => this.controller.execute(OPERATIONS.STOP_LOADING, { tabId }))
+        .catch(() => {}).finally(() => { pending--; handBack(); });
+    };
+    const release = ({ stopLoading = true } = {}) => {
+      if (closed) return;
+      closed = true;
+      signal?.removeEventListener('abort', release);
+      // Stop loading, but preserve tabs and completed effects for review.
+      if (stopLoading) for (const tabId of child.ownedTabs.keys()) stopTab(tabId);
+      handBack();
+    };
+    signal?.addEventListener('abort', release, { once: true });
+    if (signal?.aborted) release();
+    return {
+      controller: {
+        getActiveTabId: () => child.getActiveTabId(),
+        execute: async (operation, input, execution) => {
+          if (!available()) return cancelled();
+          if (!DELEGATED_BROWSER_OPERATIONS.has(operation)) return errorEnvelope(null, ERROR_CODES.POLICY_DENIED,
+            'This capability is unavailable to browser helpers. Ask the parent to perform it.');
+          if (operation === OPERATIONS.CREATE_TAB && ++created > 4) return errorEnvelope(null, ERROR_CODES.POLICY_DENIED,
+            'Helper tab limit reached. Reuse an owned tab or return your findings to the parent.');
+          pending++;
+          try { return await child.execute(operation, input, execution); }
+          finally { pending--; handBack(); }
+        },
+      },
+      recordOutcome: outcome => { if (available() && actions.length < 48) actions.push(outcome); },
+      evidence: () => ({ tabIds: [...tabIds], browserActions: [...actions], browserPending: pending > 0 }),
+      release,
+    };
   }
 
   // Called only by Freedom's preview controller consumers, after they resolve a
@@ -563,6 +670,7 @@ class OriginScopedAutomationController {
   }
 
   handleTabLifecycle(event) {
+    for (const child of this.delegatedBrowsers) child.handleTabLifecycle(event);
     if (event?.type !== 'tab_closed' || typeof event.tabId !== 'string') return;
     this.ownedTabs.delete(event.tabId);
     if (this.activeTabId === event.tabId) this.activeTabId = this.#fallbackTabId();
@@ -999,6 +1107,7 @@ async function createOriginScopedAutomationController(options = {}) {
 }
 
 module.exports = {
+  DELEGATED_BROWSER_OPERATIONS,
   ORIGIN_SCOPED_OPERATIONS,
   OriginScopedAutomationController,
   createOriginScopedAutomationController,

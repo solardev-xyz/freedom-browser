@@ -1,5 +1,7 @@
 'use strict';
 
+const { DELEGATED_BROWSER_OPERATIONS, originScopeForUrl } = require('../automation/origin-scoped-controller');
+
 const SUBAGENT_TOOL_NAME = 'delegate_task';
 const SUBAGENT_STATES = ['running', 'completed', 'cancelled', 'timed_out', 'limited', 'failed'];
 
@@ -23,6 +25,18 @@ function normalizeSubagentReceipt(value) {
     ...(value.mode === 'edit' && {
       mode: 'edit',
       changedFiles: safePaths(value.changedFiles), attemptedFiles: safePaths(value.attemptedFiles), writesPending: value.writesPending === true,
+    }),
+    ...(value.mode === 'browser' && {
+      mode: 'browser',
+      tabIds: Object.freeze(Array.isArray(value.tabIds) ? [...new Set(value.tabIds.filter(id => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(id)))].slice(0, 16) : []),
+      browserPending: value.browserPending === true,
+      browserActions: Object.freeze(Array.isArray(value.browserActions) ? value.browserActions
+        .filter(action => action && DELEGATED_BROWSER_OPERATIONS.has(action.operation) && ['succeeded', 'failed'].includes(action.status))
+        .slice(0, 48).map(action => Object.freeze({ operation: action.operation, status: action.status,
+          ...(typeof action.label === 'string' && { label: action.label.replace(/\p{Cc}/gu, ' ').slice(0, 160) }),
+          origin: originScopeForUrl(action.origin) || '',
+          pageTitle: typeof action.pageTitle === 'string' ? action.pageTitle.replace(/\p{Cc}/gu, ' ').slice(0, 160) : '',
+        })) : []),
     }),
     // A report is model-generated evidence, never a verified task result.
     report: typeof value.report === 'string' ? value.report.slice(0, 12000) : '',

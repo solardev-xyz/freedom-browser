@@ -1,8 +1,8 @@
-# Freedom subagents: inspections, follow-ups and scoped editing
+# Freedom subagents: inspections, scoped editing and browser tasks
 
 Branch: `experiment/agent-subagents`, started from
 `feature/freedom-automation-kernel` on 2026-09-25. Read-only delegation supports two concurrent helpers, parent continuation,
-and follow-up messages. Scoped editing is implemented with one writer; browser ownership remains a later slice.
+and follow-up messages. Scoped editing uses one writer. Browser helpers now use their own fresh tabs with the existing approval boundary.
 
 ## User behavior
 
@@ -21,7 +21,7 @@ independent work. `helper_task` accepts `status`, `wait`, or `message` with one 
 those IDs. Status and wait return the latest report; retrieving it prevents a
 duplicate automatic delivery. A message is queued after the helper's current
 pass, or resumes a completed helper in the same isolated Pi session. Follow-ups
-are limited to the same user turn and retain the helper's read-only ceiling.
+are limited to the same user turn and retain the helper's original capability ceiling.
 Stopped, failed or expired helpers cannot be resumed.
 
 Reports appear in activity and are persisted as each background helper finishes,
@@ -79,6 +79,44 @@ remains until already-started file operations settle. Partial edits are not roll
 back. Receipts persist completed and attempted file paths and indicate pending
 operations; the activity view shows recorded changes separately from the model's
 report. The parent must inspect current files before retrying, testing or committing.
+
+## Browser helpers
+
+Use `mode: "browser"` and include starting URLs in the task/context. A browser
+helper starts with no tabs and can create at most four fresh tabs per pass. Its
+page tools only see those tabs. Parent and siblings cannot read, navigate, click
+or close them while the helper owns them. User release and tab-close events
+revoke ownership; approval-mode changes apply to active helpers too.
+
+This is a separate browser capability, not an addition to editing/read-only mode.
+Browser helpers receive semantic, screenshot/visual, frame, navigation, interaction,
+WebMCP and native-dialog tools plus their own retained browser evidence. They have
+no project tools, commands, direct wallet/node capabilities, file transfers,
+publication tools or nested delegation. Page-originated wallet requests still
+use Freedom's existing exact approval flow. Separate tabs can share website
+cookies/account state: the parent must avoid conflicting account operations.
+
+The existing browser scope enforces approval, origin and freshness checks.
+Concurrent parent/helper approvals queue one at a time instead of being silently
+declined. Cancellation withdraws a helper's pending sheet and prevents queued
+requests from appearing later. A guard at the underlying dispatch boundary
+rejects actions after cancellation or tab release, including after an approval
+or classification await. Existing external approval barriers also apply.
+
+Completed passes return their tabs to the parent without changing its active tab.
+Stop preserves tabs and earlier effects for review, stops loading, and holds the
+reservation until already-started operations and loading cleanup settle. Late
+created tabs are registered and handed back too. The parent should list tabs and
+read fresh observations before acting. A resumed completed helper receives a fresh
+empty tab scope; it cannot reuse earlier tab IDs or references. This slice does
+not lease an existing parent tab to a helper or provide separate browser sessions.
+
+Receipts keep bounded host-recorded action statuses, page titles/origins and created
+tab IDs alongside the model report, including an uncertainty flag for operations
+still pending at interruption. They do not persist full page content or screenshots
+in helper metadata. Result summaries use these action receipts; a model report
+alone is not verified browser evidence. The activity details identify browser
+helpers and show their recorded actions as inert text.
 
 ## Authority and ownership
 
@@ -224,6 +262,29 @@ read-only project's editing-permission flow both passed user smoke tests.
 Manual background-edit/reviewer overlap, Stop during editing and reopening the
 editing receipt remain separate checks; these are not implied by those two passes.
 
-Next development slice: define browser tab ownership for browser-capable helpers. Broader writer
-concurrency, model/role selection, nested delegation, remote execution and optional
-Jev workers remain later work. No claim of complete provider/platform qualification.
+Browser smoke (2026-09-26; real-model acceptance pending):
+
+1. With no project attached, ask: “Start two browser helpers in the background.
+   One reads https://en.wikipedia.org/wiki/Mercury_(planet), the other reads
+   https://en.wikipedia.org/wiki/Venus. Meanwhile read
+   https://en.wikipedia.org/wiki/Earth yourself. Each helper must use its own
+   tabs. Compare the three planets with source links.”
+2. Confirm independent helper reports and their browser action details. After
+   completion, the parent should be able to list and inspect the returned tabs.
+3. Try a harmless interaction task in Ask every action. Decline an action;
+   it must remain unapplied. Concurrent approval requests should appear in sequence.
+4. Repeat a longer browsing assignment and press Stop during a pending approval.
+   No late action should run; earlier page effects and tabs remain available to review.
+5. Reopen the conversation and check the browser receipts.
+
+Browser ownership, approval queueing and cancellation are covered by targeted
+unit tests and a disposable Electron fixture using real pages and Pi browser
+tools. The fixture checks parallel helpers alongside a parent read, cross-owner
+access denial, approved/declined clicks, tab handoff and Stop during approval.
+SQLite persistence and both themes/layouts are also checked. Validation: 454
+targeted tests across seven suites, three Electron checks and lint passed.
+
+Next: real-model browser smoke acceptance, then reassess readiness to merge the
+experiment. Existing-tab handoff, individual helper Stop, broader writer concurrency,
+model/role selection, nested delegation, remote execution and optional Jev workers
+remain later work. No claim of complete provider/platform qualification.

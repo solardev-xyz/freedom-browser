@@ -1475,7 +1475,7 @@ class FreedomAgentService {
       run.pauseRequested ||
       run.status !== 'running' ||
       typeof tabId !== 'string' ||
-      run.scopedController?.getActiveTabId?.() !== tabId ||
+      (run.scopedController?.getTabController?.(tabId) || run.scopedController)?.getActiveTabId?.() !== tabId ||
       !this.#conversationHasTab(this.conversation, tabId)
     ) {
       return { handled: false };
@@ -1483,7 +1483,8 @@ class FreedomAgentService {
     const pageState = this.controller.getPageState?.(tabId);
     if (!pageState?.url) return { handled: false };
 
-    const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload);
+    const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload,
+      run.scopedController?.getTabController?.(tabId)?.delegationSignal);
     run.pendingWalletRequests.add(handling);
     run.scopedController?.setExternalApprovalBarrier?.(handling);
     try {
@@ -1718,7 +1719,12 @@ class FreedomAgentService {
             guidance: owner.guidance.filter(item => item.status !== 'cancelled').map(item => item.text),
           }),
           createWriter: (owner, files, signal) => this.workspaceController.createDelegatedWriter(owner.conversationId, files, { signal }),
-          createTools: async (owner, writerController) => {
+          createBrowser: (owner, signal, taskId) => owner.scopedController.createDelegatedBrowser({
+            signal, requestApproval: request => this.#requestApproval(owner, { ...request, helperTaskId: taskId }, null, signal),
+          }),
+          createTools: async (owner, writerController, browser) => {
+            if (browser) return this.createTools({ sdk, controller: browser.controller, tabId: null,
+              visionEnabled, onToolOutcome: outcome => browser.recordOutcome({ ...outcome, label: activityProgress(outcome.operation).label }) });
             // Separate tool closures keep child evidence out of the parent's activity
             // and bind every read to its original conversation, never a later run.
             const projectTools = this.workspaceController
@@ -2770,7 +2776,7 @@ class FreedomAgentService {
     }
   }
 
-  async #handleActiveWalletRequest(run, tabId, pageState, payload) {
+  async #handleActiveWalletRequest(run, tabId, pageState, payload, signal) {
     const toolCallId = `wallet_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const progress = activityProgress(OPERATIONS.WALLET_ACTION, {
       origin: pageState.url,
@@ -2799,7 +2805,7 @@ class FreedomAgentService {
         tabId,
         pageUrl: pageState.url,
         conversationId: run.conversationId,
-        requestApproval: (request) => this.#requestApproval(run, request),
+        requestApproval: (request) => this.#requestApproval(run, request, null, signal),
       },
       payload
     );
@@ -2844,7 +2850,30 @@ class FreedomAgentService {
     };
   }
 
-  async #requestApproval(run, request, reviewerRuntime = null) {
+  async #requestApproval(run, request, reviewerRuntime = null, signal = null) {
+    signal ||= reviewerRuntime ? AbortSignal.any(
+      [run.workspaceAbortController?.signal, run.subagentAbortController?.signal].filter(Boolean)
+    ) : run.workspaceAbortController?.signal;
+    // One visible sheet at a time across parent and helpers. Queueing preserves
+    // the exact request; each scope rechecks page freshness after approval.
+    const previous = run.approvalQueue;
+    let onAbort;
+    const cancelled = new Promise(resolve => {
+      onAbort = () => resolve('withdrawn');
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    if (signal?.aborted) onAbort();
+    const start = () => signal?.aborted ? Promise.resolve('withdrawn')
+      : Promise.race([this.#requestApprovalNow(run, request, reviewerRuntime, signal), cancelled]);
+    const queued = (previous ? previous.catch(() => {}).then(start) : start()).finally(() => {
+      signal?.removeEventListener('abort', onAbort);
+      if (run.approvalQueue === queued) run.approvalQueue = null;
+    });
+    run.approvalQueue = queued;
+    return Promise.race([queued, cancelled]);
+  }
+
+  async #requestApprovalNow(run, request, reviewerRuntime, signal) {
     if (
       run.finished ||
       run.stopRequested ||
@@ -2865,7 +2894,9 @@ class FreedomAgentService {
       .find(
         (item) =>
           item.status === 'running' &&
-          (!publicRequest.operation || item.operation === publicRequest.operation)
+          (request.helperTaskId
+            ? (item.subagent?.taskId === request.helperTaskId || item.subagents?.some(helper => helper.taskId === request.helperTaskId))
+            : (!publicRequest.operation || item.operation === publicRequest.operation))
       );
     const permission = publicRequest.workspacePermission;
     const accessKey = permission ? JSON.stringify(permission) : null;
@@ -2959,12 +2990,18 @@ class FreedomAgentService {
       ...(activityItem?.toolCallId && { toolCallId: activityItem.toolCallId }),
       ...(typeof request?.tabId === 'string' && { tabId: request.tabId }),
     };
+    const onAbort = () => {
+      if (run.pendingApproval?.decision === decision) this.#resolveApproval(run, 'withdrawn');
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     this.#emit(run, {
       type: 'approval_requested',
       ...publicRequest,
       ...(activityItem?.toolCallId && { toolCallId: activityItem.toolCallId }),
     });
-    return decision.promise;
+    if (signal?.aborted) onAbort();
+    try { return await decision.promise; }
+    finally { signal?.removeEventListener('abort', onAbort); }
   }
 
   #resolveApproval(run, decision) {

@@ -1445,3 +1445,29 @@ test('mixed successful inspections and a failed command do not claim command com
 test('listing saved servers reports project work, not browser use', () => {
   expect(activityProgress('workspace_server', { workspace: { kind: 'process', command: 'List saved development servers', workingDirectory: '.', backend: 'freedom-workspace-servers', state: 'completed', sideEffects: 'none' } })).toMatchObject({ label: 'Checked saved project servers' });
 });
+
+test('browser helper summaries use host action receipts without labelling their work read-only', () => {
+  const receipt = { taskId: 'delegate_' + 'a'.repeat(24), title: 'Browse', state: 'cancelled', mode: 'browser', tabIds: ['tab_child'], browserPending: true,
+    browserActions: [{ operation: 'browser_click', status: 'succeeded', origin: 'https://example.com', pageTitle: 'Example' }] };
+  const item = { operation: 'delegate_task', status: 'failed', subagent: receipt };
+  const stopped = buildAgentOutcome([item], 'cancelled');
+  expect(stopped.detail).toContain('Browser helpers recorded 1 page operation');
+  expect(stopped.detail).toContain('still settling');
+  expect(stopped.detail).not.toContain('Read-only');
+  expect(stopped.counts.changed).toBeGreaterThan(0);
+  const empty = buildAgentOutcome([{ ...item, subagent: { ...receipt, state: 'completed', browserActions: [], browserPending: false } }], 'completed');
+  expect(empty.verification).toBe('delegated_report');
+  expect(empty.detail).not.toContain('Read-only');
+});
+
+test('browser helper receipt persistence bounds metadata and does not retain raw page output', () => {
+  const { normalizeSubagentReceipt } = require('./subagent-receipt');
+  const value = normalizeSubagentReceipt({ taskId: 'delegate_' + 'b'.repeat(24), title: 'Browse', state: 'completed', mode: 'browser',
+    tabIds: ['tab_child', '../other', 'tab_child'], browserActions: [
+      { operation: 'browser_snapshot', status: 'succeeded', origin: 'https://example.com/path?secret=not-retained', pageTitle: 'A\nB', raw: 'not-retained' },
+      { operation: 'node_request', status: 'succeeded' },
+    ] });
+  expect(value.tabIds).toEqual(['tab_child']);
+  expect(value.browserActions).toEqual([{ operation: 'browser_snapshot', status: 'succeeded', origin: 'https://example.com', pageTitle: 'A B' }]);
+  expect(JSON.stringify(value)).not.toContain('not-retained');
+});

@@ -202,7 +202,7 @@ test('editing helper receives only its scoped controller, reports writes and rel
   const f = fixture({ createWriter: jest.fn(async () => scope) });
   const result = await f.run({ title: 'Improve README', task: 'Add setup instructions', mode: 'edit', files: ['README.md'] });
   expect(f.options.createWriter).toHaveBeenCalledWith(f.owner, ['README.md'], expect.any(AbortSignal));
-  expect(f.options.createTools).toHaveBeenCalledWith(f.owner, scope.controller);
+  expect(f.options.createTools).toHaveBeenCalledWith(f.owner, scope.controller, undefined);
   expect(f.options.createSession.mock.calls[0][0].customTools.map(tool => tool.name)).toEqual(['read', 'write', 'edit']);
   expect(result.details.subagent).toMatchObject({ mode: 'edit', changedFiles: ['README.md'], state: 'completed' });
   expect(scope.release).toHaveBeenCalledTimes(1);
@@ -236,7 +236,7 @@ test('editing follow-ups acquire fresh ownership and retain earlier changed-file
   expect(receipts[0].changedFiles).toEqual(['README.md', 'docs.md']);
   expect(scopes).toHaveLength(2);
   expect(scopes.every(scope => scope.release.mock.calls.length === 1)).toBe(true);
-  expect(f.options.createTools).toHaveBeenLastCalledWith(f.owner, scopes[1].controller);
+  expect(f.options.createTools).toHaveBeenLastCalledWith(f.owner, scopes[1].controller, undefined);
   f.owner.subagentAbortController.abort();
 });
 
@@ -601,4 +601,47 @@ describe('parallel read-only assignments', () => {
       expect((await pending).details.subagents.map(item => item.state)).toEqual(['completed', 'limited']);
     } finally { jest.useRealTimers(); }
   });
+});
+
+test('browser mode receives only page tools, records browser evidence, and releases its scope', async () => {
+  const scope = { controller: {}, release: jest.fn(), evidence: () => ({ tabIds: ['tab_child'], browserActions: [
+    { operation: 'browser_snapshot', status: 'succeeded', pageTitle: '<script>untrusted</script>', origin: 'https://example.com' },
+  ], browserPending: false }) };
+  const f = fixture({ createBrowser: jest.fn(async () => scope) });
+  const result = await f.run({ title: 'Inspect page', task: 'Open https://example.com and summarize', mode: 'browser' });
+  expect(f.options.createBrowser).toHaveBeenCalledWith(f.owner, expect.any(AbortSignal), result.details.subagent.taskId);
+  expect(f.options.createTools).toHaveBeenCalledWith(f.owner, undefined, scope);
+  expect(f.options.createSession.mock.calls[0][0].customTools.map(tool => tool.name)).toEqual(['browser_navigate']);
+  expect(f.options.createSession.mock.calls[0][0].systemPrompt).toContain('You start with no tabs');
+  expect(result.details.subagent).toMatchObject({ mode: 'browser', tabIds: ['tab_child'], state: 'completed', browserActions: [
+    { operation: 'browser_snapshot', status: 'succeeded', origin: 'https://example.com' },
+  ] });
+  expect(scope.release).toHaveBeenCalledTimes(1);
+});
+
+test('a browser scope returned after Stop is released without starting a session', async () => {
+  const pending = deferred(); const scope = { release: jest.fn(), evidence: () => ({}) };
+  const f = fixture({ createBrowser: () => pending.promise });
+  const running = f.run({ title: 'Browse', task: 'Inspect', mode: 'browser' });
+  await flush(); f.owner.subagentAbortController.abort();
+  expect((await running).details.subagent).toMatchObject({ mode: 'browser', state: 'cancelled' });
+  pending.resolve(scope); await flush();
+  expect(scope.release).toHaveBeenCalledTimes(1);
+  expect(f.options.createSession).not.toHaveBeenCalled();
+});
+
+test('browser follow-ups get new tab scopes and retain cumulative evidence', async () => {
+  const f = backgroundFixture(); const scopes = [];
+  f.options.createBrowser = () => {
+    const scope = { release: jest.fn(), evidence: () => ({ tabIds: [`tab_${scopes.length}`], browserActions: [] }) };
+    scopes.push(scope); return scope;
+  };
+  const result = await f.run({ title: 'Browse', task: 'Inspect', mode: 'browser', background: true }); await flush();
+  const id = result.details.subagent.taskId;
+  f.children[0].finish(); await f.tool.collect(f.owner);
+  await f.control('message', id, 'Inspect another page'); await flush();
+  f.children[0].finish(); const [receipt] = await f.tool.collect(f.owner);
+  expect(receipt.tabIds).toEqual(['tab_1', 'tab_2']);
+  expect(scopes.every(scope => scope.release.mock.calls.length === 1)).toBe(true);
+  f.owner.subagentAbortController.abort();
 });
