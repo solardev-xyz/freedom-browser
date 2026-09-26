@@ -53,6 +53,10 @@ const ENDPOINT = {
   message: 'the method eth_getLogs does not exist/is not available',
 };
 const LOGS = ['LOGS'];
+// Throttles whose wording matches Ant's needles ("exceed", "limit") but which
+// depend on the endpoint: Infura's and EIP-1474's -32005 texts.
+const THROTTLE = { code: -32005, message: 'project ID request rate exceeded' };
+const LIMIT_EXCEEDED = { code: -32005, message: 'limit exceeded' };
 
 const originalFetch = global.fetch;
 
@@ -71,6 +75,10 @@ function behave(step, signal) {
         return rpcReply({ error: TIMEOUT_REPLY });
       case 'endpoint':
         return rpcReply({ error: ENDPOINT });
+      case 'throttle':
+        return rpcReply({ error: THROTTLE });
+      case 'limitExceeded':
+        return rpcReply({ error: LIMIT_EXCEEDED });
       case '429':
         return Promise.resolve({ ok: false, status: 429, json: async () => ({}) });
       case 'down':
@@ -268,8 +276,9 @@ const MATRIX = {
     range: [gotRange, 0, ['a', 'b', 'c']],
     timeoutReply: [gotTimeoutReply, 0, ['a', 'b', 'c', 'd']],
     endpoint: [gotUnactionable, 0, ['a', 'b', 'c', 'd']],
-    // The first timeout seen (a's, in quorum) is kept; the retry's is equal.
-    hang: [gotTimeout(QUORUM_MS), 65000, ['a', 'b', 'c', 'd', 'a']],
+    // The later timeout (a's widened retry) replaces quorum's 5 s cut, so Ant
+    // and the logs see the budget that actually ran out (R1-M2).
+    hang: [gotTimeout(60000), 65000, ['a', 'b', 'c', 'd', 'a']],
     // One member's answer is reused by Direct without a second request.
     success: [gotLogs, 0, ['a', 'b', 'c']],
   },
@@ -286,12 +295,12 @@ const MATRIX = {
   },
   'direct retry': {
     range: [gotRange, QUORUM_MS, ['a', 'b', 'c', 'd', 'a']],
-    // a's own quorum timeout was kept first; the equal-ranked reply does not
-    // replace it. Either way Ant halves.
-    timeoutReply: [gotTimeout(QUORUM_MS), QUORUM_MS, ['a', 'b', 'c', 'd', 'a']],
+    // a's quorum timeout is replaced by its later, equal-ranked timeout
+    // reply. Either way Ant halves.
+    timeoutReply: [gotTimeoutReply, QUORUM_MS, ['a', 'b', 'c', 'd', 'a']],
     // The endpoint-dependent reply never displaces the timeout (R5-F1).
     endpoint: [gotTimeout(QUORUM_MS), QUORUM_MS, ['a', 'b', 'c', 'd', 'a']],
-    hang: [gotTimeout(QUORUM_MS), QUORUM_MS + 60000, ['a', 'b', 'c', 'd', 'a']],
+    hang: [gotTimeout(60000), QUORUM_MS + 60000, ['a', 'b', 'c', 'd', 'a']],
     success: [gotLogs, QUORUM_MS, ['a', 'b', 'c', 'd', 'a']],
   },
 };
@@ -342,7 +351,9 @@ describe('arrival order', () => {
 
   test('an endpoint error after a timeout does not replace it', async () => {
     const got = await scan({ rpcs: { a: 'hang', b: 'down', c: 'down', d: 'endpoint' } });
-    expect(got).toMatchObject({ ...gotTimeout(QUORUM_MS), at: 65000 });
+    // a's quorum timeout, then d's -32601, then a's widened retry times out:
+    // the timeouts are kept (the later one), the -32601 never is.
+    expect(got).toMatchObject({ ...gotTimeout(60000), at: 65000 });
   });
 
   test('a timeout after an endpoint error replaces it', async () => {
@@ -442,4 +453,23 @@ describe('PR #419 review findings', () => {
     });
     expect(got).toMatchObject({ ...gotTimeout(QUORUM_MS), at: QUORUM_MS });
   });
+
+  // Round 7 (the R1-F1/R1-M1 findings of the fix loop's next pass): coded
+  // throttles matching Ant's broad needles are endpoint-dependent.
+  test.each(['throttle', 'limitExceeded'])(
+    'a -32005 %s reply falls through to a healthy untried RPC',
+    async (kind) => {
+      const got = await scan({ rpcs: { a: kind, b: 'down', c: 'down', d: 'success' } });
+      expect(got).toMatchObject({ ...gotLogs, at: 0 });
+      expect(got.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c', 'd']);
+    }
+  );
+
+  test.each(['throttle', 'limitExceeded'])(
+    'when every RPC answers a -32005 %s, Ant gets no wording it would halve on',
+    async (kind) => {
+      const got = await scan({ rpcs: { a: kind, b: kind, c: kind, d: kind } });
+      expect(got).toMatchObject({ code: -32005, shrinks: false, at: 0 });
+    }
+  );
 });

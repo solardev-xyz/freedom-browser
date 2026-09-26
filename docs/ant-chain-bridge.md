@@ -35,20 +35,31 @@ as `rankLogScanError`; the router side is `createErrorKeeper` in
 
 1. **Rank each failure by how useful it is to Ant.**
    - _Range limit_ (highest): an endpoint answered with a JSON-RPC error whose
-     text matches Ant's needles, e.g. `-32005 query exceeds max block range
-50000`, `too many results`, `response size exceeded`. It depends on the
-     query, not the endpoint.
+     text matches Ant's needles _and_ names the query's size (its block range,
+     result count or response size), e.g. `-32005 query exceeds max block
+range 50000`, `query returned more than 10000 results`, `response size
+exceeded`. It depends on the query, not the endpoint. Ant's needles alone
+     are too broad to decide this (`limit`, `exceed`, `more than`), so a coded
+     reply that matches them without naming the query's size is
+     endpoint-dependent.
    - _Timeout_: a client timeout (`RPC query timeout after Nms`), a source
      deadline (Colibri, quorum) or an upstream `query timeout` reply. Ant
      halves on it too, but another endpoint or a longer attempt may answer.
    - _Endpoint-dependent_ (lowest): everything else, which Ant cannot act on:
-     `-32601` method not found, `-32603` internal error, rate limits (including
-     `-32005 rate limit exceeded`), HTTP 429/5xx, transport failures, a source
-     that is not ready or does not serve logs.
+     `-32601` method not found, `-32603` internal error, rate limits and
+     throttles (`-32005 rate limit exceeded`, Infura's `-32005 project ID
+request rate exceeded`, EIP-1474's `-32005 limit exceeded`), HTTP
+     429/5xx, transport failures, a source that is not ready or does not serve
+     logs. If such an error is what finally reaches Ant, the bridge keeps its
+     code but replaces text that would match Ant's needles with `endpoint
+unavailable`, so Ant does not halve its window on a throttle.
 2. **Keep the most useful failure seen so far**, across every tier (Myotis,
    Colibri, each quorum member, each Direct attempt and retry). A later
    failure replaces it only if it ranks strictly higher, so a range limit
    survives a later timeout or 429, and a timeout survives a later `-32601`.
+   The one exception is timeout by timeout: the later one replaces the
+   earlier, since it is the attempt that actually ended the request (Direct's
+   60 s widened retry after quorum's 5 s cut reports `after 60000ms`).
    When every source fails Ant gets the kept error object itself, with its
    original code and text (URLs redacted, see below). If nothing better than
    endpoint-dependent was seen, the router's usual error is reported and Ant

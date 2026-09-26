@@ -189,6 +189,27 @@ test.each([
     { code: -32005, message: 'daily request count exceeded, request rate limited' },
     'ENDPOINT',
   ],
+  [
+    'Infura project throttle',
+    { code: -32005, message: 'project ID request rate exceeded' },
+    'ENDPOINT',
+  ],
+  ['EIP-1474 limit exceeded', { code: -32005, message: 'limit exceeded' }, 'ENDPOINT'],
+  ['a coded needle-only reply', { code: -32000, message: 'more than allowed' }, 'ENDPOINT'],
+  [
+    'result count cap',
+    { code: -32005, message: 'logs matched by query exceeds limit of 10000' },
+    'REQUEST',
+  ],
+  [
+    'Alchemy response size',
+    {
+      code: -32602,
+      message:
+        'Log response size exceeded. You can make eth_getLogs requests with up to a 2K block range',
+    },
+    'REQUEST',
+  ],
   ['HTTP 429', { message: 'HTTP 429' }, 'ENDPOINT'],
   ['HTTP 503', { message: 'HTTP 503' }, 'ENDPOINT'],
   ['transport', { name: 'TypeError', message: 'fetch failed' }, 'ENDPOINT'],
@@ -215,6 +236,25 @@ test('a timeout reaches Ant worded so it halves its window', () => {
   // Untouched for methods Ant does not adapt.
   expect(antErrorReply('eth_call', deadline).message).toBe(
     'Chain request failed: Myotis gave up after 5000ms'
+  );
+});
+
+test('an endpoint-dependent failure reaches Ant without wording it would halve on', () => {
+  for (const error of [
+    Object.assign(new Error('rate limit exceeded'), { code: -32005 }),
+    Object.assign(new Error('project ID request rate exceeded'), { code: -32005 }),
+    new Error('All chain sources failed for eth_getLogs (direct: limit exceeded)'),
+  ]) {
+    const reply = antErrorReply('eth_getLogs', error);
+    expect(antShrinksLogScanOn(reply.message)).toBe(false);
+    expect(reply.code).toBe(Number.isSafeInteger(error.code) ? error.code : -32002);
+  }
+  // A range limit and methods Ant does not adapt keep their text.
+  const range = Object.assign(new Error('query exceeds max block range 50000'), { code: -32005 });
+  expect(antErrorReply('eth_getLogs', range).message).toContain('max block range 50000');
+  const throttle = Object.assign(new Error('rate limit exceeded'), { code: -32005 });
+  expect(antErrorReply('eth_call', throttle).message).toBe(
+    'Chain request failed: rate limit exceeded'
   );
 });
 

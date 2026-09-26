@@ -148,8 +148,11 @@ const ERROR_RANK = Object.freeze({
 // The single error rule for a ranked request: keep the most useful failure
 // seen so far across every tier, endpoint and retry. A later failure replaces
 // it only when it ranks strictly higher, so an earlier range limit survives a
-// later timeout or 429 and an earlier timeout survives a later -32601. Only a
-// REQUEST-ranked failure is final. Without rankError nothing is kept and the
+// later timeout or 429 and an earlier timeout survives a later -32601. The
+// one equal-rank replacement is timeout by timeout: the later one is the
+// attempt that actually ended the request (Direct's widened retry after
+// quorum's 5 s cut), so its budget is what the caller and logs should see.
+// Only a REQUEST-ranked failure is final. Without rankError nothing is kept and the
 // router reports failures exactly as before (wallet reads, broadcasts).
 function createErrorKeeper(rankError) {
   let kept = null;
@@ -164,7 +167,7 @@ function createErrorKeeper(rankError) {
         rank = ERROR_RANK.ENDPOINT;
       }
       if (!Number.isFinite(rank)) rank = ERROR_RANK.ENDPOINT;
-      if (rank > keptRank) {
+      if (rank > keptRank || (rank === keptRank && rank === ERROR_RANK.TIMEOUT)) {
         kept = error;
         keptRank = rank;
       }

@@ -52,23 +52,34 @@ function antShrinksLogScanOn(message) {
 // router just for three numbers.
 const RANK = Object.freeze({ ENDPOINT: 0, TIMEOUT: 1, REQUEST: 2 });
 const TIMEOUT_TEXT = /time(?:d)?[\s-]?out/i;
-// Wordings that match Ant's needles ("limit", "exceed", "more than") but
-// describe the endpoint, not the query: retrying elsewhere can succeed.
+// Ant's needles are broad ("limit", "exceed", "more than", "10000"), so a
+// matching reply is not evidence of a range limit by itself: throttles such
+// as Infura's -32005 "project ID request rate exceeded" or EIP-1474's -32005
+// "limit exceeded" match them too, yet another endpoint may answer. Only these
+// wordings, which name the query's size (its block range, result count or
+// response size), rank as REQUEST and end the request; any other coded reply
+// falls through to later endpoints like any endpoint-dependent failure.
+const REQUEST_LIMIT_TEXT =
+  /range|too many (?:results|logs|blocks)|response size|logs? matched|(?:returned )?more than [\d,]+ (?:results|logs|blocks)|(?:max(?:imum)?|too many) (?:number of )?(?:results|logs|blocks)|result(?:s| set)? (?:size |limit|too large|exceed)/i;
+// Wordings that describe the endpoint, not the query, checked first so a
+// throttle naming a range ("rate limit: 10 block-range requests per second")
+// still falls through.
 const ENDPOINT_LIMIT_TEXT =
-  /rate[\s-]?limit|too many requests|\b429\b|quota|credits?\b|daily request|capacity|requests? (?:per|limit)|throttl/i;
+  /\brate\b|rate[\s-]?limit|too many requests|\b429\b|quota|credits?\b|daily request|capacity|requests? (?:per|limit)|throttl/i;
 
 // How useful a failed eth_getLogs attempt is to Ant, for the router's
 // single keep-the-most-useful-error rule:
-// - REQUEST: an endpoint answered with a JSON-RPC error Ant halves its window
-//   on (-32005 "query exceeds max block range 50000", "too many results",
-//   "response size exceeded"). It depends on the query, so it ends the
-//   request and reaches Ant with its code and text intact.
+// - REQUEST: an endpoint answered with a JSON-RPC error naming the query's
+//   size (-32005 "query exceeds max block range 50000", "query returned more
+//   than 10000 results", "response size exceeded"). It depends on the query,
+//   so it ends the request and reaches Ant with its code and text intact.
 // - TIMEOUT: a client, source or upstream timeout. Ant halves on it too, but
 //   another endpoint or a longer retry may still answer.
-// - ENDPOINT: everything else (method not found, internal error, rate limits,
-//   HTTP errors, transport failures, a source that is not ready). Ant cannot
-//   act on it, so the router keeps going and never lets it displace a better
-//   error.
+// - ENDPOINT: everything else (method not found, internal error, rate limits
+//   and other throttles, HTTP errors, transport failures, a source that is not
+//   ready). Ant cannot act on it, so the router keeps going, never lets it
+//   displace a better error, and the bridge strips Ant's needles from it
+//   (antErrorReply) so Ant does not halve on a throttle.
 function rankLogScanError(error) {
   const message = typeof error?.message === 'string' ? error.message : '';
   if (
@@ -81,7 +92,9 @@ function rankLogScanError(error) {
   if (!Number.isSafeInteger(error?.code) || ENDPOINT_LIMIT_TEXT.test(message)) {
     return RANK.ENDPOINT;
   }
-  return antShrinksLogScanOn(message) ? RANK.REQUEST : RANK.ENDPOINT;
+  return REQUEST_LIMIT_TEXT.test(message) && antShrinksLogScanOn(message)
+    ? RANK.REQUEST
+    : RANK.ENDPOINT;
 }
 
 // Forward the upstream wording (Ant keys retry decisions on it, e.g. "query
@@ -123,6 +136,16 @@ function antErrorReply(method, error) {
     !antShrinksLogScanOn(detail)
   ) {
     detail = `query timeout (${detail})`;
+  } else if (
+    method === 'eth_getLogs' &&
+    rankLogScanError(error) === RANK.ENDPOINT &&
+    antShrinksLogScanOn(detail)
+  ) {
+    // An endpoint-dependent failure (e.g. every RPC answered -32005 "rate
+    // limit exceeded") must not read as a range limit to Ant, or it halves
+    // its window and repeats the scan against a throttle. The code survives;
+    // the wording is replaced with one that matches none of Ant's needles.
+    detail = 'endpoint unavailable';
   }
   const message =
     error?.code === 'MYOTIS_BROADCAST_UNCERTAIN'
