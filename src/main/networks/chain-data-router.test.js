@@ -1229,6 +1229,56 @@ describe('Ant bridge cancellation', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  test('background reads never queue for the Myotis slot ahead of wallet reads', async () => {
+    mockRegistry.getEndpoints.mockReturnValue(['https://one.example']);
+    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ result: '0xrpc' }) });
+    const held = deferred();
+    mockMyotis.ethCall.mockReturnValueOnce(held.promise).mockResolvedValue({ resultHex: '0x2a' });
+    const call = [{ to: `0x${'1'.padStart(40, '0')}`, data: '0x1234' }, 'latest'];
+    const wallet = request(100, 'eth_call', call);
+    await flushMicrotasks();
+    // The slot is busy: Ant's read skips Myotis at once instead of waiting.
+    await expect(request(100, 'eth_call', call, { background: true }))
+      .resolves.toMatchObject({ source: 'direct' });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    held.resolve({ resultHex: '0x1' });
+    await expect(wallet).resolves.toMatchObject({ source: 'myotis' });
+    // Nothing was left parked on the slot; an idle slot still serves Ant.
+    await expect(request(100, 'eth_call', call, { background: true }))
+      .resolves.toMatchObject({ source: 'myotis' });
+  });
+
+  test('direct timeout names a query timeout and can be widened, never narrowed', async () => {
+    jest.useFakeTimers();
+    try {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['direct'] }, quorum: { timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(['https://one.example']);
+      global.fetch.mockImplementation((_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      }));
+      const wide = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
+      const settled = jest.fn();
+      wide.then(settled, settled);
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(settled).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(55000);
+      await expect(wide).rejects.toThrow('RPC query timeout after 60000ms');
+
+      const narrow = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 10 });
+      const narrowSettled = jest.fn();
+      narrow.then(narrowSettled, narrowSettled);
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(narrowSettled).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1000);
+      await expect(narrow).rejects.toThrow('RPC query timeout after 5000ms');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('does not broadcast at a second RPC after cancellation', async () => {
     mockRegistry.getNetwork.mockReturnValue({ access: { broadcastOrder: ['direct'] } });
     mockRegistry.getEndpoints.mockReturnValue(['https://one.example', 'https://two.example']);

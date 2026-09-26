@@ -47,6 +47,7 @@ test('routes exact Gnosis requests and unwraps result without promoting trust', 
   expect(response).toEqual({ status: 200, body: { jsonrpc: '2.0', id: 7, result: '0x12' } });
   expect(router.request).toHaveBeenCalledWith(100, 'eth_getBalance', ['0xabc', 'latest'], {
     signal: expect.any(AbortSignal),
+    background: true,
   });
   router.request.mockResolvedValue({ result: [], source: 'direct', verified: false });
   expect(
@@ -92,13 +93,71 @@ test.each([
 
 test('coverage failure stays an error, never an empty log result', async () => {
   router.request.mockRejectedValue(
-    Object.assign(new Error('private upstream details'), { code: -32000 })
+    Object.assign(new Error('failed at https://rpc.example/key-123 upstream'), { code: -32000 })
   );
   const response = await post(bridge.url, rpc('eth_getLogs', [{}]));
   expect(response.body.error.code).toBe(-32000);
   expect(response.body).not.toHaveProperty('result');
-  expect(JSON.stringify(response)).not.toContain('private upstream');
+  expect(JSON.stringify(response)).not.toContain('key-123');
+  expect(response.body.error.message).toBe('Chain request failed: failed at [url] upstream');
+  expect(log.warn.mock.calls.join()).not.toContain('upstream');
   expect(router.request).toHaveBeenCalledTimes(1);
+});
+
+// Ant v0.5.45 `is_range_limit_error` (crates/ant-chain/src/discover.rs): its
+// eth_getLogs scan shrinks the window only when the message matches one of
+// these needles, and aborts owned-batch/chequebook recovery otherwise.
+const ANT_RANGE_NEEDLES = [
+  'block range',
+  'range',
+  'more than',
+  'exceed',
+  'too large',
+  '10000',
+  'limit',
+  'logs matched',
+  'response size',
+  'up to a',
+  'query timeout',
+  'too many results',
+];
+const antShrinks = (message) =>
+  ANT_RANGE_NEEDLES.some((needle) => message.toLowerCase().includes(needle));
+
+test('range-limit and timeout failures keep wording Ant shrinks its log scan on', async () => {
+  router.request.mockRejectedValue(
+    Object.assign(new Error('query exceeds max block range 50000'), { code: -32005 })
+  );
+  const ranged = await post(bridge.url, rpc('eth_getLogs', [{}]));
+  expect(ranged.body.error.code).toBe(-32005);
+  expect(antShrinks(ranged.body.error.message)).toBe(true);
+
+  // Router exhaustion after a direct per-URL client timeout.
+  router.request.mockRejectedValue(
+    new Error('All chain sources failed for eth_getLogs (direct: RPC query timeout after 60000ms)')
+  );
+  const exhausted = await post(bridge.url, rpc('eth_getLogs', [{}]));
+  expect(exhausted.body.error.code).toBe(-32002);
+  expect(antShrinks(exhausted.body.error.message)).toBe(true);
+
+  // The bridge's own deadline.
+  await bridge.close();
+  bridge = await startAntChainBridge({ router, log, timeoutMs: 30 });
+  router.request.mockImplementation(
+    (_c, _m, _p, { signal }) =>
+      new Promise((resolve) => signal.addEventListener('abort', () => resolve({ result: [] })))
+  );
+  const timedOut = await post(bridge.url, rpc('eth_getLogs', [{}]));
+  expect(antShrinks(timedOut.body.error.message)).toBe(true);
+});
+
+test('Ant reads are background work and wide log scans get a longer direct budget', async () => {
+  await post(bridge.url, rpc('eth_getLogs', [{}]));
+  expect(router.request).toHaveBeenLastCalledWith(100, 'eth_getLogs', [{}], {
+    signal: expect.any(AbortSignal),
+    background: true,
+    directTimeoutMs: 60000,
+  });
 });
 
 test('preserves revert code and hex data', async () => {
@@ -164,16 +223,39 @@ test('deadline aborts routing and frees no capacity until work settles', async (
   expect(signal.aborted).toBe(true);
 });
 
-test('buffers split child log tokens and drops oversized lines', () => {
+test('buffers split child log tokens and truncates oversized lines', () => {
   const stream = new EventEmitter();
   const write = jest.fn();
   const token = bridge.url.split('/').pop();
   bridge.pipeLog(stream, write);
   stream.emit('data', `failed http://127.0.0.1/ant-chain/${token.slice(0, 20)}`);
   stream.emit('data', token.slice(20) + '\n');
-  stream.emit('data', 'a'.repeat(65537));
+  stream.emit('data', 'panic: ' + 'a'.repeat(65537));
   stream.emit('data', token + '\nclean\n');
-  expect(write.mock.calls).toEqual([['failed http://127.0.0.1/ant-chain/[redacted]'], ['clean']]);
+  expect(write.mock.calls[0]).toEqual(['failed http://127.0.0.1/ant-chain/[redacted]']);
+  const long = write.mock.calls[1][0];
+  expect(long.startsWith('panic: aaa')).toBe(true);
+  expect(long).toMatch(/… \[truncated \d+ chars\]$/);
+  expect(long.length).toBeLessThan(65536 + 100);
+  expect(long).not.toContain(token.slice(0, 8));
+  expect(write.mock.calls[2]).toEqual(['clean']);
+  expect(write).toHaveBeenCalledTimes(3);
+});
+
+test('a capability straddling the truncation point is redacted, never partially logged', () => {
+  const token = bridge.url.split('/').pop();
+  for (const offset of [1, 10, 32, 63]) {
+    const stream = new EventEmitter();
+    const write = jest.fn();
+    bridge.pipeLog(stream, write);
+    // Two capabilities: one early (shrinks on redaction), one across the cut.
+    const prefix = token + 'b'.repeat(65536 - token.length - offset);
+    stream.emit('data', prefix + token + 'c'.repeat(200));
+    stream.emit('end');
+    const [[out]] = write.mock.calls;
+    for (let n = 8; n <= token.length; n += 8) expect(out).not.toContain(token.slice(0, n));
+    expect(out).toContain('[redacted]');
+  }
 });
 
 test('bounds simultaneous requests including work still settling', async () => {

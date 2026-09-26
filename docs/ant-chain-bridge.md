@@ -19,7 +19,11 @@ External, disabled and reused nodes are not reconfigured.
 The bridge fixes the chain to Gnosis (100), accepts the eight methods Ant's
 chain module issues, and forwards the original params and JSON-RPC id. Reads
 follow the network's configured policy (default Myotis → Colibri → RPC quorum
-→ direct RPC). Broadcasts use the separate configured broadcast policy and
+→ direct RPC). Ant's reads are background work: they use Myotis only when its
+single in-flight slot is idle and never queue for it, so the node's polling
+cannot push interactive wallet/app reads into queue-full fallback. Wide
+`eth_getLogs` scans get a 60 s per-URL budget on the direct path (never less
+than the chain's configured timeout) instead of the 5 s interactive default. Broadcasts use the separate configured broadcast policy and
 require an already-signed, chain-bound Gnosis transaction. Ant retains signing;
 this endpoint cannot sign, unlock an account or send an unsigned transaction.
 
@@ -32,8 +36,14 @@ cryptographically verified: source-only log entries distinguish `myotis`,
 
 An unavailable source is handled by the existing router. Exhausted sources
 return an error, never fabricated empty logs, zero balance or absent receipts.
-Genuine error codes and hex revert data are preserved; upstream messages and
-URLs are omitted. In particular `-32000` remains an error on this ordinary HTTP
+Genuine error codes and hex revert data are preserved. The upstream error text
+is forwarded to Ant (never logged by the bridge) with URLs replaced by `[url]`,
+control characters removed and length capped at 500 characters: Ant's
+`scan_logs` halves its `eth_getLogs` window only when that text matches a
+range-limit or `query timeout` pattern, so replacing it with a generic message
+would abort batch/chequebook recovery on a range-capped RPC. A direct per-URL
+client timeout and the bridge's own deadline both report `query timeout` for
+the same reason. In particular `-32000` remains an error on this ordinary HTTP
 transport. The special FFI callback interpretation of that code does not apply.
 The bridge adds no independent transaction retry. An uncertain broadcast must
 be reconciled using the original signed transaction, not signed again.
@@ -56,7 +66,8 @@ may settle later under their own bounds; a submitted transaction cannot be
 recalled by closing the connection.
 
 The URL is excluded from the manager's startup log. Child output is buffered by
-line before capability redaction (oversized lines are dropped), including when
+line before capability redaction (a line over 64 KiB is redacted, then cut with a `[truncated N chars]` marker
+rather than dropped), including when
 a token is split between chunks. URLs, request params and signed transactions
 are never logged by the bridge. A process with access to the user's process
 arguments can still obtain the capability; it is a boundary against websites

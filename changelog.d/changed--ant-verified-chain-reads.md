@@ -1,1 +1,1 @@
-- The bundled Swarm node uses Freedom's chain verification and fallback settings for balances, postage and chequebook reads.
+- The bundled Swarm node reads balances, postage and chequebook data through Freedom's configured chain sources (Myotis, Colibri, an RPC quorum, then a single RPC) instead of its own fixed RPC; only the Myotis, Colibri and quorum answers are verified ([#419](https://github.com/solardev-xyz/freedom-browser/pull/419))

@@ -15,6 +15,25 @@ const READ_METHODS = new Set([
 const MAX_BODY = 256 * 1024;
 const MAX_RESPONSE = 16 * 1024 * 1024;
 const MAX_ACTIVE = 8;
+const MAX_LOG_LINE = 64 * 1024;
+const MAX_ERROR_MESSAGE = 500;
+// Ant's scan_logs only shrinks its eth_getLogs window when the error text
+// matches a range-limit/timeout needle, so a wide scan gets a longer per-URL
+// budget on the direct path than an interactive read would.
+const LOG_SCAN_DIRECT_TIMEOUT_MS = 60000;
+
+// Forward the upstream wording (Ant keys retry decisions on it, e.g. "query
+// exceeds max block range 50000") without URLs, which may carry RPC API keys,
+// control characters or unbounded length.
+function sanitizeErrorMessage(message) {
+  if (typeof message !== 'string') return '';
+  return message
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s;,)]+/gi, '[url]')
+    .replace(/\p{Cc}+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_ERROR_MESSAGE);
+}
 
 // Private daemon transport, not a renderer/dApp RPC endpoint. The URL capability
 // is generated per start, passed only to our child, and never persisted.
@@ -75,7 +94,7 @@ async function startAntChainBridge({
         -32002,
         method === 'eth_sendRawTransaction'
           ? 'Broadcast outcome uncertain; reconcile the signed transaction'
-          : 'Chain request timed out'
+          : 'Chain request failed: query timeout'
       );
       req.destroy();
     }, timeoutMs);
@@ -136,7 +155,12 @@ async function startAntChainBridge({
           ? await router.broadcastRawTransaction(CHAIN_ID, request.params[0], {
               signal: controller.signal,
             })
-          : await router.request(CHAIN_ID, method, request.params, { signal: controller.signal });
+          : await router.request(CHAIN_ID, method, request.params, {
+              signal: controller.signal,
+              // Ant's polling must not queue ahead of wallet/app reads.
+              background: true,
+              ...(method === 'eth_getLogs' ? { directTimeoutMs: LOG_SCAN_DIRECT_TIMEOUT_MS } : {}),
+            });
       controller.signal.throwIfAborted();
       if (answer.result === undefined) throw new Error('Missing chain result');
       const body = { jsonrpc: '2.0', id, result: answer.result };
@@ -161,12 +185,13 @@ async function startAntChainBridge({
           error.data.length <= MAX_BODY
             ? error.data
             : undefined;
+        const detail = sanitizeErrorMessage(error.message);
         const message =
           error.code === 'MYOTIS_BROADCAST_UNCERTAIN'
             ? 'Broadcast outcome uncertain; reconcile the signed transaction'
             : code === 3
               ? 'Execution reverted'
-              : 'Chain request failed';
+              : `Chain request failed${detail ? `: ${detail}` : ''}`;
         fail(code, message, data);
         log.warn(
           `[Ant chain] ${
@@ -195,27 +220,47 @@ async function startAntChainBridge({
   return {
     url: `http://${authority}${route}`,
     // Buffer child output by line before redacting, so chunk boundaries cannot
-    // split a capability across log calls. Oversized lines are dropped whole.
+    // split a capability across log calls. An oversized line is redacted, then
+    // cut to its first MAX_LOG_LINE characters with a truncation marker, so a
+    // long single-line panic still reaches the log.
     pipeLog(stream, write) {
+      const redact = (text) => text.split(token).join('[redacted]');
       let line = '';
-      let dropping = false;
+      let head = null;
+      let droppedChars = 0;
+      const flush = () => {
+        if (head !== null) write(`${head}… [truncated ${droppedChars + line.length} chars]`);
+        else write(redact(line));
+        line = '';
+        head = null;
+        droppedChars = 0;
+      };
       stream.on('data', (chunk) => {
         for (const part of String(chunk).split(/(\n)/)) {
           if (part === '\n') {
-            if (!dropping) write(line.split(token).join('[redacted]'));
+            flush();
+            continue;
+          }
+          line += part;
+          if (head === null && line.length >= MAX_LOG_LINE + token.length) {
+            // Cut at MAX_LOG_LINE, extended to the end of a capability that
+            // straddles the cut, so no partial capability survives redaction.
+            const straddling = line.indexOf(token, MAX_LOG_LINE - token.length + 1);
+            const cut =
+              straddling >= 0 && straddling < MAX_LOG_LINE
+                ? straddling + token.length
+                : MAX_LOG_LINE;
+            head = redact(line.slice(0, cut));
+            line = line.slice(cut);
+          }
+          if (head !== null) {
+            droppedChars += line.length;
             line = '';
-            dropping = false;
-          } else if (!dropping) {
-            line += part;
-            if (line.length > 65536) {
-              line = '';
-              dropping = true;
-            }
           }
         }
       });
       stream.on('end', () => {
-        if (line && !dropping) write(line.split(token).join('[redacted]'));
+        if (line || head !== null) flush();
       });
     },
     close() {

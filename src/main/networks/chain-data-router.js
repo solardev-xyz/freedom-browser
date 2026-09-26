@@ -502,13 +502,13 @@ function releaseMyotisSlot(chainId) {
 
 // Returns null when the queue is full. `granted` is null when the slot was
 // free, so an uncontended read never pays for a timer it cannot need.
-function acquireMyotisSlot(chainId) {
+function acquireMyotisSlot(chainId, { queue = true } = {}) {
   const slots = myotisSlotsFor(chainId);
   if (slots.inFlight < MAX_MYOTIS_IN_FLIGHT) {
     slots.inFlight += 1;
     return { granted: null, abandon: () => {} };
   }
-  if (slots.waiters.length >= MAX_MYOTIS_QUEUED) return null;
+  if (!queue || slots.waiters.length >= MAX_MYOTIS_QUEUED) return null;
   let grant;
   const granted = new Promise((resolve) => {
     grant = resolve;
@@ -530,12 +530,18 @@ async function requestViaMyotis(
   chainId,
   method,
   params,
-  { includeTrust = false, deadlineMs = null } = {}
+  { includeTrust = false, deadlineMs = null, background = false } = {}
 ) {
   const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
-  const slot = acquireMyotisSlot(chainId);
+  // Background work (the bundled Ant node's polling) only takes an idle slot
+  // and never queues, so it cannot sit ahead of wallet/app reads.
+  const slot = acquireMyotisSlot(chainId, { queue: !background });
   if (!slot) {
-    throw new SourceUnavailableError('Myotis has too many reads queued for this workload');
+    throw new SourceUnavailableError(
+      background
+        ? 'Myotis is busy with interactive reads'
+        : 'Myotis has too many reads queued for this workload'
+    );
   }
   const startedAt = Date.now();
   if (slot.granted) {
@@ -617,7 +623,11 @@ async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
   const abort = () => controller.abort();
   if (signal?.aborted) controller.abort();
   else signal?.addEventListener?.('abort', abort, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -634,6 +644,15 @@ async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
       throw error;
     }
     return data.result;
+  } catch (err) {
+    // Name the client timeout in the message: callers such as Ant's log scan
+    // key on "query timeout" to shrink their window instead of giving up.
+    if (timedOut && !signal?.aborted) {
+      const error = new Error(`RPC query timeout after ${timeoutMs}ms`);
+      error.failureKind = 'timeout';
+      throw error;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener?.('abort', abort);
@@ -864,10 +883,21 @@ async function requestDirect(
   chainId,
   method,
   params,
-  { includeTrust = false, directFallback = null, attemptedUrls = [], signal } = {}
+  {
+    includeTrust = false,
+    directFallback = null,
+    attemptedUrls = [],
+    signal,
+    timeoutMs: requestedTimeoutMs = null,
+  } = {}
 ) {
   const network = registry.getNetwork(chainId) || {};
-  const timeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
+  const configuredTimeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
+  // A background caller (Ant's log scans) may widen the per-URL budget; it is
+  // never narrowed below the configured timeout.
+  const timeoutMs = Number.isFinite(requestedTimeoutMs)
+    ? Math.max(configuredTimeoutMs, requestedTimeoutMs)
+    : configuredTimeoutMs;
   const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   if (directFallback && urls.includes(directFallback.url) &&
@@ -935,12 +965,15 @@ async function requestSource(
     allowDirectFallback = false,
     deadlineMs = null,
     signal,
+    background = false,
+    directTimeoutMs = null,
   } = {}
 ) {
   if (source === 'myotis') {
     return requestViaMyotis(chainId, method, params, {
       includeTrust,
       deadlineMs,
+      background,
     });
   }
   if (source === 'colibri') {
@@ -960,6 +993,7 @@ async function requestSource(
       directFallback,
       attemptedUrls: directAttemptedUrls,
       signal,
+      timeoutMs: directTimeoutMs,
     });
   }
   throw new SourceUnavailableError(`Unknown chain source: ${source}`);
@@ -969,7 +1003,13 @@ async function request(
   chainId,
   method,
   rawParams = [],
-  { includeTrust = false, routingContext = null, signal } = {}
+  {
+    includeTrust = false,
+    routingContext = null,
+    signal,
+    background = false,
+    directTimeoutMs = null,
+  } = {}
 ) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
   const network = registry.getNetwork(chainId);
@@ -1000,6 +1040,8 @@ async function request(
     try {
       const sourceResult = await requestSource(source, Number(chainId), method, params, {
         signal,
+        background,
+        directTimeoutMs,
         includeTrust,
         routeKey,
         directFallback: source === 'direct' ? directFallback : null,
