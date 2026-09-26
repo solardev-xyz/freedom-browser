@@ -29,7 +29,10 @@ RPC quorum tier asks the first `k` (3) endpoints first, at the configured 5 s.
 The direct tier then tries, in registry order, the endpoints quorum never
 asked, and only after those retries the quorum members that never answered,
 now with 60 s. An endpoint that answered quorum with an error (for example a
-range limit) is not asked again. Every attempt still sits inside the bridge's
+range limit) is not asked again, and once any endpoint has answered with a
+JSON-RPC error the retries are skipped altogether: that verdict reaches Ant
+after quorum's ~5 s instead of after a hung endpoint's 60 s retry, and a later
+timeout never replaces it. Every attempt still sits inside the bridge's
 120 s per-request deadline, which fits only about two full 60 s attempts
 after quorum: with several endpoints hanging, the later ones are not reached
 before the deadline and Ant gets a query timeout, shrinks its window and
@@ -37,7 +40,7 @@ retries. Putting untried endpoints first means a healthy one is reached right
 after quorum instead of behind retries of endpoints that just failed.
 
 If no quorum member returned a result, quorum keeps the first member's
-upstream error. Only log scans opt into it (`upstreamQuorumError`), so its
+upstream JSON-RPC error (a member's timeout only when none answered). Only log scans opt into it (`upstreamQuorumError`), so its
 wording still reaches Ant when no endpoint is left untried; wallet and app
 reads keep the aggregate "all chain sources failed" error rather than one
 unverified endpoint's reply.

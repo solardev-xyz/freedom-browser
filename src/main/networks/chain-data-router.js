@@ -641,6 +641,9 @@ async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
       const error = new Error(data.error.message || 'RPC request failed');
       error.code = data.error.code;
       error.data = data.error.data;
+      // The endpoint answered: a JSON-RPC error (a range limit, a revert) is
+      // the provider's verdict, unlike a transport failure or a client timeout.
+      error.rpcReply = true;
       throw error;
     }
     return data.result;
@@ -809,9 +812,11 @@ async function requestQuorum(
       // shrink their window. request() surfaces it only for a caller that
       // opts in with upstreamQuorumError. A split with a successful member stays an
       // unverified disagreement, not an upstream error.
+      // A member's JSON-RPC verdict outranks another member's client timeout:
+      // a range limit tells the caller what to do, a hung endpoint does not.
       const rpcError = directCandidates.length
         ? null
-        : memberErrors.find(
+        : memberErrors.find((memberError) => memberError?.rpcReply) || memberErrors.find(
           (memberError) => memberError && !(memberError instanceof SourceUnavailableError)
         );
       if (rpcError) error.rpcError = rpcError;
@@ -819,6 +824,9 @@ async function requestQuorum(
       // widened Direct's per-URL budget may try them again; ones that did
       // answer would only repeat the same reply.
       error.directUnansweredUrls = urls.filter((_, index) => !answered[index]);
+      // Whether a member already gave a JSON-RPC verdict. Direct then skips
+      // the widened retry of unanswered members (see requestDirect).
+      error.directRpcReplySeen = memberErrors.some((memberError) => memberError?.rpcReply);
       // Direct would accept one endpoint's answer without agreement. Preserve
       // the highest-priority successful quorum member so the next configured
       // Direct tier can reuse it rather than issuing the same RPC again.
@@ -921,6 +929,7 @@ async function requestDirect(
     directFallback = null,
     attemptedUrls = [],
     unansweredUrls = [],
+    rpcReplySeen = false,
     signal,
     timeoutMs: requestedTimeoutMs = null,
   } = {}
@@ -950,23 +959,38 @@ async function requestDirect(
   // longer attempt. They go last: they already failed to answer once, and a
   // caller's overall deadline (the Ant bridge's) may only fit one or two long
   // attempts, which must not all be spent on endpoints that are likely down.
+  //
+  // The retries only run while no endpoint has answered with a JSON-RPC error
+  // (a quorum member or one tried here). Such a verdict ("query exceeds max
+  // block range") is what the caller acts on; a hung endpoint's long retry
+  // would only delay it by the whole widened budget, then hide it behind a
+  // timeout.
   const retried = timeoutMs > configuredTimeoutMs ? new Set(unansweredUrls) : new Set();
-  const order = [
-    ...urls.filter((url) => !attempted.has(url)),
-    ...urls.filter((url) => attempted.has(url) && retried.has(url)),
-  ];
+  const untried = urls.filter((url) => !attempted.has(url));
+  const retries = urls.filter((url) => attempted.has(url) && retried.has(url));
   let lastError;
-  for (const url of order) {
+  let rpcReply = null;
+  const attempt = async (url) => {
     signal?.throwIfAborted();
     try {
-      const result = await requestRpcUrl(url, method, params, timeoutMs, { signal });
-      return directResponse(chainId, url, result, includeTrust);
+      return { result: await requestRpcUrl(url, method, params, timeoutMs, { signal }) };
     } catch (err) {
       signal?.throwIfAborted();
       lastError = err;
+      if (err?.rpcReply && !rpcReply) rpcReply = err;
+      return null;
     }
+  };
+  for (const url of untried) {
+    const outcome = await attempt(url);
+    if (outcome) return directResponse(chainId, url, outcome.result, includeTrust);
   }
-  throw lastError || new SourceUnavailableError('All RPC endpoints failed');
+  for (const url of retries) {
+    if (rpcReplySeen || rpcReply) break;
+    const outcome = await attempt(url);
+    if (outcome) return directResponse(chainId, url, outcome.result, includeTrust);
+  }
+  throw rpcReply || lastError || new SourceUnavailableError('All RPC endpoints failed');
 }
 
 async function requestDirectFeeQuote(chainId) {
@@ -1006,6 +1030,7 @@ async function requestSource(
     directFallback = null,
     directAttemptedUrls = [],
     directUnansweredUrls = [],
+    directRpcReplySeen = false,
     allowDirectFallback = false,
     deadlineMs = null,
     signal,
@@ -1037,6 +1062,7 @@ async function requestSource(
       directFallback,
       attemptedUrls: directAttemptedUrls,
       unansweredUrls: directUnansweredUrls,
+      rpcReplySeen: directRpcReplySeen,
       signal,
       timeoutMs: directTimeoutMs,
     });
@@ -1073,6 +1099,7 @@ async function request(
   let directFallback = null;
   let directAttemptedUrls = [];
   let directUnansweredUrls = [];
+  let directRpcReplySeen = false;
   for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
     signal?.throwIfAborted();
     const source = order[sourceIndex];
@@ -1094,6 +1121,7 @@ async function request(
         directFallback: source === 'direct' ? directFallback : null,
         directAttemptedUrls: source === 'direct' ? directAttemptedUrls : [],
         directUnansweredUrls: source === 'direct' ? directUnansweredUrls : [],
+        directRpcReplySeen: source === 'direct' && directRpcReplySeen,
         allowDirectFallback: source === 'quorum' && order[sourceIndex + 1] === 'direct',
         deadlineMs: sourceDeadlineMs(Number(chainId), {
           interactive,
@@ -1120,11 +1148,17 @@ async function request(
         if (Array.isArray(err.directUnansweredUrls)) {
           directUnansweredUrls = err.directUnansweredUrls;
         }
+        if (err.directRpcReplySeen) directRpcReplySeen = true;
       }
       recordAdaptiveFailure(routeKey, err);
       const message = safeErrorMessage(err);
       failures.push(`${source}: ${message}`);
-      if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
+      // A later source's timeout never replaces an earlier endpoint's
+      // JSON-RPC verdict: a caller keying on provider wording (Ant shrinking
+      // its log-scan window on a range limit) must still see it.
+      if (!(err instanceof SourceUnavailableError)) {
+        if (!(lastRpcError?.rpcReply && failureKind(err) === 'timeout')) lastRpcError = err;
+      }
       // Quorum's member error is one unverified endpoint's reply. Only a
       // caller that keys on provider wording (Ant's log scan) takes it in
       // place of the aggregate failure; wallet and app reads keep the
