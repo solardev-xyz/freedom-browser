@@ -1,18 +1,25 @@
 // Ant's eth_getLogs scan through the real chain-data router, as a matrix:
 // tier (myotis / colibri / quorum k-of-n / direct untried / direct widened
 // retry) x error class (range limit / timeout reply / endpoint-dependent /
-// hang / success) x arrival order. Each case asserts what Ant receives (the
+// hang / success) x arrival order; the possible-range-cap rank is covered by
+// the named review cases at the end. Each case asserts what Ant receives (the
 // bridge's own antErrorReply over the router's error), whether Ant's
 // is_range_limit_error needles match it (it halves its window) and when it
 // arrives (fake timers, so elapsed times are exact).
 //
 // The rule under test (chain-data-router createErrorKeeper + the bridge's
-// rankLogScanError): range limit > timeout > endpoint-dependent; the most
-// useful error seen across every tier and retry is kept and a lower-ranked
-// later one never replaces it; only a range limit ends the request early.
+// rankLogScanError): range limit > timeout > possible range cap >
+// endpoint-dependent (REQUEST > TIMEOUT > HINT > ENDPOINT). The most useful
+// error seen across every tier and retry is kept and a lower-ranked later one
+// never replaces it (a later timeout does replace an earlier one); only a
+// range limit ends the request early. A possible range cap (a coded reply
+// matching Ant's needles that names neither the query's size, a throttle nor
+// a lagging endpoint, e.g. EIP-1474 "-32005 limit exceeded") falls through
+// like an endpoint failure but reaches Ant verbatim if nothing better turns
+// up, so Ant halves on it as it would against that RPC directly.
 //
 // Only the registry, Myotis, Colibri and fetch are stubbed. The PR #419
-// review findings R1-F1..R6-F1 are the named cases at the end.
+// review findings are the named cases at the end.
 const mockRegistry = {
   getNetwork: jest.fn(),
   getEndpoints: jest.fn(),
