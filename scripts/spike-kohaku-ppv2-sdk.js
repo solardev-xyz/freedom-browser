@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Reproducible offline SDK qualification; adds no application dependency.
- * Usage: node scripts/spike-kohaku-ppv2-sdk.js /absolute/kohaku /absolute/ppv2
+ * Usage: node scripts/spike-kohaku-ppv2-sdk.js /absolute/kohaku /absolute/ppv2 [--compat]
  * PPv2 must have its frozen dependencies, SDK dist and deposit LFS files ready.
  * Pins are deliberate. Re-review before changing them; do not use real keys.
  */
@@ -56,6 +56,12 @@ for (const file of files) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, source);
   report.sourceDigests.push({ file, sha256: digest(source) });
+}
+if (process.argv.includes('--compat')) {
+  const patch = path.join(__dirname, 'fixtures/kohaku-ppv2-compat.patch');
+  execFileSync('git', ['apply', '--check', patch], { cwd: directory });
+  execFileSync('git', ['apply', patch], { cwd: directory });
+  report.compatibilityPatchSha256 = digest(fs.readFileSync(patch));
 }
 const paths = {
   '@0xbow-io/privacy-pools-v2-sdk': [path.join(sdkDir, 'dist/index.d.ts')],
@@ -123,6 +129,14 @@ function deriveIndependently(signature, signerAddress, rotation) {
 }
 
 async function main() {
+  if (process.argv.includes('--compat')) {
+    assert.equal(report.adapterTypecheck.passed, true, diagnostics);
+    bundle(path.join(directory, 'packages/privacy-pools/src/v2/adapters/rpc.adapter.ts'), 'rpc.cjs');
+    bundle(path.join(directory, 'packages/privacy-pools/src/v2/mapping/status.ts'), 'status.cjs', {
+      '@0xbow-io/privacy-pools-v2-sdk': path.join(upstream, 'packages/sdk/src/types/NoteStatus.ts'),
+    });
+    report.adapterFixtures = { rpc: path.join(directory, 'rpc.cjs'), status: path.join(directory, 'status.cjs') };
+  }
   assert.equal(sdk.APP_IDENTIFIER, 'TODO-privacy-pools-v2', 'Re-review identity constants before rerunning');
   const derivation = bundle(path.join(directory, 'packages/privacy-pools/src/v2/account/derivation.ts'), 'derivation.cjs');
   const canonical = bundle(path.join(upstream, 'apps/sample-web/src/secretDerivationPayload.ts'), 'canonical.cjs');
@@ -223,7 +237,7 @@ async function main() {
     }
   } finally { scope.close(); }
   report.limits = [
-    'Adapter type errors remain; no working full protocol session claimed.',
+    'No working full protocol session claimed; inspect adapterTypecheck and compatibilityPatchSha256 separately.',
     'Synthetic local deposit proof only; no transfer, unshield, chain recovery or audited deployment qualification.',
     'Network tripwires are diagnostic, not a sandbox, and do not cover nested workers.',
     'Separate-process proof success does not qualify an application process host or vault cancellation.',

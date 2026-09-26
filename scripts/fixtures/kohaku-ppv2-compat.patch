@@ -1,0 +1,81 @@
+--- a/packages/privacy-pools/src/v2/adapters/rpc.adapter.ts
++++ b/packages/privacy-pools/src/v2/adapters/rpc.adapter.ts
+@@ -68,6 +68,27 @@
+     /** Latest block number, 0x-hex per the SDK convention. */
+     async getBlockNumber(): Promise<Hex> {
+         return numberToHex(await this.provider.getBlockNumber());
++    }
++
++    /** Remote finality is unverified evidence. A failed/refused read must never
++     * select the SDK's weaker `unsupported` confirmation-depth fallback.
++     */
++    async getFinalizedBlockNumber(): ReturnType<IRPCInteractor["getFinalizedBlockNumber"]> {
++        try {
++            const block = await this.provider.request({
++                method: "eth_getBlockByNumber",
++                params: ["finalized", false],
++            }) as { number?: unknown; hash?: unknown } | null;
++            if (block && typeof block.number === "string" &&
++                /^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(block.number) &&
++                BigInt(block.number) <= BigInt(Number.MAX_SAFE_INTEGER) &&
++                typeof block.hash === "string" && /^0x[0-9a-f]{64}$/i.test(block.hash)) {
++                return { status: "finalized", blockNumber: block.number as Hex };
++            }
++        } catch {
++            // Fixed diagnostic: endpoint responses can contain sensitive data.
++        }
++        return { status: "unavailable", reason: "Finalized block unavailable" };
+     }
+
+     /** Wait until the transaction mines, then return the SDK-shaped receipt with full logs. */
+--- a/packages/privacy-pools/src/v2/mapping/status.ts
++++ b/packages/privacy-pools/src/v2/mapping/status.ts
+@@ -18,11 +18,14 @@
+         case NoteStatus.INACTIVE:
+         case NoteStatus.PENDING:
+         case NoteStatus.REJECTED:
++        case NoteStatus.EXIT_PENDING:
+             return "unspendable";
+         case NoteStatus.SPENT:
+         case NoteStatus.EXITED:
+             return "excluded";
+     }
++    const unexpected: never = status;
++    throw new Error(`Unsupported note status type: ${typeof unexpected}`);
+ }
+
+ /** Only `ACTIVE` notes contribute to spendable balance (INV-4). */
+@@ -42,10 +45,10 @@
+
+ /**
+  * The note's association-set label state derived from its status: a `REJECTED`
+- * note's label was revoked; `INACTIVE`/`PENDING` are awaiting approval; everything
+- * else (`ACTIVE`/`SPENT`/`EXITED`) had an approved label.
++ * note's label was revoked; `INACTIVE`/`PENDING` are awaiting approval; exits do not
++ * establish approval (ragequit can also concern rejected notes).
+  */
+-export function labelStateFor(status: NoteStatus): "pending" | "approved" | "revoked" {
++export function labelStateFor(status: NoteStatus): "pending" | "approved" | "revoked" | "unknown" {
+     switch (status) {
+         case NoteStatus.REJECTED:
+             return "revoked";
+@@ -54,7 +57,9 @@
+             return "pending";
+         case NoteStatus.ACTIVE:
+         case NoteStatus.SPENT:
++            return "approved";
++        case NoteStatus.EXIT_PENDING:
+         case NoteStatus.EXITED:
+-            return "approved";
++            return "unknown";
+     }
+ }
+--- a/packages/privacy-pools/src/v2/interfaces/operations.interface.ts
++++ b/packages/privacy-pools/src/v2/interfaces/operations.interface.ts
+@@ -59,5 +59,5 @@
+     asset: PPv2AssetId;
+     value: bigint;
+     status: Lowercase<keyof typeof NoteStatus>;
+-    labelState: "pending" | "approved" | "revoked";
++    labelState: "pending" | "approved" | "revoked" | "unknown";
+ };

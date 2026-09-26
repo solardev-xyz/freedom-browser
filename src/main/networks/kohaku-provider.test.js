@@ -111,3 +111,53 @@ test('lock or caller cancellation discards a response that arrives after revocat
   provider = createKohakuProvider({ handle, contracts }); hook = async () => scope.close();
   await expect(provider.getBlockNumber()).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
 });
+
+test('only the finalized public block summary is granted, with no trust upgrade or receipt access', async () => {
+  results.eth_getBlockByNumber = { number: '0x1', hash: blockHash, transactions: [txHash] };
+  expect(await provider.request({ method: 'eth_getBlockByNumber', params: ['finalized', false] }))
+    .toEqual({ number: '0x1', hash: blockHash });
+  expect(provider.verified).toBe(false);
+  for (const params of [['latest', false], ['0x1', false], ['finalized', true], ['finalized'], ['finalized', false, target]]) {
+    await expect(provider.request({ method: 'eth_getBlockByNumber', params })).rejects.toMatchObject({ code: 'PRIVATE_SDK_RPC_REFUSED' });
+  }
+  expect(requests.filter((call) => call.method === 'eth_getBlockByNumber')).toHaveLength(1);
+  results.eth_getBlockByNumber = null;
+  expect(await provider.request({ method: 'eth_getBlockByNumber', params: ['finalized', false] })).toBeNull();
+  results.eth_getBlockByNumber = { number: '0x1', hash: 'secret server failure' };
+  await expect(provider.request({ method: 'eth_getBlockByNumber', params: ['finalized', false] })).rejects.toMatchObject({ code: 'PRIVATE_RPC_INVALID' });
+});
+
+const rpcFixture = process.env.FREEDOM_PP_V2_RPC_FIXTURE;
+const statusFixture = process.env.FREEDOM_PP_V2_STATUS_FIXTURE;
+(rpcFixture && statusFixture ? describe : describe.skip)('pinned Kohaku compatibility patch', () => {
+  test('actual adapter preserves finality, refuses malformed evidence and never downgrades errors', async () => {
+    const { KohakuRpcInteractor } = require(rpcFixture);
+    const adapter = new KohakuRpcInteractor(provider);
+    results.eth_getBlockByNumber = { number: '0x1', hash: blockHash };
+    expect(await adapter.getFinalizedBlockNumber()).toEqual({ status: 'finalized', blockNumber: '0x1' });
+    for (const value of [null, {}, { number: '0x1', hash: '0x0' }, { number: '-1', hash: blockHash }]) {
+      results.eth_getBlockByNumber = value;
+      expect(await adapter.getFinalizedBlockNumber()).toEqual({ status: 'unavailable', reason: 'Finalized block unavailable' });
+    }
+    for (const code of [-32601, -32602, 'PRIVACY_REQUEST_ABORTED', 'PRIVATE_SDK_RPC_REFUSED']) {
+      const failed = new KohakuRpcInteractor({ request: async () => { throw Object.assign(new Error('sensitive endpoint response'), { code }); } });
+      expect(await failed.getFinalizedBlockNumber()).toEqual({ status: 'unavailable', reason: 'Finalized block unavailable' });
+    }
+    scope.close();
+    expect((await adapter.getFinalizedBlockNumber()).status).toBe('unavailable');
+  });
+
+  test('pending exits retain value without spendability or invented ASP approval; reorg views reverse', () => {
+    const status = require(statusFixture);
+    expect(status.statusToReport('EXIT_PENDING')).toBe('unspendable');
+    expect(status.isExcluded('EXIT_PENDING')).toBe(false);
+    expect(status.isSpendable('EXIT_PENDING')).toBe(false);
+    expect(status.statusLabel('EXIT_PENDING')).toBe('exit_pending');
+    expect(status.labelStateFor('EXIT_PENDING')).toBe('unknown');
+    expect(status.labelStateFor('EXITED')).toBe('unknown');
+    expect(['ACTIVE', 'EXIT_PENDING', 'ACTIVE', 'EXIT_PENDING', 'EXITED'].map(status.statusToReport))
+      .toEqual(['spendable', 'unspendable', 'spendable', 'unspendable', 'excluded']);
+    expect(status.labelStateFor('REJECTED')).toBe('revoked');
+    expect(() => status.statusToReport('FUTURE_UNKNOWN_STATE')).toThrow();
+  });
+});

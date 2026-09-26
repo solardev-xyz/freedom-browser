@@ -1,5 +1,7 @@
 # Kohaku host integration for Freedom's wallet
 
+**September 26 continuation:** the pinned adapter compatibility patch typechecks, and a real deposit proof passes lifecycle/egress tests in source and packaged Electron through a main-owned utility process. See [the current implementation](../docs/ppv2-adapter-process-2026-09-26.md); the September 25 blockers below describe the earlier unpatched experiment.
+
 > September 25 update: the source analysis below is the September 14 snapshot. Current upstream deprecated its Rust implementations and removed the previous Railgun package in commit `8ac0c528f63e1d43be7b662a1f2f7c15514ca61e`. Freedom now has a tested bounded host network adapter, but full protocol qualification remains open. See the [current implementation and source follow-up](../docs/privacy-engineering-followup-2026-09-25.md).
 
 > Later September 25: open [PR #258](https://github.com/ethereum/kohaku/pull/258) provides a concrete PPv2 candidate and the actual GitHub Packages SDK name. Freedom now tests its exact HTTP adapter, restricted protocol reads, reviewed submission reconciliation, local artifact verification and worker cancellation. Full SDK/prover integration remains gated. See [the latest implementation and access findings](../docs/privacy-reconciliation-and-ppv2-2026-09-25.md).

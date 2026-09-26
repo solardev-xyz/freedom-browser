@@ -2,6 +2,8 @@
 
 Date: 2026-09-25. This supersedes the source-access gate in the [earlier preflight](ppv2-integration-preflight-2026-09-25.md). The bounded experiment remains Freedom host → Kohaku adapter → PPv2 SDK. It does not enable wallet operations or establish mainnet readiness.
 
+**September 26 continuation:** the pinned Kohaku compatibility patch now passes typechecking, and the real prover passes lifecycle/egress tests in source and packaged Electron through a new main-owned utility-process host. See [the current implementation and remaining gates](ppv2-adapter-process-2026-09-26.md). Findings below preserve the earlier unpatched-SDK experiment.
+
 ## Access and reproducibility
 
 After Florian accepted the invitation, authenticated read access to `0xbow-io/v2-monorepo` succeeded. 0xbow identified `v2.0` as the latest SDK code and said there is no v1.0 release yet. The isolated checkout is `/private/tmp/freedom-ppv2-v2-sep25`, pinned at `fe0244e3f14110efd83db02c60c96517dea9cd5a`. The SDK manifest is `@privacy-pools-v2/sdk`, version `0.0.0`, private; root and SDK declare MIT. This is a supported source route, so the older package-registry token scope is no longer a prerequisite for this experiment. It is not confirmation that this revision is the final audited candidate.

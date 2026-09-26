@@ -1,8 +1,10 @@
 # Wallet privacy implementation plan
 
-Date: 2026-09-14; updated 2026-09-25. Status: current main and managed nodes synchronized; reviewed submission reconciliation, restricted protocol reads, local artifact verification and worker cancellation have unit and Electron coverage. Complete protocol qualification and production activation remain pending.
+Date: 2026-09-14; updated 2026-09-26. Status: current main and managed nodes synchronized; reviewed submission reconciliation, restricted protocol reads, local artifact verification and worker cancellation have unit and Electron coverage. Complete protocol qualification and production activation remain pending.
 
 ## Implementation status
+
+**September 26 implementation:** [Adapter compatibility and prover process host](ppv2-adapter-process-2026-09-26.md) adds a pinned Kohaku finality/pending-exit patch and an Electron utility-process host with vault cancellation, forced termination, bounded results, sampled memory limits and inherited network guards. The patched adapter typechecks; real deposit proving, cancellation, restart-after-unlock and egress refusals pass in source and packaged macOS. Full regression: 5,573 passed, 25 skipped, the same 3 baseline failures; final focused checks: 36 passed. Next is a controlled session and recoverable Sepolia flow, while final identity constants, audit/deployment matching and state provenance remain gates. No application SDK dependency or product UI was added.
 
 **PPv2 source qualification:** [The accessible SDK experiment](ppv2-sdk-qualification-2026-09-25.md) pins 0xbow `v2.0` at `fe0244e3`. SDK build and 96 upstream tests pass; four independent derivation cases and a separate-process deposit proof verify. Kohaku PR #258 needs finalized-block and `EXIT_PENDING` support, and its prover dependency fails inside our Node worker. Next: a narrow adapter update and a qualified main-owned process prover host, then a controlled session and recoverable Sepolia flow. Final `APP_IDENTIFIER`, audit/deployment matching, full egress and recovery remain release gates; no application SDK dependency or wallet flow was enabled.
 

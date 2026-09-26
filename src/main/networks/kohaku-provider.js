@@ -43,6 +43,12 @@ function createKohakuProvider({ handle, contracts, signal }) {
       return `0x${context.subject.chainId.toString(16)}`;
     }
     if (method === 'eth_blockNumber' && params.length === 0) return head();
+    if (method === 'eth_getBlockByNumber' && params.length === 2 && params[0] === 'finalized' && params[1] === false) {
+      const result = await read(method, ['finalized', false], (value) => value === null ||
+        (value && block(value.number) && hash(value.hash)));
+      // Return only the public finality observation, never transaction objects.
+      return result === null ? null : { number: result.number, hash: result.hash };
+    }
     if (method === 'eth_getCode' && params.length === 2 && address(params[0]) && grants.has(params[0].toLowerCase()) && params[1] === 'latest') {
       return read(method, [params[0].toLowerCase(), 'latest'], bytes);
     }

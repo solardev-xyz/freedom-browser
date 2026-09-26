@@ -1,5 +1,7 @@
 # Privacy Pools v2 × Freedom Browser — Integration Research
 
+**September 26 continuation:** the pinned adapter compatibility patch typechecks, and a real deposit proof passes lifecycle/egress tests in source and packaged Electron through a main-owned utility process. See [the current implementation](../docs/ppv2-adapter-process-2026-09-26.md); the September 25 blockers below describe the earlier unpatched experiment.
+
 **Date:** 2026-07-08 · **Updated:** 2026-09-25 · **Status:** source research and host-boundary tests; full protocol execution unqualified
 **Scope:** Privacy Pools v2 (0xbow) as a built-in transactional-privacy layer for Freedom's EVM wallet.
 **Companion docs:** `kohaku-wallet-integration-research.md` (new September 14 source study; the earlier June document is not present), `privacy-roadmap.md` (T1–T6), `tor-circuit-isolation-research.md`, `nym-integration-research.md` (not present in this checkout).
