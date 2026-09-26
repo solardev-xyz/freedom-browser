@@ -747,6 +747,11 @@ async function requestQuorum(
     const fulfilledUrls = [];
     const directCandidates = [];
     const errors = [];
+    // Per member: the upstream error it returned, and whether it answered at
+    // all (a result or an RPC-level error, as opposed to timing out or still
+    // being in flight when quorum gave up).
+    const memberErrors = new Array(urls.length).fill(null);
+    const answered = new Array(urls.length).fill(false);
     let pending = urls.length;
     let finished = false;
     let verificationImpossible = false;
@@ -782,15 +787,37 @@ async function requestQuorum(
         },
       });
     };
-    const fail = () => {
+    const fail = ({ deadline = false } = {}) => {
       if (finished) return;
+      const unanswered = pending > 0;
       finish();
       const capacityFailures = errors.filter(isCapacityFailure).length;
       const timedOut = errors.some((error) => failureKind(error) === 'timeout');
+      // The message also names a timeout when quorum's own deadline cut off
+      // members that had not answered (failureKind is unchanged).
+      const deadlineCut = deadline && unanswered;
       const error = new SourceUnavailableError(
-        `RPC quorum did not reach ${m} matching responses`,
+        `RPC quorum did not reach ${m} matching responses${
+          timedOut || deadlineCut ? ' (query timeout)' : ''
+        }`,
         capacityFailures >= m ? 'capacity' : timedOut ? 'timeout' : null
       );
+      // When no member returned a result, keep the highest-priority upstream
+      // member error. With no untried URL left for Direct, it is the only
+      // place the provider's own wording (a range limit, a revert, a client
+      // timeout) survives; callers such as Ant's log scan key on that text to
+      // shrink their window. A split with a successful member stays an
+      // unverified disagreement, not an upstream error.
+      const rpcError = directCandidates.length
+        ? null
+        : memberErrors.find(
+          (memberError) => memberError && !(memberError instanceof SourceUnavailableError)
+        );
+      if (rpcError) error.rpcError = rpcError;
+      // Members that never answered were cut at quorum's budget. A caller that
+      // widened Direct's per-URL budget may try them again; ones that did
+      // answer would only repeat the same reply.
+      error.directUnansweredUrls = urls.filter((_, index) => !answered[index]);
       // Direct would accept one endpoint's answer without agreement. Preserve
       // the highest-priority successful quorum member so the next configured
       // Direct tier can reuse it rather than issuing the same RPC again.
@@ -826,7 +853,9 @@ async function requestQuorum(
     verificationTimer = setTimeout(() => {
       if (finished) return;
       verificationImpossible = true;
-      if (!allowDirectFallback || directCandidates.length || pending === 0) fail();
+      if (!allowDirectFallback || directCandidates.length || pending === 0) {
+        fail({ deadline: true });
+      }
     }, timeoutMs);
 
     urls.forEach((url, index) => {
@@ -836,6 +865,7 @@ async function requestQuorum(
         (value) => {
           if (finished) return;
           pending -= 1;
+          answered[index] = true;
           fulfilledUrls.push(url);
           directCandidates.push({ index, url, result: value });
           const key = stableValue(value);
@@ -851,6 +881,8 @@ async function requestQuorum(
           if (finished) return;
           pending -= 1;
           errors.push(error);
+          memberErrors[index] = error;
+          if (failureKind(error) !== 'timeout') answered[index] = true;
           rejectIfImpossible();
         }
       );
@@ -887,6 +919,7 @@ async function requestDirect(
     includeTrust = false,
     directFallback = null,
     attemptedUrls = [],
+    unansweredUrls = [],
     signal,
     timeoutMs: requestedTimeoutMs = null,
   } = {}
@@ -911,6 +944,11 @@ async function requestDirect(
     );
   }
   const attempted = new Set(attemptedUrls);
+  // With a widened budget, an endpoint quorum cut off at the configured
+  // timeout gets its longer attempt here instead of being skipped.
+  if (timeoutMs > configuredTimeoutMs) {
+    for (const url of unansweredUrls) attempted.delete(url);
+  }
   let lastError;
   for (const url of urls) {
     signal?.throwIfAborted();
@@ -962,6 +1000,7 @@ async function requestSource(
     routeKey = null,
     directFallback = null,
     directAttemptedUrls = [],
+    directUnansweredUrls = [],
     allowDirectFallback = false,
     deadlineMs = null,
     signal,
@@ -992,6 +1031,7 @@ async function requestSource(
       includeTrust,
       directFallback,
       attemptedUrls: directAttemptedUrls,
+      unansweredUrls: directUnansweredUrls,
       signal,
       timeoutMs: directTimeoutMs,
     });
@@ -1026,6 +1066,7 @@ async function request(
   let lastRpcError = null;
   let directFallback = null;
   let directAttemptedUrls = [];
+  let directUnansweredUrls = [];
   for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
     signal?.throwIfAborted();
     const source = order[sourceIndex];
@@ -1046,6 +1087,7 @@ async function request(
         routeKey,
         directFallback: source === 'direct' ? directFallback : null,
         directAttemptedUrls: source === 'direct' ? directAttemptedUrls : [],
+        directUnansweredUrls: source === 'direct' ? directUnansweredUrls : [],
         allowDirectFallback: source === 'quorum' && order[sourceIndex + 1] === 'direct',
         deadlineMs: sourceDeadlineMs(Number(chainId), {
           interactive,
@@ -1069,11 +1111,15 @@ async function request(
         if (Array.isArray(err.directAttemptedUrls)) {
           directAttemptedUrls = err.directAttemptedUrls;
         }
+        if (Array.isArray(err.directUnansweredUrls)) {
+          directUnansweredUrls = err.directUnansweredUrls;
+        }
       }
       recordAdaptiveFailure(routeKey, err);
       const message = safeErrorMessage(err);
       failures.push(`${source}: ${message}`);
       if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
+      else if (err.rpcError) lastRpcError = err.rpcError;
       log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${message}`);
     }
   }

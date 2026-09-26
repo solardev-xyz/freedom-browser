@@ -19,7 +19,8 @@ const MAX_LOG_LINE = 64 * 1024;
 const MAX_ERROR_MESSAGE = 500;
 // Ant's scan_logs only shrinks its eth_getLogs window when the error text
 // matches a range-limit/timeout needle, so a wide scan gets a longer per-URL
-// budget on the direct path than an interactive read would.
+// budget on the direct path than an interactive read would. The direct tier
+// also retries, at this budget, quorum members that timed out without an answer.
 const LOG_SCAN_DIRECT_TIMEOUT_MS = 60000;
 
 // Forward the upstream wording (Ant keys retry decisions on it, e.g. "query

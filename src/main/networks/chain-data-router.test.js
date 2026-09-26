@@ -1279,6 +1279,89 @@ describe('Ant bridge cancellation', () => {
     }
   });
 
+  // R2-F1: with no RPC URL left beyond quorum's k, Direct has nothing to try,
+  // so the provider's own wording must survive quorum's failure or Ant's log
+  // scan cannot tell a range limit / timeout from a hard failure.
+  const THREE_RPCS = ['https://a.example', 'https://b.example', 'https://c.example'];
+  const hangUntilAborted = (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () =>
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+  });
+
+  test('keeps an upstream range-limit error when quorum uses every RPC', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'colibri', 'quorum', 'direct'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockMyotis.isReady.mockReturnValue(false);
+    mockRequestViaColibri.mockRejectedValue(new Error('Colibri unavailable'));
+    mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+      role === 'prover' ? ['https://prover.example'] : THREE_RPCS);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ error: { code: -32005, message: 'query exceeds max block range 50000' } }),
+    });
+    await expect(request(100, 'eth_getLogs', [{}], { background: true, directTimeoutMs: 60000 }))
+      .rejects.toMatchObject({ code: -32005, message: 'query exceeds max block range 50000' });
+    // Members that answered are not asked again by Direct.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  test('a widened Direct budget retries RPCs quorum cut off at its timeout', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['quorum', 'direct'] },
+        quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
+      global.fetch.mockImplementation((url, options) => {
+        // Quorum's three attempts hang; the slow first RPC answers on retry.
+        if (global.fetch.mock.calls.length > 3) {
+          return new Promise((resolve) => setTimeout(() =>
+            resolve({ ok: true, json: async () => ({ result: [] }) }), 20000));
+        }
+        return hangUntilAborted(url, options);
+      });
+      const wide = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(global.fetch).toHaveBeenCalledTimes(4);
+      expect(global.fetch.mock.calls[3][0]).toBe('https://a.example');
+      await jest.advanceTimersByTimeAsync(20000);
+      await expect(wide).resolves.toMatchObject({ result: [], source: 'direct' });
+
+      // Without a widened budget, Direct does not repeat the same 5s attempt,
+      // and the failure still names a query timeout.
+      global.fetch.mockReset();
+      global.fetch.mockImplementation(hangUntilAborted);
+      const narrow = request(100, 'eth_getLogs', [{}]);
+      narrow.catch(() => {});
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(narrow).rejects.toThrow('RPC query timeout after 5000ms');
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('a quorum-only read cut by its deadline still names a query timeout', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['quorum'] },
+        quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
+      global.fetch.mockImplementation(hangUntilAborted);
+      const pending = request(100, 'eth_getLogs', [{}]);
+      pending.catch(() => {});
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(pending).rejects.toThrow(/query timeout/);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('does not broadcast at a second RPC after cancellation', async () => {
     mockRegistry.getNetwork.mockReturnValue({ access: { broadcastOrder: ['direct'] } });
     mockRegistry.getEndpoints.mockReturnValue(['https://one.example', 'https://two.example']);

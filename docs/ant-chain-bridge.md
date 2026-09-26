@@ -21,9 +21,18 @@ chain module issues, and forwards the original params and JSON-RPC id. Reads
 follow the network's configured policy (default Myotis → Colibri → RPC quorum
 → direct RPC). Ant's reads are background work: they use Myotis only when its
 single in-flight slot is idle and never queue for it, so the node's polling
-cannot push interactive wallet/app reads into queue-full fallback. Wide
-`eth_getLogs` scans get a 60 s per-URL budget on the direct path (never less
-than the chain's configured timeout) instead of the 5 s interactive default. Broadcasts use the separate configured broadcast policy and
+cannot push interactive wallet/app reads into queue-full fallback.
+
+Wide `eth_getLogs` scans get a 60 s per-URL budget on the direct tier (never
+less than the chain's configured timeout). With the default Gnosis policy the
+RPC quorum tier asks the first `k` (3) endpoints first, at the configured 5 s.
+The direct tier then retries any of those that never answered, now with 60 s,
+and tries the remaining endpoints at 60 s. An endpoint that answered quorum
+with an error (for example a range limit) is not asked again. If no member
+returned a result, quorum keeps the first member's upstream error, so its
+wording still reaches Ant when no endpoint is left untried.
+
+Broadcasts use the separate configured broadcast policy and
 require an already-signed, chain-bound Gnosis transaction. Ant retains signing;
 this endpoint cannot sign, unlock an account or send an unsigned transaction.
 
@@ -81,6 +90,10 @@ reporting, error/revert propagation, broadcast restrictions, cancellation,
 capacity and split-log redaction. Manager tests cover mode selection, close,
 bind/spawn failure and stop during startup. Router tests ensure cancellation
 prevents later fallback or a second direct broadcaster.
+`ant-chain-bridge.router.test.js` runs the real router behind the real bridge
+with three RPC endpoints (all used by quorum). It checks that a range-limit
+error still reaches Ant, and that endpoints cut off by quorum's timeout get
+the longer log-scan budget.
 
 The live check uses a newly generated, unfunded temporary managed profile,
 real Electron, Ant v0.5.45 and checksum-verified Myotis v0.1.11 / ABI 29. No
