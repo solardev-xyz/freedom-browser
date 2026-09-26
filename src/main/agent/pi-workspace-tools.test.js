@@ -926,7 +926,7 @@ describe('Pi managed workspace tools', () => {
         message: 'Could not access /Users/private/project',
       }).message
     ).toBe(
-      '[WORKSPACE_POLICY_FAILED] Freedom could not complete the operation inside the managed workspace'
+      '[WORKSPACE_POLICY_FAILED] Freedom could not establish the workspace sandbox.'
     );
     expect(safeWorkspaceError({
       code: 'EXECUTABLE_INTERPRETER_UNAVAILABLE',
@@ -937,7 +937,9 @@ describe('Pi managed workspace tools', () => {
     }).message).not.toContain('/private');
   });
 
-  test.each(['PROJECT_RECONNECT_REQUIRED', 'PROJECT_READ_ONLY', 'PROJECT_CHANGED', 'WORKSPACE_HISTORY_CHANGED'])('preserves actionable %s without leaking host paths', (code) => {
+  test.each(['PROJECT_RECONNECT_REQUIRED', 'PROJECT_READ_ONLY', 'PROJECT_CHANGED', 'WORKSPACE_HISTORY_CHANGED',
+    'UNSAFE_GIT_CONFIGURATION', 'WORKSPACE_CHANGED_DURING_VALIDATION', 'WORKSPACE_HARDLINK_DENIED', 'WORKSPACE_SPECIAL_FILE_DENIED',
+    'WORKSPACE_VALIDATION_LIMIT', 'EXTERNAL_GIT_METADATA_DENIED', 'PROTECTED_PATH_MISSING', 'INVALID_WORKSPACE'])('preserves actionable %s without leaking host paths', (code) => {
     const result = safeWorkspaceError({ code, message: '/private/user/project secret' });
     expect(result.code).toBe(code);
     expect(result.message).not.toContain('/private');

@@ -696,6 +696,18 @@ describe('workspace execution policy', () => {
     });
   });
 
+  test.each(['ssh://git@example.com/repo.git', 'git+ssh://git@example.com/repo.git', 'ssh+git://git@example.com/repo.git', 'git@example.com:repo.git'])('accepts ordinary SSH account names: %s', async url => {
+    const fixture = await createFixture(); fixtureRoots.push(fixture.fixtureRoot);
+    await fs.promises.appendFile(path.join(fixture.workspaceRoot, '.git', 'config'), `[remote "origin"]\n url = ${url}\n`);
+    await expect(createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })).resolves.toMatchObject({ kind: 'freedom.workspace-execution-policy' });
+  });
+
+  test.each(['https://token@example.com/repo.git', 'ssh://git:secret@example.com/repo.git', 'git+ssh://git:secret@example.com/repo.git'])('still rejects credential-bearing URLs: %s', async url => {
+    const fixture = await createFixture(); fixtureRoots.push(fixture.fixtureRoot);
+    await fs.promises.appendFile(path.join(fixture.workspaceRoot, '.git', 'config'), `[remote "origin"]\n url = ${url}\n`);
+    await expect(createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })).rejects.toMatchObject({ code: 'UNSAFE_GIT_CONFIGURATION' });
+  });
+
   test('represents unavailable aggregate limits without weakening them in validation', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);

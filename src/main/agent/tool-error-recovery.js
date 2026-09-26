@@ -10,6 +10,16 @@ const step = (action, instruction, extra = {}) => Object.freeze({ action, instru
 // Main-owned guidance only. Never interpret page content, error prose or a model's
 // proposed fix as authority to grant permissions or replay a consequential action.
 function recoveryForToolError(code, operation) {
+  if (code === 'WORKSPACE_CHANGED_DURING_VALIDATION') return step('refresh_state',
+    'Filesystem validation could not obtain a stable view of the project. Wait for active file changes to settle, then retry the original read once. If it repeats, report the validation failure and ask the user to investigate changing files. Do not request editing, reconnect repeatedly, change permissions or bypass validation with shell commands.');
+  if (code === 'UNSAFE_GIT_CONFIGURATION') return step('stop',
+    'Explain that Freedom could not accept the project Git configuration for sandbox use. This is not a missing editing grant. Ask the user to inspect it in their Git client; do not print credentials, rewrite Git configuration, request broader access or bypass the boundary. Retry only after the configuration or Freedom support has changed.');
+  if (['WORKSPACE_HARDLINK_DENIED', 'WORKSPACE_SPECIAL_FILE_DENIED', 'PROTECTED_PATH_MISSING'].includes(code)) return step('stop',
+    'Explain the reported filesystem boundary limitation. More editing permission does not fix it. Ask the user to inspect the project setup; do not remove files, alter links or permissions, or bypass sandbox validation.');
+  if (['WORKSPACE_VALIDATION_LIMIT', 'EXTERNAL_GIT_METADATA_DENIED'].includes(code)) return step('unsupported',
+    'Explain the reported project-layout or size limitation. More editing permission does not fix it. Ask the user to select a supported project folder or provide the relevant files through attachments. Do not access ungranted Git metadata or bypass validation with commands.');
+  if (code === 'INVALID_WORKSPACE') return step('ask_user',
+    'Ask the user to check that the attached project still exists and is accessible. Reconnect it only if its location or access changed. Do not request editing simply to inspect files or guess another host path.');
   if (code === 'COMMAND_REVIEW_STALE') return step('request_permission',
     'Project evidence changed after approval. Call request_permissions for the exact command and workingDirectory again before retrying.', { tool: 'request_permissions' });
   if (code === 'WORKSPACE_AUDIT_FINDINGS') return step('inspect_outcome',

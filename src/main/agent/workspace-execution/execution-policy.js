@@ -1,6 +1,9 @@
 'use strict';
 
-const fs = require('fs');
+// Sandbox boundaries describe physical files. Electron's patched fs treats ASAR
+// archives as virtual directories with synthetic identities, which cannot be
+// used for directory/hardlink validation or physical path ownership.
+const fs = process.versions.electron ? require('original-fs') : require('fs');
 const os = require('os');
 const path = require('path');
 const {
@@ -254,7 +257,9 @@ async function validateGitConfiguration(gitDirectory) {
         } catch {
           throw new ExecutionPolicyError('UNSAFE_GIT_CONFIGURATION', 'Git remote URL is malformed');
         }
-        if (remote.username || remote.password) {
+        // SSH usernames identify the remote account (usually "git"); they are
+        // not credentials. Passwords and HTTP userinfo remain disallowed.
+        if (remote.password || (remote.username && !['ssh:', 'git+ssh:', 'ssh+git:'].includes(remote.protocol))) {
           throw new ExecutionPolicyError(
             'UNSAFE_GIT_CONFIGURATION',
             'Git remote URLs must not contain embedded credentials'

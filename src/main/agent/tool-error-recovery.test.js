@@ -6,6 +6,14 @@ const { trustBuiltInToolOverride, isTrustedBuiltInToolOverride } = require('./pi
 describe('model-facing tool error recovery', () => {
   test.each([
     ['PROJECT_READ_ONLY', 'workspace_history', 'request_permission', 'request_permissions'],
+    ['UNSAFE_GIT_CONFIGURATION', 'read', 'stop'],
+    ['WORKSPACE_CHANGED_DURING_VALIDATION', 'find', 'refresh_state'],
+    ['WORKSPACE_HARDLINK_DENIED', 'ls', 'stop'],
+    ['WORKSPACE_SPECIAL_FILE_DENIED', 'read', 'stop'],
+    ['WORKSPACE_VALIDATION_LIMIT', 'find', 'unsupported'],
+    ['EXTERNAL_GIT_METADATA_DENIED', 'read', 'unsupported'],
+    ['PROTECTED_PATH_MISSING', 'read', 'stop'],
+    ['INVALID_WORKSPACE', 'read', 'ask_user'],
     ['WORKSPACE_COMMAND_NOT_FOUND', 'bash', 'request_permission', 'request_permissions'],
     ['WORKSPACE_HISTORY_CHANGED', 'edit', 'refresh_state', 'read'],
     ['STALE_ELEMENT_REFERENCE', 'browser_click', 'refresh_state', 'browser_snapshot'],

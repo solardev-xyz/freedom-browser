@@ -84,6 +84,19 @@ code editing. Saved-server management remains a smaller independent candidate;
 broader existing-project support remains relevant if linked worktrees or multiple
 project contexts block everyday work.
 
+**External-project read qualification — 2026-09-26:** fixed ordinary SSH usernames
+being misclassified as embedded credentials and Electron's ASAR virtual filesystem
+being used for physical workspace validation and sandboxed file search. A real Electron fixture now checks
+concurrent read/list/find on an external read-only project containing an SSH remote
+and an ASAR archive, while confirming writes remain denied. Preserve actionable
+validation codes instead of collapsing them into command execution failures.
+The reported second project passed concurrent directory listing, file search and
+README reading with a fresh read-only grant after the fixes. The original
+Freedom checkout additionally contains a node socket: the current whole-tree
+writable-workspace validation still refuses it. A separate restricted policy for
+read-only file helpers remains needed so ordinary reads do not inherit unrelated
+command-workspace layout requirements; do not simply relax socket/hardlink checks.
+
 **Additional open candidates:**
 
 - Preview transport for SSE and separate HMR ports; automatic crash restart is a

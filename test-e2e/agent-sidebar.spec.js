@@ -28,6 +28,41 @@ const test = baseTest.extend({
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
+test('read-only external projects accept SSH remotes and physical ASAR archives', async ({ electronApp, userDataDir }) => {
+  const result = await electronApp.evaluate(async (_electron, { root, userDataDir }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('original-fs'); const path = require('path');
+    const { AgentManagedWorkspaceStore } = require(root + '/src/main/agent/managed-workspace-store');
+    const { ManagedWorkspaceController } = require(root + '/src/main/agent/managed-workspace-controller');
+    const profile = path.join(userDataDir, 'read-profile');
+    const project = path.join(userDataDir, 'read-project');
+    fs.mkdirSync(profile, { recursive: true });
+    fs.mkdirSync(path.join(project, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(project, 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.git/config'), '[remote "origin"]\n url = ssh://git@example.com/project.git\n');
+    fs.writeFileSync(path.join(project, 'README.md'), 'External project fixture');
+    fs.copyFileSync(path.join(process.resourcesPath, 'default_app.asar'), path.join(project, 'node_modules/app.asar'));
+    // An archive outside ignored dependencies must stay a file during search too.
+    fs.copyFileSync(path.join(process.resourcesPath, 'default_app.asar'), path.join(project, 'build.asar'));
+    const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
+    const controller = new ManagedWorkspaceController({ store });
+    try {
+      const workspace = await store.attachProject('read-project', project);
+      const [read, listing, found] = await Promise.all([
+        controller.readFile('read-project', 'README.md'),
+        controller.listDirectory('read-project', '.'),
+        controller.findFiles('read-project', '.', { pattern: '**/README*' }),
+      ]);
+      let writeError;
+      try { await controller.writeFile('read-project', 'README.md', 'Unauthorized'); } catch (error) { writeError = error.code; }
+      return { mode: workspace.project.mode, read: read.toString('utf8'), listed: listing.entries.some(entry => entry.name === 'README.md'),
+        found: found.results.includes('README.md'), writeError,
+        unchanged: fs.readFileSync(path.join(project, 'README.md'), 'utf8') === 'External project fixture' };
+    } finally { await controller.dispose(); store.close(); }
+  }, { root: repositoryRoot, userDataDir });
+  expect(result).toEqual({ mode: 'read', read: 'External project fixture', listed: true, found: true, writeError: 'PROJECT_READ_ONLY', unchanged: true });
+});
+
 test('helper history persists reports and marks crash-left work interrupted in real SQLite', async ({ electronApp }) => {
   const result = await electronApp.evaluate(({ app }, root) => {
     const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
