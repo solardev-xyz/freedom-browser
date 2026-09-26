@@ -10,6 +10,8 @@ const step = (action, instruction, extra = {}) => Object.freeze({ action, instru
 // Main-owned guidance only. Never interpret page content, error prose or a model's
 // proposed fix as authority to grant permissions or replay a consequential action.
 function recoveryForToolError(code, operation) {
+  if (code === 'WORKSPACE_WRITER_BUSY') return step('refresh_state', 'Wait for the editing helper report and pending project operations to finish, then inspect current files before continuing. Do not start a competing writer or shell command.');
+  if (code === 'DELEGATED_PATH_DENIED') return step('stop', 'Return to the parent to revise the explicit file assignment. The helper cannot broaden its own scope or bypass it with other tools.');
   if (code === 'WORKSPACE_CHANGED_DURING_VALIDATION') return step('refresh_state',
     'Filesystem validation could not obtain a stable view of the project. Wait for active file changes to settle, then retry the original read once. If it repeats, report the validation failure and ask the user to investigate changing files. Do not request editing, reconnect repeatedly, change permissions or bypass validation with shell commands.');
   if (code === 'UNSAFE_GIT_CONFIGURATION') return step('stop',

@@ -827,7 +827,7 @@ function activityProgress(operation, receipt = {}) {
       ? ({ running: 'Helper working', cancelled: 'Helper stopped', timed_out: 'Helper timed out', limited: 'Helper reached its limit', failed: 'Helper could not finish' }[subagent.state])
       : copy.completed;
     if (title) label += ` — ${title}`;
-    if (subagents) { intent = 'Delegating two read-only tasks'; label = summarizeSubagents(subagents).detail; }
+    if (subagents) { intent = subagents.some(item => item.mode === 'edit') ? 'Delegating editing and review' : 'Delegating two read-only tasks'; label = summarizeSubagents(subagents).detail; }
   }
   if (operation === 'helper_task') {
     const labels = { status: ['Checking helper status', 'Checked helper status'], wait: ['Waiting for a helper', 'Received helper result'], message: ['Messaging a helper', 'Sent helper message'] };
@@ -1120,6 +1120,12 @@ function errorExplanation(code) {
 
 function buildAgentOutcome(activity, status, error) {
   const items = Array.isArray(activity) ? activity : [];
+  const editingHelpers = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .filter(receipt => receipt?.mode === 'edit');
+  const helperChangedFiles = new Set(editingHelpers.flatMap(receipt => receipt.changedFiles));
+  const helperEditNote = editingHelpers.length
+    ? ` Editing helpers recorded ${helperChangedFiles.size} changed ${helperChangedFiles.size === 1 ? 'file' : 'files'}. Review current changes before testing or committing; stopped tasks can leave partial edits.` : '';
   const succeeded = items.filter((item) => item?.status === 'succeeded');
   const cancelledDownloads = items.filter(
     (item) => item?.errorCode === ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
@@ -1553,8 +1559,8 @@ function buildAgentOutcome(activity, status, error) {
           ? serverPreviewOpened
             ? 'Server preview opened'
             : 'Static preview opened'
-          : changedFiles.length
-            ? changedFiles.length === 1
+          : changedFiles.length || helperChangedFiles.size
+            ? changedFiles.length + helperChangedFiles.size === 1
               ? 'Project file updated'
               : 'Project files updated'
             : shellCommands.length
@@ -1562,9 +1568,9 @@ function buildAgentOutcome(activity, status, error) {
                 ? 'Project command completed'
                 : 'Project commands completed'
               : 'Project files inspected',
-        detail: historyOnly ? historyCopy.detail : previewOpened
+        detail: (historyOnly ? historyCopy.detail : previewOpened
           ? `Freedom opened ${serverPreviewOpened ? 'a managed workspace server' : 'the current workspace HTML'} in an isolated Agent tab${serverPreviewOpened ? ' through its approved localhost port' : ' without network access'}.${workspaceCommands.length > 1 ? ` ${workspaceCommands.length - 1} earlier project ${workspaceCommands.length === 2 ? 'operation was' : 'operations were'} also recorded.` : ''}`
-          : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}${historyCopy ? ` ${historyCopy.detail}` : ''}`,
+          : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}${historyCopy ? ` ${historyCopy.detail}` : ''}`) + helperEditNote,
         workspace: lastOperation,
         destinations,
         counts,
@@ -1622,7 +1628,7 @@ function buildAgentOutcome(activity, status, error) {
       const summary = summarizeSubagents(receipts);
       return Object.freeze({
         kind: 'completed', verification: 'delegated_report', ...summary,
-        detail: `${summary.detail}. Read-only, model-generated findings.`,
+        detail: `${summary.detail}.${helperEditNote || ' Read-only, model-generated findings.'}`,
         destinations, counts,
       });
     }
@@ -1666,7 +1672,8 @@ function buildAgentOutcome(activity, status, error) {
     const projectState = `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded.${completedFileChanges ? ' Completed project changes were not rolled back.' : ''}${workspaceShellCommands.some((receipt) => receipt.sideEffects === 'unknown') ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`;
     browserState = `${hasBrowserActivity ? `${browserState} ` : ''}${projectState}`;
   }
-  const retryNeedsReview = counts.changed > 0 || uncertainChanges.length > 0;
+  if (helperEditNote) browserState += helperEditNote;
+  const retryNeedsReview = counts.changed > 0 || uncertainChanges.length > 0 || editingHelpers.some(receipt => receipt.attemptedFiles.length || receipt.writesPending);
   if (status === 'cancelled') {
     return Object.freeze({
       kind: 'interrupted',

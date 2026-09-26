@@ -1,8 +1,8 @@
-# Freedom subagents: background inspections and follow-ups
+# Freedom subagents: inspections, follow-ups and scoped editing
 
 Branch: `experiment/agent-subagents`, started from
 `feature/freedom-automation-kernel` on 2026-09-25. Read-only delegation supports two concurrent helpers, parent continuation,
-and follow-up messages. Delegated changes and browser ownership remain later slices.
+and follow-up messages. Scoped editing is implemented with one writer; browser ownership remains a later slice.
 
 ## User behavior
 
@@ -46,6 +46,40 @@ The helper uses the parent's current model connection and thinking setting.
 There is no additional provider setup. Delegation consumes additional model
 usage; simple tasks should stay with the parent.
 
+## Scoped editing
+
+Use `mode: "edit"` with `files: ["README.md", "src/example.js"]` for a bounded
+implementation. File lists contain 1–20 exact project-relative paths, not globs
+or directory grants. Read-only remains the default. An editing helper can use
+`read`, `grep`, `find`, `ls`, attachment tools, `write` and `edit`; it cannot use
+shell commands, browser tools, history operations, approvals or nested delegation.
+The parent handles testing, review and checkpoints/commits after the helper finishes.
+
+Freedom reserves one writer in the workspace controller before creating its
+session. Existing project commands, edits and history operations must settle
+first. While reserved, competing writes, commands and history operations are
+rejected with recovery guidance; ordinary reads remain available. One writer can
+run alongside a read-only helper, including in the background. Follow-ups retain
+the original file list and acquire fresh ownership when resuming a completed helper.
+This first implementation reserves writing across the controller, rather than
+allowing simultaneous writers in different projects.
+
+The project must already be enabled and, for external projects, have an active
+editing grant. A read-only grant is never upgraded by delegation: the failure tells
+the parent to request editing permission and then create a new assignment.
+File scope and live grants are checked on every delegated file operation.
+Existing files require the helper's own read revision; another reader cannot
+refresh its write authority. Both managed and external files reject stale revisions.
+Parent directories of assigned new files may be created. Unrelated paths and Git
+metadata cannot be written. External editors/processes can still change files;
+this is coordination between Freedom agents, not a lock on other applications.
+
+Stop aborts tools and releases model ownership promptly, while the writer reservation
+remains until already-started file operations settle. Partial edits are not rolled
+back. Receipts persist completed and attempted file paths and indicate pending
+operations; the activity view shows recorded changes separately from the model's
+report. The parent must inspect current files before retrying, testing or committing.
+
 ## Authority and ownership
 
 `pi-subagent-tools.js` owns the bounded helper lifecycle in main, alongside the
@@ -59,12 +93,12 @@ only display the existing activity events and persisted receipts.
   requests and non-cancelled guidance to preserve constraints, plus the selected
   assignment/context. Oversized instructions fail closed instead of silently
   dropping constraints.
-- Tool access is an explicit allowlist: Freedom's scoped `read`, `grep`, `find`,
+- Read-only tool access is an explicit allowlist: Freedom's scoped `read`, `grep`, `find`,
   `ls`, attachment reads/listing/PDF rendering, and `workspace_history` **status
   and diff only**. The history schema is narrowed and actions are checked again
   at execution. These are the existing controller-backed tools, never Pi's raw
   host filesystem tools. Child calls have namespaced IDs and separate callbacks.
-- No shell, writes, history mutations/review-token issuance, browser control,
+- Read-only helpers have no shell, writes, history mutations/review-token issuance, browser control,
   approval requests, workspace creation, wallet/node operations or nested
   delegation. Missing access is a blocker for the parent to handle.
 - Each invocation captures its owning run and abort generation. Stop, Pause,
@@ -79,7 +113,7 @@ only display the existing activity events and persisted receipts.
   The parent can work concurrently, but up to two helpers may run at a time; no
   detached jobs can outlive a completed parent turn. Files can still change due
   to existing background processes or external editors; reports are not atomic
-  project snapshots. The parent can also edit while helpers read; it must coordinate
+  project snapshots. The parent can also edit while only read-only helpers run; it must coordinate
   work and verify findings against current file revisions before editing.
 
 ## Limits and recovery
@@ -147,7 +181,7 @@ real model's delegation judgment or report quality.
 
 **User acceptance, 2026-09-25:** single-helper project review, steering to a new
 assignment, standalone Stop and two parallel read-only helpers all passed manual
-smoke tests. Background continuation and messaging still need real-model acceptance.
+smoke tests. Background continuation and same-session messaging passed user smoke tests on 2026-09-26, including the running Freedom checkout after the external-project fixes.
 
 Manual smoke:
 
@@ -165,8 +199,25 @@ Manual smoke:
 5. With no project attached, request inspection: the helper reports the access
    blocker and cannot create a replacement project or grant itself access.
 
-Next: smoke-test background continuation and messaging with real models, then
-define browser tab ownership
-and delegated editing with one writer before broader concurrency. Model/role
-selection, nested delegation, remote execution and optional Jev workers remain
-later work.
+Editing smoke (new slice):
+
+1. In an enabled managed workspace, ask: “Delegate improving README.md to a helper.
+   Let it edit only README.md. Review the result and save a checkpoint.”
+2. On an external read-only project, request the same change. The parent should
+   request editing permission, then delegate; no helper can approve itself.
+3. Ask for a background editing helper and a read-only reviewer. The parent can
+   inspect other files; competing commands/edits must wait for the writer.
+4. Stop an editing task partway through. Inspect the recorded changed/attempted
+   paths and actual files; no automatic rollback or replay should be claimed.
+5. Reopen the chat and confirm the editing receipt and file paths remain visible.
+
+Validation: 451 targeted tests across eight suites, four Electron checks and lint passed. Scoped tools were exercised through installed Pi file tools and real
+macOS sandbox execution on disposable managed and external projects, including
+permission denial, explicit path bounds, competing-parent denial and stale-write
+protection. UI receipts are checked in both themes/layouts. Unit coverage includes
+ownership through unsettled operations, cancellation, late setup and read-only
+regressions. Real-model editing smoke acceptance is pending.
+
+Next: accept scoped editing, then define browser tab ownership. Broader writer
+concurrency, model/role selection, nested delegation, remote execution and optional
+Jev workers remain later work. No claim of complete provider/platform qualification.

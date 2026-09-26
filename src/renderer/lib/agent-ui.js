@@ -2987,6 +2987,8 @@ function formatToolError(code, operation) {
     WORKSPACE_COMMAND_TIMED_OUT: 'Workspace command timed out',
     WORKSPACE_DIRECTORY_UNAVAILABLE: 'Workspace directory does not exist',
     WORKSPACE_EXECUTION_FAILED: 'Workspace command could not be executed',
+    WORKSPACE_WRITER_BUSY: 'Project editing is owned by a helper or still in progress',
+    DELEGATED_PATH_DENIED: 'File is outside the helper assignment',
     UNSAFE_GIT_CONFIGURATION: 'Project Git configuration is unsupported by the sandbox',
     WORKSPACE_CHANGED_DURING_VALIDATION: 'Project changed during filesystem validation',
     WORKSPACE_HARDLINK_DENIED: 'Project hardlinks could not be safely isolated',
@@ -3338,13 +3340,20 @@ function finishToolRow(event) {
       summary.textContent = event.subagents ? `${state} — ${receipt.title}` : label;
       const note = document.createElement('p');
       const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
-      note.textContent = `Read-only helper · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
+      note.textContent = `${receipt.mode === 'edit' ? 'Editing helper' : 'Read-only helper'} · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
       const report = document.createElement('p');
       report.textContent = typeof receipt.report === 'string' && receipt.report
         ? receipt.report.slice(0, 12000) : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
       details.appendChild(summary);
       details.appendChild(note);
       details.appendChild(report);
+      if (receipt.mode === 'edit') {
+        const changes = document.createElement('p');
+        const paths = Array.isArray(receipt.changedFiles) ? receipt.changedFiles.slice(0, 20) : [];
+        changes.textContent = paths.length ? `Files changed: ${paths.join(', ')}` : 'No completed file writes recorded.';
+        if (receipt.writesPending || (receipt.attemptedFiles || []).some(file => !paths.includes(file))) changes.textContent += ' Some writes were attempted or still settling; review the current files.';
+        details.appendChild(changes);
+      }
       record.label.appendChild(details);
     }
     if (receipts.some(receipt => receipt.state === 'running')) {

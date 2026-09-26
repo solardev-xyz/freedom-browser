@@ -1188,6 +1188,43 @@ describe('ManagedWorkspaceController', () => {
     expect(dependencies.executor.execute).not.toHaveBeenCalled();
   });
 
+  test('delegated writer owns exact files and blocks competing mutations until pending work settles', async () => {
+    const { controller, dependencies } = createController();
+    const scope = await controller.createDelegatedWriter('conversation_one', ['README.md']);
+    await expect(controller.createDelegatedWriter('conversation_one', ['other.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.writeFile('conversation_one', 'other.md', 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.execute('conversation_one', { command: 'echo parent' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'status' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(scope.controller.writeFile('conversation_one', 'other.md', 'outside')).rejects.toMatchObject({ code: 'DELEGATED_PATH_DENIED' });
+    await expect(scope.controller.createDirectory('conversation_one', 'unrelated')).rejects.toMatchObject({ code: 'DELEGATED_PATH_DENIED' });
+    let finish;
+    dependencies.executor.execute.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const writing = scope.controller.writeFile('conversation_one', 'README.md', 'updated');
+    for (let i = 0; i < 40 && !finish; i++) await Promise.resolve();
+    expect(finish).toBeDefined();
+    scope.release();
+    await expect(controller.createDelegatedWriter('conversation_one', ['other.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    finish(completedExecution(''));
+    await writing;
+    await Promise.resolve(); await Promise.resolve();
+    expect(scope.evidence()).toMatchObject({ changedFiles: ['README.md'], attemptedFiles: ['README.md'], writesPending: false });
+    await expect(scope.controller.writeFile('conversation_one', 'README.md', 'late')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    const next = await controller.createDelegatedWriter('conversation_one', ['other.md']);
+    next.release();
+  });
+
+  test('writer admission preserves read-only grants, rejects protected paths and running commands', async () => {
+    const { controller, dependencies, workspace } = createController();
+    await expect(controller.createDelegatedWriter('conversation_one', ['.git/config'])).rejects.toMatchObject({ code: 'WORKSPACE_PROTECTED_PATH' });
+    workspace.project = { mode: 'read' };
+    dependencies.store.projectAccess = { resolve: jest.fn(async () => { throw Object.assign(new Error('read-only'), { code: 'PROJECT_READ_ONLY' }); }) };
+    await expect(controller.createDelegatedWriter('conversation_one', ['README.md'])).rejects.toMatchObject({ code: 'PROJECT_READ_ONLY' });
+    await Promise.resolve();
+    expect(controller.delegatedWriter).toBeNull();
+    controller.processManager.entries.set('pending', { state: 'running' });
+    await expect(controller.createDelegatedWriter('conversation_one', ['README.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+  });
+
   test('revocation while an external policy is being prepared prevents launch', async () => {
     const { controller, dependencies, workspace } = createController();
     workspace.project = { connected: true, mode: 'write' };

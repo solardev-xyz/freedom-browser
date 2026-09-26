@@ -499,6 +499,18 @@ describe('Agent UI', () => {
     expect(reports[0].children[2].textContent).toBe('<script>untrusted()</script>');
     expect(ctx.elements['agent-run-message'].textContent).toBe('1 report received · 1 task stopped');
   });
+  test('shows recorded helper edits and unsettled writes as inert text', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', userText: 'Edit project' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'edit', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'edit', operation: 'delegate_task', status: 'failed',
+      subagent: { mode: 'edit', state: 'cancelled', report: '', changedFiles: ['README.md'], attemptedFiles: ['README.md', '<script>'], writesPending: true } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(report.children[1].textContent).toContain('Editing helper');
+    expect(report.children[3].textContent).toContain('Files changed: README.md');
+    expect(report.children[3].textContent).toContain('still settling');
+    expect(report.querySelector('script')).toBeNull();
+  });
   test('renders helper reports as expandable inert text and labels interruptions without browser errors', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'Review the project' });

@@ -1717,12 +1717,13 @@ class FreedomAgentService {
             userRequest: owner.userText,
             guidance: owner.guidance.filter(item => item.status !== 'cancelled').map(item => item.text),
           }),
-          createTools: async (owner) => {
+          createWriter: (owner, files, signal) => this.workspaceController.createDelegatedWriter(owner.conversationId, files, { signal }),
+          createTools: async (owner, writerController) => {
             // Separate tool closures keep child evidence out of the parent's activity
             // and bind every read to its original conversation, never a later run.
             const projectTools = this.workspaceController
               ? await this.createWorkspaceTools({
-                  sdk, controller: this.workspaceController, conversationId: owner.conversationId,
+                  sdk, controller: writerController || this.workspaceController, conversationId: owner.conversationId,
                   getRunSignal: () => owner.workspaceAbortController.signal,
                   requestApproval: () => { throw new Error('Helper access is unavailable. Ask the parent to request project access; helpers cannot enable a workspace.'); },
                 }) : [];
@@ -1749,7 +1750,7 @@ class FreedomAgentService {
           onProgress: (owner, title) => {
             if (this.activeRun === owner && !owner.finished) this.#emit(owner, {
               type: 'run_progress', source: 'subagent',
-              message: `Helper is inspecting: ${title.replace(/\p{Cc}/gu, ' ').slice(0, 100)}`,
+              message: `Helper is working: ${title.replace(/\p{Cc}/gu, ' ').slice(0, 100)}`,
             });
           },
         });

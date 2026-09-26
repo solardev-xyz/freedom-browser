@@ -197,6 +197,72 @@ function fixture(overrides = {}) {
   return { tool, run, owner, options, session, read, history, emit, report };
 }
 
+test('editing helper receives only its scoped controller, reports writes and releases ownership', async () => {
+  const scope = { controller: {}, release: jest.fn(), evidence: () => ({ changedFiles: ['README.md'], attemptedFiles: ['README.md'], writesPending: false }) };
+  const f = fixture({ createWriter: jest.fn(async () => scope) });
+  const result = await f.run({ title: 'Improve README', task: 'Add setup instructions', mode: 'edit', files: ['README.md'] });
+  expect(f.options.createWriter).toHaveBeenCalledWith(f.owner, ['README.md'], expect.any(AbortSignal));
+  expect(f.options.createTools).toHaveBeenCalledWith(f.owner, scope.controller);
+  expect(f.options.createSession.mock.calls[0][0].customTools.map(tool => tool.name)).toEqual(['read', 'write', 'edit']);
+  expect(result.details.subagent).toMatchObject({ mode: 'edit', changedFiles: ['README.md'], state: 'completed' });
+  expect(scope.release).toHaveBeenCalledTimes(1);
+});
+
+test('a writer scope returned after cancellation is released without starting a helper', async () => {
+  const pending = deferred();
+  const scope = { controller: {}, release: jest.fn(), evidence: () => ({}) };
+  const f = fixture({ createWriter: () => pending.promise });
+  const running = f.run({ title: 'Edit', task: 'Update README', mode: 'edit', files: ['README.md'] });
+  await flush(); f.owner.subagentAbortController.abort();
+  expect((await running).details.subagent.state).toBe('cancelled');
+  pending.resolve(scope); await flush();
+  expect(scope.release).toHaveBeenCalledTimes(1);
+  expect(f.options.createSession).not.toHaveBeenCalled();
+});
+
+test('editing follow-ups acquire fresh ownership and retain earlier changed-file receipts', async () => {
+  const f = backgroundFixture();
+  const scopes = [];
+  f.options.createWriter = async () => {
+    const changedFiles = scopes.length ? ['docs.md'] : ['README.md'];
+    const scope = { controller: {}, release: jest.fn(), evidence: () => ({ changedFiles, attemptedFiles: changedFiles }) };
+    scopes.push(scope); return scope;
+  };
+  const started = await f.run({ title: 'Edit', task: 'Update docs', mode: 'edit', files: ['README.md', 'docs.md'], background: true });
+  await flush(); f.children[0].finish('First edit'); await f.tool.collect(f.owner);
+  await f.control('message', started.details.subagent.taskId, 'Also update docs.md');
+  await flush(); f.children[0].finish('Second edit');
+  const receipts = await f.tool.collect(f.owner);
+  expect(receipts[0].changedFiles).toEqual(['README.md', 'docs.md']);
+  expect(scopes).toHaveLength(2);
+  expect(scopes.every(scope => scope.release.mock.calls.length === 1)).toBe(true);
+  expect(f.options.createTools).toHaveBeenLastCalledWith(f.owner, scopes[1].controller);
+  f.owner.subagentAbortController.abort();
+});
+
+test('editing admission cannot broaden a read-only grant or admit two writers', async () => {
+  const createWriter = jest.fn(async () => { throw Object.assign(new Error('private path'), { code: 'PROJECT_READ_ONLY' }); });
+  const f = fixture({ createWriter });
+  const task = { title: 'Edit', task: 'Improve README', mode: 'edit', files: ['README.md'] };
+  expect((await f.run({ tasks: [task, task] })).isError).toBe(true);
+  expect(createWriter).not.toHaveBeenCalled();
+  const result = await f.run(task);
+  expect(result.details.subagent.report).toContain('request_permissions');
+  expect(result.details.subagent.report).not.toContain('private path');
+  expect(f.options.createSession).not.toHaveBeenCalled();
+});
+
+test('stopping an editing helper retains partial write evidence and releases its scope', async () => {
+  const scope = { controller: {}, release: jest.fn(), evidence: () => ({ changedFiles: ['README.md'], attemptedFiles: ['README.md', 'app.js'], writesPending: true }) };
+  const f = fixture({ createWriter: async () => scope });
+  f.session.prompt.mockImplementation(() => new Promise(() => {}));
+  const running = f.run({ title: 'Edit', task: 'Update app', mode: 'edit', files: ['README.md', 'app.js'] });
+  await flush(); f.owner.subagentAbortController.abort();
+  const result = await running;
+  expect(result.details.subagent).toMatchObject({ state: 'cancelled', mode: 'edit', changedFiles: ['README.md'], attemptedFiles: ['README.md', 'app.js'], writesPending: true });
+  expect(scope.release).toHaveBeenCalledTimes(1);
+});
+
 test('isolates context, keeps the model connection and exposes only explicitly scoped read tools', async () => {
   const f = fixture();
   const result = await f.run();

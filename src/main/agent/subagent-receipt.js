@@ -3,6 +3,12 @@
 const SUBAGENT_TOOL_NAME = 'delegate_task';
 const SUBAGENT_STATES = ['running', 'completed', 'cancelled', 'timed_out', 'limited', 'failed'];
 
+function safePaths(values) {
+  return Object.freeze(Array.isArray(values) ? [...new Set(values.filter(value => typeof value === 'string' && value.length <= 1024 &&
+    value && !value.includes('\\') && !/\p{Cc}/u.test(value) && !value.startsWith('/') &&
+    !value.split('/').some(part => !part || part === '.' || part === '..')))].slice(0, 20) : []);
+}
+
 function normalizeSubagentReceipt(value) {
   if (!value || !/^delegate_[a-f0-9]{24}$/.test(value.taskId) ||
       !SUBAGENT_STATES.includes(value.state) || typeof value.title !== 'string') return null;
@@ -14,6 +20,10 @@ function normalizeSubagentReceipt(value) {
     toolCalls: count('toolCalls'),
     totalTokens: count('totalTokens'),
     durationMs: count('durationMs'),
+    ...(value.mode === 'edit' && {
+      mode: 'edit',
+      changedFiles: safePaths(value.changedFiles), attemptedFiles: safePaths(value.attemptedFiles), writesPending: value.writesPending === true,
+    }),
     // A report is model-generated evidence, never a verified task result.
     report: typeof value.report === 'string' ? value.report.slice(0, 12000) : '',
     reportTruncated: value.reportTruncated === true || (typeof value.report === 'string' && value.report.length > 12000),

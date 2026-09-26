@@ -130,6 +130,74 @@ test('reads a live external project without granting writes or socket access', a
     writeError: 'PROJECT_READ_ONLY', sandboxWriteDenied: true, socketDenied: true, unchanged: true, commandStillValidated: true });
 });
 
+for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} files through Pi tools and the real sandbox`, async ({ electronApp, userDataDir }) => {
+  const result = await electronApp.evaluate(async (_electron, { root, userDataDir, kind }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('original-fs'); const path = require('path');
+    const { AgentManagedWorkspaceStore } = require(root + '/src/main/agent/managed-workspace-store');
+    const { ManagedWorkspaceController } = require(root + '/src/main/agent/managed-workspace-controller');
+    const { createSubagentTool } = require(root + '/src/main/agent/pi-subagent-tools');
+    const { createWorkspaceTools } = require(root + '/src/main/agent/pi-workspace-tools');
+    const sdk = await require(root + '/src/main/agent/pi-sdk').loadPiSdk();
+    const profile = path.join(userDataDir, 'editing-profile'); fs.mkdirSync(profile);
+    const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
+    const controller = new ManagedWorkspaceController({ store });
+    const conversationId = 'editing';
+    const owner = { userText: 'Improve README', subagentAbortController: new AbortController() };
+    try {
+      let project;
+      if (kind === 'external') {
+        project = path.join(userDataDir, 'editing-project'); fs.mkdirSync(project); fs.mkdirSync(path.join(project, '.git'));
+        await store.attachProject(conversationId, project);
+      } else {
+        await controller.enable(conversationId);
+        project = await store.resolvePath(store.getForConversation(conversationId).workspaceId);
+      }
+      fs.writeFileSync(path.join(project, 'README.md'), 'before');
+      let permissionError;
+      if (kind === 'external') {
+        try { await controller.createDelegatedWriter(conversationId, ['README.md']); } catch (error) { permissionError = error.code; }
+        await controller.setProjectAccess(conversationId, 'write');
+      }
+      let parentDenied = false; let scopeDenied = false; let toolFailure; let toolStage;
+      const tool = createSubagentTool({ sdk, getOwner: () => owner,
+        createWriter: (_owner, files, signal) => controller.createDelegatedWriter(conversationId, files, { signal }),
+        createTools: (_owner, scoped) => createWorkspaceTools({ sdk, controller: scoped, conversationId, requestApproval: () => { throw new Error('Unexpected approval'); } }),
+        createSession: async ({ customTools }) => {
+          let listener;
+          const get = name => customTools.find(tool => tool.name === name);
+          return { session: { subscribe: fn => { listener = fn; return () => {}; }, abort: async () => {}, dispose: () => {},
+            prompt: async () => {
+              try { await controller.execute(conversationId, { command: 'echo competing' }); } catch (error) { parentDenied = error.code === 'WORKSPACE_WRITER_BUSY'; }
+              try { await get('write').execute('outside', { path: 'outside.md', content: 'denied' }); } catch (error) { scopeDenied = error.code === 'DELEGATED_PATH_DENIED'; }
+              try {
+              toolStage = 'read'; await get('read').execute('read', { path: 'README.md' });
+              toolStage = 'edit'; await get('edit').execute('edit', { path: 'README.md', edits: [{ oldText: 'before', newText: 'after' }] });
+              toolStage = 'new'; await get('write').execute('new', { path: 'docs/helper.md', content: 'created by helper' });
+              } catch (error) { toolFailure = { stage: toolStage, code: error.code, message: error.message }; throw error; }
+              listener({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Updated README and added documentation; tests are for the parent.' }] } });
+            } } };
+        },
+      });
+      const report = await tool.execute('delegate', { title: 'Improve docs', task: 'Improve the assigned files', mode: 'edit', files: ['README.md', 'docs/helper.md'] });
+      const scope = await controller.createDelegatedWriter(conversationId, ['README.md']);
+      let staleDenied;
+      try {
+        await scope.controller.readFile(conversationId, 'README.md');
+        fs.writeFileSync(path.join(project, 'README.md'), 'external change');
+        try { await scope.controller.writeFile(conversationId, 'README.md', 'stale overwrite'); } catch (error) { staleDenied = error.code; }
+      } finally { scope.release(); }
+      return { report: report.details.subagent, parentDenied, scopeDenied, permissionError, staleDenied, toolFailure,
+        current: fs.readFileSync(path.join(project, 'README.md'), 'utf8'), created: fs.existsSync(path.join(project, 'docs/helper.md')) ? fs.readFileSync(path.join(project, 'docs/helper.md'), 'utf8') : null,
+        outsideExists: fs.existsSync(path.join(project, 'outside.md')) };
+    } finally { owner.subagentAbortController.abort(); await controller.dispose(); store.close(); }
+  }, { root: repositoryRoot, userDataDir, kind });
+  expect(result.toolFailure).toBeUndefined();
+  expect(result).toMatchObject({ report: { mode: 'edit', state: 'completed', changedFiles: ['README.md', 'docs/helper.md'], writesPending: false },
+    parentDenied: true, scopeDenied: true, staleDenied: 'WORKSPACE_HISTORY_CHANGED', current: 'external change', created: 'created by helper', outsideExists: false });
+  if (kind === 'external') expect(result.permissionError).toBe('PROJECT_READ_ONLY');
+});
+
 test('helper history persists reports and marks crash-left work interrupted in real SQLite', async ({ electronApp }) => {
   const result = await electronApp.evaluate(({ app }, root) => {
     const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
@@ -143,7 +211,7 @@ test('helper history persists reports and marks crash-left work interrupted in r
     store.startTurn({ conversationId: 'helper-history', runId: 'finished', userText: 'Review', approvalMode: 'every_interaction' });
     store.finishTurn({ conversationId: 'helper-history', runId: 'finished', status: 'completed', assistantText: 'Reviewed', activity: [
       { toolCallId: 'first', operation: 'delegate_task', status: 'succeeded', label: 'Received helper report',
-        subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Check README.md', toolCalls: 1 } },
+        subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Edit README', mode: 'edit', changedFiles: ['README.md'], attemptedFiles: ['README.md'], state: 'completed', report: 'Check README.md', toolCalls: 1 } },
     ] });
     store.updateTurnActivity({ conversationId: 'helper-history', runId: 'finished', activity: [
       { toolCallId: 'batch', operation: 'delegate_task', status: 'failed', subagents: [
@@ -197,7 +265,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     window.webContents.send('agent:event', { runId: 'run_helper_ui', type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '1 report received · 1 helper working',
-      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Review planet controls', state: 'completed', report: 'First report, while the other helper works.' },
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], attemptedFiles: ['app/PlanetControls.tsx'], state: 'completed', report: 'Updated planet controls, while the reviewer works.' },
         { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'running', report: '' }] });
   });
   await expect(window.locator('.agent-subagent-report')).toHaveCount(2);
@@ -210,13 +278,13 @@ test('delegated reports are expandable, inert and coherent in both themes and la
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
     emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '2 reports received',
-      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Review planet controls', state: 'completed', toolCalls: 3,
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], attemptedFiles: ['app/PlanetControls.tsx'], state: 'completed', toolCalls: 3,
         report: 'app/SolarScene.tsx: Pause and speed controls are wired correctly.\nKeyboard focus needs a visible style. No tests were run.\n<img src="https://invalid.test/tracker"> is shown as source text.' },
         { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, report: 'Add a visible keyboard focus style.' }] });
     emit({ type: 'tool_started', toolCallId: 'stopped', operation: 'delegate_task', intent: 'Delegating: Check labels' });
     emit({ type: 'tool_finished', toolCallId: 'stopped', operation: 'delegate_task', status: 'failed', label: 'Helper stopped — Check labels',
       subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Check labels', state: 'cancelled', toolCalls: 0, report: '' } });
-    emit({ type: 'run_finished', status: 'completed', durationMs: 2000, actionCount: 2, outcome: { kind: 'completed', verification: 'delegated_report', tone: 'neutral', headline: 'Helper reports received', detail: '2 reports received · 1 task stopped. Read-only, model-generated findings.' } });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 2000, actionCount: 2, outcome: { kind: 'completed', verification: 'delegated_report', tone: 'neutral', headline: 'Helper reports received', detail: '2 reports received · 1 task stopped. Editing helpers recorded 1 changed file. Review current changes before testing or committing; stopped tasks can leave partial edits.' } });
   });
   await expect(window.locator('.agent-subagent-report')).toHaveCount(3);
   await expect(window.locator('.agent-turn-outcome.neutral')).toContainText('2 reports received · 1 task stopped');

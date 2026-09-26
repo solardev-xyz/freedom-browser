@@ -14,6 +14,13 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('helper edits remain visible alongside parent reads and after stopping', () => {
+    const subagent = { taskId: `delegate_${'a'.repeat(24)}`, title: 'Implement', state: 'cancelled', mode: 'edit', changedFiles: ['README.md'], attemptedFiles: ['README.md'] };
+    const helper = { operation: 'delegate_task', status: 'failed', subagent };
+    const read = { operation: 'read', status: 'succeeded', workspace: { kind: 'file_read', command: 'Read README.md', state: 'completed', backend: 'freedom-workspace-files', workingDirectory: '.' } };
+    expect(buildAgentOutcome([helper, read], 'completed')).toMatchObject({ headline: 'Project file updated', detail: expect.stringContaining('Editing helpers recorded 1 changed file') });
+    expect(buildAgentOutcome([helper], 'cancelled').detail).toContain('partial edits');
+  });
   test('helper receipts remain model reports, not browser verification', () => {
     const subagent = { taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', report: 'Looks good' };
     const item = { operation: 'delegate_task', status: 'succeeded', ...activityProgress('delegate_task', { subagent }) };

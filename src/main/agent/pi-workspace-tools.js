@@ -46,6 +46,8 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
   'EXTERNAL_GIT_METADATA_DENIED',
   'PROTECTED_PATH_MISSING',
   'INVALID_WORKSPACE',
+  'WORKSPACE_WRITER_BUSY',
+  'DELEGATED_PATH_DENIED',
   'INVALID_WORKSPACE_REQUEST',
   'WORKSPACE_EXECUTION_NOT_ENABLED',
   'WORKSPACE_EXECUTION_PLATFORM_UNAVAILABLE',
@@ -57,6 +59,8 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
   'WORKSPACE_SANDBOX_DENIED',
 ]);
 const WORKSPACE_ERROR_MESSAGES = Object.freeze({
+  WORKSPACE_WRITER_BUSY: 'A helper owns editing or project changes are still running. Wait for the helper and pending writes before editing, running commands or changing history.',
+  DELEGATED_PATH_DENIED: 'This file is outside the delegated file list. Return to the parent to revise the assignment; do not work around it.',
   UNSAFE_GIT_CONFIGURATION: 'Project Git configuration is incompatible with the workspace sandbox. Additional editing permission does not resolve this.',
   WORKSPACE_CHANGED_DURING_VALIDATION: 'The project changed while Freedom was checking its filesystem. Wait for changes to settle before retrying; editing permission is not required.',
   WORKSPACE_HARDLINK_DENIED: 'Project hardlinks could not be safely contained within the workspace.',
