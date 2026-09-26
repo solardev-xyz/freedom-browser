@@ -1,0 +1,655 @@
+{
+  "date": "2026-09-24",
+  "platform": "darwin-arm64",
+  "electron": "44.4.5",
+  "node": "24.18.1",
+  "myotis": "0.1.12",
+  "abi": 32,
+  "scope": "Mainnet, disposable profiles; ENS policy myotis-only; event excerpts, paths and stacks omitted",
+  "runs": {
+    "fresh-and-cold-restart": {
+      "rawLogSha256": "63289a63647e522e378669cdec320e60f898c090f2da28171f4aad9e6640404b",
+      "events": [
+        {
+          "type": "status",
+          "elapsedMs": 453,
+          "phase": "fresh-cold",
+          "state": "syncing",
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 705,
+          "phase": "fresh-cold",
+          "state": "syncing",
+          "beaconState": "SYNCING",
+          "snapPeers": 0,
+          "snapServingPeers": 0,
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 3468,
+          "phase": "fresh-cold",
+          "state": "syncing",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 0,
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 11510,
+          "phase": "fresh-cold",
+          "state": "ready",
+          "beaconState": "SYNCED",
+          "snapPeers": 2,
+          "snapServingPeers": 1,
+          "ready": true
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 13152,
+          "phase": "fresh-cold",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 45123,
+          "phase": "fresh-cold",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 76968,
+          "phase": "fresh-cold",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "status",
+          "elapsedMs": 107632,
+          "phase": "fresh-cold",
+          "state": "syncing",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 1,
+          "ready": false
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 112040,
+          "phase": "fresh-cold",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 144082,
+          "phase": "fresh-cold",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "ens",
+          "elapsedMs": 166508,
+          "phase": "fresh-cold",
+          "ms": 6852,
+          "sinceReadyMs": 154998,
+          "result": {
+            "success": true,
+            "name": "vitalik.eth",
+            "system": "ens",
+            "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "trust": {
+              "level": "verified",
+              "system": "ens",
+              "method": "myotis",
+              "finality": "optimistic",
+              "proof": "P2P light client (optimistic beacon root \u2014 attested, not finalized)",
+              "block": null,
+              "agreed": ["myotis-p2p"],
+              "dissented": [],
+              "queried": ["myotis-p2p"],
+              "quorum": {
+                "k": 1,
+                "m": 1,
+                "achieved": true
+              }
+            }
+          }
+        },
+        {
+          "type": "warm-cache",
+          "elapsedMs": 166570,
+          "name": "peers.cache",
+          "bytes": 467,
+          "sha256": "847286258a8aca9948148e259e827bac88cd437e8ef3273a8a116a00ea1b1e8b",
+          "snapok": 1,
+          "snapbad": 0
+        },
+        {
+          "type": "warm-cache",
+          "elapsedMs": 166571,
+          "name": "cl-peers.cache",
+          "bytes": 190,
+          "sha256": "811c931076c10b7c05655956c089084902993dda5b5012e3f5b0006d11ea0dca",
+          "snapok": 0,
+          "snapbad": 0
+        },
+        {
+          "type": "status",
+          "elapsedMs": 166731,
+          "phase": "cold-el-restart",
+          "state": "syncing",
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 166982,
+          "phase": "cold-el-restart",
+          "state": "syncing",
+          "beaconState": "SYNCING",
+          "snapPeers": 0,
+          "snapServingPeers": 0,
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 167736,
+          "phase": "cold-el-restart",
+          "state": "ready",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 1,
+          "ready": true
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 169041,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "status",
+          "elapsedMs": 169793,
+          "phase": "cold-el-restart",
+          "state": "syncing",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 0,
+          "ready": false
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 179331,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "status",
+          "elapsedMs": 209982,
+          "phase": "cold-el-restart",
+          "state": "ready",
+          "beaconState": "SYNCED",
+          "snapPeers": 2,
+          "snapServingPeers": 2,
+          "ready": true
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 211500,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "status",
+          "elapsedMs": 241901,
+          "phase": "cold-el-restart",
+          "state": "syncing",
+          "beaconState": "SYNCED",
+          "snapPeers": 2,
+          "snapServingPeers": 2,
+          "ready": false
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 250474,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 282289,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 314445,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 346614,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "status",
+          "elapsedMs": 377003,
+          "phase": "cold-el-restart",
+          "state": "syncing",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 1,
+          "ready": false
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 386534,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 418703,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 450530,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 482656,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 514540,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 546614,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 587754,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 619812,
+          "phase": "cold-el-restart",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "failure",
+          "elapsedMs": 646945,
+          "message": "cold-el-restart: no Myotis ENS result within 480000ms"
+        },
+        {
+          "type": "complete",
+          "elapsedMs": 647033,
+          "success": false,
+          "stopped": [true, true]
+        }
+      ]
+    },
+    "warm-recovery-a": {
+      "rawLogSha256": "98ff84536aa7584813587aaaa2f1c40731b721c65d61b0c3527824d6b3915092",
+      "events": [
+        {
+          "type": "warm-cache",
+          "elapsedMs": 40,
+          "name": "peers.cache",
+          "bytes": 626,
+          "sha256": "d4889d6b596f0c6c0a2e3733daf70dff4c2dab1f1c5a62461efcf3e851fdabf9",
+          "snapok": 1,
+          "snapbad": 0
+        },
+        {
+          "type": "warm-cache",
+          "elapsedMs": 40,
+          "name": "cl-peers.cache",
+          "bytes": 190,
+          "sha256": "811c931076c10b7c05655956c089084902993dda5b5012e3f5b0006d11ea0dca",
+          "snapok": 0,
+          "snapbad": 0
+        },
+        {
+          "type": "status",
+          "elapsedMs": 214,
+          "phase": "warm-stale-recovery",
+          "state": "syncing",
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 466,
+          "phase": "warm-stale-recovery",
+          "state": "recovering",
+          "beaconState": "STALE_ANCHOR",
+          "recovery": {
+            "phase": "checking",
+            "reason": null,
+            "attempt": 1,
+            "nextRetryAt": null,
+            "canRetry": false,
+            "takingLonger": false
+          },
+          "ready": false
+        },
+        {
+          "type": "inherited-at-pointer-swap",
+          "elapsedMs": 3033,
+          "matched": true
+        },
+        {
+          "type": "status",
+          "elapsedMs": 3232,
+          "phase": "warm-stale-recovery",
+          "state": "recovering",
+          "beaconState": "SYNCING",
+          "recovery": {
+            "phase": "restarting",
+            "reason": null,
+            "attempt": 1,
+            "nextRetryAt": null,
+            "canRetry": false,
+            "takingLonger": false
+          },
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 5241,
+          "phase": "warm-stale-recovery",
+          "state": "syncing",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 0,
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 19313,
+          "phase": "warm-stale-recovery",
+          "state": "ready",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 1,
+          "ready": true
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 20882,
+          "phase": "warm-stale-recovery",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "ens",
+          "elapsedMs": 48880,
+          "phase": "warm-stale-recovery",
+          "ms": 4577,
+          "sinceReadyMs": 29567,
+          "result": {
+            "success": true,
+            "name": "vitalik.eth",
+            "system": "ens",
+            "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "trust": {
+              "level": "verified",
+              "system": "ens",
+              "method": "myotis",
+              "finality": "optimistic",
+              "proof": "P2P light client (optimistic beacon root \u2014 attested, not finalized)",
+              "block": null,
+              "agreed": ["myotis-p2p"],
+              "dissented": [],
+              "queried": ["myotis-p2p"],
+              "quorum": {
+                "k": 1,
+                "m": 1,
+                "achieved": true
+              }
+            }
+          }
+        },
+        {
+          "type": "recovery-complete",
+          "elapsedMs": 48881,
+          "sinceImportMs": 45848,
+          "checkpoint": {
+            "schemaVersion": 2,
+            "chainId": 1,
+            "network": "mainnet",
+            "root": "0x8245440beede38a40749674516ce3795f07a6ebfa835552338a34e638297cf43",
+            "slot": 15287456,
+            "verifiedAt": 1790274847762,
+            "sources": [
+              "https://mainnet.checkpoint.sigp.io",
+              "https://beaconstate.ethstaker.cc",
+              "https://beaconstate-mainnet.chainsafe.io"
+            ],
+            "finalizedEpoch": 477733
+          }
+        },
+        {
+          "type": "complete",
+          "elapsedMs": 48971,
+          "success": true,
+          "stopped": [true, true]
+        }
+      ]
+    },
+    "warm-recovery-b": {
+      "rawLogSha256": "73d07911709ebbfa79771d619ee4d4da0728371ad3fdf242d08db54a83127b69",
+      "events": [
+        {
+          "type": "warm-cache",
+          "elapsedMs": 42,
+          "name": "peers.cache",
+          "bytes": 626,
+          "sha256": "d4889d6b596f0c6c0a2e3733daf70dff4c2dab1f1c5a62461efcf3e851fdabf9",
+          "snapok": 1,
+          "snapbad": 0
+        },
+        {
+          "type": "warm-cache",
+          "elapsedMs": 42,
+          "name": "cl-peers.cache",
+          "bytes": 190,
+          "sha256": "811c931076c10b7c05655956c089084902993dda5b5012e3f5b0006d11ea0dca",
+          "snapok": 0,
+          "snapbad": 0
+        },
+        {
+          "type": "status",
+          "elapsedMs": 216,
+          "phase": "warm-stale-recovery",
+          "state": "syncing",
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 468,
+          "phase": "warm-stale-recovery",
+          "state": "syncing",
+          "beaconState": "SYNCING",
+          "snapPeers": 0,
+          "snapServingPeers": 0,
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 1221,
+          "phase": "warm-stale-recovery",
+          "state": "recovering",
+          "beaconState": "STALE_ANCHOR",
+          "recovery": {
+            "phase": "checking",
+            "reason": null,
+            "attempt": 1,
+            "nextRetryAt": null,
+            "canRetry": false,
+            "takingLonger": false
+          },
+          "ready": false
+        },
+        {
+          "type": "inherited-at-pointer-swap",
+          "elapsedMs": 3242,
+          "matched": true
+        },
+        {
+          "type": "status",
+          "elapsedMs": 3483,
+          "phase": "warm-stale-recovery",
+          "state": "recovering",
+          "beaconState": "SYNCING",
+          "recovery": {
+            "phase": "restarting",
+            "reason": null,
+            "attempt": 1,
+            "nextRetryAt": null,
+            "canRetry": false,
+            "takingLonger": false
+          },
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 9514,
+          "phase": "warm-stale-recovery",
+          "state": "syncing",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 0,
+          "ready": false
+        },
+        {
+          "type": "status",
+          "elapsedMs": 19566,
+          "phase": "warm-stale-recovery",
+          "state": "ready",
+          "beaconState": "SYNCED",
+          "snapPeers": 1,
+          "snapServingPeers": 1,
+          "ready": true
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 21071,
+          "phase": "warm-stale-recovery",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 52886,
+          "phase": "warm-stale-recovery",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 85020,
+          "phase": "warm-stale-recovery",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 117725,
+          "phase": "warm-stale-recovery",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "read-error",
+          "elapsedMs": 150064,
+          "phase": "warm-stale-recovery",
+          "message": "Myotis Universal Resolver call unavailable"
+        },
+        {
+          "type": "ens",
+          "elapsedMs": 187320,
+          "phase": "warm-stale-recovery",
+          "ms": 7605,
+          "sinceReadyMs": 167754,
+          "result": {
+            "success": true,
+            "name": "vitalik.eth",
+            "system": "ens",
+            "address": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "trust": {
+              "level": "verified",
+              "system": "ens",
+              "method": "myotis",
+              "finality": "optimistic",
+              "proof": "P2P light client (optimistic beacon root \u2014 attested, not finalized)",
+              "block": null,
+              "agreed": ["myotis-p2p"],
+              "dissented": [],
+              "queried": ["myotis-p2p"],
+              "quorum": {
+                "k": 1,
+                "m": 1,
+                "achieved": true
+              }
+            }
+          }
+        },
+        {
+          "type": "recovery-complete",
+          "elapsedMs": 187321,
+          "sinceImportMs": 184079,
+          "checkpoint": {
+            "schemaVersion": 2,
+            "chainId": 1,
+            "network": "mainnet",
+            "root": "0xb5125b773d37e6a5535ea73d7ea75296325b88f43bc4174041e5f7b6db774ca1",
+            "slot": 15287488,
+            "verifiedAt": 1790275034616,
+            "sources": [
+              "https://mainnet.checkpoint.sigp.io",
+              "https://beaconstate.ethstaker.cc",
+              "https://beaconstate-mainnet.chainsafe.io"
+            ],
+            "finalizedEpoch": 477734
+          }
+        },
+        {
+          "type": "complete",
+          "elapsedMs": 187365,
+          "success": true,
+          "stopped": [true, true]
+        }
+      ]
+    }
+  },
+  "officialAddonDiagnostic": {
+    "abi": 32,
+    "failure": "all 2 snap peer(s) failed to serve a verifiable block: 2x peer returned 0 headers, expected 1",
+    "rejection": "el dial: peer announces a head far behind the anchored one \u2014 not pooling",
+    "laterSuccess": {
+      "status": "ok",
+      "verified": false,
+      "blockNumber": 26049114
+    },
+    "finalCache": {
+      "snapok": 1,
+      "snapbad": 0
+    }
+  },
+  "coldRestartFinalCache": {
+    "snapok": 0,
+    "snapbad": 0,
+    "bytes": 787
+  }
+}

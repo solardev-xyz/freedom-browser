@@ -33,7 +33,7 @@ function supervisorPath() {
 
 function statusSnapshot(status) {
   const snapshot = {};
-  for (const key of ['beaconState', 'currentPeriod', 'targetPeriod', 'peerCount', 'snapPeers',
+  for (const key of ['beaconState', 'currentPeriod', 'targetPeriod', 'peerCount', 'snapPeers', 'snapServingPeers',
     'finalizedBlockNumber', 'executionBlockNumber', 'wsBoundPeriods', 'running', 'paused',
     'elReaderAvailable', 'elHunting', 'finalizedSlot', 'finalizedRootHex']) {
     const value = status?.[key];
@@ -55,7 +55,7 @@ function unavailable(message, uncertain = false) {
 }
 
 class MyotisProcess {
-  constructor({ addonPath, network, dataDir, checkpoint = null, onStatus, onUnavailable, onExit, onLifecycle = () => {} }) {
+  constructor({ addonPath, network, dataDir, checkpoint = null, bootEnodes = [], onStatus, onUnavailable, onExit, onLifecycle = () => {} }) {
     this.generation = randomUUID();
     this.onLifecycle = onLifecycle;
     this.lifecycleEvents = new Set();
@@ -103,7 +103,7 @@ class MyotisProcess {
         if (receipt.generation !== this.generation) { this.invalidReceipt(); return; }
         if (receipt.type === 'owned' && !this.owned) {
           this.owned = true;
-          if (!this.stopping) this.send({ type: 'start', addonPath, network, dataDir, checkpoint });
+          if (!this.stopping) this.send({ type: 'start', addonPath, network, dataDir, checkpoint, bootEnodes });
         } else if (receipt.type === 'reaped' && this.owned && !this.terminalReceipt &&
           typeof receipt.forced === 'boolean' &&
           Number.isInteger(receipt.exitCode) && receipt.exitCode >= -1 && receipt.exitCode <= 0xffffffff &&
@@ -164,6 +164,9 @@ class MyotisProcess {
         return;
       }
       this.checkpointSupported = message.checkpointSupported === true;
+      if (Number.isInteger(message.seedPinsCount) && message.seedPinsCount > 0 && message.seedPinsCount <= 64) {
+        this.report('seed-pins', { count: message.seedPinsCount, applied: message.seedPinsApplied === true });
+      }
       this.report('started');
       this.accepting = true;
       this.resolveStart(true);

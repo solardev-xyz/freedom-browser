@@ -339,6 +339,7 @@ describeFork('Safe on forked Gnosis + Base (reproducible addresses, retroactive 
     // start silently signs the mnemonic owner (1 of 2)…
     const started = await startSafeSend({
       safeIndex: 5,
+      chainId: 100,
       tx: { to: recipient, value: amount, data: '0x' },
       display: { toAddress: recipient, asset: null, amount },
     });

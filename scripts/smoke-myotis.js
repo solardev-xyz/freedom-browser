@@ -7,7 +7,7 @@ const path = require('path');
 // Cross-platform live smoke for the exact addon Freedom ships. This is kept
 // separate from the Playwright spec so CI can cache a cleanly-stopped sync
 // data directory even when the first cold run needs another attempt.
-const EXPECTED_ABI = 26;
+const { abi: EXPECTED_ABI } = require('./myotis-release.json');
 const VITALIK_ADDRESS = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
 const network = process.env.MYOTIS_NETWORK || 'mainnet';
 const POLL_INTERVAL_MS = 5000;
@@ -202,7 +202,7 @@ async function waitUntilReady(deadline) {
   for (;;) {
     const status = JSON.parse(addon.statusJson(handle));
     const summary =
-      `beacon=${status.beaconState} peers=${status.peerCount} snapPeers=${status.snapPeers} ` +
+      `beacon=${status.beaconState} peers=${status.peerCount} snapPeers=${status.snapPeers} snapServingPeers=${status.snapServingPeers} ` +
       `period=${status.currentPeriod}/${status.targetPeriod} ` +
       `el=${status.elReaderAvailable} hunting=${status.elHunting}`;
     if (summary !== lastSummary) {
@@ -224,7 +224,7 @@ async function waitUntilReady(deadline) {
       status.beaconState === 'SYNCED' &&
       status.elReaderAvailable === true &&
       status.elHunting !== true &&
-      status.snapPeers > 0;
+      typeof status.snapServingPeers === 'number' && status.snapServingPeers > 0;
     if (ready) return;
     if (Date.now() >= deadline) {
       throw new Error(

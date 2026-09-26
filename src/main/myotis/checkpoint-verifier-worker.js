@@ -85,7 +85,7 @@ function parseMetadata(bytes) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
     return value;
   } catch {
-    throw checkpointError('CHECKPOINT_UNAVAILABLE');
+    throw Object.assign(checkpointError('CHECKPOINT_UNAVAILABLE'), { failure: 'invalid-json' });
   }
 }
 
@@ -101,10 +101,12 @@ async function fetchBytes(fetchImpl, url, options, limit) {
       redirect: 'error',
       signal: controller.signal,
     });
-    if (response.status !== 200) throw checkpointError('CHECKPOINT_UNAVAILABLE');
+    if (response.status !== 200) throw Object.assign(checkpointError('CHECKPOINT_UNAVAILABLE'), {
+      failure: 'http', httpStatus: response.status,
+    });
     const length = response.headers.get('content-length');
     if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > limit)) {
-      throw checkpointError('CHECKPOINT_UNAVAILABLE');
+      throw Object.assign(checkpointError('CHECKPOINT_UNAVAILABLE'), { failure: 'body-limit' });
     }
     if (!response.body || typeof response.body.getReader !== 'function') {
       throw checkpointError('CHECKPOINT_UNAVAILABLE');
@@ -116,13 +118,15 @@ async function fetchBytes(fetchImpl, url, options, limit) {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > limit) throw checkpointError('CHECKPOINT_UNAVAILABLE');
+      if (size > limit) throw Object.assign(checkpointError('CHECKPOINT_UNAVAILABLE'), { failure: 'body-limit' });
       chunks.push(Buffer.from(value));
     }
     return Buffer.concat(chunks, size);
   } catch (error) {
     if (error?.code?.startsWith('CHECKPOINT_')) throw error;
-    throw checkpointError('CHECKPOINT_UNAVAILABLE');
+    throw Object.assign(checkpointError('CHECKPOINT_UNAVAILABLE'), {
+      failure: controller.signal.aborted ? 'timeout' : 'transport',
+    });
   } finally {
     clearTimeout(timer);
     controller.abort();
@@ -135,15 +139,23 @@ async function fetchBytes(fetchImpl, url, options, limit) {
 }
 
 // Each authority votes once for a (slot, root) only after explicitly endorsing
-// finality. A block-root response alone is never a vote. Checkpointz's history
-// endpoint lists finalized slots, allowing comparison when latest epochs differ.
+// finality. A root without a finality endorsement is never a vote. Beacon APIs
+// can mark the requested block finalized; Checkpointz also exposes finalized
+// history. These are authority assertions, not substitutes for Colibri's proof.
 async function checkpointVote(source, slot, config, fetchImpl, now) {
-  const metadata = async (pathname) => parseMetadata(await fetchBytes(
-    fetchImpl, source + pathname, { method: 'GET' }, MAX_METADATA_BYTES
-  ));
+  const metadata = async (pathname, stage) => {
+    try {
+      return parseMetadata(await fetchBytes(
+        fetchImpl, source + pathname, { method: 'GET' }, MAX_METADATA_BYTES
+      ));
+    } catch (error) {
+      error.stage = stage;
+      throw error;
+    }
+  };
   const [blockResult, finalityResult] = await Promise.allSettled([
-    metadata(`/eth/v1/beacon/blocks/${slot}/root`),
-    metadata('/eth/v1/beacon/states/head/finality_checkpoints'),
+    metadata(`/eth/v1/beacon/blocks/${slot}/root`, 'block-root'),
+    metadata('/eth/v1/beacon/states/head/finality_checkpoints', 'finality'),
   ]);
   for (const result of [blockResult, finalityResult]) {
     if (result.status === 'rejected') throw result.reason;
@@ -165,11 +177,24 @@ async function checkpointVote(source, slot, config, fetchImpl, now) {
     throw checkpointError('CHECKPOINT_CLOCK');
   }
   if (epochSlot < slot) throw checkpointError('CHECKPOINT_RACE');
+  if (block.finalized !== undefined && typeof block.finalized !== 'boolean') {
+    throw checkpointError('CHECKPOINT_UNAVAILABLE');
+  }
+  // A head STATE can be unfinalized while its reported finalized checkpoint is
+  // valid. Only the flag on the requested BLOCK is evidence for this vote.
+  if (block.finalized === false) throw checkpointError('CHECKPOINT_RACE');
+  if (config.beaconSources?.includes(source) &&
+      (block.finalized !== true || block.execution_optimistic !== false)) {
+    throw checkpointError('CHECKPOINT_UNAVAILABLE');
+  }
   if (finalizedRoot !== root) {
     if (epoch === Math.ceil(slot / config.slotsPerEpoch)) {
       throw checkpointError('CHECKPOINT_QUORUM_CONFLICT');
     }
-    const history = await metadata('/checkpointz/v1/beacon/slots');
+    if (block.finalized === true && block.execution_optimistic === false) {
+      return { source, slot, root, finalizedEpoch: Math.ceil(slot / config.slotsPerEpoch) };
+    }
+    const history = await metadata('/checkpointz/v1/beacon/slots', 'history');
     if (!Array.isArray(history.data?.slots) || history.data.slots.length > 256) {
       throw checkpointError('CHECKPOINT_UNAVAILABLE');
     }
@@ -183,7 +208,7 @@ async function checkpointVote(source, slot, config, fetchImpl, now) {
   return { source, slot, root, finalizedEpoch: Math.ceil(slot / config.slotsPerEpoch) };
 }
 
-async function checkpointQuorum(slot, config, fetchImpl, now) {
+async function checkpointQuorum(slot, config, fetchImpl, now, onDiagnostic = () => {}) {
   // Stable candidate order makes replacement depend on availability, never on
   // response speed or which answer we prefer. Definitive responses occupy one of
   // the three seats, including dissent or inconsistent evidence. Only candidates
@@ -194,9 +219,22 @@ async function checkpointQuorum(slot, config, fetchImpl, now) {
   while (next < config.sources.length && occupied < config.participants) {
     const candidates = config.sources.slice(next, next + config.participants - occupied);
     next += candidates.length;
-    const batch = await Promise.allSettled(candidates.map(
-      (source) => checkpointVote(source, slot, config, fetchImpl, now)
-    ));
+    const batch = await Promise.allSettled(candidates.map(async (source) => {
+      const started = Date.now();
+      let failure;
+      try {
+        return await checkpointVote(source, slot, config, fetchImpl, now);
+      } catch (error) {
+        failure = error;
+        throw error;
+      } finally {
+        try {
+          onDiagnostic({ source, slot, elapsedMs: Math.max(0, Date.now() - started),
+            outcome: failure?.code || 'vote', stage: failure?.stage,
+            failure: failure?.failure, httpStatus: failure?.httpStatus });
+        } catch { /* diagnostics cannot affect a vote */ }
+      }
+    }));
     results.push(...batch);
     occupied += batch.filter((result) => result.status === 'fulfilled' ||
       !['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_RACE'].includes(result.reason?.code)).length;
@@ -274,7 +312,7 @@ async function verifyCheckpoint(chainId, dependencies = {}) {
           if (++requestCount > MAX_TRUST_REQUESTS) throw checkpointError('CHECKPOINT_UNAVAILABLE');
           const slot = uint(url.pathname.split('/').at(-2));
           if (!quorumRequests.has(slot)) {
-            quorumRequests.set(slot, checkpointQuorum(slot, config, fetchImpl, now));
+            quorumRequests.set(slot, checkpointQuorum(slot, config, fetchImpl, now, dependencies.onDiagnostic));
           }
           const observation = await quorumRequests.get(slot);
           observations.push(observation);
@@ -380,7 +418,9 @@ async function verifyCheckpoint(chainId, dependencies = {}) {
 // The public parent API accepts only a chain ID. Dependencies are injectable
 // here for deterministic tests; they are never accepted in worker messages.
 if (!isMainThread && parentPort) {
-  verifyCheckpoint(workerData?.chainId)
+  verifyCheckpoint(workerData?.chainId, {
+    onDiagnostic: (diagnostic) => parentPort.postMessage({ type: 'checkpoint-source', diagnostic }),
+  })
     .then(
       (checkpoint) => parentPort.postMessage({ ok: true, checkpoint }),
       (error) =>

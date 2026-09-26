@@ -9,7 +9,7 @@ the recorded finite campaign; the remaining product gates still apply.
 
 ## Current checkpoint-recovery integration
 
-The current integration uses the official Myotis v0.1.11 release addon (ABI 29),
+The current integration uses the official Myotis v0.1.12 release addon (ABI 32),
 whose bytes are checksum-pinned in `scripts/myotis-release.json`; Freedom ships
 no patched or locally built extension. A stale anchor starts automatic Colibri checkpoint
 verification and a guarded native-generation replacement. It does not show the
@@ -36,7 +36,8 @@ Qualification of the current product flow must cover:
 - Process restart using the same authenticated checkpoint/state generation,
   plus a later expiry requiring a fresh generation without deleting the old one.
 - Wrong evidence, unavailable services, outdated replies and clock disagreement;
-  only transient conditions retry automatically, with a three-attempt limit.
+  only transient conditions retry automatically: two quick retries followed by
+  five-minute background retries, with manual retry available during waits.
 - Legacy active/unknown ownership records must block migration, while absent or
   native-retired records permit it; no recovery action clears quarantine.
 - Storage corruption/write failure and incompatible addons: no state adoption,

@@ -1,17 +1,18 @@
 const { EventEmitter } = require('events');
 const { runChild } = require('./myotis-child');
 
-function setup(abi = 29) {
+function setup(abi = 32) {
   const host = new EventEmitter();
   host.connected = true;
   host.send = jest.fn();
   host.exit = jest.fn();
   const addon = {
     init: jest.fn(() => abi), create: jest.fn(() => 7), start: jest.fn(() => true), stop: jest.fn(),
-    statusJson: jest.fn(() => JSON.stringify({ snapPeers: 2 })), drainLogs: jest.fn(),
+    statusJson: jest.fn(() => JSON.stringify({ snapPeers: 2, snapServingPeers: 1 })), drainLogs: jest.fn(),
     ensRecordJson: jest.fn(), requestAccountJson: jest.fn(), estimateGasJson: jest.fn(),
     acceptStaleAnchor: jest.fn(() => true),
     createWithCheckpoint: jest.fn(() => 8),
+    setBootEnodes: jest.fn(() => true),
     feeEstimateJson: jest.fn(), sendRawTransactionJson: jest.fn(),
     ethCallJson: jest.fn(async () => '{"resultHex":"0x1234"}'),
   };
@@ -23,8 +24,8 @@ function setup(abi = 29) {
   return { host, addon, load, send, start };
 }
 
-test('loads and starts native code only after explicit owned start; enforces ABI', () => {
-  const ctx = setup(21);
+test.each([26, 29, 30, 31, 33, '32'])('loads and starts native code only after explicit owned start; refuses ABI %s', (abi) => {
+  const ctx = setup(abi);
   expect(ctx.load).not.toHaveBeenCalled();
   ctx.start();
   expect(ctx.addon.create).not.toHaveBeenCalled();
@@ -74,6 +75,34 @@ test('does not expose the stale-anchor risk bypass', async () => {
   ctx.send({ type: 'request', id: 1, op: 'accept-stale-anchor', args: [] });
   expect(ctx.addon.acceptStaleAnchor).not.toHaveBeenCalled();
   expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ id: 1, ok: false }));
+});
+
+test.each([false, true])('pushes pins after native start (checkpoint import: %s)', imported => {
+  const ctx = setup();
+  const pins = [`enode://${'ab'.repeat(64)}@1.2.3.4:30303`];
+  ctx.send({ type: 'start', addonPath: '/addon.node', network: 'mainnet', dataDir: '/profile/mainnet',
+    bootEnodes: [...pins, 'invalid', ...pins],
+    ...(imported ? { checkpoint: { chainId: 1, network: 'mainnet', root: '0x' + 'ab'.repeat(32), slot: 1 } } : {}),
+  });
+  expect(ctx.addon.setBootEnodes).toHaveBeenCalledWith(imported ? 8 : 7, JSON.stringify(pins));
+  expect(ctx.addon.start.mock.invocationCallOrder[0]).toBeLessThan(ctx.addon.setBootEnodes.mock.invocationCallOrder[0]);
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: true, seedPinsCount: 1, seedPinsApplied: true }));
+});
+
+test.each(['refused', 'throw', 'missing'])('optional seed %s does not fail native startup or leak diagnostics', variant => {
+  const ctx = setup();
+  if (variant === 'refused') ctx.addon.setBootEnodes.mockReturnValue(false);
+  if (variant === 'throw') ctx.addon.setBootEnodes.mockImplementation(() => { throw new Error('private upstream detail'); });
+  if (variant === 'missing') delete ctx.addon.setBootEnodes;
+  ctx.send({ type: 'start', network: 'mainnet', bootEnodes: [`enode://${'ab'.repeat(64)}@1.2.3.4:30303`] });
+  expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: true, seedPinsCount: 1, seedPinsApplied: false }));
+  expect(ctx.host.exit).not.toHaveBeenCalled();
+  expect(JSON.stringify(ctx.host.send.mock.calls)).not.toContain('private');
+});
+
+test('empty pins skip the addon call', () => {
+  const ctx = setup(); ctx.start();
+  expect(ctx.addon.setBootEnodes).not.toHaveBeenCalled();
 });
 
 test('imports only a chain-bound checkpoint through the explicit native capability', () => {

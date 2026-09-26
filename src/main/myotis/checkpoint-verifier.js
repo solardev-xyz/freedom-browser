@@ -32,8 +32,11 @@ const CHECKPOINT_NETWORKS = Object.freeze({
     sources: Object.freeze([
       'https://checkpoint.gnosischain.com',
       'https://checkpoint-sync-gnosis.dappnode.net',
+      'https://gnosis-beacon-api.publicnode.com',
     ]),
-    participants: 2,
+    // Standard Beacon APIs must explicitly mark the requested block finalized.
+    beaconSources: Object.freeze(['https://gnosis-beacon-api.publicnode.com']),
+    participants: 3,
     threshold: 2,
     prover: 'https://gnosis.colibri-proof.tech',
     genesis: 1638993340,
@@ -121,7 +124,7 @@ function validateCheckpoint(value, chainId, { now = Date.now(), fresh = true } =
   };
 }
 
-function acquireCheckpoint(chainId, { signal } = {}) {
+function acquireCheckpoint(chainId, { signal, onDiagnostic } = {}) {
   return new Promise((resolve, reject) => {
     try {
       networkFor(chainId);
@@ -149,6 +152,7 @@ function acquireCheckpoint(chainId, { signal } = {}) {
     let worker;
     let timer;
     let settled = false;
+    let diagnosticCount = 0;
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
@@ -191,6 +195,14 @@ function acquireCheckpoint(chainId, { signal } = {}) {
       worker.stderr?.resume();
       worker.on('message', (message) => {
         if (settled) return;
+        if (message?.type === 'checkpoint-source') {
+          if (++diagnosticCount > 64) return;
+          const diagnostic = validateDiagnostic(message.diagnostic, chainId);
+          if (diagnostic && typeof onDiagnostic === 'function') {
+            try { onDiagnostic(diagnostic); } catch { /* diagnostics cannot affect verification */ }
+          }
+          return;
+        }
         if (message?.ok !== true) {
           finish(checkpointError(message?.error?.code));
           return;
@@ -212,6 +224,23 @@ function acquireCheckpoint(chainId, { signal } = {}) {
       finish(checkpointError('CHECKPOINT_UNAVAILABLE'));
     }
   });
+}
+
+// Worker diagnostics cross a trust boundary too. Never forward response bodies,
+// arbitrary URLs/messages or fields into main-process logs or renderer status.
+function validateDiagnostic(value, chainId) {
+  if (!value || !networkFor(chainId).sources.includes(value.source) ||
+      !Number.isSafeInteger(value.slot) || value.slot <= 0 ||
+      !Number.isSafeInteger(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > DEADLINE_MS ||
+      !(value.outcome === 'vote' || Object.hasOwn(ERROR_MESSAGES, value.outcome))) return null;
+  return {
+    chainId, source: value.source, slot: value.slot, outcome: value.outcome, elapsedMs: value.elapsedMs,
+    ...(['block-root', 'finality', 'history'].includes(value.stage) ? { stage: value.stage } : {}),
+    ...(['http', 'timeout', 'transport', 'body-limit', 'invalid-json'].includes(value.failure)
+      ? { failure: value.failure } : {}),
+    ...(Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599
+      ? { httpStatus: value.httpStatus } : {}),
+  };
 }
 
 module.exports = {

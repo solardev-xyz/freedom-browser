@@ -378,8 +378,8 @@ function feeQuote(source, gasPriceValue, priorityValue = null) {
   };
 }
 
-// Myotis answers account reads from its verified head state and takes no block
-// parameter. Any explicit tag other than `latest` — notably the `pending` nonce
+// Freedom requests Myotis account reads at the verified head. Although ABI 32
+// also accepts finalized reads, any explicit tag other than `latest` — notably the `pending` nonce
 // a new transaction needs — has to come from a source that honours the tag.
 function assertMyotisBlockTag(method, blockTag) {
   if (blockTag == null || blockTag === 'latest') return;
@@ -391,14 +391,10 @@ function assertMyotisBlockTag(method, blockTag) {
 // more than that has to go to a source that can honour it, rather than being
 // answered — as `verified` — from head state without it.
 //
-// Engine ABI 27 (Myotis v0.1.11) started enforcing the block argument instead
-// of discarding it: `latest`, `pending`, `safe`, `finalized` and an empty block
-// still run against head state, a number from 64 below to 16 above the verified
-// head runs against head state too, and anything else is refused rather than
-// answered from the head. We only ever send `latest` — `assertMyotisBlockTag`
-// above already refuses every other tag at the router — so the enforcement is
-// a backstop here, not a behaviour change. It does mean the servable-window
-// gate is no longer a host obligation alone.
+// ABI 27+ enforces the block selector; ABI 30+ serves `finalized` at the
+// finalized block instead of head state. Freedom still forwards only `latest`:
+// assertMyotisBlockTag refuses every other selector before calling the addon.
+// The additive blockNumber/verified envelope fields do not change nativeResult.
 const MYOTIS_UNSUPPORTED_CALL_FIELDS = [
   'gas',
   'gasPrice',

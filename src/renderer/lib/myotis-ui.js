@@ -168,7 +168,7 @@ const recoveryMessage = (status) => {
       recovery.reason === 'stale'
         ? 'Checkpoint is still out of date.'
         : recovery.reason === 'quorum-unavailable'
-          ? 'Waiting for checkpoint sources to agree.'
+          ? 'Not enough checkpoint sources available.'
           : 'Checkpoint service unavailable.';
     return seconds > 0 ? `${reason} Retrying in ${seconds}s…` : `${reason} Waiting to retry…`;
   }
@@ -199,14 +199,16 @@ function updateRecovery(button, status, chainId) {
   const message = document.getElementById(
     chainId === 100 ? 'myotis-gnosis-recovery-message' : 'myotis-recovery-message'
   );
-  if (!blocked) retryErrors.delete(chainId);
+  const canRetry = active && status.recovery?.canRetry &&
+    (blocked || status.recovery?.phase === 'waiting');
+  if (!canRetry) retryErrors.delete(chainId);
   if (message) {
     message.textContent = active ? retryErrors.get(chainId) || recoveryMessage(status) : '';
     message.hidden = !message.textContent;
     message.classList.toggle('warning', Boolean(blocked));
   }
   if (button) {
-    button.hidden = !(blocked && status.recovery?.canRetry);
+    button.hidden = !canRetry;
     button.disabled = retryingCheckpoints.has(chainId);
     button.textContent = button.disabled ? 'Starting…' : status?.recovery?.reason === 'storage' ? 'Repair sync data' : 'Retry sync';
   }
