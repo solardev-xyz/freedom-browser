@@ -210,6 +210,31 @@ test.each([
     },
     'REQUEST',
   ],
+  ['Ankr range cap', { code: -32602, message: 'block range is too wide' }, 'REQUEST'],
+  ['range limit exceeded', { code: -32005, message: 'Block range limit exceeded' }, 'REQUEST'],
+  [
+    'QuickNode range cap',
+    { code: -32602, message: 'eth_getLogs is limited to a 10,000 range' },
+    'REQUEST',
+  ],
+  [
+    'reth behind head',
+    {
+      code: -32000,
+      message: 'block range extends beyond current head block: requested 0x2000, head 0x1000',
+    },
+    'ENDPOINT',
+  ],
+  [
+    'Erigon still syncing',
+    {
+      code: -32000,
+      message:
+        'requested block range [4096, 8192] is beyond latest executed block 4000 (node is still syncing)',
+    },
+    'ENDPOINT',
+  ],
+  ['invalid range params', { code: -32602, message: 'invalid block range params' }, 'ENDPOINT'],
   ['HTTP 429', { message: 'HTTP 429' }, 'ENDPOINT'],
   ['HTTP 503', { message: 'HTTP 503' }, 'ENDPOINT'],
   ['transport', { name: 'TypeError', message: 'fetch failed' }, 'ENDPOINT'],
@@ -248,6 +273,19 @@ test('an endpoint-dependent failure reaches Ant without wording it would halve o
     const reply = antErrorReply('eth_getLogs', error);
     expect(antShrinksLogScanOn(reply.message)).toBe(false);
     expect(reply.code).toBe(Number.isSafeInteger(error.code) ? error.code : -32002);
+  }
+  // A coded reply not positively identified as a throttle may be a range cap
+  // worded outside the REQUEST list: it keeps its text, so Ant still halves.
+  for (const message of [
+    'query exceeds limit of 10000 logs',
+    'limit exceeded',
+    'Request exceeds defined limit',
+    'Exceeded max log count',
+    'backend response too large',
+  ]) {
+    const reply = antErrorReply('eth_getLogs', Object.assign(new Error(message), { code: -32005 }));
+    expect(reply.message).toBe(`Chain request failed: ${message}`);
+    expect(antShrinksLogScanOn(reply.message)).toBe(true);
   }
   // A range limit and methods Ant does not adapt keep their text.
   const range = Object.assign(new Error('query exceeds max block range 50000'), { code: -32005 });

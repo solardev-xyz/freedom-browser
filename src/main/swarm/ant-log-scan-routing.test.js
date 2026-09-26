@@ -57,6 +57,19 @@ const LOGS = ['LOGS'];
 // depend on the endpoint: Infura's and EIP-1474's -32005 texts.
 const THROTTLE = { code: -32005, message: 'project ID request rate exceeded' };
 const LIMIT_EXCEEDED = { code: -32005, message: 'limit exceeded' };
+// An endpoint behind the chain head names the block range, but a synced
+// endpoint may answer: reth's and Erigon's wordings.
+const RETH_LAG = {
+  code: -32000,
+  message: 'block range extends beyond current head block: requested 0x2000, head 0x1000',
+};
+const ERIGON_LAG = {
+  code: -32000,
+  message:
+    'requested block range [4096, 8192] is beyond latest executed block 4000 (node is still syncing)',
+};
+// A range cap worded outside the bridge's REQUEST list.
+const LOG_CAP = { code: -32005, message: 'query exceeds limit of 10000 logs' };
 
 const originalFetch = global.fetch;
 
@@ -79,6 +92,12 @@ function behave(step, signal) {
         return rpcReply({ error: THROTTLE });
       case 'limitExceeded':
         return rpcReply({ error: LIMIT_EXCEEDED });
+      case 'rethLag':
+        return rpcReply({ error: RETH_LAG });
+      case 'erigonLag':
+        return rpcReply({ error: ERIGON_LAG });
+      case 'logCap':
+        return rpcReply({ error: LOG_CAP });
       case '429':
         return Promise.resolve({ ok: false, status: 429, json: async () => ({}) });
       case 'down':
@@ -465,11 +484,44 @@ describe('PR #419 review findings', () => {
     }
   );
 
-  test.each(['throttle', 'limitExceeded'])(
-    'when every RPC answers a -32005 %s, Ant gets no wording it would halve on',
+  test('when every RPC answers a -32005 throttle, Ant gets no wording it would halve on', async () => {
+    const got = await scan({
+      rpcs: { a: 'throttle', b: 'throttle', c: 'throttle', d: 'throttle' },
+    });
+    expect(got).toMatchObject({ code: -32005, shrinks: false, at: 0 });
+  });
+
+  // Round 8 (PR #419 R2-F1/R2-F2).
+  test.each(['rethLag', 'erigonLag'])(
+    'R2-F1: a %s reply (endpoint behind head) falls through to a healthy untried RPC',
     async (kind) => {
+      const got = await scan({ rpcs: { a: kind, b: 'down', c: 'down', d: 'success' } });
+      expect(got).toMatchObject({ ...gotLogs, at: 0 });
+      expect(got.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c', 'd']);
+    }
+  );
+
+  test('R2-F1: a lagging untried Direct RPC does not stop the next one', async () => {
+    const got = await scan({
+      rpcs: { a: 'down', b: 'down', c: 'down', d: 'rethLag', e: 'success' },
+    });
+    expect(got).toMatchObject({ ...gotLogs, at: 0 });
+    expect(got.fetches.map((entry) => entry.split('@')[0])).toContain('e');
+  });
+
+  test.each([
+    ['limitExceeded', LIMIT_EXCEEDED],
+    ['logCap', LOG_CAP],
+  ])(
+    'R2-F2: when every RPC answers an unrecognised -32005 %s, Ant still halves on its text',
+    async (kind, error) => {
       const got = await scan({ rpcs: { a: kind, b: kind, c: kind, d: kind } });
-      expect(got).toMatchObject({ code: -32005, shrinks: false, at: 0 });
+      expect(got).toMatchObject({
+        code: -32005,
+        message: `Chain request failed: ${error.message}`,
+        shrinks: true,
+        at: 0,
+      });
     }
   );
 });

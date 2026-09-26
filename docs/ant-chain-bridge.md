@@ -48,11 +48,19 @@ exceeded`. It depends on the query, not the endpoint. Ant's needles alone
    - _Endpoint-dependent_ (lowest): everything else, which Ant cannot act on:
      `-32601` method not found, `-32603` internal error, rate limits and
      throttles (`-32005 rate limit exceeded`, Infura's `-32005 project ID
-request rate exceeded`, EIP-1474's `-32005 limit exceeded`), HTTP
-     429/5xx, transport failures, a source that is not ready or does not serve
-     logs. If such an error is what finally reaches Ant, the bridge keeps its
-     code but replaces text that would match Ant's needles with `endpoint
-unavailable`, so Ant does not halve its window on a throttle.
+request rate exceeded`), an endpoint behind the chain head (reth's `block
+range extends beyond current head block`, Erigon's `... is beyond latest
+executed block N (node is still syncing)` — they name a range but a synced
+     endpoint may answer), a coded reply whose wording names neither a throttle
+     nor the query's size (EIP-1474's `-32005 limit exceeded`), HTTP 429/5xx,
+     transport failures, a source that is not ready or does not serve logs.
+     If such an error is what finally reaches Ant, the bridge keeps its code
+     and text, except that a recognised throttle, or a source/transport failure
+     with no JSON-RPC code, whose text would match Ant's needles is replaced
+     with `endpoint unavailable`, so Ant does not halve its window on a
+     throttle. Any other wording is forwarded, so a range cap worded outside
+     the list above (`query exceeds limit of 10000 logs`) still makes Ant halve
+     once no endpoint answered better, as it would against that RPC directly.
 2. **Keep the most useful failure seen so far**, across every tier (Myotis,
    Colibri, each quorum member, each Direct attempt and retry). A later
    failure replaces it only if it ranks strictly higher, so a range limit
