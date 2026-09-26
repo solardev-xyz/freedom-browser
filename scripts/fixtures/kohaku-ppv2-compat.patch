@@ -1,11 +1,9 @@
 --- a/packages/privacy-pools/src/v2/adapters/rpc.adapter.ts
 +++ b/packages/privacy-pools/src/v2/adapters/rpc.adapter.ts
-@@ -68,6 +68,27 @@
-     /** Latest block number, 0x-hex per the SDK convention. */
-     async getBlockNumber(): Promise<Hex> {
+@@ -70,6 +70,27 @@
          return numberToHex(await this.provider.getBlockNumber());
-+    }
-+
+     }
+
 +    /** Remote finality is unverified evidence. A failed/refused read must never
 +     * select the SDK's weaker `unsupported` confirmation-depth fallback.
 +     */
@@ -25,9 +23,54 @@
 +            // Fixed diagnostic: endpoint responses can contain sensitive data.
 +        }
 +        return { status: "unavailable", reason: "Finalized block unavailable" };
++    }
++
+     /** Wait until the transaction mines, then return the SDK-shaped receipt with full logs. */
+     async waitForTransactionReceipt(hash: Hex): Promise<TxReceipt> {
+         await this.provider.waitForTransaction(hash);
+@@ -122,36 +143,13 @@
+         const to = params.toBlock ?? (await this.provider.getBlockNumber());
+         const out: DecodedEventLog[] = [];
+
+-        await this.scanWindow(params, from, to, 5000n, out);
+-
++        // Fixed windows only. Permission, lifetime, rate and transport errors
++        // must not fan out into recursive retries with smaller ranges.
++        for (let start = from; start <= to; start += 5000n) {
++            const end = start + 4999n < to ? start + 4999n : to;
++            out.push(...(await this.getLogs({ ...params, fromBlock: start, toBlock: end })));
++        }
+         return out;
+-    }
+-
+-    /** Scan `[from,to]` in windows; bisect a window that fails (provider size/rate caps). */
+-    private async scanWindow(
+-        params: GetLogsParams,
+-        from: bigint,
+-        to: bigint,
+-        window: bigint,
+-        out: DecodedEventLog[],
+-    ): Promise<void> {
+-        for (let start = from; start <= to; start += window) {
+-            const rawEnd = start + window - 1n;
+-            const end = rawEnd < to ? rawEnd : to;
+-
+-            try {
+-                out.push(...(await this.getLogs({ ...params, fromBlock: start, toBlock: end })));
+-            } catch (err) {
+-                if (end > start) {
+-                    const mid = start + (end - start) / 2n;
+-
+-                    await this.scanWindow(params, start, mid, mid - start + 1n, out);
+-                    await this.scanWindow(params, mid + 1n, end, end - mid, out);
+-                } else {
+-                    throw err;
+-                }
+-            }
+-        }
      }
 
-     /** Wait until the transaction mines, then return the SDK-shaped receipt with full logs. */
+     /** Decode a single raw log against the event ABI set; skip non-matching logs. */
 --- a/packages/privacy-pools/src/v2/mapping/status.ts
 +++ b/packages/privacy-pools/src/v2/mapping/status.ts
 @@ -18,11 +18,14 @@
@@ -79,3 +122,155 @@
 -    labelState: "pending" | "approved" | "revoked";
 +    labelState: "pending" | "approved" | "revoked" | "unknown";
  };
+--- a/packages/privacy-pools/src/v2/interfaces/plugin.interface.ts
++++ b/packages/privacy-pools/src/v2/interfaces/plugin.interface.ts
+@@ -102,6 +102,8 @@
+     ownerAddress: Address;
+     /** SDK contract addresses; falls back to `DEPLOYMENTS[chainId]`. */
+     deployment?: DeploymentAddresses;
++    /** Reviewed deployment start; never substitute a recent-head shortcut. */
++    deploymentBlock?: Hex;
+     /** ASP endpoint; pin the public key (not authenticated on-chain, DEP-4). */
+     asp: { baseUrl: string; publicKey?: PublicKey };
+     /** Must contain at least one relayer (transfers/unshields need one, DEP-5). */
+--- a/packages/privacy-pools/src/v2/session.ts
++++ b/packages/privacy-pools/src/v2/session.ts
+@@ -1,6 +1,12 @@
+ import type { Host } from "@kohaku-eth/plugins";
+ import {
+     type INoteManager,
++    type DeriveFromSignatureConfig,
++    type Hex,
++    CryptoService,
++    KeystoreInteractor,
++    NoteComputationService,
++    PoseidonHashService,
+     type KeystoreManager,
+     NoteManager,
+     NoteStorageAdapter,
+@@ -69,6 +75,7 @@
+     const builder = PoolSessionBuilder.fromConfig({
+         chainId: Number(params.chainId),
+         rpcUrl: PLACEHOLDER_RPC_URL,
++        ...(params.deploymentBlock !== undefined ? { deploymentBlock: params.deploymentBlock } : {}),
+         ownerAddress: params.ownerAddress as Address,
+         ...(params.deployment && !factories.entrypointInteractor
+             ? { deployment: params.deployment }
+@@ -105,3 +112,39 @@
+
+     return { session, noteManager };
+ }
++
++/** The SDK candidate searches auth events under config.signerAddress, but Kohaku
++ * registers params.ownerAddress. Keep the KDF signer unchanged and read events
++ * for the public owner. Recheck on every open: another device may have rotated.
++ */
++export async function discoverOwnerRevocableKeyIndex(
++    host: Host,
++    params: PPv2PluginParameters,
++    config: DeriveFromSignatureConfig,
++): Promise<Hex> {
++    const gapLimit = params.revocableKeyGapLimit ?? 20;
++    if (!params.deployment || !Number.isInteger(gapLimit) || gapLimit < 1 || gapLimit > 256) {
++        throw new Error("Unsupported rotation recovery configuration");
++    }
++    const interactor = new KeystoreInteractor({
++        rpcInteractor: new KohakuRpcInteractor(host.provider),
++        contractAddress: params.deployment.keystoreAddress,
++        ...(params.deploymentBlock !== undefined ? { deploymentBlock: BigInt(params.deploymentBlock) } : {}),
++    });
++    const currentDigest = await interactor.getCurrentAuthorizerDigest(params.ownerAddress as Address);
++    if (currentDigest === null) throw new Error("Registered owner has no auth policy history");
++    const cryptoService = new CryptoService();
++    const hashService = await PoseidonHashService.create();
++    const notes = new NoteComputationService({ cryptoService, hashService });
++    // A persisted high index is useful even when it exceeds the fresh-device
++    // gap. It is a candidate, never proof that the chain still uses that key.
++    const indices = new Set<Hex>([config.revocableKeyIndex]);
++    for (let index = 0; index < gapLimit; index += 1) indices.add(`0x${index.toString(16)}`);
++    for (const revocableKeyIndex of indices) {
++        const derived = cryptoService.deriveKeysFromSignature({ ...config, revocableKeyIndex });
++        if (BigInt(notes.computeAuthDigest(derived.privateRevocableKey)) === BigInt(currentDigest)) {
++            return revocableKeyIndex;
++        }
++    }
++    throw new Error("Revocable key index is outside the reviewed recovery range");
++}
+--- a/packages/privacy-pools/src/v2/plugin.ts
++++ b/packages/privacy-pools/src/v2/plugin.ts
+@@ -37,7 +37,7 @@
+ import { amountToHex, assetToTokenId, hexToAmount, tokenIdToAsset } from "./mapping/assets";
+ import { isExcluded, isSpendable, labelStateFor, statusLabel, statusToReport } from "./mapping/status";
+ import { selectInputNotes } from "./selection/note-selection";
+-import { assemblePoolSession } from "./session";
++import { assemblePoolSession, discoverOwnerRevocableKeyIndex } from "./session";
+
+ /** Constructor dependencies for {@link PPv2Plugin}; assembled by {@link createPPv2Plugin}. */
+ type PPv2PluginDeps = {
+@@ -527,11 +527,8 @@
+     host: Host,
+     params: PPv2PluginParameters,
+ ): Promise<PPv2Instance> => {
+-    // Rotation-index recovery (FR-013, T062): derive with the persisted index when
+-    // one exists. On a fresh device (no record) with an on-chain registration, run
+-    // the SDK's gap scan once and, if the account rotated, re-derive + re-assemble
+-    // at the discovered index. Unregistered accounts cannot have rotated — skip the
+-    // scan and stay at index 0 without persisting (so a later restore still scans).
++    // Persisted indices are hints. Recheck the owner auth history on every open
++    // so a rotation on another device cannot silently leave this session stale.
+     const recordStorage = new KohakuStorageService(host.storage, params.storeKey);
+     const persistedIndex = await readRevocableKeyIndex(
+         recordStorage,
+@@ -554,17 +551,10 @@
+
+         assembled = await assemblePoolSession(host, params, derived.keystoreManager);
+
+-        if (persistedIndex === null && (await assembled.session.isKeystoreRegistered())) {
+-            const discovered = await assembled.session.discoverRevocableKeyIndex(
+-                {
+-                    signature: derived.deriveConfig.signature,
+-                    signerAddress: derived.deriveConfig.signerAddress,
+-                    addressHash: derived.deriveConfig.addressHash,
+-                },
+-                params.revocableKeyGapLimit,
+-            );
+-
+-            if (BigInt(discovered) !== 0n) {
++        if (await assembled.session.isKeystoreRegistered()) {
++            const discovered = await discoverOwnerRevocableKeyIndex(host, params, derived.deriveConfig);
++
++            if (BigInt(discovered) !== BigInt(derived.deriveConfig.revocableKeyIndex)) {
+                 derived = await deriveKeystoreManager({
+                     keystore: host.keystore,
+                     accountIndex: params.accountIndex,
+@@ -579,6 +569,8 @@
+                 params.ownerAddress,
+                 discovered,
+             );
++        } else if (persistedIndex !== null) {
++            throw new Error("Persisted registration is absent from the observed chain");
+         }
+     } catch (err) {
+         throw mapSdkError(err);
+--- a/packages/privacy-pools/src/v2/account/keystore-record.ts
++++ b/packages/privacy-pools/src/v2/account/keystore-record.ts
+@@ -1,3 +1,4 @@
++import { StorageCorruptionError } from "../interfaces/errors";
+ import type { Hex } from "@0xbow-io/privacy-pools-v2-sdk";
+ import type { KohakuStorageService } from "../adapters/storage.adapter";
+
+@@ -27,7 +28,13 @@
+ ): Promise<Hex | null> {
+     const record = await storage.get<KeystoreRecord>(recordKey(chainId, ownerAddress));
+
+-    return record?.revocableKeyIndex ?? null;
++    if (record === null) return null;
++    if (record.version !== 1 || typeof record.revocableKeyIndex !== "string" ||
++        !/^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(record.revocableKeyIndex) ||
++        BigInt(record.revocableKeyIndex) > 0xffffffffffffffffn) {
++        throw new StorageCorruptionError(recordKey(chainId, ownerAddress));
++    }
++    return record.revocableKeyIndex;
+ }
+
+ /** Persist the rotation index (after discovery or observed rotation). */

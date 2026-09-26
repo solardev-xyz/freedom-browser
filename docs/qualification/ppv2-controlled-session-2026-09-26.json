@@ -1,0 +1,57 @@
+{
+  "candidate": {
+    "kohaku": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+    "sdk": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+    "compatibility": "freedom-controlled-session-v1"
+  },
+  "compatibilityPatchSha256": "411957dbb894d0fcb499933a3fb54367befb7fd474bac6098ac07afa32f0133e",
+  "pluginSha256": "83a4629e700d6c9dbe5aa881a78f105595cd1c69c306de5e288922be639408b5",
+  "node": "v24.18.1",
+  "realKohakuFactory": true,
+  "realSdk": true,
+  "syntheticMnemonic": true,
+  "independentDerivation": "viem/scure BIP32",
+  "registrationCallsPrepared": 2,
+  "rpcWindowsBounded": true,
+  "failureAttempts": 1,
+  "roleIsolation": true,
+  "encryptedStateRestored": true,
+  "syncCursorRestored": true,
+  "vaultLockRejectsLateRead": true,
+  "reopenedAfterUnlock": true,
+  "recoveredOwnerRotationIndices": [
+    7,
+    8
+  ],
+  "staleCachedRotationRechecked": true,
+  "unknownRotationRefused": true,
+  "malformedRotationRecordRefused": true,
+  "missingPersistedRegistrationRefused": true,
+  "ambientNetworkAttempts": 0,
+  "liveNetwork": false,
+  "transactionSubmitted": false,
+  "shieldUnshieldTested": false,
+  "productionIdentityFinalized": false,
+  "validation": {
+    "fullRegression": {
+      "passed": 5574,
+      "skipped": 33,
+      "baselineFailures": 3
+    },
+    "focused": {
+      "passed": 38,
+      "skipped": 2
+    },
+    "adapterTypecheck": true,
+    "lint": true,
+    "newSessionPackagedElectron": false
+  },
+  "sourceDigests": {
+    "src/main/identity/ppv2-keys.js": "94d4b3b4dd88f1c013fb2fa71fe0ee043fe00391d801efdf0b0272c812a210d7",
+    "src/main/wallet/ppv2-storage.js": "340449ce1b96b4a8506d030b1bb8699bd67e6ae5fef9799068862635e57ceacb",
+    "src/main/wallet/ppv2-session.js": "8bc7d467cdccebf396c474804cd8fd45ffdb49d3b2d24d3617b7223055a5dd44",
+    "src/main/networks/kohaku-network-router.js": "4866af7a50d9fa26f1336d0f159bb80fc50bf5d807031be1a91bb7c64ff51c40",
+    "scripts/spike-ppv2-session.js": "3d69ca0936c92c4892146ea74424e42ed1cc43077999c58157c9c897b50fb129",
+    "scripts/fixtures/kohaku-ppv2-compat.patch": "411957dbb894d0fcb499933a3fb54367befb7fd474bac6098ac07afa32f0133e"
+  }
+}

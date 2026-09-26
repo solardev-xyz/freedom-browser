@@ -2,6 +2,8 @@
 
 Date: 2026-09-26. Continuation of [the source qualification](ppv2-sdk-qualification-2026-09-25.md). Main remains `2983dc62`, already merged; no new managed-node refresh was needed. Application dependencies and production activation are unchanged.
 
+Later continuation: [controlled session assembly and rotation recovery](ppv2-controlled-session-2026-09-26.md) now qualifies the real Kohaku factory against controlled services. Its expanded compatibility patch supersedes this checkpoint's patch digest; the process-host qualification below remains a separate, earlier measurement.
+
 ## Adapter update
 
 Added a small [compatibility patch](../scripts/fixtures/kohaku-ppv2-compat.patch) for Kohaku PR #258 at `6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e`, against PPv2 SDK `fe0244e3f14110efd83db02c60c96517dea9cd5a`. It applies only to freshly extracted scratch source when `spike-kohaku-ppv2-sdk.js` is run with `--compat`. It is not a published upstream change or a production-installed plugin.

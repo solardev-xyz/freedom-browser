@@ -8,6 +8,7 @@ const { listen, proxy } = require('../../../test/helpers/tor-socks-fixture');
 const fixture = require('../../../test/helpers/tor-tls-fixture');
 const { createPrivacyScope } = require('./privacy-context');
 const { createKohakuNetwork } = require('./kohaku-network');
+const { createKohakuNetworkRouter } = require('./kohaku-network-router');
 let mockAvailable, mockEndpoint, mockCertificate;
 let scope, server, socks, network;
 const seen = [];
@@ -60,6 +61,36 @@ test('capabilities bind endpoint, path, method and public pool scope before any 
   expect(socks.records).toHaveLength(0);
   await asp.fetch(`${origin}/public/tree`, { headers: { 'x-pool-scope': '123' } });
   expect(seen[0].headers['x-pool-scope']).toBe('123');
+});
+
+test('one SDK interface keeps ASP and relayer SOCKS identities separate even on the same origin', async () => {
+  const groups = [
+    { handle: context('a', 'asp'), endpoints: [{ url: `${origin}/asp/`, methods: ['GET'] }] },
+    { handle: context('a', 'relayer'), endpoints: [{ url: `${origin}/quote`, methods: ['POST'] }] },
+  ];
+  const router = createKohakuNetworkRouter(groups);
+  groups[1].endpoints[0].url = `${origin}/submit`;
+  await router.fetch(`${origin}/asp/tree`);
+  await router.fetch(`${origin}/quote`, { method: 'POST', body: '{}' });
+  expect(socks.records).toHaveLength(2);
+  expect(new Set(socks.records.map((record) => record.token)).size).toBe(2);
+  for (const [url, init] of [[`${origin}/submit`, { method: 'POST' }], [`${origin}/asp/tree`, { method: 'POST' }],
+    [`${origin}/quote`, {}], [`${origin}/asp/tree`, { headers: { authorization: 'fixture' } }]]) {
+    await expect(router.fetch(url, init)).rejects.toMatchObject({ code: 'PRIVATE_SDK_REQUEST_REFUSED' });
+  }
+  expect(seen.map((record) => record.url)).toEqual(['/asp/tree', '/quote']);
+  scope.close();
+  await expect(router.fetch(`${origin}/asp/tree`)).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
+});
+
+test('role router rejects ambiguous paths, another account and duplicate roles before I/O', () => {
+  const group = (principal, role, suffix) => ({ handle: context(principal, role), endpoints: [{ url: `${origin}${suffix}`, methods: ['GET'] }] });
+  for (const groups of [
+    [group('a', 'asp', '/'), group('a', 'relayer', '/quote')],
+    [group('a', 'asp', '/asp/'), group('b', 'relayer', '/quote')],
+    [group('a', 'asp', '/asp/'), group('a', 'asp', '/quote')],
+  ]) expect(() => createKohakuNetworkRouter(groups)).toThrow();
+  expect(socks.records).toHaveLength(0);
 });
 
 test('redirects and oversized bodies fail without fallback; Tor replacement revokes this capability', async () => {
