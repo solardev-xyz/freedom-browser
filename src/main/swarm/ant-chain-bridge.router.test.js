@@ -123,3 +123,33 @@ test('reaches a healthy fourth RPC before the bridge deadline', async () => {
   expect(response.result).toEqual(['ok']);
   expect(global.fetch.mock.calls[3][0]).toBe('https://d.example');
 });
+
+// R5-F1: a JSON-RPC error Ant cannot act on (one endpoint lacks the method)
+// must not stop the widened retry of hung quorum members or reach Ant, which
+// would abort its log scan.
+test('retries hung RPCs past an endpoint-specific error Ant cannot act on', async () => {
+  let aCalls = 0;
+  global.fetch = jest.fn((url, { signal }) => {
+    if (url === 'https://c.example') {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          error: { code: -32601, message: 'the method eth_getLogs does not exist' },
+        }),
+      });
+    }
+    if (url === 'https://a.example' && ++aCalls === 2) {
+      return new Promise((resolve) =>
+        setTimeout(() => resolve({ ok: true, json: async () => ({ result: [] }) }), 700)
+      );
+    }
+    return new Promise((_resolve, reject) =>
+      signal.addEventListener('abort', () =>
+        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+      )
+    );
+  });
+  const response = await post(bridge.url, getLogs);
+  expect(response).toMatchObject({ result: [] });
+  expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([...RPCS, 'https://a.example']);
+});

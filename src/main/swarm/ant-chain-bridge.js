@@ -26,6 +26,36 @@ const MAX_ERROR_MESSAGE = 500;
 // error, so a range limit still reaches Ant when no endpoint is left untried.
 const LOG_SCAN_DIRECT_TIMEOUT_MS = 60000;
 
+// Ant v0.5.45 `is_range_limit_error` (crates/ant-chain/src/discover.rs): its
+// eth_getLogs scan shrinks the window only when the error message contains
+// one of these needles, and aborts owned-batch/chequebook recovery otherwise.
+const ANT_LOG_SCAN_SHRINK_NEEDLES = Object.freeze([
+  'block range',
+  'range',
+  'more than',
+  'exceed',
+  'too large',
+  '10000',
+  'limit',
+  'logs matched',
+  'response size',
+  'up to a',
+  'query timeout',
+  'too many results',
+]);
+
+function antShrinksLogScanOn(message) {
+  if (typeof message !== 'string') return false;
+  const lower = message.toLowerCase();
+  return ANT_LOG_SCAN_SHRINK_NEEDLES.some((needle) => lower.includes(needle));
+}
+
+// Only an upstream reply Ant acts on (a range limit) is a verdict for the
+// router: it stops the widened retries and outranks a later timeout. Any
+// other reply (method not found on one endpoint) must not, or it would reach
+// Ant in place of a result or a query timeout and abort the scan.
+const isLogScanVerdict = (error) => antShrinksLogScanOn(error?.message);
+
 // Forward the upstream wording (Ant keys retry decisions on it, e.g. "query
 // exceeds max block range 50000") without URLs, which may carry RPC API keys,
 // control characters or unbounded length.
@@ -164,7 +194,11 @@ async function startAntChainBridge({
               // Ant's polling must not queue ahead of wallet/app reads.
               background: true,
               ...(method === 'eth_getLogs'
-                ? { directTimeoutMs: LOG_SCAN_DIRECT_TIMEOUT_MS, upstreamQuorumError: true }
+                ? {
+                    directTimeoutMs: LOG_SCAN_DIRECT_TIMEOUT_MS,
+                    upstreamQuorumError: true,
+                    actionableError: isLogScanVerdict,
+                  }
                 : {}),
             });
       controller.signal.throwIfAborted();
@@ -283,4 +317,4 @@ async function startAntChainBridge({
   };
 }
 
-module.exports = { startAntChainBridge };
+module.exports = { startAntChainBridge, antShrinksLogScanOn, ANT_LOG_SCAN_SHRINK_NEEDLES };

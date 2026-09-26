@@ -1,7 +1,7 @@
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const { Wallet } = require('ethers');
-const { startAntChainBridge } = require('./ant-chain-bridge');
+const { startAntChainBridge, antShrinksLogScanOn } = require('./ant-chain-bridge');
 
 function post(url, body, headers = {}, method = 'POST') {
   return new Promise((resolve, reject) => {
@@ -104,25 +104,7 @@ test('coverage failure stays an error, never an empty log result', async () => {
   expect(router.request).toHaveBeenCalledTimes(1);
 });
 
-// Ant v0.5.45 `is_range_limit_error` (crates/ant-chain/src/discover.rs): its
-// eth_getLogs scan shrinks the window only when the message matches one of
-// these needles, and aborts owned-batch/chequebook recovery otherwise.
-const ANT_RANGE_NEEDLES = [
-  'block range',
-  'range',
-  'more than',
-  'exceed',
-  'too large',
-  '10000',
-  'limit',
-  'logs matched',
-  'response size',
-  'up to a',
-  'query timeout',
-  'too many results',
-];
-const antShrinks = (message) =>
-  ANT_RANGE_NEEDLES.some((needle) => message.toLowerCase().includes(needle));
+const antShrinks = antShrinksLogScanOn;
 
 test('range-limit and timeout failures keep wording Ant shrinks its log scan on', async () => {
   router.request.mockRejectedValue(
@@ -158,7 +140,20 @@ test('Ant reads are background work and wide log scans get a longer direct budge
     background: true,
     directTimeoutMs: 60000,
     upstreamQuorumError: true,
+    actionableError: expect.any(Function),
   });
+  const { actionableError } = router.request.mock.calls.at(-1)[3];
+  // Ant's range limit is a verdict; an endpoint-specific error Ant cannot act
+  // on (it would abort the scan) is not.
+  expect(actionableError(new Error('query exceeds max block range 50000'))).toBe(true);
+  expect(actionableError(new Error('the method eth_getLogs does not exist'))).toBe(false);
+});
+
+test("Ant's shrink needles match v0.5.45 is_range_limit_error", () => {
+  expect(antShrinksLogScanOn('Query Timeout')).toBe(true);
+  expect(antShrinksLogScanOn('Log response size exceeded')).toBe(true);
+  expect(antShrinksLogScanOn('the method eth_getLogs does not exist/is not available')).toBe(false);
+  expect(antShrinksLogScanOn(undefined)).toBe(false);
 });
 
 test('preserves revert code and hex data', async () => {
