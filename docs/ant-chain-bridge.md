@@ -23,35 +23,62 @@ follow the network's configured policy (default Myotis → Colibri → RPC quoru
 single in-flight slot is idle and never queue for it, so the node's polling
 cannot push interactive wallet/app reads into queue-full fallback.
 
-Wide `eth_getLogs` scans get a 60 s per-URL budget on the direct tier (never
-less than the chain's configured timeout). With the default Gnosis policy the
-RPC quorum tier asks the first `k` (3) endpoints first, at the configured 5 s.
-The direct tier then tries, in registry order, the endpoints quorum never
-asked, and only after those retries the quorum members that never answered,
-now with 60 s. An endpoint that answered quorum with an error (for example a
-range limit) is not asked again. Once any endpoint has answered with an error
-Ant acts on (its message matches one of Ant's range-limit or `query timeout`
-needles, the bridge's `actionableError` predicate) the retries are skipped
-altogether: that verdict reaches Ant after quorum's ~5 s instead of after a
-hung endpoint's 60 s retry, and a later timeout never replaces it. Any other
-JSON-RPC error (for example `-32601` method not found on one endpoint) is
-endpoint-specific: it does not stop the retries or outrank their timeout,
-since reaching Ant it would abort the scan where a result or a `query timeout`
-lets it continue. Wallet reads and broadcasts pass no predicate, so for them no
-reply stops the retries and the last endpoint's error (a broadcast's uncertain
-timeout included) is the one reported. Every attempt still sits inside the bridge's
-120 s per-request deadline, which fits only about two full 60 s attempts
-after quorum: with several endpoints hanging, the later ones are not reached
-before the deadline and Ant gets a query timeout, shrinks its window and
-retries. Putting untried endpoints first means a healthy one is reached right
-after quorum instead of behind retries of endpoints that just failed.
+### Which error Ant sees: one ranking rule
 
-If no quorum member returned a result, quorum keeps the first member's
-upstream error, preferring one Ant acts on over another member's timeout. Only
-log scans opt into it (`upstreamQuorumError`), so its
-wording still reaches Ant when no endpoint is left untried; wallet and app
-reads keep the aggregate "all chain sources failed" error rather than one
-unverified endpoint's reply.
+Ant's `scan_logs` halves its `eth_getLogs` window when the error text matches
+one of its `is_range_limit_error` needles (a range limit or `query timeout`)
+and abandons batch/chequebook recovery on anything else. Behind a multi-source
+router, several endpoints fail in different ways for one request, so the
+router applies a single rule to log scans (`rankError`, supplied by the bridge
+as `rankLogScanError`; the router side is `createErrorKeeper` in
+`chain-data-router.js`):
+
+1. **Rank each failure by how useful it is to Ant.**
+   - _Range limit_ (highest): an endpoint answered with a JSON-RPC error whose
+     text matches Ant's needles, e.g. `-32005 query exceeds max block range
+50000`, `too many results`, `response size exceeded`. It depends on the
+     query, not the endpoint.
+   - _Timeout_: a client timeout (`RPC query timeout after Nms`), a source
+     deadline (Colibri, quorum) or an upstream `query timeout` reply. Ant
+     halves on it too, but another endpoint or a longer attempt may answer.
+   - _Endpoint-dependent_ (lowest): everything else, which Ant cannot act on:
+     `-32601` method not found, `-32603` internal error, rate limits (including
+     `-32005 rate limit exceeded`), HTTP 429/5xx, transport failures, a source
+     that is not ready or does not serve logs.
+2. **Keep the most useful failure seen so far**, across every tier (Myotis,
+   Colibri, each quorum member, each Direct attempt and retry). A later
+   failure replaces it only if it ranks strictly higher, so a range limit
+   survives a later timeout or 429, and a timeout survives a later `-32601`.
+   When every source fails Ant gets the kept error object itself, with its
+   original code and text (URLs redacted, see below). If nothing better than
+   endpoint-dependent was seen, the router's usual error is reported and Ant
+   gives up, as it would against a single failing RPC.
+3. **Only a range limit ends the request early.** As soon as one is seen (and
+   quorum can no longer agree on a result) the router stops: no later source,
+   untried endpoint or retry is asked, and Ant gets it within the time of that
+   answer. Every other failure falls through to the next source, endpoint or
+   retry exactly like an unavailable source, so a healthy later endpoint stays
+   reachable whatever the earlier ones answered.
+
+Wide scans get a 60 s per-URL budget on the direct tier (never less than the
+chain's configured timeout). With the default Gnosis policy the RPC quorum
+tier asks the first `k` (3) endpoints at the configured 5 s. The direct tier
+then tries, in registry order, the endpoints quorum never asked, and after
+those the quorum members that never answered, now with 60 s. An endpoint that
+answered quorum (with any error) is not asked again. Every attempt sits inside
+the bridge's 120 s per-request deadline, which fits only about two full 60 s
+attempts after quorum: with several endpoints hanging, the later ones are not
+reached and Ant gets the bridge's `query timeout`, halves and retries. Putting
+untried endpoints first means a healthy one is reached right after quorum.
+
+Only `eth_getLogs` is ranked. Ant's other reads and all wallet/app reads and
+broadcasts pass no `rankError`, so for them nothing is kept or ends early: a
+quorum member's own error never replaces the aggregate "all chain sources
+failed" error, and a broadcast reports the last endpoint's error (an uncertain
+client timeout included). One change does reach every direct/quorum caller:
+an RPC client timeout now reads `RPC query timeout after Nms` instead of the
+platform's `AbortError` text (its `failureKind` is still `timeout`, so adaptive
+routing is unaffected).
 
 Broadcasts use the separate configured broadcast policy and
 require an already-signed, chain-bound Gnosis transaction. Ant retains signing;
@@ -73,7 +100,8 @@ control characters removed and length capped at 500 characters: Ant's
 range-limit or `query timeout` pattern, so replacing it with a generic message
 would abort batch/chequebook recovery on a range-capped RPC. A direct per-URL
 client timeout and the bridge's own deadline both report `query timeout` for
-the same reason. In particular `-32000` remains an error on this ordinary HTTP
+the same reason, and a log-scan timeout worded without it (a source deadline)
+is prefixed with `query timeout` by the bridge. In particular `-32000` remains an error on this ordinary HTTP
 transport. The special FFI callback interpretation of that code does not apply.
 The bridge adds no independent transaction retry. An uncertain broadcast must
 be reconciled using the original signed transaction, not signed again.
@@ -111,11 +139,17 @@ reporting, error/revert propagation, broadcast restrictions, cancellation,
 capacity and split-log redaction. Manager tests cover mode selection, close,
 bind/spawn failure and stop during startup. Router tests ensure cancellation
 prevents later fallback or a second direct broadcaster.
-`ant-chain-bridge.router.test.js` runs the real router behind the real bridge
-with three RPC endpoints (all used by quorum). It checks that a range-limit
-error still reaches Ant, that endpoints cut off by quorum's timeout get the
-longer log-scan budget, and (with four endpoints, the first three hanging)
-that the healthy fourth is reached before the bridge deadline.
+`ant-log-scan-routing.test.js` pins the ranking rule as a matrix over the
+real router with the bridge's own options and error mapping, under fake
+timers: tier (Myotis, Colibri, quorum with all or one of three members, Direct
+untried endpoint, Direct widened retry) × error class (range limit, timeout
+reply, endpoint-dependent, hang, success), plus arrival-order cases. Each case
+asserts what Ant receives, whether Ant's needles match it and the elapsed
+time. The review findings that led to the rule (PR #419 R1-F1 … R6-F1) are
+named cases there. `ant-chain-bridge.router.test.js` runs the real router
+behind the real bridge over loopback sockets with real timers for the same
+paths end to end (range limit with three endpoints, widened retry, healthy
+fourth endpoint before the bridge deadline, endpoint-dependent error).
 
 The live check uses a newly generated, unfunded temporary managed profile,
 real Electron, Ant v0.5.45 and checksum-verified Myotis v0.1.11 / ABI 29. No

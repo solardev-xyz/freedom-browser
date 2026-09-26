@@ -1,7 +1,13 @@
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const { Wallet } = require('ethers');
-const { startAntChainBridge, antShrinksLogScanOn } = require('./ant-chain-bridge');
+const {
+  startAntChainBridge,
+  antShrinksLogScanOn,
+  rankLogScanError,
+  antErrorReply,
+  LOG_SCAN_ERROR_RANK,
+} = require('./ant-chain-bridge');
 
 function post(url, body, headers = {}, method = 'POST') {
   return new Promise((resolve, reject) => {
@@ -139,14 +145,77 @@ test('Ant reads are background work and wide log scans get a longer direct budge
     signal: expect.any(AbortSignal),
     background: true,
     directTimeoutMs: 60000,
-    upstreamQuorumError: true,
-    actionableError: expect.any(Function),
+    rankError: rankLogScanError,
   });
-  const { actionableError } = router.request.mock.calls.at(-1)[3];
-  // Ant's range limit is a verdict; an endpoint-specific error Ant cannot act
-  // on (it would abort the scan) is not.
-  expect(actionableError(new Error('query exceeds max block range 50000'))).toBe(true);
-  expect(actionableError(new Error('the method eth_getLogs does not exist'))).toBe(false);
+  // Other reads are not ranked: Ant does not adapt them to the error.
+  await post(bridge.url, rpc('eth_blockNumber', []));
+  expect(router.request).toHaveBeenLastCalledWith(100, 'eth_blockNumber', [], {
+    signal: expect.any(AbortSignal),
+    background: true,
+  });
+});
+
+// The router keeps the most useful error by this rank: range-limit (depends
+// on the query, final) > timeout > endpoint-dependent.
+test.each([
+  ['range limit', { code: -32005, message: 'query exceeds max block range 50000' }, 'REQUEST'],
+  [
+    'too many results',
+    { code: -32005, message: 'query returned more than 10000 results' },
+    'REQUEST',
+  ],
+  ['response size', { code: -32008, message: 'Log response size exceeded' }, 'REQUEST'],
+  [
+    'client timeout',
+    { message: 'RPC query timeout after 5000ms', failureKind: 'timeout' },
+    'TIMEOUT',
+  ],
+  ['upstream timeout reply', { code: -32000, message: 'query timeout exceeded' }, 'TIMEOUT'],
+  [
+    'source deadline',
+    { message: 'Colibri exceeded its 5000ms interactive deadline', failureKind: 'timeout' },
+    'TIMEOUT',
+  ],
+  ['abort', { name: 'AbortError', message: 'This operation was aborted' }, 'TIMEOUT'],
+  [
+    'method not found',
+    { code: -32601, message: 'the method eth_getLogs does not exist/is not available' },
+    'ENDPOINT',
+  ],
+  ['internal error', { code: -32603, message: 'internal error' }, 'ENDPOINT'],
+  ['rate limit with a -32005 code', { code: -32005, message: 'rate limit exceeded' }, 'ENDPOINT'],
+  [
+    'daily quota',
+    { code: -32005, message: 'daily request count exceeded, request rate limited' },
+    'ENDPOINT',
+  ],
+  ['HTTP 429', { message: 'HTTP 429' }, 'ENDPOINT'],
+  ['HTTP 503', { message: 'HTTP 503' }, 'ENDPOINT'],
+  ['transport', { name: 'TypeError', message: 'fetch failed' }, 'ENDPOINT'],
+  // No JSON-RPC code: not an endpoint's answer about the query, even if a
+  // needle ("limit") happens to appear.
+  [
+    'source text with a needle',
+    { message: 'Myotis has too many reads queued; limit reached' },
+    'ENDPOINT',
+  ],
+])('ranks %s as %s', (_name, fields, rank) => {
+  expect(rankLogScanError(Object.assign(new Error(fields.message), fields))).toBe(
+    LOG_SCAN_ERROR_RANK[rank]
+  );
+});
+
+test('a timeout reaches Ant worded so it halves its window', () => {
+  const deadline = Object.assign(new Error('Myotis gave up after 5000ms'), {
+    failureKind: 'timeout',
+  });
+  const reply = antErrorReply('eth_getLogs', deadline);
+  expect(reply).toMatchObject({ code: -32002 });
+  expect(antShrinksLogScanOn(reply.message)).toBe(true);
+  // Untouched for methods Ant does not adapt.
+  expect(antErrorReply('eth_call', deadline).message).toBe(
+    'Chain request failed: Myotis gave up after 5000ms'
+  );
 });
 
 test("Ant's shrink needles match v0.5.45 is_range_limit_error", () => {

@@ -17,13 +17,10 @@ const MAX_RESPONSE = 16 * 1024 * 1024;
 const MAX_ACTIVE = 8;
 const MAX_LOG_LINE = 64 * 1024;
 const MAX_ERROR_MESSAGE = 500;
-// Ant's scan_logs only shrinks its eth_getLogs window when the error text
-// matches a range-limit/timeout needle, so a wide scan gets a longer per-URL
-// budget on the direct path than an interactive read would. The direct tier
-// first tries endpoints quorum never asked, then retries, at this budget,
-// quorum members that timed out without an answer, as far as the bridge's
-// overall deadline allows. Log scans also opt into quorum's upstream member
-// error, so a range limit still reaches Ant when no endpoint is left untried.
+// A wide log scan gets a longer per-URL budget on the direct path than an
+// interactive read would. The direct tier first tries endpoints quorum never
+// asked, then retries, at this budget, quorum members that timed out without
+// an answer, as far as the bridge's overall deadline allows.
 const LOG_SCAN_DIRECT_TIMEOUT_MS = 60000;
 
 // Ant v0.5.45 `is_range_limit_error` (crates/ant-chain/src/discover.rs): its
@@ -50,11 +47,42 @@ function antShrinksLogScanOn(message) {
   return ANT_LOG_SCAN_SHRINK_NEEDLES.some((needle) => lower.includes(needle));
 }
 
-// Only an upstream reply Ant acts on (a range limit) is a verdict for the
-// router: it stops the widened retries and outranks a later timeout. Any
-// other reply (method not found on one endpoint) must not, or it would reach
-// Ant in place of a result or a query timeout and abort the scan.
-const isLogScanVerdict = (error) => antShrinksLogScanOn(error?.message);
+// Mirrors chain-data-router's ERROR_RANK (pinned equal by
+// ant-chain-bridge.router.test.js); kept local so the bridge does not load the
+// router just for three numbers.
+const RANK = Object.freeze({ ENDPOINT: 0, TIMEOUT: 1, REQUEST: 2 });
+const TIMEOUT_TEXT = /time(?:d)?[\s-]?out/i;
+// Wordings that match Ant's needles ("limit", "exceed", "more than") but
+// describe the endpoint, not the query: retrying elsewhere can succeed.
+const ENDPOINT_LIMIT_TEXT =
+  /rate[\s-]?limit|too many requests|\b429\b|quota|credits?\b|daily request|capacity|requests? (?:per|limit)|throttl/i;
+
+// How useful a failed eth_getLogs attempt is to Ant, for the router's
+// single keep-the-most-useful-error rule:
+// - REQUEST: an endpoint answered with a JSON-RPC error Ant halves its window
+//   on (-32005 "query exceeds max block range 50000", "too many results",
+//   "response size exceeded"). It depends on the query, so it ends the
+//   request and reaches Ant with its code and text intact.
+// - TIMEOUT: a client, source or upstream timeout. Ant halves on it too, but
+//   another endpoint or a longer retry may still answer.
+// - ENDPOINT: everything else (method not found, internal error, rate limits,
+//   HTTP errors, transport failures, a source that is not ready). Ant cannot
+//   act on it, so the router keeps going and never lets it displace a better
+//   error.
+function rankLogScanError(error) {
+  const message = typeof error?.message === 'string' ? error.message : '';
+  if (
+    error?.failureKind === 'timeout' ||
+    error?.name === 'AbortError' ||
+    TIMEOUT_TEXT.test(message)
+  ) {
+    return RANK.TIMEOUT;
+  }
+  if (!Number.isSafeInteger(error?.code) || ENDPOINT_LIMIT_TEXT.test(message)) {
+    return RANK.ENDPOINT;
+  }
+  return antShrinksLogScanOn(message) ? RANK.REQUEST : RANK.ENDPOINT;
+}
 
 // Forward the upstream wording (Ant keys retry decisions on it, e.g. "query
 // exceeds max block range 50000") without URLs, which may carry RPC API keys,
@@ -67,6 +95,42 @@ function sanitizeErrorMessage(message) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, MAX_ERROR_MESSAGE);
+}
+
+// Router options for Ant's eth_getLogs (window-halving) scans.
+const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
+  directTimeoutMs: LOG_SCAN_DIRECT_TIMEOUT_MS,
+  rankError: rankLogScanError,
+});
+
+// The JSON-RPC error Ant receives for a failed routed request. This is the
+// daemon's URL transport, not the FFI callback: real -32000 codes are
+// preserved and no second fallback/rebroadcast occurs here.
+function antErrorReply(method, error) {
+  const code = Number.isSafeInteger(error?.code) ? error.code : -32002;
+  const data =
+    typeof error?.data === 'string' &&
+    /^0x[0-9a-f]*$/i.test(error.data) &&
+    error.data.length <= MAX_BODY
+      ? error.data
+      : undefined;
+  let detail = sanitizeErrorMessage(error?.message);
+  // A timeout Ant cannot recognise (a source deadline worded without "query
+  // timeout") still has to make it halve its window rather than give up.
+  if (
+    method === 'eth_getLogs' &&
+    rankLogScanError(error) === RANK.TIMEOUT &&
+    !antShrinksLogScanOn(detail)
+  ) {
+    detail = `query timeout (${detail})`;
+  }
+  const message =
+    error?.code === 'MYOTIS_BROADCAST_UNCERTAIN'
+      ? 'Broadcast outcome uncertain; reconcile the signed transaction'
+      : code === 3
+        ? 'Execution reverted'
+        : `Chain request failed${detail ? `: ${detail}` : ''}`;
+  return { code, message, data };
 }
 
 // Private daemon transport, not a renderer/dApp RPC endpoint. The URL capability
@@ -193,13 +257,7 @@ async function startAntChainBridge({
               signal: controller.signal,
               // Ant's polling must not queue ahead of wallet/app reads.
               background: true,
-              ...(method === 'eth_getLogs'
-                ? {
-                    directTimeoutMs: LOG_SCAN_DIRECT_TIMEOUT_MS,
-                    upstreamQuorumError: true,
-                    actionableError: isLogScanVerdict,
-                  }
-                : {}),
+              ...(method === 'eth_getLogs' ? LOG_SCAN_ROUTER_OPTIONS : {}),
             });
       controller.signal.throwIfAborted();
       if (answer.result === undefined) throw new Error('Missing chain result');
@@ -216,22 +274,7 @@ async function startAntChainBridge({
       send(res, 200, body);
     } catch (error) {
       if (!controller.signal.aborted) {
-        // This is the daemon's URL transport, not the FFI callback. Preserve
-        // real -32000 codes; no second fallback/rebroadcast occurs here.
-        const code = Number.isSafeInteger(error.code) ? error.code : -32002;
-        const data =
-          typeof error.data === 'string' &&
-          /^0x[0-9a-f]*$/i.test(error.data) &&
-          error.data.length <= MAX_BODY
-            ? error.data
-            : undefined;
-        const detail = sanitizeErrorMessage(error.message);
-        const message =
-          error.code === 'MYOTIS_BROADCAST_UNCERTAIN'
-            ? 'Broadcast outcome uncertain; reconcile the signed transaction'
-            : code === 3
-              ? 'Execution reverted'
-              : `Chain request failed${detail ? `: ${detail}` : ''}`;
+        const { code, message, data } = antErrorReply(method, error);
         fail(code, message, data);
         log.warn(
           `[Ant chain] ${
@@ -317,4 +360,12 @@ async function startAntChainBridge({
   };
 }
 
-module.exports = { startAntChainBridge, antShrinksLogScanOn, ANT_LOG_SCAN_SHRINK_NEEDLES };
+module.exports = {
+  startAntChainBridge,
+  antShrinksLogScanOn,
+  rankLogScanError,
+  antErrorReply,
+  LOG_SCAN_ROUTER_OPTIONS,
+  LOG_SCAN_ERROR_RANK: RANK,
+  ANT_LOG_SCAN_SHRINK_NEEDLES,
+};

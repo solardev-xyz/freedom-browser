@@ -1279,40 +1279,17 @@ describe('Ant bridge cancellation', () => {
     }
   });
 
-  // R2-F1: with no RPC URL left beyond quorum's k, Direct has nothing to try,
-  // so the provider's own wording must survive quorum's failure or Ant's log
-  // scan cannot tell a range limit / timeout from a hard failure.
+  // The Ant log-scan error rule (rankError) is exercised as a tier x error
+  // class x arrival order matrix in src/main/swarm/ant-log-scan-routing.test.js.
+  // These pin that callers without rankError (wallet/app reads, broadcasts)
+  // report failures exactly as before.
   const THREE_RPCS = ['https://a.example', 'https://b.example', 'https://c.example'];
   const hangUntilAborted = (_url, { signal }) => new Promise((_resolve, reject) => {
     signal.addEventListener('abort', () =>
       reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
   });
 
-  test('keeps an upstream range-limit error when quorum uses every RPC', async () => {
-    mockRegistry.getNetwork.mockReturnValue({
-      access: { readOrder: ['myotis', 'colibri', 'quorum', 'direct'] },
-      quorum: { k: 3, m: 2, timeoutMs: 5000 },
-    });
-    mockMyotis.isReady.mockReturnValue(false);
-    mockRequestViaColibri.mockRejectedValue(new Error('Colibri unavailable'));
-    mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
-      role === 'prover' ? ['https://prover.example'] : THREE_RPCS);
-    global.fetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ error: { code: -32005, message: 'query exceeds max block range 50000' } }),
-    });
-    await expect(request(100, 'eth_getLogs', [{}], {
-      background: true,
-      directTimeoutMs: 60000,
-      upstreamQuorumError: true,
-    })).rejects.toMatchObject({ code: -32005, message: 'query exceeds max block range 50000' });
-    // Members that answered are not asked again by Direct.
-    expect(global.fetch).toHaveBeenCalledTimes(3);
-  });
-
-  // R3-M1: one unverified member's error (possibly fabricated revert data)
-  // must not replace the aggregate failure for wallet/app reads.
-  test('keeps the aggregate failure unless the caller opts into the member error', async () => {
+  test('without rankError a quorum member error never replaces the aggregate', async () => {
     mockRegistry.getNetwork.mockReturnValue({
       access: { readOrder: ['quorum'] },
       quorum: { k: 3, m: 2, timeoutMs: 5000 },
@@ -1327,257 +1304,33 @@ describe('Ant bridge cancellation', () => {
     const params = [{ to: '0x0000000000000000000000000000000000000001', data: '0x' }, 'latest'];
     await expect(request(100, 'eth_call', params))
       .rejects.toThrow(/^All chain sources failed for eth_call/);
-    await expect(request(100, 'eth_call', params, { upstreamQuorumError: true }))
-      .rejects.toMatchObject({ message: 'execution reverted' });
   });
 
-  // R3-F1: with the first k endpoints hanging, a healthy endpoint quorum never
-  // asked must be tried before the long retries, or the bridge's deadline
-  // expires inside retries of dead endpoints.
-  test('a widened Direct budget tries untried RPCs before retrying quorum members', async () => {
-    jest.useFakeTimers({ now: 1_000_000 });
-    try {
-      const FOUR_RPCS = [...THREE_RPCS, 'https://d.example'];
-      mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['quorum', 'direct'] },
-        quorum: { k: 3, m: 2, timeoutMs: 5000 },
-      });
-      mockRegistry.getEndpoints.mockReturnValue(FOUR_RPCS);
-      global.fetch.mockImplementation((url, options) => (url === 'https://d.example'
-        ? Promise.resolve({ ok: true, json: async () => ({ result: ['fourth'] }) })
-        : hangUntilAborted(url, options)));
-      const wide = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
-      await jest.advanceTimersByTimeAsync(5000);
-      await expect(wide).resolves.toMatchObject({ result: ['fourth'], source: 'direct' });
-      expect(global.fetch.mock.calls.map(([url]) => url)).toEqual(FOUR_RPCS);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  test('a widened Direct budget retries RPCs quorum cut off at its timeout', async () => {
+  test('without rankError a range limit neither ends the request nor is kept', async () => {
     jest.useFakeTimers({ now: 1_000_000 });
     try {
       mockRegistry.getNetwork.mockReturnValue({
         access: { readOrder: ['quorum', 'direct'] },
         quorum: { k: 3, m: 2, timeoutMs: 5000 },
       });
-      mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
+      mockRegistry.getEndpoints.mockReturnValue([...THREE_RPCS, 'https://d.example']);
       global.fetch.mockImplementation((url, options) => {
-        // Quorum's three attempts hang; the slow first RPC answers on retry.
-        if (global.fetch.mock.calls.length > 3) {
-          return new Promise((resolve) => setTimeout(() =>
-            resolve({ ok: true, json: async () => ({ result: [] }) }), 20000));
-        }
-        return hangUntilAborted(url, options);
-      });
-      const wide = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
-      await jest.advanceTimersByTimeAsync(5000);
-      expect(global.fetch).toHaveBeenCalledTimes(4);
-      expect(global.fetch.mock.calls[3][0]).toBe('https://a.example');
-      await jest.advanceTimersByTimeAsync(20000);
-      await expect(wide).resolves.toMatchObject({ result: [], source: 'direct' });
-
-      // Without a widened budget, Direct does not repeat the same 5s attempt,
-      // and the aggregate failure still names a query timeout.
-      global.fetch.mockReset();
-      global.fetch.mockImplementation(hangUntilAborted);
-      const narrow = request(100, 'eth_getLogs', [{}]);
-      narrow.catch(() => {});
-      await jest.advanceTimersByTimeAsync(5000);
-      await expect(narrow).rejects.toThrow(/query timeout/);
-      expect(global.fetch).toHaveBeenCalledTimes(3);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  // R4-F1: once any endpoint has answered with a JSON-RPC verdict (a range
-  // limit), a hung quorum member's 60 s retry would only delay that verdict
-  // and then replace it with a timeout; Ant's window-shrink step must stay
-  // at quorum's ~5 s, not ~65 s.
-  const isRangeLimit = (error) => /range/.test(error.message);
-  const rangeLimited = () => Promise.resolve({
-    ok: true,
-    json: async () => ({ error: { code: -32005, message: 'query exceeds max block range 50000' } }),
-  });
-  test('a range limit from an untried RPC skips the widened retry of hung members', async () => {
-    jest.useFakeTimers({ now: 1_000_000 });
-    try {
-      const FOUR_RPCS = [...THREE_RPCS, 'https://d.example'];
-      mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['quorum', 'direct'] },
-        quorum: { k: 3, m: 2, timeoutMs: 5000 },
-      });
-      mockRegistry.getEndpoints.mockReturnValue(FOUR_RPCS);
-      global.fetch.mockImplementation((url, options) => (url === 'https://a.example'
-        ? hangUntilAborted(url, options)
-        : rangeLimited()));
-      const wide = request(100, 'eth_getLogs', [{}], {
-        directTimeoutMs: 60000,
-        upstreamQuorumError: true,
-        actionableError: isRangeLimit,
-      });
-      const settled = jest.fn();
-      wide.then(settled, settled);
-      await jest.advanceTimersByTimeAsync(5000);
-      expect(settled).toHaveBeenCalled();
-      await expect(wide).rejects.toMatchObject({ code: -32005 });
-      expect(global.fetch.mock.calls.map(([url]) => url)).toEqual(FOUR_RPCS);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  test('a range limit from a quorum member skips the widened retry of hung members', async () => {
-    jest.useFakeTimers({ now: 1_000_000 });
-    try {
-      mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['quorum', 'direct'] },
-        quorum: { k: 3, m: 2, timeoutMs: 5000 },
-      });
-      mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
-      global.fetch.mockImplementation((url, options) => (url === 'https://a.example'
-        ? hangUntilAborted(url, options)
-        : rangeLimited()));
-      const wide = request(100, 'eth_getLogs', [{}], {
-        directTimeoutMs: 60000,
-        upstreamQuorumError: true,
-        actionableError: isRangeLimit,
-      });
-      const settled = jest.fn();
-      wide.then(settled, settled);
-      await jest.advanceTimersByTimeAsync(5000);
-      expect(settled).toHaveBeenCalled();
-      await expect(wide).rejects.toMatchObject({
-        code: -32005, message: 'query exceeds max block range 50000',
-      });
-      expect(global.fetch).toHaveBeenCalledTimes(3);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  test("an untried RPC's timeout does not replace a quorum member's range limit", async () => {
-    jest.useFakeTimers({ now: 1_000_000 });
-    try {
-      const FOUR_RPCS = [...THREE_RPCS, 'https://d.example'];
-      mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['quorum', 'direct'] },
-        quorum: { k: 3, m: 2, timeoutMs: 5000 },
-      });
-      mockRegistry.getEndpoints.mockReturnValue(FOUR_RPCS);
-      global.fetch.mockImplementation((url, options) =>
-        (url === 'https://a.example' || url === 'https://d.example'
-          ? hangUntilAborted(url, options)
-          : rangeLimited()));
-      const wide = request(100, 'eth_getLogs', [{}], {
-        directTimeoutMs: 60000,
-        upstreamQuorumError: true,
-        actionableError: isRangeLimit,
-      });
-      wide.catch(() => {});
-      await jest.advanceTimersByTimeAsync(65000);
-      await expect(wide).rejects.toMatchObject({ code: -32005 });
-      // The untried endpoint gets its attempt; the hung member is not retried.
-      expect(global.fetch.mock.calls.map(([url]) => url)).toEqual(FOUR_RPCS);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  
-  // R5-F1: only a reply the caller acts on is a verdict. A JSON-RPC error that
-  // is specific to one endpoint (method not found) must neither skip the
-  // widened retry of hung members nor outrank their timeout.
-  test('an endpoint-specific JSON-RPC error does not skip the widened retry', async () => {
-    jest.useFakeTimers({ now: 1_000_000 });
-    try {
-      mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['quorum', 'direct'] },
-        quorum: { k: 3, m: 2, timeoutMs: 5000 },
-      });
-      mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
-      let aCalls = 0;
-      global.fetch.mockImplementation((url, options) => {
-        if (url === 'https://c.example') {
-          return Promise.resolve({
-            ok: true,
-            json: async () => ({
-              error: { code: -32601, message: 'the method eth_getLogs does not exist' },
-            }),
-          });
-        }
-        if (url === 'https://a.example' && ++aCalls === 2) {
-          return new Promise((resolve) => setTimeout(
-            () => resolve({ ok: true, json: async () => ({ result: [] }) }), 10000));
-        }
-        return hangUntilAborted(url, options);
-      });
-      const wide = request(100, 'eth_getLogs', [{}], {
-        directTimeoutMs: 60000,
-        upstreamQuorumError: true,
-        actionableError: isRangeLimit,
-      });
-      const settled = jest.fn();
-      wide.then(settled, settled);
-      await jest.advanceTimersByTimeAsync(5000);
-      expect(settled).not.toHaveBeenCalled();
-      await jest.advanceTimersByTimeAsync(10000);
-      await expect(wide).resolves.toMatchObject({ result: [], source: 'direct' });
-      expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([...THREE_RPCS, 'https://a.example']);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  test("a hung member's retry timeout outranks an endpoint-specific error", async () => {
-    jest.useFakeTimers({ now: 1_000_000 });
-    try {
-      mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['quorum', 'direct'] },
-        quorum: { k: 3, m: 2, timeoutMs: 5000 },
-      });
-      mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
-      global.fetch.mockImplementation((url, options) => (url === 'https://c.example'
-        ? Promise.resolve({
+        if (url === 'https://a.example') return hangUntilAborted(url, options);
+        return Promise.resolve({
           ok: true,
           json: async () => ({
-            error: { code: -32601, message: 'the method eth_getLogs does not exist' },
+            error: { code: -32005, message: 'query exceeds max block range 50000' },
           }),
-        })
-        : hangUntilAborted(url, options)));
-      const wide = request(100, 'eth_getLogs', [{}], {
-        directTimeoutMs: 60000,
-        upstreamQuorumError: true,
-        actionableError: isRangeLimit,
+        });
       });
-      wide.catch(() => {});
-      await jest.advanceTimersByTimeAsync(125000);
-      await expect(wide).rejects.toThrow(/query timeout/);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  test('without actionableError a JSON-RPC error does not skip the widened retry', async () => {
-    jest.useFakeTimers({ now: 1_000_000 });
-    try {
-      mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['quorum', 'direct'] },
-        quorum: { k: 3, m: 2, timeoutMs: 5000 },
-      });
-      mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
-      global.fetch.mockImplementation((url, options) => (url === 'https://a.example'
-        ? hangUntilAborted(url, options)
-        : rangeLimited()));
-      const wide = request(100, 'eth_getLogs', [{}], {
-        directTimeoutMs: 60000,
-        upstreamQuorumError: true,
-      });
-      wide.catch(() => {});
-      await jest.advanceTimersByTimeAsync(66000);
-      expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([...THREE_RPCS, 'https://a.example']);
+      const pending = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
+      pending.catch(() => {});
+      await jest.advanceTimersByTimeAsync(70000);
+      // Quorum waits for the hung member, Direct asks the untried d and then
+      // retries a at the widened budget; the last endpoint's error is reported.
+      await expect(pending).rejects.toThrow('RPC query timeout after 60000ms');
+      expect(global.fetch.mock.calls.map(([url]) => url))
+        .toEqual([...THREE_RPCS, 'https://d.example', 'https://a.example']);
     } finally {
       jest.useRealTimers();
     }
@@ -1604,24 +1357,6 @@ describe('Ant bridge cancellation', () => {
       sent.catch(() => {});
       await jest.advanceTimersByTimeAsync(5000);
       await expect(sent).rejects.toThrow('RPC query timeout after 5000ms');
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-test('a quorum-only read cut by its deadline still names a query timeout', async () => {
-    jest.useFakeTimers({ now: 1_000_000 });
-    try {
-      mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['quorum'] },
-        quorum: { k: 3, m: 2, timeoutMs: 5000 },
-      });
-      mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
-      global.fetch.mockImplementation(hangUntilAborted);
-      const pending = request(100, 'eth_getLogs', [{}]);
-      pending.catch(() => {});
-      await jest.advanceTimersByTimeAsync(5000);
-      await expect(pending).rejects.toThrow(/query timeout/);
     } finally {
       jest.useRealTimers();
     }

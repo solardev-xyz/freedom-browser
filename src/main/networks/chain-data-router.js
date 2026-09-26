@@ -131,13 +131,53 @@ function isCapacityFailure(error) {
     .test(message);
 }
 
-function isActionableError(predicate, error) {
-  if (typeof predicate !== 'function' || !error?.rpcReply) return false;
-  try {
-    return predicate(error) === true;
-  } catch {
-    return false;
-  }
+// How useful a failure is to a caller that adapts its request to the error
+// (the bundled Ant node's log scan halves its eth_getLogs window on a range
+// limit or a timeout). The caller supplies rankError(error) -> one of these.
+const ERROR_RANK = Object.freeze({
+  // Depends on the endpoint, the caller cannot act on it (method not found,
+  // internal error, rate limit, HTTP 5xx, transport failure, source not ready).
+  ENDPOINT: 0,
+  // A timeout: the caller can shrink the request and try again.
+  TIMEOUT: 1,
+  // Depends on the request itself (a range limit): no other endpoint or retry
+  // is expected to do better, so it ends the request at once.
+  REQUEST: 2,
+});
+
+// The single error rule for a ranked request: keep the most useful failure
+// seen so far across every tier, endpoint and retry. A later failure replaces
+// it only when it ranks strictly higher, so an earlier range limit survives a
+// later timeout or 429 and an earlier timeout survives a later -32601. Only a
+// REQUEST-ranked failure is final. Without rankError nothing is kept and the
+// router reports failures exactly as before (wallet reads, broadcasts).
+function createErrorKeeper(rankError) {
+  let kept = null;
+  let keptRank = -1;
+  return {
+    note(error) {
+      if (typeof rankError !== 'function' || !error) return;
+      let rank;
+      try {
+        rank = Number(rankError(error));
+      } catch {
+        rank = ERROR_RANK.ENDPOINT;
+      }
+      if (!Number.isFinite(rank)) rank = ERROR_RANK.ENDPOINT;
+      if (rank > keptRank) {
+        kept = error;
+        keptRank = rank;
+      }
+    },
+    get final() {
+      return keptRank >= ERROR_RANK.REQUEST;
+    },
+    // Only a failure the caller can act on replaces the router's own report;
+    // endpoint-dependent failures keep the existing aggregate/last-RPC error.
+    get error() {
+      return keptRank > ERROR_RANK.ENDPOINT ? kept : null;
+    },
+  };
 }
 
 function failureKind(error) {
@@ -650,10 +690,6 @@ async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
       const error = new Error(data.error.message || 'RPC request failed');
       error.code = data.error.code;
       error.data = data.error.data;
-      // The endpoint answered, unlike a transport failure or a client timeout.
-      // Whether the reply is a verdict a caller acts on is the caller's call
-      // (see actionableError in request()).
-      error.rpcReply = true;
       throw error;
     }
     return data.result;
@@ -744,7 +780,7 @@ async function requestQuorum(
     includeTrust = false,
     allowDirectFallback = false,
     deadlineMs = null,
-    actionableError = null,
+    keeper = createErrorKeeper(null),
   } = {}
 ) {
   const network = registry.getNetwork(chainId) || {};
@@ -765,10 +801,8 @@ async function requestQuorum(
     const fulfilledUrls = [];
     const directCandidates = [];
     const errors = [];
-    // Per member: the upstream error it returned, and whether it answered at
-    // all (a result or an RPC-level error, as opposed to timing out or still
-    // being in flight when quorum gave up).
-    const memberErrors = new Array(urls.length).fill(null);
+    // Per member: whether it answered at all (a result or an RPC-level error,
+    // as opposed to timing out or still being in flight when quorum gave up).
     const answered = new Array(urls.length).fill(false);
     let pending = urls.length;
     let finished = false;
@@ -807,44 +841,24 @@ async function requestQuorum(
     };
     const fail = ({ deadline = false } = {}) => {
       if (finished) return;
-      const unanswered = pending > 0;
+      // Members still in flight when quorum's own deadline fires were cut off
+      // by a timeout; a ranked caller (Ant's log scan) counts that as one.
+      if (deadline && pending > 0) {
+        const cut = new Error(`RPC query timeout after ${timeoutMs}ms`);
+        cut.failureKind = 'timeout';
+        keeper.note(cut);
+      }
       finish();
       const capacityFailures = errors.filter(isCapacityFailure).length;
       const timedOut = errors.some((error) => failureKind(error) === 'timeout');
-      // The message also names a timeout when quorum's own deadline cut off
-      // members that had not answered (failureKind is unchanged).
-      const deadlineCut = deadline && unanswered;
       const error = new SourceUnavailableError(
-        `RPC quorum did not reach ${m} matching responses${
-          timedOut || deadlineCut ? ' (query timeout)' : ''
-        }`,
+        `RPC quorum did not reach ${m} matching responses`,
         capacityFailures >= m ? 'capacity' : timedOut ? 'timeout' : null
       );
-      // When no member returned a result, keep the highest-priority upstream
-      // member error. With no untried URL left for Direct, it is the only
-      // place the provider's own wording (a range limit, a revert, a client
-      // timeout) survives; callers such as Ant's log scan key on that text to
-      // shrink their window. request() surfaces it only for a caller that
-      // opts in with upstreamQuorumError. A split with a successful member stays an
-      // unverified disagreement, not an upstream error.
-      // A member reply the caller acts on (actionableError: Ant's range
-      // limit) outranks another member's client timeout. Any other reply
-      // (method not found, rate limited) does not: a timeout at least makes
-      // Ant shrink its window and retry.
-      const isActionable = (memberError) => isActionableError(actionableError, memberError);
-      const rpcError = directCandidates.length
-        ? null
-        : memberErrors.find(isActionable) || memberErrors.find(
-          (memberError) => memberError && !(memberError instanceof SourceUnavailableError)
-        );
-      if (rpcError) error.rpcError = rpcError;
       // Members that never answered were cut at quorum's budget. A caller that
       // widened Direct's per-URL budget may try them again; ones that did
       // answer would only repeat the same reply.
       error.directUnansweredUrls = urls.filter((_, index) => !answered[index]);
-      // Whether a member already gave a reply the caller acts on. Direct then
-      // skips the widened retry of unanswered members (see requestDirect).
-      error.directVerdictSeen = memberErrors.some(isActionable);
       // Direct would accept one endpoint's answer without agreement. Preserve
       // the highest-priority successful quorum member so the next configured
       // Direct tier can reuse it rather than issuing the same RPC again.
@@ -874,7 +888,11 @@ async function requestQuorum(
       // If every completed member failed, let an already-running member finish
       // within Direct's compatibility budget. Its answer cannot restore
       // quorum, but it can satisfy the Direct tier without a duplicate request.
-      if (!allowDirectFallback || directCandidates.length || pending === 0) fail();
+      // A request-dependent failure (a range limit) ends the request, so there
+      // is nothing for that member's answer to feed.
+      if (!allowDirectFallback || directCandidates.length || pending === 0 || keeper.final) {
+        fail();
+      }
     };
 
     verificationTimer = setTimeout(() => {
@@ -908,7 +926,7 @@ async function requestQuorum(
           if (finished) return;
           pending -= 1;
           errors.push(error);
-          memberErrors[index] = error;
+          keeper.note(error);
           if (failureKind(error) !== 'timeout') answered[index] = true;
           rejectIfImpossible();
         }
@@ -947,8 +965,7 @@ async function requestDirect(
     directFallback = null,
     attemptedUrls = [],
     unansweredUrls = [],
-    verdictSeen = false,
-    actionableError = null,
+    keeper = createErrorKeeper(null),
     signal,
     timeoutMs: requestedTimeoutMs = null,
   } = {}
@@ -978,40 +995,26 @@ async function requestDirect(
   // longer attempt. They go last: they already failed to answer once, and a
   // caller's overall deadline (the Ant bridge's) may only fit one or two long
   // attempts, which must not all be spent on endpoints that are likely down.
-  //
-  // The retries only run while no endpoint (a quorum member or one tried
-  // here) has answered with an error the caller acts on (actionableError:
-  // "query exceeds max block range" for Ant's log scan); a hung endpoint's
-  // long retry would only delay that verdict by the whole widened budget, then
-  // hide it behind a timeout. Any other JSON-RPC error (method not found on
-  // one endpoint) is endpoint-specific and does not stop the retries, and
-  // without an actionableError (wallet reads, broadcasts) no reply does.
+  // Any failure short of a request-dependent one (see createErrorKeeper)
+  // falls through to the next endpoint, so a healthy later endpoint stays
+  // reachable whatever the earlier ones answered.
   const retried = timeoutMs > configuredTimeoutMs ? new Set(unansweredUrls) : new Set();
   const untried = urls.filter((url) => !attempted.has(url));
   const retries = urls.filter((url) => attempted.has(url) && retried.has(url));
   let lastError;
-  let verdict = null;
-  const attempt = async (url) => {
+  for (const url of [...untried, ...retries]) {
     signal?.throwIfAborted();
     try {
-      return { result: await requestRpcUrl(url, method, params, timeoutMs, { signal }) };
+      const result = await requestRpcUrl(url, method, params, timeoutMs, { signal });
+      return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
       signal?.throwIfAborted();
       lastError = err;
-      if (!verdict && isActionableError(actionableError, err)) verdict = err;
-      return null;
+      keeper.note(err);
+      if (keeper.final) throw keeper.error;
     }
-  };
-  for (const url of untried) {
-    const outcome = await attempt(url);
-    if (outcome) return directResponse(chainId, url, outcome.result, includeTrust);
   }
-  for (const url of retries) {
-    if (verdictSeen || verdict) break;
-    const outcome = await attempt(url);
-    if (outcome) return directResponse(chainId, url, outcome.result, includeTrust);
-  }
-  throw verdict || lastError || new SourceUnavailableError('All RPC endpoints failed');
+  throw lastError || new SourceUnavailableError('All RPC endpoints failed');
 }
 
 async function requestDirectFeeQuote(chainId) {
@@ -1051,8 +1054,7 @@ async function requestSource(
     directFallback = null,
     directAttemptedUrls = [],
     directUnansweredUrls = [],
-    directVerdictSeen = false,
-    actionableError = null,
+    keeper,
     allowDirectFallback = false,
     deadlineMs = null,
     signal,
@@ -1076,7 +1078,7 @@ async function requestSource(
       includeTrust,
       allowDirectFallback,
       deadlineMs,
-      actionableError,
+      keeper,
     });
   }
   if (source === 'direct') {
@@ -1085,8 +1087,7 @@ async function requestSource(
       directFallback,
       attemptedUrls: directAttemptedUrls,
       unansweredUrls: directUnansweredUrls,
-      verdictSeen: directVerdictSeen,
-      actionableError,
+      keeper,
       signal,
       timeoutMs: directTimeoutMs,
     });
@@ -1104,12 +1105,10 @@ async function request(
     signal,
     background = false,
     directTimeoutMs = null,
-    upstreamQuorumError = false,
-    // Optional predicate over a JSON-RPC error reply: true when the caller
-    // acts on it (Ant's log scan shrinks its window on a range limit). Such a
-    // reply stops the widened Direct retries and is never replaced by a later
-    // timeout; any other reply is treated like an unanswered endpoint.
-    actionableError = null,
+    // Optional error -> ERROR_RANK classifier. When set, the most useful
+    // failure across every tier and retry is kept and reported, and a
+    // REQUEST-ranked one ends the request (see createErrorKeeper).
+    rankError = null,
   } = {}
 ) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
@@ -1128,7 +1127,7 @@ async function request(
   let directFallback = null;
   let directAttemptedUrls = [];
   let directUnansweredUrls = [];
-  let directVerdictSeen = false;
+  const keeper = createErrorKeeper(rankError);
   for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
     signal?.throwIfAborted();
     const source = order[sourceIndex];
@@ -1150,8 +1149,7 @@ async function request(
         directFallback: source === 'direct' ? directFallback : null,
         directAttemptedUrls: source === 'direct' ? directAttemptedUrls : [],
         directUnansweredUrls: source === 'direct' ? directUnansweredUrls : [],
-        directVerdictSeen: source === 'direct' && directVerdictSeen,
-        actionableError,
+        keeper,
         allowDirectFallback: source === 'quorum' && order[sourceIndex + 1] === 'direct',
         deadlineMs: sourceDeadlineMs(Number(chainId), {
           interactive,
@@ -1178,27 +1176,23 @@ async function request(
         if (Array.isArray(err.directUnansweredUrls)) {
           directUnansweredUrls = err.directUnansweredUrls;
         }
-        if (err.directVerdictSeen) directVerdictSeen = true;
       }
       recordAdaptiveFailure(routeKey, err);
       const message = safeErrorMessage(err);
       failures.push(`${source}: ${message}`);
-      // A later source's timeout never replaces an earlier endpoint's reply
-      // the caller acts on (Ant shrinking its log-scan window on a range
-      // limit): it must still see it.
-      if (!(err instanceof SourceUnavailableError)) {
-        const keepVerdict = isActionableError(actionableError, lastRpcError) &&
-          failureKind(err) === 'timeout';
-        if (!keepVerdict) lastRpcError = err;
-      }
-      // Quorum's member error is one unverified endpoint's reply. Only a
-      // caller that keys on provider wording (Ant's log scan) takes it in
-      // place of the aggregate failure; wallet and app reads keep the
-      // aggregate, so they never see one endpoint's unagreed revert data.
-      else if (err.rpcError && upstreamQuorumError) lastRpcError = err.rpcError;
+      if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
+      // Quorum already reported each member's failure; its own aggregate is
+      // not an upstream error.
+      if (source !== 'quorum') keeper.note(err);
       log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${message}`);
+      // A request-dependent failure (a range limit) is final: later sources
+      // would only repeat it or delay it. The one exception is a quorum
+      // member's result Direct reuses without a new request: an answer beats
+      // any error.
+      if (keeper.final && !(directFallback && order[sourceIndex + 1] === 'direct')) break;
     }
   }
+  if (keeper.error) throw keeper.error;
   if (lastRpcError) throw lastRpcError;
   throw new Error(`All chain sources failed for ${method} (${failures.join('; ')})`);
 }
@@ -1299,5 +1293,6 @@ module.exports = {
   broadcastRawTransaction,
   requestRpcUrl,
   SourceUnavailableError,
+  ERROR_RANK,
   clearAdaptiveRoutingForTest,
 };
