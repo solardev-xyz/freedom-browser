@@ -213,6 +213,9 @@ function loadAntManagerModule(options = {}) {
   const clearService = jest.fn();
   const updateActiveProfileNodeConfig = options.updateActiveProfileNodeConfig || jest.fn();
   const spawnedProcesses = [];
+  const bridge = { url: 'http://127.0.0.1:43210/ant-chain/test-capability',
+    close: jest.fn().mockResolvedValue(), pipeLog: jest.fn() };
+  const startBridge = options.startBridge || jest.fn().mockResolvedValue(bridge);
   const execSync = options.execSync || jest.fn();
   const spawn = jest.fn((binary, args = [], spawnOptions = {}) => {
     const proc = (options.createProcess || createProcessMock)(binary, options.processOptions || {});
@@ -276,6 +279,7 @@ function loadAntManagerModule(options = {}) {
     ipcMain,
     BrowserWindow,
     extraMocks: {
+      [require.resolve('./swarm/ant-chain-bridge')]: () => ({ startAntChainBridge: startBridge }),
       child_process: () => ({
         spawn,
         execSync,
@@ -329,6 +333,8 @@ function loadAntManagerModule(options = {}) {
 
   return {
     antBinPath,
+    bridge,
+    startBridge,
     BrowserWindow,
     clearErrorState,
     clearService,
@@ -393,6 +399,7 @@ describe('ant-manager', () => {
 
     expect(isBeeDataMigrationPending).toHaveBeenCalled();
     expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.mod.getStatus()).toEqual({
       status: 'error',
       error: expect.stringContaining('identity migration has not completed'),
@@ -412,6 +419,7 @@ describe('ant-manager', () => {
     await ctx.mod.startAnt();
 
     expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.fsMock.writeFileSync).not.toHaveBeenCalled();
     expect(ctx.mod.getStatus()).toEqual({
       status: 'error',
@@ -497,6 +505,7 @@ describe('ant-manager', () => {
     await flushMicrotasks();
 
     expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.mod.getActivePort()).toBe(1633);
     expect(ctx.updateService).toHaveBeenCalledWith('ant', {
       api: 'http://127.0.0.1:1633',
@@ -703,6 +712,7 @@ describe('ant-manager', () => {
 
     expect(checkedPorts).toEqual([]);
     expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.mod.getActivePort()).toBe(22633);
     expect(ctx.updateService).toHaveBeenCalledWith('ant', {
       api: 'http://127.0.0.1:22633',
@@ -740,6 +750,7 @@ describe('ant-manager', () => {
     expect(checkedPorts).toEqual([]);
     expect(ctx.httpGet).not.toHaveBeenCalled();
     expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.mod.getActivePort()).toBeNull();
     expect(ctx.updateService).toHaveBeenCalledWith('ant', {
       api: null,
@@ -808,6 +819,7 @@ describe('ant-manager', () => {
     expect(ctx.spawnedProcesses[0].args).toEqual([
       `--config=${ctx.configPath}`,
       '--no-control-socket',
+      `--gnosis-logs-rpc-url=${ctx.bridge.url}`,
     ]);
     expect(ctx.mod.getActivePort()).toBe(1634);
     expect(ctx.updateService).toHaveBeenCalledWith('ant', {
@@ -831,6 +843,7 @@ describe('ant-manager', () => {
     await flushMicrotasks();
     await stopPromise;
 
+    expect(ctx.bridge.close).toHaveBeenCalled();
     expect(ctx.spawnedProcesses[0].kills).toContain('SIGTERM');
     expect(ctx.clearService).toHaveBeenCalledWith('ant');
     expect(jest.getTimerCount()).toBe(0);
@@ -866,6 +879,9 @@ describe('ant-manager', () => {
     expect(ctx.registry.getEndpointSources).toHaveBeenCalledWith(100, 'rpc');
 
     const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
+    expect(ctx.startBridge).toHaveBeenCalledWith({ allowBroadcast: true });
+    expect(ctx.spawnedProcesses[0].args).toContain(`--gnosis-rpc-url=${ctx.bridge.url}`);
+    expect(configContent).not.toContain(ctx.bridge.url);
     expect(configContent).toContain('swap-enable: true');
     expect(configContent).toContain('blockchain-rpc-endpoint: "https://rpc.gnosischain.com"');
     expect(configContent).toContain('resolver-options: "https://eth.user.example"');
@@ -974,6 +990,7 @@ describe('ant-manager', () => {
     await flushMicrotasks();
 
     expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.fsMock.writeFileSync).not.toHaveBeenCalled();
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
     expect(ctx.log.error).toHaveBeenCalledWith(
@@ -997,6 +1014,7 @@ describe('ant-manager', () => {
     await flushMicrotasks();
 
     expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
     expect(ctx.log.error).toHaveBeenCalledWith(
       '[Ant] Failed to prepare config:',
@@ -1018,6 +1036,7 @@ describe('ant-manager', () => {
     await flushMicrotasks();
 
     expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
   });
 
@@ -1110,8 +1129,53 @@ describe('ant-manager', () => {
       const wasActive = await stopPromise;
 
       expect(wasActive).toBe(true);
+      expect(ctx.bridge.close).toHaveBeenCalled();
       expect(ctx.spawnedProcesses[0].kills).toContain('SIGTERM');
       expect(ctx.mod.getStatus().status).toBe('stopped');
     });
+  });
+});
+
+
+describe('Ant private chain transport lifecycle', () => {
+  afterEach(() => { jest.useRealTimers(); });
+
+  test('a bridge bind failure fails startup without spawning an RPC-only daemon', async () => {
+    const ctx = loadAntManagerModule({
+      startBridge: jest.fn().mockRejectedValue(new Error('bind failed')),
+    });
+    await ctx.mod.startAnt();
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.mod.getStatus().status).toBe('error');
+  });
+
+  test('stop during bridge startup closes the late bridge without spawning', async () => {
+    let ready, entered;
+    const began = new Promise((resolve) => { entered = resolve; });
+    const startBridge = jest.fn(() => {
+      entered();
+      return new Promise((resolve) => { ready = resolve; });
+    });
+    const ctx = loadAntManagerModule({ startBridge });
+    const starting = ctx.mod.startAnt();
+    await began;
+    await ctx.mod.stopAnt();
+    ready(ctx.bridge);
+    await starting;
+    expect(ctx.bridge.close).toHaveBeenCalled();
+    expect(ctx.spawn).not.toHaveBeenCalled();
+  });
+
+  test('unexpected exit and spawn error revoke their bridge; URLs stay out of logs', async () => {
+    jest.useFakeTimers();
+    const ctx = loadAntManagerModule();
+    await ctx.mod.startAnt();
+    const child = ctx.spawnedProcesses[0];
+    child.emit('error', new Error('could not spawn'));
+    expect(ctx.bridge.close).toHaveBeenCalled();
+    child.emit('close', 1);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(JSON.stringify(ctx.log.info.mock.calls)).not.toContain(ctx.bridge.url);
+    expect(ctx.mod.getStatus().status).toBe('stopped');
   });
 });

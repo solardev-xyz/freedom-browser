@@ -1200,3 +1200,178 @@ describe('chain-data-router', () => {
     expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 });
+
+
+describe('Ant bridge cancellation', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearAdaptiveRoutingForTest();
+    mockRegistry.getNetwork.mockReturnValue({ access: {
+      readOrder: ['myotis', 'direct'], broadcastOrder: ['myotis', 'direct'],
+    } });
+    mockMyotis.isReady.mockReturnValue(true);
+    global.fetch = jest.fn();
+  });
+  afterEach(() => { global.fetch = originalFetch; });
+
+  test.each(['read', 'broadcast'])('does not fall through after a cancelled %s', async (kind) => {
+    const controller = new AbortController();
+    const waiting = deferred();
+    const native = kind === 'read' ? mockMyotis.getAccount : mockMyotis.sendRawTransaction;
+    native.mockReturnValue(waiting.promise);
+    const pending = kind === 'read'
+      ? request(100, 'eth_getBalance', ['0xabc', 'latest'], { signal: controller.signal })
+      : broadcastRawTransaction(100, '0xsigned', { signal: controller.signal });
+    await flushMicrotasks();
+    controller.abort();
+    waiting.reject(new Error('node stopped'));
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('background reads never queue for the Myotis slot ahead of wallet reads', async () => {
+    mockRegistry.getEndpoints.mockReturnValue(['https://one.example']);
+    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ result: '0xrpc' }) });
+    const held = deferred();
+    mockMyotis.ethCall.mockReturnValueOnce(held.promise).mockResolvedValue({ resultHex: '0x2a' });
+    const call = [{ to: `0x${'1'.padStart(40, '0')}`, data: '0x1234' }, 'latest'];
+    const wallet = request(100, 'eth_call', call);
+    await flushMicrotasks();
+    // The slot is busy: Ant's read skips Myotis at once instead of waiting.
+    await expect(request(100, 'eth_call', call, { background: true }))
+      .resolves.toMatchObject({ source: 'direct' });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    held.resolve({ resultHex: '0x1' });
+    await expect(wallet).resolves.toMatchObject({ source: 'myotis' });
+    // Nothing was left parked on the slot; an idle slot still serves Ant.
+    await expect(request(100, 'eth_call', call, { background: true }))
+      .resolves.toMatchObject({ source: 'myotis' });
+  });
+
+  test('direct timeout names a query timeout and can be widened, never narrowed', async () => {
+    jest.useFakeTimers();
+    try {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['direct'] }, quorum: { timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(['https://one.example']);
+      global.fetch.mockImplementation((_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      }));
+      const wide = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
+      const settled = jest.fn();
+      wide.then(settled, settled);
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(settled).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(55000);
+      await expect(wide).rejects.toThrow('RPC query timeout after 60000ms');
+
+      const narrow = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 10 });
+      const narrowSettled = jest.fn();
+      narrow.then(narrowSettled, narrowSettled);
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(narrowSettled).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1000);
+      await expect(narrow).rejects.toThrow('RPC query timeout after 5000ms');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // The Ant log-scan error rule (rankError) is exercised as a tier x error
+  // class x arrival order matrix in src/main/swarm/ant-log-scan-routing.test.js.
+  // These pin that callers without rankError (wallet/app reads, broadcasts)
+  // report failures exactly as before.
+  const THREE_RPCS = ['https://a.example', 'https://b.example', 'https://c.example'];
+  const hangUntilAborted = (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () =>
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+  });
+
+  test('without rankError a quorum member error never replaces the aggregate', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['quorum'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        error: { code: 3, message: 'execution reverted', data: '0xdeadbeef' },
+      }),
+    });
+    const params = [{ to: '0x0000000000000000000000000000000000000001', data: '0x' }, 'latest'];
+    await expect(request(100, 'eth_call', params))
+      .rejects.toThrow(/^All chain sources failed for eth_call/);
+  });
+
+  test('without rankError a range limit neither ends the request nor is kept', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['quorum', 'direct'] },
+        quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue([...THREE_RPCS, 'https://d.example']);
+      global.fetch.mockImplementation((url, options) => {
+        if (url === 'https://a.example') return hangUntilAborted(url, options);
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            error: { code: -32005, message: 'query exceeds max block range 50000' },
+          }),
+        });
+      });
+      const pending = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
+      pending.catch(() => {});
+      await jest.advanceTimersByTimeAsync(70000);
+      // Quorum waits for the hung member, Direct asks the untried d and then
+      // retries a at the widened budget; the last endpoint's error is reported.
+      await expect(pending).rejects.toThrow('RPC query timeout after 60000ms');
+      expect(global.fetch.mock.calls.map(([url]) => url))
+        .toEqual([...THREE_RPCS, 'https://d.example', 'https://a.example']);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // R5-M1: a broadcast's later client timeout is an uncertain outcome and must
+  // not be hidden behind an earlier endpoint's definite-looking rejection.
+  test("a broadcast's later timeout is not hidden by an earlier RPC rejection", async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      mockMyotis.isReady.mockReturnValue(false);
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { broadcastOrder: ['myotis', 'direct'] },
+        quorum: { timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example']);
+      global.fetch.mockImplementation((url, options) => (url === 'https://a.example'
+        ? Promise.resolve({
+          ok: true,
+          json: async () => ({ error: { code: -32005, message: 'rate limit exceeded' } }),
+        })
+        : hangUntilAborted(url, options)));
+      const sent = broadcastRawTransaction(100, '0xsigned');
+      sent.catch(() => {});
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(sent).rejects.toThrow('RPC query timeout after 5000ms');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('does not broadcast at a second RPC after cancellation', async () => {
+    mockRegistry.getNetwork.mockReturnValue({ access: { broadcastOrder: ['direct'] } });
+    mockRegistry.getEndpoints.mockReturnValue(['https://one.example', 'https://two.example']);
+    const controller = new AbortController();
+    global.fetch.mockImplementation(async () => {
+      controller.abort();
+      throw new Error('disconnected');
+    });
+    await expect(broadcastRawTransaction(100, '0xsigned', { signal: controller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+});

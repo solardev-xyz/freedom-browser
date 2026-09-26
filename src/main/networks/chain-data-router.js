@@ -131,6 +131,65 @@ function isCapacityFailure(error) {
     .test(message);
 }
 
+// How useful a failure is to a caller that adapts its request to the error
+// (the bundled Ant node's log scan halves its eth_getLogs window on a range
+// limit or a timeout). The caller supplies rankError(error) -> one of these.
+const ERROR_RANK = Object.freeze({
+  // Depends on the endpoint, the caller cannot act on it (method not found,
+  // internal error, rate limit, HTTP 5xx, transport failure, source not ready).
+  ENDPOINT: 0,
+  // An endpoint's own reply the caller may act on, though it cannot tell it
+  // apart from an endpoint-dependent one (Ant: a range cap worded outside the
+  // bridge's known list). Other endpoints are still asked, but it is reported
+  // over any endpoint failure, so a later 429 or refused connection cannot
+  // hide it.
+  HINT: 1,
+  // A timeout: the caller can shrink the request and try again.
+  TIMEOUT: 2,
+  // Depends on the request itself (a range limit): no other endpoint or retry
+  // is expected to do better, so it ends the request at once.
+  REQUEST: 3,
+});
+
+// The single error rule for a ranked request: keep the most useful failure
+// seen so far across every tier, endpoint and retry. A later failure replaces
+// it only when it ranks strictly higher, so an earlier range limit survives a
+// later timeout or 429, an earlier timeout survives a later -32601 and a
+// possible range cap (HINT) survives a later transport failure. The
+// one equal-rank replacement is timeout by timeout: the later one is the
+// attempt that actually ended the request (Direct's widened retry after
+// quorum's 5 s cut), so its budget is what the caller and logs should see.
+// Only a REQUEST-ranked failure is final. Without rankError nothing is kept and the
+// router reports failures exactly as before (wallet reads, broadcasts).
+function createErrorKeeper(rankError) {
+  let kept = null;
+  let keptRank = -1;
+  return {
+    note(error) {
+      if (typeof rankError !== 'function' || !error) return;
+      let rank;
+      try {
+        rank = Number(rankError(error));
+      } catch {
+        rank = ERROR_RANK.ENDPOINT;
+      }
+      if (!Number.isFinite(rank)) rank = ERROR_RANK.ENDPOINT;
+      if (rank > keptRank || (rank === keptRank && rank === ERROR_RANK.TIMEOUT)) {
+        kept = error;
+        keptRank = rank;
+      }
+    },
+    get final() {
+      return keptRank >= ERROR_RANK.REQUEST;
+    },
+    // Only a failure the caller can act on replaces the router's own report;
+    // endpoint-dependent failures keep the existing aggregate/last-RPC error.
+    get error() {
+      return keptRank > ERROR_RANK.ENDPOINT ? kept : null;
+    },
+  };
+}
+
 function failureKind(error) {
   if (isCapacityFailure(error)) return 'capacity';
   if (error?.failureKind === 'timeout' || error?.name === 'AbortError') return 'timeout';
@@ -502,13 +561,13 @@ function releaseMyotisSlot(chainId) {
 
 // Returns null when the queue is full. `granted` is null when the slot was
 // free, so an uncontended read never pays for a timer it cannot need.
-function acquireMyotisSlot(chainId) {
+function acquireMyotisSlot(chainId, { queue = true } = {}) {
   const slots = myotisSlotsFor(chainId);
   if (slots.inFlight < MAX_MYOTIS_IN_FLIGHT) {
     slots.inFlight += 1;
     return { granted: null, abandon: () => {} };
   }
-  if (slots.waiters.length >= MAX_MYOTIS_QUEUED) return null;
+  if (!queue || slots.waiters.length >= MAX_MYOTIS_QUEUED) return null;
   let grant;
   const granted = new Promise((resolve) => {
     grant = resolve;
@@ -530,12 +589,18 @@ async function requestViaMyotis(
   chainId,
   method,
   params,
-  { includeTrust = false, deadlineMs = null } = {}
+  { includeTrust = false, deadlineMs = null, background = false } = {}
 ) {
   const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
-  const slot = acquireMyotisSlot(chainId);
+  // Background work (the bundled Ant node's polling) only takes an idle slot
+  // and never queues, so it cannot sit ahead of wallet/app reads.
+  const slot = acquireMyotisSlot(chainId, { queue: !background });
   if (!slot) {
-    throw new SourceUnavailableError('Myotis has too many reads queued for this workload');
+    throw new SourceUnavailableError(
+      background
+        ? 'Myotis is busy with interactive reads'
+        : 'Myotis has too many reads queued for this workload'
+    );
   }
   const startedAt = Date.now();
   if (slot.granted) {
@@ -617,7 +682,11 @@ async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
   const abort = () => controller.abort();
   if (signal?.aborted) controller.abort();
   else signal?.addEventListener?.('abort', abort, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -634,6 +703,15 @@ async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
       throw error;
     }
     return data.result;
+  } catch (err) {
+    // Name the client timeout in the message: callers such as Ant's log scan
+    // key on "query timeout" to shrink their window instead of giving up.
+    if (timedOut && !signal?.aborted) {
+      const error = new Error(`RPC query timeout after ${timeoutMs}ms`);
+      error.failureKind = 'timeout';
+      throw error;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener?.('abort', abort);
@@ -708,7 +786,12 @@ async function requestQuorum(
   chainId,
   method,
   params,
-  { includeTrust = false, allowDirectFallback = false, deadlineMs = null } = {}
+  {
+    includeTrust = false,
+    allowDirectFallback = false,
+    deadlineMs = null,
+    keeper = createErrorKeeper(null),
+  } = {}
 ) {
   const network = registry.getNetwork(chainId) || {};
   const quorum = network.quorum || {};
@@ -728,6 +811,9 @@ async function requestQuorum(
     const fulfilledUrls = [];
     const directCandidates = [];
     const errors = [];
+    // Per member: whether it answered at all (a result or an RPC-level error,
+    // as opposed to timing out or still being in flight when quorum gave up).
+    const answered = new Array(urls.length).fill(false);
     let pending = urls.length;
     let finished = false;
     let verificationImpossible = false;
@@ -763,8 +849,15 @@ async function requestQuorum(
         },
       });
     };
-    const fail = () => {
+    const fail = ({ deadline = false } = {}) => {
       if (finished) return;
+      // Members still in flight when quorum's own deadline fires were cut off
+      // by a timeout; a ranked caller (Ant's log scan) counts that as one.
+      if (deadline && pending > 0) {
+        const cut = new Error(`RPC query timeout after ${timeoutMs}ms`);
+        cut.failureKind = 'timeout';
+        keeper.note(cut);
+      }
       finish();
       const capacityFailures = errors.filter(isCapacityFailure).length;
       const timedOut = errors.some((error) => failureKind(error) === 'timeout');
@@ -772,6 +865,10 @@ async function requestQuorum(
         `RPC quorum did not reach ${m} matching responses`,
         capacityFailures >= m ? 'capacity' : timedOut ? 'timeout' : null
       );
+      // Members that never answered were cut at quorum's budget. A caller that
+      // widened Direct's per-URL budget may try them again; ones that did
+      // answer would only repeat the same reply.
+      error.directUnansweredUrls = urls.filter((_, index) => !answered[index]);
       // Direct would accept one endpoint's answer without agreement. Preserve
       // the highest-priority successful quorum member so the next configured
       // Direct tier can reuse it rather than issuing the same RPC again.
@@ -801,13 +898,19 @@ async function requestQuorum(
       // If every completed member failed, let an already-running member finish
       // within Direct's compatibility budget. Its answer cannot restore
       // quorum, but it can satisfy the Direct tier without a duplicate request.
-      if (!allowDirectFallback || directCandidates.length || pending === 0) fail();
+      // A request-dependent failure (a range limit) ends the request, so there
+      // is nothing for that member's answer to feed.
+      if (!allowDirectFallback || directCandidates.length || pending === 0 || keeper.final) {
+        fail();
+      }
     };
 
     verificationTimer = setTimeout(() => {
       if (finished) return;
       verificationImpossible = true;
-      if (!allowDirectFallback || directCandidates.length || pending === 0) fail();
+      if (!allowDirectFallback || directCandidates.length || pending === 0) {
+        fail({ deadline: true });
+      }
     }, timeoutMs);
 
     urls.forEach((url, index) => {
@@ -817,6 +920,7 @@ async function requestQuorum(
         (value) => {
           if (finished) return;
           pending -= 1;
+          answered[index] = true;
           fulfilledUrls.push(url);
           directCandidates.push({ index, url, result: value });
           const key = stableValue(value);
@@ -832,6 +936,8 @@ async function requestQuorum(
           if (finished) return;
           pending -= 1;
           errors.push(error);
+          keeper.note(error);
+          if (failureKind(error) !== 'timeout') answered[index] = true;
           rejectIfImpossible();
         }
       );
@@ -864,10 +970,23 @@ async function requestDirect(
   chainId,
   method,
   params,
-  { includeTrust = false, directFallback = null, attemptedUrls = [] } = {}
+  {
+    includeTrust = false,
+    directFallback = null,
+    attemptedUrls = [],
+    unansweredUrls = [],
+    keeper = createErrorKeeper(null),
+    signal,
+    timeoutMs: requestedTimeoutMs = null,
+  } = {}
 ) {
   const network = registry.getNetwork(chainId) || {};
-  const timeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
+  const configuredTimeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
+  // A background caller (Ant's log scans) may widen the per-URL budget; it is
+  // never narrowed below the configured timeout.
+  const timeoutMs = Number.isFinite(requestedTimeoutMs)
+    ? Math.max(configuredTimeoutMs, requestedTimeoutMs)
+    : configuredTimeoutMs;
   const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   if (directFallback && urls.includes(directFallback.url) &&
@@ -881,14 +1000,28 @@ async function requestDirect(
     );
   }
   const attempted = new Set(attemptedUrls);
+  // Endpoints quorum never asked go first, in registry order. With a widened
+  // budget, the ones quorum cut off at the configured timeout then get their
+  // longer attempt. They go last: they already failed to answer once, and a
+  // caller's overall deadline (the Ant bridge's) may only fit one or two long
+  // attempts, which must not all be spent on endpoints that are likely down.
+  // Any failure short of a request-dependent one (see createErrorKeeper)
+  // falls through to the next endpoint, so a healthy later endpoint stays
+  // reachable whatever the earlier ones answered.
+  const retried = timeoutMs > configuredTimeoutMs ? new Set(unansweredUrls) : new Set();
+  const untried = urls.filter((url) => !attempted.has(url));
+  const retries = urls.filter((url) => attempted.has(url) && retried.has(url));
   let lastError;
-  for (const url of urls) {
-    if (attempted.has(url)) continue;
+  for (const url of [...untried, ...retries]) {
+    signal?.throwIfAborted();
     try {
-      const result = await requestRpcUrl(url, method, params, timeoutMs);
+      const result = await requestRpcUrl(url, method, params, timeoutMs, { signal });
       return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
+      signal?.throwIfAborted();
       lastError = err;
+      keeper.note(err);
+      if (keeper.final) throw keeper.error;
     }
   }
   throw lastError || new SourceUnavailableError('All RPC endpoints failed');
@@ -930,14 +1063,20 @@ async function requestSource(
     routeKey = null,
     directFallback = null,
     directAttemptedUrls = [],
+    directUnansweredUrls = [],
+    keeper,
     allowDirectFallback = false,
     deadlineMs = null,
+    signal,
+    background = false,
+    directTimeoutMs = null,
   } = {}
 ) {
   if (source === 'myotis') {
     return requestViaMyotis(chainId, method, params, {
       includeTrust,
       deadlineMs,
+      background,
     });
   }
   if (source === 'colibri') {
@@ -949,6 +1088,7 @@ async function requestSource(
       includeTrust,
       allowDirectFallback,
       deadlineMs,
+      keeper,
     });
   }
   if (source === 'direct') {
@@ -956,6 +1096,10 @@ async function requestSource(
       includeTrust,
       directFallback,
       attemptedUrls: directAttemptedUrls,
+      unansweredUrls: directUnansweredUrls,
+      keeper,
+      signal,
+      timeoutMs: directTimeoutMs,
     });
   }
   throw new SourceUnavailableError(`Unknown chain source: ${source}`);
@@ -965,7 +1109,17 @@ async function request(
   chainId,
   method,
   rawParams = [],
-  { includeTrust = false, routingContext = null } = {}
+  {
+    includeTrust = false,
+    routingContext = null,
+    signal,
+    background = false,
+    directTimeoutMs = null,
+    // Optional error -> ERROR_RANK classifier. When set, the most useful
+    // failure across every tier and retry is kept and reported, and a
+    // REQUEST-ranked one ends the request (see createErrorKeeper).
+    rankError = null,
+  } = {}
 ) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
   const network = registry.getNetwork(chainId);
@@ -982,7 +1136,10 @@ async function request(
   let lastRpcError = null;
   let directFallback = null;
   let directAttemptedUrls = [];
+  let directUnansweredUrls = [];
+  const keeper = createErrorKeeper(rankError);
   for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
+    signal?.throwIfAborted();
     const source = order[sourceIndex];
     if (DIRECT_ONLY_METHODS.has(method) && source !== 'direct') continue;
     const routeKey = source === 'myotis' || source === 'colibri' || source === 'quorum'
@@ -994,16 +1151,22 @@ async function request(
     }
     try {
       const sourceResult = await requestSource(source, Number(chainId), method, params, {
+        signal,
+        background,
+        directTimeoutMs,
         includeTrust,
         routeKey,
         directFallback: source === 'direct' ? directFallback : null,
         directAttemptedUrls: source === 'direct' ? directAttemptedUrls : [],
+        directUnansweredUrls: source === 'direct' ? directUnansweredUrls : [],
+        keeper,
         allowDirectFallback: source === 'quorum' && order[sourceIndex + 1] === 'direct',
         deadlineMs: sourceDeadlineMs(Number(chainId), {
           interactive,
           hasFallbackSource: sourceIndex + 1 < order.length,
         }),
       });
+      signal?.throwIfAborted();
       recordAdaptiveSuccess(routeKey);
       const result = includeTrust ? sourceResult.result : sourceResult;
       return {
@@ -1013,20 +1176,33 @@ async function request(
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
+      signal?.throwIfAborted();
       if (source === 'myotis' && err.code === 3) throw err;
       if (source === 'quorum') {
         if (err.directFallback) directFallback = err.directFallback;
         if (Array.isArray(err.directAttemptedUrls)) {
           directAttemptedUrls = err.directAttemptedUrls;
         }
+        if (Array.isArray(err.directUnansweredUrls)) {
+          directUnansweredUrls = err.directUnansweredUrls;
+        }
       }
       recordAdaptiveFailure(routeKey, err);
       const message = safeErrorMessage(err);
       failures.push(`${source}: ${message}`);
       if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
+      // Quorum already reported each member's failure; its own aggregate is
+      // not an upstream error.
+      if (source !== 'quorum') keeper.note(err);
       log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${message}`);
+      // A request-dependent failure (a range limit) is final: later sources
+      // would only repeat it or delay it. The one exception is a quorum
+      // member's result Direct reuses without a new request: an answer beats
+      // any error.
+      if (keeper.final && !(directFallback && order[sourceIndex + 1] === 'direct')) break;
     }
   }
+  if (keeper.error) throw keeper.error;
   if (lastRpcError) throw lastRpcError;
   throw new Error(`All chain sources failed for ${method} (${failures.join('; ')})`);
 }
@@ -1079,7 +1255,7 @@ async function getFeeQuote(chainId) {
   throw new Error(`All chain sources failed for fee quote (${failures.join('; ')})`);
 }
 
-async function broadcastRawTransaction(chainId, rawTransaction) {
+async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {}) {
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
   const order = network.access?.broadcastOrder ||
@@ -1087,6 +1263,7 @@ async function broadcastRawTransaction(chainId, rawTransaction) {
   const failures = [];
   let lastRpcError = null;
   for (const source of order) {
+    signal?.throwIfAborted();
     try {
       let result;
       if (source === 'myotis') {
@@ -1099,12 +1276,13 @@ async function broadcastRawTransaction(chainId, rawTransaction) {
           throw error;
         }
       } else if (source === 'direct') {
-        result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction]);
+        result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction], { signal });
       } else {
         throw new SourceUnavailableError(`${source} cannot broadcast transactions`);
       }
       return { result, source };
     } catch (err) {
+      signal?.throwIfAborted();
       if (err.code === 'MYOTIS_BROADCAST_UNCERTAIN') throw err;
       failures.push(`${source}: ${err.message}`);
       // A node rejection (`nonce too low`, `already known`, …) carries a
@@ -1125,5 +1303,6 @@ module.exports = {
   broadcastRawTransaction,
   requestRpcUrl,
   SourceUnavailableError,
+  ERROR_RANK,
   clearAdaptiveRoutingForTest,
 };
