@@ -216,8 +216,14 @@ macOS sandbox execution on disposable managed and external projects, including
 permission denial, explicit path bounds, competing-parent denial and stale-write
 protection. UI receipts are checked in both themes/layouts. Unit coverage includes
 ownership through unsettled operations, cancellation, late setup and read-only
-regressions. Real-model editing smoke acceptance is pending.
+regressions.
 
-Next: accept scoped editing, then define browser tab ownership. Broader writer
+**User acceptance, 2026-09-26:** the fresh-workspace personal-website prompt
+(create assigned files, parent review/preview and checkpoint) and the external
+read-only project's editing-permission flow both passed user smoke tests.
+Manual background-edit/reviewer overlap, Stop during editing and reopening the
+editing receipt remain separate checks; these are not implied by those two passes.
+
+Next development slice: define browser tab ownership for browser-capable helpers. Broader writer
 concurrency, model/role selection, nested delegation, remote execution and optional
 Jev workers remain later work. No claim of complete provider/platform qualification.
