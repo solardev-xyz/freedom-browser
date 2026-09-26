@@ -806,7 +806,8 @@ async function requestQuorum(
       // member error. With no untried URL left for Direct, it is the only
       // place the provider's own wording (a range limit, a revert, a client
       // timeout) survives; callers such as Ant's log scan key on that text to
-      // shrink their window. A split with a successful member stays an
+      // shrink their window. request() surfaces it only for a caller that
+      // opts in with upstreamQuorumError. A split with a successful member stays an
       // unverified disagreement, not an upstream error.
       const rpcError = directCandidates.length
         ? null
@@ -944,15 +945,19 @@ async function requestDirect(
     );
   }
   const attempted = new Set(attemptedUrls);
-  // With a widened budget, an endpoint quorum cut off at the configured
-  // timeout gets its longer attempt here instead of being skipped.
-  if (timeoutMs > configuredTimeoutMs) {
-    for (const url of unansweredUrls) attempted.delete(url);
-  }
+  // Endpoints quorum never asked go first, in registry order. With a widened
+  // budget, the ones quorum cut off at the configured timeout then get their
+  // longer attempt. They go last: they already failed to answer once, and a
+  // caller's overall deadline (the Ant bridge's) may only fit one or two long
+  // attempts, which must not all be spent on endpoints that are likely down.
+  const retried = timeoutMs > configuredTimeoutMs ? new Set(unansweredUrls) : new Set();
+  const order = [
+    ...urls.filter((url) => !attempted.has(url)),
+    ...urls.filter((url) => attempted.has(url) && retried.has(url)),
+  ];
   let lastError;
-  for (const url of urls) {
+  for (const url of order) {
     signal?.throwIfAborted();
-    if (attempted.has(url)) continue;
     try {
       const result = await requestRpcUrl(url, method, params, timeoutMs, { signal });
       return directResponse(chainId, url, result, includeTrust);
@@ -1049,6 +1054,7 @@ async function request(
     signal,
     background = false,
     directTimeoutMs = null,
+    upstreamQuorumError = false,
   } = {}
 ) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
@@ -1119,7 +1125,11 @@ async function request(
       const message = safeErrorMessage(err);
       failures.push(`${source}: ${message}`);
       if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
-      else if (err.rpcError) lastRpcError = err.rpcError;
+      // Quorum's member error is one unverified endpoint's reply. Only a
+      // caller that keys on provider wording (Ant's log scan) takes it in
+      // place of the aggregate failure; wallet and app reads keep the
+      // aggregate, so they never see one endpoint's unagreed revert data.
+      else if (err.rpcError && upstreamQuorumError) lastRpcError = err.rpcError;
       log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${message}`);
     }
   }

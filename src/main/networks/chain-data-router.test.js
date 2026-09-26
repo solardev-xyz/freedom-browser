@@ -1301,10 +1301,58 @@ describe('Ant bridge cancellation', () => {
       ok: true,
       json: async () => ({ error: { code: -32005, message: 'query exceeds max block range 50000' } }),
     });
-    await expect(request(100, 'eth_getLogs', [{}], { background: true, directTimeoutMs: 60000 }))
-      .rejects.toMatchObject({ code: -32005, message: 'query exceeds max block range 50000' });
+    await expect(request(100, 'eth_getLogs', [{}], {
+      background: true,
+      directTimeoutMs: 60000,
+      upstreamQuorumError: true,
+    })).rejects.toMatchObject({ code: -32005, message: 'query exceeds max block range 50000' });
     // Members that answered are not asked again by Direct.
     expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  // R3-M1: one unverified member's error (possibly fabricated revert data)
+  // must not replace the aggregate failure for wallet/app reads.
+  test('keeps the aggregate failure unless the caller opts into the member error', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['quorum'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        error: { code: 3, message: 'execution reverted', data: '0xdeadbeef' },
+      }),
+    });
+    const params = [{ to: '0x0000000000000000000000000000000000000001', data: '0x' }, 'latest'];
+    await expect(request(100, 'eth_call', params))
+      .rejects.toThrow(/^All chain sources failed for eth_call/);
+    await expect(request(100, 'eth_call', params, { upstreamQuorumError: true }))
+      .rejects.toMatchObject({ message: 'execution reverted' });
+  });
+
+  // R3-F1: with the first k endpoints hanging, a healthy endpoint quorum never
+  // asked must be tried before the long retries, or the bridge's deadline
+  // expires inside retries of dead endpoints.
+  test('a widened Direct budget tries untried RPCs before retrying quorum members', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    try {
+      const FOUR_RPCS = [...THREE_RPCS, 'https://d.example'];
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['quorum', 'direct'] },
+        quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(FOUR_RPCS);
+      global.fetch.mockImplementation((url, options) => (url === 'https://d.example'
+        ? Promise.resolve({ ok: true, json: async () => ({ result: ['fourth'] }) })
+        : hangUntilAborted(url, options)));
+      const wide = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(wide).resolves.toMatchObject({ result: ['fourth'], source: 'direct' });
+      expect(global.fetch.mock.calls.map(([url]) => url)).toEqual(FOUR_RPCS);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('a widened Direct budget retries RPCs quorum cut off at its timeout', async () => {
@@ -1331,13 +1379,13 @@ describe('Ant bridge cancellation', () => {
       await expect(wide).resolves.toMatchObject({ result: [], source: 'direct' });
 
       // Without a widened budget, Direct does not repeat the same 5s attempt,
-      // and the failure still names a query timeout.
+      // and the aggregate failure still names a query timeout.
       global.fetch.mockReset();
       global.fetch.mockImplementation(hangUntilAborted);
       const narrow = request(100, 'eth_getLogs', [{}]);
       narrow.catch(() => {});
       await jest.advanceTimersByTimeAsync(5000);
-      await expect(narrow).rejects.toThrow('RPC query timeout after 5000ms');
+      await expect(narrow).rejects.toThrow(/query timeout/);
       expect(global.fetch).toHaveBeenCalledTimes(3);
     } finally {
       jest.useRealTimers();

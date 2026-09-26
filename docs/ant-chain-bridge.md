@@ -26,11 +26,21 @@ cannot push interactive wallet/app reads into queue-full fallback.
 Wide `eth_getLogs` scans get a 60 s per-URL budget on the direct tier (never
 less than the chain's configured timeout). With the default Gnosis policy the
 RPC quorum tier asks the first `k` (3) endpoints first, at the configured 5 s.
-The direct tier then retries any of those that never answered, now with 60 s,
-and tries the remaining endpoints at 60 s. An endpoint that answered quorum
-with an error (for example a range limit) is not asked again. If no member
-returned a result, quorum keeps the first member's upstream error, so its
-wording still reaches Ant when no endpoint is left untried.
+The direct tier then tries, in registry order, the endpoints quorum never
+asked, and only after those retries the quorum members that never answered,
+now with 60 s. An endpoint that answered quorum with an error (for example a
+range limit) is not asked again. Every attempt still sits inside the bridge's
+120 s per-request deadline, which fits only about two full 60 s attempts
+after quorum: with several endpoints hanging, the later ones are not reached
+before the deadline and Ant gets a query timeout, shrinks its window and
+retries. Putting untried endpoints first means a healthy one is reached right
+after quorum instead of behind retries of endpoints that just failed.
+
+If no quorum member returned a result, quorum keeps the first member's
+upstream error. Only log scans opt into it (`upstreamQuorumError`), so its
+wording still reaches Ant when no endpoint is left untried; wallet and app
+reads keep the aggregate "all chain sources failed" error rather than one
+unverified endpoint's reply.
 
 Broadcasts use the separate configured broadcast policy and
 require an already-signed, chain-bound Gnosis transaction. Ant retains signing;
@@ -92,8 +102,9 @@ bind/spawn failure and stop during startup. Router tests ensure cancellation
 prevents later fallback or a second direct broadcaster.
 `ant-chain-bridge.router.test.js` runs the real router behind the real bridge
 with three RPC endpoints (all used by quorum). It checks that a range-limit
-error still reaches Ant, and that endpoints cut off by quorum's timeout get
-the longer log-scan budget.
+error still reaches Ant, that endpoints cut off by quorum's timeout get the
+longer log-scan budget, and (with four endpoints, the first three hanging)
+that the healthy fourth is reached before the bridge deadline.
 
 The live check uses a newly generated, unfunded temporary managed profile,
 real Electron, Ant v0.5.45 and checksum-verified Myotis v0.1.11 / ABI 29. No

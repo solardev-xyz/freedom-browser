@@ -20,7 +20,10 @@ const MAX_ERROR_MESSAGE = 500;
 // Ant's scan_logs only shrinks its eth_getLogs window when the error text
 // matches a range-limit/timeout needle, so a wide scan gets a longer per-URL
 // budget on the direct path than an interactive read would. The direct tier
-// also retries, at this budget, quorum members that timed out without an answer.
+// first tries endpoints quorum never asked, then retries, at this budget,
+// quorum members that timed out without an answer, as far as the bridge's
+// overall deadline allows. Log scans also opt into quorum's upstream member
+// error, so a range limit still reaches Ant when no endpoint is left untried.
 const LOG_SCAN_DIRECT_TIMEOUT_MS = 60000;
 
 // Forward the upstream wording (Ant keys retry decisions on it, e.g. "query
@@ -160,7 +163,9 @@ async function startAntChainBridge({
               signal: controller.signal,
               // Ant's polling must not queue ahead of wallet/app reads.
               background: true,
-              ...(method === 'eth_getLogs' ? { directTimeoutMs: LOG_SCAN_DIRECT_TIMEOUT_MS } : {}),
+              ...(method === 'eth_getLogs'
+                ? { directTimeoutMs: LOG_SCAN_DIRECT_TIMEOUT_MS, upstreamQuorumError: true }
+                : {}),
             });
       controller.signal.throwIfAborted();
       if (answer.result === undefined) throw new Error('Missing chain result');

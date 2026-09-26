@@ -157,6 +157,7 @@ test('Ant reads are background work and wide log scans get a longer direct budge
     signal: expect.any(AbortSignal),
     background: true,
     directTimeoutMs: 60000,
+    upstreamQuorumError: true,
   });
 });
 

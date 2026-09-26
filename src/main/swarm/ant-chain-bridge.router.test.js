@@ -94,3 +94,32 @@ test('gives RPCs quorum cut off at its timeout the longer log-scan budget', asyn
   expect(response.result).toEqual([]);
   expect(global.fetch.mock.calls[3][0]).toBe(RPCS[0]);
 });
+
+// R3-F1 at 10x-scaled timings (quorum 500 ms, bridge deadline 1.2 s, Direct
+// 60 s budget): with the first three endpoints hanging, the healthy fourth is
+// reached right after quorum instead of after two long retries.
+test('reaches a healthy fourth RPC before the bridge deadline', async () => {
+  await bridge.close();
+  bridge = await startAntChainBridge({
+    router,
+    log: { info: jest.fn(), warn: jest.fn() },
+    timeoutMs: 1200,
+  });
+  const FOUR = [...RPCS, 'https://d.example'];
+  mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+    role === 'prover' ? ['https://prover.example'] : FOUR
+  );
+  global.fetch = jest.fn((url, { signal }) => {
+    if (url === 'https://d.example') {
+      return Promise.resolve({ ok: true, json: async () => ({ result: ['ok'] }) });
+    }
+    return new Promise((_resolve, reject) =>
+      signal.addEventListener('abort', () =>
+        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+      )
+    );
+  });
+  const response = await post(bridge.url, getLogs);
+  expect(response.result).toEqual(['ok']);
+  expect(global.fetch.mock.calls[3][0]).toBe('https://d.example');
+});
