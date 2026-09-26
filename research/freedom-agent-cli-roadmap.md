@@ -90,12 +90,19 @@ being used for physical workspace validation and sandboxed file search. A real E
 concurrent read/list/find on an external read-only project containing an SSH remote
 and an ASAR archive, while confirming writes remain denied. Preserve actionable
 validation codes instead of collapsing them into command execution failures.
-The reported second project passed concurrent directory listing, file search and
-README reading with a fresh read-only grant after the fixes. The original
-Freedom checkout additionally contains a node socket: the current whole-tree
-writable-workspace validation still refuses it. A separate restricted policy for
-read-only file helpers remains needed so ordinary reads do not inherit unrelated
-command-workspace layout requirements; do not simply relax socket/hardlink checks.
+Both reported projects now pass concurrent directory listing, file search and
+README reading with fresh read-only grants, including the running Freedom
+checkout with its live node socket. External file read/list/find/grep helpers now
+use a separate offline policy with no workspace write authority; they validate
+individual regular files rather than running whole-tree command validation.
+Search reads recheck opened inodes and reject links/special files. The Electron
+regression covers concurrent reads alongside a changing file and socket, OS-level
+write/socket denial, and continued denial of direct symlink/hardlink/socket reads.
+Command execution, writes, Git operations and history/viewer inspection retain
+their existing stricter validation; extending those operations to more live
+project layouts remains separate work. Linux read-only mount generation is
+unit-tested; the live sandbox regression was run on macOS.
+
 
 **Additional open candidates:**
 

@@ -63,6 +63,73 @@ test('read-only external projects accept SSH remotes and physical ASAR archives'
   expect(result).toEqual({ mode: 'read', read: 'External project fixture', listed: true, found: true, writeError: 'PROJECT_READ_ONLY', unchanged: true });
 });
 
+test('reads a live external project without granting writes or socket access', async ({ electronApp, userDataDir }) => {
+  test.skip(process.platform === 'win32', 'Unix socket fixture');
+  const result = await electronApp.evaluate(async (_electron, { root, userDataDir }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('original-fs'); const path = require('path'); const net = require('net');
+    const { AgentManagedWorkspaceStore } = require(root + '/src/main/agent/managed-workspace-store');
+    const { ManagedWorkspaceController } = require(root + '/src/main/agent/managed-workspace-controller');
+    const { createWorkspaceFileReadPolicy, createWorkspaceExecutionPolicy } = require(root + '/src/main/agent/workspace-execution/execution-policy');
+    const directory = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fr-'));
+    const project = path.join(directory, 'p');
+    fs.mkdirSync(project);
+    fs.mkdirSync(path.join(project, '.git'));
+    fs.writeFileSync(path.join(project, 'README.md'), 'Live project fixture');
+    const outside = path.join(directory, 'outside.txt');
+    fs.writeFileSync(outside, 'outside fixture');
+    fs.symlinkSync(outside, path.join(project, 'link.txt'));
+    fs.linkSync(outside, path.join(project, 'hardlink.txt'));
+    let connections = 0;
+    const socket = net.createServer(connection => { connections += 1; connection.end(); });
+    await new Promise((resolve, reject) => { socket.once('error', reject); socket.listen(path.join(project, 'live.sock'), resolve); });
+    const changing = setInterval(() => fs.writeFileSync(path.join(project, 'runtime.log'), String(Date.now())), 10);
+    const profile = path.join(userDataDir, 'live-read-profile');
+    fs.mkdirSync(profile);
+    const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
+    let readPolicy;
+    const controller = new ManagedWorkspaceController({ store, createReadPolicy: async options => {
+      readPolicy = await createWorkspaceFileReadPolicy(options); return readPolicy;
+    } });
+    try {
+      await store.attachProject('live-project', project);
+      const [read, listing, found, matches] = await Promise.all([
+        controller.readFile('live-project', 'README.md'), controller.listDirectory('live-project', '.'),
+        controller.findFiles('live-project', '.', { pattern: '*.md' }),
+        controller.grepFiles('live-project', '.', { pattern: 'Live project', glob: '*.md', literal: true }),
+      ]);
+      const denied = {};
+      for (const name of ['live.sock', 'link.txt', 'hardlink.txt']) {
+        try { await controller.readFile('live-project', name); } catch (error) { denied[name] = error.code; }
+      }
+      let writeError;
+      try { await controller.writeFile('live-project', 'README.md', 'changed'); } catch (error) { writeError = error.code; }
+      const executionRoot = process.platform === 'linux' ? '/workspace' : fs.realpathSync(project);
+      const attemptedWrite = await controller.executor.execute(readPolicy, {
+        command: '/bin/sh', args: ['-c', 'printf changed > "$1"', 'write-probe', executionRoot + '/README.md'],
+      });
+      const socketProbe = await controller.executor.execute(readPolicy, {
+        command: controller.runtime.sandboxExecutablePath,
+        args: ['-e', "const c=require('net').connect(process.argv[1]); c.on('connect',()=>{c.end();process.exitCode=1;}); c.on('error',()=>{process.exitCode=0;});", executionRoot + '/live.sock'],
+      });
+      let commandPolicyError;
+      try { await createWorkspaceExecutionPolicy({ workspaceRoot: project }); } catch (error) { commandPolicyError = error.code; }
+      return { read: read.toString(), listed: listing.entries.some(entry => entry.name === 'README.md'),
+        found: found.results.includes('README.md'), matched: matches.output.includes('Live project'), denied, writeError,
+        sandboxWriteDenied: attemptedWrite.exitCode !== 0, socketDenied: socketProbe.exitCode === 0 && connections === 0,
+        unchanged: fs.readFileSync(path.join(project, 'README.md'), 'utf8') === 'Live project fixture',
+        commandStillValidated: ['WORKSPACE_SPECIAL_FILE_DENIED', 'WORKSPACE_HARDLINK_DENIED', 'WORKSPACE_CHANGED_DURING_VALIDATION'].includes(commandPolicyError) };
+    } finally {
+      clearInterval(changing); await controller.dispose(); store.close();
+      await new Promise(resolve => socket.close(resolve));
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }, { root: repositoryRoot, userDataDir });
+  expect(result).toEqual({ read: 'Live project fixture', listed: true, found: true, matched: true,
+    denied: { 'live.sock': 'WORKSPACE_PATH_TYPE_MISMATCH', 'link.txt': 'WORKSPACE_FILE_UNSAFE', 'hardlink.txt': 'WORKSPACE_FILE_UNSAFE' },
+    writeError: 'PROJECT_READ_ONLY', sandboxWriteDenied: true, socketDenied: true, unchanged: true, commandStillValidated: true });
+});
+
 test('helper history persists reports and marks crash-left work interrupted in real SQLite', async ({ electronApp }) => {
   const result = await electronApp.evaluate(({ app }, root) => {
     const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);

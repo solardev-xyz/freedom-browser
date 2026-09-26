@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
-const { createWorkspaceExecutionPolicy } = require('./execution-policy');
+const { createWorkspaceExecutionPolicy, createWorkspaceFileReadPolicy } = require('./execution-policy');
 const { resolveExecutableAccess } = require('./executable-access');
 const {
   PRIVATE_DIRECTORY_PREFIX,
@@ -39,6 +39,21 @@ describe('macOS Seatbelt backend contract', () => {
     await Promise.all(
       fixtureRoots.splice(0).map((root) => fs.promises.rm(root, { recursive: true, force: true }))
     );
+  });
+
+  test('file-read policy denies all workspace writes and does not authorize project execution', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceFileReadPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const privateDirectory = await createPrivateDirectory();
+    fixtureRoots.push(privateDirectory);
+    const workspace = policy.filesystem.readableRoots[0].sourcePath;
+    const profile = buildSeatbeltProfile(policy, privateDirectory);
+    expect(profile).toContain(`(allow file-read* (subpath "${workspace}"))`);
+    expect(profile).toContain(`(deny file-write* (subpath "${workspace}"))`);
+    expect(profile).not.toContain(`(allow file-write* (subpath "${workspace}"))`);
+    expect(profile).not.toContain(`(allow process-exec (subpath "${workspace}"))`);
+    expect(profile).toContain('(deny network*)');
   });
 
   test('escapes profile strings rather than accepting injected forms', () => {

@@ -71,6 +71,7 @@ function createController(overrides = {}) {
     executor,
     detectRuntime: jest.fn(async () => runtime),
     createPolicy: jest.fn(async () => helperPolicy),
+    createReadPolicy: jest.fn(async () => helperPolicy),
     restrictPolicy: jest.fn(() => agentPolicy),
     now: jest.fn(() => 1_000),
     ...overrides,
@@ -1166,6 +1167,25 @@ describe('ManagedWorkspaceController', () => {
       run('write', 'accepted', version);
       expect(fs.readFileSync(file, 'utf8')).toBe('accepted');
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  test('external file inspection uses a separate read-only policy and rechecks revocation', async () => {
+    const { controller, dependencies, workspace } = createController();
+    workspace.project = { connected: true, mode: 'read' };
+    const grant = { dev: '1', ino: '2', mode: 'read' };
+    dependencies.store.projectAccess = { grants: new Map([[workspace.workspaceId, grant]]), resolve: jest.fn(async () => grant) };
+    dependencies.executor.execute.mockResolvedValue(completedExecution(JSON.stringify({ entries: [], limitReached: false })));
+    await controller.listDirectory('conversation_one');
+    expect(dependencies.createReadPolicy).toHaveBeenCalledWith(expect.objectContaining({ network: 'none' }));
+    expect(dependencies.createPolicy).not.toHaveBeenCalled();
+    expect(controller.leases.size).toBe(0);
+    dependencies.executor.execute.mockClear();
+    dependencies.createReadPolicy.mockImplementation(async () => {
+      dependencies.store.projectAccess.grants.delete(workspace.workspaceId);
+      return {};
+    });
+    await expect(controller.listDirectory('conversation_one')).rejects.toMatchObject({ code: 'PROJECT_RECONNECT_REQUIRED' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
   });
 
   test('revocation while an external policy is being prepared prevents launch', async () => {

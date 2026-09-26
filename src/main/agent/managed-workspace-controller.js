@@ -12,6 +12,7 @@ const { WORKSPACE_INSPECTION_HELPER } = require('./workspace-inspection-helper')
 const path = require('path');
 const {
   createWorkspaceExecutionPolicy,
+  createWorkspaceFileReadPolicy,
   EXECUTION_STATES,
   insidePath,
   MAX_TIMEOUT_MS,
@@ -114,6 +115,21 @@ function regularFile(target) {
   return stats;
 }
 
+// Recheck the opened inode: active projects can replace entries after listing.
+// NONBLOCK prevents a regular-file-to-FIFO race from hanging a read.
+function readRegularFile(target, stats) {
+  const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > READ_LIMIT) fail('WORKSPACE_FILE_UNSAFE');
+    const bytes = Buffer.alloc(opened.size + 1);
+    const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    const after = fs.fstatSync(fd);
+    if (after.nlink !== 1 || count !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) fail('WORKSPACE_HISTORY_CHANGED');
+    return { content: bytes.subarray(0, count), stats: after };
+  } finally { fs.closeSync(fd); }
+}
+
 function directory(target) {
   const stats = fs.lstatSync(target);
   if (stats.isSymbolicLink()) fail('WORKSPACE_FILE_UNSAFE');
@@ -200,7 +216,7 @@ function walkFiles(relativeRoot, visit) {
     }
     const shouldContinue = visit(filePath, relativePath, stats, () => {
       bytesRead += stats.size;
-      return fs.readFileSync(filePath);
+      return readRegularFile(filePath, stats).content;
     });
     return shouldContinue !== false;
   };
@@ -304,18 +320,9 @@ try {
     const stats = regularFile(target);
     if (stats.size > READ_LIMIT) fail('WORKSPACE_FILE_TOO_LARGE');
     if (operation !== 'access') {
-      const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-      try {
-        const opened = fs.fstatSync(fd);
-        if (!opened.isFile() || opened.nlink !== 1 || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > READ_LIMIT) fail('WORKSPACE_FILE_UNSAFE');
-        const bytes = Buffer.alloc(opened.size + 1);
-        const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
-        const after = fs.fstatSync(fd);
-        if (count !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) fail('WORKSPACE_HISTORY_CHANGED');
-        const content = bytes.subarray(0, count);
-        if (operation === 'read_version') process.stdout.write(JSON.stringify({ content: content.toString('base64'), version: fileVersion(after, content) }));
-        else process.stdout.write(content);
-      } finally { fs.closeSync(fd); }
+      const { content, stats: after } = readRegularFile(target, stats);
+      if (operation === 'read_version') process.stdout.write(JSON.stringify({ content: content.toString('base64'), version: fileVersion(after, content) }));
+      else process.stdout.write(content);
     }
   } else if (operation === 'list') {
     const requested = optionsPayload();
@@ -732,6 +739,7 @@ class ManagedWorkspaceController {
     this.executor = options.executor || createWorkspaceExecutor();
     this.detectRuntime = options.detectRuntime || detectElectronJavaScriptRuntime;
     this.createPolicy = options.createPolicy || createWorkspaceExecutionPolicy;
+    this.createReadPolicy = options.createReadPolicy || createWorkspaceFileReadPolicy;
     this.restrictPolicy = options.restrictPolicy || restrictWorkspaceExecutionPolicy;
     this.resolveExecutableAccess = options.resolveExecutableAccess || resolveExecutableAccess;
     this.captureHostCommandEnvironment =
@@ -957,17 +965,17 @@ class ManagedWorkspaceController {
     return awaitWorkspaceStep(pending, request.signal);
   }
 
-  async #createLease(workspace) {
+  async #createLease(workspace, fileReadOnly = false) {
     const workspaceRoot = await this.store.resolvePath(workspace.workspaceId);
     const runtime = await this.#attestedRuntime();
     const capabilities = await this.getCapabilities();
     const network =
-      this.networkPermissionsEnabled && capabilities.fullNetworkAvailable
+      !fileReadOnly && this.networkPermissionsEnabled && capabilities.fullNetworkAvailable
         ? NETWORK_POSTURES.FULL
         : NETWORK_POSTURES.NONE;
     let policy;
     try {
-      const basePolicy = await this.createPolicy({
+      const basePolicy = await (fileReadOnly ? this.createReadPolicy : this.createPolicy)({
         workspaceRoot,
         ...(workspace.project && { allowMissingGitMetadata: true }),
         electronRuntime: runtime,
@@ -1006,7 +1014,7 @@ class ManagedWorkspaceController {
       );
     }
     const lease = Object.freeze({ workspaceRoot, runtime, ...policy });
-    if (!workspace.project) this.leases.set(workspace.workspaceId, lease);
+    if (!workspace.project && !fileReadOnly) this.leases.set(workspace.workspaceId, lease);
     return lease;
   }
 
@@ -1046,7 +1054,7 @@ class ManagedWorkspaceController {
     };
   }
 
-  async #enabledLease(conversationId, request = {}) {
+  async #enabledLease(conversationId, request = {}, fileReadOnly = false) {
     throwIfWorkspaceAborted(request.signal);
     const workspace = this.store.getForConversation(conversationId);
     if (!workspace?.enabled) {
@@ -1056,7 +1064,9 @@ class ManagedWorkspaceController {
       );
     }
     const grant = workspace.project ? await this.store.projectAccess.resolve(workspace.workspaceId) : null;
-    const lease = await this.#lease(workspace, request);
+    const lease = fileReadOnly && workspace.project
+      ? await awaitWorkspaceStep(this.#createLease(workspace, true), request.signal)
+      : await this.#lease(workspace, request);
     if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) {
       throw new ManagedWorkspaceError('PROJECT_RECONNECT_REQUIRED', 'Project access changed. Try again.');
     }
@@ -1374,7 +1384,13 @@ class ManagedWorkspaceController {
     if (!capabilities.available) {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
-    const { lease, workspace, grant } = await this.#enabledLease(conversationId, request);
+    // Select by the fixed operation, never by model-supplied request flags.
+    const fileReadOnly = ['access', 'read', 'read_version', 'list', 'find', 'grep'].includes(operation);
+    const attached = this.store.getForConversation(conversationId);
+    if (attached?.project && !readOnlyOperations.has(operation)) {
+      await this.store.projectAccess.resolve(attached.workspaceId, { write: true });
+    }
+    const { lease, workspace, grant } = await this.#enabledLease(conversationId, request, fileReadOnly);
     if (workspace.project && !readOnlyOperations.has(operation)) {
       await this.store.projectAccess.resolve(workspace.workspaceId, { write: true });
     }

@@ -48,7 +48,7 @@ test.each([
   const values = Object.freeze({ ...set, PUBLIC_FLAG: 'fixture', HOME: '/host-home', PATH: '/host-path' });
   const policy = {
     testIssued: true, network: 'none', seccomp: { requireCustomFilter: false },
-    filesystem: { writableRoots: [{ id: 'workspace', sourcePath: '/managed/workspace' }],
+    filesystem: { readableRoots: [{ id: 'workspace', sourcePath: '/managed/workspace' }], writableRoots: [{ id: 'workspace', sourcePath: '/managed/workspace' }],
       runtimeRoots: [], protectedPaths: [], exposeSystemToolchain: false },
     environment: { values }, workingDirectory: '/workspace',
     limits: { timeoutMs: 1000, stdoutBytes: 8192, stderrBytes: 8192, aggregate: { required: false } },

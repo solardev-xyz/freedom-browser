@@ -291,9 +291,9 @@ function buildSeatbeltProfile(policy, privateDirectory, supervisor = null) {
       'Seatbelt private storage must be a validated absolute execution directory'
     );
   }
-  const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
+  const workspace = policy.filesystem.readableRoots.find((root) => root.id === 'workspace');
   if (!workspace) {
-    throw new ExecutionPolicyError('INVALID_POLICY', 'Policy has no writable workspace root');
+    throw new ExecutionPolicyError('INVALID_POLICY', 'Policy has no readable workspace root');
   }
   const lines = [
     '(version 1)',
@@ -339,8 +339,12 @@ function buildSeatbeltProfile(policy, privateDirectory, supervisor = null) {
     lines.push(pathRule('allow', 'file-read*', filter, runtimePath));
   }
   lines.push(pathRule('allow', 'file-read*', 'subpath', workspace.sourcePath));
-  lines.push(pathRule('allow', 'file-write*', 'subpath', workspace.sourcePath));
-  lines.push(pathRule('allow', 'process-exec', 'subpath', workspace.sourcePath));
+  if (policy.filesystem.writableRoots.some((root) => root.id === 'workspace')) {
+    lines.push(pathRule('allow', 'file-write*', 'subpath', workspace.sourcePath));
+    lines.push(pathRule('allow', 'process-exec', 'subpath', workspace.sourcePath));
+  } else {
+    lines.push(pathRule('deny', 'file-write*', 'subpath', workspace.sourcePath));
+  }
   lines.push(pathRule('allow', 'file-read*', 'subpath', privateDirectory));
   lines.push(pathRule('allow', 'file-write*', 'subpath', privateDirectory));
   lines.push(pathRule('allow', 'process-exec', 'subpath', privateDirectory));
@@ -638,7 +642,7 @@ class SeatbeltExecutor {
       });
     }
 
-    const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
+    const workspace = policy.filesystem.readableRoots.find((root) => root.id === 'workspace');
     const runtimePath = policy.filesystem.runtimeRoots.flatMap((root) =>
       (root.pathEntries || []).map((relativePath) =>
         relativePath === '.' ? root.sourcePath : path.join(root.sourcePath, relativePath)

@@ -819,6 +819,16 @@ async function canonicalElectronRuntime(input) {
 }
 
 async function createWorkspaceExecutionPolicy(options = {}) {
+  return createWorkspacePolicy(options, false);
+}
+
+// Only the main-owned file helpers use this policy. They inspect individual
+// regular files, never execute project code or consult Git configuration.
+async function createWorkspaceFileReadPolicy(options = {}) {
+  return createWorkspacePolicy({ ...options, network: NETWORK_POSTURES.NONE }, true);
+}
+
+async function createWorkspacePolicy(options, readOnly) {
   const workspaceRoot = await canonicalDirectory(options.workspaceRoot, 'workspaceRoot');
   const authorizedInput = options.authorizedGitMetadataPaths ?? [];
   if (!Array.isArray(authorizedInput) || authorizedInput.length > 16) {
@@ -891,7 +901,7 @@ async function createWorkspaceExecutionPolicy(options = {}) {
     }
   }
   const protectedPaths = [];
-  for (const relativePath of protectedWorkspacePaths) {
+  for (const relativePath of readOnly ? [] : protectedWorkspacePaths) {
     try {
       protectedPaths.push(await resolveProtectedPath(workspaceRoot, relativePath, authorizedGitMetadataPaths));
     } catch (error) {
@@ -900,7 +910,7 @@ async function createWorkspaceExecutionPolicy(options = {}) {
         sourcePath: path.join(workspaceRoot, relativePath), mountPath: '/workspace/.git' }));
     }
   }
-  await validateWorkspaceHardlinks(workspaceRoot, protectedWorkspacePaths);
+  if (!readOnly) await validateWorkspaceHardlinks(workspaceRoot, protectedWorkspacePaths);
 
   const limitsInput = requirePlainObject(options.limits, 'limits');
   const timeoutMs = requireBoundedInteger(
@@ -955,7 +965,7 @@ async function createWorkspaceExecutionPolicy(options = {}) {
           mountPath: WORKSPACE_MOUNT_PATH,
         }),
       ]),
-      writableRoots: Object.freeze([
+      writableRoots: Object.freeze(readOnly ? [] : [
         Object.freeze({
           id: 'workspace',
           sourcePath: workspaceRoot,
@@ -1146,6 +1156,7 @@ module.exports = {
   SAFE_DEFAULT_INHERITANCE,
   WORKSPACE_MOUNT_PATH,
   createWorkspaceExecutionPolicy,
+  createWorkspaceFileReadPolicy,
   insidePath,
   isValidatedWorkspaceExecutionPolicy,
   restrictWorkspaceExecutionPolicy,
