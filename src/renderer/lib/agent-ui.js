@@ -3030,12 +3030,32 @@ function formatToolError(code, operation) {
   return labels[code] || 'Browser action failed';
 }
 
-function renderTurnOutcome(view, outcome, error) {
-  if (!view || !outcome || typeof outcome !== 'object') return;
-  if (outcome.verification === 'not_applicable') {
-    view.outcome.hidden = true;
-    return;
+// Verification stays in the receipts. Only unresolved outcomes and useful
+// receipts belong beside the answer; downloads/publications have their own cards.
+function visibleOutcome(outcome) {
+  if (!outcome || typeof outcome !== 'object') return null;
+  if (outcome.kind === 'recovery') return outcome;
+  if (outcome.notice) return outcome.notice;
+  if (outcome.kind === 'interrupted') return outcome.counts?.changed > 0
+    ? { ...outcome, detail: 'Changes made before stopping remain in place. Review the activity before continuing.' } : null;
+  if ([
+    'wallet_broadcast', 'page_tool_unresolved', 'swarm_publication_in_flight',
+    'swarm_publication_failed', 'swarm_publication_outcome_unknown',
+    'node_request_in_flight', 'node_delivery_uncertain',
+  ].includes(outcome.verification)) return outcome;
+  if (outcome.verification === 'workspace_execution_recorded' &&
+      ['failed', 'timed_out', 'sandbox_denied'].includes(outcome.workspace?.state)) {
+    return { ...outcome, headline: 'Project operation did not complete',
+      detail: `${outcome.workspace.command || 'The last project operation'} did not complete. Check the activity for details.` };
   }
+  return null;
+}
+
+function renderTurnOutcome(view, outcome, error) {
+  if (!view) return;
+  outcome = visibleOutcome(outcome);
+  view.outcome.hidden = !outcome;
+  if (!outcome) return;
   const icons = { success: '✓', caution: '!', danger: '×', neutral: '•' };
   const tone = Object.hasOwn(icons, outcome.tone) ? outcome.tone : 'neutral';
   view.outcome.className = `agent-turn-outcome ${tone}`;

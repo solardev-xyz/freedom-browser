@@ -1134,9 +1134,32 @@ function buildAgentOutcome(activity, status, error) {
     .filter(receipt => receipt?.mode === 'browser');
   const actions = helpers.flatMap(receipt => receipt.browserActions);
   const outcome = buildAgentOutcomeFromReceipts([...items, ...actions], status, error);
-  if (!helpers.length) return outcome;
-  return Object.freeze({ ...outcome,
-    detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs. Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim(),
+  const browserItems = items.flatMap(item => item?.operation === SUBAGENT_TOOL_NAME
+    ? [item, ...(normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+      .filter(receipt => receipt?.mode === 'browser').flatMap(receipt => receipt.browserActions)] : [item]);
+  const uncertainBrowserAction = browserItems.some((item, index) => {
+    if (!item?.operation?.startsWith('browser_') || normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED ||
+        !['failed', 'running'].includes(item.status) || CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode)) return false;
+    const later = browserItems.slice(index + 1);
+    if (item.pageTool?.executionRef) return !later.some(next =>
+      next.pageTool?.executionRef === item.pageTool.executionRef && next.pageTool.status === 'completed');
+    // A failed action followed by a fresh read can be reconciled by the agent.
+    // A read of another page or metadata alone does not check its effects.
+    return !later.some(next => next.status === 'succeeded' &&
+      [OPERATIONS.SNAPSHOT, OPERATIONS.SCREENSHOT, OPERATIONS.READ_FRAME].includes(next.operation) &&
+      item.pageId && next.pageId === item.pageId);
+  });
+  const unfinishedEdits = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .some(receipt => receipt?.mode === 'edit' && (receipt.writesPending ||
+      (receipt.state !== 'completed' && receipt.attemptedFiles.length > 0)));
+  const notice = uncertainBrowserAction || helpers.some(receipt => receipt.browserPending)
+    ? { tone: 'caution', headline: 'Browser action outcome uncertain',
+      detail: 'An action may have taken effect without a confirmed result. Check the page before repeating it.' }
+    : unfinishedEdits ? { tone: 'caution', headline: 'Helper stopped during editing',
+      detail: 'The helper may have left partial changes. Review its file changes before continuing.' } : null;
+  return Object.freeze({ ...outcome, ...(notice && { notice }),
+    ...(helpers.length && { detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs. Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim() }),
   });
 }
 

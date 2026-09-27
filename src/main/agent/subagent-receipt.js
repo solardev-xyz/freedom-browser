@@ -34,6 +34,8 @@ function normalizeSubagentReceipt(value) {
       browserActions: Object.freeze(Array.isArray(value.browserActions) ? value.browserActions
         .filter(action => action && DELEGATED_BROWSER_OPERATIONS.has(action.operation) && ['succeeded', 'failed'].includes(action.status))
         .slice(0, 48).map(action => Object.freeze({ operation: action.operation, status: action.status,
+          ...(typeof action.pageId === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(action.pageId) && { pageId: action.pageId }),
+          ...(typeof action.errorCode === 'string' && /^[A-Z_]{1,80}$/.test(action.errorCode) && { errorCode: action.errorCode }),
           ...(typeof action.label === 'string' && { label: action.label.replace(/\p{Cc}/gu, ' ').slice(0, 160) }),
           origin: originScopeForUrl(action.origin) || '',
           pageTitle: typeof action.pageTitle === 'string' ? action.pageTitle.replace(/\p{Cc}/gu, ' ').slice(0, 160) : '',

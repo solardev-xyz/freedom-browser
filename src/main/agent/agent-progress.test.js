@@ -19,6 +19,8 @@ describe('Agent progress projection', () => {
     const helper = { operation: 'delegate_task', status: 'failed', subagent };
     const read = { operation: 'read', status: 'succeeded', workspace: { kind: 'file_read', command: 'Read README.md', state: 'completed', backend: 'freedom-workspace-files', workingDirectory: '.' } };
     expect(buildAgentOutcome([helper, read], 'completed')).toMatchObject({ headline: 'Project file updated', detail: expect.stringContaining('Editing helpers recorded 1 changed file') });
+    expect(buildAgentOutcome([helper, read], 'completed').notice.headline).toBe('Helper stopped during editing');
+    expect(buildAgentOutcome([{ ...helper, subagent: { ...subagent, state: 'completed' } }, read], 'completed').notice).toBeUndefined();
     expect(buildAgentOutcome([helper], 'cancelled').detail).toContain('partial edits');
   });
   test('helper receipts remain model reports, not browser verification', () => {
@@ -1486,4 +1488,21 @@ test('does not claim recovery when opening a page succeeds but its final read fa
   ], 'completed');
   expect(result.detail).not.toContain('recovered');
   expect(result.detail).toContain('1 browser action did not complete successfully');
+});
+
+
+test('only unresolved browser effects receive an attention notice; verification remains intact', () => {
+  const opened = { operation: OPERATIONS.CREATE_TAB, status: 'succeeded', pageId: 'page' };
+  expect(buildAgentOutcome([opened], 'completed')).toMatchObject({ verification: 'actions_recorded', counts: { successful: 1 } });
+  expect(buildAgentOutcome([opened], 'completed').notice).toBeUndefined();
+  const failed = { operation: OPERATIONS.CLICK, status: 'failed', pageId: 'page', errorCode: 'INTERNAL_ERROR' };
+  expect(buildAgentOutcome([opened, failed], 'completed').notice.headline).toBe('Browser action outcome uncertain');
+  const read = { operation: OPERATIONS.SNAPSHOT, status: 'succeeded', pageId: 'other' };
+  expect(buildAgentOutcome([opened, failed, read], 'completed').notice).toBeDefined();
+  expect(buildAgentOutcome([opened, failed, { ...read, pageId: 'page' }], 'completed').notice).toBeUndefined();
+  expect(buildAgentOutcome([opened, { ...failed, errorCode: 'OBSERVATION_REQUIRED' }], 'completed').notice).toBeUndefined();
+  const helper = { operation: 'delegate_task', status: 'succeeded', subagent: {
+    taskId: `delegate_${'b'.repeat(24)}`, title: 'Browse', state: 'completed', mode: 'browser', browserActions: [failed],
+  } };
+  expect(buildAgentOutcome([helper, { ...read, pageId: 'page' }], 'completed').notice).toBeUndefined();
 });

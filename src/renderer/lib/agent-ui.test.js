@@ -1762,7 +1762,7 @@ describe('Agent UI', () => {
     expect(toolRow.children[1].textContent).toContain('Download cancelled by you');
     expect(toolRow.children[2].textContent).toBe('Cancelled by you');
     expect(turn.querySelector('.agent-artifact-list').hidden).toBe(true);
-    expect(turn.querySelector('.agent-turn-outcome').classList.contains('neutral')).toBe(true);
+    expect(turn.querySelector('.agent-turn-outcome').hidden).toBe(true);
     expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toContain(
       'Download cancelled'
     );
@@ -1829,12 +1829,7 @@ describe('Agent UI', () => {
     });
 
     const outcome = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
-    expect(outcome.hidden).toBe(false);
-    expect(outcome.classList.contains('success')).toBe(true);
-    expect(outcome.children[1].children[0].textContent).toBe('Browser state inspected');
-    expect(outcome.children[1].children[1].textContent).toContain(
-      'Freedom recorded 1 successful browser action'
-    );
+    expect(outcome.hidden).toBe(true);
     expect(liveActivity.children[0].textContent).toBe(
       'Worked for 4s · 1 action · Browser inspected'
     );
@@ -2061,8 +2056,7 @@ describe('Agent UI', () => {
     expect(toolList.children).toHaveLength(1);
     expect(toolList.children[0].children[1].textContent).toBe('Read report.json');
     const outcome = turn.querySelector('.agent-turn-outcome');
-    expect(outcome.children[1].children[0].textContent).toBe('Attached sources inspected');
-    expect(outcome.children[1].children[1].textContent).not.toContain('browser evidence');
+    expect(outcome.hidden).toBe(true);
     expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
       'Worked for 2s · 2 actions · Sources inspected'
     );
@@ -2206,9 +2200,7 @@ describe('Agent UI', () => {
 
     const turn = ctx.elements['agent-transcript'].children[0];
     const outcome = turn.querySelector('.agent-turn-outcome');
-    expect(outcome.hidden).toBe(false);
-    expect(outcome.classList.contains('caution')).toBe(true);
-    expect(outcome.children[1].children[0].textContent).toBe('Node status checked');
+    expect(outcome.hidden).toBe(true);
     expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
       'Worked for 2s · 1 action · Node status checked'
     );
@@ -4363,4 +4355,46 @@ test('consolidates process polls by owned process ID, preserving separate execut
   expect(list.children).toHaveLength(2);
   expect(list.children[0].children[1].textContent).toBe('a: completed');
   expect(list.children[1].children[1].textContent).toBe('b: running');
+});
+
+
+describe('selective result notices', () => {
+  test.each([
+    ['actions_recorded', {}], ['result_observed', {}], ['model_only', {}],
+    ['delegated_report', {}], ['historical_report', {}], ['workspace_preview_opened', {}],
+    ['workspace_execution_recorded', { workspace: { state: 'completed' } }],
+    ['artifact_available', {}], ['swarm_publication_verified', {}],
+    ['node_lifecycle_verified', {}], ['wallet_declined', {}],
+  ])('hides routine %s summaries while keeping activity', async (verification, extra) => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'quiet', userText: 'Do the task' });
+    ctx.emit({ type: 'tool_started', runId: 'quiet', toolCallId: 'read', operation: 'browser_snapshot' });
+    ctx.emit({ type: 'tool_finished', runId: 'quiet', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    ctx.emit({ type: 'run_finished', runId: 'quiet', status: 'completed', actionCount: 1,
+      outcome: { kind: 'completed', verification, tone: 'caution', headline: 'Routine evidence', ...extra } });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome').hidden).toBe(true);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-activity').hidden).toBe(false);
+  });
+  test.each(['wallet_broadcast', 'page_tool_unresolved', 'swarm_publication_failed',
+    'swarm_publication_outcome_unknown', 'node_delivery_uncertain', 'node_request_in_flight'])(
+    'keeps useful receipts and unresolved %s outcomes', async verification => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'notice', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'notice', status: 'completed',
+      outcome: { kind: 'completed', verification, tone: 'caution', headline: 'Check this result', detail: 'Receipt details' } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.children[1].children[1].textContent).toBe('Receipt details');
+  });
+  test('shows a concise uncertainty notice instead of routine verification counts', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'uncertain', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'uncertain', status: 'completed', outcome: {
+      verification: 'actions_recorded', detail: '42 actions recorded',
+      notice: { tone: 'caution', headline: 'Browser action outcome uncertain', detail: 'Check the page before repeating it.' },
+    } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.children[1].children[1].textContent).toBe('Check the page before repeating it.');
+  });
 });

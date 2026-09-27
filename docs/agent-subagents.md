@@ -425,3 +425,12 @@ failed reads, approvals, ownership, Stop, and opening/reading a new page on the
 next user turn after delegation. Manual smoke: open a random Wikipedia article,
 delegate its summary, then ask to open and summarize another random article;
 reading the second page should not require another user message.
+
+Result presentation (2026-09-27): routine browser/project/source inspection and
+helper-count summaries no longer render a result card. Individual helper cards,
+expandable activity and internal verification receipts remain. Downloads and
+publications retain their actionable artifact cards; transaction receipts,
+connection failures and unresolved effects remain visible. Interrupted editing
+helpers surface a short partial-changes notice, and uncertain browser actions
+surface a notice until a fresh observation of the same page. A normal new-tab
+operation does not warn merely because it was not followed by a second read.

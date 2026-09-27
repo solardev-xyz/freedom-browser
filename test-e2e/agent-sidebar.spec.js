@@ -306,7 +306,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
     emit({ type: 'run_finished', status: 'completed', durationMs: 2000, actionCount: 2, outcome: { kind: 'completed', verification: 'delegated_report', tone: 'neutral', headline: 'Helper reports received', detail: '2 reports received · 1 task stopped. Editing helpers recorded 1 changed file. Review current changes before testing or committing; stopped tasks can leave partial edits.' } });
   });
   await expect(window.locator('.agent-subagent-report')).toHaveCount(3);
-  await expect(window.locator('.agent-turn-outcome.neutral')).toContainText('2 reports received · 1 task stopped');
+  await expect(window.locator('.agent-turn-outcome')).toBeHidden();
   await expect(window.locator('.agent-turn-outcome.caution')).toHaveCount(0);
   await window.locator('.agent-turn-activity > summary').click();
   const report = window.locator('.agent-subagent-report').first();
