@@ -291,6 +291,7 @@ async function signAndSendTransaction(params, signer, options = {}) {
   // Snapshot intent before any await. UI approval will later bind this exact
   // populated transaction; no renderer entry point enables this experiment.
   params = { ...params };
+  options = { ...options, ...(options.intent ? { intent: Object.freeze({ ...options.intent }) } : {}) };
   if (options.privacyContext) {
     if (typeof signer.sendTransaction === 'function') {
       throw privacyError('PRIVATE_REMOTE_BROADCAST_UNSUPPORTED', 'This signer controls its own network transport');
@@ -367,11 +368,15 @@ async function signAndSendTransaction(params, signer, options = {}) {
     if (options.privacyContext) {
       network.assertActive(chainId);
       Object.freeze(tx);
-      const reviewMs = options.reviewTimeoutMs ?? 120000;
-      if (!Number.isInteger(reviewMs) || reviewMs < 1 || reviewMs > 120000) {
+      let reviewMs = options.reviewTimeoutMs ?? 120000;
+      if (!Number.isInteger(reviewMs) || reviewMs < 1 || reviewMs > 120000 ||
+          (options.reviewExpiresAt !== undefined && !Number.isSafeInteger(options.reviewExpiresAt))) {
         throw privacyError('PRIVATE_REVIEW_INVALID', 'Invalid review lifetime');
       }
-      expiresAt = Date.now() + reviewMs;
+      const reviewStartedAt = Date.now();
+      if (options.reviewExpiresAt !== undefined) reviewMs = Math.min(reviewMs, options.reviewExpiresAt - reviewStartedAt);
+      if (reviewMs <= 0) throw privacyError('PRIVATE_REVIEW_EXPIRED', 'Transaction preparation expired');
+      expiresAt = reviewStartedAt + reviewMs;
       const deadline = new AbortController();
       const timer = setTimeout(() => deadline.abort(), reviewMs);
       timer.unref();
@@ -392,7 +397,7 @@ async function signAndSendTransaction(params, signer, options = {}) {
     } else signedTransaction = await signer.signTransaction(tx);
     const parsedTransaction = Transaction.from(signedTransaction);
     const broadcast = options.privacyContext
-      ? await network.broadcastRawTransaction(chainId, signedTransaction, { expiresAt })
+      ? await network.broadcastRawTransaction(chainId, signedTransaction, { expiresAt, intent: options.intent })
       : await network.broadcastRawTransaction(chainId, signedTransaction);
     if (
       parsedTransaction.hash &&

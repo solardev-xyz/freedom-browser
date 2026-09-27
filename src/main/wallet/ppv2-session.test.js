@@ -81,14 +81,14 @@ test('binds account/profile storage and rejects a changed SDK binding in the sam
   await expect(first.get('ppv2:controlled:x')).rejects.toMatchObject({ code: 'PRIVATE_PPV2_SCOPE' });
 });
 
-test('owns one session per account, isolates close, and exposes no broadcaster, export or proving', async () => {
+test('owns one session per account, isolates close, and limits broadcasting to reviewed public handoff', async () => {
   const a = await openPPv2Session({ candidate, configuration: config });
   const old = host;
   const b = await openPPv2Session({ candidate, configuration: config, accountIndex: 1 });
   await expect(openPPv2Session({ candidate, configuration: config })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_BUSY' });
   expect(params.deploymentBlock).toBe('0x64');
   expect(() => params.factories.proofService.proveDeposit({})).toThrow();
-  expect(a.descriptor).toMatchObject({ verified: false, broadcasting: false, proving: false });
+  expect(a.descriptor).toMatchObject({ verified: false, broadcasting: 'reviewed-public-only', proving: false });
   for (const name of ['prepareShield', 'prepareUnshield', 'prepareTransfer', 'exportAccount', 'importAccount', 'sync', 'broadcast']) expect(a[name]).toBeUndefined();
   a.close();
   await expect(old.keystore.deriveAt("m/28784'/2'/0'")).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });

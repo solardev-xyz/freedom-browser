@@ -7,11 +7,13 @@ const path = require('path');
 const { mnemonicToSeedSync } = require('@scure/bip39');
 const { createPrivacyStorage } = require('./privacy-storage');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
+const { validIntent } = require('./private-transaction-intent');
 const journals = new WeakMap();
 const HASH = /^0x[0-9a-f]{64}$/;
 const KEY = 'submissions-v1';
 const unresolved = (records) => records.some((record) => !record.resolution);
 function snapshot(record) {
+  if (record.intent) Object.freeze(record.intent);
   if (record.observation) Object.freeze(record.observation);
   if (record.resolution) Object.freeze(record.resolution);
   return Object.freeze(record);
@@ -46,6 +48,7 @@ function createSubmissionJournal({ handle, directory, key }) {
             !['attempted', 'submitted'].includes(record.state) ||
             !Number.isSafeInteger(record.attemptedAt) || record.attemptedAt < 0) throw invalid();
         if (record.revision !== undefined && (!Number.isSafeInteger(record.revision) || record.revision < 0)) throw invalid();
+        if (record.intent !== undefined && !validIntent(record.intent)) throw invalid();
         if (record.observation !== undefined && !validObservation(record.observation)) throw invalid();
         if (record.resolution && (!record.observation || record.resolution.blockHash !== record.observation.blockHash ||
             !Number.isSafeInteger(record.resolution.minimumConfirmations) || record.resolution.minimumConfirmations < 1 ||
@@ -71,8 +74,10 @@ function createSubmissionJournal({ handle, directory, key }) {
   return Object.freeze({
     list, assertCanSubmit,
     async has(hash) { return (await list()).some((record) => record.hash === hash?.toLowerCase()); },
-    async begin(hash, nonce) {
-      if (!HASH.test(hash) || !Number.isSafeInteger(nonce) || nonce < 0) throw invalid();
+    async begin(hash, nonce, intent) {
+      if (!HASH.test(hash) || !Number.isSafeInteger(nonce) || nonce < 0 ||
+          (intent !== undefined && !validIntent(intent))) throw invalid();
+      const metadata = intent === undefined ? {} : { intent: { ...intent } };
       await modify((records) => {
         if (records.some((record) => record.hash === hash)) {
           throw Object.assign(privacyError('PRIVATE_BROADCAST_ALREADY_ATTEMPTED', 'Query the existing submission before any further action'), { transactionHash: hash });
@@ -82,7 +87,7 @@ function createSubmissionJournal({ handle, directory, key }) {
         if (unresolved(records)) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
         if (records.length >= 64) throw privacyError('PRIVATE_TRANSACTION_LIMIT', 'Submission history capacity reached');
         if (records.some((record) => record.nonce >= nonce)) throw privacyError('PRIVATE_NONCE_REUSE_REFUSED', 'Nonce must advance beyond recorded submissions');
-        return [...records, { hash, nonce, state: 'attempted', attemptedAt: Date.now() }];
+        return [...records, { hash, nonce, state: 'attempted', attemptedAt: Date.now(), ...metadata }];
       });
     },
     async observe(hash, observation, revision) {

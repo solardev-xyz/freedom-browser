@@ -1,6 +1,7 @@
 /** Main-only, development/Sepolia PPv2 session assembly. The caller supplies
  * the reviewed scratch adapter, never a renderer-selected module. No SDK is
- * installed in the application and no broadcaster/signing API is exposed.
+ * installed in the application. Only main-owned reviewed public handoff may sign;
+ * the plugin has no signing/broadcast capability.
  */
 const { createPrivacyScope, getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const { openPrivacySession } = require('./privacy-session');
@@ -9,6 +10,8 @@ const { createPPv2Storage } = require('./ppv2-storage');
 const { createKohakuProvider } = require('../networks/kohaku-provider');
 const { createKohakuNetworkRouter } = require('../networks/kohaku-network-router');
 const { createPPv2DepositProver } = require('./ppv2-deposit-prover');
+const { createPPv2PublicOperations } = require('./ppv2-public-operations');
+const { inspectPPv2NoteRecovery } = require('./ppv2-note-recovery');
 const PPV2_CANDIDATE = Object.freeze({
   kohaku: '6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e',
   sdk: 'fe0244e3f14110efd83db02c60c96517dea9cd5a',
@@ -83,6 +86,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     const created = await scope.run(sessionHandle, () => createPlugin(host, params));
     getPrivacyContext(sessionHandle);
     plugin = created;
+    const publicOperations = createPPv2PublicOperations({ scope, configuration: config, provider });
     async function call(method, ...args) {
       getPrivacyContext(sessionHandle);
       if (busy) throw privacyError('PRIVATE_PPV2_BUSY', 'A PPv2 operation is already in progress');
@@ -91,7 +95,9 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
         return await scope.run(sessionHandle, () => method === 'prepareNativeDeposit'
           ? depositProver.prepare({ ...args[0], ownerAddress: config.ownerAddress, entrypointAddress: config.deployment.entrypointAddress },
             () => plugin.prepareShield({ asset: { __type: 'native' }, amount: args[0].amount }))
-          : plugin[method](...args));
+          : method === 'inspectNoteRecovery'
+            ? inspectPPv2NoteRecovery({ handle: sessionHandle, createPlugin, host, params, plugin })
+            : plugin[method](...args));
       } catch {
         // Never forward SDK exceptions (URLs, notes, payloads or nested causes).
         getPrivacyContext(sessionHandle);
@@ -101,13 +107,18 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     return Object.freeze({
       close,
       descriptor: Object.freeze({ chainId: 11155111, accountIndex, experimental: true, verified: false,
-        candidate: PPV2_CANDIDATE, proving: !!depositProver, broadcasting: false }),
+        candidate: PPV2_CANDIDATE, proving: !!depositProver, broadcasting: 'reviewed-public-only' }),
       instanceId: () => call('instanceId'),
       isRegistered: () => call('isRegistered'),
       balance: () => call('balance', undefined),
       notes: () => call('notes', undefined, true),
-      prepareRegisterKeystore: () => call('prepareRegisterKeystore'),
-      ...(depositProver ? { prepareNativeDeposit: ({ amount, maxFee }) => call('prepareNativeDeposit', { amount, maxFee }) } : {}),
+      inspectNoteRecovery: () => call('inspectNoteRecovery'),
+      prepareRegisterKeystore: async () => publicOperations.registration(await call('prepareRegisterKeystore')),
+      ...(depositProver ? { prepareNativeDeposit: async ({ amount, maxFee }) => publicOperations.deposit(await call('prepareNativeDeposit', { amount, maxFee })) } : {}),
+      submitPublicOperation: (prepared, options) => publicOperations.submit(prepared, options),
+      listPublicSubmissions: () => publicOperations.list(),
+      observePublicSubmission: (hash) => publicOperations.observe(hash),
+      resolvePublicSubmission: (hash, policy) => publicOperations.resolve(hash, policy),
     });
   } catch (error) {
     close();

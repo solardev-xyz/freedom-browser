@@ -181,3 +181,26 @@ test('a reviewed resolution allows one new nonce; a reorg before signing or duri
   expect(await network.listSubmissions()).toHaveLength(2);
   await expect(network.assertCanSubmit()).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
 });
+
+test('rejects intent metadata that does not match signed bytes before journaling or transport', async () => {
+  const { transactionIntent } = require('./private-transaction-intent');
+  const signed = await wallet.signTransaction({ ...params, data: '0xabcd', nonce: 0, gasPrice: 100n });
+  const wrong = transactionIntent('ppv2-native-deposit', { ...params, from: wallet.address, data: '0xabcd', value: '2' });
+  await expect(network.broadcastRawTransaction(11155111, signed, { intent: wrong }))
+    .rejects.toMatchObject({ code: 'PRIVATE_INTENT_INVALID' });
+  expect(await network.listSubmissions()).toEqual([]); expect(requests).toEqual([]);
+});
+
+test('an absolute preparation deadline cannot be extended by slow nonce reads', async () => {
+  const expiresAt = Date.now() + 1000;
+  let clock;
+  responseHook = async (call) => {
+    if (call.method === 'eth_getTransactionCount') clock = jest.spyOn(Date, 'now').mockReturnValue(expiresAt + 1);
+  };
+  try {
+    await expect(service.signAndSendTransaction(params, signer, { privacyContext: handle,
+      reviewExpiresAt: expiresAt, review: async () => true })).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_EXPIRED' });
+    expect(signer.signTransaction).not.toHaveBeenCalled();
+    expect(requests.some((request) => request.method === 'eth_sendRawTransaction')).toBe(false);
+  } finally { clock?.mockRestore(); }
+});

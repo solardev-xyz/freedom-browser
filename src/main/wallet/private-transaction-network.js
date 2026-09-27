@@ -4,6 +4,7 @@
 const { Transaction } = require('ethers');
 const { createPrivateRpc, isQuantity } = require('../networks/private-rpc');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
+const { validIntent, transactionIntent } = require('./private-transaction-intent');
 const clients = new WeakMap();
 const address = (value) => typeof value === 'string' && /^0x[0-9a-f]{40}$/i.test(value);
 const hash = (value) => typeof value === 'string' && /^0x[0-9a-f]{64}$/i.test(value);
@@ -74,7 +75,7 @@ function getPrivateTransactionNetwork(handle) {
     // Product fee presets remain on the established ordinary-wallet path.
     return { type: 'legacy', gasPrice: BigInt(result).toString(), effectiveGasPrice: BigInt(result).toString(), source: 'direct', verified: false };
   }
-  async function broadcastRawTransaction(requestChain, signed, { expiresAt } = {}) {
+  async function broadcastRawTransaction(requestChain, signed, { expiresAt, intent } = {}) {
     assertActive(requestChain);
     if (!data(signed)) throw privacyError('PRIVATE_SIGNED_TX_INVALID', 'Invalid signed transaction');
     let transaction;
@@ -85,6 +86,12 @@ function getPrivateTransactionNetwork(handle) {
       throw privacyError('PRIVATE_SIGNED_TX_INVALID', 'Signed transaction has the wrong chain');
     }
     assertSigner(transaction.from);
+    if (intent !== undefined) {
+      if (!validIntent(intent) || transactionIntent(intent.kind, transaction).digest !== intent.digest) {
+        throw privacyError('PRIVATE_INTENT_INVALID', 'Signed transaction differs from its operation intent');
+      }
+      intent = Object.freeze({ ...intent });
+    }
     const txHash = transaction.hash.toLowerCase();
     const assertDeadline = () => {
       if (expiresAt !== undefined && (!Number.isSafeInteger(expiresAt) || Date.now() >= expiresAt)) {
@@ -99,7 +106,7 @@ function getPrivateTransactionNetwork(handle) {
     // Atomic encrypted write + fsync must succeed before transport sees bytes.
     // If the process dies at any later instruction, recovery treats this hash
     // as possibly submitted. The journal never contains the signed bytes.
-    await journal().begin(txHash, transaction.nonce);
+    await journal().begin(txHash, transaction.nonce, intent);
     try {
       assertActive(); assertDeadline();
       const response = await rpc.request('eth_sendRawTransaction', [signed], (result) => hash(result) && result.toLowerCase() === txHash);
