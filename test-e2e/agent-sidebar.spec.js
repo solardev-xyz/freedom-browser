@@ -258,6 +258,8 @@ test('delegated reports are expandable, inert and coherent in both themes and la
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
     const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
     emit({ type: 'run_started', userText: 'Review the solar-system project' });
+    emit({ type: 'tool_started', toolCallId: 'parent-read', operation: 'read', intent: 'Read README.md' });
+    emit({ type: 'tool_finished', toolCallId: 'parent-read', operation: 'read', status: 'succeeded', label: 'Read README.md' });
     emit({ type: 'tool_started', toolCallId: 'helper', operation: 'delegate_task', intent: 'Delegating: Review planet controls' });
   });
   await expect(window.locator('.agent-tool-list')).toContainText('Delegating: Review planet controls');
@@ -269,7 +271,22 @@ test('delegated reports are expandable, inert and coherent in both themes and la
         { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'running', report: '' }] });
   });
   await expect(window.locator('.agent-subagent-report')).toHaveCount(2);
+  await expect(window.locator('.agent-tool-item:visible')).toHaveCount(1);
   await window.locator('.agent-subagent-report').first().locator('summary').click();
+  const helperStop = window.getByRole('button', { name: 'Stop helper: Review accessibility' });
+  await expect(helperStop).toBeVisible();
+  await helperStop.focus();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    window.webContents.send('agent:event', { runId: 'run_helper_ui', type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded',
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], state: 'completed', report: 'Updated planet controls, while the reviewer works.' },
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'running', activity: 'Reading a file', report: '' }] });
+  });
+  await expect(helperStop).toBeFocused();
+  await expect(window.locator('.agent-helper-status').last()).toContainText('Reading a file');
+  await window.locator('.agent-turn-activity > summary').click();
+  await expect(helperStop).toBeVisible();
+
   for (const theme of ['dark', 'light']) {
     await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
     await window.screenshot({ path: testInfo.outputPath(`helper-background-${theme}.png`) });
@@ -294,7 +311,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await expect(report).toHaveAttribute('open', '');
   await expect(report.locator('p').last()).toBeVisible();
   await expect(report.locator('img, script')).toHaveCount(0);
-  await expect(window.locator('.agent-tool-item.cancelled')).toContainText('Helper stopped');
+  await expect(window.locator('.agent-helper-status').last()).toContainText('Stopped');
   const browserReport = window.locator('.agent-subagent-report').last();
   await browserReport.locator('summary').click();
   await expect(browserReport).toContainText('Browser helper');
@@ -1061,14 +1078,16 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
       const parentRead = await scoped.execute('browser_snapshot', { tabId: parentTab });
       const reports = (await running).details.subagents;
       const returned = await scoped.execute('browser_list_tabs');
-      const stopping = delegate.execute('stopped', { title: 'Stopped page', task: urls[3], mode: 'browser' });
-      await approvalReached; owner.subagentAbortController.abort();
-      const stopped = (await stopping).details.subagent;
+      const stopping = await delegate.execute('stopped', { title: 'Stopped page', task: urls[3], mode: 'browser', background: true });
+      await approvalReached;
+      const individuallyStopped = await delegate.stop(owner, stopping.details.subagent.taskId);
+      const stopped = (await delegate.collect(owner))[0];
+      const parentStillActive = !owner.subagentAbortController.signal.aborted && (await scoped.execute('browser_snapshot', { tabId: parentTab })).ok;
       releaseApproval('approved');
       for (let i = 0; i < 25; i++) await new Promise(resolve => setTimeout(resolve, 10));
       const counts = {};
       for (const { content } of pages.values()) counts[content.getURL()] = await content.executeJavaScript('globalThis.clicks');
-      return { parentRead: parentRead.ok, deniedParentReads, reports, stopped, counts,
+      return { parentRead: parentRead.ok, individuallyStopped, parentStillActive, deniedParentReads, reports, stopped, counts,
         returnedTabs: returned.result.tabs.length, activeUnchanged: scoped.getActiveTabId() === parentTab,
         approvals: approvals.length, remainingOwners: scoped.delegatedBrowsers.size };
     } finally {
@@ -1078,6 +1097,8 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
     }
   }, { root: repositoryRoot, urls });
   expect(result.parentRead).toBe(true);
+  expect(result.individuallyStopped).toBe(true);
+  expect(result.parentStillActive).toBe(true);
   expect(result.deniedParentReads).toEqual([true, true, true]);
   expect(result.counts).toEqual({ [urls[0]]: 0, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0 });
   expect(result.returnedTabs).toBe(3);

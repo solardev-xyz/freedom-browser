@@ -45,6 +45,40 @@ describe('background delegation and messages', () => {
     expect(f.children[0].session.dispose).toHaveBeenCalledTimes(1);
   });
 
+  test.each([false, true])('individual Stop cancels only its selected helper (background=%s)', async background => {
+    const f = backgroundFixture();
+    const pending = f.run({ background, tasks: [{ title: 'A', task: 'Inspect A' }, { title: 'B', task: 'Inspect B' }] });
+    await flush();
+    const ids = f.options.onResult.mock.calls[0][1].subagents.map(item => item.taskId);
+    expect(await f.tool.stop({}, ids[0])).toBe(false);
+    expect(await f.tool.stop(f.owner, 'unknown')).toBe(false);
+    const read = f.children[0].settings.customTools.find(tool => tool.name === 'read');
+    expect(await f.tool.stop(f.owner, ids[0])).toBe(true);
+    expect(f.owner.subagentAbortController.signal.aborted).toBe(false);
+    expect(f.children[1].session.abort).not.toHaveBeenCalled();
+    await expect(read.execute('late', { path: 'README.md' })).rejects.toThrow('stopped');
+    expect(await f.tool.stop(f.owner, ids[0])).toBe(false);
+    f.children[0].finish('Late report');
+    f.children[1].finish('B report'); await flush();
+    const reports = background ? await f.tool.collect(f.owner) : (await pending).details.subagents;
+    expect(reports.map(item => item.state)).toEqual(['cancelled', 'completed']);
+    expect(reports[0].report).toBe('');
+    if (background) expect((await f.control('message', ids[0], 'Restart')).isError).toBe(true);
+    f.owner.subagentAbortController.abort();
+  });
+
+  test('individual Stop during setup disposes a late session without prompting it', async () => {
+    const f = fixture(); const creation = deferred();
+    f.options.createSession.mockReturnValue(creation.promise);
+    const pending = f.run(); await flush();
+    const id = f.options.onResult.mock.calls[0][1].subagent.taskId;
+    expect(await f.tool.stop(f.owner, id)).toBe(true);
+    expect((await pending).details.subagent.state).toBe('cancelled');
+    creation.resolve({ session: f.session }); await flush();
+    expect(f.session.prompt).not.toHaveBeenCalled();
+    expect(f.session.dispose).toHaveBeenCalledTimes(1);
+  });
+
   test('wait exposes a completed report without a second automatic delivery', async () => {
     const f = backgroundFixture(); const started = await f.start(); await flush();
     const waiting = f.control('wait', started.details.subagent.taskId);
@@ -79,7 +113,7 @@ describe('background delegation and messages', () => {
     f.children[0].finish('First pass'); await flush();
     expect(f.children[0].session.prompt).toHaveBeenCalledTimes(2);
     expect(f.children[0].session.prompt.mock.calls[1][0]).toContain('Also inspect keyboard access');
-    expect(f.options.onResult).not.toHaveBeenCalled();
+    expect(f.options.onResult.mock.calls.every(([, value]) => (value.subagents || [value.subagent]).every(item => item.state === 'running'))).toBe(true);
     f.children[0].finish('Combined report');
     expect((await f.tool.collect(f.owner))[0].report).toBe('Combined report');
     expect(f.options.createSession).toHaveBeenCalledTimes(1);
@@ -233,6 +267,20 @@ test('editing helper receives only its scoped controller, reports writes and rel
   expect(scope.release).toHaveBeenCalledTimes(1);
 });
 
+test('individual Stop preserves partial editing receipts and releases the writer without stopping the owner', async () => {
+  const f = backgroundFixture();
+  const scope = { controller: {}, release: jest.fn(), evidence: () => ({ changedFiles: ['README.md'], attemptedFiles: ['README.md', 'notes.md'], writesPending: true }) };
+  f.options.createWriter = async () => scope;
+  const started = await f.run({ title: 'Edit', task: 'Update docs', mode: 'edit', files: ['README.md', 'notes.md'], background: true });
+  await flush();
+  expect(await f.tool.stop(f.owner, started.details.subagent.taskId)).toBe(true);
+  const reports = await f.tool.collect(f.owner);
+  expect(reports[0]).toMatchObject({ state: 'cancelled', changedFiles: ['README.md'], attemptedFiles: ['README.md', 'notes.md'], writesPending: true });
+  expect(scope.release).toHaveBeenCalledTimes(1);
+  expect(f.owner.subagentAbortController.signal.aborted).toBe(false);
+  f.owner.subagentAbortController.abort();
+});
+
 test('a writer scope returned after cancellation is released without starting a helper', async () => {
   const pending = deferred();
   const scope = { controller: {}, release: jest.fn(), evidence: () => ({}) };
@@ -302,7 +350,7 @@ test('isolates context, keeps the model connection and exposes only explicitly s
     userInstructions: { userRequest: 'Review my project' }, assignment: 'Inspect for bugs', context: 'Focus on null checks',
   });
   expect(result.details.subagent).toMatchObject({ state: 'completed', totalTokens: 12, report: expect.stringContaining('app.js:5') });
-  expect(f.options.onResult).toHaveBeenCalledTimes(1);
+  expect(f.options.onResult.mock.calls.filter(([, value]) => !value.background)).toHaveLength(1);
   await flush();
   expect(f.session.dispose).toHaveBeenCalledTimes(1);
 });
@@ -331,7 +379,7 @@ test('Stop resolves even if the child provider never settles; late reports canno
   f.owner.subagentAbortController.abort();
   expect((await pending).details.subagent.state).toBe('cancelled');
   f.report('Late success');
-  expect(f.options.onResult).toHaveBeenCalledTimes(1);
+  expect(f.options.onResult.mock.calls.filter(([, value]) => !value.background)).toHaveLength(1);
   await flush();
   expect(f.session.dispose).toHaveBeenCalledTimes(1);
 });
@@ -385,7 +433,7 @@ test('elapsed time does not stop a helper, but Stop still detaches an unresponsi
     const pending = f.run(); await flush();
     jest.advanceTimersByTime(60 * 60 * 1000); await flush();
     expect(f.session.abort).not.toHaveBeenCalled();
-    expect(f.options.onResult).not.toHaveBeenCalled();
+    expect(f.options.onResult.mock.calls.every(([, value]) => (value.subagents || [value.subagent]).every(item => item.state === 'running'))).toBe(true);
     f.owner.subagentAbortController.abort();
     expect((await pending).details.subagent).toMatchObject({ state: 'cancelled', durationMs: 3600000 });
     await flush(); expect(f.session.abort).toHaveBeenCalled();
@@ -547,7 +595,7 @@ describe('parallel read-only assignments', () => {
     expect(f.children[1].session.prompt.mock.calls[0][0]).not.toContain('structure-only');
     expect((await f.run()).details.subagent.state).toBe('limited');
     f.children[1].finish('Accessibility report'); await flush();
-    expect(f.options.onResult).toHaveBeenCalledTimes(1); // Rejected third helper only.
+    expect(f.options.onResult.mock.calls.at(-1)[1].subagents.map(item => item.state)).toEqual(['running', 'completed']);
     f.children[0].finish('Structure report');
     const result = await pending;
     expect(result.details.subagents.map(item => item.report)).toEqual(['Structure report', 'Accessibility report']);
@@ -580,7 +628,7 @@ describe('parallel read-only assignments', () => {
     expect((await pending).details.subagents.map(item => item.state)).toEqual(['cancelled', 'cancelled']);
     f.children.forEach(child => child.finish('Late result'));
     await flush();
-    expect(f.options.onResult).toHaveBeenCalledTimes(1);
+    expect(f.options.onResult.mock.calls.filter(([, value]) => !value.background)).toHaveLength(1);
     expect(f.children.every(child => child.session.dispose.mock.calls.length === 1)).toBe(true);
   });
 
@@ -597,7 +645,7 @@ describe('parallel read-only assignments', () => {
       stopReason: 'toolUse', content: [], usage: { totalTokens: tokens } } });
     await flush();
     expect(f.children.every(child => child.session.abort.mock.calls.length === 0)).toBe(true);
-    expect(f.options.onResult).not.toHaveBeenCalled();
+    expect(f.options.onResult.mock.calls.every(([, value]) => (value.subagents || [value.subagent]).every(item => item.state === 'running'))).toBe(true);
     f.children[0].finish('Mercury report'); f.children[1].finish('Venus report');
     expect((await pending).details.subagents).toEqual([
       expect.objectContaining({ state: 'completed', report: 'Mercury report', totalTokens: 81807 }),

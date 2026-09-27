@@ -43,6 +43,7 @@ function createService(options = {}) {
       })),
     pause: options.pause || jest.fn(async () => true),
     resume: options.resume || jest.fn(async () => true),
+    stopHelper: jest.fn(async () => true),
     stop: options.stop || jest.fn(async () => true),
     clearConversation: options.clearConversation || jest.fn(async () => true),
     listConversations: options.listConversations || jest.fn(() => []),
@@ -803,6 +804,21 @@ describe('Freedom agent IPC', () => {
       stopped: true,
     });
     expect(ctx.service.stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('helper Stop requires the owning window, run and a valid task ID, never falling back to whole-run Stop', async () => {
+    const ctx = register();
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    const stop = ctx.ipcMain.handlers.get(IPC.AGENT_STOP);
+    const taskId = 'delegate_' + 'a'.repeat(24);
+    for (const payload of [{ runId: 'run_stale', taskId }, { runId: 'run_test', taskId: null }, { runId: 'run_test', taskId: '' }]) {
+      expect((await stop({ sender: ctx.sender }, payload)).ok).toBe(false);
+    }
+    expect((await stop({ sender: ctx.otherSender }, { runId: 'run_test', taskId })).ok).toBe(false);
+    expect(ctx.service.stopHelper).not.toHaveBeenCalled();
+    expect(await stop({ sender: ctx.sender }, { runId: 'run_test', taskId })).toEqual({ ok: true, stopped: true });
+    expect(ctx.service.stopHelper).toHaveBeenCalledWith('run_test', taskId);
+    expect(ctx.service.stop).not.toHaveBeenCalled();
   });
 
   test('routes pause and resume only for the owning sender and exact run', async () => {

@@ -3221,6 +3221,8 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
 
+.agent-tool-item[hidden] { display: none; }
+
 .agent-tool-state {
   flex-shrink: 0;
   width: 14px;
@@ -3228,11 +3230,30 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   text-align: center;
 }
 
-.agent-subagent-report { min-width: 0; overflow-wrap: anywhere; }
-.agent-subagent-report + .agent-subagent-report { margin-top: 8px; }
-.agent-subagent-report summary { cursor: pointer; }
-.agent-subagent-report summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.agent-subagent-report p { margin: 8px 0; white-space: pre-wrap; line-height: 1.5; }
+/* Helper cards remain visible independently of the collapsible action log. */
+.agent-helper-list { display: grid; gap: 10px; margin: 16px 0; min-width: 0; }
+.agent-helper-list[hidden] { display: none; }
+.agent-subagent-report {
+  min-width: 0; overflow-wrap: anywhere; padding: 14px 16px;
+  background: var(--bg); border: 1px solid var(--agent-divider, var(--border)); border-radius: 14px;
+}
+.agent-subagent-report[data-state="running"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.agent-subagent-report > summary { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; list-style: none; }
+.agent-subagent-report > summary::-webkit-details-marker { display: none; }
+.agent-helper-chevron { flex: 0 0 16px; width: 16px; height: 16px; margin-top: 2px; color: var(--muted); }
+.agent-helper-chevron svg { display: block; width: 100%; height: 100%; }
+.agent-subagent-report[open] .agent-helper-chevron { transform: rotate(90deg); }
+.agent-subagent-report summary:focus-visible, .agent-helper-stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.agent-helper-copy { display: grid; gap: 5px; flex: 1; min-width: 0; }
+.agent-helper-title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+.agent-helper-status { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.agent-helper-preview { font-size: 12px; line-height: 1.5; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.agent-helper-preview[hidden], .agent-subagent-report[open] .agent-helper-preview { display: none; }
+.agent-helper-stop { flex: 0 0 auto; }
+.agent-helper-stop[hidden] { display: none; }
+.agent-subagent-report p { margin: 12px 0 0; white-space: pre-wrap; line-height: 1.5; font-size: 12px; }
+.agent-subagent-report > p:first-of-type { color: var(--muted); font-size: 11px; padding-top: 12px; border-top: 1px solid var(--agent-divider, var(--border)); }
+.agent-subagent-report ul { padding-left: 18px; font-size: 12px; line-height: 1.6; }
 
 .agent-tool-page { display: flex; align-items: flex-start; gap: 7px; min-width: 0; flex: 1; }
 .agent-tool-page-icon { display: grid; flex: 0 0 14px; width: 14px; height: 14px; margin-top: 2px; }

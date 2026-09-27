@@ -479,6 +479,12 @@ function registerFreedomAgentIpc(options = {}) {
         'The sender does not own that agent run'
       );
     }
+    if (Object.hasOwn(payload, 'taskId')) {
+      if (typeof payload.taskId !== 'string' || !/^delegate_[a-f0-9]{24}$/.test(payload.taskId)) {
+        return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Choose a running helper from this task.');
+      }
+      return { ok: true, stopped: await service.stopHelper(owner.runId, payload.taskId) };
+    }
     return { ok: true, stopped: await service.stop(owner.runId) };
   };
 

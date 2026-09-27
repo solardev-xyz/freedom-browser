@@ -1,7 +1,7 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-25
+Last updated: 2026-09-27
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
@@ -66,7 +66,7 @@ task/context/report, cancellation on Stop/Pause/steering, visible reports and
 history. The user accepted single-helper review, steering and Stop smokes on
 2026-09-25, followed by parallel-helper acceptance. Background parent continuation,
 same-session helper follow-ups, individual report persistence and neutral summaries
-are implemented and user smoke-tested on 2026-09-26. Scoped editing now adds explicit file lists, a single writer, live grant/revision checks and persisted write evidence; the user accepted fresh-workspace editing and external-project permission smokes on 2026-09-26. Browser helpers now use exclusive fresh tabs, queued existing approvals, cancellation guards, parent handoff and persisted browser receipts; the Mercury/Venus smoke exposed the shared token cutoff, now removed (2026-09-27); repeat browser smokes are next. See the
+are implemented and user smoke-tested on 2026-09-26. Scoped editing now adds explicit file lists, a single writer, live grant/revision checks and persisted write evidence; the user accepted fresh-workspace editing and external-project permission smokes on 2026-09-26. Browser helpers now use exclusive fresh tabs, queued existing approvals, cancellation guards, parent handoff and persisted browser receipts; the Mercury/Venus smoke exposed the shared token cutoff, now removed (2026-09-27); the repeated browser comparison passed. Helper cards with individual Stop are implemented; their user smoke is next. See the
 [implementation contract and smoke steps](../docs/agent-subagents.md).
 
 **Other product candidates — not implementation authorization:**
@@ -75,7 +75,7 @@ are implemented and user smoke-tested on 2026-09-26. Scoped editing now adds exp
 | --- | --- | --- |
 | Saved-server management | Rename, edit and remove saved command/directory/port definitions. Define active-process behavior explicitly; removal must not silently stop a process or erase project files. | Smaller continuation: keep the Workspace panel useful as projects accumulate servers. Restart/reattach already exists. |
 | Broader existing-project support | First support linked Git worktrees and their separately located metadata through explicit, validated ownership. Individual file grants and multiple writable projects are separate subsequent slices. | Useful for real development repositories; requires careful metadata and writer-coordination work. |
-| Subagents (active experiment) | Single and parallel-helper smokes accepted. Background continuation and bounded same-session follow-ups implemented with two concurrent helpers and individual report persistence. Background/messaging smokes accepted. Scoped editing with one writer and explicit files passed fresh-workspace and external-permission smokes. Browser helpers implemented with exclusive fresh tabs, queued approvals, handoff and action receipts. Helper-specific execution budgets removed after the Mercury/Venus smoke; repeat browser smokes next. Manual editing interruption/overlap checks remain. | A focused review/inspection through the existing connection. No extra provider required; reports are evidence for the parent to review. |
+| Subagents (active experiment) | Single and parallel-helper smokes accepted. Background continuation and bounded same-session follow-ups implemented with two concurrent helpers and individual report persistence. Background/messaging smokes accepted. Scoped editing with one writer and explicit files passed fresh-workspace and external-permission smokes. Browser helpers implemented with exclusive fresh tabs, queued approvals, handoff and action receipts. Helper-specific execution budgets removed after the Mercury/Venus smoke; browser comparison accepted. Helper cards and individual Stop implemented; user smoke next. Manual editing interruption/overlap checks remain. | A focused review/inspection through the existing connection. No extra provider required; reports are evidence for the parent to review. |
 | Workspace/history scale | Raise managed checkpoint limits with explicit storage/retention and large-file behavior; improve rename matching where actual projects justify it. | Makes larger projects practical. Current checkpoint ingestion remains 200 files, 64 KiB per file and 512 KiB total; pagination, comparisons and selected restore are already implemented. |
 | Browser/WebMCP coverage | Choose a real blocked website/tool schema, then add the missing schema constraints or frame-scoped tools with origin/approval checks. Embedded or ambiguous-source dialogs remain a separate gap. | Broader compatibility, driven by real tasks rather than speculative API breadth. |
 
@@ -2612,11 +2612,11 @@ The numbered inventory below records completed foundations and remaining capabil
 Added 2026-09-17; implementation authorized 2026-09-25 on
 `experiment/agent-subagents`. First delivery is an isolated foreground read-only
 Pi helper with existing provider access, explicit tasks/context, scoped tools,
-bounded usage/results, cancellation and persisted activity reports. Deterministic
+bounded input/results, cancellation and persisted activity reports. Deterministic
 SDK and UI coverage is implemented. Single-helper review, steering and Stop were
 accepted in user smokes on 2026-09-25, followed by two parallel read-only helpers.
 Background parent continuation, status/wait/message controls, same-session follow-ups,
-per-helper report persistence passed real-model user smokes on 2026-09-26. Scoped editing now enforces one writer with explicit files and existing grants, blocks competing commands/writes, rechecks revisions, and retains partial-write evidence. The user accepted fresh-workspace editing and external-project permission smokes on 2026-09-26. Browser helpers now have their own fresh tabs, preserved browser approvals/freshness, queued prompts, cancellation guards and receipts. Disposable real-page Electron tests pass. The real-model Mercury/Venus smoke confirmed separate tabs and parent recovery but exposed an overly restrictive shared token cutoff; helper-specific execution budgets were removed on 2026-09-27, with a repeat smoke pending. Manual editing interruption, reader/writer overlap and reopened-receipt checks remain separate.
+per-helper report persistence passed real-model user smokes on 2026-09-26. Scoped editing now enforces one writer with explicit files and existing grants, blocks competing commands/writes, rechecks revisions, and retains partial-write evidence. The user accepted fresh-workspace editing and external-project permission smokes on 2026-09-26. Browser helpers now have their own fresh tabs, preserved browser approvals/freshness, queued prompts, cancellation guards and receipts. Disposable real-page Electron tests pass. The real-model Mercury/Venus smoke confirmed separate tabs and parent recovery but exposed an overly restrictive shared token cutoff; helper-specific execution budgets were removed on 2026-09-27, and the repeated browser comparison passed. Helper cards and individual Stop are implemented; user smoke is pending. Manual editing interruption, reader/writer overlap and reopened-receipt checks remain separate.
 See [the contract, upstream inspiration and smoke steps](../docs/agent-subagents.md).
 The broader items below remain the direction, not a claim they all shipped.
 

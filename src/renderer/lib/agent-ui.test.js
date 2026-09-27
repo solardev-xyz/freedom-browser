@@ -377,6 +377,7 @@ async function loadAgentUi(options = {}) {
     copyText: jest.fn().mockResolvedValue({ success: true }),
     pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
     resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
+    stopAgentHelper: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
     decideAgentApproval: jest.fn().mockResolvedValue({ ok: true, decided: true }),
     onAgentEvent: jest.fn((handler) => {
@@ -494,10 +495,35 @@ describe('Agent UI', () => {
       ] });
     const reports = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
     expect(reports.length).toBe(2);
-    expect(reports[0].children[0].textContent).toBe('Report received — Structure');
-    expect(reports[1].children[0].textContent).toBe('Stopped — Accessibility');
+    expect(reports[0].querySelector('.agent-helper-title').textContent).toBe('Structure');
+    expect(reports[0].querySelector('.agent-helper-status').textContent).toContain('Completed');
+    expect(reports[1].querySelector('.agent-helper-status').textContent).toContain('Stopped');
     expect(reports[0].children[2].textContent).toBe('<script>untrusted()</script>');
     expect(ctx.elements['agent-run-message'].textContent).toBe('1 report received · 1 task stopped');
+  });
+  test('helper cards remain outside the action log and Stop targets only one helper with stable focus and expansion', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', status: 'succeeded',
+      subagents: ['a', 'b'].map(id => ({ taskId: 'delegate_' + id.repeat(24), title: id, state: 'running', activity: 'Reading a page' })) };
+    ctx.emit(event);
+    const cards = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
+    const button = cards[0].querySelector('.agent-helper-stop');
+    expect(cards[0].parentNode.className).toBe('agent-helper-list');
+    expect(button.hidden).toBe(false);
+    cards[0].open = true;
+    ctx.emit(event);
+    expect(cards[0].querySelector('.agent-helper-stop')).toBe(button);
+    expect(cards[0].open).toBe(true);
+    await button.dispatch('click', { preventDefault() {}, stopPropagation() {} }); await flush();
+    expect(ctx.electronAPI.stopAgentHelper).toHaveBeenCalledWith('run_test', event.subagents[0].taskId);
+    expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
+    ctx.emit({ ...event, subagents: [{ ...event.subagents[0], state: 'cancelled' }, event.subagents[1]] });
+    expect(button.hidden).toBe(true);
+    expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(false);
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+    expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(true);
   });
   test('shows recorded helper edits and unsettled writes as inert text', async () => {
     const ctx = await loadAgentUi();
@@ -521,7 +547,7 @@ describe('Agent UI', () => {
       status: 'succeeded', label: 'Received helper report — Review',
       subagent: { state: 'completed', toolCalls: 2, report: '<img src="https://invalid.test/track">README.md needs an example.' } });
     const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
-    expect(report.children[0].textContent).toBe('Received helper report — Review');
+    expect(report.querySelector('.agent-helper-status').textContent).toContain('Completed');
     expect(report.children[2].textContent).toContain('<img');
     expect(report.querySelector('img')).toBeNull();
     ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task',

@@ -60,7 +60,7 @@ function createSubagentTool(options) {
     return state;
   };
   const available = (owner, generation) => owner && options.getOwner() === owner && !owner.finished && !owner.stopRequested && !generation?.aborted;
-  const snapshot = job => job.result || normalizeSubagentReceipt({ ...job.stats, ...job.edits, ...job.browserEvidence, mode: job.params.mode, taskId: job.taskId, title: job.params.title, state: 'running' });
+  const snapshot = job => job.result || job.liveReceipt?.() || normalizeSubagentReceipt({ ...job.stats, ...job.edits, ...job.browserEvidence, mode: job.params.mode, taskId: job.taskId, title: job.params.title, state: 'running' });
   const consume = job => { job.delivered = true; return snapshot(job); };
   const result = (details, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details, isError });
   const control = {
@@ -75,7 +75,7 @@ function createSubagentTool(options) {
       const state = owner && owners.get(owner);
       const job = state?.jobs.get(params?.taskId);
       const fail = guidance => result({ error: guidance }, true);
-      if (!job || !available(owner, job.generation) || signal?.aborted) return fail('Helper is unavailable in this task or was stopped. Reconcile the latest user guidance; continue directly or start a new authorized assignment.');
+      if (!job || !job.background || !available(owner, job.generation) || signal?.aborted) return fail('Helper is unavailable in this task or was stopped. Reconcile the latest user guidance; continue directly or start a new authorized assignment.');
       if (!['status', 'wait', 'message'].includes(params.action)) return fail('Use action status, wait or message with a taskId returned by delegate_task.');
       if (params.action !== 'message' && params.message !== undefined) return fail('Only action message accepts message text.');
       if (params.action === 'message') {
@@ -110,9 +110,9 @@ function createSubagentTool(options) {
       status: values.some(value => !['running', 'completed'].includes(value.state)) ? 'failed' : 'succeeded',
       ...(values.length === 1 ? { subagent: values[0] } : { subagents: values }) });
   }
-  function startJob(owner, state, job, reservation = {}) {
+  function startJob(owner, state, job, reservation = {}, signal = null) {
     state.active.add(reservation);
-    job.promise = runTask(owner, job.generation, state, reservation, job.params, job.prompt, null, job).then(receipt => {
+    job.promise = runTask(owner, job.generation, state, reservation, job.params, job.prompt, signal, job).then(receipt => {
       job.result = receipt;
       publish(owner, job);
       return receipt;
@@ -166,26 +166,31 @@ function createSubagentTool(options) {
       // Reserve the complete batch synchronously, before any asynchronous setup.
       const reservations = tasks.map(() => ({}));
       for (const entry of reservations) state.active.add(entry);
+      const jobs = tasks.map((task, index) => ({ taskId: `delegate_${crypto.randomBytes(12).toString('hex')}`,
+        params: task, prompt: prompts[index], generation: ownerSignal, toolCallId,
+        background: params.background === true, pendingMessages: [], delivered: false }));
+      for (const job of jobs) { job.group = jobs; state.jobs.set(job.taskId, job); }
+      publish(owner, jobs[0]);
+      for (const [index, job] of jobs.entries()) startJob(owner, state, job, reservations[index], params.background ? null : signal);
       if (params.background) {
-        const jobs = tasks.map((task, index) => ({ taskId: `delegate_${crypto.randomBytes(12).toString('hex')}`,
-          params: task, prompt: prompts[index], generation: ownerSignal, toolCallId, pendingMessages: [], delivered: false }));
-        for (const [index, job] of jobs.entries()) {
-          job.group = jobs;
-          state.jobs.set(job.taskId, job);
-          startJob(owner, state, job, reservations[index]);
-        }
         const values = jobs.map(snapshot);
         const details = values.length === 1 ? { subagent: values[0] } : { subagents: values };
         return result({ ...details, guidance: 'Helpers started. Continue independent work. Use helper_task for status, wait or a follow-up message. Freedom collects outstanding reports before ending this user turn. Helpers share project files with you: coordinate reads and writes, and re-read files before editing.' });
       }
-      const pending = tasks.map((task, index) => runTask(owner, ownerSignal, state, reservations[index], task, prompts[index], signal));
-      return respond(await Promise.all(pending));
+      return respond(await Promise.all(jobs.map(job => job.promise)));
     },
   };
+  tool.stop = async (owner, taskId) => {
+    const job = owner && owners.get(owner)?.jobs.get(taskId);
+    if (!job || job.result || !available(owner, job.generation) || !job.cancel) return false;
+    job.cancel('cancelled');
+    await job.promise;
+    return true;
+  };
   tool.controlTools = [control];
-  tool.hasPending = owner => [...(owners.get(owner)?.jobs.values() || [])].some(job => available(owner, job.generation) && !job.result);
+  tool.hasPending = owner => [...(owners.get(owner)?.jobs.values() || [])].some(job => job.background && available(owner, job.generation) && !job.result);
   tool.collect = async owner => {
-    const jobs = [...(owners.get(owner)?.jobs.values() || [])].filter(job => available(owner, job.generation));
+    const jobs = [...(owners.get(owner)?.jobs.values() || [])].filter(job => job.background && available(owner, job.generation));
     if (!jobs.some(job => job.result && !job.delivered) && jobs.some(job => !job.result)) {
       options.onWaiting?.(owner);
       await Promise.race(jobs.filter(job => !job.result).map(job => job.promise));
@@ -206,13 +211,14 @@ function createSubagentTool(options) {
     let unsubscribe;
     let closed = false;
     let cancel;
+    let activity = 'Thinking…';
     const childAbort = new AbortController();
     const ownerSignal = ownerSignalAtStart;
     const isCurrent = () => !closed && owner && options.getOwner() === owner &&
       !owner.finished && !owner.stopRequested && !ownerSignal?.aborted && !signal?.aborted && !childAbort.signal.aborted;
     const receipt = (state, report = '') => normalizeSubagentReceipt({ taskId,
       title: typeof params?.title === 'string' ? params.title : 'Delegated task',
-      state, report, ...(params.mode === 'browser' && { mode: 'browser',
+      state, report, ...(state === 'running' && { activity }), ...(params.mode === 'browser' && { mode: 'browser',
         tabIds: [...new Set([...(job?.browserEvidence?.tabIds || []), ...(browser?.evidence().tabIds || [])])],
         browserActions: [...(job?.browserEvidence?.browserActions || []), ...(browser?.evidence().browserActions || [])],
         browserPending: browser?.evidence().browserPending === true }), ...(params.mode === 'edit' && { mode: 'edit',
@@ -223,6 +229,7 @@ function createSubagentTool(options) {
       resolve(receipt(state));
       childAbort.abort();
     }; });
+    if (job) { job.cancel = cancel; job.liveReceipt = () => receipt('running'); }
     const onAbort = () => cancel('cancelled');
     ownerSignal?.addEventListener('abort', onAbort, { once: true });
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -256,9 +263,18 @@ function createSubagentTool(options) {
             if (tool.name === 'workspace_history' && !['status', 'diff'].includes(args?.action)) {
               throw new Error('Helpers can only inspect history status or diff. Ask the parent to perform other actions.');
             }
+            activity = ({ read: 'Reading a file', ls: 'Listing files', find: 'Finding files', grep: 'Searching files',
+              write: 'Writing a file', edit: 'Editing a file', workspace_history: 'Reviewing changes',
+              browser_snapshot: 'Reading a page', browser_create_tab: 'Opening a page', browser_navigate: 'Navigating',
+              browser_click: 'Interacting with a page', browser_screenshot: 'Looking at a page',
+              browser_list_page_tools: 'Discovering page actions' })[tool.name] || 'Using a tool';
+            if (job) publish(owner, job);
             const signals = [childAbort.signal, ownerSignal, signal, toolSignal].filter(Boolean);
-            const value = await tool.execute(`${taskId}:${id}`, args,
-              AbortSignal.any(signals), onUpdate, context);
+            let value;
+            try { value = await tool.execute(`${taskId}:${id}`, args, AbortSignal.any(signals), onUpdate, context); }
+            finally {
+              if (isCurrent()) { activity = 'Thinking…'; if (job) publish(owner, job); }
+            }
             if (!isCurrent()) throw new Error('Delegated task stopped. Ignore late results.');
             return value;
           },
@@ -322,7 +338,8 @@ function createSubagentTool(options) {
       ownerSignal?.removeEventListener('abort', onAbort);
       signal?.removeEventListener('abort', onAbort);
       try { unsubscribe?.(); } catch { /* Cleanup must still detach the child. */ }
-      if (!job || outcome?.state !== 'completed' || ownerSignal?.aborted) { dispose(session); if (job) job.session = null; }
+      if (!job?.background || outcome?.state !== 'completed' || ownerSignal?.aborted) { dispose(session); if (job) job.session = null; }
+      if (job) { job.cancel = null; job.liveReceipt = null; }
       state.active.delete(reservation);
     }
     return outcome;

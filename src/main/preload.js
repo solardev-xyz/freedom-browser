@@ -177,6 +177,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pauseAgent: (runId) => ipcRenderer.invoke('agent:pause', { runId }),
   resumeAgent: (runId, prompt) => ipcRenderer.invoke('agent:resume', { runId, prompt }),
   stopAgent: (runId) => ipcRenderer.invoke('agent:stop', { runId }),
+  stopAgentHelper: (runId, taskId) => ipcRenderer.invoke('agent:stop', { runId, taskId }),
   decideAgentApproval: (runId, approvalId, approved, options = {}) =>
     ipcRenderer.invoke('agent:approval:decide', {
       runId,

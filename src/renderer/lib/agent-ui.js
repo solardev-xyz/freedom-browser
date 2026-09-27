@@ -2182,6 +2182,10 @@ function createTurnView(turn) {
   artifactList.className = 'agent-artifact-list';
   artifactList.hidden = true;
 
+  const helperList = document.createElement('div');
+  helperList.className = 'agent-helper-list';
+  helperList.hidden = true;
+
   const guidanceList = document.createElement('div');
   guidanceList.className = 'agent-guidance-list';
 
@@ -2217,6 +2221,7 @@ function createTurnView(turn) {
   section.appendChild(assistantRow);
   section.appendChild(outcome);
   section.appendChild(artifactList);
+  section.appendChild(helperList);
   section.appendChild(activity);
   section.appendChild(liveStatus);
   elements.transcript.appendChild(section);
@@ -2236,6 +2241,8 @@ function createTurnView(turn) {
     outcomeActions,
     outcomeRetry,
     artifactList,
+    helperList,
+    helperCards: new Map(),
     activity,
     activitySummary,
     toolList,
@@ -3314,7 +3321,6 @@ function finishToolRow(event) {
   const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
   const publicationCancelled = event.errorCode === 'SWARM_PUBLICATION_CANCELLED_BY_USER';
   const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled;
-  const expandedHelpers = new Set([...record.label.querySelectorAll('.agent-subagent-report[open]')].map(details => details.dataset.taskId));
   record.label.textContent = event.label || record.label.textContent;
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
@@ -3327,24 +3333,74 @@ function finishToolRow(event) {
   renderToolPage(record, event, true);
   if (event.operation === 'delegate_task' && (event.subagent || event.subagents)) {
     const receipts = Array.isArray(event.subagents) ? event.subagents.slice(0, 2) : [event.subagent];
-    const label = record.label.textContent;
-    record.label.replaceChildren();
+    const view = turnView(event.runId);
+    record.row.hidden = true;
+    view.activity.hidden = [...view.toolList.children].every(row => row.hidden);
+    view.helperList.hidden = false;
     for (const receipt of receipts) {
-      const details = document.createElement('details');
-      details.className = 'agent-subagent-report';
-      details.dataset.taskId = receipt.taskId;
-      details.open = expandedHelpers.has(receipt.taskId);
-      const summary = document.createElement('summary');
-      const state = { running: 'Working', completed: 'Report received', cancelled: 'Stopped', failed: 'Could not finish',
-        timed_out: 'Timed out', limited: 'Limit reached' }[receipt.state] || 'Incomplete';
-      summary.textContent = event.subagents ? `${state} — ${receipt.title}` : label;
+      const key = receipt.taskId || `${event.toolCallId}:${receipts.indexOf(receipt)}`;
+      let card = view.helperCards.get(key);
+      if (!card) {
+        const details = document.createElement('details');
+        details.className = 'agent-subagent-report';
+        details.dataset.taskId = key;
+        const summary = document.createElement('summary');
+        const copy = document.createElement('span');
+        copy.className = 'agent-helper-copy';
+        const title = document.createElement('strong');
+        title.className = 'agent-helper-title';
+        const status = document.createElement('span');
+        status.className = 'agent-helper-status';
+        const preview = document.createElement('span');
+        preview.className = 'agent-helper-preview';
+        copy.appendChild(title); copy.appendChild(status); copy.appendChild(preview);
+        const stop = document.createElement('button');
+        stop.type = 'button'; stop.className = 'agent-button agent-helper-stop';
+        stop.textContent = 'Stop';
+        card = { details, summary, title, status, preview, stop, stopping: false };
+        stop.addEventListener('click', async click => {
+          click.preventDefault(); click.stopPropagation();
+          if (card.stopping || currentRunId !== event.runId || card.state !== 'running') return;
+          card.stopping = true; stop.disabled = true; stop.textContent = 'Stopping…';
+          try {
+            const response = await window.electronAPI.stopAgentHelper(event.runId, receipt.taskId);
+            if (!response?.ok || !response.stopped) {
+              setMessage(elements.runMessage, response?.error?.message || 'This helper is no longer running. Its latest status will appear here.', true);
+            }
+          } catch { setMessage(elements.runMessage, 'Could not stop this helper. Try again, or use Stop task to stop all work.', true); }
+          finally { card.stopping = false; stop.disabled = card.state !== 'running'; stop.textContent = 'Stop'; }
+        });
+        const chevron = document.createElement('span');
+        chevron.className = 'agent-helper-chevron'; chevron.setAttribute('aria-hidden', 'true');
+        // Lucide chevron-right, matching the workspace/composer icon style.
+        chevron.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+        summary.appendChild(copy); summary.appendChild(stop); summary.appendChild(chevron);
+        details.appendChild(summary);
+        view.helperCards.set(key, card);
+        view.helperList.appendChild(details);
+      }
+      const { details, summary } = card;
+      card.state = receipt.state;
+      details.dataset.state = receipt.state;
+      card.title.textContent = receipt.title || 'Delegated task';
+      const state = { running: 'Working', completed: 'Completed', cancelled: 'Stopped', failed: 'Failed',
+        timed_out: 'Timed out', limited: 'Could not start' }[receipt.state] || 'Incomplete';
+      const kind = receipt.mode === 'browser' ? 'Browser helper' : receipt.mode === 'edit' ? 'Editing helper' : 'Read-only helper';
+      card.status.textContent = `${kind} · ${state}${receipt.state === 'running' && receipt.activity ? ` · ${receipt.activity}` : ''}`;
+      card.preview.textContent = receipt.state === 'completed' ? (receipt.report || '').slice(0, 180) :
+        receipt.state === 'cancelled' && ['edit', 'browser'].includes(receipt.mode) ? 'Stopped work may have made changes. Expand to review.' : '';
+      card.preview.hidden = !card.preview.textContent;
+      card.stop.hidden = receipt.state !== 'running' || currentRunId !== event.runId;
+      card.stop.disabled = card.stopping || card.stop.hidden;
+      card.stop.setAttribute('aria-label', `Stop helper: ${receipt.title || 'Delegated task'}`);
+      // Keep the summary and its focused Stop button stable during progress updates.
+      for (const child of [...details.children]) if (child !== summary) child.remove();
       const note = document.createElement('p');
       const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
       note.textContent = `${receipt.mode === 'browser' ? 'Browser helper' : receipt.mode === 'edit' ? 'Editing helper' : 'Read-only helper'} · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
       const report = document.createElement('p');
       report.textContent = typeof receipt.report === 'string' && receipt.report
         ? receipt.report.slice(0, 12000) : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
-      details.appendChild(summary);
       details.appendChild(note);
       details.appendChild(report);
       if (receipt.mode === 'browser') {
@@ -3368,7 +3424,6 @@ function finishToolRow(event) {
         if (receipt.writesPending || (receipt.attemptedFiles || []).some(file => !paths.includes(file))) changes.textContent += ' Some writes were attempted or still settling; review the current files.';
         details.appendChild(changes);
       }
-      record.label.appendChild(details);
     }
     if (receipts.some(receipt => receipt.state === 'running')) {
       record.state.textContent = '•';
@@ -3424,7 +3479,7 @@ function finishTurnView(runId, event = {}) {
     ? event.actionCount
     : view.actionCount;
   if (actionCount > 0) {
-    view.activity.hidden = false;
+    view.activity.hidden = [...view.toolList.children].every(row => row.hidden);
     view.activity.open = false;
     const outcomeLabel = outcomeSummaryLabel(event.outcome);
     view.activitySummary.textContent = `Worked for ${formatDuration(event.durationMs)} · ${actionCount} ${actionCount === 1 ? 'action' : 'actions'}${outcomeLabel ? ` · ${outcomeLabel}` : ''}`;
@@ -3843,6 +3898,7 @@ function handleAgentEvent(event) {
     setMessage(elements.runMessage, 'Agent is re-reading the current page before acting.');
     setLiveStatus(event.runId, 'Reading the page again…');
   } else if (event.type === 'run_finished') {
+    for (const card of turnView(event.runId)?.helperCards.values() || []) { card.stop.hidden = true; card.stop.disabled = true; }
     const status = event.status || 'finished';
     const wasStopped = status === 'cancelled' && stopRequestedRunId === event.runId;
     clearApproval();
@@ -4148,6 +4204,9 @@ async function restoreRunState() {
 
     if (state.runId && state.status !== 'ready') {
       currentRunId = state.runId;
+      for (const card of turnView(state.runId)?.helperCards.values() || []) {
+        card.stop.hidden = card.state !== 'running'; card.stop.disabled = card.stop.hidden || card.stopping;
+      }
       if (conversationRendererTabId) setAgentControlledTab(conversationRendererTabId);
       const restoredStatus = ['paused', 'pausing', 'resuming'].includes(state.status)
         ? state.status

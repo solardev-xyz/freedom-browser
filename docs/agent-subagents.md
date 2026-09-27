@@ -34,9 +34,23 @@ only until the parent turn ends; they are not durable background jobs.
 Successful reports and intentional stops use a neutral summary, such as
 “1 report received · 1 task stopped.” Failed, timed-out or limited helpers are
 counted as incomplete and retain a caution indicator. Each parallel report has
-its own expandable entry in the activity list.
+its own expandable card in the conversation.
 
-The activity list shows the assignment and an expandable report. Reports are
+Each helper has a card above the collapsible action log, with its assignment,
+capability, state and current tool activity. Completed cards show a short report
+preview; expanding a card reveals its report and recorded browser/file effects.
+Cards update in place, preserving keyboard focus and expanded state.
+
+A running card has an individual Stop button for foreground and background
+helpers. It cancels only that owned task, withdraws its pending/queued approvals,
+and retains recorded effects; the parent and sibling keep running. It does not
+undo edits or page actions. Stopped helpers cannot be resumed. The existing
+whole-task Stop still cancels all work. Saved cards have no active Stop control.
+The preload uses the existing owner-checked Stop IPC with an exact helper ID;
+main validates the run and task, then the helper runtime aborts its scoped tools.
+Malformed or stale helper IDs never fall back to whole-task cancellation.
+
+The card shows the assignment and an expandable report. Reports are
 plain, inert text and explicitly identified as model-generated findings. A
 completed report does not imply a verified task result. Failed, stopped and
 limited helpers do not count as successful browser actions. Bounded reports and
@@ -121,9 +135,10 @@ helpers and show their recorded actions as inert text.
 ## Authority and ownership
 
 `pi-subagent-tools.js` owns the bounded helper lifecycle in main, alongside the
-existing Pi session factory and Freedom service. No new IPC surface, external
+existing Pi session factory and Freedom service. No new IPC channel, external
 agent package, dependency or process boundary is introduced. Renderer changes
-only display the existing activity events and persisted receipts.
+display existing activity events and persisted receipts, and send owner-checked
+individual Stop requests. No process responsibility or top-level boundary changes.
 
 - Each helper is a fresh `createIsolatedPiSession`: no ambient extensions,
   external skills, project instruction discovery, host working directory or
@@ -270,7 +285,10 @@ read-only project's editing-permission flow both passed user smoke tests.
 Manual background-edit/reviewer overlap, Stop during editing and reopening the
 editing receipt remain separate checks; these are not implied by those two passes.
 
-Browser smoke (2026-09-26 exercised tab ownership and parent recovery; repeat after budget removal):
+**User acceptance, 2026-09-27:** the Mercury/Venus/Earth browser comparison passed
+after removing helper execution budgets.
+
+Browser smoke:
 
 1. With no project attached, ask: “Start two browser helpers in the background.
    One reads https://en.wikipedia.org/wiki/Mercury_(planet), the other reads
@@ -292,7 +310,19 @@ access denial, approved/declined clicks, tab handoff and Stop during approval.
 SQLite persistence and both themes/layouts are also checked. Validation: 454
 targeted tests across seven suites, three Electron checks and lint passed.
 
-Next: real-model browser smoke acceptance, then reassess readiness to merge the
-experiment. Existing-tab handoff, individual helper Stop, broader writer concurrency,
+Helper cards and individual Stop are implemented on 2026-09-27. Validation:
+412 tests across eight suites and lint passed. Three disposable Electron checks
+cover saved receipts, card rendering in both themes/layouts, and real-page
+ownership/approval cancellation. Individual Stop preserves parent operation and
+prevents a late-approved click. Focus and expanded cards survive live updates.
+
+Smoke: start two
+background browser helpers, stop one using its card, and confirm the sibling and
+parent continue. Expand the stopped card to review retained actions, then reopen
+the conversation to check its saved status. Repeat Stop while a helper awaits a
+browser approval; its action must not execute later.
+
+Next: user acceptance of cards/individual Stop, then reassess readiness to merge
+the experiment. Existing-tab handoff, broader writer concurrency,
 model/role selection, nested delegation, remote execution and optional Jev workers
 remain later work. No claim of complete provider/platform qualification.

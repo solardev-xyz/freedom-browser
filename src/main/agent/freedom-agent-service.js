@@ -1946,6 +1946,13 @@ class FreedomAgentService {
     }
   }
 
+  async stopHelper(runId, taskId) {
+    const run = this.activeRun;
+    if (!run || run.runId !== runId || run.finished || run.stopRequested ||
+        typeof taskId !== 'string' || !/^delegate_[a-f0-9]{24}$/.test(taskId)) return false;
+    return await run.delegationTool?.stop(run, taskId) || false;
+  }
+
   async stop(runId) {
     const run = this.activeRun;
     if (!run || (runId !== undefined && run.runId !== runId)) return false;

@@ -234,6 +234,7 @@ describe('preload', () => {
         IPC.AGENT_RESUME,
         [{ runId: 'run_test', prompt: 'I logged in' }],
       ],
+      [exposures.electronAPI, 'stopAgentHelper', ['run_1', 'delegate_1'], IPC.AGENT_STOP, [{ runId: 'run_1', taskId: 'delegate_1' }]],
       [exposures.electronAPI, 'stopAgent', ['run_1'], IPC.AGENT_STOP, [{ runId: 'run_1' }]],
       [
         exposures.electronAPI,
