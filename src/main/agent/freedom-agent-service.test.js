@@ -551,7 +551,7 @@ describe('FreedomAgentService', () => {
       model: { id: 'model_test', provider: 'test' },
       modelRuntime: { kind: 'model-runtime' },
       thinkingLevel: 'low',
-      customTools: [{ name: 'browser_snapshot' }, expect.objectContaining({ name: 'delegate_task' }), expect.objectContaining({ name: 'helper_task' })],
+      customTools: [{ name: 'browser_snapshot' }, expect.objectContaining({ name: 'delegate_task' }), expect.objectContaining({ name: 'helper_task' }), expect.objectContaining({ name: 'helper_reports' })],
       enableBuiltInSkills: true,
       systemPrompt: expect.stringContaining('You are Freedom Agent inside Freedom Browser'),
     });
@@ -843,7 +843,7 @@ describe('FreedomAgentService', () => {
       { name: 'attachment_list' },
       { name: 'attachment_read' },
       expect.objectContaining({ name: 'delegate_task' }),
-      expect.objectContaining({ name: 'helper_task' }),
+      expect.objectContaining({ name: 'helper_task' }), expect.objectContaining({ name: 'helper_reports' }),
     ]);
     expect(fake.session.prompt.mock.calls[0][0]).toContain('attachment_aaaaaaaaaaaaaaaaaaaa');
     expect(fake.session.prompt.mock.calls[0][0]).not.toContain('/Users/');
@@ -924,7 +924,7 @@ describe('FreedomAgentService', () => {
         { name: 'find' },
         { name: 'ls' },
         { name: 'delegate_task' },
-        { name: 'helper_task' },
+        { name: 'helper_task' }, { name: 'helper_reports' },
       ],
       systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
     });

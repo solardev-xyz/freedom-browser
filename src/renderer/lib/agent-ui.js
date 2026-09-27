@@ -2952,6 +2952,7 @@ function formatOperation(operation) {
 
 function formatToolError(code, operation) {
   if (operation === 'delegate_task') return 'The delegated task did not complete';
+  if (operation === 'helper_reports') return 'Could not read the saved report. Reopen this conversation and try again';
   if (operation === 'helper_task') return 'The helper request could not be completed';
   const labels = {
     TAB_NOT_FOUND: 'Page is no longer open',
@@ -3359,6 +3360,9 @@ function finishToolRow(event) {
         stop.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>';
         stop.title = 'Stop helper';
         card = { details, summary, title, status, preview, stop, stopping: false };
+        details.addEventListener('toggle', () => {
+          if (details.open && card.reportId && !card.reportLoaded) card.loadReport?.();
+        });
         stop.addEventListener('click', async click => {
           click.preventDefault(); click.stopPropagation();
           if (card.stopping || currentRunId !== event.runId || card.state !== 'running') return;
@@ -3402,13 +3406,14 @@ function finishToolRow(event) {
       const report = document.createElement('div');
       report.className = 'agent-helper-report-body';
       report.textContent = typeof receipt.report === 'string' && receipt.report
-        ? receipt.report.slice(0, 12000) : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
+        ? receipt.report : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
       renderAgentMarkdown(report, report.textContent);
       if (receipt.state === 'completed' && receipt.report && report.classList.contains('rendered-markdown')) {
         card.preview.textContent = report.textContent.replace(/\s+/g, ' ').trim().slice(0, 180);
       }
       details.appendChild(note);
       details.appendChild(report);
+      configureHelperReport(card, receipt, report);
       if (receipt.mode === 'browser') {
         const actions = document.createElement('ul');
         for (const action of (receipt.browserActions || []).slice(0, 48)) {
@@ -3449,6 +3454,60 @@ function finishToolRow(event) {
   }
   if (event.artifact) renderArtifact(event.runId, event.artifact);
   if (event.publication) renderPublication(event.runId, event.publication);
+}
+
+// Load only expanded reports. Each click fetches another bounded page; conversation
+// changes and newer follow-up reports invalidate in-flight responses.
+function configureHelperReport(card, receipt, body) {
+  if (!receipt.reportId) return;
+  const conversationId = currentConversationId;
+  const reportId = receipt.reportId;
+  if (card.reportId !== reportId) {
+    card.reportId = reportId;
+    card.reportText = '';
+    card.reportLoaded = false;
+    card.reportLoading = false;
+    card.reportOffset = 0;
+    card.reportError = '';
+  }
+  const more = document.createElement('button');
+  more.type = 'button'; more.className = 'agent-button';
+  card.details.appendChild(more);
+  const paint = () => {
+    const text = card.reportLoaded ? card.reportText : receipt.report || '';
+    body.textContent = text;
+    renderAgentMarkdown(body, text);
+    more.hidden = card.reportLoaded && card.reportOffset === null;
+    more.disabled = card.reportLoading;
+    more.textContent = card.reportLoading ? 'Loading report…' : card.reportError
+      ? 'Retry loading report' : card.reportLoaded ? 'Show more' : 'Load report';
+    more.title = card.reportError || '';
+  };
+  card.paintReport = paint;
+  card.loadReport = async () => {
+    if (card.reportLoading || card.reportOffset === null || currentConversationId !== conversationId) return;
+    card.reportLoading = true; card.paintReport();
+    try {
+      const response = await window.electronAPI.readAgentHelperReport(conversationId, reportId, card.reportOffset);
+      if (currentConversationId !== conversationId || card.reportId !== reportId) return;
+      if (!response?.ok || response.result?.error || typeof response.result?.text !== 'string') {
+        throw new Error(response?.result?.error || response?.error?.message || 'Could not load this report. Try again.');
+      }
+      card.reportText += response.result.text;
+      card.reportOffset = response.result.nextOffset;
+      card.reportLoaded = true;
+      card.reportError = '';
+    } catch (error) {
+      if (currentConversationId === conversationId && card.reportId === reportId) card.reportError = error.message;
+    } finally {
+      if (currentConversationId === conversationId && card.reportId === reportId) {
+        card.reportLoading = false; card.paintReport();
+      }
+    }
+  };
+  more.addEventListener('click', () => card.loadReport());
+  paint();
+  if (card.details.open && !card.reportLoaded && !card.reportError) card.loadReport();
 }
 
 function updateToolProgress(event) {

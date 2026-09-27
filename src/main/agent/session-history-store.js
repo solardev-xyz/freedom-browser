@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const log = require('../logger');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
@@ -18,7 +19,7 @@ const {
 } = require('./agent-progress');
 
 const DB_FILE = 'agent-history.sqlite';
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const MAX_TITLE_LENGTH = 120;
 const MAX_MODEL_FIELD_LENGTH = 240;
 const SESSION_STATUSES = new Set(['running', 'ready', 'interrupted', 'failed', 'cancelled']);
@@ -296,8 +297,81 @@ class AgentSessionHistoryStore {
             'every_interaction'
           );
       `);
-      this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
+      this.db.pragma('user_version = 4');
     }
+    if (version < 5) {
+      this.db.transaction(() => {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS agent_helper_reports (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+          run_id TEXT NOT NULL REFERENCES agent_turns(id) ON DELETE CASCADE,
+          task_id TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL,
+          report TEXT NOT NULL, report_chars INTEGER NOT NULL,
+          truncated INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_helper_reports_session ON agent_helper_reports(session_id, created_at DESC);`);
+        // Preserve legacy text and its truncation flag; never claim lost text was recovered.
+        for (const row of this.db.prepare('SELECT id, session_id, activity_json, started_at FROM agent_turns').iterate()) {
+          const activity = this.#compactReports(row.session_id, row.id, safeJsonParse(row.activity_json, []), row.started_at);
+          this.db.prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ?')
+            .run(JSON.stringify(activity), row.id, row.session_id);
+        }
+        this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
+      })();
+    }
+  }
+
+  // Reports belong to conversation history, but not to its eagerly loaded JSON.
+  // Immutable IDs also keep earlier follow-up reports addressable.
+  saveHelperReport(conversationId, runId, value, createdAt = this.now()) {
+    const receipt = normalizeSubagentReceipt(value);
+    if (!receipt || !receipt.report || receipt.reportId) return receipt;
+    const db = this.getDb();
+    if (!db.prepare('SELECT id FROM agent_turns WHERE id = ? AND session_id = ?').get(runId, conversationId)) {
+      throw new Error('Report conversation is unavailable. Reopen the conversation before retrieving reports.');
+    }
+    const reportId = `report_${crypto.createHash('sha256').update(JSON.stringify([conversationId, runId, receipt.taskId, receipt.state, receipt.report, receipt.reportTruncated])).digest('hex')}`;
+    let reportChars = 0;
+    for (const _character of receipt.report) reportChars++;
+    db.prepare(`INSERT OR IGNORE INTO agent_helper_reports
+      (id, session_id, run_id, task_id, title, state, report, report_chars, truncated, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(reportId, conversationId, runId,
+      receipt.taskId, receipt.title, receipt.state, receipt.report, reportChars, receipt.reportTruncated ? 1 : 0, createdAt);
+    return normalizeSubagentReceipt({ ...receipt, reportId, reportChars, report: receipt.report.slice(0, 600) });
+  }
+
+  #compactReports(conversationId, runId, activity, createdAt) {
+    return normalizeActivity(activity).map(item => ({ ...item,
+      ...(item.subagent && { subagent: this.saveHelperReport(conversationId, runId, item.subagent, createdAt) }),
+      ...(item.subagents && { subagents: item.subagents.map(receipt => this.saveHelperReport(conversationId, runId, receipt, createdAt)) }),
+    }));
+  }
+
+  helperReports(conversationId, params = {}) {
+    const id = requiredString(conversationId, 'Agent conversation ID', 160);
+    const { action = 'list', reportId, offset = 0, limit = action === 'read' ? 8000 : 20, query = '' } = params;
+    if (!['list', 'read'].includes(action) || !Number.isSafeInteger(offset) || offset < 0 ||
+        !Number.isSafeInteger(limit) || limit < 1 || limit > (action === 'read' ? 16000 : 50) ||
+        typeof query !== 'string' || query.length > 200 ||
+        (action === 'read' && !/^report_[a-f0-9]{64}$/.test(reportId || ''))) {
+      throw new TypeError('Use list with an optional search query and offset, or read with a reportId and character offset. Limits: 50 entries or 16000 characters.');
+    }
+    const db = this.getDb();
+    if (action === 'list') {
+      const rows = db.prepare(`SELECT id, run_id, task_id, title, state, report_chars, truncated, created_at
+        FROM agent_helper_reports WHERE session_id = ? AND (instr(lower(title), lower(?)) > 0 OR instr(lower(report), lower(?)) > 0)
+        ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?`).all(id, query, query, limit + 1, offset);
+      return { reports: rows.slice(0, limit).map(row => ({ reportId: row.id, runId: row.run_id, taskId: row.task_id,
+        title: row.title, state: row.state, reportChars: row.report_chars, reportTruncated: Boolean(row.truncated), createdAt: row.created_at })),
+      nextOffset: rows.length > limit ? offset + limit : null };
+    }
+    // SQLite pages by Unicode code point, avoiding split surrogate pairs and
+    // loading only the requested text into the main process.
+    const row = db.prepare('SELECT substr(report, ?, ?) AS text, report_chars, truncated FROM agent_helper_reports WHERE session_id = ? AND id = ?')
+      .get(offset + 1, limit, id, reportId);
+    if (!row) return { error: 'Report not found in this conversation. List its saved reports and use a returned reportId.' };
+    return { reportId, text: row.text, offset, reportChars: row.report_chars, reportTruncated: Boolean(row.truncated),
+      nextOffset: offset + limit < row.report_chars ? offset + limit : null };
   }
 
   #getStatements() {
@@ -429,7 +503,7 @@ class AgentSessionHistoryStore {
     const status = TURN_STATUSES.has(entry?.status) ? entry.status : 'failed';
     const assistantText = typeof entry?.assistantText === 'string' ? entry.assistantText : '';
     const durationMs = Number.isFinite(entry?.durationMs) ? Math.max(0, entry.durationMs) : null;
-    const activity = normalizeActivity(entry?.activity);
+    const activity = this.#compactReports(sessionId, runId, entry?.activity);
     const guidance = normalizeGuidance(entry?.guidance);
     const errorCode = optionalString(entry?.error?.code, 120);
     const errorMessage = optionalString(entry?.error?.message, 512);
@@ -473,7 +547,7 @@ class AgentSessionHistoryStore {
   updateTurnActivity(entry) {
     const sessionId = requiredString(entry?.conversationId, 'Agent conversation ID', 160);
     const runId = requiredString(entry?.runId, 'Agent run ID', 160);
-    const activity = normalizeActivity(entry?.activity);
+    const activity = this.#compactReports(sessionId, runId, entry?.activity);
     const statement = entry.running === true
       ? this.#getStatements().updateRunningTurnActivity : this.#getStatements().updateTurnActivity;
     const result = statement.run(

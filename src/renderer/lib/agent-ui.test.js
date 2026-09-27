@@ -525,6 +525,51 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
     expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(true);
   });
+  test('saved helper cards load only when expanded, page on demand, and preserve loaded text across updates', async () => {
+    const read = jest.fn().mockResolvedValueOnce({ ok: true, result: { text: 'First page ', nextOffset: 11 } })
+      .mockResolvedValueOnce({ ok: true, result: { text: 'last finding', nextOffset: null } });
+    const ctx = await loadAgentUi({ electronAPI: { readAgentHelperReport: read } });
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Preview', reportId: 'report_' + 'a'.repeat(64), reportChars: 23 } };
+    ctx.emit(event);
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(read).not.toHaveBeenCalled();
+    card.open = true; await card.dispatch('toggle'); await flush();
+    expect(read).toHaveBeenCalledWith('conversation_test', event.subagent.reportId, 0);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page ');
+    ctx.emit(event);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page ');
+    const more = [...card.children].find(child => child.tagName === 'BUTTON');
+    expect(more.textContent).toBe('Show more');
+    await more.dispatch('click'); await flush();
+    expect(read).toHaveBeenLastCalledWith('conversation_test', event.subagent.reportId, 11);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page last finding');
+    expect(more.hidden).toBe(true);
+  });
+
+  test('report loading can retry and ignores a late page for an older helper follow-up', async () => {
+    let resolveOld;
+    const read = jest.fn().mockRejectedValueOnce(new Error('Unavailable'))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }))
+      .mockResolvedValue({ ok: true, result: { text: 'New report', nextOffset: null } });
+    const ctx = await loadAgentUi({ electronAPI: { readAgentHelperReport: read } });
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Preview', reportId: 'report_' + 'a'.repeat(64) } };
+    ctx.emit(event);
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    card.open = true; await card.dispatch('toggle'); await flush();
+    const retry = [...card.children].find(child => child.tagName === 'BUTTON');
+    expect(retry.textContent).toBe('Retry loading report');
+    retry.dispatch('click'); await flush();
+    ctx.emit({ ...event, subagent: { ...event.subagent, reportId: 'report_' + 'b'.repeat(64) } }); await flush();
+    resolveOld({ ok: true, result: { text: 'Old report', nextOffset: null } }); await flush();
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('New report');
+  });
+
   test('helper reports use the same restricted Markdown renderer as the main response', async () => {
     const sanitize = jest.fn(() => '<p><strong>Finding</strong></p>');
     const ctx = await loadAgentUi({ windowGlobals: {

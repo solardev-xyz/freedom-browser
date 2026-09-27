@@ -193,6 +193,7 @@ module.exports = {
   AGENT_GET_STATE: 'agent:get-state',
   AGENT_PAGE_ACTIONS: 'agent:page-actions',
   AGENT_CLEAR_CONVERSATION: 'agent:clear-conversation',
+  AGENT_HELPER_REPORTS: 'agent:helper-reports',
   AGENT_HISTORY_LIST: 'agent:history:list',
   AGENT_HISTORY_OPEN: 'agent:history:open',
   AGENT_HISTORY_RENAME: 'agent:history:rename',

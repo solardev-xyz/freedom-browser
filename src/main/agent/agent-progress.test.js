@@ -1471,3 +1471,10 @@ test('browser helper receipt persistence bounds metadata and does not retain raw
   expect(value.browserActions).toEqual([{ operation: 'browser_snapshot', status: 'succeeded', origin: 'https://example.com', pageTitle: 'A B' }]);
   expect(JSON.stringify(value)).not.toContain('not-retained');
 });
+
+
+test('saved report retrieval is historical evidence, not a browser observation', () => {
+  const item = { operation: 'helper_reports', status: 'succeeded', ...activityProgress('helper_reports') };
+  expect(item.label).toBe('Read saved helper reports');
+  expect(buildAgentOutcome([item], 'completed')).toMatchObject({ verification: 'historical_report', tone: 'neutral' });
+});

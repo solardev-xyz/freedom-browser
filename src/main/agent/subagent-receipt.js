@@ -40,8 +40,9 @@ function normalizeSubagentReceipt(value) {
         })) : []),
     }),
     // A report is model-generated evidence, never a verified task result.
-    report: typeof value.report === 'string' ? value.report.slice(0, 12000) : '',
-    reportTruncated: value.reportTruncated === true || (typeof value.report === 'string' && value.report.length > 12000),
+    report: typeof value.report === 'string' ? value.report : '',
+    ...(/^report_[a-f0-9]{64}$/.test(value.reportId || '') && { reportId: value.reportId, reportChars: count('reportChars') }),
+    reportTruncated: value.reportTruncated === true,
   });
 }
 

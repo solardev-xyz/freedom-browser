@@ -1110,6 +1110,11 @@ class FreedomAgentService {
     };
   }
 
+  helperReports(conversationId, params) {
+    if (!this.historyStore?.helperReports) return { error: 'Saved reports are unavailable. Continue using the report already returned in this conversation.' };
+    return this.historyStore.helperReports(conversationId, params);
+  }
+
   listConversations() {
     return this.historyStore ? this.historyStore.listSessions() : [];
   }
@@ -1711,6 +1716,8 @@ class FreedomAgentService {
             const active = activeConversationRun();
             return active?.status === 'running' ? active : null;
           },
+          saveReport: (owner, receipt) => this.historyStore?.saveHelperReport?.(owner.conversationId, owner.runId, receipt) || receipt,
+          readReports: (owner, params) => this.helperReports(owner.conversationId, params),
           getUserInstructions: (owner) => ({
             priorUserRequests: (this.conversations.get(owner.conversationId)?.turns || [])
               .filter(turn => turn !== owner).map(turn => ({ userRequest: turn.userText,

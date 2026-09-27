@@ -196,6 +196,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
   getAgentPageActions: (rendererTabId) => ipcRenderer.invoke('agent:page-actions', { rendererTabId }),
   clearAgentConversation: () => ipcRenderer.invoke('agent:clear-conversation'),
+  readAgentHelperReport: (conversationId, reportId, offset = 0) =>
+    ipcRenderer.invoke('agent:helper-reports', { conversationId, reportId, offset }),
   listAgentSessions: () => ipcRenderer.invoke('agent:history:list'),
   openAgentSession: (conversationId) =>
     ipcRenderer.invoke('agent:history:open', { conversationId }),

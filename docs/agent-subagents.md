@@ -55,7 +55,7 @@ use the same restricted, sanitized Markdown renderer as the main response, with
 no active HTML or remote images, and are identified as model-generated findings.
 The individual Stop control uses the composer’s square icon with an accessible label. A
 completed report does not imply a verified task result. Failed, stopped and
-limited helpers do not count as successful browser actions. Bounded reports and
+limited helpers do not count as successful browser actions. Compact report references and
 metadata are retained in the conversation's existing profile-local history.
 
 The helper uses the parent's current model connection and thinking setting.
@@ -204,12 +204,11 @@ Repeated input context contributes to this usage. On 2026-09-27 the user directe
 removal of helper-specific execution budgets; any future user-facing cost budget
 should cover the whole task consistently rather than silently stopping helpers.
 
-Transport/storage bounds remain: combined assignment input is capped at 48,000
+Transport bounds remain: combined assignment input is capped at 48,000
 characters, each follow-up at 8,000 characters, and pending follow-ups at the
-input-size bound. Reports are retained up to 12,000 characters with explicit
-truncation metadata; a longer response is shortened for storage without cancelling
-the helper. Messages wait until the current pass finishes and do not interrupt an
-in-flight model response. These bounds do not ration turns or cumulative usage.
+input-size bound. Completed report text is preserved in full; previews and retrieval
+pages bound transport rather than permanently truncating findings. Messages wait
+until the current pass finishes and do not interrupt an in-flight model response. These bounds do not ration turns or cumulative usage.
 
 Results distinguish running, completed, cancelled, limited admission and failed.
 Historical timed-out/limited receipts remain readable.
@@ -218,8 +217,35 @@ retry the assignment. Foreground reports are persisted when the call settles;
 background reports are persisted individually. Active task labels and running
 receipts are saved when delegation starts. After a crash, history preserves
 completed sibling reports and labels only unfinished tasks interrupted. No job is replayed
-on restart. Full child transcripts, resuming a child after restart and retrieval
-of old child reports through a dedicated model tool are not implemented.
+on restart. Full child transcripts and resuming a child after restart are not implemented.
+
+### Saved report retrieval (2026-09-27)
+
+Full helper reports live in `agent_helper_reports` inside the active profile's
+`agent-history.sqlite`. Activity JSON carries a report ID and a 600-character
+preview. Identical task/report versions are stored once; changed follow-up reports
+get immutable IDs, preserving earlier findings. Reports follow conversation
+retention and are removed with its history; there is no automatic expiry.
+
+The parent has a `helper_reports` tool: `list` searches titles and report text in
+this conversation (20 entries by default, maximum 50, paginated); `read` returns
+text using a report ID and Unicode character offset (8,000 characters by default,
+maximum 16,000). `nextOffset` retrieves the next page. This works in later turns,
+after context compaction and after reopening history without retaining a child
+session. Reports remain historical, untrusted model evidence; current files/pages
+must be rechecked before acting. Helpers cannot retrieve other helpers' history.
+
+Cards fetch the first page only when expanded, render restricted Markdown, and
+provide Show more for subsequent pages. The main process owns persistence and
+conversation scoping; the existing trusted chrome preload/IPC boundary serves
+bounded report pages. No new persistence system or process responsibility is added.
+Legacy inline reports migrate transactionally; an old truncation flag stays visible
+because already-lost text cannot be recovered. If report storage fails during a
+run, the original inline result is retained rather than silently discarding text.
+
+Smoke: delegate a review, then in a later turn ask “Find the helper's earlier
+review using saved reports and quote its final recommendation.” Reopen the chat
+and expand the card. A long report should offer Show more and retain its ending.
 
 ## Upstream inspiration
 
@@ -343,8 +369,9 @@ the conversation to check its saved status. Repeat Stop while a helper awaits a
 browser approval; its action must not execute later.
 
 The user accepted the helper-card UI, including the compact Markdown refinement.
-Next: existing-tab handoff smoke, then reassess readiness to merge the experiment.
-Existing-tab handoff is implemented (2026-09-27); its user smoke is pending. Broader writer concurrency,
+Existing-tab handoff passed the user smoke (2026-09-27).
+Next: saved-report retrieval smoke, then reassess readiness to merge the experiment.
+Broader writer concurrency,
 model/role selection, nested delegation, remote execution and optional Jev workers
 remain later work. No claim of complete provider/platform qualification.
 
@@ -362,3 +389,12 @@ lint and the disposable Electron browser-helper fixture passed. Coverage include
 exclusive transfer, busy-tab rejection, fresh observations, original-tab close
 protection, origin restrictions, retained declines, Stop/release races, closed tabs,
 follow-up scope failure cleanup and use of the same existing Electron page.
+
+
+Validation for saved reports: 424 targeted tests across eight suites, lint, and
+two disposable Electron checks passed. Real SQLite tests cover complete long
+reports, Unicode pagination, legacy migration, deduplication, follow-up versions,
+conversation isolation, reopening and deletion. Tool coverage checks lookup from
+a new parent context; card coverage checks lazy loading, additional pages, retries,
+and stale responses. Electron verifies persisted history and report rendering in
+both themes/layouts. Real-model retrieval smoke remains for user acceptance.

@@ -806,6 +806,21 @@ describe('Freedom agent IPC', () => {
     expect(ctx.service.stop).toHaveBeenCalledTimes(1);
   });
 
+  test('saved report reads require trusted chrome owning the exact conversation', async () => {
+    const ctx = register();
+    ctx.service.helperReports = jest.fn(() => ({ text: 'Report page', nextOffset: null }));
+    const start = await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    const read = ctx.ipcMain.handlers.get(IPC.AGENT_HELPER_REPORTS);
+    const payload = { conversationId: start.conversationId, reportId: 'report_' + 'a'.repeat(64), offset: 0 };
+    expect((await read({ sender: ctx.otherSender }, payload)).ok).toBe(false);
+    expect((await read({ sender: ctx.sender }, { ...payload, conversationId: 'another' })).ok).toBe(false);
+    expect((await read({ sender: ctx.sender }, { ...payload, reportId: '../file' })).ok).toBe(false);
+    expect((await read({ sender: ctx.sender }, { ...payload, offset: -1 })).ok).toBe(false);
+    expect(ctx.service.helperReports).not.toHaveBeenCalled();
+    expect(await read({ sender: ctx.sender }, payload)).toMatchObject({ ok: true, result: { text: 'Report page' } });
+    expect(ctx.service.helperReports).toHaveBeenCalledWith(start.conversationId, { action: 'read', reportId: payload.reportId, offset: 0, limit: 16000 });
+  });
+
   test('helper Stop requires the owning window, run and a valid task ID, never falling back to whole-run Stop', async () => {
     const ctx = register();
     await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });

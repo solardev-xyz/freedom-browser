@@ -1127,3 +1127,60 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
   expect(result.reports[1].browserActions).toContainEqual(expect.objectContaining({ operation: 'browser_click', status: 'failed' }));
   expect(result.stopped).toMatchObject({ mode: 'browser', state: 'cancelled', browserPending: true });
 });
+
+test('saved helper reports load on expansion and page through complete SQLite text', async ({ electronApp, window, ollamaServer, userDataDir }, testInfo) => {
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
+  await window.locator('#agent-ollama-url').fill(ollamaServer);
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await electronApp.evaluate(({ BrowserWindow, ipcMain }, { root, userDataDir }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const { AgentSessionHistoryStore } = require(root + '/src/main/agent/session-history-store');
+    const path = require('path'); const fs = require('fs');
+    const directory = path.join(userDataDir, 'report-fixture'); fs.mkdirSync(directory);
+    const store = new AgentSessionHistoryStore({ userDataDir: directory });
+    store.createSession({ conversationId: 'reports', title: 'Saved reports', approvalMode: 'every_interaction' });
+    store.startTurn({ conversationId: 'reports', runId: 'report-turn', userText: 'Review', approvalMode: 'every_interaction' });
+    const receipt = store.saveHelperReport('reports', 'report-turn', { taskId: 'delegate_' + 'f'.repeat(24), title: 'Accessibility review', state: 'completed',
+      report: '# Review findings\n\n**Keyboard access** needs review.\n\n' + 'Detailed supporting evidence. '.repeat(650) + '\n\n## Final recommendation\n\nUse semantic buttons. <img src=x onerror=alert(1)>' });
+    store.finishTurn({ conversationId: 'reports', runId: 'report-turn', status: 'completed', activity: [{ operation: 'delegate_task', subagent: receipt }] });
+    globalThis.helperReportReads = 0;
+    ipcMain.removeHandler('agent:helper-reports');
+    ipcMain.handle('agent:helper-reports', (_event, payload) => {
+      globalThis.helperReportReads++;
+      return { ok: true, result: store.helperReports(payload.conversationId, { action: 'read', reportId: payload.reportId, offset: payload.offset, limit: 16000 }) };
+    });
+    const host = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    for (const event of [
+      { type: 'run_started', conversationId: 'reports', userText: 'Review saved findings' },
+      { type: 'tool_started', toolCallId: 'helper', operation: 'delegate_task' },
+      { type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', subagent: receipt },
+      { type: 'run_finished', status: 'completed' },
+    ]) host.webContents.send('agent:event', { runId: 'report-turn', ...event });
+  }, { root: repositoryRoot, userDataDir });
+  const card = window.locator('.agent-subagent-report');
+  await expect(card).toBeVisible();
+  expect(await electronApp.evaluate(() => globalThis.helperReportReads)).toBe(0);
+  await card.locator('summary').click();
+  await expect(card.getByRole('button', { name: 'Show more', exact: true })).toBeVisible();
+  expect(await electronApp.evaluate(() => globalThis.helperReportReads)).toBe(1);
+  await expect(card.locator('.agent-helper-report-body')).not.toContainText('Final recommendation');
+  await card.getByRole('button', { name: 'Show more', exact: true }).click();
+  await expect(card.locator('.agent-helper-report-body h2')).toHaveText('Final recommendation');
+  await expect(card.locator('.agent-helper-report-body img')).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Show more', exact: true })).toBeHidden();
+  for (const layout of ['browser', 'agent']) {
+    if (layout === 'agent') await window.locator('[data-test="agent-first-toggle"]').click();
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
+      await card.locator('summary').scrollIntoViewIfNeeded();
+      expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await window.screenshot({ path: testInfo.outputPath(`saved-report-${layout}-${theme}.png`) });
+    }
+  }
+  expect(await electronApp.evaluate(() => globalThis.helperReportReads)).toBe(2);
+});

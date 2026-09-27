@@ -794,6 +794,17 @@ function registerFreedomAgentIpc(options = {}) {
     }
   };
 
+  const handleHelperReports = (event, payload) => trustedHistoryRequest(event, () => {
+    if (!owner || owner.sender !== event.sender || payload?.conversationId !== owner.conversationId) {
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Open this conversation before reading its helper reports.');
+    }
+    if (!/^report_[a-f0-9]{64}$/.test(payload?.reportId || '') ||
+        !Number.isSafeInteger(payload.offset) || payload.offset < 0) {
+      return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Choose a saved helper report and a valid text offset.');
+    }
+    return { ok: true, result: service.helperReports(owner.conversationId, { action: 'read', reportId: payload.reportId, offset: payload.offset, limit: 16000 }) };
+  });
+
   const handleHistoryList = (event) =>
     trustedHistoryRequest(event, () => ({ ok: true, sessions: service.listConversations() }));
 
@@ -1280,6 +1291,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_WALLET_REQUEST, handleAgentWalletRequest);
   ipcMain.handle(IPC.AGENT_GET_STATE, handleGetState);
   ipcMain.handle(IPC.AGENT_CLEAR_CONVERSATION, handleClearConversation);
+  ipcMain.handle(IPC.AGENT_HELPER_REPORTS, handleHelperReports);
   ipcMain.handle(IPC.AGENT_HISTORY_LIST, handleHistoryList);
   ipcMain.handle(IPC.AGENT_HISTORY_OPEN, handleHistoryOpen);
   ipcMain.handle(IPC.AGENT_HISTORY_RENAME, handleHistoryRename);
@@ -1321,6 +1333,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_GET_STATE);
     ipcMain.removeHandler?.(IPC.AGENT_PAGE_ACTIONS);
     ipcMain.removeHandler?.(IPC.AGENT_CLEAR_CONVERSATION);
+    ipcMain.removeHandler?.(IPC.AGENT_HELPER_REPORTS);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_LIST);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_RENAME);

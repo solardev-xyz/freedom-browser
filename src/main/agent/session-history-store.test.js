@@ -11,12 +11,12 @@ jest.mock('better-sqlite3', () =>
 
 const { AgentSessionHistoryStore, DB_FILE, normalizeActivity } = require('./session-history-store');
 
-test('retains bounded helper evidence without runtime objects or extra fields', () => {
+test('retains complete helper text without runtime objects or extra fields', () => {
   const [item] = normalizeActivity([{ operation: 'delegate_task', status: 'succeeded', subagent: {
     taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', toolCalls: 3,
     report: 'x'.repeat(13000), credential: 'not persisted', session: { live: true },
   } }]);
-  expect(item.subagent.report.length).toBe(12000);
+  expect(item.subagent.report.length).toBe(13000);
   expect(item.subagent.toolCalls).toBe(3);
   expect(item.subagent.credential).toBeUndefined();
   expect(item.subagent.session).toBeUndefined();
@@ -524,4 +524,71 @@ describe('AgentSessionHistoryStore', () => {
       })
     ).toThrow('supported approval mode');
   });
+});
+
+test('real SQLite stores complete reports once, migrates legacy text, and reads bounded conversation-scoped pages', () => {
+  const { DatabaseSync } = require('node:sqlite');
+  class SqliteAdapter {
+    constructor(filename) { this.db = new DatabaseSync(filename); }
+    exec(sql) { return this.db.exec(sql); }
+    prepare(sql) { return this.db.prepare(sql); }
+    close() { this.db.close(); }
+    pragma(sql, options = {}) {
+      const rows = this.db.prepare(`PRAGMA ${sql}`).all();
+      return options.simple ? Object.values(rows[0])[0] : rows;
+    }
+    transaction(fn) { return (...args) => {
+      this.db.exec('BEGIN');
+      try { const result = fn(...args); this.db.exec('COMMIT'); return result; }
+      catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    }; }
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-helper-reports-'));
+  let store = new AgentSessionHistoryStore({ userDataDir: dir, Database: SqliteAdapter, now: () => 1234 });
+  try {
+    for (const id of ['one', 'two']) {
+      store.createSession({ conversationId: id, title: id, approvalMode: 'every_interaction' });
+      store.startTurn({ conversationId: id, runId: `run_${id}`, userText: 'Review', approvalMode: 'every_interaction', startedAt: 100 });
+    }
+    const text = '😀important finding\n'.repeat(3000) + 'Final recommendation';
+    const value = { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: text };
+    const receipt = store.saveHelperReport('one', 'run_one', value);
+    expect(receipt.report.length).toBeLessThan(1000);
+    expect(receipt.reportTruncated).toBe(false);
+    expect(store.saveHelperReport('one', 'run_one', value).reportId).toBe(receipt.reportId);
+    store.finishTurn({ conversationId: 'one', runId: 'run_one', status: 'completed', activity: [{ operation: 'delegate_task', subagent: receipt }] });
+    expect(JSON.stringify(store.getSession('one')).length).toBeLessThan(3000);
+    expect(store.getDb().prepare('SELECT count(*) AS n FROM agent_helper_reports').get().n).toBe(1);
+    expect(store.helperReports('two', { action: 'read', reportId: receipt.reportId }).error).toMatch(/not found/);
+    expect(store.helperReports('two').reports).toEqual([]);
+    expect(store.helperReports('one', { query: 'Final recommendation' }).reports[0].reportId).toBe(receipt.reportId);
+    let restored = ''; let offset = 0;
+    do {
+      const page = store.helperReports('one', { action: 'read', reportId: receipt.reportId, offset, limit: 997 });
+      expect(Array.from(page.text).length).toBeLessThanOrEqual(997);
+      restored += page.text; offset = page.nextOffset;
+    } while (offset !== null);
+    expect(restored).toBe(text);
+    expect(() => store.helperReports('one', { action: 'read', reportId: receipt.reportId, limit: 20000 })).toThrow();
+    expect(() => store.helperReports('one', { offset: -1 })).toThrow();
+    const next = store.saveHelperReport('one', 'run_one', { ...value, report: 'Follow-up report' });
+    expect(next.reportId).not.toBe(receipt.reportId);
+    const listing = store.helperReports('one', { limit: 1 });
+    expect(listing.nextOffset).toBe(1);
+    expect(store.helperReports('one', { limit: 1, offset: 1 }).reports[0].reportId).not.toBe(listing.reports[0].reportId);
+    // Simulate legacy history before the schema upgrade.
+    const legacy = { ...value, report: 'legacy text', reportTruncated: true };
+    store.getDb().prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ?').run(JSON.stringify([{ operation: 'delegate_task', subagent: legacy }]), 'run_two');
+    store.getDb().pragma('user_version = 4'); store.close();
+    store = new AgentSessionHistoryStore({ userDataDir: dir, Database: SqliteAdapter });
+    const old = store.getSession('two').transcript[0].activity[0].subagent;
+    expect(old.reportId).toMatch(/^report_/);
+    expect(store.helperReports('two', { action: 'read', reportId: old.reportId })).toMatchObject({ text: 'legacy text', reportTruncated: true });
+    expect(store.helperReports('two').reports[0].createdAt).toBe(100);
+    expect(store.helperReports('one', { action: 'read', reportId: receipt.reportId, offset: Array.from(text).length - 20 }).text).toBe('Final recommendation');
+    expect(store.getDb().prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    store.deleteSession('one');
+    expect(store.helperReports('one').reports).toEqual([]);
+    expect(store.helperReports('two').reports).toHaveLength(1);
+  } finally { store.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

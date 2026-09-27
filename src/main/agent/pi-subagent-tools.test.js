@@ -452,12 +452,12 @@ test('more than twelve model responses and large streamed output still produce a
   expect((await f.run()).details.subagent).toMatchObject({ state: 'completed', report: 'Final report', totalTokens: 300012 });
 });
 
-test('shortens retained reports without cancelling, and handles missing reports and provider errors safely', async () => {
+test('preserves full reports when persistence is unavailable, and handles missing reports and provider errors safely', async () => {
   const f = fixture();
   f.session.prompt.mockImplementation(async () => f.report('x'.repeat(40000)));
   const large = (await f.run()).details.subagent;
-  expect(large).toMatchObject({ state: 'completed', reportTruncated: true });
-  expect(large.report).toHaveLength(12000);
+  expect(large).toMatchObject({ state: 'completed', reportTruncated: false });
+  expect(large.report).toHaveLength(40000);
   const empty = fixture();
   empty.session.prompt.mockResolvedValue(undefined);
   expect((await empty.run()).details.subagent.state).toBe('failed');
@@ -756,4 +756,37 @@ test('browser follow-ups get new tab scopes and retain cumulative evidence', asy
   expect(receipt.tabIds).toEqual(['tab_1', 'tab_2']);
   expect(scopes.every(scope => scope.release.mock.calls.length === 1)).toBe(true);
   f.owner.subagentAbortController.abort();
+});
+
+test('persists a complete report before emitting a preview, with paged lookup available to a later parent context', async () => {
+  const reportId = 'report_' + 'a'.repeat(64);
+  const full = 'Detailed findings\n'.repeat(3000) + 'Last finding';
+  const saveReport = jest.fn((_owner, receipt) => ({ ...receipt, reportId, reportChars: full.length, report: receipt.report.slice(0, 600) }));
+  const readReports = jest.fn((_owner, params) => params.action === 'list'
+    ? { reports: [{ reportId, title: 'Review' }], nextOffset: null }
+    : { reportId, text: full.slice(params.offset || 0, (params.offset || 0) + 8000), nextOffset: 8000 });
+  const f = fixture({ saveReport, readReports });
+  f.session.prompt.mockImplementation(async () => f.report(full));
+  const response = await f.run();
+  expect(saveReport.mock.calls[0][1].report).toBe(full);
+  expect(response.details.subagent.report).toHaveLength(600);
+  expect(response.content[0].text).not.toContain('Last finding');
+  expect(f.options.onResult.mock.calls.at(-1)[1].subagent.reportId).toBe(reportId);
+  // A new parent tool instance has no child sessions or in-context task records.
+  const later = fixture({ readReports });
+  const tool = later.tool.controlTools.find(tool => tool.name === 'helper_reports');
+  expect((await tool.execute('list', { action: 'list' })).details.reports[0].reportId).toBe(reportId);
+  expect((await tool.execute('read', { action: 'read', reportId })).details.text).toBe(full.slice(0, 8000));
+  expect(readReports.mock.calls.at(-1)[0]).toBe(later.owner);
+  later.owner.subagentAbortController.abort();
+  expect((await tool.execute('read', { action: 'read', reportId })).isError).toBe(true);
+  expect(readReports).toHaveBeenCalledTimes(2);
+});
+
+test('a report storage failure preserves findings instead of failing the job or silently truncating them', async () => {
+  const f = fixture({ saveReport: () => { throw new Error('disk unavailable'); } });
+  f.session.prompt.mockImplementation(async () => f.report('x'.repeat(40000)));
+  const response = await f.run();
+  expect(response.details.subagent).toMatchObject({ state: 'completed', reportTruncated: false });
+  expect(response.details.subagent.report).toHaveLength(40000);
 });

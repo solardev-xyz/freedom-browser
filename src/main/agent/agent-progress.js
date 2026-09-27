@@ -38,6 +38,11 @@ const WORKSPACE_OPERATIONS = Object.freeze({
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
 const OPERATION_PROGRESS = Object.freeze({
+  helper_reports: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Reading saved helper reports',
+    completed: 'Read saved helper reports',
+  },
   helper_task: {
     effect: ACTIVITY_EFFECTS.MANAGED,
     intent: 'Checking or messaging a helper',
@@ -1221,6 +1226,7 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
     .map((item) => normalizeWorkspaceReceipt(item?.workspace))
     .filter(Boolean);
   const nonBrowserObservations = new Set([
+    'helper_reports',
     SUBAGENT_TOOL_NAME,
     OPERATIONS.NODE_STATUS,
     OPERATIONS.NODE_REQUEST,
@@ -1644,6 +1650,10 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
         detail: `${summary.detail}.${helperEditNote || (receipts.some(receipt => receipt?.mode === 'browser') ? ' Model-generated findings.' : ' Read-only, model-generated findings.')}`,
         destinations, counts,
       });
+    }
+    if (succeeded.some(item => item.operation === 'helper_reports') && !failed.length) {
+      return Object.freeze({ kind: 'completed', verification: 'historical_report', tone: 'neutral',
+        headline: 'Read saved helper reports', detail: 'Freedom retrieved historical helper findings. They do not verify the current state of files or pages.', destinations, counts });
     }
     if (!items.length) {
       return Object.freeze({
