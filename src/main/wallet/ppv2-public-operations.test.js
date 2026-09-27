@@ -182,3 +182,17 @@ test('intent is durable before transport sees signed bytes and cannot be changed
   await operations.submit(operations.registration(registration()), options());
   expect(durableBeforeTransport).toBe(true);
 });
+
+test('native ragequit review exposes its full note amount and uses the public submission journal', async () => {
+  registered = false; // Publishing a viewing key is not a prerequisite for exit.
+  const prepared = Object.freeze({ kind: 'ppv2-native-ragequit', chainId: 11155111, from: wallet.address,
+    to: config.deployment.poolAddress, value: 0n, data: '0xabcd', amount: 10000n, fee: 0n,
+    commitment: `0x${'7'.padStart(64, '0')}`, proofVerified: true, chainStateVerified: false });
+  expect(() => operations.ragequit(Object.freeze({ ...prepared, value: 1n }))).toThrow();
+  expect(() => operations.ragequit(Object.freeze({ ...prepared, to: wallet.address }))).toThrow();
+  let review;
+  await operations.submit(operations.ragequit(prepared), options({ review: async (v) => { review = v; return true; } }));
+  expect(review).toMatchObject({ operation: 'ppv2-native-ragequit', amount: 10000n, noteCommitment: prepared.commitment,
+    protocolFee: 0n, chainStateVerified: false });
+  expect(sent[0].value).toBe(0n); expect((await operations.list())[0].intent.kind).toBe('ppv2-native-ragequit');
+});

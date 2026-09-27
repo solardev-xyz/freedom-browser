@@ -48,6 +48,12 @@ function createPPv2PublicOperations({ scope, configuration, provider }) {
         prepared.proofVerified !== true || prepared.chainStateVerified !== false || !Object.isFrozen(prepared)) throw refused();
     return issue(prepared, [prepared]);
   }
+  function ragequit(prepared) {
+    if (prepared?.kind !== 'ppv2-native-ragequit' || prepared.chainId !== 11155111 || prepared.value !== 0n ||
+        prepared.from?.toLowerCase() !== owner || prepared.to?.toLowerCase() !== configuration.deployment.poolAddress.toLowerCase() ||
+        prepared.proofVerified !== true || prepared.chainStateVerified !== false || !Object.isFrozen(prepared)) throw refused();
+    return issue(prepared, [prepared]);
+  }
   async function submit(prepared, { step = 0, signer, review, gasLimit, maxGasFee, reviewTimeoutMs = 120000 } = {}) {
     getPrivacyContext(handle);
     const plan = issued.get(prepared);
@@ -96,6 +102,7 @@ function createPPv2PublicOperations({ scope, configuration, provider }) {
               BigInt(actual.gasLimit) !== gasLimit || gasLimit * BigInt(actual.gasPrice ?? actual.maxFeePerGas) > maxGasFee ||
               Date.now() >= plan.expiresAt) throw refused();
           return review(Object.freeze({ ...request, intent, operation: tx.kind, step, steps: plan.txs.length,
+            amount: tx.amount ?? null, noteCommitment: tx.commitment ?? null,
             protocolFee: tx.fee ?? 0n, maxGasFee, proofVerified: tx.proofVerified === true, chainStateVerified: false }));
         } });
       plan.hashes[step] = result.hash;
@@ -105,7 +112,7 @@ function createPPv2PublicOperations({ scope, configuration, provider }) {
       throw error;
     } finally { busy = false; }
   }
-  return Object.freeze({ registration, deposit, submit,
+  return Object.freeze({ registration, deposit, ragequit, submit,
     list: () => network().listSubmissions(), observe: (hash) => network().reconcileSubmission(hash),
     resolve: (hash, policy) => network().resolveSubmission(hash, policy) });
 }

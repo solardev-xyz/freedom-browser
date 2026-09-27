@@ -42,7 +42,7 @@ Validation:
 - Packaged macOS arm64: **3 passed**, including executable preflight, deposit and lifecycle/process restart. Seven affected packaged wallet modules match source byte-for-byte.
 - Lint and whitespace checks pass. Application package/lock files are unchanged.
 
-See [the packaged report](qualification/ppv2-lifecycle-2026-09-27.json). Logs: `/private/tmp/ppv2-{handoff-unit,lifecycle-regression-approved,lifecycle-lint,lifecycle-build,lifecycle-electron,lifecycle-restart,lifecycle-packaged}.log`. Reproduce with the SDK ASAR from `scripts/spike-ppv2-process.js`, then run `test-e2e/ppv2-lifecycle.spec.js` in the harness/packaged projects. No live Sepolia transaction or Tor measurement was made by this fixture.
+See [the packaged report](qualification/ppv2-lifecycle-2026-09-27.json). Logs: `/private/tmp/ppv2-{handoff-unit,lifecycle-regression-approved,lifecycle-lint,lifecycle-build,lifecycle-electron,lifecycle-restart,lifecycle-packaged}.log`. The [subsequent native-exit continuation](ppv2-native-ragequit-2026-09-27.md) extends this fixture. Reproduce its current version with the SDK ASAR from `scripts/spike-ppv2-process.js` using `--exit-circuits`, then run `test-e2e/ppv2-lifecycle.spec.js` in the harness/packaged projects. No live Sepolia transaction or Tor measurement was made by this fixture.
 
 ## Remaining gates
 

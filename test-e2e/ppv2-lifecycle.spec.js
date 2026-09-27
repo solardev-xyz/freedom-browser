@@ -4,7 +4,7 @@ const artifact = process.env.FREEDOM_PP_V2_PROCESS_ASAR;
 test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery', async ({ electronApp, relaunchApp }, testInfo) => {
   test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the qualified Kohaku/SDK fixture');
   test.setTimeout(120000);
-  const exercise = async ({ app }, { artifact, restart }) => {
+  const exercise = async ({ app }, { artifact, restart, exit }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
     const fs = req('fs'), path = req('path');
     const { Interface, Wallet, Transaction } = req('ethers');
@@ -12,6 +12,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
     const rpc = req('./src/main/networks/private-rpc'), tor = req('./src/main/tor-manager');
     const { getPrivacyContext } = req('./src/main/networks/privacy-context');
     const { ARTIFACTS, DEPOSIT_ABI } = req('./src/main/wallet/ppv2-deposit-policy');
+    const { ARTIFACTS: EXIT_ARTIFACTS, RAGEQUIT_ABI } = req('./src/main/wallet/ppv2-ragequit-policy');
     const { REGISTRATION_ABI } = req('./src/main/wallet/ppv2-public-operations');
     const original = { gate: settings.isWalletTorExperimentAvailable, rpc: rpc.createPrivateRpc, tor: tor.getWalletSocksEndpoint };
     const productionGate = original.gate();
@@ -28,7 +29,8 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
       grant.selectors = interfaces[index].fragments.filter((f) => f.type === 'function').map((f) => f.selector);
       grant.eventTopics = [...new Set(interfaces[index].fragments.filter((f) => f.type === 'event').map((f) => f.topicHash))];
     });
-    const register = new Interface(REGISTRATION_ABI), depositABI = new Interface([DEPOSIT_ABI]);
+    const register = new Interface(REGISTRATION_ABI), depositABI = new Interface([DEPOSIT_ABI]), exitABI = new Interface([RAGEQUIT_ABI]);
+    const hashService = await sdk.PoseidonHashService.create();
     const receipts = new Map(), logs = [], sends = [], methods = new Set(), contexts = new Map();
     let head = 256, nonce = 0, auth = 0n, viewing = `0x${'00'.repeat(32)}`, lost = false, timestampAvailable = true;
     const statePath = path.join(app.getPath('userData'), 'ppv2-public-chain-fixture.json');
@@ -78,13 +80,23 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
                 const event = interfaces[2].encodeEventLog(interfaces[2].getEvent('AuthPolicySet'), [wallet.address, call.args[1], call.args[0]]);
                 logs.push({ address: config.deployment.keystoreAddress, ...event, blockNumber: quantity(head), blockHash,
                   transactionHash: tx.hash, logIndex: '0x0', transactionIndex: '0x0', removed: false });
+                const leaf = hashService.hash([config.ownerAddress, `0x${call.args[1].toString(16)}`, `0x${call.args[0].toString(16)}`]);
+                const inserted = interfaces[2].encodeEventLog(interfaces[2].getEvent('LeafInserted'), [BigInt(leaf), BigInt(leaf), 0n]);
+                logs.push({ address: config.deployment.keystoreAddress, ...inserted, blockNumber: quantity(head), blockHash,
+                  transactionHash: tx.hash, logIndex: '0x1', transactionIndex: '0x0', removed: false });
               } else viewing = call.args[0];
-            } else {
+            } else if (tx.to.toLowerCase() === config.deployment.entrypointAddress) {
               const decoded = depositABI.decodeFunctionData('deposit', tx.data);
               const event = interfaces[0].encodeEventLog(interfaces[0].getEvent('Note'), [decoded._noteData.hint, decoded._noteData.data]);
               logs.push({ address: config.deployment.poolAddress, ...event, blockNumber: quantity(head), blockHash,
                 transactionHash: tx.hash, logIndex: '0x0', transactionIndex: '0x0', removed: false });
-            }
+            } else if (tx.to.toLowerCase() === config.deployment.poolAddress) {
+              const signals = exitABI.decodeFunctionData('ragequit', tx.data)._proof.pubSignals;
+              const event = interfaces[0].encodeEventLog(interfaces[0].getEvent('Ragequit'),
+                [wallet.address, `0x${signals[5].toString(16).padStart(40, '0')}`, signals[4], signals[1], signals[0], signals[6]]);
+              logs.push({ address: config.deployment.poolAddress, ...event, blockNumber: quantity(head), blockHash,
+                transactionHash: tx.hash, logIndex: '0x0', transactionIndex: '0x0', removed: false });
+            } else throw new Error('Unexpected fixture transaction');
             if (lost) throw new Error('Controlled lost broadcast response');
           } else throw new Error('Unexpected RPC request');
           if (!validate(result)) throw new Error('Invalid controlled response');
@@ -93,7 +105,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
     };
     const directory = path.join(app.getPath('userData'), 'ppv2-lifecycle-vault');
     const artifactDir = fs.mkdtempSync(path.join(app.getPath('userData'), 'ppv2-lifecycle-artifacts-'));
-    for (const entry of ARTIFACTS) fs.writeFileSync(path.join(artifactDir, entry.name), fs.readFileSync(`${artifact}/artifacts/${entry.name}`));
+    for (const entry of [...ARTIFACTS, ...EXIT_ARTIFACTS]) fs.writeFileSync(path.join(artifactDir, entry.name), fs.readFileSync(`${artifact}/artifacts/${entry.name}`));
     let session, stage = 'open';
     try {
       if (!restart) await vault.importVault(directory, 'fixture-password', 'test test test test test test test test test test test junk');
@@ -101,7 +113,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
       const { PPV2_CANDIDATE, openPPv2Session } = req('./src/main/wallet/ppv2-session');
       const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin };
       const open = () => openPPv2Session({ candidate, configuration: config,
-        proving: { sdkEntry: `${artifact}/sdk.cjs`, directory: artifactDir } });
+        proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];
       const options = { signer: { getAddress: async () => wallet.address, signTransaction: (tx) => wallet.signTransaction(tx) },
         gasLimit: 1000000n, maxGasFee: 100000000n, review: async (request) => {
@@ -116,6 +128,19 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
         const rescan = await session.inspectNoteRecovery();
         const prepared = await session.prepareNativeDeposit({ amount: 10000n, maxFee: 100n });
         const blocked = await session.submitPublicOperation(prepared, options).then(() => null, (e) => e.code);
+        if (exit) {
+          stage = 'native ragequit';
+          await resolve(saved.depositHash);
+          const preparedExit = await session.prepareNativeRagequit(saved.commitment);
+          const result = await session.submitPublicOperation(preparedExit, options);
+          head += 3;
+          const afterExit = await session.notes();
+          return { kind: preparedExit.kind, amount: preparedExit.amount.toString(), value: preparedExit.value.toString(),
+            proofVerified: preparedExit.proofVerified, chainStateVerified: preparedExit.chainStateVerified,
+            commitmentBound: preparedExit.commitment === saved.commitment, ownerBound: preparedExit.from === config.ownerAddress,
+            poolBound: preparedExit.to === config.deployment.poolAddress, sent: sends.length, journalKind: (await session.listPublicSubmissions())[3].intent.kind,
+            observedStatus: afterExit[0]?.status, reviewed: reviews[0]?.operation, recordedHash: (await session.listPublicSubmissions())[3].hash === result.hash };
+        }
         return { recovered: notes.length === 1 && notes[0].commitment === saved.commitment,
           rescanRecovered: rescan.notes.length === 1 && rescan.notes[0].commitment === saved.commitment,
           journalRestored: journal.length === 3 && journal[2].hash === saved.depositHash && journal[2].state === 'attempted',
@@ -199,8 +224,14 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
   await electronApp.close();
   const restarted = await relaunchApp();
   report.processRestart = await restarted.evaluate(exercise, { artifact, restart: true });
+  await restarted.close();
+  const exiting = await relaunchApp();
+  report.nativeExit = await exiting.evaluate(exercise, { artifact, restart: true, exit: true });
   await testInfo.attach('ppv2-lifecycle-report', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
   expect(report.productionGate).toBe(false);
+  expect(report.nativeExit).toMatchObject({ kind: 'ppv2-native-ragequit', amount: '10000', value: '0', proofVerified: true,
+    chainStateVerified: false, commitmentBound: true, ownerBound: true, poolBound: true, sent: 1,
+    journalKind: 'ppv2-native-ragequit', observedStatus: 'exited', reviewed: 'ppv2-native-ragequit', recordedHash: true });
   expect(report.processRestart).toMatchObject({ recovered: true, rescanRecovered: true, journalRestored: true,
     blocked: 'PRIVATE_SUBMISSION_UNRESOLVED', sends: 0, productionGate: false });
   expect(report.blockedSecond).toBe('PRIVATE_SUBMISSION_UNRESOLVED');

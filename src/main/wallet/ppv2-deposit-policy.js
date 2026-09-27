@@ -16,14 +16,14 @@ function validWitness(value) {
     hex(value.tokenId, 1n << 160n) && hex(value.value, 1n << 128n) &&
     hex(value.context, 1n << 256n) && hex(value.noteAddressHash, FIELD) && hex(value.depositSecret, FIELD);
 }
-function validProof(value) {
+function validProof(value, publicSignalCount = 4) {
   if (!keys(value, ['proof', 'publicSignals']) || !keys(value.proof, ['pi_a', 'pi_b', 'pi_c', 'protocol', 'curve'])) return false;
   const { proof, publicSignals } = value;
   const vector = (row, length) => Array.isArray(row) && row.length === length && row.every((item) => hex(item, BASE_FIELD));
   return proof.protocol === 'groth16' && proof.curve === 'bn128' && vector(proof.pi_a, 3) && vector(proof.pi_c, 3) &&
     BigInt(proof.pi_a[2]) === 1n && BigInt(proof.pi_c[2]) === 1n && Array.isArray(proof.pi_b) && proof.pi_b.length === 3 &&
     proof.pi_b.every((row) => vector(row, 2)) && BigInt(proof.pi_b[2][0]) === 1n && BigInt(proof.pi_b[2][1]) === 0n &&
-    Array.isArray(publicSignals) && publicSignals.length === 4 && publicSignals.every((item) => hex(item, FIELD));
+    Array.isArray(publicSignals) && publicSignals.length === publicSignalCount && publicSignals.every((item) => hex(item, FIELD));
 }
 function formatProof({ proof, publicSignals }) {
   return { pA: proof.pi_a.slice(0, 2).map(BigInt), pB: proof.pi_b.slice(0, 2).map((row) => [BigInt(row[1]), BigInt(row[0])]),

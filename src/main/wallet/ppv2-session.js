@@ -12,6 +12,7 @@ const { createKohakuNetworkRouter } = require('../networks/kohaku-network-router
 const { createPPv2DepositProver } = require('./ppv2-deposit-prover');
 const { createPPv2PublicOperations } = require('./ppv2-public-operations');
 const { inspectPPv2NoteRecovery } = require('./ppv2-note-recovery');
+const { createPPv2RagequitProver } = require('./ppv2-ragequit-prover');
 const PPV2_CANDIDATE = Object.freeze({
   kohaku: '6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e',
   sdk: 'fe0244e3f14110efd83db02c60c96517dea9cd5a',
@@ -78,11 +79,21 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     const storage = await createPPv2Storage({ handle: handle('storage'), accountIndex, binding });
     const depositProver = proving ? createPPv2DepositProver({ handle: handle('prover'), artifactHandle: handle('artifacts'),
       sdkEntry: proving.sdkEntry, directory: proving.directory, onProgress: proving.onProgress, manifest: config.artifacts.manifest }) : null;
+    const ragequitProver = proving?.ragequitProverEntry ? createPPv2RagequitProver({ handle: handle('prover'), artifactHandle: handle('artifacts'),
+      sdkEntry: proving.sdkEntry, proverEntry: proving.ragequitProverEntry, directory: proving.directory,
+      onProgress: proving.onProgress, manifest: config.artifacts.manifest }) : null;
+    let proofKind = null;
+    const proofService = Object.freeze({ ...noProof, ...depositProver?.service, ...ragequitProver?.service,
+      formatForEVM: (proof) => {
+        if (proofKind === 'deposit') return depositProver.service.formatForEVM(proof);
+        if (proofKind === 'ragequit') return ragequitProver.service.formatForEVM(proof);
+        return proofUnavailable();
+      } });
     const host = Object.freeze({ provider, network, keystore, storage });
     const params = { chainId: 11155111n, ownerAddress: config.ownerAddress, accountIndex,
       deployment: config.deployment, deploymentBlock: `0x${config.deploymentBlock.toString(16)}`,
       asp: config.asp, relayers: config.relayers, artifacts: config.artifacts,
-      storeKey: 'controlled', revocableKeyGapLimit: 20, factories: { proofService: depositProver?.service || noProof } };
+      storeKey: 'controlled', revocableKeyGapLimit: 20, factories: { proofService } };
     const created = await scope.run(sessionHandle, () => createPlugin(host, params));
     getPrivacyContext(sessionHandle);
     plugin = created;
@@ -92,22 +103,32 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       if (busy) throw privacyError('PRIVATE_PPV2_BUSY', 'A PPv2 operation is already in progress');
       busy = true;
       try {
-        return await scope.run(sessionHandle, () => method === 'prepareNativeDeposit'
-          ? depositProver.prepare({ ...args[0], ownerAddress: config.ownerAddress, entrypointAddress: config.deployment.entrypointAddress },
-            () => plugin.prepareShield({ asset: { __type: 'native' }, amount: args[0].amount }))
-          : method === 'inspectNoteRecovery'
-            ? inspectPPv2NoteRecovery({ handle: sessionHandle, createPlugin, host, params, plugin })
-            : plugin[method](...args));
+        return await scope.run(sessionHandle, async () => {
+          if (method === 'prepareNativeDeposit') {
+            proofKind = 'deposit';
+            return depositProver.prepare({ ...args[0], ownerAddress: config.ownerAddress, entrypointAddress: config.deployment.entrypointAddress },
+              () => plugin.prepareShield({ asset: { __type: 'native' }, amount: args[0].amount }));
+          }
+          if (method === 'prepareNativeRagequit') {
+            const note = (await plugin.notes(undefined, true)).find((note) => note.commitment === args[0]);
+            if (!note || note.asset?.__type !== 'native' || ['spent', 'exited', 'exit_pending'].includes(note.status)) throw unavailable();
+            proofKind = 'ragequit';
+            return ragequitProver.prepare({ commitment: note.commitment, amount: note.value, ownerAddress: config.ownerAddress,
+              poolAddress: config.deployment.poolAddress }, () => plugin.prepareRageQuit(note.commitment));
+          }
+          if (method === 'inspectNoteRecovery') return inspectPPv2NoteRecovery({ handle: sessionHandle, createPlugin, host, params, plugin });
+          return plugin[method](...args);
+        });
       } catch {
         // Never forward SDK exceptions (URLs, notes, payloads or nested causes).
         getPrivacyContext(sessionHandle);
         throw privacyError('PRIVATE_PPV2_OPERATION_FAILED', 'Controlled PPv2 operation failed');
-      } finally { busy = false; }
+      } finally { busy = false; proofKind = null; }
     }
     return Object.freeze({
       close,
       descriptor: Object.freeze({ chainId: 11155111, accountIndex, experimental: true, verified: false,
-        candidate: PPV2_CANDIDATE, proving: !!depositProver, broadcasting: 'reviewed-public-only' }),
+        candidate: PPV2_CANDIDATE, proving: !!depositProver, exitProving: !!ragequitProver, broadcasting: 'reviewed-public-only' }),
       instanceId: () => call('instanceId'),
       isRegistered: () => call('isRegistered'),
       balance: () => call('balance', undefined),
@@ -115,6 +136,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       inspectNoteRecovery: () => call('inspectNoteRecovery'),
       prepareRegisterKeystore: async () => publicOperations.registration(await call('prepareRegisterKeystore')),
       ...(depositProver ? { prepareNativeDeposit: async ({ amount, maxFee }) => publicOperations.deposit(await call('prepareNativeDeposit', { amount, maxFee })) } : {}),
+      ...(ragequitProver ? { prepareNativeRagequit: async (commitment) => publicOperations.ragequit(await call('prepareNativeRagequit', commitment)) } : {}),
       submitPublicOperation: (prepared, options) => publicOperations.submit(prepared, options),
       listPublicSubmissions: () => publicOperations.list(),
       observePublicSubmission: (hash) => publicOperations.observe(hash),
