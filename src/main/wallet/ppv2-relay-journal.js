@@ -1,5 +1,5 @@
-/** Main-owned write-ahead relay ledger. A response is not settlement. No retry
- * or release API until canonical nullifier/receipt reconciliation is qualified. */
+/** Main-owned write-ahead relay ledger. A response is not settlement.
+ * Resolution retains history and requires explicitly reviewed chain evidence. */
 const path = require('path');
 const { createHmac } = require('crypto');
 const { mnemonicToSeedSync } = require('@scure/bip39');
@@ -16,6 +16,19 @@ const fields = ['id', 'intentDigest', 'endpointDigest', 'payloadDigest', 'commit
 function validAttempt(v) {
   return keys(v, fields) && fields.every((k) => typeof v[k] === 'string' && HASH.test(v[k]));
 }
+function validSettlement(v) {
+  return keys(v, ['pool', 'processor', 'outputCommitment', 'amountOut', 'noteDigest', 'fromBlock']) &&
+    [v.pool, v.processor].every((x) => typeof x === 'string' && /^0x[0-9a-f]{40}$/.test(x)) &&
+    [v.outputCommitment, v.noteDigest].every((x) => typeof x === 'string' && HASH.test(x)) &&
+    typeof v.amountOut === 'string' && /^[1-9][0-9]{0,38}$/.test(v.amountOut) &&
+    Number.isSafeInteger(v.fromBlock) && v.fromBlock >= 0;
+}
+function validObservation(v) {
+  return keys(v, ['status', 'transactionHash', 'blockHash', 'blockNumber', 'trust']) && v.trust === 'unverified-rpc' &&
+    ['included', 'unknown', 'conflict'].includes(v.status) && (v.status === 'included'
+      ? HASH.test(v.transactionHash) && HASH.test(v.blockHash) && Number.isSafeInteger(v.blockNumber) && v.blockNumber >= 0
+      : v.transactionHash === null && v.blockHash === null && v.blockNumber === null);
+}
 function createPPv2RelayJournal({ handle, directory, key }) {
   const { subject } = getPrivacyContext(handle);
   if (subject.kind !== 'private-account' || subject.role !== 'storage' || subject.protocol !== 'privacy-pools-v2' ||
@@ -26,19 +39,29 @@ function createPPv2RelayJournal({ handle, directory, key }) {
     if (value === null) return [];
     try {
       const data = JSON.parse(value);
-      if (!keys(data, ['version', 'records']) || data.version !== 1 || !Array.isArray(data.records) || data.records.length > 1) throw invalid();
+      if (!keys(data, ['version', 'records']) || data.version !== 1 || !Array.isArray(data.records) || data.records.length > 64) throw invalid();
       for (const record of data.records) {
-        if (!keys(record, [...fields, 'attemptedAt', 'acknowledgedHash']) ||
+        const extra = ['settlement', 'observation', 'resolution', 'revision'].filter((k) => Object.hasOwn(record, k));
+        if (!keys(record, [...fields, 'attemptedAt', 'acknowledgedHash', ...extra]) ||
             !validAttempt(Object.fromEntries(fields.map((k) => [k, record[k]]))) ||
             !Number.isSafeInteger(record.attemptedAt) || record.attemptedAt < 0 ||
             !(record.acknowledgedHash === null || (typeof record.acknowledgedHash === 'string' && HASH.test(record.acknowledgedHash)))) throw invalid();
+        if (record.settlement !== undefined && !validSettlement(record.settlement)) throw invalid();
+        if (record.revision !== undefined && (!Number.isSafeInteger(record.revision) || record.revision < 0)) throw invalid();
+        if (record.observation !== undefined && (!record.settlement || !Number.isSafeInteger(record.revision) || !validObservation(record.observation))) throw invalid();
+        if (record.resolution !== undefined && record.resolution !== null && (!keys(record.resolution, ['blockHash', 'reviewedAt']) ||
+            record.observation?.status !== 'included' || record.resolution.blockHash !== record.observation.blockHash ||
+            !Number.isSafeInteger(record.resolution.reviewedAt) || record.resolution.reviewedAt < 0)) throw invalid();
       }
+      if (new Set(data.records.map((r) => r.id)).size !== data.records.length ||
+          new Set(data.records.map((r) => r.nullifier)).size !== data.records.length ||
+          new Set(data.records.map((r) => r.commitment)).size !== data.records.length) throw invalid();
       return data.records;
     } catch { throw invalid(); }
   }
   async function list() {
     const value = await storage.get(KEY); getPrivacyContext(handle);
-    return Object.freeze(decode(value).map(Object.freeze));
+    return Object.freeze(decode(value).map((r) => { for (const k of ['settlement', 'observation', 'resolution']) if (r[k]) Object.freeze(r[k]); return Object.freeze(r); }));
   }
   return Object.freeze({
     assertScope(otherHandle) {
@@ -47,20 +70,44 @@ function createPPv2RelayJournal({ handle, directory, key }) {
       if (current.profileId !== other.profileId || current.generation !== other.generation || JSON.stringify(a) !== JSON.stringify(b)) throw invalid();
     },
     list,
-    async assertCanSubmit() { if ((await list()).length) throw blocked(); },
-    async begin(attempt) {
-      if (!validAttempt(attempt)) throw invalid();
-      const copy = { ...attempt };
+    async assertCanSubmit() { if ((await list()).some((r) => !r.resolution)) throw blocked(); },
+    async begin(attempt, settlement) {
+      if (!validAttempt(attempt) || (settlement !== undefined && !validSettlement(settlement))) throw invalid();
+      const copy = { ...attempt, ...(settlement ? { settlement: { ...settlement } } : {}) };
       await storage.update(KEY, (value) => {
-        if (decode(value).length) throw blocked();
-        return JSON.stringify({ version: 1, records: [{ ...copy, attemptedAt: Date.now(), acknowledgedHash: null }] });
+        const records = decode(value);
+        if (records.some((r) => !r.resolution || r.id === copy.id || r.nullifier === copy.nullifier || r.commitment === copy.commitment) || records.length >= 64) throw blocked();
+        return JSON.stringify({ version: 1, records: [...records, { ...copy, attemptedAt: Date.now(), acknowledgedHash: null }] });
       });
       getPrivacyContext(handle);
+    },
+    async observe(id, observation, revision) {
+      if (!validObservation(observation) || !Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) throw invalid();
+      const copy = { ...observation };
+      await storage.update(KEY, (value) => {
+        const records = decode(value), r = records.find((r) => r.id === id);
+        if (!r?.settlement || (r.revision || 0) !== revision) throw invalid();
+        if (copy.status !== 'included' || r.observation?.blockHash !== copy.blockHash ||
+            r.observation?.transactionHash !== copy.transactionHash) r.resolution = null;
+        r.observation = copy; r.revision = revision + 1;
+        return JSON.stringify({ version: 1, records });
+      });
+      return (await list()).find((r) => r.id === id);
+    },
+    async resolve(id, revision) {
+      if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) throw invalid();
+      await storage.update(KEY, (value) => {
+        const records = decode(value), r = records.find((r) => r.id === id);
+        if (!r?.settlement || r.revision !== revision || r.observation?.status !== 'included') throw invalid();
+        r.resolution = { blockHash: r.observation.blockHash, reviewedAt: Date.now() }; r.revision++;
+        return JSON.stringify({ version: 1, records });
+      });
+      return (await list()).find((r) => r.id === id);
     },
     async acknowledge(id, hash) {
       if (typeof hash !== 'string' || !HASH.test(hash)) throw invalid();
       await storage.update(KEY, (value) => {
-        const records = decode(value), record = records[0];
+        const records = decode(value), record = records.find((r) => r.id === id);
         if (!record || record.id !== id || (record.acknowledgedHash && record.acknowledgedHash !== hash)) throw invalid();
         record.acknowledgedHash = hash;
         return JSON.stringify({ version: 1, records });

@@ -167,3 +167,22 @@ test('corruption, wrong key and another account fail closed', async () => {
   fs.writeFileSync(path.join(directory, fs.readdirSync(directory)[0]), '{}');
   await expect(journal.assertCanSubmit()).rejects.toMatchObject({ code: 'PRIVATE_STORAGE_UNREADABLE' });
 });
+
+test('rechecks main-owned eligibility after review before durable intent or network', async () => {
+  const events = [];
+  gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal, network, verifyProof,
+    beforeBegin: async () => { events.push('recheck'); throw new Error('Evidence changed'); } });
+  const prepared = await gate.prepare(request);
+  await expect(gate.submit(prepared, { review: async () => { events.push('review'); return true; }, invoke })).rejects.toThrow();
+  expect(events).toEqual(['review', 'recheck']); expect(await journal.list()).toEqual([]);
+  expect(network.fetch).not.toHaveBeenCalled();
+});
+
+test('accepts the SDK native-asset checksum spelling while preserving exact reviewed bytes', async () => {
+  const payload = JSON.parse(request.body);
+  payload.signedFeeCommitment.asset = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+  request.body = JSON.stringify(payload);
+  const prepared = await gate.prepare(request);
+  await gate.submit(prepared, { review: async () => true, invoke });
+  expect(network.fetch.mock.calls[0][1].body).toBe(request.body);
+});

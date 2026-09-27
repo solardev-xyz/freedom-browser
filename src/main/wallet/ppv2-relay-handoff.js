@@ -4,7 +4,7 @@ const { getPrivacyContext, privacyError } = require('../networks/privacy-context
 const { validateRelay } = require('./ppv2-relay-policy');
 const refused = () => privacyError('PRIVATE_PPV2_RELAY_REFUSED', 'Relay handoff refused');
 const uncertain = () => privacyError('PRIVATE_PPV2_RELAY_UNCERTAIN', 'Relay outcome is uncertain; inspect the recorded attempt');
-function createPPv2RelayHandoff({ handle, journal, network, verifyProof }) {
+function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeBegin }) {
   const context = getPrivacyContext(handle), s = context.subject;
   if (s.kind !== 'private-account' || s.role !== 'relayer' || s.protocol !== 'privacy-pools-v2' ||
       s.deployment !== 'sepolia' || s.chainId !== 11155111 || s.operation !== null || typeof verifyProof !== 'function' ||
@@ -41,7 +41,8 @@ function createPPv2RelayHandoff({ handle, journal, network, verifyProof }) {
       plan.used = true;
       await journal.assertCanSubmit(); checkPlan();
       await reviewBeforeDeadline(plan.review, plan.summary, plan.expiresAt); checkPlan();
-      await journal.begin(plan.attempt);
+      if (beforeBegin) { await beforeBegin(); checkPlan(); }
+      await journal.begin(plan.attempt, plan.settlement);
       // Any failure after begin remains possibly submitted, including a crash
       // or lock just before fetch. No retry or release based on an HTTP error.
       try {
@@ -96,7 +97,7 @@ function createPPv2RelayHandoff({ handle, journal, network, verifyProof }) {
         const result = await invoke(sdkNetwork); check();
         if (!current.used || !current.acknowledged) throw refused();
         return result;
-      } catch { getPrivacyContext(handle); if (current.used && (await journal.list()).length) throw uncertain(); throw refused(); }
+      } catch { getPrivacyContext(handle); if (current.used && (await journal.list()).some((r) => r.id === current.attempt.id)) throw uncertain(); throw refused(); }
       finally { current.controller.abort(); active = null; busy = false; }
     },
   });

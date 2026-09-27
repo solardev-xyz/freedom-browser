@@ -89,7 +89,23 @@ async function main() {
     const patchHash = createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'fixtures/kohaku-ppv2-compat.patch'))).digest('hex');
     if (!previous.adapterTypecheck.passed || previous.sdkRevision !== revision || previous.compatibilityPatchSha256 !== patchHash ||
         previous.sdkEntrySha256 !== createHash('sha256').update(fs.readFileSync(sdkEntry)).digest('hex')) throw new Error('Rebuild reviewed compatibility fixtures');
-    await esbuild.build({ entryPoints: [path.join(fixtures, 'packages/privacy-pools/src/v2/plugin.ts')],
+    await esbuild.build({ stdin: { contents: `
+      export { createPPv2Plugin } from './plugin';
+      export { createPPv2Broadcaster } from './broadcaster';
+      import { deriveKeystoreManager } from './account/derivation';
+      import { CryptoService, PoseidonHashService, NoteComputationService } from '@0xbow-io/privacy-pools-v2-sdk';
+      export async function inspectChange(keystore, accountIndex, owner, noteData) {
+        if (noteData.length !== 1) throw new Error('Expected one change note');
+        const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });
+        const cryptoService = new CryptoService();
+        const notes = new NoteComputationService({ hashService: await PoseidonHashService.create(), cryptoService });
+        const data = noteData[0].data;
+        const secret = cryptoService.ecdh(keystoreManager.getViewingKeyPair().privateKey, data.slice(0,66));
+        const payload = notes.decodeNotePayload(cryptoService.decrypt('0x'+data.slice(66), secret));
+        const commitment = notes.computeFullCommitment({ noteAddressHash: notes.computeNoteAddressHash(owner, payload.noteSecret),
+          tokenId: payload.tokenId, value: payload.value, label: payload.label });
+        return { commitment, value: payload.value, tokenId: payload.tokenId };
+      }`, resolveDir: path.join(fixtures, 'packages/privacy-pools/src/v2'), loader: 'ts' },
       outfile: path.join(source, 'plugin.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node24',
       nodePaths: [path.join(checkout, 'packages/sdk/node_modules')],
       alias: { '@kohaku-eth/plugins': path.join(fixtures, 'packages/plugins/src/index.ts') },
