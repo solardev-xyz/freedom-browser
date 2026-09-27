@@ -3829,9 +3829,10 @@ describe('provider-aware orchestration guidance', () => {
       const settings = dependencies.createSession.mock.calls[0][0];
       expect(settings.model).toBe(model);
       expect(settings.customTools.map(tool => tool.name)).toEqual(expect.arrayContaining(['delegate_task', 'helper_task', 'helper_reports']));
-      expect(settings.systemPrompt).toContain('For each substantial task, consider independent subtasks');
+      expect(settings.systemPrompt).toContain('For each substantial task, identify independent subtasks');
       expect(settings.systemPrompt).toContain('Check important findings against sources or changed files');
       expect(settings.systemPrompt).toContain('handle simple requests directly');
+      expect(settings.systemPrompt).toContain('do not wait for the user to mention helpers');
       expect(settings.systemPrompt).not.toContain('private-endpoint');
       expect(settings.systemPrompt).not.toContain('private-credential');
       if (provider === 'ollama') {
@@ -3839,7 +3840,7 @@ describe('provider-aware orchestration guidance', () => {
         expect(settings.systemPrompt).toContain('Honor explicit user requests for helpers, including parallel helpers');
         expect(settings.systemPrompt).not.toContain('this conversation uses a hosted model connection');
       } else {
-        expect(settings.systemPrompt).toContain('Actively consider parallel helpers for substantial independent subtasks');
+        expect(settings.systemPrompt).toContain('use parallel helpers as the normal approach');
         expect(settings.systemPrompt).not.toContain('this conversation uses an Ollama connection');
       }
       fake.prompt.resolve();

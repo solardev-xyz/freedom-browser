@@ -436,11 +436,11 @@ surface a notice until a fresh observation of the same page. A normal new-tab
 operation does not warn merely because it was not followed by a second read.
 
 
-Delegation guidance (2026-09-27): the main Agent now considers decomposition and
-review as part of substantial tasks, delegates clear independent assignments,
+Delegation guidance (2026-09-27): the main Agent autonomously organizes substantial tasks, uses delegation as a
+normal workflow without asking users to request helpers, delegates clear independent assignments,
 and owns verification, integration and completion. Simple requests stay direct.
 The active supported provider selects scheduling guidance: hosted connections
-encourage useful parallel work; Ollama prefers direct work or a single foreground
+default to useful parallel work for independent workstreams; Ollama prefers direct work or a single foreground
 helper for focused context/review. This is a heuristic, not a hardware benchmark
 or concurrency restriction. Explicit requests for helpers, including parallel
 ones on Ollama, remain supported. No provider switching, new settings or capability
