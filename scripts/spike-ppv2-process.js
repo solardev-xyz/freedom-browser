@@ -100,6 +100,8 @@ async function main() {
     await esbuild.build({ entryPoints: [path.join(checkout, 'packages/sdk/src/constant/ContractInteractor.ts')],
       outfile: path.join(source, 'abis.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node24' });
     fs.copyFileSync(path.join(__dirname, '../test/helpers/ppv2-session-fixture.js'), path.join(source, 'configuration.cjs'));
+    await esbuild.build({ entryPoints: [path.join(fixtures, 'packages/privacy-pools/src/v2/adapters/http.adapter.ts')],
+      outfile: path.join(source, 'http.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node24' });
     sessionCandidate = { kohaku: previous.kohakuRevision, sdk: revision, patchSha256: patchHash };
     fs.writeFileSync(path.join(source, 'candidate.json'), JSON.stringify(sessionCandidate));
   }

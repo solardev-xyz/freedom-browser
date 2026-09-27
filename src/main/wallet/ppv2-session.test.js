@@ -11,6 +11,7 @@ const { createHash } = require('crypto');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { createPPv2Keystore } = require('../identity/ppv2-keys');
 const { createPPv2Storage } = require('./ppv2-storage');
+const { getPPv2RelayJournal } = require('./ppv2-relay-journal');
 const { PPV2_CANDIDATE, openPPv2Session } = require('./ppv2-session');
 const { resetPrivacySession } = require('./privacy-session');
 const { configuration } = require('../../../test/helpers/ppv2-session-fixture');
@@ -28,6 +29,21 @@ beforeEach(() => {
   candidate = { ...PPV2_CANDIDATE, createPlugin: jest.fn(async (h, p) => { host = h; params = p; return snapshot(); }) };
 });
 afterEach(() => { mockVault.abort(); scope.close(); resetPrivacySession(); });
+
+test('restores uncertain relays across sessions and refuses public sends while keeping recovery reads available', async () => {
+  const { relayFixture } = require('../../../test/helpers/ppv2-relay-fixture');
+  const { validateRelay } = require('./ppv2-relay-policy');
+  const journal = getPPv2RelayJournal(handle('storage'), 0);
+  await journal.begin(validateRelay(relayFixture()).attempt);
+  const session = await openPPv2Session({ candidate, configuration: config });
+  expect(await session.listRelayAttempts()).toHaveLength(1);
+  await expect(session.submitPublicOperation({}, {})).rejects.toMatchObject({ code: 'PRIVATE_PPV2_RELAY_UNRESOLVED' });
+  expect(await session.notes()).toEqual([]);
+  session.close();
+  const reopened = await openPPv2Session({ candidate, configuration: config });
+  await expect(reopened.submitPublicOperation({}, {})).rejects.toMatchObject({ code: 'PRIVATE_PPV2_RELAY_UNRESOLVED' });
+  expect(await reopened.listRelayAttempts()).toHaveLength(1);
+});
 
 test('dedicated signer refuses wallet, Ant, other account and stale-vault derivation', async () => {
   const keys = createPPv2Keystore(handle('keystore'), 0);

@@ -39,9 +39,9 @@ exports.run = async function run(input, { progress }) {
     const aspLeaves = [noteComputationService.computeLabelHash(label)];
     witness = await witnessService.buildTransactWitness({ inputNotes: [note], changeNotes: [change], recipientNotes: [],
       ownerAddress, privateNullifyingKey, privateRevocableKey, tokenId, amountOut: '0x1770', tokenIdOut: tokenId,
-      context: '0x1234', stateLeaves, keystoreLeaves, aspLeaves });
+      context: input.relayContext || '0x1234', stateLeaves, keystoreLeaves, aspLeaves });
     expected = [nullifier, change.commitment, await merkleService.computeRoot(stateLeaves),
-      await merkleService.computeRoot(keystoreLeaves), await merkleService.computeRoot(aspLeaves), '0x1770', tokenId, '0x1234'];
+      await merkleService.computeRoot(keystoreLeaves), await merkleService.computeRoot(aspLeaves), '0x1770', tokenId, input.relayContext || '0x1234'];
   }
   const artifact = async (name, kind) => { assert.equal(name, input.circuit); return input.artifacts[kind]; };
   const prover = input.singleThread ? require('./serial-prover.cjs') : new sdk.Groth16Prover();
@@ -63,6 +63,7 @@ exports.run = async function run(input, { progress }) {
   altered.publicSignals[valueIndex] = `0x${(BigInt(altered.publicSignals[valueIndex]) + 1n).toString(16)}`;
   assert.equal(await verify(altered), false);
   return { circuit: input.circuit, prover: input.singleThread ? 'single-thread' : 'sdk-default', verified: true, publicSignalsBound: true, tamperedAmountRejected: true,
+    ...(input.relayContext ? { publicFixture: { proof, commitment } } : {}),
     publicSignalCount: proof.publicSignals.length, provingMs, rssBytes: process.memoryUsage().rss,
     fromAsar: __filename.includes('.asar/'), sdkFromAsar: input.sdkEntry.includes('.asar/'),
     node: process.versions.node, electron: process.versions.electron };

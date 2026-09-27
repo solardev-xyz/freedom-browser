@@ -13,6 +13,7 @@ const { createPPv2DepositProver } = require('./ppv2-deposit-prover');
 const { createPPv2PublicOperations } = require('./ppv2-public-operations');
 const { inspectPPv2NoteRecovery } = require('./ppv2-note-recovery');
 const { createPPv2RagequitProver } = require('./ppv2-ragequit-prover');
+const { getPPv2RelayJournal } = require('./ppv2-relay-journal');
 const PPV2_CANDIDATE = Object.freeze({
   kohaku: '6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e',
   sdk: 'fe0244e3f14110efd83db02c60c96517dea9cd5a',
@@ -70,6 +71,8 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
   active.set(lease, scope);
   const close = () => scope.close();
   try {
+    const relayJournal = getPPv2RelayJournal(handle('storage'), accountIndex);
+    await relayJournal.list(); // Corrupt/foreign state must not look like no attempts.
     const provider = createKohakuProvider({ handle: handle('protocol-rpc'), contracts: config.contracts });
     const network = createKohakuNetworkRouter(config.networks.map(({ role, endpoints }) => ({ handle: handle(role), endpoints })));
     const keystore = createPPv2Keystore(handle('keystore'), accountIndex);
@@ -137,7 +140,14 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       prepareRegisterKeystore: async () => publicOperations.registration(await call('prepareRegisterKeystore')),
       ...(depositProver ? { prepareNativeDeposit: async ({ amount, maxFee }) => publicOperations.deposit(await call('prepareNativeDeposit', { amount, maxFee })) } : {}),
       ...(ragequitProver ? { prepareNativeRagequit: async (commitment) => publicOperations.ragequit(await call('prepareNativeRagequit', commitment)) } : {}),
-      submitPublicOperation: (prepared, options) => publicOperations.submit(prepared, options),
+      submitPublicOperation: async (prepared, options) => {
+        getPrivacyContext(sessionHandle);
+        if (busy) throw privacyError('PRIVATE_PPV2_BUSY', 'A PPv2 operation is already in progress');
+        busy = true;
+        try { await relayJournal.assertCanSubmit(); getPrivacyContext(sessionHandle); return await publicOperations.submit(prepared, options); }
+        finally { busy = false; }
+      },
+      listRelayAttempts: () => relayJournal.list(),
       listPublicSubmissions: () => publicOperations.list(),
       observePublicSubmission: (hash) => publicOperations.observe(hash),
       resolvePublicSubmission: (hash, policy) => publicOperations.resolve(hash, policy),
