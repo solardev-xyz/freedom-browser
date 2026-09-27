@@ -298,6 +298,8 @@ const ERROR_LABELS = Object.freeze({
   [ERROR_CODES.ELEMENT_NOT_FOUND]: 'The page element is no longer available.',
   [ERROR_CODES.ELEMENT_NOT_INTERACTABLE]: 'The page element could not be used.',
   [ERROR_CODES.APPROVAL_REQUIRED]: 'This action still needs approval.',
+  [ERROR_CODES.OBSERVATION_REQUIRED]: 'A fresh page observation is needed before this action.',
+  [ERROR_CODES.TAB_BUSY]: 'A helper is currently using this tab.',
   [ERROR_CODES.POLICY_DENIED]: 'Freedom blocked this browser action.',
   [ERROR_CODES.USER_CANCELLED]: 'The browser action was not applied.',
   [ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER]: 'The user cancelled file selection.',
@@ -322,6 +324,8 @@ const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
   ERROR_CODES.ELEMENT_NOT_FOUND,
   ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
   ERROR_CODES.APPROVAL_REQUIRED,
+  ERROR_CODES.OBSERVATION_REQUIRED,
+  ERROR_CODES.TAB_BUSY,
   ERROR_CODES.POLICY_DENIED,
   ERROR_CODES.USER_CANCELLED,
   ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER,
@@ -1306,8 +1310,9 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
     approvals,
   });
   const browserActionCopy = `${browserSucceeded.length} successful browser ${browserSucceeded.length === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
-  const recoveryNote = counts.failed
-    ? ` Agent recovered from ${counts.failed} failed browser ${counts.failed === 1 ? 'action' : 'actions'}.`
+  const browserFailures = failed.filter(item => !nonBrowserObservations.has(item.operation)).length;
+  const recoveryNote = browserFailures
+    ? ` ${browserFailures} browser ${browserFailures === 1 ? 'action did' : 'actions did'} not complete successfully.`
     : '';
   const approvalNote = approvals.approved
     ? ` ${approvals.approved} browser ${approvals.approved === 1 ? 'action was' : 'actions were'} approved by the user.`

@@ -10,6 +10,10 @@ const step = (action, instruction, extra = {}) => Object.freeze({ action, instru
 // Main-owned guidance only. Never interpret page content, error prose or a model's
 // proposed fix as authority to grant permissions or replay a consequential action.
 function recoveryForToolError(code, operation) {
+  if (code === 'OBSERVATION_REQUIRED') return step('refresh_state',
+    'This action was not run. Follow the observation tool named in the error on the same tab: browser_snapshot for semantic controls, browser_list_frames and browser_read_frame for embedded controls, browser_screenshot and browser_target_point for visual targets, or browser_list_page_tools for website tools. Use the newly returned references and continue the authorized task. No new user permission is needed.');
+  if (code === 'TAB_BUSY') return step('refresh_state',
+    'A helper owns this tab temporarily. Wait for its report with helper_task, or work on another task-owned tab. Once returned, observe it again before acting. Do not take control while the helper is active.');
   if (code === 'WORKSPACE_WRITER_BUSY') return step('refresh_state', 'Wait for the editing helper report and pending project operations to finish, then inspect current files before continuing. Do not start a competing writer or shell command.');
   if (code === 'DELEGATED_PATH_DENIED') return step('stop', 'Return to the parent to revise the explicit file assignment. The helper cannot broaden its own scope or bypass it with other tools.');
   if (code === 'WORKSPACE_CHANGED_DURING_VALIDATION') return step('refresh_state',

@@ -1021,7 +1021,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
 
 test('browser helpers use separate real pages with approval, handoff and Stop', async ({ electronApp, window, harness }) => {
   await expect(window.locator('body')).toBeVisible();
-  const urls = ['parent', 'approved', 'declined', 'stopped'].map(name => `https://helper-browser.test/${name}`);
+  const urls = ['parent', 'approved', 'declined', 'stopped', 'next-turn'].map(name => `https://helper-browser.test/${name}`);
   for (const url of urls) await harness.setContentFixture(url, { body: `<!doctype html><title>Helper fixture</title>
     <button onclick="globalThis.clicks++;document.querySelector('output').textContent=globalThis.clicks">Increment</button>
     <output>0</output><script>globalThis.clicks=0</script>` });
@@ -1097,9 +1097,19 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
       const requiredFresh = await scoped.execute('browser_click', { tabId: parentTab, ref: 'old_ref' });
       const handedBack = await scoped.execute('browser_snapshot', { tabId: parentTab });
       const existingPagePreserved = originalPage === pages.get(parentTab).content.id;
+      // Reproduce a new user turn opening and reading a page after delegation.
+      await scoped.prepareResume();
+      const parentTools = await createFreedomBrowserTools({ sdk, controller: scoped, tabId: parentTab });
+      const parentTool = name => parentTools.find(tool => tool.name === name);
+      const nextPage = await parentTool('browser_create_tab').execute('next-open', { url: urls[4] });
+      const nextRead = await parentTool('browser_snapshot').execute('next-read', {});
+      const staleParent = await parentTool('browser_click').execute('stale-parent', { tabId: parentTab, ref: 'old_ref', intent: 'Increment' })
+        .then(() => null, error => ({ code: error.code, recovery: error.recovery }));
       const counts = {};
       for (const { content } of pages.values()) counts[content.getURL()] = await content.executeJavaScript('globalThis.clicks');
-      return { delegatedExisting, requiredFresh: requiredFresh.error?.message, handedBack: handedBack.ok, existingPagePreserved, parentRead: parentRead.ok, individuallyStopped, parentStillActive, deniedParentReads, reports, stopped, counts,
+      return { nextPage: nextPage.details.envelope.ok, nextRead: nextRead.details.envelope.ok,
+        nextElements: nextRead.details.envelope.result?.elements, staleParent,
+        delegatedExisting, requiredFresh: requiredFresh.error?.message, handedBack: handedBack.ok, existingPagePreserved, parentRead: parentRead.ok, individuallyStopped, parentStillActive, deniedParentReads, reports, stopped, counts,
         returnedTabs: returned.result.tabs.length, activeUnchanged: scoped.getActiveTabId() === parentTab,
         approvals: approvals.length, remainingOwners: scoped.delegatedBrowsers.size };
     } finally {
@@ -1116,7 +1126,12 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
   expect(result.requiredFresh).toContain('fresh browser_snapshot');
   expect(result.handedBack).toBe(true);
   expect(result.existingPagePreserved).toBe(true);
-  expect(result.counts).toEqual({ [urls[0]]: 1, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0 });
+  expect(result.nextPage).toBe(true);
+  expect(result.nextRead).toBe(true);
+  expect(result.nextElements).toContainEqual(expect.objectContaining({ name: 'Increment' }));
+  expect(result.staleParent.code).toBe('OBSERVATION_REQUIRED');
+  expect(result.staleParent.recovery.action).toBe('refresh_state');
+  expect(result.counts).toEqual({ [urls[0]]: 1, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0, [urls[4]]: 0 });
   expect(result.returnedTabs).toBe(3);
   expect(result.activeUnchanged).toBe(false); // Keep the other available parent tab selected after the lease.
   expect(result.approvals).toBe(4);

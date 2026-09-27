@@ -2962,6 +2962,8 @@ function formatToolError(code, operation) {
     ELEMENT_NOT_FOUND: 'Page element is no longer available',
     ELEMENT_NOT_INTERACTABLE: 'Page element could not be used',
     APPROVAL_REQUIRED: 'Approval is still required',
+    OBSERVATION_REQUIRED: 'Agent needs to refresh its view of this page',
+    TAB_BUSY: 'A helper is currently using this tab',
     POLICY_DENIED: 'Blocked by Freedom policy',
     USER_CANCELLED: 'Not applied',
     FILE_UPLOAD_CANCELLED_BY_USER: 'File selection cancelled by you',

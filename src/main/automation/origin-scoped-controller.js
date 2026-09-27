@@ -196,11 +196,10 @@ class OriginScopedAutomationController {
     this.declinedActions = new Set();
     this.diagnosticGrant = false;
     this.declinedDiagnostics = new Set();
-    this.resumeObservation = null;
     this.externalApprovalBarriers = new Set();
     this.delegatedBrowsers = new Set();
     this.pendingTabOperations = new Map();
-    this.observationRequired = new Set();
+    this.freshReferences = new Map();
   }
 
   setApprovalMode(value) {
@@ -216,12 +215,11 @@ class OriginScopedAutomationController {
   async prepareResume() {
     const state = await this.#readActiveState();
     if (!state) {
-      this.resumeObservation = 'create_tab';
       return { ok: true, activeTabId: null, workspaceEmpty: true };
     }
     if (!state.ok) return state;
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
-    this.resumeObservation = 'get_tab';
+    for (const tabId of this.ownedTabs.keys()) this.freshReferences.set(tabId, new Set());
     return { ok: true, activeTabId: this.activeTabId, workspaceEmpty: false };
   }
 
@@ -246,7 +244,7 @@ class OriginScopedAutomationController {
     for (const child of this.delegatedBrowsers) if (child.releaseTab(tabId)) return true;
     if (typeof tabId !== 'string' || !this.ownedTabs.has(tabId)) return false;
     this.ownedTabs.delete(tabId);
-    this.observationRequired.delete(tabId);
+    this.freshReferences.delete(tabId);
     if (this.activeTabId === tabId) this.activeTabId = this.#fallbackTabId();
     return true;
   }
@@ -324,9 +322,9 @@ class OriginScopedAutomationController {
     child.declinedActions = this.declinedActions;
     for (const id of assignedTabIds) {
       child.ownedTabs.set(id, this.ownedTabs.get(id));
-      child.observationRequired.add(id);
+      child.freshReferences.set(id, new Set());
       this.ownedTabs.delete(id);
-      this.observationRequired.delete(id);
+      this.freshReferences.delete(id);
       tabIds.add(id);
     }
     child.activeTabId = assignedTabIds[0] || null;
@@ -342,7 +340,7 @@ class OriginScopedAutomationController {
       if (!closed || pending) return;
       for (const [tabId, metadata] of child.ownedTabs) {
         this.ownedTabs.set(tabId, metadata);
-        if (assignedTabIds.includes(tabId)) this.observationRequired.add(tabId);
+        this.freshReferences.set(tabId, new Set());
       }
       if (!this.activeTabId) this.activeTabId = this.#fallbackTabId();
       child.ownedTabs.clear();
@@ -386,7 +384,7 @@ class OriginScopedAutomationController {
 
   // Called only by Freedom's preview controller consumers, after they resolve a
   // conversation-owned preview. This is not a model-facing browser operation.
-  // Opening a known preview needs no old page references; preserve the resume
+  // Opening a known preview needs no old page references; preserve the
   // observation barrier for subsequent page interactions instead of clearing it.
   async openWorkspacePreview(url) {
     if (
@@ -402,43 +400,43 @@ class OriginScopedAutomationController {
     const listed = await this.execute(OPERATIONS.LIST_TABS, {});
     if (!listed?.ok) return listed;
     const existing = listed.result.tabs.find((tab) => tab.url === url);
-    const needsObservation = Boolean(this.resumeObservation);
     let opened;
     if (existing?.tabId) {
-      const focused = await this.#execute(OPERATIONS.FOCUS_TAB, { tabId: existing.tabId }, {}, true);
+      const focused = await this.#execute(OPERATIONS.FOCUS_TAB, { tabId: existing.tabId });
       if (!focused?.ok) return focused;
-      opened = await this.#execute(OPERATIONS.NAVIGATE, { tabId: existing.tabId, url }, {}, true);
+      opened = await this.#execute(OPERATIONS.NAVIGATE, { tabId: existing.tabId, url });
     } else {
       opened = await this.#execute(
         OPERATIONS.CREATE_TAB,
         {
           url,
           ...(listed.result.activeTabId && { tabId: listed.result.activeTabId }),
-        },
-        {},
-        true
+        }
       );
     }
-    if (needsObservation) this.resumeObservation = 'get_tab';
     if (opened?.ok) {
       opened.result = { ...opened.result, activeTabId: this.activeTabId };
     }
     return opened;
   }
 
-  async #execute(operation, input = {}, execution = {}, previewNavigation = false) {
+  async #execute(operation, input = {}, execution = {}) {
     if (DELEGATED_BROWSER_OPERATIONS.has(operation) && typeof input?.tabId === 'string' && !this.ownedTabs.has(input.tabId)) {
       if (!this.ownedTabs.size && !this.delegatedBrowsers.size) return errorEnvelope(this.lastState, ERROR_CODES.CAPABILITY_UNAVAILABLE,
         'No task tab remains. Create a fresh task tab before using this browser tool.', { retryable: true });
+      if ([...this.delegatedBrowsers].some(child => child.ownedTabs.has(input.tabId))) {
+        return errorEnvelope(this.lastState, ERROR_CODES.TAB_BUSY,
+          'A helper currently controls this tab. Wait for its result or use another task-owned tab; after handoff, observe the page again.', { retryable: true });
+      }
       return errorEnvelope(this.lastState, ERROR_CODES.POLICY_DENIED,
-        'This task does not currently control that tab. Wait for its helper to finish, or list task tabs and choose an available one.');
+        'This tab is outside this task. Use browser_list_tabs to choose a task-owned tab.');
     }
     // Include approval/classification waits, not only the final page dispatch.
     // This prevents an in-flight parent action from racing a tab handoff.
     const tabs = operation === OPERATIONS.LIST_TABS ? [...this.ownedTabs.keys()]
       : this.ownedTabs.has(input?.tabId) ? [input.tabId] : [];
     for (const id of tabs) this.pendingTabOperations.set(id, (this.pendingTabOperations.get(id) || 0) + 1);
-    try { return await this.#executeScoped(operation, input, execution, previewNavigation); }
+    try { return await this.#executeScoped(operation, input, execution); }
     finally {
       for (const id of tabs) {
         const remaining = this.pendingTabOperations.get(id) - 1;
@@ -447,7 +445,7 @@ class OriginScopedAutomationController {
     }
   }
 
-  async #executeScoped(operation, input = {}, execution = {}, previewNavigation = false) {
+  async #executeScoped(operation, input = {}, execution = {}) {
     await this.#awaitExternalApprovalBarrier();
     if (!ORIGIN_SCOPED_OPERATIONS.has(operation)) {
       return errorEnvelope(
@@ -514,7 +512,7 @@ class OriginScopedAutomationController {
     }
     if (operation === OPERATIONS.CREATE_TAB) {
       // Creating a tab from an explicit URL does not depend on observed page
-      // content. Keep the resume barrier for page actions; ownership and URL
+      // content. Require fresh references for page actions; ownership and URL
       // checks still run in #createOwnedTab.
       return this.#createOwnedTab(input);
     }
@@ -539,7 +537,6 @@ class OriginScopedAutomationController {
     if (operation === OPERATIONS.GET_TAB) {
       if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
       this.activeTabId = input.tabId;
-      if (this.resumeObservation === 'get_tab') this.resumeObservation = 'snapshot';
       return state;
     }
     // Cancellation authority must survive an unexpected redirect so Freedom
@@ -558,27 +555,31 @@ class OriginScopedAutomationController {
       const result = await this.#executeController(operation, input, execution);
       if (result?.ok) {
         this.ownedTabs.delete(input.tabId);
+        this.freshReferences.delete(input.tabId);
         if (this.activeTabId === input.tabId) this.activeTabId = this.#fallbackTabId();
         result.result.activeTabId = this.activeTabId;
       }
       return result;
     }
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
-    if (this.observationRequired.has(input.tabId) &&
-        ![OPERATIONS.SNAPSHOT, OPERATIONS.FOCUS_TAB, OPERATIONS.GET_DIALOG, OPERATIONS.HANDLE_DIALOG].includes(operation)) {
-      return errorEnvelope(state, ERROR_CODES.POLICY_DENIED,
-        'Tab ownership changed. Take a fresh browser_snapshot of this tab before acting; do not reuse earlier page references.');
-    }
-
-    if (this.resumeObservation && !previewNavigation) {
-      if (![OPERATIONS.GET_DIALOG, OPERATIONS.HANDLE_DIALOG].includes(operation) &&
-          (operation !== OPERATIONS.SNAPSHOT || this.resumeObservation !== 'snapshot')) {
-        return errorEnvelope(
-          state,
-          ERROR_CODES.POLICY_DENIED,
-          'After resume, get the current tab and take a fresh snapshot before acting'
-        );
-      }
+    // Fresh observations are always permitted. Only references from before a
+    // user turn or ownership handoff need refreshing, independently for each tab.
+    const fresh = this.freshReferences.get(input.tabId);
+    const reference = operation === OPERATIONS.CALL_PAGE_TOOL ? input.toolRef
+      : operation === OPERATIONS.TARGET_POINT ? input.captureRef : input.ref;
+    if (fresh && (PAGE_INTERACTION_OPERATIONS.has(operation) ||
+        [OPERATIONS.CALL_PAGE_TOOL, OPERATIONS.TARGET_POINT].includes(operation)) &&
+        typeof reference === 'string' && !fresh.has(reference)) {
+      const instruction = operation === OPERATIONS.CALL_PAGE_TOOL
+        ? 'Call browser_list_page_tools on this tab and use a newly returned toolRef.'
+        : operation === OPERATIONS.TARGET_POINT || reference.startsWith('visual_')
+          ? 'Take a fresh browser_screenshot of this tab, then use browser_target_point with its captureRef.'
+          : reference.startsWith('frame_element_')
+            ? 'Call browser_list_frames then browser_read_frame on this tab and use newly returned element references.'
+            : 'Take a fresh browser_snapshot of this tab and use newly returned element references.';
+      return errorEnvelope(state, ERROR_CODES.OBSERVATION_REQUIRED,
+        `${instruction} The action was not run. Continue the authorized task after refreshing; no new permission is needed.`,
+        { retryable: true });
     }
 
     const requestedUrl =
@@ -677,10 +678,7 @@ class OriginScopedAutomationController {
     }
 
     if (operation === OPERATIONS.READ_FRAME) {
-      return this.#executeController(operation, input, {
-        ...execution,
-        authorizeFrame: (frame) => this.#acceptRequestedOrigin(frame?.origin),
-      });
+      execution.authorizeFrame = (frame) => this.#acceptRequestedOrigin(frame?.origin);
     }
 
     if (PAGE_INTERACTION_OPERATIONS.has(operation) || operation === OPERATIONS.NAVIGATE) {
@@ -712,11 +710,18 @@ class OriginScopedAutomationController {
       await new Promise((resolve) => setTimeout(resolve, TRUSTED_INPUT_EFFECT_SETTLE_MS));
       await this.#awaitExternalApprovalBarrier();
     }
-    if (result?.ok && operation === OPERATIONS.SNAPSHOT) {
-      this.resumeObservation = null;
-      this.observationRequired.delete(input.tabId);
+    if (result?.ok && fresh) {
+      const refs = [];
+      if ([OPERATIONS.SNAPSHOT, OPERATIONS.READ_FRAME].includes(operation)) {
+        refs.push(...(result.result?.elements || []).map(element => element.ref),
+          ...(result.result?.frames || []).map(frame => frame.viewport?.ref));
+      } else if (operation === OPERATIONS.SCREENSHOT) refs.push(result.result?.captureRef);
+      else if (operation === OPERATIONS.TARGET_POINT) refs.push(result.result?.ref);
+      else if (operation === OPERATIONS.LIST_PAGE_TOOLS) refs.push(...(result.result?.tools || []).map(tool => tool.toolRef));
+      for (const ref of refs) if (typeof ref === 'string' && ref) fresh.add(ref);
     }
     if (result?.ok && operation === OPERATIONS.NAVIGATE) {
+      fresh?.clear();
       const navigatedState = await this.#readState(input.tabId);
       if (!navigatedState.ok) return navigatedState;
       if (!this.#acceptCurrentOrigin(navigatedState)) {
@@ -730,7 +735,7 @@ class OriginScopedAutomationController {
     for (const child of this.delegatedBrowsers) child.handleTabLifecycle(event);
     if (event?.type !== 'tab_closed' || typeof event.tabId !== 'string') return;
     this.ownedTabs.delete(event.tabId);
-    this.observationRequired.delete(event.tabId);
+    this.freshReferences.delete(event.tabId);
     if (this.activeTabId === event.tabId) this.activeTabId = this.#fallbackTabId();
   }
 
@@ -760,6 +765,7 @@ class OriginScopedAutomationController {
       const state = await this.#readState(tabId);
       if (state?.ok || state?.error?.code !== ERROR_CODES.TAB_NOT_FOUND) return state;
       this.ownedTabs.delete(tabId);
+      this.freshReferences.delete(tabId);
       this.activeTabId = this.#fallbackTabId();
     }
     return null;
@@ -778,6 +784,7 @@ class OriginScopedAutomationController {
       if (!state?.ok) {
         if (state?.error?.code === ERROR_CODES.TAB_NOT_FOUND) {
           this.ownedTabs.delete(tabId);
+          this.freshReferences.delete(tabId);
           if (this.activeTabId === tabId) this.activeTabId = this.#fallbackTabId();
           continue;
         }
@@ -828,9 +835,9 @@ class OriginScopedAutomationController {
         return this.#originDenied(openerState);
       }
       this.ownedTabs.set(createdTabId, { created: true });
+      this.freshReferences.set(createdTabId, new Set());
       this.#notifyWorkspaceTabCreated(createdTabId);
       this.activeTabId = createdTabId;
-      if (this.resumeObservation === 'create_tab') this.resumeObservation = 'snapshot';
       result.result.activeTabId = createdTabId;
     }
     return result;
@@ -846,7 +853,6 @@ class OriginScopedAutomationController {
       );
     }
     if (!this.#acceptRequestedOrigin(url)) return this.#originDenied(this.lastState);
-    const resumingEmptyWorkspace = this.resumeObservation === 'create_tab';
     let createdTabId;
     try {
       createdTabId = await this.createWorkspacePage(url);
@@ -875,9 +881,9 @@ class OriginScopedAutomationController {
       return this.#originDenied(state);
     }
     this.ownedTabs.set(createdTabId, { created: true });
+    this.freshReferences.set(createdTabId, new Set());
     this.#notifyWorkspaceTabCreated(createdTabId);
     this.activeTabId = createdTabId;
-    if (resumingEmptyWorkspace) this.resumeObservation = 'snapshot';
     return {
       ...state,
       result: { tab: state.result.tab, activeTabId: createdTabId },

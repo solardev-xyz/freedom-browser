@@ -87,3 +87,16 @@ test('untyped cancellation from an upstream tool instructs stopping', async () =
   const tool = withToolErrorRecovery({ name: 'read', execute: async () => { throw new Error('Operation aborted'); } });
   await expect(tool.execute('id', {}, controller.signal)).rejects.toMatchObject({ code: 'ABORT_ERR', recovery: { action: 'stop' } });
 });
+
+test.each(['browser_click', 'browser_call_page_tool', 'browser_target_point'])('freshness errors recover without user approval or replaying an action (%s)', async operation => {
+  const tool = withToolErrorRecovery({ name: operation, execute: async () => {
+    throw Object.assign(new Error('Take a fresh browser_snapshot of this tab. The action was not run.'), { code: 'OBSERVATION_REQUIRED' });
+  } });
+  await expect(tool.execute()).rejects.toMatchObject({ recovery: { action: 'refresh_state', instruction: expect.stringContaining('No new user permission') } });
+  expect(recoveryForToolError('POLICY_DENIED', operation).action).toBe('stop');
+  expect(recoveryForToolError('USER_CANCELLED', operation).action).toBe('stop');
+});
+
+test('temporarily delegated tabs recover by waiting, without taking control from a helper', () => {
+  expect(recoveryForToolError('TAB_BUSY', 'browser_snapshot')).toMatchObject({ action: 'refresh_state', instruction: expect.stringContaining('Wait for its report') });
+});

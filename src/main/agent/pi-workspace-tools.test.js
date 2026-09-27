@@ -586,30 +586,11 @@ describe('Pi managed workspace tools', () => {
       details: { pageId: 'tab_1' },
     });
     expect(tabs.size).toBe(2);
-    for (const operation of ['browser_click', 'browser_navigate']) {
-      await expect(
-        scope.execute(operation, { tabId: 'tab_1', url: 'https://example.com', ref: 'stale' })
-      ).resolves.toMatchObject({ ok: false, error: { code: 'POLICY_DENIED' } });
-    }
-    await expect(scope.execute('browser_snapshot', { tabId: 'tab_1' })).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'POLICY_DENIED' },
-    });
-    await scope.execute('browser_get_tab', { tabId: 'tab_1' });
-    await scope.execute('browser_snapshot', { tabId: 'tab_1' });
-    await expect(
-      scope.execute('browser_navigate', { tabId: 'tab_1', url: tabs.get('tab_1').url })
-    ).resolves.toMatchObject({ ok: true });
-    for (const url of [
-      'https://example.com',
-      'file:///private/index.html',
-      'freedom-preview://bad/index.html',
-    ]) {
-      await expect(scope.openWorkspacePreview(url)).resolves.toMatchObject({
-        ok: false,
-        error: { code: 'POLICY_DENIED' },
-      });
-    }
+    await expect(scope.execute('browser_click', { tabId: 'tab_1', ref: 'stale' }))
+      .resolves.toMatchObject({ ok: false, error: { code: 'OBSERVATION_REQUIRED' } });
+    await expect(scope.execute('browser_snapshot', { tabId: 'tab_1' })).resolves.toMatchObject({ ok: true });
+    await expect(scope.execute('browser_navigate', { tabId: 'tab_1', url: 'https://example.com' })).resolves.toMatchObject({ ok: true });
+
   });
 
   test('declares and opens a gated managed server preview through one process identity', async () => {

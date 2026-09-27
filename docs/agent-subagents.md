@@ -133,11 +133,21 @@ empty until a tab returns. Handoff does not displace another active parent tab.
 Stop preserves tabs and earlier effects for review, stops loading, and holds the
 reservation until already-started operations and loading cleanup settle. Late
 created tabs are registered and handed back too. The parent should list tabs and
-read fresh observations before acting. Assigned tabs require a fresh snapshot
-both on entry to the helper and on return to the parent. Existing original-user-tab
+read fresh observations before acting. Tabs require newly observed references
+both on entry to the helper and on return to the parent. Observations can be
+snapshots, frame reads, screenshots/visual targets or website-tool discovery;
+reading a page never requires a preceding `browser_get_tab`. Existing original-user-tab
 close protection, origin restrictions and declined-action memory survive handoff.
 User-released or closed tabs are never reclaimed. Loading cleanup checks current
 ownership before dispatch.
+
+Resuming a user turn resets observation freshness separately for each owned tab.
+Opening or navigating to an explicit URL remains available, followed directly by
+a read. Reading one tab cannot refresh another tab's references. A stale action
+returns retryable `OBSERVATION_REQUIRED` with the appropriate observation tool;
+a helper-owned tab returns `TAB_BUSY` with wait/use-another-tab guidance. Neither
+is a permission refusal. Origin restrictions, action approvals and cancellation
+remain enforced. Activity summaries report failed actions without assuming recovery.
 
 A resumed completed helper reacquires its original explicit tab assignment only
 if those tabs are still available; otherwise it reports the blocker and disposes
@@ -407,3 +417,11 @@ before writing, within the same transaction, and closes a failed connection so
 retry cannot skip migration. An Electron regression covers 205 legacy turns,
 mid-migration failure, full rollback, retry, report preservation and reopening.
 Validation: 10 history tests, lint and three Electron checks passed.
+
+Validation for resumed browsing: 570 targeted unit tests across eight suites, lint,
+and the isolated Electron browser-helper regression pass. Coverage includes
+per-tab freshness, semantic/frame/visual/page-tool observations, stale references,
+failed reads, approvals, ownership, Stop, and opening/reading a new page on the
+next user turn after delegation. Manual smoke: open a random Wikipedia article,
+delegate its summary, then ask to open and summarize another random article;
+reading the second page should not require another user message.

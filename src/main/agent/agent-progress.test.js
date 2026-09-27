@@ -1478,3 +1478,12 @@ test('saved report retrieval is historical evidence, not a browser observation',
   expect(item.label).toBe('Read saved helper reports');
   expect(buildAgentOutcome([item], 'completed')).toMatchObject({ verification: 'historical_report', tone: 'neutral' });
 });
+
+test('does not claim recovery when opening a page succeeds but its final read fails', () => {
+  const result = buildAgentOutcome([
+    { operation: OPERATIONS.CREATE_TAB, status: 'succeeded', effect: 'changed', pageId: 'new_tab', origin: 'https://en.wikipedia.org' },
+    { operation: OPERATIONS.SNAPSHOT, status: 'failed', effect: 'observed', pageId: 'new_tab', errorCode: 'OBSERVATION_REQUIRED' },
+  ], 'completed');
+  expect(result.detail).not.toContain('recovered');
+  expect(result.detail).toContain('1 browser action did not complete successfully');
+});

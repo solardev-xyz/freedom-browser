@@ -637,7 +637,7 @@ describe('OriginScopedAutomationController', () => {
       execute: jest.fn(async (operation, input) => {
         if (operation === OPERATIONS.GET_TAB) return { ok: true, result: { tab: tabs.get(input.tabId) } };
         if (operation === OPERATIONS.CREATE_TAB) return { ok: true, result: { tab: tabs.get(create(input.url)) } };
-        return { ok: true, result: {} };
+        return { ok: true, result: { elements: [{ ref: 'fresh_ref' }] } };
       }),
     };
     const scoped = await createOriginScopedAutomationController({
@@ -654,12 +654,11 @@ describe('OriginScopedAutomationController', () => {
     expect(tabs.size).toBe(existingTab ? 6 : 5);
     const tabId = scoped.getActiveTabId();
     await expect(scoped.execute(OPERATIONS.CLICK, { tabId, ref: 'stale_ref' }))
-      .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+      .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.OBSERVATION_REQUIRED } });
     await expect(scoped.execute(OPERATIONS.CREATE_TAB, { tabId: 'unrelated', url: 'https://example.test' }))
       .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
     await expect(scoped.execute(OPERATIONS.CREATE_TAB, { tabId, url: 'file:///private/secret' }))
       .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
-    await scoped.execute(OPERATIONS.GET_TAB, { tabId });
     await expect(scoped.execute(OPERATIONS.SNAPSHOT, { tabId })).resolves.toMatchObject({ ok: true });
     await expect(scoped.execute(OPERATIONS.CLICK, { tabId, ref: 'fresh_ref' })).resolves.toMatchObject({ ok: true });
   });
@@ -677,7 +676,7 @@ describe('OriginScopedAutomationController', () => {
     for (const origin of ['null', '', 'file:///private/secret', 'freedom://settings']) expect(authorize({ origin })).toBe(false);
     await scoped.prepareResume();
     for (const operation of [OPERATIONS.LIST_FRAMES, OPERATIONS.READ_FRAME]) {
-      expect(await scoped.execute(operation, { tabId: 'tab_assigned', frameRef })).toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+      expect(await scoped.execute(operation, { tabId: 'tab_assigned', frameRef })).toMatchObject({ ok: true });
     }
     await scoped.execute(OPERATIONS.GET_TAB, { tabId: 'tab_assigned' });
     await scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' });
@@ -687,63 +686,32 @@ describe('OriginScopedAutomationController', () => {
   test('scroll cannot bypass task ownership or the fresh observation requirement after resume', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned' });
-    const input = { ref: 'ref_viewport', direction: 'down' };
+    const input = { ref: 'ref_submit', direction: 'down' };
     expect(await scoped.execute(OPERATIONS.SCROLL, { tabId: 'tab_other', ...input }))
       .toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
     await scoped.prepareResume();
     expect(await scoped.execute(OPERATIONS.SCROLL, { tabId: 'tab_assigned', ...input }))
-      .toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+      .toMatchObject({ ok: false, error: { code: ERROR_CODES.OBSERVATION_REQUIRED } });
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.SCROLL, expect.anything());
     await scoped.execute(OPERATIONS.GET_TAB, { tabId: 'tab_assigned' });
     await scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' });
     expect(await scoped.execute(OPERATIONS.SCROLL, { tabId: 'tab_assigned', ...input })).toMatchObject({ ok: true });
   });
 
-  test('requires a fresh tab read and snapshot before acting after resume', async () => {
+  test('accepts direct snapshots after resume while refusing earlier action references', async () => {
     const controller = createController();
-    const scoped = await createOriginScopedAutomationController({
-      controller,
-      tabId: 'tab_assigned',
-    });
-
-    await expect(scoped.prepareResume()).resolves.toMatchObject({
-      ok: true,
-      activeTabId: 'tab_assigned',
-      workspaceEmpty: false,
-    });
-    await expect(
-      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_button' })
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: ERROR_CODES.POLICY_DENIED },
-    });
-    await expect(
-      scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' })
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: ERROR_CODES.POLICY_DENIED },
-    });
-    await expect(
-      scoped.execute(OPERATIONS.GET_TAB, { tabId: 'tab_assigned' })
-    ).resolves.toMatchObject({ ok: true });
-    await expect(
-      scoped.execute(OPERATIONS.SCREENSHOT, { tabId: 'tab_assigned' })
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: ERROR_CODES.POLICY_DENIED },
-    });
-    await expect(
-      scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' })
-    ).resolves.toMatchObject({ ok: true });
-    await expect(
-      scoped.execute(OPERATIONS.SCREENSHOT, { tabId: 'tab_assigned' })
-    ).resolves.toMatchObject({ ok: true });
-    await expect(
-      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_button' })
-    ).resolves.toMatchObject({ ok: true });
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned' });
+    await expect(scoped.prepareResume()).resolves.toMatchObject({ ok: true, activeTabId: 'tab_assigned', workspaceEmpty: false });
+    await expect(scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_old' }))
+      .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.OBSERVATION_REQUIRED, retryable: true } });
+    await expect(scoped.execute(OPERATIONS.SCREENSHOT, { tabId: 'tab_assigned' })).resolves.toMatchObject({ ok: true });
+    await expect(scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' })).resolves.toMatchObject({ ok: true });
+    await expect(scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_old' }))
+      .resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.OBSERVATION_REQUIRED } });
+    await expect(scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })).resolves.toMatchObject({ ok: true });
   });
 
-  test('preview opening preserves ownership and cannot grant a general resume bypass', async () => {
+  test('explicit navigation and previews need no prior observation but preserve ownership', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
@@ -759,10 +727,7 @@ describe('OriginScopedAutomationController', () => {
         },
         { previewNavigation: true }
       )
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: ERROR_CODES.POLICY_DENIED },
-    });
+    ).resolves.toMatchObject({ ok: true });
     const url = `freedom-preview://${'a'.repeat(40)}/index.html`;
     await expect(scoped.openWorkspacePreview(url)).resolves.toMatchObject({ ok: true });
     expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CREATE_TAB, {
@@ -774,7 +739,7 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
     await expect(
       scoped.execute(OPERATIONS.NAVIGATE, { tabId: 'tab_created', url })
-    ).resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    ).resolves.toMatchObject({ ok: true });
   });
 
   test('prepares resume after a cross-origin human navigation inside the workspace', async () => {
@@ -1689,7 +1654,7 @@ describe('delegated browser ownership', () => {
         if (operation === OPERATIONS.GET_TAB) return pages.has(input.tabId)
           ? { ok: true, tabId: input.tabId, result: { tab: { tabId: input.tabId, url: pages.get(input.tabId) } } }
           : { ok: false, error: { code: ERROR_CODES.TAB_NOT_FOUND } };
-        return { ok: true, result: {} };
+        return { ok: true, result: { elements: [{ ref: 'fresh_ref' }, { ref: 'ref_save' }], tools: [{ toolRef: 'tool_save' }] } };
       }),
       inspectAction: jest.fn(async () => ({ ok: true, result: { effect: 'form_submission', label: 'Save' } })),
     };
@@ -1711,7 +1676,8 @@ describe('delegated browser ownership', () => {
     expect(a.controller.getActiveTabId()).toBe(tabId);
     expect((await f.root.execute(OPERATIONS.LIST_TABS)).result.tabs.map(tab => tab.tabId)).toEqual(['tab_parent']);
     expect((await b.controller.execute(OPERATIONS.LIST_TABS)).result.tabs).toEqual([]);
-    for (const scope of [f.root, b.controller]) expect((await scope.execute(OPERATIONS.SNAPSHOT, { tabId })).ok).toBe(false);
+    expect((await f.root.execute(OPERATIONS.SNAPSHOT, { tabId })).error).toMatchObject({ code: 'TAB_BUSY', retryable: true });
+    expect((await b.controller.execute(OPERATIONS.SNAPSHOT, { tabId })).ok).toBe(false);
     expect((await a.controller.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_parent' })).ok).toBe(false);
     expect(f.root.getWorkspaceState().tabIds).toContain(tabId);
     expect(f.root.getTabController(tabId)).not.toBe(f.root);
@@ -1880,11 +1846,73 @@ describe('delegated browser ownership', () => {
     f.controller.inspectAction.mockResolvedValue({ ok: true, result: { toolRef: 'tool_save', name: 'Save', url: 'https://child.example', arguments: {} } });
     f.root.setApprovalMode(AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS);
     expect(f.root.getTabController(tabId).approvalMode).toBe(AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS);
+    await helper.controller.execute(OPERATIONS.LIST_PAGE_TOOLS, { tabId });
     const result = await helper.controller.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId, toolRef: 'tool_save', arguments: {} });
     expect(result.error.code).toBe(ERROR_CODES.USER_CANCELLED);
     expect(request).toHaveBeenCalledWith(expect.objectContaining({ pageTool: expect.objectContaining({ name: 'Save' }) }));
     expect(f.controller.execute.mock.calls.some(([op]) => op === OPERATIONS.CALL_PAGE_TOOL)).toBe(false);
     f.root.handleTabLifecycle({ type: 'tab_closed', tabId }); helper.release();
     expect(f.root.getWorkspaceState().tabIds).not.toContain(tabId);
+  });
+});
+
+describe('fresh observations across turns and handoffs', () => {
+  async function setup() {
+    const controller = createController();
+    const root = await createOriginScopedAutomationController({ controller, tabId: 'tab_assigned' });
+    await root.execute(OPERATIONS.CREATE_TAB, { tabId: 'tab_assigned', url: 'https://second.example' });
+    await root.prepareResume();
+    return { controller, root };
+  }
+  test('reading a new tab neither needs get_tab nor refreshes another tab or an older reference', async () => {
+    const { root } = await setup();
+    expect((await root.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_created' })).ok).toBe(true);
+    expect((await root.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })).error.code).toBe('OBSERVATION_REQUIRED');
+    await root.execute(OPERATIONS.GET_TAB, { tabId: 'tab_assigned' });
+    expect((await root.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })).error.code).toBe('OBSERVATION_REQUIRED');
+    await root.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' });
+    expect((await root.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })).ok).toBe(true);
+    expect((await root.execute(OPERATIONS.CLICK, { tabId: 'tab_created', ref: 'earlier_ref' })).error.code).toBe('OBSERVATION_REQUIRED');
+    await root.execute(OPERATIONS.NAVIGATE, { tabId: 'tab_created', url: 'https://second.example/next' });
+    expect((await root.execute(OPERATIONS.CLICK, { tabId: 'tab_created', ref: 'ref_submit' })).error.code).toBe('OBSERVATION_REQUIRED');
+  });
+  test('frame, visual and website-tool observations authorize only their returned references', async () => {
+    const { root, controller } = await setup();
+    const original = controller.execute.getMockImplementation();
+    controller.execute.mockImplementation(async (op, input, execution) => {
+      const data = {
+        [OPERATIONS.READ_FRAME]: { elements: [{ ref: 'frame_element_new' }], frames: [{ viewport: { ref: 'frame_element_viewport' } }] },
+        [OPERATIONS.SCREENSHOT]: { captureRef: 'capture_new' },
+        [OPERATIONS.TARGET_POINT]: { ref: 'visual_new' },
+        [OPERATIONS.LIST_PAGE_TOOLS]: { tools: [{ toolRef: 'tool_new' }] },
+      };
+      return data[op] ? { ok: true, result: data[op] } : original(op, input, execution);
+    });
+    controller.inspectAction.mockResolvedValue({ ok: true, result: { label: 'Frame control', frameRef: 'frame_observed', origin: 'https://embedded.example' } });
+    const tabId = 'tab_assigned';
+    await root.execute(OPERATIONS.READ_FRAME, { tabId, frameRef: 'frame_observed' });
+    expect((await root.execute(OPERATIONS.CLICK, { tabId, ref: 'frame_element_new' })).ok).toBe(true);
+    expect((await root.execute(OPERATIONS.SCROLL, { tabId, ref: 'frame_element_viewport', direction: 'down' })).ok).toBe(true);
+    expect((await root.execute(OPERATIONS.CLICK, { tabId, ref: 'ref_submit' })).error.code).toBe('OBSERVATION_REQUIRED');
+    expect((await root.execute(OPERATIONS.TARGET_POINT, { tabId, captureRef: 'capture_old' })).error.code).toBe('OBSERVATION_REQUIRED');
+    await root.execute(OPERATIONS.SCREENSHOT, { tabId });
+    await root.execute(OPERATIONS.TARGET_POINT, { tabId, captureRef: 'capture_new' });
+    expect((await root.execute(OPERATIONS.CLICK, { tabId, ref: 'visual_old' })).error.code).toBe('OBSERVATION_REQUIRED');
+    root.setApprovalMode(AGENT_APPROVAL_MODES.EVERY_INTERACTION);
+    // Visual effects still need their normal approval; observation grants no action approval.
+    expect((await root.execute(OPERATIONS.CLICK, { tabId, ref: 'visual_new' })).error.code).toBe('APPROVAL_REQUIRED');
+    expect((await root.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId, toolRef: 'tool_new' })).error.code).toBe('OBSERVATION_REQUIRED');
+    controller.inspectAction.mockResolvedValue({ ok: true, result: { name: 'Save', url: 'https://trusted.example', arguments: {} } });
+    await root.execute(OPERATIONS.LIST_PAGE_TOOLS, { tabId });
+    expect((await root.execute(OPERATIONS.CALL_PAGE_TOOL, { tabId, toolRef: 'tool_new' })).error.code).toBe('APPROVAL_REQUIRED');
+  });
+  test('failed reads do not refresh references, and forbidden origins remain forbidden', async () => {
+    const { root, controller } = await setup();
+    const original = controller.execute.getMockImplementation();
+    controller.execute.mockImplementation((op, input, execution) => op === OPERATIONS.SNAPSHOT
+      ? { ok: false, error: { code: 'WAIT_TIMEOUT' }, result: { elements: [{ ref: 'ref_submit' }] } } : original(op, input, execution));
+    await root.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' });
+    expect((await root.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })).error.code).toBe('OBSERVATION_REQUIRED');
+    expect((await root.execute(OPERATIONS.NAVIGATE, { tabId: 'tab_assigned', url: 'file:///private/file' })).error.code).toBe('POLICY_DENIED');
   });
 });
