@@ -275,6 +275,8 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await window.locator('.agent-subagent-report').first().locator('summary').click();
   const helperStop = window.getByRole('button', { name: 'Stop helper: Review accessibility' });
   await expect(helperStop).toBeVisible();
+  await expect(helperStop.locator('svg rect')).toHaveAttribute('width', '10');
+  await expect(helperStop).toHaveText('');
   await helperStop.focus();
   await electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
@@ -296,7 +298,7 @@ test('delegated reports are expandable, inert and coherent in both themes and la
     const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
     emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '2 reports received',
       subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], attemptedFiles: ['app/PlanetControls.tsx'], state: 'completed', toolCalls: 3,
-        report: 'app/SolarScene.tsx: Pause and speed controls are wired correctly.\nKeyboard focus needs a visible style. No tests were run.\n<img src="https://invalid.test/tracker"> is shown as source text.' },
+        report: '### Findings\n- **Playback controls** are wired correctly in `app/SolarScene.tsx`.\n- Keyboard focus needs a visible style.\n\nNo tests were run.\n<img src="https://invalid.test/tracker"> <script>globalThis.helperInjection = true</script>' },
         { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, report: 'Add a visible keyboard focus style.' }] });
     emit({ type: 'tool_started', toolCallId: 'stopped', operation: 'delegate_task', intent: 'Delegating: Check labels' });
     emit({ type: 'tool_finished', toolCallId: 'stopped', operation: 'delegate_task', status: 'failed', label: 'Helper stopped — Check labels',
@@ -311,6 +313,9 @@ test('delegated reports are expandable, inert and coherent in both themes and la
   await expect(report).toHaveAttribute('open', '');
   await expect(report.locator('p').last()).toBeVisible();
   await expect(report.locator('img, script')).toHaveCount(0);
+  await expect(report.locator('.agent-helper-report-body strong')).toHaveText('Playback controls');
+  await expect(report.locator('.agent-helper-report-body li')).toHaveCount(2);
+  expect(await window.evaluate(() => globalThis.helperInjection)).toBeUndefined();
   await expect(window.locator('.agent-helper-status').last()).toContainText('Stopped');
   const browserReport = window.locator('.agent-subagent-report').last();
   await browserReport.locator('summary').click();

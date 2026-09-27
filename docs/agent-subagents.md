@@ -50,8 +50,10 @@ The preload uses the existing owner-checked Stop IPC with an exact helper ID;
 main validates the run and task, then the helper runtime aborts its scoped tools.
 Malformed or stale helper IDs never fall back to whole-task cancellation.
 
-The card shows the assignment and an expandable report. Reports are
-plain, inert text and explicitly identified as model-generated findings. A
+The compact gradient card shows the assignment and an expandable report. Reports
+use the same restricted, sanitized Markdown renderer as the main response, with
+no active HTML or remote images, and are identified as model-generated findings.
+The individual Stop control uses the composer’s square icon with an accessible label. A
 completed report does not imply a verified task result. Failed, stopped and
 limited helpers do not count as successful browser actions. Bounded reports and
 metadata are retained in the conversation's existing profile-local history.

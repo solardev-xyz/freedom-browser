@@ -525,6 +525,23 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
     expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(true);
   });
+  test('helper reports use the same restricted Markdown renderer as the main response', async () => {
+    const sanitize = jest.fn(() => '<p><strong>Finding</strong></p>');
+    const ctx = await loadAgentUi({ windowGlobals: {
+      marked: { parse: jest.fn(() => '<p><strong>Finding</strong><img src=x onerror=alert(1)></p>') },
+      DOMPurify: { sanitize },
+    } });
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: '**Finding**' } });
+    const body = ctx.elements['agent-transcript'].querySelector('.agent-helper-report-body');
+    expect(body.innerHTML).toBe('<p><strong>Finding</strong></p>');
+    expect(body.classList.contains('rendered-markdown')).toBe(true);
+    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual([]);
+    expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('img');
+    expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('script');
+  });
   test('shows recorded helper edits and unsettled writes as inert text', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test', userText: 'Edit project' });
@@ -532,7 +549,7 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'edit', operation: 'delegate_task', status: 'failed',
       subagent: { mode: 'edit', state: 'cancelled', report: '', changedFiles: ['README.md'], attemptedFiles: ['README.md', '<script>'], writesPending: true } });
     const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
-    expect(report.children[1].textContent).toContain('Editing helper');
+    expect(report.querySelector('.agent-helper-status').textContent).toContain('Editing helper');
     expect(report.children[3].textContent).toContain('Files changed: README.md');
     expect(report.children[3].textContent).toContain('still settling');
     expect(report.querySelector('script')).toBeNull();

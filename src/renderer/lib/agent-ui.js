@@ -2345,12 +2345,12 @@ function formatDuration(durationMs) {
   return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
-function renderAssistantMarkdown(view) {
-  if (!view?.assistantText || !window.marked?.parse || !window.DOMPurify?.sanitize) return;
+function renderAgentMarkdown(output, text) {
+  if (!text || !window.marked?.parse || !window.DOMPurify?.sanitize) return;
   try {
-    const rendered = window.marked.parse(view.assistantText, { gfm: true, breaks: true });
+    const rendered = window.marked.parse(text, { gfm: true, breaks: true });
     if (typeof rendered !== 'string') return;
-    view.output.innerHTML = window.DOMPurify.sanitize(rendered, {
+    output.innerHTML = window.DOMPurify.sanitize(rendered, {
       ALLOWED_TAGS: [
         'p',
         'br',
@@ -2379,10 +2379,10 @@ function renderAssistantMarkdown(view) {
       ],
       ALLOWED_ATTR: [],
     });
-    view.output.classList.add('rendered-markdown');
+    output.classList.add('rendered-markdown');
   } catch {
-    view.output.textContent = view.assistantText;
-    view.output.classList.remove('rendered-markdown');
+    output.textContent = text;
+    output.classList.remove('rendered-markdown');
   }
 }
 
@@ -2401,7 +2401,7 @@ function restoreTranscript(transcript = []) {
     ) {
       finishTurnView(turn.runId, turn);
     }
-    if (view.assistantText && turn.status === 'completed') renderAssistantMarkdown(view);
+    if (view.assistantText && turn.status === 'completed') renderAgentMarkdown(view.output, view.assistantText);
   }
 }
 
@@ -3356,19 +3356,20 @@ function finishToolRow(event) {
         copy.appendChild(title); copy.appendChild(status); copy.appendChild(preview);
         const stop = document.createElement('button');
         stop.type = 'button'; stop.className = 'agent-button agent-helper-stop';
-        stop.textContent = 'Stop';
+        stop.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>';
+        stop.title = 'Stop helper';
         card = { details, summary, title, status, preview, stop, stopping: false };
         stop.addEventListener('click', async click => {
           click.preventDefault(); click.stopPropagation();
           if (card.stopping || currentRunId !== event.runId || card.state !== 'running') return;
-          card.stopping = true; stop.disabled = true; stop.textContent = 'Stopping…';
+          card.stopping = true; stop.disabled = true; stop.title = 'Stopping…';
           try {
             const response = await window.electronAPI.stopAgentHelper(event.runId, receipt.taskId);
             if (!response?.ok || !response.stopped) {
               setMessage(elements.runMessage, response?.error?.message || 'This helper is no longer running. Its latest status will appear here.', true);
             }
           } catch { setMessage(elements.runMessage, 'Could not stop this helper. Try again, or use Stop task to stop all work.', true); }
-          finally { card.stopping = false; stop.disabled = card.state !== 'running'; stop.textContent = 'Stop'; }
+          finally { card.stopping = false; stop.disabled = card.state !== 'running'; stop.title = 'Stop helper'; }
         });
         const chevron = document.createElement('span');
         chevron.className = 'agent-helper-chevron'; chevron.setAttribute('aria-hidden', 'true');
@@ -3397,10 +3398,15 @@ function finishToolRow(event) {
       for (const child of [...details.children]) if (child !== summary) child.remove();
       const note = document.createElement('p');
       const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
-      note.textContent = `${receipt.mode === 'browser' ? 'Browser helper' : receipt.mode === 'edit' ? 'Editing helper' : 'Read-only helper'} · ${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
-      const report = document.createElement('p');
+      note.textContent = `${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
+      const report = document.createElement('div');
+      report.className = 'agent-helper-report-body';
       report.textContent = typeof receipt.report === 'string' && receipt.report
         ? receipt.report.slice(0, 12000) : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
+      renderAgentMarkdown(report, report.textContent);
+      if (receipt.state === 'completed' && receipt.report && report.classList.contains('rendered-markdown')) {
+        card.preview.textContent = report.textContent.replace(/\s+/g, ' ').trim().slice(0, 180);
+      }
       details.appendChild(note);
       details.appendChild(report);
       if (receipt.mode === 'browser') {
@@ -3487,7 +3493,7 @@ function finishTurnView(runId, event = {}) {
     view.activity.hidden = true;
   }
   renderTurnOutcome(view, event.outcome, event.error);
-  if (event.status === 'completed') renderAssistantMarkdown(view);
+  if (event.status === 'completed') renderAgentMarkdown(view.output, view.assistantText);
 }
 
 function applyReadyConversationState(state) {
