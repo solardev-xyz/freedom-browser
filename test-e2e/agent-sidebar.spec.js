@@ -1051,7 +1051,7 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
     let reachedApproval; const approvalReached = new Promise(resolve => { reachedApproval = resolve; });
     let releaseApproval; const pendingApproval = new Promise(resolve => { releaseApproval = resolve; });
     const delegate = createSubagentTool({ sdk, getOwner: () => owner,
-      createBrowser: (_owner, signal) => scoped.createDelegatedBrowser({ signal, requestApproval: request => {
+      createBrowser: (_owner, signal, _taskId, tabIds) => scoped.createDelegatedBrowser({ signal, tabIds, requestApproval: request => {
         approvals.push(request);
         const url = pages.get(request.tabId)?.content.getURL();
         if (url === urls[3]) { reachedApproval(); return pendingApproval; }
@@ -1064,9 +1064,9 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
         const tool = name => customTools.find(item => item.name === name);
         return { session: { subscribe: fn => { listener = fn; return () => {}; }, abort: async () => {}, dispose: () => {},
           prompt: async prompt => {
-            const url = JSON.parse(prompt).assignment;
-            const opened = await tool('browser_create_tab').execute('open', { url });
-            const tabId = opened.details.envelope.result.tab.tabId;
+            const assignment = JSON.parse(prompt);
+            const opened = assignment.assignedTabIds ? null : await tool('browser_create_tab').execute('open', { url: assignment.assignment });
+            const tabId = assignment.assignedTabIds?.[0] || opened.details.envelope.result.tab.tabId;
             deniedParentReads.push(!(await scoped.execute('browser_snapshot', { tabId })).ok);
             const observation = await tool('browser_snapshot').execute('read', {});
             const ref = observation.details.envelope.result.elements.find(element => element.name === 'Increment').ref;
@@ -1090,9 +1090,16 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
       const parentStillActive = !owner.subagentAbortController.signal.aborted && (await scoped.execute('browser_snapshot', { tabId: parentTab })).ok;
       releaseApproval('approved');
       for (let i = 0; i < 25; i++) await new Promise(resolve => setTimeout(resolve, 10));
+      const originalPage = pages.get(parentTab).content.id;
+      const delegatedExisting = (await delegate.execute('existing', {
+        title: 'Use existing page', task: 'Click the existing counter', mode: 'browser', tabIds: [parentTab],
+      })).details.subagent;
+      const requiredFresh = await scoped.execute('browser_click', { tabId: parentTab, ref: 'old_ref' });
+      const handedBack = await scoped.execute('browser_snapshot', { tabId: parentTab });
+      const existingPagePreserved = originalPage === pages.get(parentTab).content.id;
       const counts = {};
       for (const { content } of pages.values()) counts[content.getURL()] = await content.executeJavaScript('globalThis.clicks');
-      return { parentRead: parentRead.ok, individuallyStopped, parentStillActive, deniedParentReads, reports, stopped, counts,
+      return { delegatedExisting, requiredFresh: requiredFresh.error?.message, handedBack: handedBack.ok, existingPagePreserved, parentRead: parentRead.ok, individuallyStopped, parentStillActive, deniedParentReads, reports, stopped, counts,
         returnedTabs: returned.result.tabs.length, activeUnchanged: scoped.getActiveTabId() === parentTab,
         approvals: approvals.length, remainingOwners: scoped.delegatedBrowsers.size };
     } finally {
@@ -1104,11 +1111,15 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
   expect(result.parentRead).toBe(true);
   expect(result.individuallyStopped).toBe(true);
   expect(result.parentStillActive).toBe(true);
-  expect(result.deniedParentReads).toEqual([true, true, true]);
-  expect(result.counts).toEqual({ [urls[0]]: 0, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0 });
+  expect(result.deniedParentReads).toEqual([true, true, true, true]);
+  expect(result.delegatedExisting).toMatchObject({ state: 'completed', mode: 'browser' });
+  expect(result.requiredFresh).toContain('fresh browser_snapshot');
+  expect(result.handedBack).toBe(true);
+  expect(result.existingPagePreserved).toBe(true);
+  expect(result.counts).toEqual({ [urls[0]]: 1, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0 });
   expect(result.returnedTabs).toBe(3);
-  expect(result.activeUnchanged).toBe(true);
-  expect(result.approvals).toBe(3);
+  expect(result.activeUnchanged).toBe(false); // Keep the other available parent tab selected after the lease.
+  expect(result.approvals).toBe(4);
   expect(result.remainingOwners).toBe(0);
   expect(result.reports[0]).toMatchObject({ mode: 'browser', state: 'completed', browserActions: expect.arrayContaining([
     expect.objectContaining({ operation: 'browser_click', status: 'succeeded' }),

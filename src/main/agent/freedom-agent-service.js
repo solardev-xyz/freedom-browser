@@ -1719,8 +1719,8 @@ class FreedomAgentService {
             guidance: owner.guidance.filter(item => item.status !== 'cancelled').map(item => item.text),
           }),
           createWriter: (owner, files, signal) => this.workspaceController.createDelegatedWriter(owner.conversationId, files, { signal }),
-          createBrowser: (owner, signal, taskId) => owner.scopedController.createDelegatedBrowser({
-            signal, requestApproval: request => this.#requestApproval(owner, { ...request, helperTaskId: taskId }, null, signal),
+          createBrowser: (owner, signal, taskId, tabIds) => owner.scopedController.createDelegatedBrowser({
+            signal, tabIds, requestApproval: request => this.#requestApproval(owner, { ...request, helperTaskId: taskId }, null, signal),
           }),
           createTools: async (owner, writerController, browser) => {
             if (browser) return this.createTools({ sdk, controller: browser.controller, tabId: null,

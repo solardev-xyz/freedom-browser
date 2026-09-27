@@ -2,7 +2,7 @@
 
 Branch: `experiment/agent-subagents`, started from
 `feature/freedom-automation-kernel` on 2026-09-25. Read-only delegation supports two concurrent helpers, parent continuation,
-and follow-up messages. Scoped editing uses one writer. Browser helpers now use their own fresh tabs with the existing approval boundary.
+and follow-up messages. Scoped editing uses one writer. Browser helpers use fresh or explicitly assigned existing tabs with the existing approval boundary.
 
 ## User behavior
 
@@ -98,9 +98,17 @@ report. The parent must inspect current files before retrying, testing or commit
 
 ## Browser helpers
 
-Use `mode: "browser"` and include starting URLs in the task/context. A browser
-helper starts with no tabs and can create at most four fresh tabs per pass. Its
-page tools only see those tabs. Parent and siblings cannot read, navigate, click
+Use `mode: "browser"`. For new pages include starting URLs in the task/context;
+for existing pages supply `tabIds` containing 1–4 distinct IDs from the parent's
+`browser_list_tabs`. Only tabs already controlled by this conversation can be
+assigned. The scope validates the entire list and moves ownership synchronously;
+a tab owned by a sibling or with an unfinished parent browser action/approval
+cannot be handed over. Errors tell the parent to wait or choose available tabs.
+Parallel assignments cannot contain overlapping tab IDs. No new approval is
+required merely to hand over a tab within the existing task.
+
+A helper can also create at most four fresh tabs per pass. Its page tools only
+see its assigned and newly created tabs. Parent and siblings cannot read, navigate, click
 or close them while the helper owns them. User release and tab-close events
 revoke ownership; approval-mode changes apply to active helpers too.
 
@@ -119,15 +127,25 @@ requests from appearing later. A guard at the underlying dispatch boundary
 rejects actions after cancellation or tab release, including after an approval
 or classification await. Existing external approval barriers also apply.
 
-Completed passes return their tabs to the parent without changing its active tab.
+Completed passes return their tabs to the parent. If the parent's active tab is
+assigned, its current tab falls back to another available task tab, or becomes
+empty until a tab returns. Handoff does not displace another active parent tab.
 Stop preserves tabs and earlier effects for review, stops loading, and holds the
 reservation until already-started operations and loading cleanup settle. Late
 created tabs are registered and handed back too. The parent should list tabs and
-read fresh observations before acting. A resumed completed helper receives a fresh
-empty tab scope; it cannot reuse earlier tab IDs or references. This slice does
-not lease an existing parent tab to a helper or provide separate browser sessions.
+read fresh observations before acting. Assigned tabs require a fresh snapshot
+both on entry to the helper and on return to the parent. Existing original-user-tab
+close protection, origin restrictions and declined-action memory survive handoff.
+User-released or closed tabs are never reclaimed. Loading cleanup checks current
+ownership before dispatch.
 
-Receipts keep bounded host-recorded action statuses, page titles/origins and created
+A resumed completed helper reacquires its original explicit tab assignment only
+if those tabs are still available; otherwise it reports the blocker and disposes
+its retained session. Without `tabIds`, each pass starts with an empty scope.
+Earlier action references must not be reused. Separate browser sessions remain
+outside this slice.
+
+Receipts keep bounded host-recorded action statuses, page titles/origins and assigned/created
 tab IDs alongside the model report, including an uncertainty flag for operations
 still pending at interruption. They do not persist full page content or screenshots
 in helper metadata. Result summaries use these action receipts; a model report
@@ -324,7 +342,23 @@ parent continue. Expand the stopped card to review retained actions, then reopen
 the conversation to check its saved status. Repeat Stop while a helper awaits a
 browser approval; its action must not execute later.
 
-Next: user acceptance of cards/individual Stop, then reassess readiness to merge
-the experiment. Existing-tab handoff, broader writer concurrency,
+The user accepted the helper-card UI, including the compact Markdown refinement.
+Next: existing-tab handoff smoke, then reassess readiness to merge the experiment.
+Existing-tab handoff is implemented (2026-09-27); its user smoke is pending. Broader writer concurrency,
 model/role selection, nested delegation, remote execution and optional Jev workers
 remain later work. No claim of complete provider/platform qualification.
+
+
+Existing-tab smoke: on an ordinary website, ask “Delegate reviewing this current
+page to a browser helper using the existing tab. Do not open a replacement page.
+Summarize its findings.” Confirm it uses the same tab and returns a report; then
+ask the parent to inspect that page. Repeat with individual Stop. Page state
+should remain, and the parent must observe it again before acting. The controller
+owns tab transfer and freshness; the Pi tool only validates assignments and asks
+for that scope. No renderer, IPC, provider or process boundary changes are needed.
+
+Validation for existing-tab delegation: 295 targeted tests across four suites,
+lint and the disposable Electron browser-helper fixture passed. Coverage includes
+exclusive transfer, busy-tab rejection, fresh observations, original-tab close
+protection, origin restrictions, retained declines, Stop/release races, closed tabs,
+follow-up scope failure cleanup and use of the same existing Electron page.

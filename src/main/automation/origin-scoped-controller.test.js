@@ -1722,6 +1722,98 @@ describe('delegated browser ownership', () => {
     b.release();
   });
 
+  test('transfers an existing tab exclusively, requires fresh observations, and protects the user tab', async () => {
+    const f = await setup(); const sibling = f.create();
+    const helper = f.root.createDelegatedBrowser({ signal: new AbortController().signal, requestApproval: async () => 'approved', tabIds: ['tab_parent'] });
+    expect(f.root.getActiveTabId()).toBeNull();
+    expect(helper.controller.getActiveTabId()).toBe('tab_parent');
+    expect(helper.evidence().tabIds).toEqual(['tab_parent']);
+    expect((await f.root.execute(OPERATIONS.LIST_TABS)).result.tabs).toEqual([]);
+    expect((await sibling.controller.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_parent' })).ok).toBe(false);
+    expect((await helper.controller.execute(OPERATIONS.CLICK, { tabId: 'tab_parent', ref: 'old_ref' })).error.message).toContain('fresh browser_snapshot');
+    expect((await helper.controller.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_parent' })).ok).toBe(false);
+    expect((await helper.controller.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_parent' })).ok).toBe(true);
+    expect((await helper.controller.execute(OPERATIONS.CLICK, { tabId: 'tab_parent', ref: 'fresh_ref' })).ok).toBe(true);
+    helper.release({ stopLoading: false });
+    expect(f.root.getActiveTabId()).toBe('tab_parent');
+    expect((await f.root.execute(OPERATIONS.CLICK, { tabId: 'tab_parent', ref: 'fresh_ref' })).error.message).toContain('fresh browser_snapshot');
+    expect((await f.root.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_parent' })).ok).toBe(true);
+    expect(f.root.ownedTabs.get('tab_parent')).toEqual({ created: false });
+    sibling.release();
+  });
+
+  test('preserves established origin restrictions for an assigned tab that redirected outside the supported workspace', async () => {
+    const f = await setup();
+    f.controller.execute.mockResolvedValue({ ok: true, result: { tab: { tabId: 'tab_parent', url: 'file:///private/example' } } });
+    const helper = f.root.createDelegatedBrowser({ tabIds: ['tab_parent'] });
+    expect((await helper.controller.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_parent' })).ok).toBe(false);
+    helper.release({ stopLoading: false });
+  });
+
+  test('rejects parent requests immediately during a lease even if an external approval barrier is pending', async () => {
+    const f = await setup(); const helper = f.root.createDelegatedBrowser({ tabIds: ['tab_parent'] });
+    const barrier = deferred(); f.root.setExternalApprovalBarrier(barrier.promise);
+    const denied = await f.root.execute(OPERATIONS.CLICK, { tabId: 'tab_parent', ref: 'old' });
+    expect(denied.ok).toBe(false);
+    helper.release({ stopLoading: false }); barrier.resolve(); await flush();
+    expect(f.controller.execute.mock.calls.some(([op]) => op === OPERATIONS.CLICK)).toBe(false);
+  });
+
+  test('user release before queued loading cleanup prevents a late stop-loading dispatch', async () => {
+    const f = await setup(); const abort = new AbortController();
+    f.root.createDelegatedBrowser({ tabIds: ['tab_parent'], signal: abort.signal });
+    abort.abort(); f.root.releaseTab('tab_parent'); await flush();
+    expect(f.controller.execute.mock.calls.some(([op]) => op === OPERATIONS.STOP_LOADING)).toBe(false);
+    expect(f.root.getWorkspaceState().tabIds).toEqual([]);
+  });
+
+  test('validates all assigned tabs before transfer and rejects duplicate, foreign, leased and cancelled requests', async () => {
+    const f = await setup();
+    for (const tabIds of [['tab_parent', 'foreign'], ['tab_parent', 'tab_parent'], [''], null]) {
+      expect(() => f.root.createDelegatedBrowser({ tabIds })).toThrow();
+      expect(f.root.ownedTabs.has('tab_parent')).toBe(true);
+      expect(f.root.delegatedBrowsers.size).toBe(0);
+    }
+    const abort = new AbortController(); abort.abort();
+    expect(() => f.root.createDelegatedBrowser({ tabIds: ['tab_parent'], signal: abort.signal })).toThrow('stopped');
+    const helper = f.root.createDelegatedBrowser({ tabIds: ['tab_parent'] });
+    expect(() => f.root.createDelegatedBrowser({ tabIds: ['tab_parent'] })).toThrow('not available');
+    helper.release({ stopLoading: false });
+  });
+
+  test('refuses a handoff while the parent is awaiting approval, then allows it once settled', async () => {
+    const f = await setup(); const approval = deferred();
+    f.root.requestApproval = () => approval.promise;
+    const clicking = f.root.execute(OPERATIONS.CLICK, { tabId: 'tab_parent', ref: 'ref_save' }); await flush();
+    expect(() => f.root.createDelegatedBrowser({ tabIds: ['tab_parent'] })).toThrow('unfinished browser action');
+    approval.resolve('declined'); await clicking;
+    const request = jest.fn(async () => 'approved');
+    const helper = f.root.createDelegatedBrowser({ tabIds: ['tab_parent'], requestApproval: request });
+    await helper.controller.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_parent' });
+    expect((await helper.controller.execute(OPERATIONS.CLICK, { tabId: 'tab_parent', ref: 'ref_save' })).error.code).toBe(ERROR_CODES.USER_CANCELLED);
+    expect(request).not.toHaveBeenCalled();
+    helper.release({ stopLoading: false });
+  });
+
+  test.each(['release', 'close'])('does not reclaim an assigned tab after user %s', async kind => {
+    const f = await setup();
+    const helper = f.root.createDelegatedBrowser({ tabIds: ['tab_parent'] });
+    if (kind === 'release') f.root.releaseTab('tab_parent'); else f.root.handleTabLifecycle({ type: 'tab_closed', tabId: 'tab_parent' });
+    helper.release({ stopLoading: false });
+    expect(f.root.getWorkspaceState().tabIds).not.toContain('tab_parent');
+    expect(f.root.getActiveTabId()).toBeNull();
+  });
+
+  test('a returned tab does not replace a different active parent tab', async () => {
+    const f = await setup(); const creator = f.create(); const other = await f.open(creator);
+    creator.release({ stopLoading: false });
+    await f.root.execute(OPERATIONS.FOCUS_TAB, { tabId: other.result.tab.tabId });
+    const helper = f.root.createDelegatedBrowser({ tabIds: ['tab_parent'] });
+    expect(f.root.getActiveTabId()).toBe(other.result.tab.tabId);
+    helper.release({ stopLoading: false });
+    expect(f.root.getActiveTabId()).toBe(other.result.tab.tabId);
+  });
+
   test('forbids non-browser capabilities even if called directly and bounds tab creation', async () => {
     const f = await setup(); const helper = f.create();
     for (const op of [OPERATIONS.NODE_REQUEST, OPERATIONS.WALLET_TRANSFER, OPERATIONS.UPLOAD, OPERATIONS.DOWNLOAD, OPERATIONS.SWARM_PUBLISH]) {
@@ -1733,9 +1825,11 @@ describe('delegated browser ownership', () => {
     helper.release();
   });
 
-  test.each(['stop', 'release'])('blocks a late approved click after %s and holds ownership until settlement', async kind => {
-    const f = await setup(); const approval = deferred(); const helper = f.create(() => approval.promise);
-    const tabId = (await f.open(helper)).result.tab.tabId;
+  test.each([['stop', false], ['release', false], ['stop', true], ['release', true]])('blocks a late approved click after %s (existing=%s) and holds ownership until settlement', async (kind, existing) => {
+    const f = await setup(); const approval = deferred(); const abort = new AbortController();
+    const helper = existing ? { ...f.root.createDelegatedBrowser({ tabIds: ['tab_parent'], signal: abort.signal, requestApproval: () => approval.promise }), abort } : f.create(() => approval.promise);
+    const tabId = existing ? 'tab_parent' : (await f.open(helper)).result.tab.tabId;
+    await helper.controller.execute(OPERATIONS.SNAPSHOT, { tabId });
     const clicking = helper.controller.execute(OPERATIONS.CLICK, { tabId, ref: 'ref_save' });
     await flush();
     if (kind === 'stop') helper.abort.abort(); else f.root.releaseTab(tabId);

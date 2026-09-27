@@ -199,6 +199,8 @@ class OriginScopedAutomationController {
     this.resumeObservation = null;
     this.externalApprovalBarriers = new Set();
     this.delegatedBrowsers = new Set();
+    this.pendingTabOperations = new Map();
+    this.observationRequired = new Set();
   }
 
   setApprovalMode(value) {
@@ -244,6 +246,7 @@ class OriginScopedAutomationController {
     for (const child of this.delegatedBrowsers) if (child.releaseTab(tabId)) return true;
     if (typeof tabId !== 'string' || !this.ownedTabs.has(tabId)) return false;
     this.ownedTabs.delete(tabId);
+    this.observationRequired.delete(tabId);
     if (this.activeTabId === tabId) this.activeTabId = this.#fallbackTabId();
     return true;
   }
@@ -266,7 +269,16 @@ class OriginScopedAutomationController {
       (this.ownedTabs.has(tabId) ? this : null);
   }
 
-  createDelegatedBrowser({ signal, requestApproval }) {
+  createDelegatedBrowser({ signal, requestApproval, tabIds: assignedTabIds = [] }) {
+    const fail = message => { throw Object.assign(new Error(message), { code: 'BROWSER_DELEGATION_UNAVAILABLE' }); };
+    if (!Array.isArray(assignedTabIds) || assignedTabIds.length > 4 ||
+        assignedTabIds.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) ||
+        new Set(assignedTabIds).size !== assignedTabIds.length) fail('Supply up to four distinct task tab IDs from browser_list_tabs.');
+    if (signal?.aborted) fail('Delegation was stopped. Reconcile the latest user guidance before starting another helper.');
+    for (const id of assignedTabIds) {
+      if (!this.ownedTabs.has(id)) fail('A requested tab is not available to the parent. List current task tabs, wait for its owning helper, or choose another tab.');
+      if (this.pendingTabOperations.has(id)) fail('A requested tab has an unfinished browser action. Wait for that action or approval to settle, then delegate again.');
+    }
     let closed = false;
     let pending = 0;
     let created = 0;
@@ -305,6 +317,20 @@ class OriginScopedAutomationController {
       onWorkspaceTabCreated: tabId => rememberTab(tabId),
     });
     child.delegationSignal = signal;
+    // Transfer synchronously after validating the complete set. Preserve original
+    // user-tab protection and declined actions across the ownership boundary.
+    child.adoptedTabId = this.adoptedTabId;
+    if (assignedTabIds.length) child.workspaceEstablished = this.workspaceEstablished;
+    child.declinedActions = this.declinedActions;
+    for (const id of assignedTabIds) {
+      child.ownedTabs.set(id, this.ownedTabs.get(id));
+      child.observationRequired.add(id);
+      this.ownedTabs.delete(id);
+      this.observationRequired.delete(id);
+      tabIds.add(id);
+    }
+    child.activeTabId = assignedTabIds[0] || null;
+    if (assignedTabIds.includes(this.activeTabId)) this.activeTabId = this.#fallbackTabId();
     for (const barrier of this.externalApprovalBarriers) child.setExternalApprovalBarrier(barrier);
     const rememberTab = tabId => {
       child.ownedTabs.set(tabId, { created: true });
@@ -314,14 +340,18 @@ class OriginScopedAutomationController {
     this.delegatedBrowsers.add(child);
     const handBack = () => {
       if (!closed || pending) return;
-      for (const [tabId, metadata] of child.ownedTabs) this.ownedTabs.set(tabId, metadata);
+      for (const [tabId, metadata] of child.ownedTabs) {
+        this.ownedTabs.set(tabId, metadata);
+        if (assignedTabIds.includes(tabId)) this.observationRequired.add(tabId);
+      }
+      if (!this.activeTabId) this.activeTabId = this.#fallbackTabId();
       child.ownedTabs.clear();
       child.activeTabId = null;
       this.delegatedBrowsers.delete(child);
     };
     const stopTab = tabId => {
       pending++;
-      Promise.resolve().then(() => this.controller.execute(OPERATIONS.STOP_LOADING, { tabId }))
+      Promise.resolve().then(() => child.ownedTabs.has(tabId) ? this.controller.execute(OPERATIONS.STOP_LOADING, { tabId }) : undefined)
         .catch(() => {}).finally(() => { pending--; handBack(); });
     };
     const release = ({ stopLoading = true } = {}) => {
@@ -397,6 +427,27 @@ class OriginScopedAutomationController {
   }
 
   async #execute(operation, input = {}, execution = {}, previewNavigation = false) {
+    if (DELEGATED_BROWSER_OPERATIONS.has(operation) && typeof input?.tabId === 'string' && !this.ownedTabs.has(input.tabId)) {
+      if (!this.ownedTabs.size && !this.delegatedBrowsers.size) return errorEnvelope(this.lastState, ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'No task tab remains. Create a fresh task tab before using this browser tool.', { retryable: true });
+      return errorEnvelope(this.lastState, ERROR_CODES.POLICY_DENIED,
+        'This task does not currently control that tab. Wait for its helper to finish, or list task tabs and choose an available one.');
+    }
+    // Include approval/classification waits, not only the final page dispatch.
+    // This prevents an in-flight parent action from racing a tab handoff.
+    const tabs = operation === OPERATIONS.LIST_TABS ? [...this.ownedTabs.keys()]
+      : this.ownedTabs.has(input?.tabId) ? [input.tabId] : [];
+    for (const id of tabs) this.pendingTabOperations.set(id, (this.pendingTabOperations.get(id) || 0) + 1);
+    try { return await this.#executeScoped(operation, input, execution, previewNavigation); }
+    finally {
+      for (const id of tabs) {
+        const remaining = this.pendingTabOperations.get(id) - 1;
+        if (remaining) this.pendingTabOperations.set(id, remaining); else this.pendingTabOperations.delete(id);
+      }
+    }
+  }
+
+  async #executeScoped(operation, input = {}, execution = {}, previewNavigation = false) {
     await this.#awaitExternalApprovalBarrier();
     if (!ORIGIN_SCOPED_OPERATIONS.has(operation)) {
       return errorEnvelope(
@@ -513,6 +564,11 @@ class OriginScopedAutomationController {
       return result;
     }
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
+    if (this.observationRequired.has(input.tabId) &&
+        ![OPERATIONS.SNAPSHOT, OPERATIONS.FOCUS_TAB, OPERATIONS.GET_DIALOG, OPERATIONS.HANDLE_DIALOG].includes(operation)) {
+      return errorEnvelope(state, ERROR_CODES.POLICY_DENIED,
+        'Tab ownership changed. Take a fresh browser_snapshot of this tab before acting; do not reuse earlier page references.');
+    }
 
     if (this.resumeObservation && !previewNavigation) {
       if (![OPERATIONS.GET_DIALOG, OPERATIONS.HANDLE_DIALOG].includes(operation) &&
@@ -658,6 +714,7 @@ class OriginScopedAutomationController {
     }
     if (result?.ok && operation === OPERATIONS.SNAPSHOT) {
       this.resumeObservation = null;
+      this.observationRequired.delete(input.tabId);
     }
     if (result?.ok && operation === OPERATIONS.NAVIGATE) {
       const navigatedState = await this.#readState(input.tabId);
@@ -673,6 +730,7 @@ class OriginScopedAutomationController {
     for (const child of this.delegatedBrowsers) child.handleTabLifecycle(event);
     if (event?.type !== 'tab_closed' || typeof event.tabId !== 'string') return;
     this.ownedTabs.delete(event.tabId);
+    this.observationRequired.delete(event.tabId);
     if (this.activeTabId === event.tabId) this.activeTabId = this.#fallbackTabId();
   }
 

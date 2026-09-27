@@ -677,16 +677,54 @@ describe('parallel read-only assignments', () => {
 
 });
 
+test('passes explicit browser tab IDs to the scope and child context, with actionable handoff failures', async () => {
+  const scope = { controller: {}, release: jest.fn(), evidence: () => ({ tabIds: ['tab_parent'], browserActions: [] }) };
+  const f = fixture({ createBrowser: jest.fn(async () => scope) });
+  const task = { title: 'Review page', task: 'Inspect this existing page', mode: 'browser', tabIds: ['tab_parent'] };
+  expect((await f.run(task)).details.subagent.state).toBe('completed');
+  expect(f.options.createBrowser).toHaveBeenCalledWith(f.owner, expect.any(AbortSignal), expect.any(String), ['tab_parent']);
+  expect(JSON.parse(f.session.prompt.mock.calls[0][0]).assignedTabIds).toEqual(['tab_parent']);
+  f.options.createBrowser.mockRejectedValue(Object.assign(new Error('Wait for the owning helper to finish.'), { code: 'BROWSER_DELEGATION_UNAVAILABLE' }));
+  expect((await f.run(task)).details.subagent).toMatchObject({ state: 'failed', report: 'Wait for the owning helper to finish.' });
+});
+
+test('a failed existing-tab reacquisition disposes the retained session without replaying the helper', async () => {
+  const f = backgroundFixture();
+  const scope = { controller: {}, release: jest.fn(), evidence: () => ({ tabIds: ['tab_parent'], browserActions: [] }) };
+  f.options.createBrowser = jest.fn(async () => scope);
+  const started = await f.run({ title: 'Browse', task: 'Inspect', mode: 'browser', tabIds: ['tab_parent'], background: true });
+  await flush(); f.children[0].finish(); await f.tool.collect(f.owner);
+  f.options.createBrowser.mockRejectedValue(Object.assign(new Error('Tab unavailable. List current task tabs.'), { code: 'BROWSER_DELEGATION_UNAVAILABLE' }));
+  await f.control('message', started.details.subagent.taskId, 'Check again');
+  expect((await f.tool.collect(f.owner))[0]).toMatchObject({ state: 'failed', report: 'Tab unavailable. List current task tabs.' });
+  await flush();
+  expect(f.children[0].session.dispose).toHaveBeenCalledTimes(1);
+  expect(f.children[0].session.prompt).toHaveBeenCalledTimes(1);
+  expect(f.options.createBrowser.mock.calls[1][3]).toEqual(['tab_parent']);
+  f.owner.subagentAbortController.abort();
+});
+
+test('rejects malformed and overlapping tab assignments before starting helpers', async () => {
+  const f = fixture();
+  const task = { title: 'Browse', task: 'Inspect', mode: 'browser' };
+  for (const tabIds of [null, [], [''], ['a', 'a'], Array(5).fill('a'), [123]]) {
+    expect((await f.run({ ...task, tabIds })).details.subagent.state).toBe('failed');
+  }
+  expect((await f.run({ ...task, mode: 'read', tabIds: ['tab_parent'] })).details.subagent.state).toBe('failed');
+  expect((await f.run({ tasks: [{ ...task, tabIds: ['tab_parent'] }, { ...task, tabIds: ['tab_parent'] }] })).isError).toBe(true);
+  expect(f.options.createSession).not.toHaveBeenCalled();
+});
+
 test('browser mode receives only page tools, records browser evidence, and releases its scope', async () => {
   const scope = { controller: {}, release: jest.fn(), evidence: () => ({ tabIds: ['tab_child'], browserActions: [
     { operation: 'browser_snapshot', status: 'succeeded', pageTitle: '<script>untrusted</script>', origin: 'https://example.com' },
   ], browserPending: false }) };
   const f = fixture({ createBrowser: jest.fn(async () => scope) });
   const result = await f.run({ title: 'Inspect page', task: 'Open https://example.com and summarize', mode: 'browser' });
-  expect(f.options.createBrowser).toHaveBeenCalledWith(f.owner, expect.any(AbortSignal), result.details.subagent.taskId);
+  expect(f.options.createBrowser).toHaveBeenCalledWith(f.owner, expect.any(AbortSignal), result.details.subagent.taskId, []);
   expect(f.options.createTools).toHaveBeenCalledWith(f.owner, undefined, scope);
   expect(f.options.createSession.mock.calls[0][0].customTools.map(tool => tool.name)).toEqual(['browser_navigate']);
-  expect(f.options.createSession.mock.calls[0][0].systemPrompt).toContain('You start with no tabs');
+  expect(f.options.createSession.mock.calls[0][0].systemPrompt).toContain('assignedTabIds');
   expect(result.details.subagent).toMatchObject({ mode: 'browser', tabIds: ['tab_child'], state: 'completed', browserActions: [
     { operation: 'browser_snapshot', status: 'succeeded', origin: 'https://example.com' },
   ] });

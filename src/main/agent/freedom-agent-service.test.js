@@ -3801,8 +3801,9 @@ describe('concurrent helper approvals', () => {
     const events = []; service.subscribe(event => events.push(event));
     await service.start(startOptions());
     const delegate = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
-    const started = await delegate.execute('browser-helper', { title: 'Browse', task: 'Inspect a page', mode: 'browser', background: true }); await flush();
+    const started = await delegate.execute('browser-helper', { title: 'Browse', task: 'Inspect a page', mode: 'browser', tabIds: ['tab_test'], background: true }); await flush();
     expect(dependencies.createTools.mock.calls[1][0]).toMatchObject({ controller: browser.controller, tabId: null });
+    expect(createBrowser.mock.calls[0][0].tabIds).toEqual(['tab_test']);
     const { signal, requestApproval } = createBrowser.mock.calls[0][0];
     const decision = requestApproval({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'Helper click' });
     expect(events.at(-1).label).toBe('Helper click');
