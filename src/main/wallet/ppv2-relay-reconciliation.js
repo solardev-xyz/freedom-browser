@@ -21,11 +21,25 @@ function createPPv2RelayReconciliation({ handle, journal }) {
     if (!s) return empty('unknown');
     const final = await read('eth_getBlockByNumber', ['finalized', false], (b) => b === null || (block(b.number) && HASH.test(b.hash)));
     if (!final || BigInt(final.number) < BigInt(s.fromBlock)) return empty('unknown');
-    // Bounded discovery handles lost responses without trusting a relayer hash.
-    // Larger gaps need a future durable scan cursor; never truncate silently.
-    const end = BigInt(final.number), start = BigInt(s.fromBlock);
-    if (end - start >= 5000n) return empty('unknown');
-    const logs = await read('eth_getLogs', [{ address: s.pool, topics: [[txTopic]], fromBlock: `0x${start.toString(16)}`, toBlock: final.number }],
+    // One bounded page per observation. Persist progress only after matching
+    // boundary reads; callers can resume after a restart without a burst of RPCs.
+    const known = record.observation?.status === 'included' ? record.observation.blockNumber : null;
+    let start = BigInt(known ?? s.fromBlock);
+    if (known === null && record.scan) {
+      const checkpoint = await read('eth_getBlockByNumber', [`0x${(BigInt(record.scan.nextBlock) - 1n).toString(16)}`, false],
+        (v) => v === null || (block(v.number) && HASH.test(v.hash)));
+      if (!checkpoint || BigInt(checkpoint.number) !== BigInt(record.scan.nextBlock) - 1n ||
+          checkpoint.hash.toLowerCase() !== record.scan.blockHash || BigInt(final.number) < BigInt(record.scan.nextBlock) - 1n) {
+        return { observation: empty('unknown'), scan: null };
+      }
+      start = BigInt(record.scan.nextBlock);
+    }
+    if (start > BigInt(final.number)) return { observation: empty('unknown'), scan: known === null ? record.scan : null };
+    const end = known !== null ? start : (start + 4999n < BigInt(final.number) ? start + 4999n : BigInt(final.number));
+    const endHex = `0x${end.toString(16)}`;
+    const anchor = await read('eth_getBlockByNumber', [endHex, false], (v) => v === null || (block(v.number) && HASH.test(v.hash)));
+    if (!anchor || BigInt(anchor.number) !== end) throw fail();
+    const logs = await read('eth_getLogs', [{ address: s.pool, topics: [[txTopic]], fromBlock: `0x${start.toString(16)}`, toBlock: endHex }],
       (v) => Array.isArray(v) && v.length <= 2048);
     const matches = [];
     for (const log of logs) {
@@ -35,7 +49,10 @@ function createPPv2RelayReconciliation({ handle, journal }) {
       if (!e || e.name !== 'Transacted') throw fail();
       if (e.args.nullifierHashes.some((v) => v === BigInt(record.nullifier))) matches.push(log);
     }
-    if (!matches.length) return empty('unknown');
+    const after = await read('eth_getBlockByNumber', [endHex, false], (v) => v === null || (block(v.number) && HASH.test(v.hash)));
+    if (!after || BigInt(after.number) !== end || after.hash.toLowerCase() !== anchor.hash.toLowerCase()) throw fail();
+    if (!matches.length) return { observation: empty('unknown'), scan: known !== null ? null :
+      { nextBlock: Number(end + 1n), blockHash: anchor.hash.toLowerCase() } };
     if (matches.length !== 1) return empty('conflict');
     const found = matches[0], event = iface.parseLog(found).args;
     if (event.nullifierHashes.length !== 1 || event.outputCommitments.length !== 1 || event.outputCommitments[0] !== BigInt(s.outputCommitment) ||
@@ -66,7 +83,8 @@ function createPPv2RelayReconciliation({ handle, journal }) {
     const record = (await journal.list()).find((r) => r.id === id); if (!record?.settlement) throw fail();
     let result;
     try { result = await inspect(record); } catch { getPrivacyContext(handle); result = empty('unknown'); }
-    getPrivacyContext(handle); return journal.observe(id, result, record.revision || 0);
+    getPrivacyContext(handle); return journal.observe(id, result.observation || result, record.revision || 0,
+      result.observation ? result.scan : result.status === 'included' ? null : undefined);
   }
   return Object.freeze({ observe,
     async refreshResolved() { for (const r of await journal.list()) if (r.resolution) await observe(r.id); },

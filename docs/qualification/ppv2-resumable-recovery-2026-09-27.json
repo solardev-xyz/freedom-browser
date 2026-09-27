@@ -1,0 +1,263 @@
+{
+  "date": "2026-09-27",
+  "scope": "controlled macOS arm64, real SDK proofs, synthetic chain/HTTP",
+  "candidate": {
+    "kohaku": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+    "sdk": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+    "patchSha256": "411957dbb894d0fcb499933a3fb54367befb7fd474bac6098ac07afa32f0133e"
+  },
+  "sdkCompatibility": "empty-asp-root-v1",
+  "scratchAsarSha256": "3f3e4ffdc5baf285e9fdd17cff30f79f353427f58527d595729395728f75e07a",
+  "unit": {
+    "passed": 5688,
+    "skipped": 33,
+    "baselineFailures": 3
+  },
+  "packaged": {
+    "expected": 4,
+    "unexpected": 0,
+    "flaky": 0,
+    "tests": [
+      {
+        "title": "FREEDOM_E2E_EXECUTABLE points at an executable packaged build",
+        "status": "passed"
+      },
+      {
+        "title": "PPv2 reviewed registration, uncertain deposit and encrypted note recovery",
+        "status": "passed"
+      },
+      {
+        "title": "real PPv2 relay wire format is reviewed and journaled before an uncertain handoff and survives restart",
+        "status": "passed"
+      },
+      {
+        "title": "PPv2 native deposit, ASP state, lost withdrawal, restart, reconciliation and second spend",
+        "status": "passed"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "path": "src/main/wallet/ppv2-relay-journal.js",
+      "matched": true
+    },
+    {
+      "path": "src/main/wallet/ppv2-relay-reconciliation.js",
+      "matched": true
+    }
+  ],
+  "reports": {
+    "ppv2-lifecycle-report": {
+      "productionGate": false,
+      "packaged": true,
+      "blockedSecond": "PRIVATE_SUBMISSION_UNRESOLVED",
+      "partialSteps": 1,
+      "partialKind": "ppv2-register-viewing",
+      "sends": 3,
+      "reviews": [
+        {
+          "operation": "ppv2-register-auth",
+          "proofVerified": false,
+          "chainStateVerified": false
+        },
+        {
+          "operation": "ppv2-register-viewing",
+          "proofVerified": false,
+          "chainStateVerified": false
+        },
+        {
+          "operation": "ppv2-native-deposit",
+          "proofVerified": true,
+          "chainStateVerified": false
+        }
+      ],
+      "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
+      "journalKinds": [
+        "ppv2-register-auth",
+        "ppv2-register-viewing",
+        "ppv2-native-deposit"
+      ],
+      "attemptedRecovered": true,
+      "missingTimestampCount": 0,
+      "proofCommitmentRecovered": true,
+      "notes": [
+        {
+          "value": "10000",
+          "status": "pending"
+        }
+      ],
+      "restoredEqual": true,
+      "independentlyRecovered": true,
+      "rescanRecovered": true,
+      "discrepancyDetected": true,
+      "cachePreserved": true,
+      "ciphertextOnly": true,
+      "balances": [
+        {
+          "amount": "0",
+          "tag": "spendable"
+        },
+        {
+          "amount": "10000",
+          "tag": "unspendable"
+        }
+      ],
+      "isolatedRoles": true,
+      "methods": [
+        "eth_blockNumber",
+        "eth_call",
+        "eth_gasPrice",
+        "eth_getBlockByNumber",
+        "eth_getLogs",
+        "eth_getTransactionCount",
+        "eth_getTransactionReceipt",
+        "eth_sendRawTransaction"
+      ],
+      "liveTransactionSubmitted": false,
+      "processRestart": {
+        "recovered": true,
+        "rescanRecovered": true,
+        "journalRestored": true,
+        "blocked": "PRIVATE_SUBMISSION_UNRESOLVED",
+        "sends": 0,
+        "productionGate": false,
+        "packaged": true
+      },
+      "nativeExit": {
+        "kind": "ppv2-native-ragequit",
+        "amount": "10000",
+        "value": "0",
+        "proofVerified": true,
+        "chainStateVerified": false,
+        "commitmentBound": true,
+        "ownerBound": true,
+        "poolBound": true,
+        "sent": 1,
+        "journalKind": "ppv2-native-ragequit",
+        "observedStatus": "exited",
+        "reviewed": "ppv2-native-ragequit",
+        "recordedHash": true
+      }
+    },
+    "ppv2-relay-report": {
+      "sent": 1,
+      "reviewed": 1,
+      "durableBeforeSend": true,
+      "outcome": "PRIVATE_PPV2_RELAY_UNCERTAIN",
+      "tamperRejected": true,
+      "realProofVerified": true,
+      "chainStateVerified": false,
+      "quoteSignatureVerified": false,
+      "nullifierBound": true,
+      "commitmentBound": true,
+      "recordedWithoutPayload": true,
+      "acknowledgedHash": null,
+      "productionGate": false,
+      "packaged": true,
+      "liveTransactionSubmitted": false,
+      "restart": {
+        "records": 1,
+        "acknowledgedHash": null,
+        "blocked": "PRIVATE_PPV2_RELAY_UNRESOLVED",
+        "packaged": true
+      }
+    },
+    "ppv2-withdrawal-report": {
+      "productionGate": false,
+      "packaged": true,
+      "blockedSecond": "PRIVATE_SUBMISSION_UNRESOLVED",
+      "partialSteps": 1,
+      "partialKind": "ppv2-register-viewing",
+      "sends": 3,
+      "reviews": [
+        {
+          "operation": "ppv2-register-auth",
+          "proofVerified": false,
+          "chainStateVerified": false
+        },
+        {
+          "operation": "ppv2-register-viewing",
+          "proofVerified": false,
+          "chainStateVerified": false
+        },
+        {
+          "operation": "ppv2-native-deposit",
+          "proofVerified": true,
+          "chainStateVerified": false
+        }
+      ],
+      "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
+      "journalKinds": [
+        "ppv2-register-auth",
+        "ppv2-register-viewing",
+        "ppv2-native-deposit"
+      ],
+      "attemptedRecovered": true,
+      "missingTimestampCount": 0,
+      "proofCommitmentRecovered": true,
+      "notes": [
+        {
+          "value": "10000",
+          "status": "pending"
+        }
+      ],
+      "restoredEqual": true,
+      "independentlyRecovered": true,
+      "rescanRecovered": true,
+      "discrepancyDetected": true,
+      "cachePreserved": true,
+      "ciphertextOnly": true,
+      "balances": [
+        {
+          "amount": "0",
+          "tag": "spendable"
+        },
+        {
+          "amount": "10000",
+          "tag": "unspendable"
+        }
+      ],
+      "isolatedRoles": true,
+      "methods": [
+        "eth_blockNumber",
+        "eth_call",
+        "eth_gasPrice",
+        "eth_getBlockByNumber",
+        "eth_getLogs",
+        "eth_getTransactionCount",
+        "eth_getTransactionReceipt",
+        "eth_sendRawTransaction"
+      ],
+      "liveTransactionSubmitted": false,
+      "withdrawal": {
+        "pending": "pending",
+        "mismatched": "pending",
+        "approved": "active",
+        "revoked": "rejected",
+        "emptySetStatus": "rejected",
+        "emptySetSpendBlocked": true,
+        "outcome": "PRIVATE_PPV2_RELAY_UNCERTAIN",
+        "blocked": "PRIVATE_PPV2_RELAY_UNRESOLVED",
+        "relaySends": 1,
+        "proofVerified": true
+      },
+      "checkpoint": {
+        "nextBlock": 5275,
+        "status": "unknown"
+      },
+      "secondSpend": {
+        "checkpointPersisted": true,
+        "observation": "included",
+        "trust": "unverified-rpc",
+        "recoveredChange": "4000",
+        "reorgBlocked": true,
+        "secondHash": true,
+        "remaining": [
+          "2900"
+        ],
+        "resolved": 2,
+        "relaySends": 1
+      }
+    }
+  }
+}

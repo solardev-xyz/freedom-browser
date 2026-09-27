@@ -41,11 +41,14 @@ function createPPv2RelayJournal({ handle, directory, key }) {
       const data = JSON.parse(value);
       if (!keys(data, ['version', 'records']) || data.version !== 1 || !Array.isArray(data.records) || data.records.length > 64) throw invalid();
       for (const record of data.records) {
-        const extra = ['settlement', 'observation', 'resolution', 'revision'].filter((k) => Object.hasOwn(record, k));
+        const extra = ['settlement', 'observation', 'resolution', 'revision', 'scan'].filter((k) => Object.hasOwn(record, k));
         if (!keys(record, [...fields, 'attemptedAt', 'acknowledgedHash', ...extra]) ||
             !validAttempt(Object.fromEntries(fields.map((k) => [k, record[k]]))) ||
             !Number.isSafeInteger(record.attemptedAt) || record.attemptedAt < 0 ||
             !(record.acknowledgedHash === null || (typeof record.acknowledgedHash === 'string' && HASH.test(record.acknowledgedHash)))) throw invalid();
+        if (record.scan !== undefined && record.scan !== null && (!record.settlement ||
+            !keys(record.scan, ['nextBlock', 'blockHash']) || !Number.isSafeInteger(record.scan.nextBlock) ||
+            record.scan.nextBlock <= record.settlement.fromBlock || !HASH.test(record.scan.blockHash))) throw invalid();
         if (record.settlement !== undefined && !validSettlement(record.settlement)) throw invalid();
         if (record.revision !== undefined && (!Number.isSafeInteger(record.revision) || record.revision < 0)) throw invalid();
         if (record.observation !== undefined && (!record.settlement || !Number.isSafeInteger(record.revision) || !validObservation(record.observation))) throw invalid();
@@ -61,7 +64,7 @@ function createPPv2RelayJournal({ handle, directory, key }) {
   }
   async function list() {
     const value = await storage.get(KEY); getPrivacyContext(handle);
-    return Object.freeze(decode(value).map((r) => { for (const k of ['settlement', 'observation', 'resolution']) if (r[k]) Object.freeze(r[k]); return Object.freeze(r); }));
+    return Object.freeze(decode(value).map((r) => { for (const k of ['settlement', 'observation', 'resolution', 'scan']) if (r[k]) Object.freeze(r[k]); return Object.freeze(r); }));
   }
   return Object.freeze({
     assertScope(otherHandle) {
@@ -81,14 +84,20 @@ function createPPv2RelayJournal({ handle, directory, key }) {
       });
       getPrivacyContext(handle);
     },
-    async observe(id, observation, revision) {
+    async observe(id, observation, revision, scan) {
       if (!validObservation(observation) || !Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) throw invalid();
-      const copy = { ...observation };
+      const copy = { ...observation }, checkpoint = scan === undefined || scan === null ? scan : { ...scan };
+      if (checkpoint && (!keys(checkpoint, ['nextBlock', 'blockHash']) || !Number.isSafeInteger(checkpoint.nextBlock) ||
+          checkpoint.nextBlock <= 0 || !HASH.test(checkpoint.blockHash))) throw invalid();
       await storage.update(KEY, (value) => {
         const records = decode(value), r = records.find((r) => r.id === id);
         if (!r?.settlement || (r.revision || 0) !== revision) throw invalid();
         if (copy.status !== 'included' || r.observation?.blockHash !== copy.blockHash ||
             r.observation?.transactionHash !== copy.transactionHash) r.resolution = null;
+        if (checkpoint !== undefined) {
+          if (checkpoint && checkpoint.nextBlock <= r.settlement.fromBlock) throw invalid();
+          r.scan = checkpoint;
+        }
         r.observation = copy; r.revision = revision + 1;
         return JSON.stringify({ version: 1, records });
       });

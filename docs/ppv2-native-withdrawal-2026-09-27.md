@@ -35,6 +35,8 @@ Reproduce the scratch bundle using `scripts/spike-ppv2-process.js /absolute/pinn
 
 ## Remaining limits and next work
 
+The later [resumable recovery milestone](ppv2-resumable-recovery-2026-09-27.md) supersedes the empty-root issue and total 5,000-block horizon below; other limits remain.
+
 1. **Empty ASP set bug in the pinned SDK.** `MerkleService.computeRoot([])` returns `0x0`; `ASPRegistryInteractor` returns a 32-byte padded zero via `bigintToHex`. `ASPClient.assertLeavesMatchChainRoot` compares lowercase strings, so an empty set fails root comparison. An active note retains its previous status on this failed read. The qualification test records that behavior and proves withdrawal preparation still refuses it. Nonempty-set revocation/restoration works. Fix and requalify upstream normalization before product use; do not label all ASP states complete.
 2. **Long absence and ambiguous failures.** Discovery deliberately refuses gaps of 5,000 blocks or more and responses above 2,048 logs. The development ledger caps history at 64 attempts. A durable paginated scan cursor, bounded historical revalidation and explicit failed/replaced-operation recovery are needed before normal use. There is no timeout-based release or blind retry.
 3. **Protocol scope.** Only native 1×1 withdrawal with positive change is granted. Full withdrawal, multiple inputs/outputs, private transfers, ERC-20 approvals/transacts and relayer fallback still need separate qualification.

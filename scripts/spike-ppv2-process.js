@@ -22,7 +22,15 @@ async function main() {
   const workers = new Map();
   const built = await esbuild.build({ entryPoints: [sdkEntry], outfile: path.join(source, 'sdk.cjs'),
     bundle: true, platform: 'node', format: 'cjs', target: 'node24', conditions: ['module-sync'], metafile: true,
-    plugins: [{ name: 'preserve-worker-bootstrap', setup(build) {
+    plugins: [{ name: 'normalize-empty-asp-root', setup(build) {
+      build.onLoad({ filter: /index\.cjs$/ }, ({ path: filename }) => {
+        if (filename !== sdkEntry) return;
+        const contents = fs.readFileSync(filename, 'utf8');
+        const before = 'if (leaves.length === 0) return "0x0";';
+        if (contents.split(before).length !== 2) throw new Error('Re-review SDK empty-root compatibility patch');
+        return { contents: contents.replace(before, `if (leaves.length === 0) return "0x${'0'.repeat(64)}";`), loader: 'js' };
+      });
+    } }, { name: 'preserve-worker-bootstrap', setup(build) {
       build.onResolve({ filter: /^web-worker$/ }, ({ importer }) => {
         const entry = createRequire(importer).resolve('web-worker');
         const root = path.dirname(path.dirname(entry));
@@ -123,7 +131,7 @@ async function main() {
   }
   const output = path.join(directory, 'ppv2.asar');
   await require('@electron/asar').createPackage(source, output);
-  const report = { revision, output, manifest, exitManifest, sessionCandidate, webWorkerVersions: [...workers.keys()],
+  const report = { revision, output, sdkCompatibility: 'empty-asp-root-v1', manifest, exitManifest, sessionCandidate, webWorkerVersions: [...workers.keys()],
     asarSha256: createHash('sha256').update(fs.readFileSync(output)).digest('hex'), bundleInputs: Object.keys(built.metafile.inputs).length };
   fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

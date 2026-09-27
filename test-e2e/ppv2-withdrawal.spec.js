@@ -4,7 +4,7 @@ const artifact = process.env.FREEDOM_PP_V2_PROCESS_ASAR;
 test('PPv2 native deposit, ASP state, lost withdrawal, restart, reconciliation and second spend', async ({ electronApp, relaunchApp }, testInfo) => {
   test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the qualified Kohaku/SDK fixture');
   test.setTimeout(240000);
-  const exercise = async ({ app }, { artifact, restart, exit, second }) => {
+  const exercise = async ({ app }, { artifact, restart, exit, second, checkpoint }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
     const fs = req('fs'), path = req('path');
     const { Interface, Wallet, Transaction } = req('ethers');
@@ -134,7 +134,7 @@ test('PPv2 native deposit, ASP state, lost withdrawal, restart, reconciliation a
       }
       if (u.pathname.endsWith('/v1/relay/evm/11155111/withdrawal')) {
         const p = JSON.parse(init.body), signals = p.proof.publicSignals.map(BigInt);
-        relaySends++; head++;
+        relaySends++; head+=6000;
         const txHash = `0x${(200+spent.size).toString(16).padStart(64,'0')}`;
         const start = stateLeaves.length, leaves = [leaf('privacy_pools_note', signals[1]), leaf('privacy_pools_nullifier', signals[0])];
         stateLeaves.push(...leaves); spent.add(signals[0].toString());
@@ -143,7 +143,7 @@ test('PPv2 native deposit, ASP state, lost withdrawal, restart, reconciliation a
           interfaces[0].encodeEventLog(interfaces[0].getEvent('Transacted'), [[signals[1]],[signals[0]],'0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',signals[5],config.relayers[0].processorAddress])]
           .map((e,i)=>({address:config.deployment.poolAddress,...e,blockNumber:quantity(head),blockHash,transactionHash:txHash,logIndex:quantity(i),transactionIndex:'0x0',removed:false}));
         logs.push(...events); receipts.set(txHash,{transactionHash:txHash,to:config.relayers[0].processorAddress,blockHash,blockNumber:quantity(head),status:'0x1',logs:events});
-        head+=3;
+        head+=6000;
         if (relayLost) throw new Error('Controlled lost relay response');
         return new Response(JSON.stringify({txHash}));
       }
@@ -187,9 +187,7 @@ test('PPv2 native deposit, ASP state, lost withdrawal, restart, reconciliation a
           const mismatched=await session.notes();
           badRoot=false; head+=3; session.close(); session=await open(); const approved=await session.notes();
           const approvedLeaves=aspLeaves;
-          // Pinned SDK compares an unpadded empty-tree root to a padded RPC
-          // root. Preserve this known stale-status behavior as an explicit
-          // qualification limit, and prove preparation still fails closed.
+          // The compatibility fix must demote an active note on an empty set.
           aspLeaves=[]; head+=3; session.close(); session=await open();
           const emptySet=await session.notes();
           const emptySetSpendBlocked=await session.prepareNativeWithdrawal({commitment:saved.commitment,amount:5900n,maxFee:100n,
@@ -203,11 +201,16 @@ test('PPv2 native deposit, ASP state, lost withdrawal, restart, reconciliation a
           const blocked=await session.submitPublicOperation({},{}).then(()=>null,e=>e.code);
           save(saved.commitment,saved.depositHash);
           return {pending:pending[0].status,mismatched:mismatched[0].status,approved:approved[0].status,revoked:revoked[0].status,
-            emptySetRetainsStatus:emptySet[0].status,emptySetSpendBlocked,
+            emptySetStatus:emptySet[0].status,emptySetSpendBlocked,
             outcome,blocked,relaySends,proofVerified:prepared.proofVerified};
         }
         stage='withdrawal recovery';
         const attempts=await session.listRelayAttempts();
+        if (checkpoint) {
+          const progress=await session.observeRelayAttempt(attempts[0].id);
+          return { nextBlock:progress.scan?.nextBlock, status:progress.observation.status };
+        }
+        const resumed=(await session.listRelayAttempts())[0];
         const observation=await session.observeRelayAttempt(attempts[0].id);
         stage='withdrawal resolution';
         await session.resolveRelayAttempt(attempts[0].id,async()=>({allowNextOperation:true,acceptedEvidence:'unverified-rpc'}));
@@ -215,14 +218,16 @@ test('PPv2 native deposit, ASP state, lost withdrawal, restart, reconciliation a
         if(!change)throw new Error('Change not recovered');
         reorg=true;
         const reorgBlocked=await session.prepareNativeWithdrawal({commitment:change.commitment,amount:1000n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`}).then(()=>false,()=>true);
-        reorg=false; await session.resolveRelayAttempt(attempts[0].id,async()=>({allowNextOperation:true,acceptedEvidence:'unverified-rpc'}));
+        reorg=false; await session.observeRelayAttempt(attempts[0].id); await session.resolveRelayAttempt(attempts[0].id,async()=>({allowNextOperation:true,acceptedEvidence:'unverified-rpc'}));
         stage='second spend';
         const prepared=await session.prepareNativeWithdrawal({commitment:change.commitment,amount:1000n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`});
         const result=await session.submitNativeWithdrawal(prepared,async()=>true);
         const last=(await session.listRelayAttempts())[1];
+        await session.observeRelayAttempt(last.id);
         await session.resolveRelayAttempt(last.id,async()=>({allowNextOperation:true,acceptedEvidence:'unverified-rpc'}));
         const after=await session.notes();
-        return {observation:observation.observation.status,trust:observation.observation.trust,recoveredChange:change.value.toString(),reorgBlocked,
+        return {checkpointPersisted:!!resumed.scan && resumed.observation.status==='unknown',
+          observation:observation.observation.status,trust:observation.observation.trust,recoveredChange:change.value.toString(),reorgBlocked,
           secondHash:!!result.txHash,remaining:after.filter(n=>n.status==='active').map(n=>n.value.toString()),
           resolved:(await session.listRelayAttempts()).filter(r=>r.resolution).length,relaySends};
       }
@@ -304,11 +309,15 @@ test('PPv2 native deposit, ASP state, lost withdrawal, restart, reconciliation a
   await electronApp.close(); const withdrawing = await relaunchApp();
   report.withdrawal = await withdrawing.evaluate(exercise, { artifact, restart:true, exit:true });
   await withdrawing.close(); const restored = await relaunchApp();
-  report.secondSpend = await restored.evaluate(exercise, { artifact, restart:true, second:true });
+  report.checkpoint = await restored.evaluate(exercise, { artifact, restart:true, second:true, checkpoint:true });
+  await restored.close(); const resumed = await relaunchApp();
+  report.secondSpend = await resumed.evaluate(exercise, { artifact, restart:true, second:true });
   await testInfo.attach('ppv2-withdrawal-report', {body:JSON.stringify(report,null,2),contentType:'application/json'});
+  expect(report.checkpoint).toMatchObject({status:'unknown'});
+  expect(report.checkpoint.nextBlock).toBeGreaterThan(5000);
   expect(report.productionGate).toBe(false);
   expect(report.withdrawal).toMatchObject({pending:'pending',mismatched:'pending',approved:'active',revoked:'rejected',
-    emptySetRetainsStatus:'active',emptySetSpendBlocked:true,outcome:'PRIVATE_PPV2_RELAY_UNCERTAIN',blocked:'PRIVATE_PPV2_RELAY_UNRESOLVED',relaySends:1,proofVerified:true});
-  expect(report.secondSpend).toMatchObject({observation:'included',trust:'unverified-rpc',recoveredChange:'4000',reorgBlocked:true,
+    emptySetStatus:'rejected',emptySetSpendBlocked:true,outcome:'PRIVATE_PPV2_RELAY_UNCERTAIN',blocked:'PRIVATE_PPV2_RELAY_UNRESOLVED',relaySends:1,proofVerified:true});
+  expect(report.secondSpend).toMatchObject({checkpointPersisted:true,observation:'included',trust:'unverified-rpc',recoveredChange:'4000',reorgBlocked:true,
     secondHash:true,remaining:['2900'],resolved:2,relaySends:1});
 });

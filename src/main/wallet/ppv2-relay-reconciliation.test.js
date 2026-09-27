@@ -22,8 +22,8 @@ beforeEach(async () => {
     logs: [...logs, make('Note', [payload.noteData[0].hint, payload.noteData[0].data])] };
   canonical = { number: '0x10', hash: blockHash }; spent = word(100); final = { number: '0x12', hash: word(73) };
   mockRequest = jest.fn(async (method, params, valid) => {
-    const result = method === 'eth_getLogs' ? logs : method === 'eth_getTransactionReceipt' ? receipt :
-      method === 'eth_call' ? spent : params[0] === 'finalized' ? final : canonical;
+    const result = method === 'eth_getLogs' ? logs.filter((log) => BigInt(log.blockNumber) >= BigInt(params[0].fromBlock) && BigInt(log.blockNumber) <= BigInt(params[0].toBlock)) : method === 'eth_getTransactionReceipt' ? receipt :
+      method === 'eth_call' ? spent : params[0] === 'finalized' ? final : params[0] === canonical.number ? canonical : { number: params[0], hash: word(90) };
     if (!valid(result)) throw new Error('Invalid fixture'); return { result };
   });
   reconcile = createPPv2RelayReconciliation({ handle: scope.getContext({ ...subject, role: 'protocol-rpc' }), journal });
@@ -81,4 +81,76 @@ test('legacy attempts without settlement metadata stay readable and cannot be re
   await journal.begin({ ...attempt, id: word(81), nullifier: word(82), commitment: word(83) });
   await expect(reconcile.resolve(word(81), accept)).rejects.toThrow();
   await expect(journal.assertCanSubmit()).rejects.toThrow();
+});
+
+test('resumes bounded discovery with a fresh reconciler and revalidates old inclusions without rescanning history', async () => {
+  final = { number: '0x10000', hash: word(73) };
+  for (const log of [...logs, ...receipt.logs]) log.blockNumber = '0x2000';
+  receipt.blockNumber = canonical.number = '0x2000';
+  const first = await reconcile.observe(record.id);
+  expect(first.observation.status).toBe('unknown');
+  expect(first.scan.nextBlock).toBe(5000);
+  await expect(journal.assertCanSubmit()).rejects.toThrow();
+  const subject = { kind: 'private-account', principal: 'ppv2:0', protocol: 'privacy-pools-v2', deployment: 'sepolia', chainId: 11155111, role: 'protocol-rpc' };
+  reconcile = createPPv2RelayReconciliation({ handle: scope.getContext(subject), journal });
+  expect((await reconcile.observe(record.id)).observation.status).toBe('included');
+  await reconcile.resolve(record.id, accept);
+  final.number = '0x100000'; mockRequest.mockClear();
+  await reconcile.refreshResolved();
+  const ranges = mockRequest.mock.calls.filter(([method]) => method === 'eth_getLogs').map(([, p]) => p[0]);
+  expect(ranges).toHaveLength(1);
+  expect(ranges[0]).toMatchObject({ fromBlock: '0x2000', toBlock: '0x2000' });
+  expect((await journal.list())[0].resolution).toBeTruthy();
+});
+
+test('changed checkpoint resets discovery without advancing or releasing the reservation', async () => {
+  logs = []; final.number = '0x10000';
+  await reconcile.observe(record.id);
+  canonical = { number: '0x1387', hash: word(91) };
+  mockRequest.mockClear();
+  const result = await reconcile.observe(record.id);
+  expect(result.scan).toBeNull(); expect(result.observation.status).toBe('unknown');
+  expect(mockRequest.mock.calls.some(([m]) => m === 'eth_getLogs')).toBe(false);
+  await expect(journal.assertCanSubmit()).rejects.toThrow();
+  await reconcile.observe(record.id);
+  expect(mockRequest.mock.calls.find(([m]) => m === 'eth_getLogs')[1][0].fromBlock).toBe('0x0');
+});
+
+test.each(['rpc', 'overflow', 'boundary'])('does not persist progress when a page fails: %s', async (failure) => {
+  logs = []; final.number = '0x10000';
+  await reconcile.observe(record.id);
+  const before = (await journal.list())[0].scan;
+  const normal = mockRequest.getMockImplementation(); let boundary = 0;
+  mockRequest.mockImplementation(async (method, params, valid) => {
+    if (method === 'eth_getLogs' && failure === 'rpc') throw new Error('Temporary failure');
+    if (method === 'eth_getLogs' && failure === 'overflow') { if (!valid(Array(2049).fill({}))) throw new Error('Too many logs'); }
+    if (method === 'eth_getBlockByNumber' && params[0] === '0x270f' && failure === 'boundary' && ++boundary === 2) {
+      return { result: { number: params[0], hash: word(92) } };
+    }
+    return normal(method, params, valid);
+  });
+  const result = await reconcile.observe(record.id);
+  expect(result.scan).toEqual(before); expect(result.observation.status).toBe('unknown');
+  await expect(journal.assertCanSubmit()).rejects.toThrow();
+});
+
+test('an empty scan at the finalized tip remains reserved and resumes only when the head advances', async () => {
+  logs = [];
+  const first = await reconcile.observe(record.id);
+  expect(first.scan.nextBlock).toBe(19);
+  mockRequest.mockClear();
+  const second = await reconcile.observe(record.id);
+  expect(second.scan).toEqual(first.scan);
+  expect(mockRequest.mock.calls.some(([m]) => m === 'eth_getLogs')).toBe(false);
+  await expect(journal.assertCanSubmit()).rejects.toThrow();
+  final.number = '0x20';
+  await reconcile.observe(record.id);
+  expect(mockRequest.mock.calls.find(([m]) => m === 'eth_getLogs')[1][0]).toMatchObject({ fromBlock: '0x13', toBlock: '0x20' });
+});
+
+test('concurrent observers cannot overwrite a newer checkpoint', async () => {
+  logs = []; final.number = '0x10000';
+  const results = await Promise.allSettled([reconcile.observe(record.id), reconcile.observe(record.id)]);
+  expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+  expect((await journal.list())[0].scan.nextBlock).toBe(5000);
 });
