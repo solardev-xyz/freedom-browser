@@ -3355,7 +3355,7 @@ function finishToolRow(event) {
   }
   renderToolPage(record, event, true);
   if (event.operation === 'delegate_task' && (event.subagent || event.subagents)) {
-    const receipts = Array.isArray(event.subagents) ? event.subagents.slice(0, 2) : [event.subagent];
+    const receipts = Array.isArray(event.subagents) ? event.subagents : [event.subagent];
     const view = turnView(event.runId);
     record.row.hidden = true;
     view.activity.hidden = [...view.toolList.children].every(row => row.hidden);

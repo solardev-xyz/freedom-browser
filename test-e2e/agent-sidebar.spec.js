@@ -227,6 +227,12 @@ test('helper history persists reports and marks crash-left work interrupted in r
         { taskId: 'delegate_' + 'd'.repeat(24), title: 'Active sibling', mode: 'browser', tabIds: ['tab_helper'], browserActions: [{ operation: 'browser_snapshot', status: 'succeeded', pageTitle: 'Fixture', origin: 'https://helper.test' }], state: 'running', report: '' },
       ] },
     ] });
+    store.startTurn({ conversationId: 'helper-history', runId: 'six-helpers', position: 2, userText: 'Six topics', approvalMode: 'every_interaction' });
+    store.updateTurnActivity({ conversationId: 'helper-history', runId: 'six-helpers', running: true, activity: [
+      { toolCallId: 'six', operation: 'delegate_task', subagents: Array.from({ length: 6 }, (_, i) => ({
+        taskId: 'delegate_' + String(i).repeat(24), title: `Topic ${i}`, state: i < 3 ? 'completed' : 'running', report: i < 3 ? `Report ${i}` : '',
+      })) },
+    ] });
     store.close();
     store = new AgentSessionHistoryStore({ userDataDir });
     store.markStaleRunningAsInterrupted();
@@ -236,6 +242,8 @@ test('helper history persists reports and marks crash-left work interrupted in r
   }, repositoryRoot);
   expect(result.lateWrite).toBe(false);
   expect(result.runningSaved).toBe(true);
+  expect(result.transcript[2].activity[0].subagents.map(item => item.state)).toEqual(['completed', 'completed', 'completed', 'cancelled', 'cancelled', 'cancelled']);
+  expect(result.transcript[2].activity[0].subagents.slice(0, 3).map(item => item.report)).toEqual(['Report 0', 'Report 1', 'Report 2']);
   expect(result.transcript[0].activity[0].subagents[0].report).toBe('Check README.md');
   expect(result.transcript[0].activity[0].subagents[1].state).toBe('cancelled');
   expect(result.transcript[1]).toMatchObject({ status: 'interrupted', activity: [
@@ -299,13 +307,15 @@ test('delegated reports are expandable, inert and coherent in both themes and la
     emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '2 reports received',
       subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], attemptedFiles: ['app/PlanetControls.tsx'], state: 'completed', toolCalls: 3,
         report: '### Findings\n- **Playback controls** are wired correctly in `app/SolarScene.tsx`.\n- Keyboard focus needs a visible style.\n\nNo tests were run.\n<img src="https://invalid.test/tracker"> <script>globalThis.helperInjection = true</script>' },
-        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, report: 'Add a visible keyboard focus style.' }] });
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, report: 'Add a visible keyboard focus style.' },
+        ...Array.from({ length: 4 }, (_, i) => ({ taskId: 'delegate_' + String(i).repeat(24), title: `Research topic ${i + 3}`, state: 'completed', toolCalls: 2, report: `Findings for topic ${i + 3}.` }))] });
     emit({ type: 'tool_started', toolCallId: 'stopped', operation: 'delegate_task', intent: 'Delegating: Check labels' });
     emit({ type: 'tool_finished', toolCallId: 'stopped', operation: 'delegate_task', status: 'failed', label: 'Helper stopped — Check labels',
       subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Check labels', mode: 'browser', state: 'cancelled', toolCalls: 2, browserPending: true, browserActions: [{ operation: 'browser_snapshot', label: 'Read page', status: 'succeeded', pageTitle: 'Planet preview' }, { operation: 'browser_click', label: 'Clicked on page', status: 'failed', pageTitle: '<img src=x> Untrusted title' }], report: '' } });
     emit({ type: 'run_finished', status: 'completed', durationMs: 2000, actionCount: 2, outcome: { kind: 'completed', verification: 'delegated_report', tone: 'neutral', headline: 'Helper reports received', detail: '2 reports received · 1 task stopped. Editing helpers recorded 1 changed file. Review current changes before testing or committing; stopped tasks can leave partial edits.' } });
   });
-  await expect(window.locator('.agent-subagent-report')).toHaveCount(3);
+  await expect(window.locator('.agent-subagent-report')).toHaveCount(7);
+  await expect(window.locator('.agent-subagent-report').nth(5)).toContainText('Research topic 6');
   await expect(window.locator('.agent-turn-outcome')).toBeHidden();
   await expect(window.locator('.agent-turn-outcome.caution')).toHaveCount(0);
   await window.locator('.agent-turn-activity > summary').click();
@@ -330,6 +340,10 @@ test('delegated reports are expandable, inert and coherent in both themes and la
       expect(await report.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
       await report.scrollIntoViewIfNeeded();
       await window.screenshot({ path: testInfo.outputPath(`helper-report-${layout}-${theme}.png`) });
+      const sixth = window.locator('.agent-subagent-report').nth(5);
+      await sixth.scrollIntoViewIfNeeded();
+      await expect(sixth).toBeVisible();
+      await window.screenshot({ path: testInfo.outputPath(`helper-sixth-${layout}-${theme}.png`) });
       await browserReport.scrollIntoViewIfNeeded();
       await window.screenshot({ path: testInfo.outputPath(`helper-browser-${layout}-${theme}.png`) });
     }
@@ -1021,7 +1035,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
 
 test('browser helpers use separate real pages with approval, handoff and Stop', async ({ electronApp, window, harness }) => {
   await expect(window.locator('body')).toBeVisible();
-  const urls = ['parent', 'approved', 'declined', 'stopped', 'next-turn'].map(name => `https://helper-browser.test/${name}`);
+  const urls = ['parent', 'approved', 'declined', 'stopped', 'next-turn', 'approved-third'].map(name => `https://helper-browser.test/${name}`);
   for (const url of urls) await harness.setContentFixture(url, { body: `<!doctype html><title>Helper fixture</title>
     <button onclick="globalThis.clicks++;document.querySelector('output').textContent=globalThis.clicks">Increment</button>
     <output>0</output><script>globalThis.clicks=0</script>` });
@@ -1079,6 +1093,7 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
     try {
       const running = delegate.execute('parallel', { tasks: [
         { title: 'Approved page', task: urls[1], mode: 'browser' }, { title: 'Declined page', task: urls[2], mode: 'browser' },
+        { title: 'Third independent page', task: urls[5], mode: 'browser' },
       ] });
       const parentRead = await scoped.execute('browser_snapshot', { tabId: parentTab });
       const reports = (await running).details.subagents;
@@ -1121,7 +1136,7 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
   expect(result.parentRead).toBe(true);
   expect(result.individuallyStopped).toBe(true);
   expect(result.parentStillActive).toBe(true);
-  expect(result.deniedParentReads).toEqual([true, true, true, true]);
+  expect(result.deniedParentReads).toEqual([true, true, true, true, true]);
   expect(result.delegatedExisting).toMatchObject({ state: 'completed', mode: 'browser' });
   expect(result.requiredFresh).toContain('fresh browser_snapshot');
   expect(result.handedBack).toBe(true);
@@ -1131,14 +1146,16 @@ test('browser helpers use separate real pages with approval, handoff and Stop', 
   expect(result.nextElements).toContainEqual(expect.objectContaining({ name: 'Increment' }));
   expect(result.staleParent.code).toBe('OBSERVATION_REQUIRED');
   expect(result.staleParent.recovery.action).toBe('refresh_state');
-  expect(result.counts).toEqual({ [urls[0]]: 1, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0, [urls[4]]: 0 });
-  expect(result.returnedTabs).toBe(3);
+  expect(result.counts).toEqual({ [urls[0]]: 1, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0, [urls[4]]: 0, [urls[5]]: 1 });
+  expect(result.returnedTabs).toBe(4);
   expect(result.activeUnchanged).toBe(false); // Keep the other available parent tab selected after the lease.
-  expect(result.approvals).toBe(4);
+  expect(result.approvals).toBe(5);
   expect(result.remainingOwners).toBe(0);
   expect(result.reports[0]).toMatchObject({ mode: 'browser', state: 'completed', browserActions: expect.arrayContaining([
     expect.objectContaining({ operation: 'browser_click', status: 'succeeded' }),
   ]) });
+  expect(result.reports).toHaveLength(3);
+  expect(result.reports[2]).toMatchObject({ mode: 'browser', state: 'completed' });
   expect(result.reports[1].browserActions).toContainEqual(expect.objectContaining({ operation: 'browser_click', status: 'failed' }));
   expect(result.stopped).toMatchObject({ mode: 'browser', state: 'cancelled', browserPending: true });
 });

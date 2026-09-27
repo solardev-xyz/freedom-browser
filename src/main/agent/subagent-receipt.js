@@ -3,6 +3,7 @@
 const { DELEGATED_BROWSER_OPERATIONS, originScopeForUrl } = require('../automation/origin-scoped-controller');
 
 const SUBAGENT_TOOL_NAME = 'delegate_task';
+const MAX_SUBAGENT_BATCH_SIZE = 6;
 const SUBAGENT_STATES = ['running', 'completed', 'cancelled', 'timed_out', 'limited', 'failed'];
 
 function safePaths(values) {
@@ -49,7 +50,7 @@ function normalizeSubagentReceipt(value) {
 }
 
 function normalizeSubagentReceipts(values) {
-  if (!Array.isArray(values) || !values.length || values.length > 2) return null;
+  if (!Array.isArray(values) || !values.length || values.length > MAX_SUBAGENT_BATCH_SIZE) return null;
   const receipts = values.map(normalizeSubagentReceipt);
   if (receipts.some(value => !value) || new Set(receipts.map(value => value.taskId)).size !== receipts.length) return null;
   return Object.freeze(receipts);
@@ -74,4 +75,4 @@ function summarizeSubagents(receipts) {
   };
 }
 
-module.exports = { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts, summarizeSubagents };
+module.exports = { MAX_SUBAGENT_BATCH_SIZE, SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts, summarizeSubagents };

@@ -3833,6 +3833,8 @@ describe('provider-aware orchestration guidance', () => {
       expect(settings.systemPrompt).toContain('Check important findings against sources or changed files');
       expect(settings.systemPrompt).toContain('handle simple requests directly');
       expect(settings.systemPrompt).toContain('do not wait for the user to mention helpers');
+      expect(settings.systemPrompt).toContain('start three browser helpers in one batch');
+      expect(settings.customTools.find(tool => tool.name === 'delegate_task').parameters.properties.tasks.maxItems).toBe(6);
       expect(settings.systemPrompt).not.toContain('private-endpoint');
       expect(settings.systemPrompt).not.toContain('private-credential');
       if (provider === 'ollama') {

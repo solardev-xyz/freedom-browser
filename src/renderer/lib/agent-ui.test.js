@@ -501,14 +501,15 @@ describe('Agent UI', () => {
     expect(reports[0].children[2].textContent).toBe('<script>untrusted()</script>');
     expect(ctx.elements['agent-run-message'].textContent).toBe('1 report received · 1 task stopped');
   });
-  test('helper cards remain outside the action log and Stop targets only one helper with stable focus and expansion', async () => {
+  test.each([2, 6])('%i helper cards remain outside the action log and Stop targets only one helper with stable focus and expansion', async count => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
     ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task' });
     const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', status: 'succeeded',
-      subagents: ['a', 'b'].map(id => ({ taskId: 'delegate_' + id.repeat(24), title: id, state: 'running', activity: 'Reading a page' })) };
+      subagents: ['a', 'b', 'c', 'd', 'e', 'f'].slice(0, count).map(id => ({ taskId: 'delegate_' + id.repeat(24), title: id, state: 'running', activity: 'Reading a page' })) };
     ctx.emit(event);
     const cards = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
+    expect(cards).toHaveLength(count);
     const button = cards[0].querySelector('.agent-helper-stop');
     expect(cards[0].parentNode.className).toBe('agent-helper-list');
     expect(button.hidden).toBe(false);
@@ -519,7 +520,7 @@ describe('Agent UI', () => {
     await button.dispatch('click', { preventDefault() {}, stopPropagation() {} }); await flush();
     expect(ctx.electronAPI.stopAgentHelper).toHaveBeenCalledWith('run_test', event.subagents[0].taskId);
     expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
-    ctx.emit({ ...event, subagents: [{ ...event.subagents[0], state: 'cancelled' }, event.subagents[1]] });
+    ctx.emit({ ...event, subagents: event.subagents.map((receipt, i) => i === 0 ? { ...receipt, state: 'cancelled' } : receipt) });
     expect(button.hidden).toBe(true);
     expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(false);
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });

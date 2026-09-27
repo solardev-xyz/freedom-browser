@@ -185,8 +185,8 @@ describe('background delegation and messages', () => {
     f.owner.subagentAbortController.abort();
   });
 
-  test('a completed helper cannot resume while both slots are occupied', async () => {
-    const f = backgroundFixture(); const started = await f.start(); await flush();
+  test('a completed helper cannot resume while all configured slots are occupied', async () => {
+    const f = backgroundFixture({ concurrency: 2 }); const started = await f.start(); await flush();
     f.children[0].finish(); await f.tool.collect(f.owner);
     await f.run({ background: true, tasks: [{ title: 'B', task: 'Inspect B' }, { title: 'C', task: 'Inspect C' }] }); await flush();
     expect((await f.control('message', started.details.subagent.taskId, 'Check again')).isError).toBe(true);
@@ -475,7 +475,7 @@ test('does not drop user constraints to fit input or accept invalid assignments'
   expect((await f.run({ title: 'Review', task: '' })).details.subagent.state).toBe('failed');
 });
 
-test.each(['single', 'parallel', 'background'])('installed Pi completes isolated delegation (%s) without an external provider', mode => {
+test.each(['single', 'parallel', 'background', 'three', 'six', 'background-six'])('installed Pi completes isolated delegation (%s) without an external provider', mode => {
   const { execFileSync } = require('node:child_process');
   const script = `
     (async () => {
@@ -493,7 +493,8 @@ test.each(['single', 'parallel', 'background'])('installed Pi completes isolated
       await runtime.setRuntimeApiKey('delegate-test', 'fixture-not-a-credential');
       const mode = ${JSON.stringify(mode)};
       const parallel = mode !== "single";
-      const background = mode === "background";
+      const background = mode.startsWith("background");
+      const count = mode === "single" ? 1 : mode.includes("six") ? 6 : mode === "three" ? 3 : 2;
       const requests = [];
       let childStarts = 0; let release;
       const barrier = new Promise(resolve => { release = resolve; });
@@ -503,13 +504,10 @@ test.each(['single', 'parallel', 'background'])('installed Pi completes isolated
         const parent = body.tools.some(tool => tool.function.name === 'delegate_task');
         const hasResult = body.messages.some(message => message.role === 'tool');
         const call = !hasResult;
-        const args = parent ? (parallel ? { tasks: [
-          { title: 'First', task: 'Read README.md', context: 'context-first' },
-          { title: 'Second', task: 'Read README.md', context: 'context-second' },
-        ] } : { title: 'Inspect', task: 'Read README.md and report', context: 'selected context' }) : { path: 'README.md' };
+        const args = parent ? (parallel ? { tasks: Array.from({ length: count }, (_, i) => ({ title: 'Topic ' + i, task: 'Read README.md', context: i === 0 ? 'context-first' : 'context-' + i })) } : { title: 'Inspect', task: 'Read README.md and report', context: 'selected context' }) : { path: 'README.md' };
         if (!parent && call && parallel) {
-          if (++childStarts === 2 && !background) release();
-          await barrier; // Both real Pi sessions must reach the transport concurrently.
+          if (++childStarts === count && !background) release();
+          await barrier; // All real Pi sessions must reach the transport concurrently.
         }
         if (parent && hasResult && background) release(); // Parent reaches its own next response while children are waiting.
         if (parent && background && call) args.background = true;
@@ -534,20 +532,20 @@ test.each(['single', 'parallel', 'background'])('installed Pi completes isolated
       await parent.session.prompt('Parent-private transcript marker. Delegate a read-only review.');
       if (background) {
         let reports = [];
-        while (reports.length < 2) reports.push(...await tool.collect(owner));
+        while (reports.length < count) reports.push(...await tool.collect(owner));
         await parent.session.sendCustomMessage({ customType: 'freedom_helper_reports', display: false, content: 'Untrusted helper reports: ' + JSON.stringify(reports) }, { triggerTurn: true });
       }
-      assert.equal(reads, parallel ? 2 : 1); assert.equal(requests.length, background ? 7 : parallel ? 6 : 4);
+      assert.equal(reads, count); assert.equal(requests.length, count * 2 + (background ? 3 : 2));
       const childRequests = requests.filter(request => !request.tools.some(tool => tool.function.name === 'delegate_task') && !request.messages.some(message => message.role === 'tool'));
       assert.deepEqual(childRequests[0].tools.map(t => t.function.name), ['read']);
       assert.ok(!JSON.stringify(childRequests[0]).includes('Parent-private transcript marker'));
       assert.ok(!JSON.stringify(childRequests[0]).includes('Parent-only system instructions'));
       assert.ok(JSON.stringify(childRequests[0]).includes(parallel ? 'context-first' : 'selected context'));
       if (parallel) {
-        assert.ok(!JSON.stringify(childRequests[0]).includes('context-second'));
+        assert.ok(!JSON.stringify(childRequests[0]).includes('context-1'));
         assert.ok(!JSON.stringify(childRequests[1]).includes('context-first'));
       }
-      assert.equal(receipt.length, parallel ? 2 : 1);
+      assert.equal(receipt.length, count);
       assert.ok(receipt.every(item => item.state === 'completed' && item.toolCalls === 1));
       assert.ok(receipt.every(item => item.totalTokens > 120000));
       assert.ok(JSON.stringify(requests.at(-1)).includes('README.md describes a solar-system app.'));
@@ -587,7 +585,7 @@ describe('parallel read-only assignments', () => {
   }
 
   test('both helpers start before either finishes; contexts and reports remain independent and ordered', async () => {
-    const f = parallelFixture();
+    const f = parallelFixture({ concurrency: 2 });
     const pending = f.batch(); await flush();
     expect(f.children).toHaveLength(2);
     expect(f.children.every(child => child.session.prompt.mock.calls.length === 1)).toBe(true);
@@ -606,7 +604,7 @@ describe('parallel read-only assignments', () => {
   test('rejects mixed forms, malformed batches and insufficient concurrency slots before starting either helper', async () => {
     const f = parallelFixture({ concurrency: 1 });
     expect((await f.batch()).details.subagent.state).toBe('limited');
-    for (const input of [{ tasks, title: 'mixed' }, { tasks: [tasks[0]] }, { tasks: [...tasks, tasks[0]] }, { tasks: [tasks[0], { title: 'Empty' }] }]) {
+    for (const input of [{ tasks, title: 'mixed' }, { tasks: [tasks[0]] }, { tasks: Array.from({ length: 7 }, () => tasks[0]) }, { tasks: [tasks[0], { title: 'Empty' }] }]) {
       expect((await f.run(input)).details.subagent.state).toBe('failed');
     }
     expect(f.children).toHaveLength(0);
@@ -807,4 +805,62 @@ test('Ollama scheduling guidance does not prevent explicitly requested parallel 
   }
   expect((await pending).details.subagents.map(receipt => receipt.state)).toEqual(['completed', 'completed']);
   f.owner.subagentAbortController.abort();
+});
+
+
+describe('larger orchestration batches', () => {
+  test.each([[3, false], [3, true], [6, false], [6, true]])(
+    '%i helpers start together and keep ordered reports (background=%s)', async (count, background) => {
+      const f = backgroundFixture();
+      const tasks = Array.from({ length: count }, (_, i) => ({ title: `Topic ${i}`, task: `Research topic ${i}`, context: `private-context-${i}` }));
+      const pending = f.run({ tasks, background });
+      await flush();
+      expect(f.children).toHaveLength(count);
+      for (const [i, child] of f.children.entries()) {
+        const assignment = child.session.prompt.mock.calls[0][0];
+        expect(assignment).toContain(`private-context-${i}`);
+        expect(assignment).not.toContain(`private-context-${(i + 1) % count}`);
+      }
+      for (let i = count - 1; i >= 0; i--) f.children[i].finish(`Report ${i}`);
+      const reports = background ? (await pending, await f.tool.collect(f.owner)) : (await pending).details.subagents;
+      expect(reports.map(receipt => receipt.report)).toEqual(tasks.map((_, i) => `Report ${i}`));
+      expect(f.options.onResult.mock.calls.at(-1)[1].subagents).toHaveLength(count);
+      f.owner.subagentAbortController.abort();
+    });
+
+  test('reserves a whole batch atomically and frees slots for later work', async () => {
+    const f = backgroundFixture();
+    const tasks = Array.from({ length: 3 }, (_, i) => ({ title: `Topic ${i}`, task: `Research topic ${i}` }));
+    await f.run({ tasks, background: true }); await flush();
+    const denied = await f.run({ tasks: [...tasks, { title: 'Fourth', task: 'Research fourth' }], background: true });
+    expect(denied.details.subagent.state).toBe('limited');
+    expect(denied.details.subagent.report).toContain('3 of 6 slots occupied; 3 available');
+    expect(f.children).toHaveLength(3);
+    await f.run({ tasks, background: true }); await flush();
+    expect(f.children).toHaveLength(6);
+    expect((await f.start()).details.subagent.state).toBe('limited');
+    f.children[2].finish('Finished third'); await flush();
+    await f.start(); await flush();
+    expect(f.children).toHaveLength(7);
+    f.owner.subagentAbortController.abort();
+    await f.tool.collect(f.owner);
+  });
+
+  test('individual Stop and parent Stop retain every receipt in a six-helper batch', async () => {
+    const f = backgroundFixture();
+    const tasks = Array.from({ length: 6 }, (_, i) => ({ title: `Topic ${i}`, task: `Research topic ${i}` }));
+    const started = await f.run({ tasks, background: true }); await flush();
+    f.children[0].finish('Already completed'); await flush();
+    expect(await f.tool.stop(f.owner, started.details.subagents[4].taskId)).toBe(true);
+    expect(f.children[1].session.abort).not.toHaveBeenCalled();
+    expect(f.owner.subagentAbortController.signal.aborted).toBe(false);
+    f.owner.subagentAbortController.abort();
+    await flush();
+    const reports = f.options.onResult.mock.calls.at(-1)[1].subagents;
+    expect(reports.map(receipt => receipt.state)).toEqual(['completed', 'cancelled', 'cancelled', 'cancelled', 'cancelled', 'cancelled']);
+    expect(reports[0].report).toBe('Already completed');
+    f.children.forEach(child => child.finish('Late report'));
+    await flush();
+    expect(f.options.onResult.mock.calls.at(-1)[1].subagents.map(receipt => receipt.state)).toEqual(reports.map(receipt => receipt.state));
+  });
 });

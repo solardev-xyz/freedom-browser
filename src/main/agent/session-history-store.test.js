@@ -29,6 +29,9 @@ test('retains individual parallel reports and rejects oversized or duplicate rec
   expect(item([a, b]).subagents.map(receipt => receipt.state)).toEqual(['completed', 'cancelled']);
   expect(item([a, a]).subagents).toBeUndefined();
   expect(item([a, b, a]).subagents).toBeUndefined();
+  const batch = Array.from({ length: 6 }, (_, i) => ({ ...a, taskId: `delegate_${String(i).repeat(24)}`, title: `Topic ${i}` }));
+  expect(item(batch).subagents).toHaveLength(6);
+  expect(item([...batch, { ...a, taskId: `delegate_${'f'.repeat(24)}` }]).subagents).toBeUndefined();
 });
 
 test('reviewer approval provenance survives history normalization without its private decision data', () => {

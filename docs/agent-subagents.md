@@ -1,7 +1,7 @@
 # Freedom subagents: inspections, scoped editing and browser tasks
 
 Branch: `experiment/agent-subagents`, started from
-`feature/freedom-automation-kernel` on 2026-09-25. Read-only delegation supports two concurrent helpers, parent continuation,
+`feature/freedom-automation-kernel` on 2026-09-25. Delegation supports up to six concurrent helpers, parent continuation,
 and follow-up messages. Scoped editing uses one writer. Browser helpers use fresh or explicitly assigned existing tabs with the existing approval boundary.
 
 ## User behavior
@@ -10,11 +10,11 @@ The main Agent can call `delegate_task` with a short title, focused task and
 selected context. A helper can inspect the conversation's granted project and
 attachments, or analyze supplied evidence. It returns a report to the main Agent,
 which remains responsible for checking findings and answering the user.
-For parallel inspection, pass `tasks` containing exactly two independent
-`{title, task, context}` assignments instead of the single-task fields. Both
-slots are reserved before either session starts. Each helper
+For parallel work, pass `tasks` containing 2–6 independent
+`{title, task, context, mode}` assignments instead of the single-task fields. All
+slots are reserved before any session starts. Each helper
 receives only its own selected context; the parent receives reports in assignment
-order after both settle. One failure does not discard the other helper's report.
+order after the batch settles. One failure does not discard sibling reports.
 
 Set `background: true` to receive task IDs immediately and let the parent do
 independent work. `helper_task` accepts `status`, `wait`, or `message` with one of
@@ -193,7 +193,7 @@ individual Stop requests. No process responsibility or top-level boundary change
   does not wait indefinitely on an unresponsive provider. A separate context is
   **not** a separate process sandbox.
 - Foreground calls wait for all results; background calls return immediately.
-  The parent can work concurrently, but up to two helpers may run at a time; no
+  The parent can work concurrently, but up to six helpers may run at a time; no
   detached jobs can outlive a completed parent turn. Files can still change due
   to existing background processes or external editors; reports are not atomic
   project snapshots. The parent can also edit while only read-only helpers run; it must coordinate
@@ -201,7 +201,7 @@ individual Stop requests. No process responsibility or top-level boundary change
 
 ## Limits and recovery
 
-At most two helpers run concurrently. Helpers have no separate token, elapsed-time,
+At most six helpers run concurrently, in addition to the parent. Batch size, admission and receipt validation share one main-process ceiling; the renderer displays every validated receipt. If a batch does not fit, none of it starts and the error gives occupied/free slots and instructions to wait or submit a smaller batch. Helpers have no separate token, elapsed-time,
 model-response, tool-call, generated-text, task-start or follow-up-count budget.
 They continue until they finish, fail, or are cancelled by Stop, Pause, steering,
 parent completion or disposal. Token counts, tool calls and elapsed time are
@@ -273,7 +273,7 @@ factory and controller-backed tools; it copies no upstream implementation.
 Automated coverage includes real installed Pi parent/child execution against a
 deterministic in-memory provider transport, trusted-tool isolation, history
 action restrictions, same model/runtime, cancellation before/during session
-creation, unresponsive providers, late callbacks, read aborts, two-helper
+creation, unresponsive providers, late callbacks, read aborts, concurrency
 enforcement, atomic batch admission, disjoint contexts, continuation beyond former time/token/tool
 ceilings, sibling failures, Stop/Pause/steering,
 parent transcript isolation, history normalization and crash interruption.
@@ -444,7 +444,7 @@ default to useful parallel work for independent workstreams; Ollama prefers dire
 helper for focused context/review. This is a heuristic, not a hardware benchmark
 or concurrency restriction. Explicit requests for helpers, including parallel
 ones on Ollama, remain supported. No provider switching, new settings or capability
-grants are introduced. Existing two-helper/one-writer limits remain. Child prompts
+grants are introduced. The six-helper ceiling and one-writer rule remain. Child prompts
 stay role-specific and cannot delegate. The guidance is built with the parent
 session, including a reconstructed session after reopening history.
 
@@ -455,3 +455,26 @@ focused project review; direct/sequential work should be preferred. Then explici
 request two parallel helpers on Ollama to check the preference is overridable.
 These are judgment/performance smokes; deterministic tests establish instruction
 wiring and preserved tool availability, not real-model delegation quality or speed.
+
+
+Larger orchestration batches (2026-09-27): the Wikipedia smoke delegated only
+one article while the parent read two. The previous runtime ceiling, batch schema,
+receipt normalization and UI truncation all assumed two helpers. Batches now
+support 2–6 assignments, with up to six active helpers plus the parent. Three
+independent articles can each have their own browser helper in one call. Hosted
+model guidance makes this decomposition explicit and keeps source review and
+synthesis with the parent; larger tasks use later batches as capacity frees.
+Simple/tightly coupled tasks still stay direct and Ollama scheduling remains
+preferentially direct/sequential. No quota on total helpers, turns or tokens is
+introduced. One writer, exclusive tab ownership, normal approvals and Stop remain.
+
+The main process owns admission and receipt validation in the existing delegation
+modules; the renderer consumes the complete trusted batch instead of maintaining
+its own two-card limit. No new IPC or process responsibility is introduced.
+Validation covers three/six foreground and background helpers, atomic admission,
+slot reuse, context separation, individual/parent Stop and late results. Installed
+Pi sessions exercise three and six concurrent transports without an external
+provider. Electron checks three real browser helpers, six-receipt SQLite crash
+recovery, and all six cards in both themes/layouts. The next real-model smoke is
+simply “Open three random Wikipedia articles and summarize them for me,” without
+any instruction to delegate.
