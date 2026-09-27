@@ -16,7 +16,7 @@ const {
 } = require('../automation/origin-scoped-controller');
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
 const { createConversationAttachmentTools } = require('./pi-attachment-tools');
-const { createSubagentTool, DELEGATION_SYSTEM_PROMPT } = require('./pi-subagent-tools');
+const { createSubagentTool, buildDelegationSystemPrompt } = require('./pi-subagent-tools');
 const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts } = require('./subagent-receipt');
 const {
   createWorkspaceTools,
@@ -1768,7 +1768,7 @@ class FreedomAgentService {
           },
         });
         const customTools = [...browserTools, ...attachmentTools, ...workspaceTools, delegationTool, ...delegationTool.controlTools];
-        let systemPrompt = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}\n\n${DELEGATION_SYSTEM_PROMPT}`;
+        let systemPrompt = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}\n\n${buildDelegationSystemPrompt(options.model?.provider)}`;
         if (this.attachmentStore) {
           systemPrompt = `${systemPrompt}\n\n${ATTACHMENT_SYSTEM_PROMPT}`;
         }

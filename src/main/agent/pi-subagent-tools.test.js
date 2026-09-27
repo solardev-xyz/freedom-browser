@@ -790,3 +790,21 @@ test('a report storage failure preserves findings instead of failing the job or 
   expect(response.details.subagent).toMatchObject({ state: 'completed', reportTruncated: false });
   expect(response.details.subagent.report).toHaveLength(40000);
 });
+
+test('Ollama scheduling guidance does not prevent explicitly requested parallel helpers', async () => {
+  const f = backgroundFixture();
+  f.options.model = { id: 'qwen3:8b', provider: 'ollama' };
+  const pending = f.run({ tasks: [{ title: 'Structure', task: 'Review structure' }, { title: 'Accessibility', task: 'Review accessibility' }] });
+  await flush();
+  expect(f.children).toHaveLength(2);
+  for (const child of f.children) {
+    expect(child.settings.model).toBe(f.options.model);
+    expect(child.settings.modelRuntime).toBe(f.options.modelRuntime);
+    expect(child.settings.systemPrompt).toContain('You are a read-only helper');
+    expect(child.settings.systemPrompt).not.toContain('Coordinate and review the work');
+    expect(child.settings.customTools.map(tool => tool.name)).not.toContain('delegate_task');
+    child.finish('Reviewed assigned files');
+  }
+  expect((await pending).details.subagents.map(receipt => receipt.state)).toEqual(['completed', 'completed']);
+  f.owner.subagentAbortController.abort();
+});

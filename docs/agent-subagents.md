@@ -380,7 +380,7 @@ browser approval; its action must not execute later.
 
 The user accepted the helper-card UI, including the compact Markdown refinement.
 Existing-tab handoff passed the user smoke (2026-09-27).
-Next: saved-report retrieval smoke, then reassess readiness to merge the experiment.
+Saved-report retrieval passed the user smoke (2026-09-27). Remaining acceptance checks: Stop during editing and background editing/reviewer overlap, including reopening the editing receipt; then reassess readiness to merge the experiment.
 Broader writer concurrency,
 model/role selection, nested delegation, remote execution and optional Jev workers
 remain later work. No claim of complete provider/platform qualification.
@@ -407,7 +407,7 @@ reports, Unicode pagination, legacy migration, deduplication, follow-up versions
 conversation isolation, reopening and deletion. Tool coverage checks lookup from
 a new parent context; card coverage checks lazy loading, additional pages, retries,
 and stale responses. Electron verifies persisted history and report rendering in
-both themes/layouts. Real-model retrieval smoke remains for user acceptance.
+both themes/layouts. Real-model retrieval passed user acceptance on 2026-09-27.
 
 Startup migration correction: the populated schema-4 upgrade originally used an
 active `iterate()` cursor while writing, which Electron's `better-sqlite3` rejects
@@ -434,3 +434,24 @@ connection failures and unresolved effects remain visible. Interrupted editing
 helpers surface a short partial-changes notice, and uncertain browser actions
 surface a notice until a fresh observation of the same page. A normal new-tab
 operation does not warn merely because it was not followed by a second read.
+
+
+Delegation guidance (2026-09-27): the main Agent now considers decomposition and
+review as part of substantial tasks, delegates clear independent assignments,
+and owns verification, integration and completion. Simple requests stay direct.
+The active supported provider selects scheduling guidance: hosted connections
+encourage useful parallel work; Ollama prefers direct work or a single foreground
+helper for focused context/review. This is a heuristic, not a hardware benchmark
+or concurrency restriction. Explicit requests for helpers, including parallel
+ones on Ollama, remain supported. No provider switching, new settings or capability
+grants are introduced. Existing two-helper/one-writer limits remain. Child prompts
+stay role-specific and cannot delegate. The guidance is built with the parent
+session, including a reconstructed session after reopening history.
+
+Acceptance prompts for orchestration: on a hosted connection, ask for a comparison
+of several independently researched topics without mentioning helpers; check that
+delegation is useful and findings are reviewed. On Ollama, try a small task and a
+focused project review; direct/sequential work should be preferred. Then explicitly
+request two parallel helpers on Ollama to check the preference is overridable.
+These are judgment/performance smokes; deterministic tests establish instruction
+wiring and preserved tool availability, not real-model delegation quality or speed.
