@@ -12,7 +12,7 @@ attachments, or analyze supplied evidence. It returns a report to the main Agent
 which remains responsible for checking findings and answering the user.
 For parallel inspection, pass `tasks` containing exactly two independent
 `{title, task, context}` assignments instead of the single-task fields. Both
-slots and task allowances are reserved before either session starts. Each helper
+slots are reserved before either session starts. Each helper
 receives only its own selected context; the parent receives reports in assignment
 order after both settle. One failure does not discard the other helper's report.
 
@@ -156,25 +156,28 @@ only display the existing activity events and persisted receipts.
 
 ## Limits and recovery
 
-Defaults are four helper starts per user turn (resuming a completed helper counts
-as another start), two active helpers, 24 tool calls and
-12 assistant responses per helper, and a shared ceiling of 48 tool calls per
-turn. Time limits are three minutes per helper and six minutes of cumulative
-helper time per turn. Simultaneous helpers both consume that time allowance;
-active timers rebalance as helpers finish. A shared tool/time/token limit cancels
-all still-active helpers; completed reports remain available. Input is capped at 48,000 characters,
-streamed text at 32,000 characters, and retained report text at 12,000 characters
-with explicit truncation metadata. Reported token usage has a cumulative
-120,000-token stop threshold across helpers in the turn. Usage is checked at
-message boundaries when available; this is not a guaranteed monetary cap or a
-preflight reservation for a provider response. Parent usage is separate.
-Per-helper counters and active time accumulate across follow-ups; shared budgets
-never reset when a helper resumes. There are at most eight follow-up messages per
-user turn, each bounded to 8,000 characters. Idle retained sessions consume no
-active time allowance. Messages wait until the current helper pass finishes;
-they do not interrupt an in-flight model response.
+At most two helpers run concurrently. Helpers have no separate token, elapsed-time,
+model-response, tool-call, generated-text, task-start or follow-up-count budget.
+They continue until they finish, fail, or are cancelled by Stop, Pause, steering,
+parent completion or disposal. Token counts, tool calls and elapsed time are
+retained as receipt metadata, not enforcement thresholds. Ordinary provider and
+individual tool constraints still apply, just as they do for the parent.
 
-Results distinguish running, completed, cancelled, timed out, limited and failed.
+The Mercury/Venus smoke on 2026-09-26 exposed the old shared 120,000-token cutoff:
+both helpers stopped after about 20 seconds, with 81,806 and 47,594 reported tokens.
+Repeated input context contributes to this usage. On 2026-09-27 the user directed
+removal of helper-specific execution budgets; any future user-facing cost budget
+should cover the whole task consistently rather than silently stopping helpers.
+
+Transport/storage bounds remain: combined assignment input is capped at 48,000
+characters, each follow-up at 8,000 characters, and pending follow-ups at the
+input-size bound. Reports are retained up to 12,000 characters with explicit
+truncation metadata; a longer response is shortened for storage without cancelling
+the helper. Messages wait until the current pass finishes and do not interrupt an
+in-flight model response. These bounds do not ration turns or cumulative usage.
+
+Results distinguish running, completed, cancelled, limited admission and failed.
+Historical timed-out/limited receipts remain readable.
 Errors include a parent-facing next step. Cancellation does not automatically
 retry the assignment. Foreground reports are persisted when the call settles;
 background reports are persisted individually. Active task labels and running
@@ -200,17 +203,22 @@ Automated coverage includes real installed Pi parent/child execution against a
 deterministic in-memory provider transport, trusted-tool isolation, history
 action restrictions, same model/runtime, cancellation before/during session
 creation, unresponsive providers, late callbacks, read aborts, two-helper
-enforcement, atomic batch admission, disjoint contexts, shared live time/token/tool
-budgets, sibling failures, Stop/Pause/steering,
+enforcement, atomic batch admission, disjoint contexts, continuation beyond former time/token/tool
+ceilings, sibling failures, Stop/Pause/steering,
 parent transcript isolation, history normalization and crash interruption.
 Renderer coverage checks inert expandable reports; disposable Electron coverage
 exercises both layouts and themes, plus real SQLite persistence and interrupted
 task recovery. Background coverage adds parent continuation, automatic delivery,
-same-session follow-ups with refreshed scoped tool closures, message limits,
-shared budget preservation, interruption while waiting, and stale task IDs.
+same-session follow-ups with refreshed scoped tool closures, message-size validation,
+usage accounting across follow-ups, interruption while waiting, and stale task IDs.
 The installed-SDK fixture holds background helpers at a transport barrier until
 the parent reaches its own next response, proving parent continuation.
-It also verifies two foreground helpers reach the transport concurrently. Provider scheduling may
+It also verifies two foreground helpers reach the transport concurrently and
+complete with reported usage above the former token cutoff. Sequential background
+tasks share one owner cleanup listener; Stop disposes all retained sessions.
+Budget-removal validation (2026-09-27): 232 tests across the helper, service,
+progress and history suites passed, along with `npm run lint`.
+Provider scheduling may
 still serialize requests, especially for local models.
 
 Validation for this slice: 355 targeted tests across seven suites, both affected
@@ -262,7 +270,7 @@ read-only project's editing-permission flow both passed user smoke tests.
 Manual background-edit/reviewer overlap, Stop during editing and reopening the
 editing receipt remain separate checks; these are not implied by those two passes.
 
-Browser smoke (2026-09-26; real-model acceptance pending):
+Browser smoke (2026-09-26 exercised tab ownership and parent recovery; repeat after budget removal):
 
 1. With no project attached, ask: “Start two browser helpers in the background.
    One reads https://en.wikipedia.org/wiki/Mercury_(planet), the other reads

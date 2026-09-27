@@ -54,6 +54,23 @@ describe('background delegation and messages', () => {
     f.owner.subagentAbortController.abort();
   });
 
+  test('many sequential background helpers share one cleanup listener and all dispose on Stop', async () => {
+    const f = backgroundFixture();
+    const { getEventListeners } = require('node:events');
+    const signal = f.owner.subagentAbortController.signal;
+    for (let i = 0; i < 12; i++) {
+      await f.start(); await flush();
+      f.children[i].finish();
+      expect((await f.tool.collect(f.owner))[0].state).toBe('completed');
+      expect(getEventListeners(signal, 'abort')).toHaveLength(1);
+    }
+    signal.throwIfAborted();
+    f.owner.subagentAbortController.abort(); await flush();
+    for (const child of f.children) expect(child.session.dispose).toHaveBeenCalledTimes(1);
+    expect(getEventListeners(signal, 'abort')).toHaveLength(0);
+    expect(await f.tool.collect(f.owner)).toEqual([]);
+  });
+
   test('queues active messages between passes, preserving context without concurrent prompts', async () => {
     const f = backgroundFixture(); const started = await f.start(); await flush();
     const id = started.details.subagent.taskId;
@@ -85,32 +102,40 @@ describe('background delegation and messages', () => {
     await expect(read.execute('late-read', { path: 'README.md' })).rejects.toThrow('stopped');
   });
 
-  test('messages cannot bypass task, concurrency, or shared message limits', async () => {
-    const f = backgroundFixture({ tasks: 1, messages: 1 }); const started = await f.start(); await flush();
+  test('follow-up messages have no per-turn count quota', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
     const id = started.details.subagent.taskId;
-    expect((await f.control('message', id, 'A follow-up')).isError).toBe(false);
-    expect((await f.control('message', id, 'Another follow-up')).isError).toBe(true);
-    f.children[0].finish(); await flush(); f.children[0].finish(); await f.tool.collect(f.owner);
-    expect((await f.control('message', id, 'Resume')).isError).toBe(true);
+    for (let i = 0; i < 10; i++) expect((await f.control('message', id, `Follow-up ${i}`)).isError).toBe(false);
+    f.children[0].finish(); await flush();
+    const prompt = JSON.parse(f.children[0].session.prompt.mock.calls[1][0]);
+    expect(prompt.parentFollowUps).toHaveLength(10);
+    f.children[0].finish('Combined report');
+    expect((await f.tool.collect(f.owner))[0].state).toBe('completed');
     f.owner.subagentAbortController.abort();
   });
 
-  test('completed follow-ups consume the shared task budget', async () => {
-    const f = backgroundFixture({ tasks: 1 }); const started = await f.start(); await flush();
+  test('completed helpers can resume repeatedly without a task-start quota', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
     f.children[0].finish(); await f.tool.collect(f.owner);
-    expect((await f.control('message', started.details.subagent.taskId, 'Resume')).isError).toBe(true);
+    for (let i = 0; i < 6; i++) {
+      expect((await f.control('message', started.details.subagent.taskId, 'Continue')).isError).toBe(false);
+      await flush(); f.children[0].finish();
+      expect((await f.tool.collect(f.owner))[0].state).toBe('completed');
+    }
+    expect(f.children).toHaveLength(1);
     f.owner.subagentAbortController.abort();
   });
 
-  test('a follow-up does not reset the per-helper tool-call ceiling', async () => {
-    const f = backgroundFixture({ toolCalls: 1 }); const started = await f.start(); await flush();
+  test('follow-ups retain usage counts without imposing a tool-call ceiling', async () => {
+    const f = backgroundFixture(); const started = await f.start(); await flush();
     const read = f.children[0].settings.customTools.find(tool => tool.name === 'read');
-    await read.execute('first', { path: 'README.md' });
+    for (let i = 0; i < 30; i++) await read.execute(`first-${i}`, { path: 'README.md' });
     f.children[0].finish(); await f.tool.collect(f.owner);
     await f.control('message', started.details.subagent.taskId, 'Inspect again'); await flush();
-    await expect(read.execute('second', { path: 'README.md' })).rejects.toThrow('budget');
-    expect((await f.tool.collect(f.owner))[0].state).toBe('limited');
-    expect(f.read.execute).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 30; i++) await read.execute(`second-${i}`, { path: 'README.md' });
+    f.children[0].finish();
+    expect((await f.tool.collect(f.owner))[0]).toMatchObject({ state: 'completed', toolCalls: 60 });
+    expect(f.read.execute).toHaveBeenCalledTimes(60);
     f.owner.subagentAbortController.abort();
   });
 
@@ -346,49 +371,45 @@ test('child tools abort with their task and cannot run after it finishes or unde
   expect(f.read.execute).toHaveBeenCalledTimes(1);
 });
 
-test('at most one helper runs and per-turn task budgets survive repeated delegations', async () => {
-  const f = fixture({ limits: { tasks: 1 } });
-  const done = deferred();
-  f.session.prompt.mockImplementation(() => done.promise);
-  const pending = f.run();
-  await flush();
-  expect((await f.run()).details.subagent.state).toBe('limited');
-  f.report(); done.resolve(); await pending;
-  expect((await f.run()).details.subagent.state).toBe('limited');
-  expect(f.options.createSession).toHaveBeenCalledTimes(1);
+test('completed foreground helpers free their slots without a per-turn start quota', async () => {
+  const f = fixture();
+  for (let i = 0; i < 6; i++) expect((await f.run()).details.subagent.state).toBe('completed');
+  expect(f.options.createSession).toHaveBeenCalledTimes(6);
 });
 
-test('timeout cancels child tools and detaches an unresponsive provider', async () => {
+test('elapsed time does not stop a helper, but Stop still detaches an unresponsive provider', async () => {
   jest.useFakeTimers();
   try {
-    const f = fixture({ limits: { timeoutMs: 30 } });
+    const f = fixture();
     f.session.prompt.mockImplementation(() => new Promise(() => {}));
     const pending = f.run(); await flush();
-    jest.advanceTimersByTime(31);
-    expect((await pending).details.subagent.state).toBe('timed_out');
-    await flush();
-    expect(f.session.abort).toHaveBeenCalled();
+    jest.advanceTimersByTime(60 * 60 * 1000); await flush();
+    expect(f.session.abort).not.toHaveBeenCalled();
+    expect(f.options.onResult).not.toHaveBeenCalled();
+    f.owner.subagentAbortController.abort();
+    expect((await pending).details.subagent).toMatchObject({ state: 'cancelled', durationMs: 3600000 });
+    await flush(); expect(f.session.abort).toHaveBeenCalled();
   } finally { jest.useRealTimers(); }
 });
 
-test('tool and shared token limits produce incomplete results rather than success', async () => {
-  const f = fixture({ limits: { toolCalls: 1 } });
+test('more than twelve model responses and large streamed output still produce a report', async () => {
+  const f = fixture();
   f.session.prompt.mockImplementation(async () => {
-    const read = f.options.createSession.mock.calls[0][0].customTools[0];
-    await read.execute('1', { path: 'a' });
-    await read.execute('2', { path: 'b' });
+    for (let i = 0; i < 20; i++) {
+      f.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'x'.repeat(4000) } });
+      f.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse', content: [], usage: { totalTokens: 15000 } } });
+    }
+    f.report('Final report');
   });
-  expect((await f.run()).details.subagent.state).toBe('limited');
-  expect(f.read.execute).toHaveBeenCalledTimes(1);
-  const tokens = fixture({ limits: { totalTokens: 20 } });
-  expect((await tokens.run()).details.subagent.state).toBe('completed');
-  expect((await tokens.run()).details.subagent.state).toBe('limited');
-  expect((await tokens.run()).details.subagent.state).toBe('limited');
+  expect((await f.run()).details.subagent).toMatchObject({ state: 'completed', report: 'Final report', totalTokens: 300012 });
 });
 
-test('rejects oversized output, missing terminal reports and provider exceptions without exposing provider internals', async () => {
-  const f = fixture({ limits: { outputChars: 20 } });
-  expect((await f.run()).details.subagent.state).toBe('limited');
+test('shortens retained reports without cancelling, and handles missing reports and provider errors safely', async () => {
+  const f = fixture();
+  f.session.prompt.mockImplementation(async () => f.report('x'.repeat(40000)));
+  const large = (await f.run()).details.subagent;
+  expect(large).toMatchObject({ state: 'completed', reportTruncated: true });
+  expect(large.report).toHaveLength(12000);
   const empty = fixture();
   empty.session.prompt.mockResolvedValue(undefined);
   expect((await empty.run()).details.subagent.state).toBe('failed');
@@ -448,6 +469,7 @@ test.each(['single', 'parallel', 'background'])('installed Pi completes isolated
           function: { name: parent ? 'delegate_task' : 'read', arguments: JSON.stringify(args) } }] }
           : { content: parent ? 'The helpers inspected the README.' : 'README.md describes a solar-system app.' };
         const chunk = { id: 'response-' + index, object: 'chat.completion.chunk', created: 1, model: 'test',
+          usage: { prompt_tokens: 80000, completion_tokens: 10, total_tokens: 80010 },
           choices: [{ index: 0, delta, finish_reason: call ? 'tool_calls' : 'stop' }] };
         return new Response('data: ' + JSON.stringify(chunk) + '\\n\\ndata: [DONE]\\n\\n', { headers: { 'content-type': 'text/event-stream' } });
       };
@@ -479,6 +501,7 @@ test.each(['single', 'parallel', 'background'])('installed Pi completes isolated
       }
       assert.equal(receipt.length, parallel ? 2 : 1);
       assert.ok(receipt.every(item => item.state === 'completed' && item.toolCalls === 1));
+      assert.ok(receipt.every(item => item.totalTokens > 120000));
       assert.ok(JSON.stringify(requests.at(-1)).includes('README.md describes a solar-system app.'));
       owner.subagentAbortController.abort();
       parent.session.dispose(); process.stdout.write('passed');
@@ -532,8 +555,8 @@ describe('parallel read-only assignments', () => {
     expect(result.isError).toBe(false);
   });
 
-  test('rejects mixed forms, malformed batches and insufficient remaining task budget before starting either helper', async () => {
-    const f = parallelFixture({ tasks: 1 });
+  test('rejects mixed forms, malformed batches and insufficient concurrency slots before starting either helper', async () => {
+    const f = parallelFixture({ concurrency: 1 });
     expect((await f.batch()).details.subagent.state).toBe('limited');
     for (const input of [{ tasks, title: 'mixed' }, { tasks: [tasks[0]] }, { tasks: [...tasks, tasks[0]] }, { tasks: [tasks[0], { title: 'Empty' }] }]) {
       expect((await f.run(input)).details.subagent.state).toBe('failed');
@@ -568,39 +591,42 @@ describe('parallel read-only assignments', () => {
     expect((await pending).details.subagents.map(item => item.state)).toEqual(['completed', 'cancelled']);
   });
 
-  test('reported tokens are shared while both helpers are still active', async () => {
-    const f = parallelFixture({ totalTokens: 20 }); const pending = f.batch(); await flush();
-    for (const child of f.children) child.emit({ type: 'message_end', message: { role: 'assistant',
-      stopReason: 'toolUse', content: [], usage: { totalTokens: 12 } } });
-    expect((await pending).details.subagents.map(item => item.state)).toEqual(['limited', 'limited']);
-    expect((await f.batch()).details.subagent.state).toBe('limited');
-    expect(f.children).toHaveLength(2);
+  test('the Mercury/Venus usage no longer cancels either sibling and counts remain accurate', async () => {
+    const f = parallelFixture(); const pending = f.batch(); await flush();
+    for (const [i, tokens] of [81806, 47594].entries()) f.children[i].emit({ type: 'message_end', message: { role: 'assistant',
+      stopReason: 'toolUse', content: [], usage: { totalTokens: tokens } } });
+    await flush();
+    expect(f.children.every(child => child.session.abort.mock.calls.length === 0)).toBe(true);
+    expect(f.options.onResult).not.toHaveBeenCalled();
+    f.children[0].finish('Mercury report'); f.children[1].finish('Venus report');
+    expect((await pending).details.subagents).toEqual([
+      expect.objectContaining({ state: 'completed', report: 'Mercury report', totalTokens: 81807 }),
+      expect.objectContaining({ state: 'completed', report: 'Venus report', totalTokens: 47595 }),
+    ]);
   });
 
-  test('the shared tool-call ceiling stops both helpers without executing the excess call', async () => {
-    const f = parallelFixture({ totalToolCalls: 3 }); const pending = f.batch(); await flush();
+  test('both helpers can keep using tools beyond the former shared ceiling', async () => {
+    const f = parallelFixture(); const pending = f.batch(); await flush();
     const reads = f.children.map(child => child.settings.customTools.find(tool => tool.name === 'read'));
-    await reads[0].execute('1', { path: 'a' });
-    await reads[1].execute('1', { path: 'b' });
-    await reads[0].execute('2', { path: 'c' });
-    await expect(reads[1].execute('2', { path: 'd' })).rejects.toThrow('Shared helper tool budget');
-    expect((await pending).details.subagents.map(item => item.state)).toEqual(['limited', 'limited']);
-    expect(f.read.execute).toHaveBeenCalledTimes(3);
+    for (let i = 0; i < 30; i++) for (const read of reads) await read.execute(String(i), { path: 'README.md' });
+    f.children[0].finish('A report'); f.children[1].finish('B report');
+    expect((await pending).details.subagents.map(item => [item.state, item.toolCalls])).toEqual([['completed', 30], ['completed', 30]]);
+    expect(f.read.execute).toHaveBeenCalledTimes(60);
   });
 
-  test('cumulative time counts both active helpers and rebalances when one finishes', async () => {
+  test('long-running siblings complete independently without a shared time ceiling', async () => {
     jest.useFakeTimers();
     try {
-      const f = parallelFixture({ totalDurationMs: 60, timeoutMs: 1000 });
-      const pending = f.batch(); await flush();
-      jest.advanceTimersByTime(10);
+      const f = parallelFixture(); const pending = f.batch(); await flush();
+      jest.advanceTimersByTime(3600000);
       f.children[0].finish('Done'); await flush();
-      jest.advanceTimersByTime(39); await flush();
+      jest.advanceTimersByTime(3600000); await flush();
       expect(f.children[1].session.abort).not.toHaveBeenCalled();
-      jest.advanceTimersByTime(2);
-      expect((await pending).details.subagents.map(item => item.state)).toEqual(['completed', 'limited']);
+      f.children[1].finish('Also done');
+      expect((await pending).details.subagents.map(item => [item.state, item.durationMs])).toEqual([['completed', 3600000], ['completed', 7200000]]);
     } finally { jest.useRealTimers(); }
   });
+
 });
 
 test('browser mode receives only page tools, records browser evidence, and releases its scope', async () => {
