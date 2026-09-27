@@ -1,5 +1,7 @@
 # Kohaku host integration for Freedom's wallet
 
+**September 27 deposit checkpoint:** real native-ETH deposit preparation now passes through the Kohaku session and managed process prover in source and packaged Electron. Main checks amount/fee/target and proof-bound calldata; vault cancellation and artifact refusal pass. ERC-20 remains gated because the candidate drops the SDK's zero-reset approval from its multi-approval sequence. [Evidence and remaining work](../docs/ppv2-controlled-deposit-2026-09-27.md).
+
 **Latest September 26 session checkpoint:** the real Kohaku/SDK factory now passes controlled registration preparation, encrypted cursor restore and owner-rotation recovery through Freedom's restricted host. Runtime checks found and corrected owner/signer confusion, stale rotation metadata, recursive log retries and an artifact-manifest prefix mismatch. [Evidence and next implementation slice](../docs/ppv2-controlled-session-2026-09-26.md). Full shield/unshield and live Sepolia qualification remain pending.
 
 **September 26 continuation:** the pinned adapter compatibility patch typechecks, and a real deposit proof passes lifecycle/egress tests in source and packaged Electron through a main-owned utility process. See [the current implementation](../docs/ppv2-adapter-process-2026-09-26.md); the September 25 blockers below describe the earlier unpatched experiment.

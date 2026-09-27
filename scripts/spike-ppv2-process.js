@@ -44,9 +44,32 @@ async function main() {
     fs.writeFileSync(path.join(artifacts, name), bytes); return { kind, name, size: bytes.length, sha256 };
   });
   fs.writeFileSync(path.join(source, 'manifest.json'), JSON.stringify(manifest));
+  // Optional real Kohaku session candidate for the assembled-deposit probe.
+  const fixtures = process.argv[3];
+  let sessionCandidate = null;
+  if (fixtures) {
+    if (!path.isAbsolute(fixtures)) throw new Error('Absolute compatibility fixture directory required');
+    const previous = JSON.parse(fs.readFileSync(path.join(fixtures, 'report.json')));
+    const patchHash = createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'fixtures/kohaku-ppv2-compat.patch'))).digest('hex');
+    if (!previous.adapterTypecheck.passed || previous.sdkRevision !== revision || previous.compatibilityPatchSha256 !== patchHash ||
+        previous.sdkEntrySha256 !== createHash('sha256').update(fs.readFileSync(sdkEntry)).digest('hex')) throw new Error('Rebuild reviewed compatibility fixtures');
+    await esbuild.build({ entryPoints: [path.join(fixtures, 'packages/privacy-pools/src/v2/plugin.ts')],
+      outfile: path.join(source, 'plugin.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node24',
+      nodePaths: [path.join(checkout, 'packages/sdk/node_modules')],
+      alias: { '@kohaku-eth/plugins': path.join(fixtures, 'packages/plugins/src/index.ts') },
+      plugins: [{ name: 'local-sdk', setup(build) {
+        build.onResolve({ filter: /^@0xbow-io\/privacy-pools-v2-sdk$/ }, () => ({ path: './sdk.cjs', external: true }));
+      } }],
+    });
+    await esbuild.build({ entryPoints: [path.join(checkout, 'packages/sdk/src/constant/ContractInteractor.ts')],
+      outfile: path.join(source, 'abis.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node24' });
+    fs.copyFileSync(path.join(__dirname, '../test/helpers/ppv2-session-fixture.js'), path.join(source, 'configuration.cjs'));
+    sessionCandidate = { kohaku: previous.kohakuRevision, sdk: revision, patchSha256: patchHash };
+    fs.writeFileSync(path.join(source, 'candidate.json'), JSON.stringify(sessionCandidate));
+  }
   const output = path.join(directory, 'ppv2.asar');
   await require('@electron/asar').createPackage(source, output);
-  const report = { revision, output, manifest, webWorkerVersions: [...workers.keys()],
+  const report = { revision, output, manifest, sessionCandidate, webWorkerVersions: [...workers.keys()],
     asarSha256: createHash('sha256').update(fs.readFileSync(output)).digest('hex'), bundleInputs: Object.keys(built.metafile.inputs).length };
   fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

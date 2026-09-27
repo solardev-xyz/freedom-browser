@@ -2,6 +2,8 @@
 
 Date: 2026-09-26. Continues [adapter and process qualification](ppv2-adapter-process-2026-09-26.md). Main was fetched and remains `2983dc62`, already merged; no new dependency/node refresh was necessary. No application dependency, UI, renderer channel or production activation was added.
 
+September 27 continuation: [native deposit proving and preparation](ppv2-controlled-deposit-2026-09-27.md) now passes through this session in source and packaged Electron. The read-only/proving-disabled description below records this earlier checkpoint; an explicit main-owned proving configuration now enables only the bounded native-deposit preparation method.
+
 ## Implemented boundary
 
 `wallet/ppv2-session.js` assembles the real Kohaku candidate through main-owned capabilities. It accepts a reviewed local candidate factory, explicit Sepolia deployment and contract grants, pinned ASP key/artifact manifest, and separate endpoint grants. This is a main-only engineering entry point, not dynamic plugin installation or an IPC API. Candidate labels are compatibility checks, not a sandbox or cryptographic authentication of an arbitrary JavaScript function; the qualification script verifies the source/build inputs separately.

@@ -8,6 +8,7 @@ const { createPPv2Keystore } = require('../identity/ppv2-keys');
 const { createPPv2Storage } = require('./ppv2-storage');
 const { createKohakuProvider } = require('../networks/kohaku-provider');
 const { createKohakuNetworkRouter } = require('../networks/kohaku-network-router');
+const { createPPv2DepositProver } = require('./ppv2-deposit-prover');
 const PPV2_CANDIDATE = Object.freeze({
   kohaku: '6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e',
   sdk: 'fe0244e3f14110efd83db02c60c96517dea9cd5a',
@@ -20,7 +21,7 @@ const proofUnavailable = () => { throw privacyError('PRIVATE_PPV2_PROOF_UNAVAILA
 const noProof = Object.freeze(Object.fromEntries(['proveDeposit', 'proveTransact', 'proveRagequit', 'verifyDeposit',
   'verifyTransact', 'verifyRagequit', 'loadCircuit', 'formatForEVM'].map((name) => [name, proofUnavailable])));
 
-async function openPPv2Session({ candidate, accountIndex = 0, configuration }) {
+async function openPPv2Session({ candidate, accountIndex = 0, configuration, proving }) {
   if (!require('../settings-store').isWalletTorExperimentAvailable() ||
       !Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex > 65535 ||
       !candidate || typeof candidate.createPlugin !== 'function' ||
@@ -72,11 +73,13 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration }) {
       deployment: Object.fromEntries(deploymentKeys.map((name) => [name, config.deployment[name].toLowerCase()])),
       deploymentBlock: config.deploymentBlock, asp: config.asp, artifacts: config.artifacts };
     const storage = await createPPv2Storage({ handle: handle('storage'), accountIndex, binding });
+    const depositProver = proving ? createPPv2DepositProver({ handle: handle('prover'), artifactHandle: handle('artifacts'),
+      sdkEntry: proving.sdkEntry, directory: proving.directory, onProgress: proving.onProgress, manifest: config.artifacts.manifest }) : null;
     const host = Object.freeze({ provider, network, keystore, storage });
     const params = { chainId: 11155111n, ownerAddress: config.ownerAddress, accountIndex,
       deployment: config.deployment, deploymentBlock: `0x${config.deploymentBlock.toString(16)}`,
       asp: config.asp, relayers: config.relayers, artifacts: config.artifacts,
-      storeKey: 'controlled', revocableKeyGapLimit: 20, factories: { proofService: noProof } };
+      storeKey: 'controlled', revocableKeyGapLimit: 20, factories: { proofService: depositProver?.service || noProof } };
     const created = await scope.run(sessionHandle, () => createPlugin(host, params));
     getPrivacyContext(sessionHandle);
     plugin = created;
@@ -85,7 +88,10 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration }) {
       if (busy) throw privacyError('PRIVATE_PPV2_BUSY', 'A PPv2 operation is already in progress');
       busy = true;
       try {
-        return await scope.run(sessionHandle, () => plugin[method](...args));
+        return await scope.run(sessionHandle, () => method === 'prepareNativeDeposit'
+          ? depositProver.prepare({ ...args[0], ownerAddress: config.ownerAddress, entrypointAddress: config.deployment.entrypointAddress },
+            () => plugin.prepareShield({ asset: { __type: 'native' }, amount: args[0].amount }))
+          : plugin[method](...args));
       } catch {
         // Never forward SDK exceptions (URLs, notes, payloads or nested causes).
         getPrivacyContext(sessionHandle);
@@ -95,12 +101,13 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration }) {
     return Object.freeze({
       close,
       descriptor: Object.freeze({ chainId: 11155111, accountIndex, experimental: true, verified: false,
-        candidate: PPV2_CANDIDATE, proving: false, broadcasting: false }),
+        candidate: PPV2_CANDIDATE, proving: !!depositProver, broadcasting: false }),
       instanceId: () => call('instanceId'),
       isRegistered: () => call('isRegistered'),
       balance: () => call('balance', undefined),
       notes: () => call('notes', undefined, true),
       prepareRegisterKeystore: () => call('prepareRegisterKeystore'),
+      ...(depositProver ? { prepareNativeDeposit: ({ amount, maxFee }) => call('prepareNativeDeposit', { amount, maxFee }) } : {}),
     });
   } catch (error) {
     close();
