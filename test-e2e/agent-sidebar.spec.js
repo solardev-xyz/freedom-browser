@@ -1184,3 +1184,66 @@ test('saved helper reports load on expansion and page through complete SQLite te
   }
   expect(await electronApp.evaluate(() => globalThis.helperReportReads)).toBe(2);
 });
+
+test('upgrades populated legacy helper history with the Electron SQLite driver', async ({ electronApp, userDataDir }) => {
+  const result = await electronApp.evaluate((_electron, { root, userDataDir }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('fs'); const path = require('path');
+    const Database = require('better-sqlite3');
+    const { AgentSessionHistoryStore } = require(root + '/src/main/agent/session-history-store');
+    const dir = path.join(userDataDir, 'legacy-helper-upgrade'); fs.mkdirSync(dir);
+    const store = new AgentSessionHistoryStore({ userDataDir: dir });
+    store.createSession({ conversationId: 'legacy', title: 'Legacy conversation', approvalMode: 'every_interaction' });
+    for (let i = 0; i < 205; i++) {
+      const runId = `turn_${String(i).padStart(3, '0')}`;
+      store.startTurn({ conversationId: 'legacy', runId, userText: `Review ${i}`, approvalMode: 'every_interaction' });
+      const subagent = { taskId: 'delegate_' + i.toString(16).padStart(24, '0'), title: `Review ${i}`,
+        state: 'completed', report: `Legacy findings ${i}`, reportTruncated: i === 204 };
+      store.getDb().prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ?').run(JSON.stringify([{ operation: 'delegate_task', subagent }]), runId);
+    }
+    store.getDb().exec('DROP TABLE agent_helper_reports');
+    store.getDb().pragma('user_version = 4'); store.close();
+    let injectFailure = true;
+    class FaultOnceDatabase extends Database {
+      prepare(sql) {
+        const statement = super.prepare(sql);
+        if (injectFailure && sql.startsWith('UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ?')) {
+          return { run: (...args) => {
+            if (args[1] === 'turn_102') throw new Error('Injected migration write failure');
+            return statement.run(...args);
+          } };
+        }
+        return statement;
+      }
+    }
+    const upgraded = new AgentSessionHistoryStore({ userDataDir: dir, Database: FaultOnceDatabase });
+    let failure;
+    try { upgraded.getDb(); } catch (error) { failure = error.message; }
+    const closedAfterFailure = upgraded.db === null;
+    const probe = new Database(path.join(dir, 'agent-history.sqlite'));
+    const versionAfterFailure = probe.pragma('user_version', { simple: true });
+    const legacyAfterFailure = JSON.parse(probe.prepare('SELECT activity_json FROM agent_turns WHERE id = ?').get('turn_000').activity_json)[0].subagent;
+    probe.close();
+    if (failure !== 'Injected migration write failure' || !closedAfterFailure) {
+      upgraded.close();
+      return { failure, closedAfterFailure, versionAfterFailure, legacyAfterFailure };
+    }
+    injectFailure = false;
+    upgraded.markStaleRunningAsInterrupted();
+    const transcript = upgraded.getSession('legacy').transcript;
+    const reports = transcript.map(turn => upgraded.helperReports('legacy', { action: 'read', reportId: turn.activity[0].subagent.reportId }));
+    const version = upgraded.getDb().pragma('user_version', { simple: true });
+    const count = upgraded.getDb().prepare('SELECT count(*) AS n FROM agent_helper_reports').get().n;
+    upgraded.close();
+    const reopenedCount = upgraded.getSession('legacy').transcript.length;
+    upgraded.close();
+    return { failure, closedAfterFailure, versionAfterFailure, legacyAfterFailure, version, count, reopenedCount,
+      allReportsMatch: reports.every((report, i) => report.text === `Legacy findings ${i}`), lastTruncated: reports.at(-1).reportTruncated };
+  }, { root: repositoryRoot, userDataDir });
+  expect(result.failure).toBe('Injected migration write failure');
+  expect(result.closedAfterFailure).toBe(true);
+  expect(result.versionAfterFailure).toBe(4);
+  expect(result.legacyAfterFailure.report).toBe('Legacy findings 0');
+  expect(result.legacyAfterFailure.reportId).toBeUndefined();
+  expect(result).toMatchObject({ version: 5, count: 205, reopenedCount: 205, allReportsMatch: true, lastTruncated: true });
+});

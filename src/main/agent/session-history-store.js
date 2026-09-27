@@ -221,9 +221,15 @@ class AgentSessionHistoryStore {
     const dbPath = path.join(this.userDataDir, DB_FILE);
     log.info('[AgentHistory] Opening database:', dbPath);
     this.db = new this.Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.#migrate();
+    try {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('foreign_keys = ON');
+      this.#migrate();
+    } catch (error) {
+      // A rolled-back migration must be retried, not bypassed by a cached connection.
+      this.close();
+      throw error;
+    }
     return this.db;
   }
 
@@ -310,11 +316,20 @@ class AgentSessionHistoryStore {
           truncated INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_agent_helper_reports_session ON agent_helper_reports(session_id, created_at DESC);`);
-        // Preserve legacy text and its truncation flag; never claim lost text was recovered.
-        for (const row of this.db.prepare('SELECT id, session_id, activity_json, started_at FROM agent_turns').iterate()) {
-          const activity = this.#compactReports(row.session_id, row.id, safeJsonParse(row.activity_json, []), row.started_at);
-          this.db.prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ?')
-            .run(JSON.stringify(activity), row.id, row.session_id);
+        // Finalize each bounded read before writing: better-sqlite3 forbids
+        // writes while an iterate() cursor is active on this connection.
+        const readBatch = this.db.prepare(`SELECT id, session_id, activity_json, started_at
+          FROM agent_turns WHERE id > ? ORDER BY id ASC LIMIT 100`);
+        const update = this.db.prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ?');
+        let cursor = '';
+        while (true) {
+          const rows = readBatch.all(cursor);
+          if (!rows.length) break;
+          for (const row of rows) {
+            const activity = this.#compactReports(row.session_id, row.id, safeJsonParse(row.activity_json, []), row.started_at);
+            update.run(JSON.stringify(activity), row.id, row.session_id);
+          }
+          cursor = rows.at(-1).id;
         }
         this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
       })();

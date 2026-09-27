@@ -398,3 +398,12 @@ conversation isolation, reopening and deletion. Tool coverage checks lookup from
 a new parent context; card coverage checks lazy loading, additional pages, retries,
 and stale responses. Electron verifies persisted history and report rendering in
 both themes/layouts. Real-model retrieval smoke remains for user acceptance.
+
+Startup migration correction: the populated schema-4 upgrade originally used an
+active `iterate()` cursor while writing, which Electron's `better-sqlite3` rejects
+as a busy connection. The earlier Node SQLite migration test did not catch that
+driver-specific constraint. Migration now reads finalized batches of 100 turns
+before writing, within the same transaction, and closes a failed connection so
+retry cannot skip migration. An Electron regression covers 205 legacy turns,
+mid-migration failure, full rollback, retry, report preservation and reopening.
+Validation: 10 history tests, lint and three Electron checks passed.

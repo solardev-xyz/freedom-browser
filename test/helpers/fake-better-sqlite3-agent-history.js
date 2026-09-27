@@ -39,8 +39,9 @@ class FakeBetterSqlite3AgentHistoryDatabase {
   prepare(sql) {
     const query = normalize(sql);
 
-    if (query === 'SELECT id, session_id, activity_json, started_at FROM agent_turns') {
-      return { iterate: () => this.state.turns.map(clone) };
+    if (query === 'SELECT id, session_id, activity_json, started_at FROM agent_turns WHERE id > ? ORDER BY id ASC LIMIT 100') {
+      return { all: cursor => this.state.turns.filter(row => row.id > cursor)
+        .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, 100).map(clone) };
     }
     if (query === 'SELECT id FROM agent_turns WHERE id = ? AND session_id = ?') {
       return { get: (id, sessionId) => clone(this.state.turns.find(row => row.id === id && row.session_id === sessionId)) };
