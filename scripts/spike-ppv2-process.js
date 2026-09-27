@@ -44,6 +44,42 @@ async function main() {
     fs.writeFileSync(path.join(artifacts, name), bytes); return { kind, name, size: bytes.length, sha256 };
   });
   fs.writeFileSync(path.join(source, 'manifest.json'), JSON.stringify(manifest));
+  // Explicit opt-in: hydrate these pinned LFS artifacts first. Never generate
+  // replacement proving keys or silently download from a runtime gateway.
+  const exitManifest = [];
+  if (process.argv[4] === '--exit-circuits') {
+    for (const circuit of ['ragequit', 'transact_1x1']) {
+      for (const [kind, relative] of Object.entries({ wasm: `${circuit}_js/${circuit}.wasm`,
+        provingKey: 'groth16_pkey.zkey', verificationKey: 'groth16_vkey.json' })) {
+        const bytes = fs.readFileSync(path.join(checkout, 'packages/circuits/build', circuit, relative));
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        if (sha256 !== sdk.DEFAULT_CIRCUIT_MANIFEST[circuit][`${kind}Sha256`]) throw new Error('Exit artifact digest mismatch');
+        const name = `${circuit}.${{ wasm: 'wasm', provingKey: 'zkey', verificationKey: 'vkey.json' }[kind]}`;
+        fs.writeFileSync(path.join(artifacts, name), bytes);
+        exitManifest.push({ circuit, kind, name, size: bytes.length, sha256 });
+      }
+    }
+    fs.writeFileSync(path.join(source, 'exit-manifest.json'), JSON.stringify(exitManifest));
+    fs.copyFileSync(path.join(__dirname, 'fixtures/ppv2-exit-job.js'), path.join(source, 'exit-job.cjs'));
+    // Same locked snarkjs dependency, using its supported prover option. This
+    // is an experimental factory implementation, not a patched SDK/dependency.
+    await esbuild.build({ stdin: { contents: `const { groth16 } = require('snarkjs');
+      exports.fullProve = (input, wasm, key) => groth16.fullProve(input, wasm, key, undefined, undefined, { singleThread: true });
+      exports.verify = (...args) => groth16.verify(...args);`, resolveDir: path.join(checkout, 'packages/sdk') },
+      outfile: path.join(source, 'serial-prover.cjs'), bundle: true, platform: 'node', format: 'cjs', target: 'node24',
+      plugins: [{ name: 'preserve-serial-worker-bootstrap', setup(build) {
+        build.onResolve({ filter: /^web-worker$/ }, ({ importer }) => {
+          const entry = createRequire(importer).resolve('web-worker');
+          const root = path.dirname(path.dirname(entry));
+          const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version;
+          if (!workers.has(version)) throw new Error('Unreviewed worker version');
+          return { path: `./node_modules/web-worker-${version}/cjs/node.js`, external: true };
+        });
+      } }],
+    });
+
+  }
+
   // Optional real Kohaku session candidate for the assembled-deposit probe.
   const fixtures = process.argv[3];
   let sessionCandidate = null;
@@ -69,7 +105,7 @@ async function main() {
   }
   const output = path.join(directory, 'ppv2.asar');
   await require('@electron/asar').createPackage(source, output);
-  const report = { revision, output, manifest, sessionCandidate, webWorkerVersions: [...workers.keys()],
+  const report = { revision, output, manifest, exitManifest, sessionCandidate, webWorkerVersions: [...workers.keys()],
     asarSha256: createHash('sha256').update(fs.readFileSync(output)).digest('hex'), bundleInputs: Object.keys(built.metafile.inputs).length };
   fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
