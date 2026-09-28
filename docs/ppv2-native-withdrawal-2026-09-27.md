@@ -1,5 +1,7 @@
 # PPv2 controlled native withdrawal and change recovery
 
+**Historical checkpoint:** [September 28 review fixes](privacy-review-fixes-2026-09-28.md) update the status of the recovery, registration, quote and proof-verification limits described below. Session verification runs in the producer process; the standalone relay fixture separately qualifies an independent verifier.
+
 Date: 2026-09-27. Scope: main-process development/Sepolia session, synthetic chain and HTTP services, actual pinned Kohaku/SDK code and Groth16 circuits. Production remains disabled. No live transaction, new application dependency, renderer flow or IPC channel was added.
 
 ## Implemented boundary

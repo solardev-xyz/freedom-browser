@@ -1,6 +1,6 @@
 # Wallet privacy engineering status
 
-September 14 baseline. **Latest update:** [September 25 recovery and SDK transport](privacy-engineering-followup-2026-09-25.md) supersedes the pending-journal and current-Railgun assumptions below.
+September 14 baseline. **Latest update:** [September 28 independent review and fixes](privacy-review-fixes-2026-09-28.md) records the current implementation and release gates. The [September 25 follow-up](privacy-engineering-followup-2026-09-25.md) updates the Railgun assumptions below. This page preserves the September 14 baseline and its original measurements.
 
 Local implementation and qualification work; no production activation or shielded-wallet release. The [implementation plan](wallet-privacy-implementation-plan.md) remains the acceptance checklist. UI/UX is provisional and will be discussed separately.
 

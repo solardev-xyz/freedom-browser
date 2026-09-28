@@ -1,5 +1,7 @@
 # PPv2 controlled native deposit
 
+**Historical checkpoint:** [September 28 review fixes](privacy-review-fixes-2026-09-28.md) update the status of the recovery, registration, quote and proof-verification limits described below. Session verification runs in the producer process; the standalone relay fixture separately qualifies an independent verifier.
+
 Date: 2026-09-27. Continues [controlled session assembly](ppv2-controlled-session-2026-09-26.md). Main was fetched and remains already merged at `2983dc62`; no merge or managed-node refresh was needed. No application dependency or renderer API was added.
 
 ## What now works

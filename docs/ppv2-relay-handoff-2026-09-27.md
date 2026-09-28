@@ -1,5 +1,7 @@
 # PPv2 final relay handoff and durable uncertainty
 
+**Historical checkpoint:** [September 28 review fixes](privacy-review-fixes-2026-09-28.md) update the status of the recovery, registration, quote and proof-verification limits described below. Session verification runs in the producer process; the standalone relay fixture separately qualifies an independent verifier.
+
 Date: 2026-09-27. Continues [native emergency exit](ppv2-native-ragequit-2026-09-27.md). Main was fetched and remains fully merged at `2983dc62`. No dependencies or node pins changed. SDK `fe0244e3` and Kohaku `6fdc248b` with the existing compatibility patch remain the qualified sources.
 
 ## Implemented
