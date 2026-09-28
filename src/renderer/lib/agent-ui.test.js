@@ -615,7 +615,7 @@ describe('Agent UI', () => {
     expect(report.querySelector('img')).toBeNull();
     ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task',
       status: 'failed', label: 'Helper stopped — Review', subagent: { state: 'cancelled', report: '' } });
-    expect(ctx.elements['agent-transcript'].querySelector('.agent-subagent-report').children[2].textContent).toBe('No complete report was returned.');
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-subagent-report').children[2].textContent).toBe('No complete report was returned');
     expect(ctx.elements['agent-run-message'].textContent).not.toContain('Browser');
   });
   afterEach(() => {

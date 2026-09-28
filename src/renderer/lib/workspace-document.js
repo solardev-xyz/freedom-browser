@@ -122,7 +122,7 @@ export function renderDocument(host, rows, { split = false, query = '', highligh
       }
     } else { host.appendChild(rowNode(row)); index += 1; }
   }
-  if (!rows.length) host.appendChild(element('p', 'workspace-viewer-message', 'No content to show.'));
+  if (!rows.length) host.appendChild(element('p', 'workspace-viewer-message', 'No content to show'));
   return group;
 }
 

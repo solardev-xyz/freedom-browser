@@ -3428,7 +3428,7 @@ function finishToolRow(event) {
       const report = document.createElement('div');
       report.className = 'agent-helper-report-body';
       report.textContent = typeof receipt.report === 'string' && receipt.report
-        ? receipt.report : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
+        ? receipt.report : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned';
       renderAgentMarkdown(report, report.textContent);
       if (receipt.state === 'completed' && receipt.report && report.classList.contains('rendered-markdown')) {
         card.preview.textContent = report.textContent.replace(/\s+/g, ' ').trim().slice(0, 180);
@@ -3453,7 +3453,7 @@ function finishToolRow(event) {
       if (receipt.mode === 'edit') {
         const changes = document.createElement('p');
         const paths = Array.isArray(receipt.changedFiles) ? receipt.changedFiles.slice(0, 20) : [];
-        changes.textContent = paths.length ? `Files changed: ${paths.join(', ')}` : 'No completed file writes recorded.';
+        changes.textContent = paths.length ? `Files changed: ${paths.join(', ')}` : 'No completed file writes recorded';
         if (receipt.writesPending || (receipt.attemptedFiles || []).some(file => !paths.includes(file))) changes.textContent += ' Some writes were attempted or still settling; review the current files.';
         details.appendChild(changes);
       }

@@ -103,7 +103,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
     if (!append) {
       const entry = entries.find(item => item.path === session.selected) || entries.find(item => item.type !== 'directory');
       if (entry) { session.selected = entry.path; void readFile(session, ui, entry); }
-      else session.document.appendChild(node('p', 'workspace-viewer-message', entries.length ? 'Choose a folder to browse its files.' : 'No files to show.'));
+      else session.document.appendChild(node('p', 'workspace-viewer-message', entries.length ? 'Choose a folder to browse its files.' : 'No files to show'));
     }
   }
 
@@ -156,7 +156,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
           tree.appendChild(action('Retry folder', () => load(path, page?.nextOffset || 0)));
         } else if (page?.nextOffset) tree.appendChild(action('Load more files', () => load(path, page.nextOffset)));
         else if (page?.limitReached) tree.appendChild(node('p', 'workspace-viewer-caption', 'Folder listing limit reached.'));
-        else if (page && !page.entries.length && !loading.has(path)) tree.appendChild(node('p', 'workspace-viewer-caption', path === '.' ? 'No files found.' : 'Empty folder'));
+        else if (page && !page.entries.length && !loading.has(path)) tree.appendChild(node('p', 'workspace-viewer-caption', path === '.' ? 'No files found' : 'Empty folder'));
       };
       branch('.', 0); list.scrollTop = scroll;
       session.buttons.find(button => button.dataset.path === focus)?.focus();
@@ -320,7 +320,7 @@ export function createWorkspaceViewers({ openTab, closeTab, onOpenViewer = () =>
       button.appendChild(node('span', 'workspace-viewer-caption', `${version.id.slice(0, 7)} · ${new Date(version.createdAt).toLocaleString()}`)); list.appendChild(button);
     }
     if (state.nextCursor) { const more = action('Load older commits', async () => { more.disabled = true; try { await showHistory(session, ui, state.nextCursor); } finally { more.disabled = false; } }); list.appendChild(more); }
-    if (!session.versions.length) detail.replaceChildren(node('p', 'workspace-viewer-message', 'No commits to show.'));
+    if (!session.versions.length) detail.replaceChildren(node('p', 'workspace-viewer-message', 'No commits to show'));
     const recovery = await history(session, 'recovery'); if (!recovery || !ui.valid() || !recovery.pending) return;
     const card = node('div', 'workspace-viewer-recovery'); card.appendChild(node('strong', '', 'An interrupted operation needs attention'));
     card.appendChild(node('p', '', recovery.message || 'A restore did not finish. Review the saved backup before recovering.'));
