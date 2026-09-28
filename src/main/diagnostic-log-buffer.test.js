@@ -6,6 +6,12 @@ const {
 } = require('./diagnostic-log-buffer');
 
 describe('DiagnosticLogBuffer', () => {
+  test('removes URL credentials, keyed paths, queries and fragments before retention', () => {
+    const buffer = new DiagnosticLogBuffer();
+    buffer.capture({ data: ['[History] https://user:password@example.test/api/secret?token=private#fragment'] });
+    expect(buffer.read().entries[0].text).toBe('[History] https://example.test/[path redacted]');
+  });
+
   test('captures raw node and Freedom lines with trusted source classification', () => {
     const buffer = new DiagnosticLogBuffer({ maxEntries: 10 });
     buffer.capture({

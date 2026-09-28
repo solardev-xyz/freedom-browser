@@ -3529,6 +3529,51 @@ describe('Agent UI', () => {
     );
   });
 
+  test('does not apply a second click to a newly queued approval', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const approval = approvalId => ({ type: 'approval_requested', runId: 'run_test', approvalId,
+      action: 'browser_interaction', operation: 'browser_click', label: 'Continue', origin: 'https://example.test' });
+    ctx.emit(approval('first'));
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    ctx.emit(approval('second'));
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 2 });
+    ctx.elements['agent-approval-approve'].dispatch('click', { detail: 1 });
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval.mock.calls).toEqual([['run_test', 'first', true]]);
+    expect(ctx.elements['agent-approval-approve'].disabled).toBe(true);
+  });
+
+  test('a delayed password unlock cannot approve a replacement request', async () => {
+    let finishUnlock;
+    const ctx = await loadAgentUi({ windowGlobals: { identity: {
+      getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }),
+      unlock: jest.fn(() => new Promise(resolve => { finishUnlock = resolve; })),
+    } } });
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'wallet_first',
+      action: 'wallet_transaction', wallet: { kind: 'transaction', requiresUnlock: true } });
+    ctx.elements['agent-wallet-password'].value = 'fixture password';
+    ctx.elements['agent-wallet-unlock-submit'].dispatch('click');
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'replacement',
+      action: 'browser_interaction', operation: 'browser_click', label: 'Continue' });
+    finishUnlock({ success: true });
+    await flush(); await flush();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+  });
+
+  test('sending guidance twice and pressing Enter on an empty composer do not stop the run', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.elements['agent-prompt'].value = 'Use a blue background';
+    ctx.elements['agent-run'].dispatch('click', { detail: 1 });
+    ctx.elements['agent-run'].dispatch('click', { detail: 2 });
+    ctx.elements['agent-prompt'].dispatch('keydown', { key: 'Enter', preventDefault: jest.fn() });
+    await flush();
+    expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
+  });
+
   test('keeps a locked transaction approval in the composer until password unlock succeeds', async () => {
     const unlock = jest.fn().mockResolvedValue({ success: true });
     const ctx = await loadAgentUi({

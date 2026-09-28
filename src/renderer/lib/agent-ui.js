@@ -103,6 +103,9 @@ let conversationResources = [];
 let lastFinishedRunId = null;
 let stopRequestedRunId = null;
 let pendingApproval = null;
+let lastApprovalDecisionAt = -Infinity;
+let approvalReadyAt = 0;
+let lastGuidanceSentAt = -Infinity;
 let panelOpen = false;
 let agentView = 'loading';
 let approvalMode = APPROVAL_MODES.SENSITIVE_ACTIONS;
@@ -2680,6 +2683,7 @@ function workspaceCommandPermissionDetails(permission, reason) {
 }
 
 function renderApproval(request) {
+  approvalReadyAt = Math.max(Date.now(), lastApprovalDecisionAt + 600);
   if (!request || typeof request.approvalId !== 'string') return;
   pendingApproval = request;
   closeComposerPopovers();
@@ -2827,7 +2831,10 @@ function renderApproval(request) {
       : '';
   elements.walletUnlock.hidden = true;
   elements.approvalAllowConversation.hidden = !diagnostic && !workspacePermission;
-  if (diagnostic) elements.approvalAllowConversation.textContent = 'Share for conversation';
+  if (diagnostic) {
+    elements.approvalAllowConversation.textContent = 'Share for conversation';
+    elements.approvalOrigin.textContent += ' Sharing for this conversation covers node and Freedom application logs, including browsing diagnostics.';
+  }
   if (workspacePermission) {
     elements.approvalAllowConversation.textContent = 'Allow for conversation';
   }
@@ -2836,6 +2843,15 @@ function renderApproval(request) {
   if (nodeLifecycle) renderNodeLifecycleApproval(request);
   if (publication) renderPublicationApproval(request);
   setApprovalControlsDisabled(false);
+  if (Date.now() < approvalReadyAt) {
+    elements.approvalApprove.disabled = true;
+    elements.approvalAllowConversation.disabled = true;
+    setTimeout(() => {
+      if (pendingApproval !== request) return;
+      elements.approvalApprove.disabled = false;
+      elements.approvalAllowConversation.disabled = false;
+    }, approvalReadyAt - Date.now());
+  }
   setMessage(elements.approvalMessage, 'Agent is waiting');
   elements.composer.classList.add('approval-pending');
   elements.approval.hidden = false;
@@ -2867,22 +2883,26 @@ async function ensureWalletUnlocked(request) {
   return false;
 }
 
-async function decideApproval(approved, options = {}) {
-  const request = pendingApproval;
-  if (!request || !currentRunId) return;
+async function decideApproval(approved, options = {}, request = pendingApproval) {
+  const runId = currentRunId;
+  if (!request || !runId || request !== pendingApproval || (approved && Date.now() < approvalReadyAt)) return;
   setApprovalControlsDisabled(true);
   if (approved && request.wallet) {
     try {
       if (!(await ensureWalletUnlocked(request))) {
+        if (pendingApproval !== request || currentRunId !== runId) return;
         setApprovalControlsDisabled(false);
         return;
       }
     } catch {
+      if (pendingApproval !== request || currentRunId !== runId) return;
       setApprovalControlsDisabled(false);
       setMessage(elements.approvalMessage, 'Wallet unlock failed', true);
       return;
     }
   }
+  if (pendingApproval !== request || currentRunId !== runId) return;
+  lastApprovalDecisionAt = Date.now();
   setMessage(elements.approvalMessage, approved ? 'Allowing…' : 'Not allowing…');
   try {
     const walletIndex = Number(elements.walletAccount.value);
@@ -2902,12 +2922,12 @@ async function decideApproval(approved, options = {}) {
     const hasDecisionOptions = decisionOptions && Object.keys(decisionOptions).length > 0;
     const response = hasDecisionOptions
       ? await window.electronAPI.decideAgentApproval(
-          currentRunId,
+          runId,
           request.approvalId,
           approved,
           decisionOptions
         )
-      : await window.electronAPI.decideAgentApproval(currentRunId, request.approvalId, approved);
+      : await window.electronAPI.decideAgentApproval(runId, request.approvalId, approved);
     if (!response?.ok && pendingApproval === request) {
       setApprovalControlsDisabled(false);
       setMessage(
@@ -2930,13 +2950,14 @@ async function unlockWalletWithPassword() {
   elements.walletUnlockSubmit.disabled = true;
   try {
     const result = await window.identity.unlock(password);
+    if (pendingApproval !== request) return;
     if (!result?.success) {
       setMessage(elements.approvalMessage, result?.error || 'Incorrect password', true);
       return;
     }
     elements.walletPassword.value = '';
     elements.walletUnlock.hidden = true;
-    await decideApproval(true);
+    await decideApproval(true, {}, request);
   } catch {
     setMessage(elements.approvalMessage, 'Wallet unlock failed', true);
   } finally {
@@ -4115,6 +4136,7 @@ async function steerRun() {
   const prompt = elements.prompt.value.trim();
   if (!prompt) return;
   const runId = currentRunId;
+  lastGuidanceSentAt = Date.now();
   elements.prompt.value = '';
   updateSendAvailability();
   focusComposer();
@@ -4137,11 +4159,11 @@ async function steerRun() {
   }
 }
 
-function submitComposer() {
+function submitComposer({ allowStop = false } = {}) {
   if (currentRunStatus === 'running') {
     if (elements.prompt.value.trim()) {
       void steerRun();
-    } else {
+    } else if (allowStop && Date.now() - lastGuidanceSentAt >= 600) {
       void stopRun();
     }
   } else if (currentRunStatus === 'paused') {
@@ -4640,7 +4662,7 @@ export function initAgentUi(options = {}) {
   elements.saveProvider.addEventListener('click', saveProvider);
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
-  elements.run.addEventListener('click', submitComposer);
+  elements.run.addEventListener('click', event => submitComposer({ allowStop: !(event.detail > 1) }));
   elements.processCompactToggle.addEventListener('click', () => {
     const opening = elements.processCompactPopover.hidden;
     closeComposerPopovers();
@@ -4684,9 +4706,9 @@ export function initAgentUi(options = {}) {
     elements.takeoverConfirm.disabled = true;
     void takeOverRun();
   });
-  elements.approvalApprove.addEventListener('click', () => decideApproval(true));
-  elements.approvalAllowConversation.addEventListener('click', () =>
-    decideApproval(true, {
+  elements.approvalApprove.addEventListener('click', event => { if (!(event.detail > 1)) void decideApproval(true); });
+  elements.approvalAllowConversation.addEventListener('click', event =>
+    !(event.detail > 1) && decideApproval(true, {
       diagnosticScope: 'conversation',
       workspacePermissionScope: 'conversation',
     })
@@ -4761,7 +4783,7 @@ export function initAgentUi(options = {}) {
     setModeMenuOpen(false);
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
     if (!elements.modeMenu.hidden) {
       event.preventDefault();
       setModeMenuOpen(false, true);
@@ -4775,6 +4797,7 @@ export function initAgentUi(options = {}) {
     const openOptions = [elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]
       .map((host) => host.querySelector('.agent-workspace-options')).find((options) => options?.open);
     if (openOptions) {
+      event.preventDefault();
       openOptions.open = false;
       openOptions.querySelector('summary').focus();
       return;
@@ -4784,14 +4807,18 @@ export function initAgentUi(options = {}) {
       !elements.approvalModePopover.hidden ||
       !elements.attachmentMenu.hidden;
     closeComposerPopovers();
+    if (popoverWasOpen) event.preventDefault();
     if (!elements.takeoverDialog.hidden) {
+      event.preventDefault();
       setTakeoverDialogOpen(false);
     } else if (!popoverWasOpen && !elements.processCompactPopover.hidden) {
       event.preventDefault();
       elements.processCompactPopover.hidden = true;
       elements.processCompactToggle.setAttribute('aria-expanded', 'false');
       elements.processCompactToggle.focus();
-    } else if (!popoverWasOpen && currentRunStatus === 'running' && currentRunId) {
+    } else if (!popoverWasOpen && currentRunStatus === 'running' && currentRunId &&
+      elements.panel.contains(event.target) && !event.target?.closest?.('input, textarea, [contenteditable], #agent-approval')) {
+      event.preventDefault();
       void stopRun();
     } else if (!popoverWasOpen && agentFirstMode) {
       setAgentFirstMode(false);
