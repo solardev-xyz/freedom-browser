@@ -1,0 +1,380 @@
+{
+  "date": "2026-09-29",
+  "scope": "Read-only live Sepolia qualification and bounded host fixes",
+  "mainMerged": "4df82417",
+  "mergeCommit": "58f7be50",
+  "platform": "macOS arm64; Electron 44.4.5; Arti 2.6.0",
+  "liveTransactionSubmitted": false,
+  "fundingWalletCreated": false,
+  "productionEnabled": false,
+  "fundingReady": false,
+  "runtimeSha256": "ce18c67a40fa0c72593bb1e851a995951afe7371b0ddd88dfee16d1ffa8e2cb7",
+  "deployment": {
+    "anchor": {
+      "number": "0xb41ae8",
+      "hash": "0xa1717d53f1ea27b1eeacdefd5ef11c07a0b4625393c54db7937309655cfec9cf",
+      "timestamp": "0x6abae360"
+    },
+    "contracts": {
+      "pool": {
+        "address": "0x09b94d3127019298757a6ceeb7911922085f7c01",
+        "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+        "codeBytes": 141,
+        "implementation": {
+          "address": "0x94515c7469eb8be37a5188f6ebe327bf8a9753a8",
+          "codeHash": "0xae64cb5a1f6764736ae1a89d229566923daf98b473e9508b800d67478c3514fe",
+          "codeBytes": 16710
+        }
+      },
+      "entrypoint": {
+        "address": "0xeb3e3961008952348445513e418ad6f43c23ca9a",
+        "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+        "codeBytes": 141,
+        "implementation": {
+          "address": "0x6370b20d1afdde4a6681f43a3124e863279c4454",
+          "codeHash": "0x1fc9ce48f59e4cb6b356022ce85a8fb9df73fbb8150eb8b4452195ccf3a343c5",
+          "codeBytes": 6893
+        }
+      },
+      "keystore": {
+        "address": "0x6d264acb9c3a7a3105c29470afe2f5f1ec203c73",
+        "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+        "codeBytes": 141,
+        "implementation": {
+          "address": "0x2aa77fa12ec391df772157e223f6b1d9862c20ad",
+          "codeHash": "0x27d5319a12d695aa5a50d4bcbfc1f388c90afdff1b475ee6012a1a48f87640cf",
+          "codeBytes": 6587
+        }
+      },
+      "aspRegistry": {
+        "address": "0x35d29efdcf067599ab4a53cf40229477f0b1ca9c",
+        "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+        "codeBytes": 141,
+        "implementation": {
+          "address": "0x3e98ed1a80d16a92d42314809b5e11a612fb98d2",
+          "codeHash": "0x85c5553c7aefbef2d9b5607aa41b4eff33fa1a995c2a8a19e7ff904704c49bc2",
+          "codeBytes": 4664
+        }
+      },
+      "processor": {
+        "address": "0x7430cc030d7eb8c83e76cd983996982c8c054204",
+        "codeHash": "0x96f34d8e312c3e60b2fdb6c4d7e6ed7bf811de6712ff1bb3c5600cf683f0966a",
+        "codeBytes": 6697
+      }
+    },
+    "verifiers": {
+      "deposit": {
+        "address": "0x6b780f56aa1007abd19980cef5b8a68a74f34d06",
+        "codeHash": "0xe658d2e96dcf785acf351f888dab179628e9afb6c33a949de580753e30e8ed77",
+        "codeBytes": 1654
+      },
+      "ragequit": {
+        "address": "0x03b81c5620a5a736cc7084337bd0ebe272ff6f0a",
+        "codeHash": "0xabf1d6b0b71704ded1ae8e2fd9784c744e7a0f561a70a76a99e075b84afd4a4a",
+        "codeBytes": 2099
+      },
+      "transact_1x1": {
+        "address": "0x88fe44b518a0887dcb7518af91dd0c7d85a53c73",
+        "codeHash": "0xbdbe6c6b6a7067f2bd881593ab8e497c37a4bf0be5995b82993e7812d1068c87",
+        "codeBytes": 2261,
+        "selector": "0xc9219a7a"
+      }
+    },
+    "relayInterface": {
+      "maxBatch": 10,
+      "announcer": {
+        "address": "0x55649e01b5df198d18d95b5cc5051630cfd45564",
+        "codeHash": "0x80ed491c57edc6d92b5a85cc7db2dfeb40bbab52476b5b09b9b21c5c907b77c4",
+        "codeBytes": 709
+      },
+      "relaySelector": "0xace97342"
+    },
+    "nativeAsset": {
+      "enabled": true,
+      "minAmountWei": "1",
+      "vettingFeeBPS": "0",
+      "maxRelayFeeWei": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    },
+    "keystoreRootLivenessSeconds": 1200
+  },
+  "circuits": {
+    "checks": [
+      {
+        "circuit": "deposit",
+        "name": "valid",
+        "result": true,
+        "passed": true
+      },
+      {
+        "circuit": "deposit",
+        "name": "changed-public-signal",
+        "result": false,
+        "passed": true
+      },
+      {
+        "circuit": "deposit",
+        "name": "cross-circuit",
+        "result": false,
+        "passed": true
+      },
+      {
+        "circuit": "ragequit",
+        "name": "valid",
+        "result": true,
+        "passed": true
+      },
+      {
+        "circuit": "ragequit",
+        "name": "changed-public-signal",
+        "result": false,
+        "passed": true
+      },
+      {
+        "circuit": "ragequit",
+        "name": "cross-circuit",
+        "result": false,
+        "passed": true
+      },
+      {
+        "circuit": "transact_1x1",
+        "name": "valid",
+        "result": true,
+        "passed": true
+      },
+      {
+        "circuit": "transact_1x1",
+        "name": "changed-public-signal",
+        "result": false,
+        "passed": true
+      },
+      {
+        "circuit": "transact_1x1",
+        "name": "cross-circuit",
+        "result": false,
+        "passed": true
+      }
+    ],
+    "metrics": {
+      "deposit": {
+        "elapsedMs": 405,
+        "peakRssBytes": 430735360,
+        "locallyVerified": true
+      },
+      "ragequit": {
+        "elapsedMs": 1920,
+        "peakRssBytes": 541884416,
+        "locallyVerified": true
+      },
+      "transact_1x1": {
+        "elapsedMs": 4750,
+        "peakRssBytes": 601440256,
+        "locallyVerified": true
+      }
+    },
+    "archiveVerifiedInMain": true,
+    "childRechecksArchive": {
+      "deposit": true,
+      "ragequit": false,
+      "transact_1x1": false
+    },
+    "note": "Ragequit/transact checks use public synthetic jobs inside the authenticated archive. Product jobs separately enforce child-side archive verification."
+  },
+  "asp": {
+    "leafRootCheck": {
+      "count": 13315,
+      "computed": "10162824046322524044835264016488577315839695648081366233376737317700846805517",
+      "finalizedRegistry": "10162824046322524044835264016488577315839695648081366233376737317700846805517",
+      "latestRegistry": "10162824046322524044835264016488577315839695648081366233376737317700846805517",
+      "latestBlock": "0xb41b65",
+      "matched": true
+    },
+    "snapshot": {
+      "readable": false,
+      "failure": {
+        "role": "asp",
+        "label": "/11155111/public/event-snapshot/payload",
+        "elapsedMs": 17285,
+        "passed": false,
+        "code": "PRIVATE_RESPONSE_TOO_LARGE"
+      }
+    },
+    "directDiagnosticSnapshotBytes": 6738359,
+    "rootCadence": {
+      "fromBlock": 11802537,
+      "anchor": {
+        "number": "0xb41b90",
+        "hash": "0x828e5febcfdf3c8261f2b53039350f1e8b53a533500476aaaff02fa9585a0ee7"
+      },
+      "events": [
+        {
+          "block": 11803141,
+          "root": "958816887189469086765263360155860425002409634278063746153415466116398594861"
+        },
+        {
+          "block": 11803148,
+          "root": "13641515588740559123245225626138078451537955788146400531500362411193978980654"
+        },
+        {
+          "block": 11803276,
+          "root": "12422010551340232058130045880814173126962671866587953224541407567781003605188"
+        },
+        {
+          "block": 11803283,
+          "root": "8577778611210979809963217557046241078265267035980906247349442719426687862843"
+        },
+        {
+          "block": 11803290,
+          "root": "3696059342682054249558234378929861575530466064136139964979234362589285125587"
+        },
+        {
+          "block": 11803340,
+          "root": "20985132954872187215004848727001458007691058891459702240307658357104180238029"
+        },
+        {
+          "block": 11803365,
+          "root": "2205938522440506918489152723075212187952168633471152935783183956719659933981"
+        },
+        {
+          "block": 11803371,
+          "root": "10162824046322524044835264016488577315839695648081366233376737317700846805517"
+        },
+        {
+          "block": 11803501,
+          "root": "4802821829481801213880607858960440382843494415007514039478649317409601353457"
+        },
+        {
+          "block": 11803515,
+          "root": "12890165532023917047382644898796830225011598520136703437120222179425170924519"
+        },
+        {
+          "block": 11803522,
+          "root": "6420587066109444425521299137615487252087653237419824073654294382348308159070"
+        }
+      ]
+    },
+    "note": "Initial finalized/service mismatch later converged. Latest leaves root, not service root versus finalized, determines SDK compatibility."
+  },
+  "recovery": {
+    "passed": false,
+    "rpc": "https://ethereum-sepolia-rpc.publicnode.com",
+    "floor": 10932354,
+    "failure": "First returned pool leaf has index 6138, so history is incomplete; strict replay refused. Keystore rebuild and full live SDK sync remain unqualified.",
+    "scanPosition": {
+      "contract": "pool",
+      "from": 11792354,
+      "to": 11797353,
+      "leaves": 0
+    },
+    "firstReturnedEvent": {
+      "type": "LeavesInserted",
+      "height": 11795006,
+      "index": 6138,
+      "leavesBefore": 0
+    },
+    "aspFirstKeystoreLeafBlock": 10994877,
+    "aspPoolFeedStart": 10994884,
+    "alternativeRpcProbes": {
+      "onfinality": "Unavailable during read-only Tor probe; no qualification",
+      "ethpandaops": "eth_chainId failed with TOR_REQUEST_FAILED; no qualification"
+    }
+  },
+  "relayer": {
+    "directDiagnosticQuote": {
+      "transport": "direct diagnostic only; not wallet qualification",
+      "receivedAt": "2026-09-28T22:25:00.746Z",
+      "signer": "0x4ba5ff376865b370790a56276c63e7984dcff1f7",
+      "feeRecipient": "0x4ba5ff376865b370790a56276c63e7984dcff1f7",
+      "processor": "0x7430cc030d7eb8c83e76cd983996982c8c054204",
+      "remainingMs": 59939,
+      "expiration": 1790634360685,
+      "feeWei": "807675769250000",
+      "amountReceivedWei": "1000000000000000",
+      "amountSentWei": "1807675769250000",
+      "gasPriceWei": "1241039645",
+      "relayGasEstimate": "650000",
+      "signatureVerified": true
+    },
+    "tor": "One details200/quote201 response early; later independent runs repeatedly403. No successful signature-qualified Tor quote; no relay POST ever.",
+    "note": "The 9-second remaining fixture is an artificial reference time, not a measurement of staging TTL."
+  },
+  "regression": {
+    "passed": 6372,
+    "skipped": 33,
+    "failed": 3,
+    "baselineFailures": [
+      "two macOS shortcut-remap cases",
+      "one Safe fork integration case"
+    ],
+    "existingAsynchronousLoggingWarnings": true
+  },
+  "packaged": {
+    "evidenceCodeBaseline": "2151252c (main072d45e4)",
+    "productionFusesAndSmokePassed": 6,
+    "inspectorOnlyTestCopy": {
+      "productionAsarSha256": "06da31fea0bab19d9ff51042f4b4ab83b6b66e975cbe8da2437d55c63c3c897f",
+      "sameAsar": true,
+      "sameAsarIntegrity": true,
+      "originalFuses": [
+        49,
+        48,
+        48,
+        48,
+        49,
+        49,
+        48,
+        49,
+        49
+      ],
+      "testFuses": [
+        49,
+        48,
+        48,
+        49,
+        49,
+        49,
+        48,
+        49,
+        49
+      ],
+      "onlyChangedFuse": "EnableNodeCliInspectArguments",
+      "signing": "ad hoc test copy only; never distribute"
+    },
+    "testCopyChecks": {
+      "depositAndProcess": 3,
+      "nativeWithdrawalRootChangeAndRestart": 1,
+      "allPassed": true
+    },
+    "note": "Source ASAR is unchanged in the test copy; only inspector fuse and ad hoc signatures differ. Final popup-blocker merge does not alter these privacy modules. Signed hardened-runtime qualification remains pending."
+  },
+  "review": {
+    "reviewer": "Existing Claude agent, w6:p2",
+    "rootGuard": "Approved after operation-isolation fix; reviewer independently ran 73 passing focused tests",
+    "scope": "Engineering review, not authorization to fund or a cryptographic audit",
+    "mainMerge": "Reviewer compared branch-delta digests before and after merge for startup/settings; privacy changes preserved byte for byte"
+  },
+  "bundledNodesRefreshed": {
+    "Ant": "0.5.45",
+    "IPFS": "0.4.3",
+    "Radicle": "0.7.1",
+    "Myotis": "0.1.11 ABI29",
+    "MyotisSupervisor": "rebuilt",
+    "Arti": "2.6.0 retained, already matches pin",
+    "afterEachMerge": true
+  },
+  "codeCommit": "2151252c",
+  "earlierMerge": {
+    "main": "072d45e4",
+    "commit": "51ce8dd6"
+  },
+  "source": {
+    "finalPrivacyLifecyclePassed": 4,
+    "staleRootDuringReview": "Refuses with zero journal attempts/relay sends, then reprepare succeeds",
+    "baseline": "2151252c before popup-blocker merge",
+    "postMergeSmoke": {
+      "baseline": "58f7be50",
+      "passed": 7,
+      "scope": "six popup-blocker checks plus PPv2 real controlled deposit"
+    }
+  },
+  "lintPassed": true
+}

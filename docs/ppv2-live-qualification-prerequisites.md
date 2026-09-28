@@ -2,6 +2,8 @@
 
 This is the concrete handoff needed to move the controlled Kohaku/PPv2 experiment onto live Sepolia. It does not authorize a transaction, enable a product feature, or assume the final upstream release is available. No new outreach has been sent.
 
+**September 29 result:** [Read-only live qualification](ppv2-live-preflight-2026-09-29.md) confirms matching proof verifiers and ASP leaves. The concrete blockers are relayer HTTP 403 through Tor and incomplete historical logs from the tested public RPC. Staging quotes have approximately 60-second lifetime; that is not an upstream blocker. Complete the unfunded session/recovery checks before requesting Sepolia ETH. The generic checklist below remains the production handoff, not a request to ask PP again for every already published value.
+
 ## Published environment checked on September 28
 
 The [live v2 frontend](https://v2.privacypools.com/) publishes Sepolia staging configuration. The [Sepolia deployment documentation](https://privacy-pools-v2-docs.vercel.app/deployments/sepolia) already provides a V9 deployment and service configuration; discovering a deployment is not an upstream blocker. These are candidate configuration values to verify against our pinned SDK and on-chain state, not an approved signing configuration.

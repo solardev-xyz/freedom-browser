@@ -2,7 +2,7 @@
 
 **Latest continuation:** [Runtime integrity and reviewed history retention](privacy-runtime-retention-2026-09-28.md) adds authenticated SDK loading and explicit journal compaction. Its archival trust tradeoff, permanent bounds and one-way state format are documented there. [Live qualification prerequisites](ppv2-live-qualification-prerequisites.md) lists the remaining PP handoff.
 
-September 14 baseline. **Latest update:** [September 28 independent review and fixes](privacy-review-fixes-2026-09-28.md) records the current implementation and release gates. The [September 25 follow-up](privacy-engineering-followup-2026-09-25.md) updates the Railgun assumptions below. This page preserves the September 14 baseline and its original measurements.
+September 14 baseline. **Latest update:** [September 29 live Sepolia preparation](ppv2-live-preflight-2026-09-29.md) records passing verifier/ASP checks and the Tor-relayer/history blockers before funding. [September 28 independent review and fixes](privacy-review-fixes-2026-09-28.md) records the implementation and release gates. The [September 25 follow-up](privacy-engineering-followup-2026-09-25.md) updates the Railgun assumptions below. This page preserves the September 14 baseline and its original measurements.
 
 Local implementation and qualification work; no production activation or shielded-wallet release. The [implementation plan](wallet-privacy-implementation-plan.md) remains the acceptance checklist. UI/UX is provisional and will be discussed separately.
 
