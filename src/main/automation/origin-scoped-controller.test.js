@@ -165,6 +165,27 @@ function createController(initialUrl = 'https://trusted.example/start') {
 }
 
 describe('OriginScopedAutomationController', () => {
+  test.each(['stop', 'takeover'])('does not dispatch or ask approval after %s during classification', async (kind) => {
+    const controller = createController();
+    let resolveClassification;
+    let started;
+    const classified = new Promise(resolve => { resolveClassification = resolve; });
+    const entered = new Promise(resolve => { started = resolve; });
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller, tabId: 'tab_assigned', approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
+      requestApproval, classifyInteraction: () => { started(); return classified; },
+    });
+    const abort = new AbortController();
+    const pending = scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_link' }, { signal: abort.signal });
+    await entered;
+    if (kind === 'stop') abort.abort(); else scoped.releaseTab('tab_assigned');
+    resolveClassification({ kind: 'ordinary', confidence: 1, summary: 'Read a page', uncertainties: [] });
+    expect((await pending).ok).toBe(false);
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(controller.execute.mock.calls.some(([operation]) => operation === OPERATIONS.CLICK)).toBe(false);
+  });
+
   test('normalizes web and dweb origins without retaining paths', () => {
     expect(originScopeForUrl('https://Example.test:443/path?q=1')).toBe('https://example.test');
     expect(originScopeForUrl('ipfs://BAFY/path')).toBe('ipfs://bafy');
@@ -1364,7 +1385,7 @@ describe('OriginScopedAutomationController', () => {
 
     expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.WALLET_TRANSFER, input, {
       conversationId: 'conversation_test',
-      requestApproval,
+      requestApproval: expect.any(Function),
     });
   });
 
@@ -1421,7 +1442,7 @@ describe('OriginScopedAutomationController', () => {
     expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.NODE_LIFECYCLE, input, {
       conversationId: 'conversation_test',
       classifyEffect,
-      requestApproval,
+      requestApproval: expect.any(Function),
     });
   });
 

@@ -676,7 +676,7 @@ async function executeCancellable(controller, operation, input, signal, executio
   signal.addEventListener('abort', onAbort, { once: true });
 
   try {
-    const operationResult = Promise.resolve(controller.execute(operation, input)).then(
+    const operationResult = Promise.resolve(controller.execute(operation, input, { ...execution, signal })).then(
       (envelope) => ({ kind: 'result', envelope }),
       () => ({ kind: 'failure' })
     );
@@ -711,11 +711,11 @@ async function executeBrowserTool(controller, tabId, spec, params, signal, execu
         : { ...params, tabId };
   let envelope;
   try {
-    envelope = (spec.cancellable || params.ref?.startsWith('visual_') || params.ref?.startsWith('frame_element_'))
+    envelope = (signal || spec.cancellable || params.ref?.startsWith('visual_') || params.ref?.startsWith('frame_element_'))
       ? await executeCancellable(controller, spec.operation, input, signal, execution)
       : spec.operation === OPERATIONS.DOWNLOAD || spec.operation === OPERATIONS.UPLOAD
-        ? await controller.execute(spec.operation, input, execution)
-        : await controller.execute(spec.operation, input);
+        ? await controller.execute(spec.operation, input, { ...execution, signal })
+        : await controller.execute(spec.operation, input, ...(signal ? [{ signal }] : []));
   } catch (error) {
     if (error instanceof FreedomBrowserToolError) throw error;
     throw new FreedomBrowserToolError(spec.operation, internalError());

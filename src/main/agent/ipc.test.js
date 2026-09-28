@@ -28,8 +28,9 @@ test('unavailable Agent rejects every request safely while preserving chrome own
   expect(ipcMain.handlers.size).toBe(requestChannels.length);
   expect(ipcMain.handlers.has(IPC.AGENT_EVENT)).toBe(false);
   expect(ipcMain.handlers.has(IPC.AGENT_PROVIDER_AUTH_EVENT)).toBe(false);
-  for (const handler of ipcMain.handlers.values()) {
-    expect(await handler({ sender })).toMatchObject({
+  for (const [channel, handler] of ipcMain.handlers) {
+    if (channel === IPC.AGENT_WALLET_REQUEST) expect(await handler({ sender })).toEqual({ handled: false });
+    else expect(await handler({ sender })).toMatchObject({
       ok: false, error: { code: 'AGENT_STORAGE_UNAVAILABLE', message: expect.stringContaining('Restart Freedom') },
     });
     expect(await handler({ sender: createSender() })).toMatchObject({

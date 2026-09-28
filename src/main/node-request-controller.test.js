@@ -106,7 +106,7 @@ describe('NodeRequestController', () => {
     });
 
     await expect(controller.request(input, { classifyEffect, requestApproval })).resolves.toMatchObject({
-      effect: EFFECTS.PERSISTENT_CHANGE,
+      effect: EFFECTS.FINANCIAL,
       response: { status: 201 },
     });
     expect(requestApproval).toHaveBeenCalledWith({
@@ -117,7 +117,7 @@ describe('NodeRequestController', () => {
         service: 'ant',
         transport: 'http',
         request: input.request,
-        effect: EFFECTS.PERSISTENT_CHANGE,
+        effect: EFFECTS.FINANCIAL,
         classification: classification(EFFECTS.PERSISTENT_CHANGE),
       },
     });

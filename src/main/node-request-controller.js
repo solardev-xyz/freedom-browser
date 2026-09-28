@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { OPERATIONS, MAX_NODE_RESPONSE_BYTES } = require('./automation/contract/operations');
+const { OPERATIONS, MAX_NODE_RESPONSE_BYTES, canonicalNodeRequestPath } = require('./automation/contract/operations');
 const { AutomationError, ERROR_CODES } = require('./automation/contract/errors');
 const { EFFECTS, decideEffectPolicy, unknownClassification } = require('./agent/effect-classifier');
 const { OPERATION_STATES } = require('./agent/node-operation-store');
@@ -246,6 +246,7 @@ class NodeRequestController {
   }
 
   async request(input, context = {}) {
+    input = { ...input, request: { ...input.request, path: canonicalNodeRequestPath(input.request.path) } };
     if (input.service === 'radicle') {
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
@@ -279,7 +280,9 @@ class NodeRequestController {
           })
         : unknownClassification('classifier_unavailable');
     const policy = decideEffectPolicy(classification, {
-      minimumEffect: minimumEffectForMethod(input.request.method),
+      minimumEffect: input.service === 'ant' && !['GET', 'HEAD'].includes(input.request.method) &&
+        /^\/(?:stamps|stake|chequebook|wallet|transactions)(?:\/|$)/i.test(input.request.path.split('?')[0])
+        ? EFFECTS.FINANCIAL : minimumEffectForMethod(input.request.method),
     });
     if (policy.decision === 'approval') {
       if (typeof context.requestApproval !== 'function') {

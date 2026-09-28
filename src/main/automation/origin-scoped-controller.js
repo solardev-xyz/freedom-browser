@@ -421,6 +421,14 @@ class OriginScopedAutomationController {
   }
 
   async #execute(operation, input = {}, execution = {}) {
+    const unavailable = () => execution.signal?.aborted ||
+      (typeof input.tabId === 'string' && !this.ownedTabs.has(input.tabId));
+    const requestApproval = this.requestApproval;
+    execution = { ...execution, requestApproval: typeof requestApproval === 'function'
+      ? request => unavailable() ? Promise.resolve('withdrawn') : requestApproval(request)
+      : undefined };
+    if (execution.signal?.aborted) return errorEnvelope(this.lastState, ERROR_CODES.USER_CANCELLED,
+      'This action was cancelled. Start a new request before continuing.');
     if (DELEGATED_BROWSER_OPERATIONS.has(operation) && typeof input?.tabId === 'string' && !this.ownedTabs.has(input.tabId)) {
       if (!this.ownedTabs.size && !this.delegatedBrowsers.size) return errorEnvelope(this.lastState, ERROR_CODES.CAPABILITY_UNAVAILABLE,
         'No task tab remains. Create a fresh task tab before using this browser tool.', { retryable: true });
@@ -447,6 +455,8 @@ class OriginScopedAutomationController {
 
   async #executeScoped(operation, input = {}, execution = {}) {
     await this.#awaitExternalApprovalBarrier();
+    if (execution.signal?.aborted) return errorEnvelope(this.lastState, ERROR_CODES.USER_CANCELLED,
+      'This action was cancelled. Start a new request before continuing.');
     if (!ORIGIN_SCOPED_OPERATIONS.has(operation)) {
       return errorEnvelope(
         this.lastState,
@@ -473,7 +483,7 @@ class OriginScopedAutomationController {
       return this.#executeController(operation, input, {
         ...execution,
         classifyEffect: this.classifyEffect,
-        requestApproval: this.requestApproval,
+        requestApproval: execution.requestApproval,
       });
     }
     if (operation === OPERATIONS.NODE_OPERATION_STATUS) {
@@ -482,7 +492,7 @@ class OriginScopedAutomationController {
     if (operation === OPERATIONS.SWARM_PUBLISH) {
       return this.#executeController(operation, input, {
         ...execution,
-        requestApproval: this.requestApproval,
+        requestApproval: execution.requestApproval,
       });
     }
     if (operation === OPERATIONS.SWARM_PUBLICATION_STATUS) {
@@ -492,7 +502,7 @@ class OriginScopedAutomationController {
       return this.#executeController(operation, input, {
         ...execution,
         classifyEffect: this.classifyEffect,
-        requestApproval: this.requestApproval,
+        requestApproval: execution.requestApproval,
       });
     }
     if (
@@ -501,20 +511,20 @@ class OriginScopedAutomationController {
     ) {
       return this.#executeController(operation, input, {
         ...execution,
-        requestApproval: (request) => this.#requestDiagnosticApproval(request),
+        requestApproval: (request) => this.#requestDiagnosticApproval(request, execution.requestApproval),
       });
     }
     if (operation === OPERATIONS.WALLET_TRANSFER) {
       return this.#executeController(operation, input, {
         ...execution,
-        requestApproval: this.requestApproval,
+        requestApproval: execution.requestApproval,
       });
     }
     if (operation === OPERATIONS.CREATE_TAB) {
       // Creating a tab from an explicit URL does not depend on observed page
       // content. Require fresh references for page actions; ownership and URL
       // checks still run in #createOwnedTab.
-      return this.#createOwnedTab(input);
+      return this.#createOwnedTab(input, execution);
     }
     if (this.ownedTabs.size === 0) {
       return errorEnvelope(
@@ -607,11 +617,11 @@ class OriginScopedAutomationController {
       const { toolRef: _toolRef, ...decisionTool } = tool;
       const key = `${input.tabId}:${JSON.stringify(decisionTool)}`;
       if (this.declinedActions.has(key)) return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'This page tool invocation was declined');
-      if (typeof this.requestApproval !== 'function') return errorEnvelope(state, ERROR_CODES.APPROVAL_REQUIRED, 'Page tool invocations require approval');
+      if (typeof execution.requestApproval !== 'function') return errorEnvelope(state, ERROR_CODES.APPROVAL_REQUIRED, 'Page tool invocations require approval');
       const monitored = await this.controller.preparePageDialogs?.(input.tabId);
       if (monitored?.ok && monitored.result.dialog)
         return errorEnvelope(state, ERROR_CODES.CAPABILITY_UNAVAILABLE, 'Handle the pending native dialog before invoking a page tool');
-      const decision = await this.requestApproval({
+      const decision = await execution.requestApproval({
         action: 'browser_interaction', operation, tabId: input.tabId,
         origin: originScopeForUrl(tool.url), destinationOrigin: originScopeForUrl(tool.formAction) || '',
         label: tool.name,
@@ -645,11 +655,11 @@ class OriginScopedAutomationController {
       const expectedDialog = JSON.stringify({ ...dialog, accept: input.accept, promptText: input.promptText });
       const key = `${input.tabId}:${expectedDialog}`;
       if (this.declinedActions.has(key)) return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'This dialog response was declined');
-      if (typeof this.requestApproval !== 'function') return errorEnvelope(state, ERROR_CODES.APPROVAL_REQUIRED, 'Dialog responses require approval');
+      if (typeof execution.requestApproval !== 'function') return errorEnvelope(state, ERROR_CODES.APPROVAL_REQUIRED, 'Dialog responses require approval');
       const label = dialog.navigationCancelled
         ? (input.accept ? 'Leave page and retry the cancelled navigation' : 'Stay on this page')
         : `${input.accept ? 'Accept' : 'Dismiss'} ${dialog.type}${input.promptText !== undefined ? ` with text “${input.promptText}”` : ''}`;
-      const decision = await this.requestApproval({
+      const decision = await execution.requestApproval({
         action: 'browser_interaction', operation, tabId: input.tabId,
         origin: originScopeForUrl(dialog.url), destinationOrigin: originScopeForUrl(dialog.navigationTarget) || '', label,
         interaction: { kind: 'consequential', confidence: 1,
@@ -744,6 +754,14 @@ class OriginScopedAutomationController {
   }
 
   #executeController(operation, input, execution = {}) {
+    if (execution.signal?.aborted) return errorEnvelope(this.lastState, ERROR_CODES.USER_CANCELLED,
+      'This action was cancelled. Start a new request before continuing.');
+    if (typeof input.tabId === 'string' && !this.ownedTabs.has(input.tabId))
+      return errorEnvelope(this.lastState, ERROR_CODES.POLICY_DENIED,
+        'This tab is no longer controlled by the task. Choose a task-owned tab before continuing.');
+    const { requestApproval: _approval, ...forwarded } = execution;
+    if (![OPERATIONS.NODE_REQUEST, OPERATIONS.NODE_LIFECYCLE, OPERATIONS.NODE_DIAGNOSTICS,
+      OPERATIONS.APP_DIAGNOSTICS, OPERATIONS.SWARM_PUBLISH, OPERATIONS.WALLET_TRANSFER].includes(operation)) execution = forwarded;
     if (!this.transferOwnerId && Object.keys(execution).length === 0) {
       return this.controller.execute(operation, input);
     }
@@ -811,7 +829,7 @@ class OriginScopedAutomationController {
     };
   }
 
-  async #createOwnedTab(input) {
+  async #createOwnedTab(input, execution = {}) {
     if (this.ownedTabs.size === 0) return this.#createFirstWorkspaceTab(input.url);
     if (typeof input.tabId !== 'string' || !this.ownedTabs.has(input.tabId)) {
       return errorEnvelope(
@@ -824,6 +842,8 @@ class OriginScopedAutomationController {
     if (!openerState.ok) return openerState;
     if (!this.#acceptCurrentOrigin(openerState)) return this.#originDenied(openerState);
     if (!this.#acceptRequestedOrigin(input.url)) return this.#originDenied(openerState);
+    if (execution.signal?.aborted || !this.ownedTabs.has(input.tabId))
+      return errorEnvelope(this.lastState, ERROR_CODES.USER_CANCELLED, 'Tab creation was cancelled. Create a fresh task tab to continue.');
     const result = await this.controller.execute(OPERATIONS.CREATE_TAB, {
       url: input.url,
       openerTabId: input.tabId,
@@ -920,7 +940,7 @@ class OriginScopedAutomationController {
     );
   }
 
-  async #requestDiagnosticApproval(request) {
+  async #requestDiagnosticApproval(request, requestApproval = this.requestApproval) {
     if (this.diagnosticGrant) {
       return { status: 'approved', diagnosticScope: 'conversation' };
     }
@@ -929,10 +949,10 @@ class OriginScopedAutomationController {
       request?.diagnostic?.scope || '',
       request?.diagnostic?.service || '',
     ]);
-    if (this.declinedDiagnostics.has(key) || typeof this.requestApproval !== 'function') {
+    if (this.declinedDiagnostics.has(key) || typeof requestApproval !== 'function') {
       return 'declined';
     }
-    const decision = await this.requestApproval(request);
+    const decision = await requestApproval(request);
     const status = typeof decision === 'object' ? decision?.status : decision;
     if (
       status === 'approved' &&
@@ -1050,14 +1070,14 @@ class OriginScopedAutomationController {
         return this.#revalidateAuthorizedAction(operation, input, element);
       }
     }
-    if (typeof this.requestApproval !== 'function') {
+    if (typeof execution.requestApproval !== 'function') {
       return errorEnvelope(
         state,
         ERROR_CODES.APPROVAL_REQUIRED,
         'This website interaction requires user approval'
       );
     }
-    const decision = await this.requestApproval({
+    const decision = await execution.requestApproval({
       action:
         element.effect === 'form_submission'
           ? 'form_submission'

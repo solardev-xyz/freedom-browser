@@ -70,6 +70,7 @@ function registerUnavailableAgentIpc({ ipcMain, isTrustedSender }) {
     ipcMain.handle(channel, (event) => {
       if (!isTrustedSender(event.sender))
         return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
+      if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
       return errorEnvelope(
         'AGENT_STORAGE_UNAVAILABLE',
         'Agent storage is unavailable. Restart Freedom; if this persists, check profile-folder access or restore Agent data from a backup.'

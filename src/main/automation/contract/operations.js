@@ -162,6 +162,24 @@ function validateNavigationUrl(value) {
   return url;
 }
 
+// Use one unambiguous route for approval, classification, journaling and dispatch.
+function canonicalNodeRequestPath(value) {
+  const path = requireString(value, 'request.path').trim();
+  const route = path.split('?')[0];
+  if (path.length > 2048 || !path.startsWith('/') || path.startsWith('//') ||
+      path.includes('\\') || path.includes('#') || containsControlCharacters(path) ||
+      /%(?![a-f0-9]{2})/i.test(path) || /%(?:2e|2f|5c|25)/i.test(route) ||
+      route.split('/').some(segment => segment === '.' || segment === '..')) {
+    throw invalidArgument('Use a direct absolute API path without fragments, encoded separators or dot segments.', { field: 'request.path' });
+  }
+  const decoded = route.replace(/%([a-f0-9]{2})/gi, (encoded, hex) => {
+    const character = String.fromCharCode(parseInt(hex, 16));
+    return /[a-z0-9_~-]/i.test(character) ? character : encoded.toUpperCase();
+  });
+  const target = new URL(decoded + path.slice(route.length), 'http://node.invalid');
+  return target.pathname + target.search;
+}
+
 function validateOperationInput(operation, rawInput) {
   if (!OPERATION_SET.has(operation)) {
     throw invalidArgument(`Unknown automation operation: ${String(operation)}`, {
@@ -456,18 +474,7 @@ function validateOperationInput(operation, rawInput) {
         field: 'request.method',
       });
     }
-    const path = requireString(request.path, 'request.path').trim();
-    if (
-      path.length > 2_048 ||
-      !path.startsWith('/') ||
-      path.startsWith('//') ||
-      path.includes('\\') ||
-      containsControlCharacters(path)
-    ) {
-      throw invalidArgument('request.path must be a bounded absolute API path', {
-        field: 'request.path',
-      });
-    }
+    const path = canonicalNodeRequestPath(request.path);
     const headers = {};
     if (request.headers !== undefined) {
       const rawHeaders = requireObject(request.headers);
@@ -667,4 +674,5 @@ module.exports = {
   OPERATIONS,
   PRESS_KEYS,
   validateOperationInput,
+  canonicalNodeRequestPath,
 };

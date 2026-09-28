@@ -1039,7 +1039,7 @@ describe('Pi browser tool adapter', () => {
       tabId: 'tab_assigned',
       condition: 'text',
       text: 'Ready',
-    });
+    }, expect.objectContaining({ signal: abortController.signal }));
     expect(controller.execute).toHaveBeenNthCalledWith(2, OPERATIONS.STOP_LOADING, {
       tabId: 'tab_assigned',
     });

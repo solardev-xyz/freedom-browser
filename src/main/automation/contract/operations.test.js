@@ -376,6 +376,18 @@ describe('automation operation contract', () => {
     expect(() => validateOperationInput(OPERATIONS.NODE_REQUEST, input)).toThrow();
   });
 
+  test.each(['/bytes/../stamps/1/17', '/bytes/%2E%2E/stamps/1/17', '/%252e%252e/stamps', '/stamps%2f1', '/wallet#hidden', '/bad%path'])('rejects ambiguous API route %s', path => {
+    expect(() => validateOperationInput(OPERATIONS.NODE_REQUEST, {
+      service: 'ant', transport: 'http', request: { method: 'POST', path },
+    })).toThrow(/direct absolute API path/);
+  });
+
+  test('canonicalizes encoded route letters before dispatch or approval', () => {
+    expect(validateOperationInput(OPERATIONS.NODE_REQUEST, {
+      service: 'ant', transport: 'http', request: { method: 'POST', path: '/%73tamps/1/17?label=hello%20world' },
+    }).request.path).toBe('/stamps/1/17?label=hello%20world');
+  });
+
   test('accepts exact or discovery-mode node operation status input', () => {
     expect(validateOperationInput(OPERATIONS.NODE_OPERATION_STATUS, {})).toEqual({});
     expect(
