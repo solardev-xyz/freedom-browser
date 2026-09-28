@@ -287,6 +287,7 @@ function notifySettingsChanged(merged, previous) {
 // by === .
 function saveSettings(newSettings) {
   try {
+    if (newSettings?.walletTorBalanceReads === true && !isWalletTorExperimentAvailable()) return false;
     const previous = loadSettings();
     const merged = { ...previous };
     let changed = false;

@@ -16,6 +16,15 @@ beforeEach(() => {
 });
 afterEach(() => { scope.close(); jest.restoreAllMocks(); });
 
+test('small artifacts own their entire backing store across structured cloning', async () => {
+  const result = await loader.load('circuit.wasm');
+  const cloned = structuredClone(result);
+  expect(result.byteOffset).toBe(0);
+  expect(result.buffer.byteLength).toBe(bytes.length);
+  expect(cloned.buffer.byteLength).toBe(bytes.length);
+  expect(Buffer.from(cloned.buffer)).toEqual(bytes);
+});
+
 test('only pinned names, exact length and digest pass; grants cannot be widened after creation', async () => {
   expect(await loader.load('circuit.wasm')).toEqual(bytes);
   manifest.push({ ...manifest[0], name: 'other.wasm' });

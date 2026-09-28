@@ -1,11 +1,11 @@
 const { test, expect } = require('./fixtures');
 const artifact = process.env.FREEDOM_PP_V2_PROCESS_ASAR;
 
-for (const tokenMode of [false, true]) {
-test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal, restart, reconciliation and second spend`, async ({ electronApp, relaunchApp }, testInfo) => {
+for (const tokenMode of [false, true]) for (const cancel of [false, true]) {
+test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart and reviewed emergency exit' : 'deposit, ASP state, lost withdrawal, restart, reconciliation and second spend'}`, async ({ electronApp, relaunchApp }, testInfo) => {
   test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the qualified Kohaku/SDK fixture');
   test.setTimeout(240000);
-  const exercise = async ({ app }, { artifact, restart, exit, second, checkpoint, tokenMode }) => {
+  const exercise = async ({ app }, { artifact, restart, exit, second, checkpoint, tokenMode, cancel }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
     const fs = req('fs'), path = req('path');
     const { Interface, Wallet, Transaction } = req('ethers');
@@ -44,7 +44,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
     const register = new Interface(REGISTRATION_ABI), depositABI = new Interface([DEPOSIT_ABI]), exitABI = new Interface([RAGEQUIT_ABI]);
     const hashService = await sdk.PoseidonHashService.create();
     const merkle = new sdk.MerkleService({ hashService });
-    const stateLeaves = [], spent = new Set(); let aspLeaves = [], badRoot = false, reorg = false, relayLost = false, relaySends = 0, invalidQuote = false, fixturePlugin;
+    const stateLeaves = [], spent = new Set(); let aspLeaves = [], badRoot = false, reorg = false, relayLost = false, relaySends = 0, invalidQuote = false, fixturePlugin, quoteLifetime = 60000, shortQuoteExpiration = null;
     const tag = (s) => hashService.hash([`0x${Buffer.from(s).toString('hex')}`]);
     const leaf = (tagName, v) => hashService.hash([tag(tagName), `0x${BigInt(v).toString(16)}`, '0x6553f100']);
     const receipts = new Map(), logs = [], sends = [], methods = new Set(), contexts = new Map();
@@ -66,7 +66,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
         async request(method, params, validate) {
           getPrivacyContext(handle); methods.add(method);
           let result;
-          if (method === 'eth_call' && context.subject.role === 'transaction-rpc') result = '0x';
+          if (method === 'eth_call' && context.subject.role === 'transaction-rpc' && params[0].from) result = '0x';
           else if (method === 'eth_blockNumber') result = quantity(head);
           else if (method === 'eth_getBlockByNumber') result = { number: params[0] === 'finalized' ? quantity(head - 2) : params[0], hash: reorg && params[0] !== 'finalized' ? `0x${'dd'.repeat(32)}` : blockHash };
           else if (method === 'eth_getLogs') {
@@ -124,8 +124,11 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
               const signals = exitABI.decodeFunctionData('ragequit', tx.data)._proof.pubSignals;
               const event = interfaces[0].encodeEventLog(interfaces[0].getEvent('Ragequit'),
                 [wallet.address, `0x${signals[5].toString(16).padStart(40, '0')}`, signals[4], signals[1], signals[0], signals[6]]);
-              logs.push({ address: config.deployment.poolAddress, ...event, blockNumber: quantity(head), blockHash,
-                transactionHash: tx.hash, logIndex: '0x0', transactionIndex: '0x0', removed: false });
+              const exitLog = { address: config.deployment.poolAddress, ...event, blockNumber: quantity(head), blockHash,
+                transactionHash: tx.hash, logIndex: '0x0', transactionIndex: '0x0', removed: false };
+              logs.push(exitLog); spent.add(signals[0].toString());
+              Object.assign(receipts.get(tx.hash), { to: config.deployment.poolAddress, logs: [exitLog] });
+              head += 3;
             } else throw new Error('Unexpected fixture transaction');
             if (lost) throw new Error('Controlled lost broadcast response');
           } else throw new Error('Unexpected RPC request');
@@ -141,8 +144,9 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
         const amount = BigInt(requested.amount), fee = 100n;
         const data = coder.encode(['tuple(address recipient,address feeRecipient,uint256 feeAmount,uint256 nativeGas)'],
           [[requested.recipient, config.relayers[0].address, fee, 0n]]);
-        const feeCommitment = { data, asset: requested.asset, expiration: Date.now()+300000, feeAmount: '100',
+        const feeCommitment = { data, asset: requested.asset, expiration: Date.now()+quoteLifetime, feeAmount: '100',
           recipient: requested.recipient, amountSent: (amount+fee).toString(), amountReceived: amount.toString(), extraGas: false };
+        if (quoteLifetime === 10000) shortQuoteExpiration = feeCommitment.expiration;
         feeCommitment.signedRelayerCommitment = await quoteSigner.signTypedData({
           domain: { name: 'Privacy Pools Relayer', version: '1', chainId: 11155111, verifyingContract: config.relayers[0].processorAddress },
           primaryType: 'RelayWithdrawalCommitment', types: { RelayWithdrawalCommitment: [
@@ -156,7 +160,9 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
       }
       if (u.pathname.endsWith('/v1/relay/evm/11155111/withdrawal')) {
         const p = JSON.parse(init.body), signals = p.proof.publicSignals.map(BigInt);
-        relaySends++; head+=6000;
+        relaySends++;
+        if (cancel) return new Response('{}', { status: 400 });
+        head+=6000;
         const txHash = `0x${(200+spent.size).toString(16).padStart(64,'0')}`;
         const start = stateLeaves.length, leaves = [leaf('privacy_pools_note', signals[1]), leaf('privacy_pools_nullifier', signals[0])];
         stateLeaves.push(...leaves); spent.add(signals[0].toString());
@@ -182,13 +188,13 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
       const adapter = req(`${artifact}/plugin.cjs`);
       const candidate = { ...PPV2_CANDIDATE,
         createPlugin: async (host, params) => (fixturePlugin = await adapter.createPPv2Plugin(host, params)),
-        createBroadcaster: adapter.createPPv2Broadcaster, inspectChange: adapter.inspectChange };
+        createBroadcaster: adapter.createPPv2Broadcaster, inspectChange: adapter.inspectChange, inspectRegistration: adapter.inspectRegistration };
       const open = () => openPPv2Session({ candidate, configuration: config,
         proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, transactProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];
       const options = { signer: { getAddress: async () => wallet.address, signTransaction: (tx) => wallet.signTransaction(tx) },
         gasLimit: 1000000n, maxGasFee: 100000000n, review: async (request) => {
-          reviews.push({ operation: request.operation, proofVerified: request.proofVerified, chainStateVerified: request.chainStateVerified }); return true;
+          reviews.push({ operation: request.operation, proofVerified: request.proofVerified, chainStateVerified: request.chainStateVerified, pendingRelayCancellation: request.pendingRelayCancellation, competingRelayMayWin: request.competingRelayMayWin }); return true;
         } };
       const resolve = (hash) => session.resolvePublicSubmission(hash, { minimumConfirmations: 1,
         review: async () => ({ allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' }) });
@@ -216,21 +222,51 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
             recipient:`0x${'77'.repeat(20)}`}).then(()=>false,()=>true);
           aspLeaves=['0x123']; head+=3; session.close(); session=await open(); const revoked=await session.notes();
           aspLeaves=approvedLeaves; head+=3; session.close(); session=await open(); await session.notes();
-          stage='withdrawal quote authentication'; invalidQuote=true;
+          stage='withdrawal quote authentication'; invalidQuote=true; errorCodes.length=0;
           const invalidQuoteBlocked=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`}).then(()=>false,()=>true);
+          const invalidQuoteCode=errorCodes.includes('PRIVATE_PPV2_RELAY_REFUSED');
           if(relaySends!==0)throw new Error('Invalid quote reached relay');
-          invalidQuote=false; stage='withdrawal preparation';
+          invalidQuote=false; quoteLifetime=10000; errorCodes.length=0;
+          const shortQuoteStart = performance.now();
+          const shortQuoteCode=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`}).then(()=>null,(error)=>error.code);
+          const shortQuoteRejectedAt = Date.now();
+          const shortQuoteElapsedMs = Math.round(performance.now() - shortQuoteStart);
+          // The SDK can itself discard the expired quote before producing the
+          // final capture. Otherwise main refuses its 15-second delivery margin.
+          const shortQuoteBlocked = shortQuoteCode === 'PRIVATE_PPV2_RELAY_REFUSED' ||
+            (shortQuoteCode === 'PRIVATE_PPV2_OPERATION_FAILED' && shortQuoteExpiration !== null && shortQuoteRejectedAt >= shortQuoteExpiration);
+          if(relaySends!==0 || (await session.listRelayAttempts()).length!==0) throw new Error('Short quote reserved or sent');
+          quoteLifetime=60000; stage='withdrawal preparation';
           const prepared=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`});
           stage='withdrawal lost response'; relayLost=true;
           const outcome=await session[tokenMode?'submitTokenWithdrawal':'submitNativeWithdrawal'](prepared,async()=>true).then(()=>null,e=>e.code);
           const blocked=await session.submitPublicOperation({},{}).then(()=>null,e=>e.code);
           save(saved.commitment,saved.depositHash);
           return {pending:pending[0].status,mismatched:mismatched[0].status,approved:approved[0].status,revoked:revoked[0].status,
-            emptySetStatus:emptySet[0].status,emptySetSpendBlocked,invalidQuoteBlocked,
+            emptySetStatus:emptySet[0].status,emptySetSpendBlocked,invalidQuoteBlocked,invalidQuoteCode,shortQuoteBlocked,shortQuoteCode,shortQuoteElapsedMs,shortQuoteExpiration,shortQuoteRejectedAt,
             outcome,blocked,relaySends,proofVerified:prepared.proofVerified,quoteSignatureVerified:prepared.quoteSignatureVerified};
         }
         stage='withdrawal recovery';
         const attempts=await session.listRelayAttempts();
+        if (cancel) {
+          if (checkpoint) {
+            const before = await session.observeRelayAttempt(attempts[0].id);
+            stage='competing emergency exit';
+            const prepared = await session[tokenMode?'prepareTokenRagequit':'prepareNativeRagequit'](tokenMode ? {token, commitment:saved.commitment} : saved.commitment);
+            const result = await session.submitPublicOperation(prepared, options);
+            await resolve(result.hash);
+            const observed = await session.observeRelayAttempt(attempts[0].id);
+            const unresolved = (await session.listRelayAttempts())[0].resolution === null;
+            save(saved.commitment,saved.depositHash);
+            return { status:before.observation.status, exitStatus:observed.observation.status, unresolved, reviews, relaySends };
+          }
+          stage='emergency exit resolution after restart';
+          const persisted = (await session.listRelayAttempts())[0];
+          const resolved = await session.resolveRelayAttempt(attempts[0].id, async()=>({allowNextOperation:true,acceptedEvidence:'unverified-rpc'}));
+          const notes = await session.notes();
+          return { persistedExit:persisted.observation.status, requiredReview:!persisted.resolution, resolved:!!resolved.resolution,
+            observation:resolved.observation.status, activeNotes:notes.filter(n=>n.status==='active').length, relaySends };
+        }
         if (checkpoint) {
           const progress=await session.observeRelayAttempt(attempts[0].id);
           return { nextBlock:progress.scan?.nextBlock, status:progress.observation.status };
@@ -296,12 +332,15 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
           'wallet-ppv2-experiment'))[0]));
       logs.push(...originalNoteLogs);
       const rescan = await session.inspectNoteRecovery();
-      // Preserve the old encrypted cache, then prove independent discovery
-      // from the same seed with no SDK cache available to the new session.
+      // Missing initialized state must block, even when chain scanning could
+      // reconstruct notes. Restore the preserved cache before reopening.
       session.close();
       const profile = req('./src/main/profile-resolver').getActiveProfile();
       const cache = path.join(profile.userDataDir, 'wallet-ppv2-experiment');
       fs.renameSync(cache, `${cache}.recovery-fixture`);
+      const missingCacheBlocked = await open().then(()=>false, e=>e.code === 'PRIVATE_PROFILE_STORE_MISSING');
+      if (!missingCacheBlocked) throw new Error('Missing initialized cache was accepted');
+      fs.renameSync(`${cache}.recovery-fixture`, cache);
       session = await open();
       stage = 'recovered';
       const recovered = await session.notes();
@@ -317,7 +356,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
         notes: notes.map((note) => ({ value: note.value.toString(), status: note.status })),
         restoredEqual: JSON.stringify(restored, (_key, value) => typeof value === 'bigint' ? value.toString() : value) ===
           JSON.stringify(notes, (_key, value) => typeof value === 'bigint' ? value.toString() : value),
-        independentlyRecovered: recovered.length === 1 && recovered[0].commitment === notes[0]?.commitment,
+        guardedCacheRestored: recovered.length === 1 && recovered[0].commitment === notes[0]?.commitment,
         rescanRecovered: rescan.notes.length === 1 && rescan.notes[0].commitment === notes[0]?.commitment,
         discrepancyDetected: discrepancy.missingFromScan.length === 1 && discrepancy.cacheReplaced === false,
         cachePreserved: encryptedBefore.equals(encryptedAfter),
@@ -331,21 +370,24 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
       rpc.createPrivateRpc = original.rpc; tor.getWalletSocksEndpoint = original.tor;
     }
   };
-  const report = await electronApp.evaluate(exercise, { artifact, tokenMode, restart: false });
+  const report = await electronApp.evaluate(exercise, { artifact, tokenMode, cancel, restart: false });
   await electronApp.close(); const withdrawing = await relaunchApp();
-  report.withdrawal = await withdrawing.evaluate(exercise, { artifact, tokenMode, restart:true, exit:true });
+  report.withdrawal = await withdrawing.evaluate(exercise, { artifact, tokenMode, cancel, restart:true, exit:true });
   await withdrawing.close(); const restored = await relaunchApp();
-  report.checkpoint = await restored.evaluate(exercise, { artifact, tokenMode, restart:true, second:true, checkpoint:true });
+  report.checkpoint = await restored.evaluate(exercise, { artifact, tokenMode, cancel, restart:true, second:true, checkpoint:true });
   await restored.close(); const resumed = await relaunchApp();
-  report.secondSpend = await resumed.evaluate(exercise, { artifact, tokenMode, restart:true, second:true });
+  report.secondSpend = await resumed.evaluate(exercise, { artifact, tokenMode, cancel, restart:true, second:true });
   await testInfo.attach('ppv2-withdrawal-report', {body:JSON.stringify(report,null,2),contentType:'application/json'});
   expect(report.checkpoint).toMatchObject({status:'unknown'});
-  expect(report.checkpoint.nextBlock).toBeGreaterThan(5000);
+  if (!cancel) expect(report.checkpoint.nextBlock).toBeGreaterThan(5000);
+  else expect(report.checkpoint).toMatchObject({exitStatus:'exited',unresolved:true,relaySends:0,
+    reviews:[expect.objectContaining({pendingRelayCancellation:true,competingRelayMayWin:true})]});
   expect(report.assetBound).toBe(true);
   expect(report.productionGate).toBe(false);
   expect(report.withdrawal).toMatchObject({pending:'pending',mismatched:'pending',approved:'active',revoked:'rejected',
-    emptySetStatus:'rejected',emptySetSpendBlocked:true,invalidQuoteBlocked:true,outcome:'PRIVATE_PPV2_RELAY_UNCERTAIN',blocked:'PRIVATE_PPV2_RELAY_UNRESOLVED',relaySends:1,proofVerified:true,quoteSignatureVerified:true});
-  expect(report.secondSpend).toMatchObject({checkpointPersisted:true,observation:'included',trust:'unverified-rpc',recoveredChange:'4000',reorgBlocked:true,
+    emptySetStatus:'rejected',emptySetSpendBlocked:true,invalidQuoteBlocked:true,invalidQuoteCode:true,shortQuoteBlocked:true,outcome:'PRIVATE_PPV2_RELAY_UNCERTAIN',blocked:'PRIVATE_PPV2_RELAY_UNRESOLVED',relaySends:1,proofVerified:true,quoteSignatureVerified:true});
+  if (cancel) expect(report.secondSpend).toMatchObject({persistedExit:'exited',requiredReview:true,resolved:true,observation:'exited',activeNotes:0,relaySends:0});
+  else expect(report.secondSpend).toMatchObject({checkpointPersisted:true,observation:'included',trust:'unverified-rpc',recoveredChange:'4000',reorgBlocked:true,
     secondHash:true,remaining:['2900'],resolved:2,relaySends:1});
 });
 }

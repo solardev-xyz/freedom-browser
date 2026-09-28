@@ -12,7 +12,7 @@ const block = (value) => isQuantity(value) && BigInt(value) <= BigInt(Number.MAX
 const onlyKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).every((key) => keys.includes(key));
 
-function createKohakuProvider({ handle, contracts, signal }) {
+function createKohakuProvider({ handle, contracts, signal, publicReadHandle, publicContracts = [] }) {
   const context = getPrivacyContext(handle);
   if (context.subject.kind !== 'private-account' || context.subject.role !== 'protocol-rpc') {
     throw privacyError('PRIVATE_SDK_UNAVAILABLE', 'Protocol provider requires its own private-account context');
@@ -31,8 +31,19 @@ function createKohakuProvider({ handle, contracts, signal }) {
     });
   }
   const rpc = createPrivateRpc(handle, 'protocol-rpc', { signal });
-  const read = async (method, params, validate) => (await rpc.request(method, params, validate)).result;
-  const head = () => read('eth_blockNumber', [], block);
+  let publicRpc;
+  if (!Array.isArray(publicContracts) || publicContracts.some((target) => !address(target) || !grants.has(target.toLowerCase()))) throw refused();
+  const ownerTargets = new Set(publicContracts.map((target) => target.toLowerCase()));
+  if (ownerTargets.size) {
+    const owner = getPrivacyContext(publicReadHandle);
+    if (owner.profileId !== context.profileId || owner.generation !== context.generation || owner.subject.kind !== 'public-address' ||
+        owner.subject.role !== 'transaction-rpc' || owner.subject.chainId !== context.subject.chainId || owner.subject.operation !== null ||
+        owner.subject.protocol !== null || owner.subject.deployment !== null) throw refused();
+    publicRpc = createPrivateRpc(publicReadHandle, 'transaction-rpc', { signal });
+  }
+  const route = (target) => ownerTargets.has(target?.toLowerCase()) ? publicRpc : rpc;
+  const read = async (method, params, validate, target) => (await route(target).request(method, params, validate)).result;
+  const head = (target) => read('eth_blockNumber', [], block, target);
   async function request(input) {
     rpc.assertActive();
     if (!onlyKeys(input, ['method', 'params']) || typeof input.method !== 'string') throw refused();
@@ -50,13 +61,13 @@ function createKohakuProvider({ handle, contracts, signal }) {
       return result === null ? null : { number: result.number, hash: result.hash };
     }
     if (method === 'eth_getCode' && params.length === 2 && address(params[0]) && grants.has(params[0].toLowerCase()) && params[1] === 'latest') {
-      return read(method, [params[0].toLowerCase(), 'latest'], bytes);
+      return read(method, [params[0].toLowerCase(), 'latest'], bytes, params[0]);
     }
     if (method === 'eth_call' && params.length === 2 && params[1] === 'latest') {
       const call = params[0];
       if (!onlyKeys(call, ['to', 'data']) || !address(call.to) || !bytes(call.data) || call.data.length > 8194 ||
           !grants.get(call.to.toLowerCase())?.selectors.has(call.data.slice(0, 10).toLowerCase())) throw refused();
-      return read(method, [{ to: call.to.toLowerCase(), data: call.data }, 'latest'], bytes);
+      return read(method, [{ to: call.to.toLowerCase(), data: call.data }, 'latest'], bytes, call.to);
     }
     if (method === 'eth_getLogs' && params.length === 1) {
       const filter = params[0];
@@ -70,14 +81,14 @@ function createKohakuProvider({ handle, contracts, signal }) {
       // or filter while the chain check/head request is in flight.
       const allowedTopics = new Set(topics.map((value) => value.toLowerCase()));
       const from = BigInt(filter.fromBlock);
-      const to = BigInt(filter.toBlock === 'latest' ? await head() : filter.toBlock);
+      const to = BigInt(filter.toBlock === 'latest' ? await head(target) : filter.toBlock);
       if (to < from || to - from >= 5000n) throw refused();
       const query = { address: target, topics: [[...allowedTopics]], fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` };
       return read(method, [query], (logs) => Array.isArray(logs) && logs.length <= 2048 && logs.every((log) =>
         log && address(log.address) && log.address.toLowerCase() === target && Array.isArray(log.topics) &&
         log.topics.length > 0 && log.topics.length <= 4 && log.topics.every(hash) && allowedTopics.has(log.topics[0].toLowerCase()) &&
         bytes(log.data) && block(log.blockNumber) && BigInt(log.blockNumber) >= from && BigInt(log.blockNumber) <= to &&
-        hash(log.blockHash) && hash(log.transactionHash) && block(log.logIndex) && log.removed === false));
+        hash(log.blockHash) && hash(log.transactionHash) && block(log.logIndex) && log.removed === false), target);
     }
     throw refused();
   }

@@ -21,7 +21,11 @@ exports.run = async function run(input, { progress }) {
       ['http', () => require('http').get('http://127.0.0.1:1')],
       ['socket', () => require('net').connect(1, '127.0.0.1')],
       ['dns', () => require('dns').lookup('example.com', () => {})],
+      ['dns-resolver', () => new (require('dns').Resolver)().resolve4('example.invalid', () => {})],
+      ['dns-promise-resolver', () => new (require('dns').promises.Resolver)().resolve4('example.invalid')],
+      ['dns-reverse', () => require('dns').reverse('127.0.0.1', () => {})],
       ['udp', () => require('dgram').createSocket('udp4')],
+      ['udp-constructor', () => new (require('dgram').Socket)('udp4').send('probe', 1, '127.0.0.1')],
       ['http2', () => require('http2').connect('https://127.0.0.1:1')],
       ['child', () => require('child_process').spawn(process.execPath)],
       ['electron', () => require('electron').net.fetch('http://127.0.0.1:1')],
@@ -33,9 +37,12 @@ exports.run = async function run(input, { progress }) {
     const nested = await new Promise((resolve, reject) => {
       const worker = new Worker(`
         const { parentPort } = require('worker_threads');
-        let refused = false;
-        try { require('net').connect(1, '127.0.0.1'); } catch (error) { refused = error.message.includes('capability refused'); }
-        parentPort.postMessage(refused);
+        const probes = [() => require('net').connect(1, '127.0.0.1'),
+          () => new (require('dns').Resolver)().resolve4('example.invalid', () => {}),
+          () => new (require('dns').promises.Resolver)().resolve4('example.invalid')];
+        parentPort.postMessage(probes.every((probe) => {
+          try { probe(); return false; } catch (error) { return error.message.includes('capability refused'); }
+        }));
       `, { eval: true });
       worker.once('error', reject);
       worker.once('message', async (value) => { await worker.terminate(); resolve(value); });
@@ -45,6 +52,8 @@ exports.run = async function run(input, { progress }) {
   }
   const sdk = require(input.sdkEntry);
   for (const [kind, bytes] of Object.entries(input.artifacts)) {
+    assert.equal(bytes.byteOffset, 0);
+    assert.equal(bytes.buffer.byteLength, bytes.byteLength); // No pooled slab crosses real Electron IPC.
     assert.equal(createHash('sha256').update(bytes).digest('hex'), sdk.DEFAULT_CIRCUIT_MANIFEST.deposit[`${kind}Sha256`]);
   }
   const hashService = await sdk.PoseidonHashService.create();
@@ -69,7 +78,7 @@ exports.run = async function run(input, { progress }) {
   const provingMs = Math.round(performance.now() - start);
   assert.equal(await service.verifyDeposit(proof), true);
   assert.equal(await service.verifyDeposit({ ...proof, publicSignals: proof.publicSignals.map(() => '0xdeadbeef') }), false);
-  return { verified: true, tamperedRejected: true, provingMs, rssBytes: process.memoryUsage().rss,
+  return { verified: true, tamperedRejected: true, ownedArtifactBuffers: true, provingMs, rssBytes: process.memoryUsage().rss,
     fromAsar: __filename.includes('.asar/'), sdkFromAsar: input.sdkEntry.includes('.asar/'),
     node: process.versions.node, electron: process.versions.electron };
 };

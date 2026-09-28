@@ -102,6 +102,16 @@ async function main() {
       export { createPPv2Broadcaster } from './broadcaster';
       import { deriveKeystoreManager } from './account/derivation';
       import { CryptoService, PoseidonHashService, NoteComputationService } from '@0xbow-io/privacy-pools-v2-sdk';
+      export async function inspectRegistration(keystore, accountIndex) {
+        const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });
+        const hashService = await PoseidonHashService.create();
+        const notes = new NoteComputationService({ hashService, cryptoService: new CryptoService() });
+        return {
+          nullifyingKeyHash: hashService.hash([keystoreManager.getPrivateNullifyingKey()]),
+          authDigest: notes.computeAuthDigest(keystoreManager.getPrivateRevocableKey()),
+          viewingKey: keystoreManager.getViewingKeyPair().publicKey,
+        };
+      }
       export async function inspectChange(keystore, accountIndex, owner, noteData) {
         if (noteData.length !== 1) throw new Error('Expected one change note');
         const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });

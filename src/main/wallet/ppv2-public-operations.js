@@ -11,12 +11,19 @@ const iface = new Interface(REGISTRATION_ABI);
 const readInterface = new Interface(['function nullifyingKeys(address) view returns (uint256)',
   'function viewingKeys(address) view returns (bytes32)']);
 const refused = () => privacyError('PRIVATE_PPV2_HANDOFF_REFUSED', 'PPv2 transaction handoff refused');
+const mismatch = () => privacyError('PRIVATE_PPV2_REGISTRATION_MISMATCH', 'Registered PPv2 keys do not match this account');
 
-function createPPv2PublicOperations({ scope, configuration, provider, tokenPolicy }) {
+function createPPv2PublicOperations({ scope, configuration, provider, tokenPolicy, registrationKeys, accountIndex }) {
   const owner = configuration.ownerAddress.toLowerCase();
   const keystore = configuration.deployment.keystoreAddress.toLowerCase();
   const handle = scope.getContext({ kind: 'public-address', principal: owner, chainId: 11155111, role: 'transaction-rpc' });
   const issued = new WeakMap();
+  if (!Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex > 65535 ||
+      !['nullifyingKeyHash', 'authDigest', 'viewingKey'].every((name) =>
+        typeof registrationKeys?.[name] === 'string' && /^0x[0-9a-f]{64}$/i.test(registrationKeys[name]) && BigInt(registrationKeys[name]) > 0n) ||
+      ['nullifyingKeyHash', 'authDigest'].some((name) => BigInt(registrationKeys[name]) >= FIELD)) throw mismatch();
+  const expected = Object.freeze(Object.fromEntries(['nullifyingKeyHash', 'authDigest', 'viewingKey']
+    .map((name) => [name, registrationKeys[name].toLowerCase()])));
   let busy = false;
   const network = () => require('./private-transaction-network').getPrivateTransactionNetwork(handle);
   function issue(value, txs) {
@@ -24,7 +31,7 @@ function createPPv2PublicOperations({ scope, configuration, provider, tokenPolic
     issued.set(value, { txs, used: new Set(), hashes: [], expiresAt: Date.now() + 120000 });
     return value;
   }
-  function registration(operation) {
+  function registration(operation, previousViewingKey = null) {
     try {
       if (operation?.__type !== 'publicOperation' || !Array.isArray(operation.txs) ||
           operation.txs.length < 1 || operation.txs.length > 2) throw refused();
@@ -34,12 +41,36 @@ function createPPv2PublicOperations({ scope, configuration, provider, tokenPolic
         if (!parsed || iface.encodeFunctionData(parsed.fragment, parsed.args).toLowerCase() !== tx.data.toLowerCase()) throw refused();
         if (parsed.name === 'setAuthPolicy' && !parsed.args.every((v) => v > 0n && v < FIELD)) throw refused();
         if (parsed.name === 'setViewingKey' && BigInt(parsed.args[0]) === 0n) throw refused();
+        if (parsed.name === 'setAuthPolicy' && (parsed.args[0] !== BigInt(expected.authDigest) ||
+            parsed.args[1] !== BigInt(expected.nullifyingKeyHash))) throw mismatch();
+        if (parsed.name === 'setViewingKey' && parsed.args[0].toLowerCase() !== expected.viewingKey) throw mismatch();
         return Object.freeze({ kind: parsed.name === 'setAuthPolicy' ? 'ppv2-register-auth' : 'ppv2-register-viewing',
-          chainId: 11155111, from: owner, to: keystore, value: 0n, data: tx.data.toLowerCase(), chainStateVerified: false });
+          chainId: 11155111, from: owner, to: keystore, value: 0n, data: tx.data.toLowerCase(), chainStateVerified: false,
+          ...(previousViewingKey ? { previousViewingKey, replacesExistingViewingKey: BigInt(previousViewingKey) !== 0n } : {}) });
       });
       if (txs.length === 2 && (txs[0].kind !== 'ppv2-register-auth' || txs[1].kind !== 'ppv2-register-viewing')) throw refused();
       return issue(Object.freeze({ __type: 'publicOperation', kind: 'ppv2-registration', txs: Object.freeze(txs), chainStateVerified: false }), txs);
-    } catch { throw refused(); }
+    } catch (error) { if (error?.code === 'PRIVATE_PPV2_REGISTRATION_MISMATCH') throw mismatch(); throw refused(); }
+  }
+  async function checkRegistration(requireRegistered = false) {
+    getPrivacyContext(handle);
+    if (!provider) throw refused();
+    const status = {};
+    for (const [name, key] of [['nullifyingKeys', 'nullifyingKeyHash'], ['viewingKeys', 'viewingKey']]) {
+      const result = await provider.call({ to: keystore, data: readInterface.encodeFunctionData(name, [owner]) });
+      getPrivacyContext(handle);
+      const value = BigInt(readInterface.decodeFunctionResult(name, result)[0]);
+      status[key] = value === BigInt(expected[key]);
+      if (key === 'viewingKey') status.registeredViewingKey = `0x${value.toString(16).padStart(64, '0')}`;
+      if ((name === 'nullifyingKeys' && value !== 0n && !status[key]) || (requireRegistered && !status[key])) throw mismatch();
+    }
+    return Object.freeze(status);
+  }
+  async function repairViewingKey() {
+    const status = await checkRegistration();
+    if (!status.nullifyingKeyHash || status.viewingKey) throw refused();
+    return registration({ __type: 'publicOperation', txs: [{ to: keystore, value: 0n,
+      data: iface.encodeFunctionData('setViewingKey', [expected.viewingKey]) }] }, status.registeredViewingKey);
   }
   function deposit(prepared) {
     // Only the session's verified deposit bridge calls this, not renderer/SDK.
@@ -79,14 +110,9 @@ function createPPv2PublicOperations({ scope, configuration, provider, tokenPolic
       if (Date.now() >= plan.expiresAt) throw refused();
       const tx = plan.txs[step];
       if (['ppv2-native-deposit', 'ppv2-token-deposit'].includes(tx.kind)) {
-        // isRegistered() in the SDK checks only the auth slot. Deposits from
-        // this wallet require BOTH public registration steps to be observed.
-        for (const name of ['nullifyingKeys', 'viewingKeys']) {
-          if (!provider) throw refused();
-          const result = await provider.call({ to: keystore, data: readInterface.encodeFunctionData(name, [owner]) });
-          try { if (BigInt(readInterface.decodeFunctionResult(name, result)[0]) === 0n) throw refused(); }
-          catch { throw refused(); }
-        }
+        // Nonzero is insufficient: the immutable nullifying key may belong to
+        // another derivation/account, making a successful deposit unspendable.
+        await checkRegistration(true);
       }
       const tokenOperation = ['ppv2-token-deposit', 'ppv2-token-approval'].includes(tx.kind);
       if (tokenOperation) { if (!tokenPolicy) throw refused(); await tokenPolicy.check(tx); }
@@ -110,11 +136,13 @@ function createPPv2PublicOperations({ scope, configuration, provider, tokenPolic
           if (request.from.toLowerCase() !== owner || transactionIntent(tx.kind, { ...actual, from: owner }).digest !== intent.digest ||
               BigInt(actual.gasLimit) !== gasLimit || gasLimit * BigInt(actual.gasPrice ?? actual.maxFeePerGas) > maxGasFee ||
               Date.now() >= plan.expiresAt) throw refused();
-          const approved = await review(Object.freeze({ ...request, intent, operation: tx.kind, step, steps: plan.txs.length,
+          const approved = await review(Object.freeze({ ...request, intent, operation: tx.kind, accountIndex, step, steps: plan.txs.length,
+            replacesExistingViewingKey: tx.replacesExistingViewingKey === true, previousViewingKey: tx.previousViewingKey ?? null,
             amount: tx.amount ?? null, noteCommitment: tx.commitment ?? null,
             ...(tx.token ? { token: tx.token, spender: tx.spender ?? tx.to, approvalAmount: tx.approvalAmount ?? null } : {}),
             protocolFee: tx.fee ?? 0n, maxGasFee, proofVerified: tx.proofVerified === true, chainStateVerified: false }));
           if (approved === true && tokenOperation) await tokenPolicy.check(tx);
+          if (approved === true && ['ppv2-native-deposit', 'ppv2-token-deposit'].includes(tx.kind)) await checkRegistration(true);
           return approved;
         } });
       plan.hashes[step] = result.hash;
@@ -124,7 +152,7 @@ function createPPv2PublicOperations({ scope, configuration, provider, tokenPolic
       throw error;
     } finally { busy = false; }
   }
-  return Object.freeze({ registration, deposit, ragequit, tokenApproval, submit,
+  return Object.freeze({ registration, checkRegistration, repairViewingKey, deposit, ragequit, tokenApproval, submit,
     list: () => network().listSubmissions(), observe: (hash) => network().reconcileSubmission(hash),
     resolve: (hash, policy) => network().resolveSubmission(hash, policy) });
 }

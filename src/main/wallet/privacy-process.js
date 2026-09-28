@@ -4,8 +4,22 @@
  */
 const path = require('path');
 const { serialize } = require('v8');
+const { isArrayBuffer } = require('util').types;
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 let activeProcesses = 0;
+
+function ownsInputBuffers(input, seen = new Set()) {
+  if (input === null || ['undefined', 'string', 'boolean', 'number', 'bigint'].includes(typeof input)) return true;
+  if (typeof input !== 'object') return false;
+  if (ArrayBuffer.isView(input)) return isArrayBuffer(input.buffer) && input.byteOffset === 0 && input.buffer.byteLength === input.byteLength;
+  // Bare backing stores may be pooled slabs; callers pass bounded views.
+  if (isArrayBuffer(input)) return false;
+  if (!Array.isArray(input) && ![Object.prototype, null].includes(Object.getPrototypeOf(input))) return false;
+  if (seen.has(input)) return true;
+  if (seen.size >= 10000) return false;
+  seen.add(input);
+  return Object.values(input).every((value) => ownsInputBuffers(value, seen));
+}
 
 function runPrivacyProcess({ handle, filename, input, validateResult, onProgress,
   signal, timeoutMs = 120000, heapMb = 256, rssMb = 768 }) {
@@ -17,6 +31,9 @@ function runPrivacyProcess({ handle, filename, input, validateResult, onProgress
       !Number.isInteger(heapMb) || heapMb < 16 || heapMb > 1024 || !Number.isInteger(rssMb) || rssMb < 64 || rssMb > 2048) {
     throw fail('PRIVATE_PROCESS_INVALID');
   }
+  // Electron clones a view's entire backing buffer, not just its visible
+  // slice. Only main-owned full allocations may cross this boundary.
+  if (!ownsInputBuffers(input)) throw fail('PRIVATE_PROCESS_INVALID');
   const { app, utilityProcess } = require('electron');
   if (!app.isReady()) throw fail('PRIVATE_PROCESS_UNAVAILABLE');
   const lifetime = AbortSignal.any([context.signal, ...(signal ? [signal] : [])]);
@@ -84,7 +101,10 @@ function runPrivacyProcess({ handle, filename, input, validateResult, onProgress
       child.once('error', () => stop(fail()));
       child.once('spawn', () => {
         if (stopping || lifetime.aborted) { stop(fail('PRIVACY_REQUEST_ABORTED')); return; }
-        try { child.postMessage({ filename, input }); } catch { stop(fail()); }
+        try {
+          if (!ownsInputBuffers(input)) throw fail('PRIVATE_PROCESS_INVALID');
+          child.postMessage({ filename, input });
+        } catch { stop(fail()); }
       });
       child.on('message', (message) => {
         if (stopping || exited) return;

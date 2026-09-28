@@ -2,7 +2,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createPrivacyScope } = require('../networks/privacy-context');
-const { runPrivacyWorker } = require('./privacy-worker');
+const { runPrivacyWorker: runWorker } = require('./privacy-worker');
+const runPrivacyWorker = (args) => runWorker({ validateResult: (value) => value?.value === 42, ...args });
 let scope, handle, filename;
 beforeEach(() => {
   scope = createPrivacyScope({ profileId: 'worker-fixture', signal: new AbortController().signal });
@@ -59,4 +60,11 @@ test('capacity and lifetime checks happen before more workers can start', async 
   controller.abort();
   expect((await settled).every((result) => result.status === 'rejected')).toBe(true);
   await expect(runPrivacyWorker({ handle, filename, workerData: { mode: 'result' } })).resolves.toMatchObject({ value: 42 });
+});
+
+test('requires a bounded, explicitly validated result', async () => {
+  expect(() => runWorker({ handle, filename })).toThrow(expect.objectContaining({ code: 'PRIVATE_WORKER_INVALID' }));
+  await expect(runPrivacyWorker({ handle, filename, workerData: {}, validateResult: () => false })).rejects.toMatchObject({ code: 'PRIVATE_WORKER_FAILED' });
+  fs.writeFileSync(filename, "require('worker_threads').parentPort.postMessage('x'.repeat(1024 * 1024 + 1))");
+  await expect(runPrivacyWorker({ handle, filename, workerData: {}, validateResult: () => true })).rejects.toMatchObject({ code: 'PRIVATE_WORKER_FAILED' });
 });

@@ -74,7 +74,7 @@ function createPrivateRpc(handle, role, { signal } = {}) {
       if (!isQuantity(chain) || BigInt(chain) !== BigInt(subject.chainId)) {
         throw privacyError('PRIVATE_CHAIN_MISMATCH', 'RPC endpoint returned a different chain');
       }
-    });
+    }).catch((error) => { chainCheck = null; throw error; });
     await chainCheck;
     assertActive();
   }
@@ -84,7 +84,7 @@ function createPrivateRpc(handle, role, { signal } = {}) {
     if (!validate(result)) throw privacyError('PRIVATE_RPC_INVALID', 'Invalid private RPC result');
     return { result, source: 'direct', verified: false, trust, privacy, observedAt: new Date().toISOString() };
   }
-  return Object.freeze({ request, ready, assertActive, signal: lifetime, trust, privacy });
+  return Object.freeze({ request, ready, assertActive, signal: lifetime, trust, privacy, release: () => transport?.release(handle) });
 }
 
 function isQuantity(value) {

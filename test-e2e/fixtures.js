@@ -46,8 +46,32 @@ function launchOptions(userDataDir) {
 // Launch one Freedom instance against `userDataDir`. Exported through the
 // `relaunchApp` fixture rather than directly so every app a spec opens is
 // closed at teardown.
-function launchApp(userDataDir) {
-  return electron.launch(launchOptions(userDataDir));
+async function launchApp(userDataDir) {
+  const app = await electron.launch(launchOptions(userDataDir));
+  const originalClose = app.close.bind(app);
+  let closing;
+  app.close = () => closing ||= (async () => {
+    let timer;
+    try {
+      await Promise.race([originalClose(), new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          // Only this fixture's own Electron child; never another app process.
+          app.process().kill('SIGKILL');
+          reject(new Error('Controlled Electron shutdown exceeded 30 seconds'));
+        }, 30000);
+      })]);
+    } finally { clearTimeout(timer); }
+  })();
+  let timer;
+  try {
+    await Promise.race([app.evaluate(async ({ app }) => { await app.whenReady(); }), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Controlled Electron readiness timed out')), launchOptions(userDataDir).timeout);
+    })]);
+    return app;
+  } catch (error) {
+    await app.close().catch(() => {});
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 
 // First BrowserWindow, waited until the browser chrome has mounted. The

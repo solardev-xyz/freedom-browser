@@ -54,10 +54,11 @@ test('PPv2 proves from ASAR in a managed utility process; cancellation, crash an
       packaged: app.isPackaged, hostFromAsar: req.resolve('./src/main/wallet/privacy-process').includes('app.asar/') };
   }, artifact);
   await testInfo.attach('ppv2-process-report', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
-  expect(report.proof.result).toMatchObject({ verified: true, tamperedRejected: true, fromAsar: true, sdkFromAsar: true });
+  expect(report.proof.result).toMatchObject({ verified: true, tamperedRejected: true, ownedArtifactBuffers: true, fromAsar: true, sdkFromAsar: true });
   expect(report.proof.peakRssBytes).toBeGreaterThan(0);
   expect(report.egress.result).toMatchObject({ nested: true, inheritedSecret: null });
-  expect(report.egress.result.refused).toEqual(['fetch', 'http', 'socket', 'dns', 'udp', 'http2', 'child', 'electron']);
+  expect(report.egress.result.refused).toEqual(['fetch', 'http', 'socket', 'dns', 'dns-resolver', 'dns-promise-resolver', 'dns-reverse',
+    'udp', 'udp-constructor', 'http2', 'child', 'electron']);
   expect(report.crash).toBe('PRIVATE_PROCESS_FAILED');
   expect(report.timeout).toBe('PRIVACY_REQUEST_ABORTED');
   expect(report.memory).toBe('PRIVATE_PROCESS_MEMORY_LIMIT');

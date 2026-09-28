@@ -2,6 +2,7 @@
  * record. Changing identity, deployment or SDK pins requires explicit migration.
  */
 const path = require('path');
+const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { createHmac } = require('crypto');
 const { mnemonicToSeedSync } = require('@scure/bip39');
 const vault = require('../identity/vault');
@@ -21,7 +22,7 @@ async function createPPv2Storage({ handle, accountIndex, binding }) {
   try {
     key = createHmac('sha256', seed).update('Freedom PPv2 storage v1\0')
       .update(JSON.stringify([context.profileId, context.subject])).digest();
-    storage = createPrivacyStorage({ handle, directory: path.join(profile.userDataDir, 'wallet-ppv2-experiment'), key });
+    storage = createPrivacyStorage({ handle, directory: path.join(profile.userDataDir, 'wallet-ppv2-experiment'), key, profileGuard: createPrivacyProfileGuard({ handle, profile, seed }) });
   } finally { seed.fill(0); key?.fill(0); }
   const expected = JSON.stringify({ identity: PPV2_IDENTITY, accountIndex, binding });
   function assertActive() {

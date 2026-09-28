@@ -20,7 +20,7 @@ const wallet = new Wallet(`0x${'1'.repeat(64)}`); // Public synthetic fixture on
 const params = { chainId: 11155111, to: `0x${'2'.repeat(40)}`, value: '1', gasLimit: '21000' };
 let scope, handle, network, tor, journalDirectory;
 let requests;
-let receipt;
+let receipt, canonical;
 let nonce;
 let responseHook;
 let signer;
@@ -32,6 +32,7 @@ beforeEach(() => {
   journalDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'private-send-fixture-'));
   mockJournals.set(handle, createSubmissionJournal({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) }));
   network = getPrivateTransactionNetwork(handle);
+  canonical = { number: '0x10', hash: `0x${'c'.repeat(64)}` };
   requests = []; receipt = null; nonce = '0x0'; responseHook = null;
   signer = { getAddress: async () => wallet.address, signTransaction: jest.fn((tx) => wallet.signTransaction(tx)) };
   mockRequest.mockImplementation(async (context, _url, options) => {
@@ -40,7 +41,7 @@ beforeEach(() => {
     if (responseHook) await responseHook(call);
     const result = { eth_chainId: '0xaa36a7', eth_gasPrice: '0x64', eth_getTransactionCount: nonce,
       eth_estimateGas: '0x5208', eth_call: '0x', eth_getTransactionReceipt: receipt, eth_getTransactionByHash: null,
-      eth_getBlockByNumber: { number: '0x10', hash: `0x${'c'.repeat(64)}` }, eth_blockNumber: '0x11' }[call.method];
+      eth_getBlockByNumber: canonical, eth_blockNumber: '0x11' }[call.method];
     return { status: 200, body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id,
       result: call.method === 'eth_sendRawTransaction' ? Transaction.from(call.params[0]).hash : result })) };
   });
@@ -90,6 +91,14 @@ test('other-account nonces, arbitrary hashes and Tor replacement cannot cross th
   mockEndpoint = { signal: new AbortController().signal };
   await expect(network.getFeeQuote(11155111)).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
   expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('a fresh caller gets a new client after Tor restarts while old references stay revoked', async () => {
+  tor.abort(); tor = new AbortController(); mockEndpoint = { signal: tor.signal };
+  const next = getPrivateTransactionNetwork(handle);
+  expect(next).not.toBe(network);
+  await expect(network.getFeeQuote(11155111)).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  expect((await next.getFeeQuote(11155111)).gasPrice).toBe('100');
 });
 
 test('lock cancels receipt polling without waiting for its timer', async () => {
@@ -157,22 +166,22 @@ test('disk failure before broadcast sends no bytes; a failed acknowledgment keep
   } finally { jest.restoreAllMocks(); }
 });
 
-test('a reviewed resolution allows one new nonce; a reorg before signing or during signing closes the gate', async () => {
+test('a reviewed resolution allows one new nonce; missing evidence before or during signing closes the gate', async () => {
   const options = { privacyContext: handle, review: async () => true };
   const first = await service.signAndSendTransaction(params, signer, options);
   const included = { transactionHash: first.hash, from: wallet.address, blockHash: `0x${'c'.repeat(64)}`, status: '0x1', blockNumber: '0x10' };
   const policy = { minimumConfirmations: 2, review: async () => ({ allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' }) };
   receipt = included;
   await network.resolveSubmission(first.hash, policy);
-  receipt = null; signer.signTransaction.mockClear(); nonce = '0x1';
-  await expect(service.signAndSendTransaction(params, signer, options)).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+  const includedBlock = canonical; canonical = null; signer.signTransaction.mockClear(); nonce = '0x1';
+  await expect(service.signAndSendTransaction(params, signer, options)).rejects.toMatchObject({ code: 'PRIVATE_RECONCILIATION_UNAVAILABLE' });
   expect(signer.signTransaction).not.toHaveBeenCalled();
-  receipt = included;
+  receipt = included; canonical = includedBlock;
   await network.resolveSubmission(first.hash, policy);
-  signer.signTransaction.mockImplementation(async (tx) => { receipt = null; return wallet.signTransaction(tx); });
-  await expect(service.signAndSendTransaction(params, signer, options)).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+  signer.signTransaction.mockImplementation(async (tx) => { canonical = null; return wallet.signTransaction(tx); });
+  await expect(service.signAndSendTransaction(params, signer, options)).rejects.toMatchObject({ code: 'PRIVATE_RECONCILIATION_UNAVAILABLE' });
   expect(requests.filter((call) => call.method === 'eth_sendRawTransaction')).toHaveLength(1);
-  receipt = included;
+  receipt = included; canonical = includedBlock;
   await network.resolveSubmission(first.hash, policy);
   signer.signTransaction.mockImplementation((tx) => wallet.signTransaction(tx));
   const second = await service.signAndSendTransaction(params, signer, options);

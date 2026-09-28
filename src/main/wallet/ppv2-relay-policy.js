@@ -25,9 +25,9 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
   try {
     const token = intent?.kind === 'ppv2-token-withdrawal' ? intent.token : NATIVE;
     if (!address(token) || (intent?.kind === 'ppv2-token-withdrawal' && token === NATIVE)) throw fail();
-    if (!keys(intent, [...(intent?.kind === 'ppv2-token-withdrawal' ? ['token'] : []), 'kind', 'chainId', 'pool', 'processor', 'relayer', 'quoteSigner', 'recipient', 'amount', 'maxFee', 'commitment', 'publicSignals']) ||
+    if (!keys(intent, [...(intent?.kind === 'ppv2-token-withdrawal' ? ['token'] : []), 'kind', 'chainId', 'owner', 'inputValue', 'pool', 'processor', 'relayer', 'quoteSigner', 'recipient', 'amount', 'maxFee', 'commitment', 'publicSignals']) ||
         !['ppv2-native-withdrawal', 'ppv2-token-withdrawal'].includes(intent.kind) || intent.chainId !== 11155111 ||
-        !['pool', 'processor', 'relayer', 'quoteSigner', 'recipient'].every((k) => address(intent[k])) ||
+        !['owner', 'pool', 'processor', 'relayer', 'quoteSigner', 'recipient'].every((k) => address(intent[k])) || !amount(intent.inputValue) ||
         !amount(intent.amount) || BigInt(intent.amount) <= 0n || !amount(intent.maxFee) || !word(intent.commitment) ||
         !Array.isArray(intent.publicSignals) || intent.publicSignals.length !== 8 || !intent.publicSignals.every(word)) throw fail();
     if (!Number.isSafeInteger(fromBlock) || fromBlock < 0) throw fail();
@@ -46,6 +46,7 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
         typeof fee.asset !== 'string' || fee.asset.toLowerCase() !== token || fee.recipient !== intent.recipient || fee.extraGas !== false ||
         !amount(fee.feeAmount) || BigInt(fee.feeAmount) > BigInt(intent.maxFee) || !amount(fee.amountSent) ||
         fee.amountReceived !== intent.amount || BigInt(fee.amountSent) !== BigInt(intent.amount) + BigInt(fee.feeAmount) ||
+        BigInt(fee.amountSent) >= BigInt(intent.inputValue) ||
         !Number.isSafeInteger(fee.expiration) || fee.expiration <= Date.now() ||
         !hex(fee.signedRelayerCommitment, 132) || fee.signedRelayerCommitment.length !== 132) throw fail();
     const routing = coder.encode([ROUTING], [[intent.recipient, intent.relayer, BigInt(fee.feeAmount), 0n]]);
@@ -63,8 +64,10 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
     return { proof: result, expiresAt: Math.min(Date.now() + 120000, fee.expiration),
       attempt: { id: hash(JSON.stringify([intentDigest, endpointDigest, payloadDigest])), intentDigest, endpointDigest, payloadDigest,
         commitment: intent.commitment, nullifier: intent.publicSignals[0] },
-      settlement: { ...(token === NATIVE ? {} : { token }), pool: intent.pool, processor: intent.processor, outputCommitment: intent.publicSignals[1],
-        amountOut: fee.amountSent, noteDigest: hash(JSON.stringify(payload.noteData)), fromBlock },
+      settlement: { ...(token === NATIVE ? {} : { token }), owner: intent.owner, inputValue: intent.inputValue,
+        pool: intent.pool, processor: intent.processor, outputCommitment: intent.publicSignals[1],
+        amountOut: fee.amountSent, noteDigest: hash(JSON.stringify(payload.noteData.map((note) =>
+          ({ hint: note.hint.toLowerCase(), data: note.data.toLowerCase() })))), fromBlock },
       summary: { ...intent, publicSignals: Object.freeze([...intent.publicSignals]), fee: fee.feeAmount,
         endpoint, payloadDigest, proofVerified: true, chainStateVerified: false, quoteSignatureVerified: true } };
   } catch { throw fail(); }

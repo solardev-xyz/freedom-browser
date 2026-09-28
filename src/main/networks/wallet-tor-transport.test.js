@@ -130,6 +130,17 @@ describe('wallet Tor transport', () => {
     expect(socks.records).toHaveLength(2);
   });
 
+  test('explicit operation release permits more than 32 sequential isolated groups without waiting for idle expiry', async () => {
+    for (let index = 1; index <= 36; index++) {
+      const handle = scope.getContext({ kind: 'private-account', principal: 'fixture', protocol: 'ppv2-fixture', deployment: 'sepolia',
+        chainId: 11155111, role: 'protocol-rpc', operation: `attempt-${index}` });
+      await transport.request(handle, 'http://rpc.example.test/');
+      transport.release(handle);
+    }
+    expect(socks.records).toHaveLength(36);
+    expect(seen).toHaveLength(36);
+  });
+
   test('requires HTTPS by default, forbids credential URLs and cookie injection', async () => {
     const strict = createWalletTorTransport({ getEndpoint: () => socks.endpoint });
     await expect(strict.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({ code: 'INVALID_PRIVATE_REQUEST' });

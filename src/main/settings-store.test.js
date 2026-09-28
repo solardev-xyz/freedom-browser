@@ -592,11 +592,14 @@ test('wallet Tor qualification gate is main-owned and cannot enable packaged bui
     app.isPackaged = true;
     expect(mod.isWalletTorExperimentAvailable()).toBe(false);
     expect(mod.loadSettings().walletTorBalanceReads).toBe(false);
+    expect(mod.saveSettings({ walletTorBalanceReads: true })).toBe(false);
+    expect(mod.loadSettings().walletTorBalanceReads).toBe(false);
     mod.saveSettings({ walletTorExperimentAvailable: true });
     expect((await ipcMain.invoke(IPC.SETTINGS_GET)).walletTorExperimentAvailable).toBe(false);
     app.isPackaged = false;
     delete process.env.FREEDOM_WALLET_TOR_EXPERIMENT;
     expect(mod.isWalletTorExperimentAvailable()).toBe(false);
+    expect(mod.saveSettings({ walletTorBalanceReads: true })).toBe(false);
   } finally {
     if (original === undefined) delete process.env.FREEDOM_WALLET_TOR_EXPERIMENT;
     else process.env.FREEDOM_WALLET_TOR_EXPERIMENT = original;

@@ -70,7 +70,7 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
         },
         network: { fetch: async () => { sent++; durableBeforeSend = (await journal.list()).length === 1; throw new Error('Controlled lost response'); } },
       });
-      const request = { ...captured, intent: { kind: 'ppv2-native-withdrawal', chainId: 11155111, pool: `0x${'44'.repeat(20)}`,
+      const request = { ...captured, intent: { kind: 'ppv2-native-withdrawal', chainId: 11155111, owner: `0x${'55'.repeat(20)}`, inputValue: '10000', pool: `0x${'44'.repeat(20)}`,
         processor, relayer, quoteSigner: signer.address.toLowerCase(), recipient, amount: '5900', maxFee: '100', commitment: word(commitment), publicSignals: proof.publicSignals.map(word) } };
       // A changed curve point with identical intended public signals must fail
       // real verification, not merely the amount/context shape checks.

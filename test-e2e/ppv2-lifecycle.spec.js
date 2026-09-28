@@ -48,7 +48,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
         async request(method, params, validate) {
           getPrivacyContext(handle); methods.add(method);
           let result;
-          if (method === 'eth_call' && context.subject.role === 'transaction-rpc') result = '0x';
+          if (method === 'eth_call' && context.subject.role === 'transaction-rpc' && params[0].from) result = '0x';
           else if (method === 'eth_blockNumber') result = quantity(head);
           else if (method === 'eth_getBlockByNumber') result = { number: params[0] === 'finalized' ? quantity(head - 2) : params[0], hash: blockHash };
           else if (method === 'eth_getLogs') {
@@ -111,7 +111,8 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
       if (!restart) await vault.importVault(directory, 'fixture-password', 'test test test test test test test test test test test junk');
       await vault.unlockVault(directory, 'fixture-password', 0);
       const { PPV2_CANDIDATE, openPPv2Session } = req('./src/main/wallet/ppv2-session');
-      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin };
+      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin,
+        inspectRegistration: req(`${artifact}/plugin.cjs`).inspectRegistration, inspectChange: req(`${artifact}/plugin.cjs`).inspectChange };
       const open = () => openPPv2Session({ candidate, configuration: config,
         proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];
@@ -126,8 +127,8 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
         const notes = await session.notes();
         const journal = await session.listPublicSubmissions();
         const rescan = await session.inspectNoteRecovery();
-        const prepared = await session.prepareNativeDeposit({ amount: 10000n, maxFee: 100n });
-        const blocked = await session.submitPublicOperation(prepared, options).then(() => null, (e) => e.code);
+        const blocked = await session.prepareNativeDeposit({ amount: 10000n, maxFee: 100n })
+          .then((prepared) => session.submitPublicOperation(prepared, options)).then(() => null, (e) => e.code);
         if (exit) {
           stage = 'native ragequit';
           await resolve(saved.depositHash);
@@ -186,12 +187,15 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
           'wallet-ppv2-experiment'))[0]));
       logs.push(...originalNoteLogs);
       const rescan = await session.inspectNoteRecovery();
-      // Preserve the old encrypted cache, then prove independent discovery
-      // from the same seed with no SDK cache available to the new session.
+      // Missing initialized state must block, even when chain scanning could
+      // reconstruct notes. Restore the preserved cache before reopening.
       session.close();
       const profile = req('./src/main/profile-resolver').getActiveProfile();
       const cache = path.join(profile.userDataDir, 'wallet-ppv2-experiment');
       fs.renameSync(cache, `${cache}.recovery-fixture`);
+      const missingCacheBlocked = await open().then(()=>false, e=>e.code === 'PRIVATE_PROFILE_STORE_MISSING');
+      if (!missingCacheBlocked) throw new Error('Missing initialized cache was accepted');
+      fs.renameSync(`${cache}.recovery-fixture`, cache);
       session = await open();
       stage = 'recovered';
       const recovered = await session.notes();
@@ -207,7 +211,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
         notes: notes.map((note) => ({ value: note.value.toString(), status: note.status })),
         restoredEqual: JSON.stringify(restored, (_key, value) => typeof value === 'bigint' ? value.toString() : value) ===
           JSON.stringify(notes, (_key, value) => typeof value === 'bigint' ? value.toString() : value),
-        independentlyRecovered: recovered.length === 1 && recovered[0].commitment === notes[0]?.commitment,
+        guardedCacheRestored: recovered.length === 1 && recovered[0].commitment === notes[0]?.commitment,
         rescanRecovered: rescan.notes.length === 1 && rescan.notes[0].commitment === notes[0]?.commitment,
         discrepancyDetected: discrepancy.missingFromScan.length === 1 && discrepancy.cacheReplaced === false,
         cachePreserved: encryptedBefore.equals(encryptedAfter),
@@ -241,7 +245,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
   expect(report.attemptedRecovered).toBe(true); expect(report.missingTimestampCount).toBe(0);
   expect(report.proofCommitmentRecovered).toBe(true);
   expect(report.notes).toEqual([{ value: '10000', status: 'pending' }]);
-  expect(report.restoredEqual).toBe(true); expect(report.independentlyRecovered).toBe(true);
+  expect(report.restoredEqual).toBe(true); expect(report.guardedCacheRestored).toBe(true);
   expect(report.rescanRecovered).toBe(true); expect(report.discrepancyDetected).toBe(true); expect(report.cachePreserved).toBe(true);
   expect(report.ciphertextOnly).toBe(true); expect(report.isolatedRoles).toBe(true);
   expect(report.balances).toEqual([{ amount: '0', tag: 'spendable' }, { amount: '10000', tag: 'unspendable' }]);

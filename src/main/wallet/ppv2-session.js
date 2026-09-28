@@ -34,7 +34,7 @@ const noProof = Object.freeze(Object.fromEntries(['proveDeposit', 'proveTransact
 async function openPPv2Session({ candidate, accountIndex = 0, configuration, proving }) {
   if (!require('../settings-store').isWalletTorExperimentAvailable() ||
       !Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex > 65535 ||
-      !candidate || typeof candidate.createPlugin !== 'function' ||
+      !candidate || typeof candidate.createPlugin !== 'function' || typeof candidate.inspectRegistration !== 'function' ||
       Object.keys(PPV2_CANDIDATE).some((name) => candidate[name] !== PPV2_CANDIDATE[name])) throw unavailable();
   // Snapshot before any await; neither the caller nor SDK may change grants.
   let config;
@@ -64,10 +64,13 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     deployment: 'sepolia', chainId: 11155111 };
   const parentHandle = parent.getContext({ ...subject, role: 'session' });
   const parentContext = getPrivacyContext(parentHandle);
+  const tor = require('../tor-manager');
+  const endpoint = tor.getWalletSocksEndpoint();
+  if (!endpoint || endpoint.signal.aborted) throw unavailable();
   const lease = JSON.stringify([parentContext.profileId, subject.principal]);
   if (active.has(lease)) throw privacyError('PRIVATE_PPV2_BUSY', 'This PPv2 account already has an open session');
-  const scope = createPrivacyScope({ profileId: parentContext.profileId, signal: parent.signal,
-    isCurrent: () => { try { getPrivacyContext(parentHandle); return true; } catch { return false; } } });
+  const scope = createPrivacyScope({ profileId: parentContext.profileId, signal: AbortSignal.any([parent.signal, endpoint.signal]),
+    isCurrent: () => { try { getPrivacyContext(parentHandle); return tor.getWalletSocksEndpoint() === endpoint; } catch { return false; } } });
   const handle = (role) => scope.getContext({ ...subject, role });
   const sessionHandle = handle('session');
   let plugin = null, busy = false;
@@ -78,12 +81,15 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
   try {
     const relayJournal = getPPv2RelayJournal(handle('storage'), accountIndex);
     await relayJournal.list(); // Corrupt/foreign state must not look like no attempts.
-    const provider = createKohakuProvider({ handle: handle('protocol-rpc'), contracts: config.contracts });
+    const ownerHandle = scope.getContext({ kind: 'public-address', principal: config.ownerAddress.toLowerCase(), chainId: 11155111, role: 'transaction-rpc' });
+    const provider = createKohakuProvider({ handle: handle('protocol-rpc'), contracts: config.contracts, publicReadHandle: ownerHandle,
+      publicContracts: [config.deployment.keystoreAddress, ...(config.erc20Tokens || [])] });
     const transport = createKohakuNetworkRouter(config.networks.map(({ role, endpoints }) => ({ handle: handle(role), endpoints })));
     let capture = null;
     const network = Object.freeze({ fetch: async (input, init = {}) => {
       const url = new URL(input instanceof Request ? input.url : input);
-      if (/\/v1\/relay(?:\/|$)/.test(url.pathname)) {
+      const pathname = decodeURIComponent(url.pathname).replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+      if (/\/v1\/relay(?:\/|$)/i.test(pathname)) {
         if (!capture || capture.request || typeof input !== 'string' || init.method !== 'POST' || typeof init.body !== 'string') throw unavailable();
         capture.request = { endpoint: input, body: init.body };
         throw privacyError('PRIVATE_PPV2_CAPTURE_ONLY', 'Prepared relay captured without transmission');
@@ -91,12 +97,15 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       return transport.fetch(input, init);
     } });
     const keystore = createPPv2Keystore(handle('keystore'), accountIndex);
+    const registrationKeys = structuredClone(await scope.run(sessionHandle, () => candidate.inspectRegistration(keystore, accountIndex)));
+    getPrivacyContext(sessionHandle);
     const binding = { candidate: PPV2_CANDIDATE, ownerAddress: config.ownerAddress.toLowerCase(),
       deployment: Object.fromEntries(deploymentKeys.map((name) => [name, config.deployment[name].toLowerCase()])),
       deploymentBlock: config.deploymentBlock, asp: config.asp, artifacts: config.artifacts };
     const storage = await createPPv2Storage({ handle: handle('storage'), accountIndex, binding });
     const depositProver = proving ? createPPv2DepositProver({ handle: handle('prover'), artifactHandle: handle('artifacts'),
-      sdkEntry: proving.sdkEntry, directory: proving.directory, onProgress: proving.onProgress, manifest: config.artifacts.manifest }) : null;
+      sdkEntry: proving.sdkEntry, directory: proving.directory, onProgress: proving.onProgress, manifest: config.artifacts.manifest,
+      inspectNote: typeof candidate.inspectChange === 'function' ? (owner, notes) => candidate.inspectChange(keystore, accountIndex, owner, notes) : undefined }) : null;
     const ragequitProver = proving?.ragequitProverEntry ? createPPv2RagequitProver({ handle: handle('prover'), artifactHandle: handle('artifacts'),
       sdkEntry: proving.sdkEntry, proverEntry: proving.ragequitProverEntry, directory: proving.directory,
       onProgress: proving.onProgress, manifest: config.artifacts.manifest }) : null;
@@ -121,17 +130,20 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     getPrivacyContext(sessionHandle);
     plugin = created;
     const tokenPolicy = createPPv2TokenPolicy({ configuration: config, provider });
-    const publicOperations = createPPv2PublicOperations({ scope, configuration: config, provider, tokenPolicy });
-    const relayReconciliation = () => createPPv2RelayReconciliation({ handle: handle('protocol-rpc'), journal: relayJournal });
+    const publicOperations = createPPv2PublicOperations({ scope, configuration: config, provider, tokenPolicy, registrationKeys, accountIndex });
+    await publicOperations.checkRegistration();
+    const relayReconciliation = () => createPPv2RelayReconciliation({ handle: handle('protocol-rpc'), journal: relayJournal,
+      getOperationHandle: (id) => scope.getContext({ ...subject, role: 'protocol-rpc', operation: id }) });
     const publicNetwork = () => require('./private-transaction-network').getPrivateTransactionNetwork(
-      scope.getContext({ kind: 'public-address', principal: config.ownerAddress.toLowerCase(), chainId: 11155111, role: 'transaction-rpc' }));
+      ownerHandle);
     const withdrawals = new WeakMap();
-    async function availableToSpend() {
-      if ((await relayJournal.list()).some((r) => r.resolution)) await relayReconciliation().refreshResolved();
+    async function availableToSpend(signal) {
+      const check = () => { if (signal?.aborted) throw unavailable(); getPrivacyContext(sessionHandle); };
+      check();
+      if ((await relayJournal.list()).some((r) => r.resolution)) await relayReconciliation().refreshResolved(signal);
       await relayJournal.assertCanSubmit();
       const client = publicNetwork();
-      for (const r of await client.listSubmissions()) if (r.resolution) await client.reconcileSubmission(r.hash);
-      await client.assertCanSubmit(); getPrivacyContext(sessionHandle);
+      await client.assertCanSubmit(signal); check();
     }
     async function prepareWithdrawal(args) {
       if (!transactProver || !address(args.recipient) || !config.relayers.every((r) => address(r.quoteSigner))) throw unavailable();
@@ -143,7 +155,14 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       const note = (await plugin.notes(undefined, true)).find((n) => n.commitment === request.commitment);
       if (!note || note.status !== 'active' || (token === NATIVE ? note.asset?.__type !== 'native' :
           note.asset?.__type !== 'erc20' || note.asset.contract.toLowerCase() !== token.toLowerCase())) throw unavailable();
-      const fromBlock = Number(await provider.getBlockNumber());
+      // Start before both observed heads with a reorg margin. Scanning from
+      // deployment for every new attempt would make old pools impractical.
+      // Both observations remain unverified, like the settlement logs themselves.
+      const latest = await provider.getBlockNumber();
+      const finalized = await provider.request({ method: 'eth_getBlockByNumber', params: ['finalized', false] });
+      if (!finalized) throw unavailable();
+      const earliest = latest < BigInt(finalized.number) ? latest : BigInt(finalized.number);
+      const fromBlock = Math.max(config.deploymentBlock, Number(earliest > 1000n ? earliest - 1000n : 0n));
       proofKind = 'transact';
       const captured = {};
       const prepared = await transactProver.prepare({ commitment: note.commitment, value: note.value, owner: config.ownerAddress,
@@ -173,6 +192,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
         verifyProof: async (p) => JSON.stringify(p) === JSON.stringify(proof) }); // Exact proof already verified by the owned process.
       const summary = await gate.prepare({ ...prepared.value, fromBlock, intent: { ...(token === NATIVE ? {} : { token: token.toLowerCase() }),
         kind: token === NATIVE ? 'ppv2-native-withdrawal' : 'ppv2-token-withdrawal', chainId: 11155111,
+        owner: config.ownerAddress.toLowerCase(), inputValue: note.value.toString(),
         pool: config.deployment.poolAddress.toLowerCase(), processor: captured.relayer.processorAddress.toLowerCase(),
         relayer: captured.relayer.address.toLowerCase(), quoteSigner: captured.relayer.quoteSigner.toLowerCase(),
         recipient: request.recipient, amount: request.amount.toString(), maxFee: request.maxFee.toString(),
@@ -186,7 +206,6 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     }
     const submitWithdrawal = (prepared, review) => exclusive(async () => {
       const plan = withdrawals.get(prepared); if (!plan) throw unavailable(); withdrawals.delete(prepared);
-      await availableToSpend();
       return plan.gate.submit(prepared, { review, invoke: async (net) => {
         const response = await net.fetch(plan.request.endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: plan.request.body });
         return response.json();
@@ -205,6 +224,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
           }
           if (method === 'prepareTokenDeposit') {
             await availableToSpend();
+            await publicOperations.checkRegistration(true);
             const state = await tokenPolicy.read(args[0]);
             if (state.allowance !== state.total) throw unavailable();
             proofKind = 'deposit';
@@ -212,6 +232,8 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
               () => plugin.prepareShield({ asset: { __type: 'erc20', contract: state.token }, amount: state.amount }));
           }
           if (method === 'prepareNativeDeposit') {
+            await availableToSpend();
+            await publicOperations.checkRegistration(true);
             proofKind = 'deposit';
             return depositProver.prepare({ ...args[0], ownerAddress: config.ownerAddress, entrypointAddress: config.deployment.entrypointAddress },
               () => plugin.prepareShield({ asset: { __type: 'native' }, amount: args[0].amount }));
@@ -230,9 +252,13 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
           if (method === 'inspectNoteRecovery') return inspectPPv2NoteRecovery({ handle: sessionHandle, createPlugin, host, params, plugin });
           return plugin[method](...args);
         });
-      } catch {
+      } catch (error) {
         // Never forward SDK exceptions (URLs, notes, payloads or nested causes).
         getPrivacyContext(sessionHandle);
+        const safe = ['PRIVATE_PPV2_REGISTRATION_MISMATCH', 'PRIVATE_SUBMISSION_UNRESOLVED', 'PRIVATE_PPV2_RELAY_UNRESOLVED',
+          'PRIVATE_PPV2_RELAY_REFUSED', 'PRIVATE_PPV2_RECONCILIATION_REFUSED', 'PRIVATE_RECONCILIATION_UNAVAILABLE',
+          'PRIVATE_PROFILE_MOVED', 'PRIVATE_PROFILE_STORE_MISSING', 'PRIVATE_PROFILE_INVENTORY_INVALID', 'PRIVATE_PROFILE_INVENTORY_MISSING'];
+        if (safe.includes(error?.code)) throw privacyError(error.code, 'Controlled PPv2 operation refused');
         throw privacyError('PRIVATE_PPV2_OPERATION_FAILED', 'Controlled PPv2 operation failed');
       } finally { busy = false; proofKind = null; }
     }
@@ -246,6 +272,8 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       balance: () => call('balance', undefined),
       notes: () => call('notes', undefined, true),
       inspectNoteRecovery: () => call('inspectNoteRecovery'),
+      registrationStatus: () => exclusive(() => publicOperations.checkRegistration()),
+      prepareRepairViewingKey: () => exclusive(() => publicOperations.repairViewingKey()),
       prepareRegisterKeystore: async () => publicOperations.registration(await call('prepareRegisterKeystore')),
       ...(depositProver ? { prepareNativeDeposit: async ({ amount, maxFee }) => publicOperations.deposit(await call('prepareNativeDeposit', { amount, maxFee })) } : {}),
       ...(depositProver ? {
@@ -260,28 +288,34 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
         submitTokenWithdrawal: submitWithdrawal,
         prepareTokenWithdrawal: (args) => call('prepareTokenWithdrawal', { ...args }),
       } : {}),
-      observeRelayAttempt: (id) => exclusive(() => relayReconciliation().observe(id)),
+      observeRelayAttempt: (id, options) => exclusive(() => relayReconciliation().observe(id, options)),
       resolveRelayAttempt: (id, review) => exclusive(() => relayReconciliation().resolve(id, review)),
       submitPublicOperation: async (prepared, options) => {
         getPrivacyContext(sessionHandle);
         if (busy) throw privacyError('PRIVATE_PPV2_BUSY', 'A PPv2 operation is already in progress');
         busy = true;
         try {
-          if ((await relayJournal.list()).some((r) => r.resolution)) await relayReconciliation().refreshResolved();
-          await relayJournal.assertCanSubmit(); getPrivacyContext(sessionHandle);
-          if (['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(prepared?.kind)) {
+          const exiting = ['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(prepared?.kind);
+          const checkRelay = async () => {
+            if (exiting) {
+              if ((await relayJournal.list()).some((r) => r.commitment === prepared.commitment && r.resolution)) throw unavailable();
+            } else {
+              if ((await relayJournal.list()).some((r) => r.resolution)) await relayReconciliation().refreshResolved();
+              await relayJournal.assertCanSubmit();
+            }
+            getPrivacyContext(sessionHandle);
+          };
+          await checkRelay();
+          if (exiting) {
             const note = (await plugin.notes(undefined, true)).find((n) => n.commitment === prepared.commitment);
             if (!note || ['spent', 'exited', 'exit_pending'].includes(note.status)) throw unavailable();
           }
-          if (['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(prepared?.kind) &&
-              (await relayJournal.list()).some((r) => r.commitment === prepared.commitment)) throw unavailable();
+          const cancelling = exiting && (await relayJournal.list()).some((r) => r.commitment === prepared.commitment && !r.resolution);
           const review = options?.review;
           return await publicOperations.submit(prepared, { ...options, review: typeof review === 'function' ? async (request) => {
-            const approved = await review(request);
-            if (approved === true) {
-              if ((await relayJournal.list()).some((r) => r.resolution)) await relayReconciliation().refreshResolved();
-              await relayJournal.assertCanSubmit(); getPrivacyContext(sessionHandle);
-            }
+            const approved = await review(Object.freeze({ ...request, pendingRelayCancellation: cancelling,
+              competingRelayMayWin: cancelling }));
+            if (approved === true) await checkRelay();
             return approved;
           } : review });
         }
@@ -294,7 +328,8 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     });
   } catch (error) {
     close();
-    const safe = ['PRIVATE_PPV2_STATE_MISMATCH', 'PRIVATE_STORAGE_UNREADABLE', 'PRIVACY_CONTEXT_REVOKED'];
+    const safe = ['PRIVATE_PPV2_STATE_MISMATCH', 'PRIVATE_PPV2_REGISTRATION_MISMATCH', 'PRIVATE_STORAGE_UNREADABLE', 'PRIVACY_CONTEXT_REVOKED',
+      'PRIVATE_PROFILE_MOVED', 'PRIVATE_PROFILE_STORE_MISSING', 'PRIVATE_PROFILE_INVENTORY_INVALID', 'PRIVATE_PROFILE_INVENTORY_MISSING'];
     if (safe.includes(error?.code)) throw privacyError(error.code, 'Controlled PPv2 session could not be opened');
     throw unavailable();
   }

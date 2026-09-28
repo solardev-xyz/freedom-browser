@@ -2,8 +2,9 @@ jest.mock('../identity/vault', () => ({ getMnemonic: () => 'test test test test 
   getSessionSignal: () => mockVault.signal }));
 jest.mock('../profile-resolver', () => ({ getActiveProfile: () => mockProfile }));
 jest.mock('../settings-store', () => ({ isWalletTorExperimentAvailable: () => mockAvailable }));
-jest.mock('../networks/kohaku-provider', () => ({ createKohakuProvider: () => ({}) }));
-jest.mock('../networks/kohaku-network-router', () => ({ createKohakuNetworkRouter: () => ({}) }));
+jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mockEndpoint }));
+jest.mock('../networks/kohaku-provider', () => ({ createKohakuProvider: () => ({ call: (...args) => mockCall(...args) }) }));
+jest.mock('../networks/kohaku-network-router', () => ({ createKohakuNetworkRouter: () => ({ fetch: (...args) => mockFetch(...args) }) }));
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -15,20 +16,48 @@ const { getPPv2RelayJournal } = require('./ppv2-relay-journal');
 const { PPV2_CANDIDATE, openPPv2Session } = require('./ppv2-session');
 const { resetPrivacySession } = require('./privacy-session');
 const { configuration } = require('../../../test/helpers/ppv2-session-fixture');
-let mockVault, mockProfile, mockAvailable, config, host, params, candidate, scope;
+let mockVault, mockProfile, mockAvailable, config, host, params, candidate, scope, mockCall, mockEndpoint, tor, mockFetch;
+const registrationKeys = { authDigest: `0x${'1'.padStart(64, '0')}`, nullifyingKeyHash: `0x${'2'.padStart(64, '0')}`, viewingKey: `0x${'ab'.repeat(32)}` };
 const snapshot = () => Object.freeze({ instanceId: async () => config.ownerAddress, isRegistered: async () => false,
   balance: async () => [], notes: async () => [], prepareRegisterKeystore: async () => ({ __type: 'publicOperation', txs: [] }) });
 const handle = (role, index = 0) => scope.getContext({ kind: 'private-account', principal: `ppv2:${index}`,
   protocol: 'privacy-pools-v2', deployment: 'sepolia', chainId: 11155111, role });
 beforeEach(() => {
   mockVault = new AbortController(); mockAvailable = true;
+  tor = new AbortController(); mockEndpoint = { signal: tor.signal };
   mockProfile = { id: 'fixture', userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-ppv2-state-test-')) };
   scope = createPrivacyScope({ signal: mockVault.signal, profileId: createHash('sha256')
     .update(JSON.stringify([mockProfile.id, mockProfile.userDataDir])).digest('hex') });
   config = configuration();
-  candidate = { ...PPV2_CANDIDATE, createPlugin: jest.fn(async (h, p) => { host = h; params = p; return snapshot(); }) };
+  mockCall = jest.fn(async () => `0x${'0'.repeat(64)}`);
+  mockFetch = jest.fn(async () => new Response('{}'));
+  candidate = { ...PPV2_CANDIDATE, inspectRegistration: async () => registrationKeys,
+    createPlugin: jest.fn(async (h, p) => { host = h; params = p; return snapshot(); }) };
 });
 afterEach(() => { mockVault.abort(); scope.close(); resetPrivacySession(); });
+
+test.each(['/V1/relay/evm/11155111/withdrawal', '/v1/%72elay/evm/11155111/withdrawal', '/v1//relay/evm/11155111/withdrawal'])(
+  'the SDK cannot bypass capture-only relay handling through %s', async (pathname) => {
+    const session = await openPPv2Session({ candidate, configuration: config });
+    await expect(host.network.fetch(`https://service.example.test${pathname}`, { method: 'POST', body: '{}' })).rejects.toThrow();
+    expect(mockFetch).not.toHaveBeenCalled(); session.close();
+  });
+
+test('Tor replacement revokes the old session and releases its account lease', async () => {
+  const old = await openPPv2Session({ candidate, configuration: config });
+  tor.abort(); tor = new AbortController(); mockEndpoint = { signal: tor.signal };
+  await expect(old.notes()).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
+  const next = await openPPv2Session({ candidate, configuration: config });
+  expect(await next.notes()).toEqual([]); next.close();
+});
+
+test('refuses an existing immutable registration from another account and releases the session lease', async () => {
+  mockCall.mockResolvedValue(`0x${'3'.padStart(64, '0')}`);
+  await expect(openPPv2Session({ candidate, configuration: config })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_REGISTRATION_MISMATCH' });
+  mockCall.mockResolvedValue(`0x${'0'.repeat(64)}`);
+  const reopened = await openPPv2Session({ candidate, configuration: config });
+  reopened.close();
+});
 
 test('restores uncertain relays across sessions and refuses public sends while keeping recovery reads available', async () => {
   const { relayFixture } = require('../../../test/helpers/ppv2-relay-fixture');
@@ -160,4 +189,22 @@ test('SDK configuration mutation cannot change main-owned transaction targets', 
   };
   const session=await openPPv2Session({candidate,configuration:config});
   await expect(session.prepareRegisterKeystore()).rejects.toThrow();
+});
+
+test('a viewing-key-only mismatch keeps the session available for recovery and reports the repair state', async () => {
+  mockCall.mockResolvedValueOnce(registrationKeys.nullifyingKeyHash).mockResolvedValueOnce(`0x${'33'.repeat(32)}`);
+  const session = await openPPv2Session({ candidate, configuration: config });
+  expect(await session.notes()).toEqual([]);
+  mockCall.mockResolvedValueOnce(registrationKeys.nullifyingKeyHash).mockResolvedValueOnce(`0x${'33'.repeat(32)}`);
+  expect(await session.registrationStatus()).toMatchObject({ nullifyingKeyHash: true, viewingKey: false });
+  session.close();
+});
+
+test('missing initialized storage reports the recovery-specific error and releases the session lease', async () => {
+  const session = await openPPv2Session({ candidate, configuration: config }); session.close();
+  const directory = path.join(mockProfile.userDataDir, 'wallet-ppv2-experiment');
+  fs.renameSync(directory, `${directory}.preserved`);
+  await expect(openPPv2Session({ candidate, configuration: config })).rejects.toMatchObject({ code: 'PRIVATE_PROFILE_STORE_MISSING' });
+  fs.renameSync(`${directory}.preserved`, directory);
+  const restored = await openPPv2Session({ candidate, configuration: config }); restored.close();
 });

@@ -4,6 +4,9 @@ const { getPrivacyContext, privacyError } = require('../networks/privacy-context
 const { validateRelay } = require('./ppv2-relay-policy');
 const refused = () => privacyError('PRIVATE_PPV2_RELAY_REFUSED', 'Relay handoff refused');
 const uncertain = () => privacyError('PRIVATE_PPV2_RELAY_UNCERTAIN', 'Relay outcome is uncertain; inspect the recorded attempt');
+// Leave time for Tor delivery; this reduces avoidable expired submissions but
+// cannot guarantee arrival or make a failed response safe to retry.
+const HANDOFF_MARGIN_MS = 15000;
 function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeBegin }) {
   const context = getPrivacyContext(handle), s = context.subject;
   if (s.kind !== 'private-account' || s.role !== 'relayer' || s.protocol !== 'privacy-pools-v2' ||
@@ -13,19 +16,22 @@ function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeB
   const issued = new WeakMap();
   let active = null, busy = false;
   function check(signal) { getPrivacyContext(handle); if (signal?.aborted) throw refused(); }
-  async function reviewBeforeDeadline(review, summary, expiresAt) {
+  async function beforeDeadline(task, expiresAt) {
+    check(); if (Date.now() >= expiresAt) throw refused();
+    const controller = new AbortController();
     let timer, onAbort;
     try {
-      const approved = await Promise.race([
-        Promise.resolve().then(() => { check(); return review(summary); }),
+      const value = await Promise.race([
+        Promise.resolve().then(() => { check(); return task(AbortSignal.any([context.signal, controller.signal])); }),
         new Promise((_, reject) => {
           timer = setTimeout(() => reject(refused()), Math.max(0, expiresAt - Date.now()));
           onAbort = () => reject(refused());
           context.signal.addEventListener('abort', onAbort, { once: true });
         }),
       ]);
-      check(); if (approved !== true || Date.now() >= expiresAt) throw refused();
-    } finally { clearTimeout(timer); context.signal.removeEventListener('abort', onAbort); }
+      check(); if (Date.now() >= expiresAt) throw refused();
+      return value;
+    } finally { controller.abort(); clearTimeout(timer); context.signal.removeEventListener('abort', onAbort); }
   }
   const sdkNetwork = Object.freeze({
     async fetch(input, init = {}) {
@@ -40,8 +46,13 @@ function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeB
       if ([...headers].length !== 1 || headers.get('content-type') !== 'application/json') throw refused();
       plan.used = true;
       await journal.assertCanSubmit(); checkPlan();
-      await reviewBeforeDeadline(plan.review, plan.summary, plan.expiresAt); checkPlan();
-      if (beforeBegin) { await beforeBegin(); checkPlan(); }
+      const handoffDeadline = plan.expiresAt - HANDOFF_MARGIN_MS;
+      if (await beforeDeadline(() => plan.review(plan.summary), handoffDeadline) !== true) throw refused();
+      checkPlan();
+      if (beforeBegin) { await beforeDeadline(beforeBegin, handoffDeadline); checkPlan(); }
+      // Reconciliation may outlast the reviewed quote. A known pre-send
+      // expiry must not become a durable, permanently uncertain attempt.
+      if (Date.now() >= handoffDeadline) throw refused();
       await journal.begin(plan.attempt, plan.settlement);
       // Any failure after begin remains possibly submitted, including a crash
       // or lock just before fetch. No retry or release based on an HTTP error.
@@ -81,7 +92,7 @@ function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeB
       await journal.assertCanSubmit();
       // Only a main-owned verifier belongs here, never an SDK-supplied boolean.
       if (await verifyProof(structuredClone(validated.proof)) !== true) throw refused();
-      check(); if (Date.now() >= validated.expiresAt) throw refused();
+      check(); if (Date.now() >= validated.expiresAt - HANDOFF_MARGIN_MS) throw refused();
       const summary = Object.freeze(validated.summary);
       issued.set(summary, { ...validated, endpoint: copy.endpoint, body: copy.body });
       return summary;
@@ -89,7 +100,7 @@ function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeB
     async submit(prepared, { review, invoke }) {
       check();
       const plan = issued.get(prepared);
-      if (!plan || busy || typeof review !== 'function' || typeof invoke !== 'function' || Date.now() >= plan.expiresAt) throw refused();
+      if (!plan || busy || typeof review !== 'function' || typeof invoke !== 'function' || Date.now() >= plan.expiresAt - HANDOFF_MARGIN_MS) throw refused();
       issued.delete(prepared); busy = true; active = { ...plan, review, used: false, acknowledged: false, controller: new AbortController() };
       const current = active;
       try {

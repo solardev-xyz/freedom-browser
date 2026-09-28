@@ -112,15 +112,8 @@ async function saveVault(dataDir, password, mnemonic) {
   fs.writeFileSync(vaultPath, JSON.stringify(vaultData, null, 2));
 }
 
-/**
- * Unlock the vault and load mnemonic into memory
- * @param {string} dataDir - App data directory
- * @param {string} password - User's password
- * @param {number} autoLockMs - Auto-lock timeout (0 to disable)
- * @returns {Promise<void>}
- */
-async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS) {
-  const startedGeneration = lockGeneration;
+// Verify/decrypt without changing the vault session or its auto-lock timer.
+async function decryptVaultMnemonic(dataDir, password) {
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found. Create one first.');
   }
@@ -134,28 +127,34 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
 
   try {
     const decrypted = await decrypt(password, vaultData.encrypted);
-    if (startedGeneration !== lockGeneration) {
-      throw new Error('Vault unlock cancelled by a newer session');
-    }
-
-    // Validate decrypted mnemonic
     if (!isValidMnemonic(decrypted.mnemonic)) {
-      lockVault();
       throw new Error('Decrypted data is not a valid mnemonic');
     }
-
-    // Replacement unlocks revoke existing work too. Advancing the generation
-    // prevents an older concurrent decrypt from reviving/replacing this session.
-    lockVault();
-    unlockedMnemonic = decrypted.mnemonic;
-    sessionController = new AbortController();
-    resetAutoLockTimer(autoLockMs);
+    return decrypted.mnemonic;
   } catch (err) {
     if (err.message.includes('Incorrect password')) {
       throw new Error('Incorrect password', { cause: err });
     }
     throw err;
   }
+}
+
+/**
+ * Unlock the vault and load mnemonic into memory
+ * @param {string} dataDir - App data directory
+ * @param {string} password - User's password
+ * @param {number} autoLockMs - Auto-lock timeout (0 to disable)
+ * @returns {Promise<void>}
+ */
+async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS) {
+  const startedGeneration = lockGeneration;
+  const mnemonic = await decryptVaultMnemonic(dataDir, password);
+  if (startedGeneration !== lockGeneration) throw new Error('Vault unlock cancelled by a newer session');
+  // Only an explicit unlock replaces the lifetime and inactivity timer.
+  lockVault();
+  unlockedMnemonic = mnemonic;
+  sessionController = new AbortController();
+  resetAutoLockTimer(autoLockMs);
 }
 
 /**
@@ -216,15 +215,10 @@ function resetAutoLockTimer(autoLockMs = DEFAULT_AUTO_LOCK_MS) {
  * @param {string} newPassword - New password
  */
 async function changePassword(dataDir, currentPassword, newPassword) {
-  // First verify current password by unlocking
-  await unlockVault(dataDir, currentPassword, 0);
-
-  if (!unlockedMnemonic) {
-    throw new Error('Failed to unlock vault');
-  }
-
-  // Re-encrypt with new password
-  await saveVault(dataDir, newPassword, unlockedMnemonic);
+  // Password verification must preserve the existing lock state, deadline and
+  // privacy-session signal, including an auto-lock during re-encryption.
+  const mnemonic = await decryptVaultMnemonic(dataDir, currentPassword);
+  await saveVault(dataDir, newPassword, mnemonic);
 }
 
 /**
@@ -234,7 +228,7 @@ async function changePassword(dataDir, currentPassword, newPassword) {
  */
 async function deleteVault(dataDir, password) {
   // Verify password first
-  await unlockVault(dataDir, password, 0);
+  await verifyPassword(dataDir, password);
   lockVault();
 
   // Delete vault file
@@ -252,19 +246,7 @@ async function deleteVault(dataDir, password) {
  * @throws {Error} If password is incorrect or vault doesn't exist
  */
 async function verifyPassword(dataDir, password) {
-  if (!vaultExists(dataDir)) {
-    throw new Error('No vault found');
-  }
-  const vaultPath = getVaultPath(dataDir);
-  const vaultData = JSON.parse(fs.readFileSync(vaultPath, 'utf-8'));
-  try {
-    await decrypt(password, vaultData.encrypted);
-  } catch (err) {
-    if (err.message.includes('Incorrect password')) {
-      throw new Error('Incorrect password', { cause: err });
-    }
-    throw err;
-  }
+  await decryptVaultMnemonic(dataDir, password);
 }
 
 /**

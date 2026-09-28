@@ -11,7 +11,7 @@ const abi = new Interface([DEPOSIT_ABI]);
 const coder = AbiCoder.defaultAbiCoder();
 const fail = () => privacyError('PRIVATE_PPV2_DEPOSIT_REFUSED', 'Deposit does not match its reviewed intent');
 
-function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, manifest, onProgress }) {
+function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, manifest, onProgress, inspectNote }) {
   const context = getPrivacyContext(handle), artifactsContext = getPrivacyContext(artifactHandle);
   const { role: _role, ...subject } = context.subject;
   const { role: _artifactRole, ...artifactSubject } = artifactsContext.subject;
@@ -19,7 +19,7 @@ function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, 
       context.profileId !== artifactsContext.profileId || context.generation !== artifactsContext.generation ||
       JSON.stringify(subject) !== JSON.stringify(artifactSubject) || !path.isAbsolute(sdkEntry) ||
       ARTIFACTS.some((entry) => manifest?.deposit?.[`${entry.kind}Sha256`]?.replace(/^0x/, '').toLowerCase() !== entry.sha256) ||
-      (onProgress !== undefined && typeof onProgress !== 'function')) throw fail();
+      (onProgress !== undefined && typeof onProgress !== 'function') || typeof inspectNote !== 'function') throw fail();
   const loader = createPrivacyArtifactLoader({ handle: artifactHandle, directory, manifest: ARTIFACTS });
   let operation = null;
   const unsupported = () => { getPrivacyContext(handle); throw fail(); };
@@ -81,6 +81,10 @@ function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, 
         if (note.data.length <= 2 || note.data.length > 4098 || decoded._aspCiphertext.length <= 66 || decoded._aspCiphertext.length > 4098 ||
             BigInt(keccak256(coder.encode(['tuple(bytes32 hint,bytes data)'], [note]))) % FIELD !== current.context ||
             abi.encodeFunctionData('deposit', [expected, note, decoded._aspCiphertext]).toLowerCase() !== tx.data.toLowerCase()) throw fail();
+        const recovered = await inspectNote(ownerAddress, [note]);
+        getPrivacyContext(handle);
+        if (BigInt(recovered.commitment) !== BigInt(current.proof.publicSignals[0]) ||
+            BigInt(recovered.value) !== amount || BigInt(recovered.tokenId) !== BigInt(token)) throw fail();
         return Object.freeze({ kind: native ? 'ppv2-native-deposit' : 'ppv2-token-deposit', chainId: 11155111, from: ownerAddress,
           to: entrypointAddress, value: tx.value, data: tx.data, amount, fee: native ? tx.value - amount : fee,
           ...(native ? {} : { token, maxFee }),

@@ -1,6 +1,7 @@
 /** Main-owned write-ahead relay ledger. A response is not settlement.
  * Resolution retains history and requires explicitly reviewed chain evidence. */
 const path = require('path');
+const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { createHmac } = require('crypto');
 const { mnemonicToSeedSync } = require('@scure/bip39');
 const { createPrivacyStorage } = require('./privacy-storage');
@@ -17,7 +18,11 @@ function validAttempt(v) {
   return keys(v, fields) && fields.every((k) => typeof v[k] === 'string' && HASH.test(v[k]));
 }
 function validSettlement(v) {
-  return keys(v, [...(v && Object.hasOwn(v, 'token') ? ['token'] : []), 'pool', 'processor', 'outputCommitment', 'amountOut', 'noteDigest', 'fromBlock']) &&
+  return keys(v, [...(v && Object.hasOwn(v, 'token') ? ['token'] : []), ...(v && Object.hasOwn(v, 'owner') ? ['owner', 'inputValue'] : []),
+    'pool', 'processor', 'outputCommitment', 'amountOut', 'noteDigest', 'fromBlock']) &&
+    (v.owner === undefined || (typeof v.owner === 'string' && /^0x[0-9a-f]{40}$/.test(v.owner) && BigInt(v.owner) !== 0n &&
+      typeof v.inputValue === 'string' && /^[1-9][0-9]{0,38}$/.test(v.inputValue) && BigInt(v.inputValue) < 1n << 128n &&
+      BigInt(v.inputValue) > BigInt(v.amountOut))) &&
     (v.token === undefined || (typeof v.token === 'string' && /^0x[0-9a-f]{40}$/.test(v.token) && BigInt(v.token) !== 0n)) &&
     [v.pool, v.processor].every((x) => typeof x === 'string' && /^0x[0-9a-f]{40}$/.test(x)) &&
     [v.outputCommitment, v.noteDigest].every((x) => typeof x === 'string' && HASH.test(x)) &&
@@ -26,16 +31,16 @@ function validSettlement(v) {
 }
 function validObservation(v) {
   return keys(v, ['status', 'transactionHash', 'blockHash', 'blockNumber', 'trust']) && v.trust === 'unverified-rpc' &&
-    ['included', 'unknown', 'conflict'].includes(v.status) && (v.status === 'included'
+    ['included', 'exited', 'unknown', 'conflict'].includes(v.status) && (['included', 'exited'].includes(v.status)
       ? HASH.test(v.transactionHash) && HASH.test(v.blockHash) && Number.isSafeInteger(v.blockNumber) && v.blockNumber >= 0
       : v.transactionHash === null && v.blockHash === null && v.blockNumber === null);
 }
-function createPPv2RelayJournal({ handle, directory, key }) {
+function createPPv2RelayJournal({ handle, directory, key, profileGuard }) {
   const { subject } = getPrivacyContext(handle);
   if (subject.kind !== 'private-account' || subject.role !== 'storage' || subject.protocol !== 'privacy-pools-v2' ||
       subject.deployment !== 'sepolia' || subject.chainId !== 11155111 || subject.operation !== null ||
       !/^ppv2:(0|[1-9][0-9]{0,4})$/.test(subject.principal) || Number(subject.principal.slice(5)) > 65535) throw invalid();
-  const storage = createPrivacyStorage({ handle, directory, key });
+  const storage = createPrivacyStorage({ handle, directory, key, profileGuard });
   function decode(value) {
     if (value === null) return [];
     try {
@@ -54,7 +59,7 @@ function createPPv2RelayJournal({ handle, directory, key }) {
         if (record.revision !== undefined && (!Number.isSafeInteger(record.revision) || record.revision < 0)) throw invalid();
         if (record.observation !== undefined && (!record.settlement || !Number.isSafeInteger(record.revision) || !validObservation(record.observation))) throw invalid();
         if (record.resolution !== undefined && record.resolution !== null && (!keys(record.resolution, ['blockHash', 'reviewedAt']) ||
-            record.observation?.status !== 'included' || record.resolution.blockHash !== record.observation.blockHash ||
+            !['included', 'exited'].includes(record.observation?.status) || record.resolution.blockHash !== record.observation.blockHash ||
             !Number.isSafeInteger(record.resolution.reviewedAt) || record.resolution.reviewedAt < 0)) throw invalid();
       }
       if (new Set(data.records.map((r) => r.id)).size !== data.records.length ||
@@ -93,7 +98,7 @@ function createPPv2RelayJournal({ handle, directory, key }) {
       await storage.update(KEY, (value) => {
         const records = decode(value), r = records.find((r) => r.id === id);
         if (!r?.settlement || (r.revision || 0) !== revision) throw invalid();
-        if (copy.status !== 'included' || r.observation?.blockHash !== copy.blockHash ||
+        if (!['included', 'exited'].includes(copy.status) || r.observation?.status !== copy.status || r.observation?.blockHash !== copy.blockHash ||
             r.observation?.transactionHash !== copy.transactionHash) r.resolution = null;
         if (checkpoint !== undefined) {
           if (checkpoint && checkpoint.nextBlock <= r.settlement.fromBlock) throw invalid();
@@ -108,7 +113,7 @@ function createPPv2RelayJournal({ handle, directory, key }) {
       if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) throw invalid();
       await storage.update(KEY, (value) => {
         const records = decode(value), r = records.find((r) => r.id === id);
-        if (!r?.settlement || r.revision !== revision || r.observation?.status !== 'included') throw invalid();
+        if (!r?.settlement || r.revision !== revision || !['included', 'exited'].includes(r.observation?.status)) throw invalid();
         r.resolution = { blockHash: r.observation.blockHash, reviewedAt: Date.now() }; r.revision++;
         return JSON.stringify({ version: 1, records });
       });
@@ -137,7 +142,7 @@ function getPPv2RelayJournal(handle, accountIndex) {
     // Stable across endpoint/SDK changes: a new configuration cannot hide an attempt.
     key = createHmac('sha256', seed).update('Freedom PPv2 relay journal v1\0')
       .update(JSON.stringify([context.profileId, context.subject])).digest();
-    return createPPv2RelayJournal({ handle, directory: path.join(profile.userDataDir, 'wallet-ppv2-relays'), key });
+    return createPPv2RelayJournal({ handle, directory: path.join(profile.userDataDir, 'wallet-ppv2-relays'), key, profileGuard: createPrivacyProfileGuard({ handle, profile, seed }) });
   } finally { seed.fill(0); key?.fill(0); }
 }
 module.exports = { createPPv2RelayJournal, getPPv2RelayJournal };

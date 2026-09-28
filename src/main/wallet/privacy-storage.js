@@ -8,7 +8,7 @@ const { createHash, randomBytes, createCipheriv, createDecipheriv } = require('c
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const MAX_BYTES = 4 * 1024 * 1024;
 
-function createPrivacyStorage({ handle, directory, key }) {
+function createPrivacyStorage({ handle, directory, key, profileGuard }) {
   const context = getPrivacyContext(handle);
   const permitted = (context.subject.kind === 'private-account' && context.subject.role === 'storage') ||
     (context.subject.kind === 'public-address' && context.subject.role === 'transaction-rpc' &&
@@ -17,7 +17,8 @@ function createPrivacyStorage({ handle, directory, key }) {
       !Buffer.isBuffer(key) || key.length !== 32 || !path.isAbsolute(directory)) {
     throw privacyError('PRIVATE_STORAGE_INVALID', 'Invalid privacy storage configuration');
   }
-  const secret = Buffer.from(key);
+  const secret = Buffer.alloc(key.length);
+  key.copy(secret);
   const aad = Buffer.from(JSON.stringify([1, context.profileId, context.subject]));
   const file = path.join(directory, `${createHash('sha256').update(aad).digest('hex')}.json`);
   context.signal.addEventListener('abort', () => secret.fill(0), { once: true });
@@ -27,6 +28,7 @@ function createPrivacyStorage({ handle, directory, key }) {
   }
   function read() {
     assertActive();
+    profileGuard?.assert(file);
     if (!fs.existsSync(file)) return {};
     try {
       if (fs.statSync(file).size > MAX_BYTES * 2) throw new Error('size');
@@ -43,9 +45,11 @@ function createPrivacyStorage({ handle, directory, key }) {
         const values = JSON.parse(plaintext.toString('utf8'));
         if (!values || Array.isArray(values) || typeof values !== 'object' || Object.keys(values).length > 256 ||
             Object.entries(values).some(([name, value]) => !name || name.length > 256 || typeof value !== 'string')) throw new Error('shape');
+        profileGuard?.remember(file);
         return values;
       } finally { plaintext.fill(0); }
-    } catch {
+    } catch (error) {
+      if (error.code?.startsWith('PRIVATE_PROFILE_')) throw error;
       throw privacyError('PRIVATE_STORAGE_UNREADABLE', 'Privacy state could not be authenticated or decoded');
     }
   }
@@ -78,6 +82,7 @@ function createPrivacyStorage({ handle, directory, key }) {
         const parent = fs.openSync(directory, 'r');
         try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
       }
+      profileGuard?.remember(file);
     } catch (error) {
       if (error.code?.startsWith('PRIVATE_') || error.code?.startsWith('PRIVACY_')) throw error;
       throw privacyError('PRIVATE_STORAGE_WRITE_FAILED', 'Privacy state could not be saved');

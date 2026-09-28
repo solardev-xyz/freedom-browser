@@ -212,7 +212,10 @@ function createWalletTorTransport({
     for (const [handle, group] of groups) closeGroup(handle, group);
   }
 
-  return Object.freeze({ request, close });
+  return Object.freeze({ request, close, release(handle) {
+    const group = groups.get(handle);
+    if (group) closeGroup(handle, group);
+  } });
 }
 
 module.exports = { createWalletTorTransport };

@@ -54,7 +54,7 @@ const profile = { id: 'controlled-fixture', userDataDir: directory };
 const endpoint = { signal: new AbortController().signal };
 const rpcUrl = 'https://rpc.example.test/';
 const records = [], identities = new Map();
-let capturedHost, holdRpc = false, releaseRpc, registered = false, authLog;
+let capturedHost, holdRpc = false, releaseRpc, registered = false, authLog, registrationKeys;
 function substitute(relative, exports) {
   const filename = require.resolve(relative);
   require.cache[filename] = { id: filename, filename, loaded: true, exports };
@@ -74,7 +74,7 @@ substitute('../src/main/networks/wallet-tor-transport', { createWalletTorTranspo
     const target = new URL(url);
     let response;
     if (url === rpcUrl) {
-      assert.equal(role, 'protocol-rpc');
+      assert.ok(['protocol-rpc', 'transaction-rpc'].includes(role));
       const request = JSON.parse(options.body);
       records.push({ role, method: request.method, params: request.params });
       if (holdRpc && request.method === 'eth_call') await new Promise((resolve) => { releaseRpc = resolve; });
@@ -85,7 +85,12 @@ substitute('../src/main/networks/wallet-tor-transport', { createWalletTorTranspo
         const filter = request.params[0];
         result = registered && filter.topics[0].includes(authLog.topics[0]) &&
           BigInt(filter.fromBlock) <= 101n && BigInt(filter.toBlock) >= 101n ? [authLog] : [];
-      } else if (request.method === 'eth_call') result = viem.encodeAbiParameters([{ type: 'uint256' }], [registered ? 1n : 0n]);
+      } else if (request.method === 'eth_call') {
+        const name = request.params[0].to === config.deployment.keystoreAddress
+          ? viem.decodeFunctionData({ abi: abi.KEYSTORE_ABI, data: request.params[0].data }).functionName : null;
+        const value = name === 'viewingKeys' ? registrationKeys.viewingKey : registrationKeys.nullifyingKeyHash;
+        result = viem.encodeAbiParameters([{ type: 'uint256' }], [registered ? BigInt(value) : 0n]);
+      }
       else if (request.method === 'eth_getBlockByNumber') result = { number: '0x2700', hash: `0x${'77'.repeat(32)}` };
       else assert.fail('Unexpected SDK RPC method');
       response = { jsonrpc: '2.0', id: request.id, result };
@@ -117,7 +122,14 @@ syncBuiltinESMExports();
 const { PPV2_CANDIDATE, openPPv2Session } = require('../src/main/wallet/ppv2-session');
 assert.equal(PPV2_CANDIDATE.sdk, previous.sdkRevision);
 assert.equal(PPV2_CANDIDATE.kohaku, previous.kohakuRevision);
-const candidate = { ...PPV2_CANDIDATE, async createPlugin(host, params) {
+const candidate = { ...PPV2_CANDIDATE, async inspectRegistration(keystore, accountIndex) {
+  const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });
+  const hashService = await sdk.PoseidonHashService.create();
+  const notes = new sdk.NoteComputationService({ hashService, cryptoService: new sdk.CryptoService() });
+  registrationKeys = { nullifyingKeyHash: hashService.hash([keystoreManager.getPrivateNullifyingKey()]),
+    authDigest: notes.computeAuthDigest(keystoreManager.getPrivateRevocableKey()), viewingKey: keystoreManager.getViewingKeyPair().publicKey };
+  return registrationKeys;
+}, async createPlugin(host, params) {
   capturedHost = host;
   return createPPv2Plugin(host, params);
 } };
@@ -186,7 +198,7 @@ async function main() {
     const authDigest = computation.computeAuthDigest(derived.keystoreManager.getPrivateRevocableKey());
     authLog = { address: config.deployment.keystoreAddress,
       topics: viem.encodeEventTopics({ abi: [event], eventName: event.name, args: { _account: config.ownerAddress } }),
-      data: viem.encodeAbiParameters([{ type: 'uint256' }, { type: 'uint256' }], [1n, BigInt(authDigest)]),
+      data: viem.encodeAbiParameters([{ type: 'uint256' }, { type: 'uint256' }], [BigInt(registrationKeys.nullifyingKeyHash), BigInt(authDigest)]),
       blockNumber: '0x65', blockHash: `0x${'55'.repeat(32)}`, transactionHash: `0x${'66'.repeat(32)}`, logIndex: '0x0', removed: false };
     registered = true;
   }

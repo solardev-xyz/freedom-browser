@@ -6,24 +6,45 @@ const { getPrivacyContext, privacyError } = require('../networks/privacy-context
 const { NATIVE } = require('./ppv2-deposit-policy');
 const { hash } = require('./ppv2-relay-policy');
 const ABI = ['event Transacted(uint256[] outputCommitments,uint256[] nullifierHashes,address indexed asset,uint256 withdrawnValue,address indexed caller)',
+  'event Ragequit(address indexed ragequitter,address indexed asset,uint256 value,uint256 commitment,uint256 nullifierHash,uint256 label)',
   'event Note(bytes32 indexed hint,bytes data)', 'function spentNullifiers(uint256) view returns(uint256)'];
 const iface = new Interface(ABI), txTopic = iface.getEvent('Transacted').topicHash, noteTopic = iface.getEvent('Note').topicHash;
+const exitTopic = iface.getEvent('Ragequit').topicHash;
+const settled = (observation) => ['included', 'exited'].includes(observation?.status);
 const HASH = /^0x[0-9a-f]{64}$/i;
 const block = (v) => isQuantity(v) && BigInt(v) <= BigInt(Number.MAX_SAFE_INTEGER);
 const fail = () => privacyError('PRIVATE_PPV2_RECONCILIATION_REFUSED', 'Relay reconciliation could not establish matching evidence');
-function createPPv2RelayReconciliation({ handle, journal }) {
-  getPrivacyContext(handle); journal.assertScope(handle);
-  const rpc = createPrivateRpc(handle, 'protocol-rpc');
-  const read = async (method, params, valid) => (await rpc.request(method, params, valid)).result;
+function createPPv2RelayReconciliation({ handle, journal, getOperationHandle }) {
+  const context = getPrivacyContext(handle); journal.assertScope(handle);
+  if (typeof getOperationHandle !== 'function') throw fail();
   const empty = (status) => ({ status, transactionHash: null, blockHash: null, blockNumber: null, trust: 'unverified-rpc' });
-  async function inspect(record) {
+  async function inspect(record, maxBlocks, compact, signal) {
+    const operationHandle = getOperationHandle(record.id), operation = getPrivacyContext(operationHandle);
+    if (operation.profileId !== context.profileId || operation.generation !== context.generation ||
+        operation.subject.operation !== record.id || Object.keys(context.subject).some((key) =>
+          key !== 'operation' && operation.subject[key] !== context.subject[key])) throw fail();
+    const rpc = createPrivateRpc(operationHandle, 'protocol-rpc', { signal });
+    try {
+    if (compact && record.resolution && settled(record.observation)) {
+      const prior = record.observation;
+      const { result: canonical } = await rpc.request('eth_getBlockByNumber', [`0x${prior.blockNumber.toString(16)}`, false],
+        (v) => v === null || (block(v.number) && HASH.test(v.hash)));
+      if (!canonical || Number(BigInt(canonical.number)) !== prior.blockNumber) throw fail();
+      if (canonical.hash.toLowerCase() !== prior.blockHash) return empty('conflict');
+      return prior; // The block hash commits to the previously reviewed receipt/logs.
+    }
+    const read = async (method, params, valid) => (await rpc.request(method, params, valid)).result;
     const s = record.settlement;
     if (!s) return empty('unknown');
     const final = await read('eth_getBlockByNumber', ['finalized', false], (b) => b === null || (block(b.number) && HASH.test(b.hash)));
-    if (!final || BigInt(final.number) < BigInt(s.fromBlock)) return empty('unknown');
+    if (!final) throw fail();
+    if (BigInt(final.number) < BigInt(s.fromBlock)) {
+      if (settled(record.observation)) throw fail();
+      return empty('unknown');
+    }
     // One bounded page per observation. Persist progress only after matching
     // boundary reads; callers can resume after a restart without a burst of RPCs.
-    const known = record.observation?.status === 'included' ? record.observation.blockNumber : null;
+    const known = settled(record.observation) ? record.observation.blockNumber : null;
     let start = BigInt(known ?? s.fromBlock);
     if (known === null && record.scan) {
       const checkpoint = await read('eth_getBlockByNumber', [`0x${(BigInt(record.scan.nextBlock) - 1n).toString(16)}`, false],
@@ -34,36 +55,48 @@ function createPPv2RelayReconciliation({ handle, journal }) {
       }
       start = BigInt(record.scan.nextBlock);
     }
-    if (start > BigInt(final.number)) return { observation: empty('unknown'), scan: known === null ? record.scan : null };
-    const end = known !== null ? start : (start + 4999n < BigInt(final.number) ? start + 4999n : BigInt(final.number));
+    if (start > BigInt(final.number)) {
+      if (known !== null) throw fail();
+      return { observation: empty('unknown'), scan: record.scan };
+    }
+    const end = known !== null ? start : (start + BigInt(maxBlocks - 1) < BigInt(final.number) ? start + BigInt(maxBlocks - 1) : BigInt(final.number));
     const endHex = `0x${end.toString(16)}`;
     const anchor = await read('eth_getBlockByNumber', [endHex, false], (v) => v === null || (block(v.number) && HASH.test(v.hash)));
     if (!anchor || BigInt(anchor.number) !== end) throw fail();
-    const logs = await read('eth_getLogs', [{ address: s.pool, topics: [[txTopic]], fromBlock: `0x${start.toString(16)}`, toBlock: endHex }],
+    if (known !== null && anchor.hash.toLowerCase() !== record.observation.blockHash) return empty('conflict');
+    const logs = await read('eth_getLogs', [{ address: s.pool, topics: [[txTopic, exitTopic]], fromBlock: `0x${start.toString(16)}`, toBlock: endHex }],
       (v) => Array.isArray(v) && v.length <= 2048);
     const matches = [];
     for (const log of logs) {
       if (log.address?.toLowerCase() !== s.pool || log.removed !== false || !block(log.blockNumber) || !HASH.test(log.blockHash) || !HASH.test(log.transactionHash) ||
           BigInt(log.blockNumber) < start || BigInt(log.blockNumber) > end) throw fail();
       const e = iface.parseLog(log);
-      if (!e || e.name !== 'Transacted') throw fail();
-      if (e.args.nullifierHashes.some((v) => v === BigInt(record.nullifier))) matches.push(log);
+      if (!e || !['Transacted', 'Ragequit'].includes(e.name)) throw fail();
+      if (e.name === 'Ragequit' ? e.args.nullifierHash === BigInt(record.nullifier) :
+        e.args.nullifierHashes.some((v) => v === BigInt(record.nullifier))) matches.push(log);
     }
     const after = await read('eth_getBlockByNumber', [endHex, false], (v) => v === null || (block(v.number) && HASH.test(v.hash)));
     if (!after || BigInt(after.number) !== end || after.hash.toLowerCase() !== anchor.hash.toLowerCase()) throw fail();
-    if (!matches.length) return { observation: empty('unknown'), scan: known !== null ? null :
-      { nextBlock: Number(end + 1n), blockHash: anchor.hash.toLowerCase() } };
+    if (!matches.length) {
+      if (known !== null) throw fail(); // Missing index data is not evidence of a reorg.
+      return { observation: empty('unknown'), scan: { nextBlock: Number(end + 1n), blockHash: anchor.hash.toLowerCase() } };
+    }
     if (matches.length !== 1) return empty('conflict');
-    const found = matches[0], event = iface.parseLog(found).args;
-    if (event.nullifierHashes.length !== 1 || event.outputCommitments.length !== 1 || event.outputCommitments[0] !== BigInt(s.outputCommitment) ||
+    const found = matches[0], parsedEvent = iface.parseLog(found), event = parsedEvent.args, exited = parsedEvent.name === 'Ragequit';
+    if (exited) {
+      if (!s.owner || event.ragequitter.toLowerCase() !== s.owner || event.commitment !== BigInt(record.commitment) ||
+          event.value !== BigInt(s.inputValue) || event.asset.toLowerCase() !== (s.token || NATIVE)) return empty('conflict');
+    } else if (event.nullifierHashes.length !== 1 || event.outputCommitments.length !== 1 || event.outputCommitments[0] !== BigInt(s.outputCommitment) ||
         event.asset.toLowerCase() !== (s.token || NATIVE) || event.withdrawnValue !== BigInt(s.amountOut) || event.caller.toLowerCase() !== s.processor) return empty('conflict');
     const receipt = await read('eth_getTransactionReceipt', [found.transactionHash], (v) => v === null ||
       (v && HASH.test(v.transactionHash) && HASH.test(v.blockHash) && block(v.blockNumber) && Array.isArray(v.logs) && v.logs.length <= 2048));
-    if (!receipt || receipt.status !== '0x1' || receipt.transactionHash.toLowerCase() !== found.transactionHash.toLowerCase() ||
-        receipt.blockHash.toLowerCase() !== found.blockHash.toLowerCase() || receipt.blockNumber !== found.blockNumber || receipt.to?.toLowerCase() !== s.processor) return empty('conflict');
+    if (!receipt) throw fail();
+    if (receipt.status !== '0x1' || receipt.transactionHash.toLowerCase() !== found.transactionHash.toLowerCase() ||
+        receipt.blockHash.toLowerCase() !== found.blockHash.toLowerCase() || receipt.blockNumber !== found.blockNumber ||
+        receipt.to?.toLowerCase() !== (exited ? s.pool : s.processor) || (exited && receipt.from?.toLowerCase() !== s.owner)) return empty('conflict');
     const notes = [], transacts = [];
     for (const log of receipt.logs) {
-      if (log.address?.toLowerCase() !== s.pool || ![txTopic, noteTopic].includes(log.topics?.[0])) continue;
+      if (log.address?.toLowerCase() !== s.pool || ![txTopic, noteTopic, exitTopic].includes(log.topics?.[0])) continue;
       if (log.removed !== false || log.transactionHash?.toLowerCase() !== receipt.transactionHash.toLowerCase() ||
           log.blockHash?.toLowerCase() !== receipt.blockHash.toLowerCase() || log.blockNumber !== receipt.blockNumber) return empty('conflict');
       const parsed = iface.parseLog(log);
@@ -71,30 +104,44 @@ function createPPv2RelayReconciliation({ handle, journal }) {
       else transacts.push(log);
     }
     if (transacts.length !== 1 || transacts[0].data.toLowerCase() !== found.data.toLowerCase() ||
-        JSON.stringify(transacts[0].topics) !== JSON.stringify(found.topics) || hash(JSON.stringify(notes)) !== s.noteDigest) return empty('conflict');
+        JSON.stringify(transacts[0].topics) !== JSON.stringify(found.topics) ||
+        (exited ? notes.length !== 0 : hash(JSON.stringify(notes)) !== s.noteDigest)) return empty('conflict');
     const canonical = await read('eth_getBlockByNumber', [receipt.blockNumber, false], (v) => v === null || (block(v.number) && HASH.test(v.hash)));
     const spent = await read('eth_call', [{ to: s.pool, data: iface.encodeFunctionData('spentNullifiers', [record.nullifier]) }, 'latest'],
       (v) => typeof v === 'string' && /^0x[0-9a-f]{64}$/i.test(v));
-    if (!canonical || canonical.number !== receipt.blockNumber || canonical.hash.toLowerCase() !== receipt.blockHash.toLowerCase() || BigInt(spent) === 0n) return empty('conflict');
-    return { status: 'included', transactionHash: receipt.transactionHash.toLowerCase(), blockHash: receipt.blockHash.toLowerCase(),
+    if (!canonical) throw fail();
+    if (canonical.number !== receipt.blockNumber || canonical.hash.toLowerCase() !== receipt.blockHash.toLowerCase() || BigInt(spent) === 0n) return empty('conflict');
+    return { status: exited ? 'exited' : 'included', transactionHash: receipt.transactionHash.toLowerCase(), blockHash: receipt.blockHash.toLowerCase(),
       blockNumber: Number(BigInt(receipt.blockNumber)), trust: 'unverified-rpc' };
+    } finally { rpc.release?.(); }
   }
-  async function observe(id) {
+  async function observeRecord(id, { maxBlocks = 5000 } = {}, compact = false, signal) {
+    if (!Number.isInteger(maxBlocks) || maxBlocks < 1 || maxBlocks > 5000) throw fail();
     const record = (await journal.list()).find((r) => r.id === id); if (!record?.settlement) throw fail();
     let result;
-    try { result = await inspect(record); } catch { getPrivacyContext(handle); result = empty('unknown'); }
-    getPrivacyContext(handle); return journal.observe(id, result.observation || result, record.revision || 0,
-      result.observation ? result.scan : result.status === 'included' ? null : undefined);
+    try { result = await inspect(record, maxBlocks, compact, signal); } catch { getPrivacyContext(handle); throw fail(); }
+    getPrivacyContext(handle); if (signal?.aborted) throw fail(); return journal.observe(id, result.observation || result, record.revision || 0,
+      result.observation ? result.scan : settled(result) ? null : undefined);
   }
+  const observe = (id, options) => observeRecord(id, options);
   return Object.freeze({ observe,
-    async refreshResolved() { for (const r of await journal.list()) if (r.resolution) await observe(r.id); },
+    async refreshResolved(signal) {
+      const records = (await journal.list()).filter((r) => r.resolution);
+      for (let offset = 0; offset < records.length; offset += 4) {
+        // Drain the batch before returning errors; no late journal writes after
+        // a failed refresh. Each record retains its own transport context.
+        const results = await Promise.allSettled(records.slice(offset, offset + 4).map((r) => observeRecord(r.id, {}, true, signal)));
+        const failed = results.find((r) => r.status === 'rejected');
+        if (failed) throw failed.reason;
+      }
+    },
     async resolve(id, review) {
       if (typeof review !== 'function') throw fail();
-      const first = await observe(id); if (first.observation.status !== 'included') throw fail();
+      const first = await observe(id); if (!settled(first.observation)) throw fail();
       const approval = await review(first); getPrivacyContext(handle);
       if (approval?.allowNextOperation !== true || approval.acceptedEvidence !== 'unverified-rpc') throw fail();
       const second = await observe(id);
-      if (second.observation.status !== 'included' || second.observation.blockHash !== first.observation.blockHash ||
+      if (!settled(second.observation) || second.observation.status !== first.observation.status || second.observation.blockHash !== first.observation.blockHash ||
           second.observation.transactionHash !== first.observation.transactionHash || second.revision !== first.revision + 1) throw fail();
       return journal.resolve(id, second.revision);
     },

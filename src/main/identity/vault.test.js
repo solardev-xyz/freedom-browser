@@ -175,6 +175,27 @@ describe('vault', () => {
   });
 
   describe('changePassword', () => {
+    test('preserves the unlock lifetime and the original auto-lock deadline', async () => {
+      jest.useFakeTimers();
+      try {
+        await unlockVault(tempDir, 'oldpassword', 1000);
+        const signal = require('./vault').getSessionSignal();
+        jest.advanceTimersByTime(400);
+        await changePassword(tempDir, 'oldpassword', 'newpassword');
+        expect(require('./vault').getSessionSignal()).toBe(signal);
+        expect(signal.aborted).toBe(false);
+        jest.advanceTimersByTime(600);
+        expect(isUnlocked()).toBe(false);
+        expect(signal.aborted).toBe(true);
+      } finally { jest.useRealTimers(); }
+    });
+
+    test('does not unlock a locked vault while changing its password', async () => {
+      await changePassword(tempDir, 'oldpassword', 'newpassword');
+      expect(isUnlocked()).toBe(false);
+      await unlockVault(tempDir, 'newpassword', 0);
+      expect(getMnemonic()).toBe(TEST_MNEMONIC);
+    });
     beforeEach(async () => {
       await importVault(tempDir, 'oldpassword', TEST_MNEMONIC);
     });

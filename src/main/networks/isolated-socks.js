@@ -55,9 +55,14 @@ function connectIsolatedSocks({ endpoint, hostname, port, token, signal, timeout
       if (phase === 'method' && buffer.length >= 2) {
         if (buffer[0] !== 5 || buffer[1] !== 2) return finish(error('SOCKS_AUTH_REQUIRED'));
         buffer = buffer.subarray(2);
-        const username = Buffer.from('<torS0X>0');
-        const password = Buffer.from(token);
-        socket.write(Buffer.concat([Buffer.from([1, username.length]), username, Buffer.from([password.length]), password]));
+        const username = '<torS0X>0';
+        // Keep isolation credentials out of the shared Buffer pool.
+        const authentication = Buffer.alloc(3 + username.length + Buffer.byteLength(token));
+        authentication[0] = 1; authentication[1] = username.length;
+        authentication.write(username, 2);
+        authentication[2 + username.length] = Buffer.byteLength(token);
+        authentication.write(token, 3 + username.length);
+        socket.write(authentication, () => authentication.fill(0));
         phase = 'auth';
       }
       if (phase === 'auth' && buffer.length >= 2) {

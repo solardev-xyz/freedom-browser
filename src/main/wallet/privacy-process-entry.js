@@ -15,10 +15,20 @@ require('net').Socket.prototype.connect = refuse;
 require('net').connect = refuse; require('net').createConnection = refuse;
 require('tls').connect = refuse;
 require('http2').connect = refuse;
-require('dgram').createSocket = refuse;
+const dgram = require('dgram');
+dgram.createSocket = refuse;
+dgram.Socket.prototype.send = refuse;
+dgram.Socket.prototype.connect = refuse;
+dgram.Socket.prototype.bind = refuse;
 const dns = require('dns');
-for (const name of Object.keys(dns)) if (/^(lookup|resolve)/.test(name)) dns[name] = refuse;
-for (const name of Object.keys(dns.promises)) if (/^(lookup|resolve)/.test(name)) dns.promises[name] = refuse;
+for (const api of [dns, dns.promises]) {
+  for (const name of Object.keys(api)) if (/^(lookup|resolve|reverse)/.test(name)) api[name] = refuse;
+  // Resolver methods live on a parent prototype in some Node releases.
+  for (const name of ['resolve', 'resolve4', 'resolve6', 'resolveAny', 'resolveCaa', 'resolveCname', 'resolveMx',
+    'resolveNaptr', 'resolveNs', 'resolvePtr', 'resolveSoa', 'resolveSrv', 'resolveTlsa', 'resolveTxt', 'reverse']) {
+    api.Resolver.prototype[name] = refuse;
+  }
+}
 for (const name of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) require('child_process')[name] = refuse;
 // Electron APIs exist in the utility process, not in its nested Node workers.
 // A source checkout's npm electron shim can mask this distinction.

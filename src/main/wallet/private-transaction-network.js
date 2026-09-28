@@ -12,7 +12,9 @@ const data = (value) => typeof value === 'string' && /^0x(?:[0-9a-f]{2})*$/i.tes
 
 function getPrivateTransactionNetwork(handle) {
   getPrivacyContext(handle);
-  if (clients.has(handle)) return clients.get(handle);
+  const cached = clients.get(handle);
+  if (cached && !cached.signal.aborted) return cached;
+  clients.delete(handle);
   const rpc = createPrivateRpc(handle, 'transaction-rpc');
   const context = getPrivacyContext(handle);
   const { chainId, principal } = context.subject;
@@ -21,10 +23,10 @@ function getPrivateTransactionNetwork(handle) {
   const reconciliation = () => reconciler ||= require('./private-submission-reconciler').createSubmissionReconciler({
     rpc, journal: journal(), principal, assertActive,
   });
-  async function assertCanSubmit() {
+  async function assertCanSubmit(signal) {
     assertActive();
     await journal().assertCanSubmit();
-    for (const record of await journal().list()) await reconciliation().observe(record.hash);
+    await reconciliation().refreshResolved(signal);
     await journal().assertCanSubmit();
     assertActive();
   }

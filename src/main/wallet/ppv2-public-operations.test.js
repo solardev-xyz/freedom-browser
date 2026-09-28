@@ -15,14 +15,17 @@ const { configuration } = require('../../../test/helpers/ppv2-session-fixture');
 const { transactionIntent } = require('./private-transaction-intent');
 const wallet = Wallet.fromPhrase('test test test test test test test test test test test junk');
 const iface = new Interface(REGISTRATION_ABI);
-let mockVault, mockProfile, scope, operations, config, receipts, nonce, lost, sent, signer, registered;
+const registrationKeys = { authDigest: `0x${'1'.padStart(64, '0')}`, nullifyingKeyHash: `0x${'2'.padStart(64, '0')}`, viewingKey: `0x${'ab'.repeat(32)}` };
+const readABI = new Interface(['function nullifyingKeys(address) view returns(uint256)', 'function viewingKeys(address) view returns(bytes32)']);
+let mockVault, mockProfile, scope, operations, config, receipts, nonce, lost, sent, signer, registered, registeredKeys;
 const mockRequest = jest.fn();
 const blockHash = `0x${'c'.repeat(64)}`;
 function open(tokenPolicy) {
   scope = createPrivacyScope({ signal: mockVault.signal, profileId: createHash('sha256')
     .update(JSON.stringify([mockProfile.id, mockProfile.userDataDir])).digest('hex') });
-  operations = createPPv2PublicOperations({ scope, configuration: config, tokenPolicy,
-    provider: { call: async () => `0x${(registered ? '1' : '0').padStart(64, '0')}` } });
+  operations = createPPv2PublicOperations({ scope, configuration: config, tokenPolicy, registrationKeys, accountIndex: 0,
+    provider: { call: async ({ data }) => registered ? registeredKeys[readABI.parseTransaction({ data }).name === 'nullifyingKeys'
+      ? 'nullifyingKeyHash' : 'viewingKey'] : `0x${'0'.repeat(64)}` } });
 }
 function registration() {
   return { __type: 'publicOperation', txs: [
@@ -39,7 +42,7 @@ function mine(hash, status = '0x1') {
 beforeEach(() => {
   mockVault = new AbortController(); mockProfile = { id: 'fixture', userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ppv2-handoff-')) };
   config = configuration(); config.ownerAddress = wallet.address;
-  receipts = new Map(); nonce = 0; lost = false; registered = true; sent = [];
+  receipts = new Map(); nonce = 0; lost = false; registered = true; registeredKeys = { ...registrationKeys }; sent = [];
   signer = { getAddress: async () => wallet.address, signTransaction: jest.fn((tx) => wallet.signTransaction(tx)) };
   mockRequest.mockReset().mockImplementation(async (method, params, validate) => {
     let result;
@@ -72,6 +75,27 @@ test('registration is canonical, immutable, ordered and limited to the configure
   ]) {
     const bad = registration(); modify(bad); expect(() => operations.registration(bad)).toThrow();
   }
+});
+
+test.each(['authDigest', 'nullifyingKeyHash', 'viewingKey'])('registration refuses substituted %s', (name) => {
+  const value = { ...registrationKeys, [name]: `0x${'3'.padStart(64, '0')}` };
+  const plan = registration();
+  plan.txs[0].data = iface.encodeFunctionData('setAuthPolicy', [value.authDigest, value.nullifyingKeyHash]);
+  plan.txs[1].data = iface.encodeFunctionData('setViewingKey', [value.viewingKey]);
+  expect(() => operations.registration(plan)).toThrow(expect.objectContaining({ code: 'PRIVATE_PPV2_REGISTRATION_MISMATCH' }));
+});
+
+test.each(['nullifyingKeyHash', 'viewingKey'])('a different registered %s refuses deposits before signing and after review', async (name) => {
+  const prepare = () => operations.deposit(Object.freeze({ kind: 'ppv2-native-deposit', chainId: 11155111,
+    from: wallet.address, to: config.deployment.entrypointAddress, value: 100n, amount: 100n, fee: 0n,
+    data: '0xabcd', proofVerified: true, chainStateVerified: false }));
+  registeredKeys[name] = `0x${'3'.padStart(64, '0')}`;
+  await expect(operations.submit(prepare(), options())).rejects.toMatchObject({ code: 'PRIVATE_PPV2_REGISTRATION_MISMATCH' });
+  registeredKeys = { ...registrationKeys };
+  await expect(operations.submit(prepare(), options({ review: async (request) => {
+    expect(request.accountIndex).toBe(0); registeredKeys[name] = `0x${'3'.padStart(64, '0')}`; return true;
+  } }))).rejects.toThrow();
+  expect(signer.signTransaction).not.toHaveBeenCalled(); expect(sent).toEqual([]);
 });
 
 test('requires review, provenance, correct sender, fee cap and one use per prepared step', async () => {
@@ -237,4 +261,21 @@ test.each(['allowance','fee','simulation'])('refuses token changes during review
     return true;
   }}))).rejects.toThrow();
   expect(sent).toHaveLength(0); expect(signer.signTransaction).not.toHaveBeenCalled();
+});
+
+test('a rotated viewing key allows recovery reads and an explicitly reviewed repair, while refusing deposits', async () => {
+  registeredKeys.viewingKey = `0x${'33'.repeat(32)}`;
+  expect(await operations.checkRegistration()).toMatchObject({ nullifyingKeyHash: true, viewingKey: false });
+  await expect(operations.checkRegistration(true)).rejects.toMatchObject({ code: 'PRIVATE_PPV2_REGISTRATION_MISMATCH' });
+  const repair = await operations.repairViewingKey();
+  expect(repair.txs).toHaveLength(1);
+  expect(repair.txs[0]).toMatchObject({ kind: 'ppv2-register-viewing', replacesExistingViewingKey: true, previousViewingKey: registeredKeys.viewingKey });
+  expect(iface.decodeFunctionData('setViewingKey', repair.txs[0].data)[0]).toBe(registrationKeys.viewingKey);
+  expect(sent).toHaveLength(0);
+});
+
+test('setting a missing viewing key is not described as replacing an existing key', async () => {
+  registeredKeys.viewingKey = `0x${'00'.repeat(32)}`;
+  const repair = await operations.repairViewingKey();
+  expect(repair.txs[0]).toMatchObject({ replacesExistingViewingKey: false, previousViewingKey: registeredKeys.viewingKey });
 });

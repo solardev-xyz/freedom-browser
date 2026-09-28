@@ -4,7 +4,7 @@ const { Interface, AbiCoder, keccak256 } = require('ethers');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { createPPv2DepositProver } = require('./ppv2-deposit-prover');
 const { FIELD, NATIVE, DEPOSIT_ABI, ARTIFACTS, formatProof } = require('./ppv2-deposit-policy');
-let mockRun, mockLoad, scope, prover, witness, proof, config;
+let mockRun, mockLoad, scope, prover, witness, proof, config, inspectNote;
 const ownerAddress = `0x${'11'.repeat(20)}`, entrypointAddress = `0x${'22'.repeat(20)}`;
 const note = { hint: `0x${'33'.repeat(32)}`, data: `0x${'44'.repeat(128)}` };
 const ciphertext = `0x${'55'.repeat(128)}`;
@@ -14,7 +14,8 @@ const context = keccak256(AbiCoder.defaultAbiCoder().encode(['tuple(bytes32 hint
 beforeEach(() => {
   scope = createPrivacyScope({ profileId: 'fixture', signal: new AbortController().signal });
   const handle = (role) => scope.getContext({ kind: 'private-account', principal: 'a', protocol: 'privacy-pools-v2', deployment: 'sepolia', chainId: 11155111, role });
-  config = { handle: handle('prover'), artifactHandle: handle('artifacts'), sdkEntry: '/reviewed/sdk.cjs', directory: '/reviewed/artifacts',
+  inspectNote = jest.fn(async () => ({ commitment: '0x7', value: 100n, tokenId: witness.tokenId }));
+  config = { handle: handle('prover'), artifactHandle: handle('artifacts'), sdkEntry: '/reviewed/sdk.cjs', directory: '/reviewed/artifacts', inspectNote,
     manifest: { deposit: Object.fromEntries(ARTIFACTS.map((entry) => [`${entry.kind}Sha256`, entry.sha256])) } };
   witness = { tokenId: NATIVE, value: '0x64', context, noteAddressHash: '0x1', depositSecret: '0x2' };
   // Shape-only fixture. The real SDK proof/verification is exercised in Electron.
@@ -27,6 +28,11 @@ beforeEach(() => {
     return { result };
   });
   prover = createPPv2DepositProver(config);
+});
+test.each(['commitment', 'value', 'tokenId', 'decrypt'])('refuses an independently unrecoverable deposit note: %s', async (change) => {
+  if (change === 'decrypt') inspectNote.mockRejectedValueOnce(new Error('Wrong key'));
+  else inspectNote.mockResolvedValueOnce({ commitment: '0x7', value: 100n, tokenId: NATIVE, [change]: '0x8' });
+  await expect(prover.prepare(intent, () => prepare())).rejects.toMatchObject({ code: 'PRIVATE_PPV2_DEPOSIT_REFUSED' });
 });
 afterEach(() => scope.close());
 async function prepare(mutate = (value) => value) {

@@ -20,7 +20,7 @@ beforeEach(async () => {
   journal = createSubmissionJournal({ handle, directory, key: Buffer.alloc(32, 7) });
   await journal.begin(hash, 7);
   responses = { eth_getTransactionReceipt: null, eth_getTransactionByHash: null,
-    eth_getBlockByNumber: { number: '0x10', hash: blockHash }, eth_blockNumber: '0x12' };
+    eth_getBlockByNumber: { number: '0x10', hash: blockHash }, eth_blockNumber: '0x12', eth_getTransactionCount: '0x7' };
   rpc = { signal: getPrivacyContext(handle).signal, request: jest.fn(async (method, _params, validate) => {
     const result = responses[method];
     if (!validate(result)) throw Object.assign(new Error('Invalid result'), { code: 'PRIVATE_RPC_INVALID' });
@@ -29,6 +29,27 @@ beforeEach(async () => {
   reconciler = createSubmissionReconciler({ rpc, journal, principal, assertActive: () => getPrivacyContext(handle) });
 });
 afterEach(() => scope.close());
+
+test('a consumed finalized nonce resolves an unknown outcome only after review, without claiming replacement or success', async () => {
+  responses.eth_getTransactionCount = '0x8';
+  const observed = await reconciler.observe(hash);
+  expect(observed.observation).toMatchObject({ status: 'nonce-consumed', finalizedNonce: 8, blockNumber: 16, trust: 'unverified' });
+  await expect(journal.assertCanSubmit()).rejects.toThrow();
+  await reconciler.resolve(hash, { minimumConfirmations: 2, review: accept });
+  await expect(journal.assertCanSubmit()).resolves.toBeUndefined();
+  await expect(journal.begin(`0x${'c'.repeat(64)}`, 7)).rejects.toMatchObject({ code: 'PRIVATE_NONCE_REUSE_REFUSED' });
+  expect(rpc.request.mock.calls.filter(([method]) => method === 'eth_getTransactionCount').every(([, params]) => params[1] === '0x10')).toBe(true);
+  responses.eth_getTransactionCount = '0x7';
+  expect(await reconciler.observe(hash)).toMatchObject({ resolution: null, observation: { status: 'reorged' } });
+});
+
+test('nonce consumption that changes during review cannot release an uncertain public attempt', async () => {
+  responses.eth_getTransactionCount = '0x8';
+  await expect(reconciler.resolve(hash, { minimumConfirmations: 2, review: async () => {
+    responses.eth_getTransactionCount = '0x7'; return accept();
+  } })).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_STALE' });
+  await expect(journal.assertCanSubmit()).rejects.toThrow();
+});
 
 test('unknown and pending observations never release the next-send gate or write signed bytes', async () => {
   expect((await reconciler.observe(hash)).observation).toMatchObject({ status: 'unknown', confirmations: 0, trust: 'unverified' });
@@ -80,7 +101,8 @@ test.each(['missing', 'block', 'status', 'head'])('evidence change during review
     if (change === 'head') responses.eth_blockNumber = '0xf';
     return accept();
   };
-  await expect(reconciler.resolve(hash, { minimumConfirmations: 2, review })).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_STALE' });
+  await expect(reconciler.resolve(hash, { minimumConfirmations: 2, review })).rejects.toMatchObject({
+    code: ['missing', 'head'].includes(change) ? 'PRIVATE_RECONCILIATION_UNAVAILABLE' : 'PRIVATE_REVIEW_STALE' });
   await expect(journal.assertCanSubmit()).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
 });
 
@@ -105,8 +127,22 @@ test('resolution survives reopening; disappearing inclusion revokes it durably',
   reconciler = createSubmissionReconciler({ rpc: { ...rpc, signal: getPrivacyContext(handle).signal }, journal, principal,
     assertActive: () => getPrivacyContext(handle) });
   responses.eth_getTransactionReceipt = null;
+  responses.eth_getBlockByNumber.hash = `0x${'c'.repeat(64)}`;
   expect(await reconciler.observe(hash)).toMatchObject({ resolution: null, observation: { status: 'reorged' } });
   await expect(journal.assertCanSubmit()).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+});
+
+test('missing receipts and RPC failures preserve reviewed history while preventing use of unavailable evidence', async () => {
+  included(); await reconciler.resolve(hash, { minimumConfirmations: 2, review: accept });
+  const before = await journal.list();
+  rpc.request.mockRejectedValueOnce(new Error('Temporary RPC outage'));
+  await expect(reconciler.observe(hash)).rejects.toThrow();
+  expect(await journal.list()).toEqual(before);
+  responses.eth_getTransactionReceipt = null;
+  await expect(reconciler.observe(hash)).rejects.toMatchObject({ code: 'PRIVATE_RECONCILIATION_UNAVAILABLE' });
+  expect(await journal.list()).toEqual(before);
+  responses.eth_getBlockByNumber.transactions = [hash];
+  expect(await reconciler.observe(hash)).toMatchObject({ resolution: before[0].resolution, observation: { status: 'included' } });
 });
 
 test('a later observation wins over an earlier RPC response still in flight', async () => {
@@ -132,4 +168,37 @@ test('untracked hashes, wrong owner/nonce and malformed chain data cannot create
   included(); responses.eth_getBlockByNumber.number = '0x11';
   await expect(reconciler.observe(hash)).rejects.toMatchObject({ code: 'PRIVATE_RPC_INVALID' });
   expect((await journal.list())[0].observation).toBeUndefined();
+});
+
+test('compact refresh preserves reviewed history on unavailable/wrong-height evidence and invalidates a changed canonical hash', async () => {
+  included(); await reconciler.resolve(hash, { minimumConfirmations: 2, review: accept });
+  const before = await journal.list();
+  for (const value of [null, { number: '0x11', hash: blockHash }]) {
+    responses.eth_getBlockByNumber = value;
+    await expect(reconciler.refreshResolved()).rejects.toMatchObject({ code: 'PRIVATE_RECONCILIATION_UNAVAILABLE' });
+    expect(await journal.list()).toEqual(before);
+  }
+  responses.eth_getBlockByNumber = { number: '0x10', hash: blockHash };
+  responses.eth_getTransactionReceipt = null; rpc.request.mockClear();
+  await reconciler.refreshResolved();
+  expect(rpc.request.mock.calls.map(([method]) => method)).toEqual(['eth_blockNumber', 'eth_getBlockByNumber']);
+  expect((await journal.list())[0].resolution).toBeTruthy();
+  responses.eth_getBlockByNumber.hash = `0x${'c'.repeat(64)}`;
+  await reconciler.refreshResolved();
+  expect((await journal.list())[0]).toMatchObject({ resolution: null, observation: { status: 'reorged' } });
+});
+
+test('an aborted compact refresh cannot commit a delayed block response', async () => {
+  included(); await reconciler.resolve(hash, { minimumConfirmations: 2, review: accept });
+  const before = await journal.list(), controller = new AbortController();
+  let release;
+  const original = rpc.request.getMockImplementation();
+  rpc.request.mockImplementation((method, params, validate) => method === 'eth_getBlockByNumber'
+    ? new Promise((resolve) => { release = () => resolve({ result: responses.eth_getBlockByNumber }); }) : original(method, params, validate));
+  const pending = reconciler.refreshResolved(controller.signal);
+  for (let i = 0; i < 10 && !release; i++) await Promise.resolve();
+  expect(release).toEqual(expect.any(Function));
+  controller.abort(); release();
+  await expect(pending).rejects.toMatchObject({ code: 'PRIVATE_RECONCILIATION_UNAVAILABLE' });
+  expect(await journal.list()).toEqual(before);
 });

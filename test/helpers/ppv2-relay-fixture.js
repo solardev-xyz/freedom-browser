@@ -26,7 +26,7 @@ function relayFixture() {
   signedFeeCommitment: { data, asset: NATIVE, expiration: Date.now() + 300000, feeAmount: '100',
     signedRelayerCommitment: `0x${'ab'.repeat(65)}`, recipient, amountSent: '6000', amountReceived: '5900', extraGas: false },
   inputNullifierNumber: 1, outputCommitmentNumber: 1 };
-  const intent = { kind: 'ppv2-native-withdrawal', chainId: 11155111, pool: `0x${'44'.repeat(20)}`, processor, relayer,
+  const intent = { kind: 'ppv2-native-withdrawal', chainId: 11155111, owner: `0x${'55'.repeat(20)}`, inputValue: '10000', pool: `0x${'44'.repeat(20)}`, processor, relayer,
     quoteSigner: quoteWallet.address.toLowerCase(), recipient, amount: '5900', maxFee: '100', commitment: word(9), publicSignals: signals };
   payload.signedFeeCommitment.signedRelayerCommitment = signQuote(payload.signedFeeCommitment, processor);
   return { intent, endpoint: 'https://relay.example.test/v1/relay/evm/11155111/withdrawal', body: JSON.stringify(payload) };

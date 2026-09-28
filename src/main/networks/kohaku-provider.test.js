@@ -4,7 +4,7 @@ jest.mock('./network-registry', () => ({ getNetwork: () => ({}), getEndpoints: (
 jest.mock('./wallet-tor-transport', () => ({ createWalletTorTransport: () => ({ request: mockRequest }) }));
 const mockRequest = jest.fn();
 let mockEndpoint, mockEnabled;
-const { createPrivacyScope } = require('./privacy-context');
+const { createPrivacyScope, getPrivacyContext } = require('./privacy-context');
 const { createPrivateRpc } = require('./private-rpc');
 const { createKohakuProvider } = require('./kohaku-provider');
 const target = `0x${'1'.repeat(40)}`;
@@ -33,6 +33,38 @@ beforeEach(() => {
   });
 });
 afterEach(() => scope.close());
+
+test('owner contract reads use the public-address connection while pool reads retain their private context', async () => {
+  const owner = scope.getContext({ kind: 'public-address', principal: `0x${'9'.repeat(40)}`, chainId: 11155111, role: 'transaction-rpc' });
+  const pool = `0x${'2'.repeat(40)}`;
+  const seen = [];
+  mockRequest.mockImplementation(async (context, _url, options) => {
+    const call = JSON.parse(options.body); seen.push({ context, call });
+    return { status: 200, body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: results[call.method] })) };
+  });
+  provider = createKohakuProvider({ handle, contracts: [...contracts, { ...contracts[0], address: pool }],
+    publicReadHandle: owner, publicContracts: [target] });
+  await provider.call({ to: target, data: '0x12345678' });
+  await provider.getCode(target);
+  await provider._internal.request({ method: 'eth_getLogs', params: [{ ...filter(), toBlock: 'latest' }] });
+  expect(seen.every(({ context }) => context === owner)).toBe(true);
+  await provider.call({ to: pool, data: '0x12345678' });
+  expect(seen.at(-1).context).toBe(handle);
+  expect(getPrivacyContext(owner).isolationToken).not.toBe(getPrivacyContext(handle).isolationToken);
+  const foreign = createPrivacyScope({ profileId: 'other', signal: new AbortController().signal });
+  expect(() => createKohakuProvider({ handle, contracts, publicReadHandle: foreign.getContext({ kind: 'public-address',
+    principal: target, chainId: 11155111, role: 'transaction-rpc' }), publicContracts: [target] })).toThrow();
+  foreign.close();
+});
+
+test('an explicit new read may recover from a failed chain check without retrying the failed request', async () => {
+  let failed = false;
+  hook = async (call) => { if (!failed && call.method === 'eth_chainId') { failed = true; throw new Error('Temporary failure'); } };
+  await expect(provider.getBlockNumber()).rejects.toThrow();
+  expect(requests.map((call) => call.method)).toEqual(['eth_chainId']);
+  expect(await provider.getBlockNumber()).toBe(2n);
+  expect(requests.map((call) => call.method)).toEqual(['eth_chainId', 'eth_chainId', 'eth_blockNumber']);
+});
 
 test('read calls and full raw log metadata use the private context, with no verification upgrade', async () => {
   expect(await provider.getChainId()).toBe(11155111n);

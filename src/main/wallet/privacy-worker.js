@@ -4,13 +4,14 @@
  */
 const path = require('path');
 const { Worker } = require('worker_threads');
+const { serialize } = require('v8');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 let activeWorkers = 0;
 
-function runPrivacyWorker({ handle, filename, workerData, signal, timeoutMs = 120000, heapMb = 256 }) {
+function runPrivacyWorker({ handle, filename, workerData, validateResult, signal, timeoutMs = 120000, heapMb = 256 }) {
   const context = getPrivacyContext(handle);
   if (context.subject.kind !== 'private-account' || context.subject.role !== 'prover' || context.subject.chainId !== 11155111 ||
-      typeof filename !== 'string' || !path.isAbsolute(filename) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000 ||
+      typeof validateResult !== 'function' || typeof filename !== 'string' || !path.isAbsolute(filename) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000 ||
       !Number.isSafeInteger(heapMb) || heapMb < 16 || heapMb > 1024) {
     throw privacyError('PRIVATE_WORKER_INVALID', 'Invalid proving worker configuration');
   }
@@ -41,7 +42,12 @@ function runPrivacyWorker({ handle, filename, workerData, signal, timeoutMs = 12
       worker = new Worker(filename, { workerData, execArgv: [], env: {}, stdout: true, stderr: true,
         resourceLimits: { maxOldGenerationSizeMb: heapMb, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 } });
       worker.stdout.resume(); worker.stderr.resume();
-      worker.once('message', (result) => finish(null, result));
+      worker.once('message', (result) => {
+        try {
+          if (serialize(result).length > 1024 * 1024 || validateResult(result) !== true) throw new Error('shape');
+          finish(null, result);
+        } catch { finish(privacyError('PRIVATE_WORKER_FAILED', 'Invalid proving worker result')); }
+      });
       worker.once('error', () => finish(privacyError('PRIVATE_WORKER_FAILED', 'Proving worker failed')));
       worker.once('exit', () => finish(privacyError('PRIVATE_WORKER_FAILED', 'Proving worker exited without a result')));
       lifetime.addEventListener('abort', abort, { once: true });

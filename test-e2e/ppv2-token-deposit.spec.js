@@ -54,7 +54,7 @@ test('PPv2 token reset, approval, deposit and restart recovery', async ({ electr
         async request(method, params, validate) {
           getPrivacyContext(handle); methods.add(method);
           let result;
-          if (method === 'eth_call' && context.subject.role === 'transaction-rpc') result = '0x';
+          if (method === 'eth_call' && context.subject.role === 'transaction-rpc' && params[0].from) result = '0x';
           else if (method === 'eth_blockNumber') result = quantity(head);
           else if (method === 'eth_getBlockByNumber') result = { number: params[0] === 'finalized' ? quantity(head - 2) : params[0], hash: blockHash };
           else if (method === 'eth_getLogs') {
@@ -126,7 +126,8 @@ test('PPv2 token reset, approval, deposit and restart recovery', async ({ electr
       if (!phase) await vault.importVault(directory, 'fixture-password', 'test test test test test test test test test test test junk');
       await vault.unlockVault(directory, 'fixture-password', 0);
       const { PPV2_CANDIDATE, openPPv2Session } = req('./src/main/wallet/ppv2-session');
-      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin };
+      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin,
+        inspectRegistration: req(`${artifact}/plugin.cjs`).inspectRegistration, inspectChange: req(`${artifact}/plugin.cjs`).inspectChange };
       const open = () => openPPv2Session({ candidate, configuration: config,
         proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];
@@ -181,6 +182,9 @@ test('PPv2 token reset, approval, deposit and restart recovery', async ({ electr
       session.close();
       const cache=path.join(req('./src/main/profile-resolver').getActiveProfile().userDataDir,'wallet-ppv2-experiment');
       fs.renameSync(cache,`${cache}.token-recovery-fixture`);
+      const missingCacheBlocked = await open().then(()=>false, e=>e.code === 'PRIVATE_PROFILE_STORE_MISSING');
+      if (!missingCacheBlocked) throw new Error('Missing initialized cache was accepted');
+      fs.renameSync(`${cache}.token-recovery-fixture`, cache);
       session=await open(); const recovered=await session.notes();
       stage='token emergency exit';
       const exit=await session.prepareTokenRagequit({token,commitment:recovered[0].commitment});
@@ -189,7 +193,7 @@ test('PPv2 token reset, approval, deposit and restart recovery', async ({ electr
       return {exitKind:exit.kind,exitProofVerified:exit.proofVerified,exitStatus:exited[0]?.status,
         blocked,journalCount:before.length,balance:balance.toString(),allowance:allowance.toString(),
         notes:notes.map(n=>({amount:n.value.toString(),token:n.asset.contract,status:n.status})),
-        independentlyRecovered:recovered[0]?.commitment===notes[0]?.commitment,
+        guardedCacheRestored:recovered[0]?.commitment===notes[0]?.commitment,
         rescanRecovered:rescan.notes[0]?.commitment===notes[0]?.commitment,
         journalKinds:(await session.listPublicSubmissions()).map(r=>r.intent.kind),sends:sends.length};
     } catch(error) { throw new Error(`Controlled token stage: ${stage}, ${error.code||'fixture-failed'}`,{cause:error}); }
@@ -207,6 +211,6 @@ test('PPv2 token reset, approval, deposit and restart recovery', async ({ electr
   expect(report[2]).toMatchObject({blocked:true,noApproval:true,kind:'ppv2-token-deposit',tokenBound:true,
     amount:'10000',fee:'100',value:'0',proofVerified:true});
   expect(report[3]).toMatchObject({blocked:true,journalCount:5,balance:'19900',allowance:'0',
-    independentlyRecovered:true,rescanRecovered:true,sends:1,exitKind:'ppv2-token-ragequit',exitProofVerified:true,exitStatus:'exited'});
+    guardedCacheRestored:true,rescanRecovered:true,sends:1,exitKind:'ppv2-token-ragequit',exitProofVerified:true,exitStatus:'exited'});
   expect(report[3].notes).toEqual([{amount:'10000',token:`0x${'55'.repeat(20)}`,status:'pending'}]);
 });

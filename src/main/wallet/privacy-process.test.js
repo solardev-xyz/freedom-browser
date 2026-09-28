@@ -17,6 +17,33 @@ beforeEach(() => {
 });
 afterEach(() => { scope.close(); jest.restoreAllMocks(); });
 
+test('rejects pooled or partial views before IPC and accepts only owned backing buffers', async () => {
+  const backing = Buffer.alloc(64, 0x73);
+  for (const artifact of [backing.buffer, backing.subarray(0, 32), new DataView(backing.buffer, 8, 16), Buffer.from('pooled public artifact')]) {
+    expect(() => runPrivacyProcess({ ...args, input: { artifacts: [artifact] } }))
+      .toThrow(expect.objectContaining({ code: 'PRIVATE_PROCESS_INVALID' }));
+  }
+  expect(mockFork).not.toHaveBeenCalled();
+  const artifact = Buffer.alloc(32, 0x61);
+  const task = runPrivacyProcess({ ...args, input: { artifacts: [artifact] } });
+  child.emit('spawn');
+  const posted = structuredClone(child.postMessage.mock.calls[0][0]).input.artifacts[0];
+  expect(posted.buffer.byteLength).toBe(32);
+  expect(Buffer.from(posted.buffer)).toEqual(artifact);
+  child.emit('message', { type: 'result', value: { valid: true } }); child.emit('exit', 0);
+  await task;
+});
+
+test('a caller cannot substitute a pooled view while the child is spawning', async () => {
+  const input = { artifact: Buffer.alloc(32) };
+  const task = runPrivacyProcess({ ...args, input });
+  const rejected = expect(task).rejects.toMatchObject({ code: 'PRIVATE_PROCESS_FAILED' });
+  input.artifact = Buffer.alloc(64).subarray(0, 32);
+  child.emit('spawn');
+  expect(child.postMessage).not.toHaveBeenCalled();
+  child.emit('exit', 1); await rejected;
+});
+
 test('a result is held until exit, with no inherited environment or command-line input', async () => {
   let settled = false;
   const task = runPrivacyProcess(args).then((result) => { settled = true; return result; });

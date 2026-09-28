@@ -4,6 +4,7 @@
  */
 const { createHash, createHmac } = require('crypto');
 const path = require('path');
+const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { mnemonicToSeedSync } = require('@scure/bip39');
 const { createPrivacyStorage } = require('./privacy-storage');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
@@ -19,22 +20,23 @@ function snapshot(record) {
   return Object.freeze(record);
 }
 function validObservation(value) {
-  return value && ['unknown', 'pending', 'included', 'reverted', 'reorged'].includes(value.status) &&
+  return value && ['unknown', 'pending', 'included', 'reverted', 'reorged', 'nonce-consumed'].includes(value.status) &&
     value.trust === 'unverified' && Number.isSafeInteger(value.observedAt) && value.observedAt >= 0 &&
     Number.isSafeInteger(value.confirmations) && value.confirmations >= 0 &&
-    (['included', 'reverted'].includes(value.status)
+    (value.status !== 'nonce-consumed' || (Number.isSafeInteger(value.finalizedNonce) && value.finalizedNonce > 0)) &&
+    (['included', 'reverted', 'nonce-consumed'].includes(value.status)
       ? typeof value.blockHash === 'string' && HASH.test(value.blockHash) && Number.isSafeInteger(value.blockNumber) && value.blockNumber >= 0 && value.confirmations > 0
       : value.blockHash === null && value.blockNumber === null && value.confirmations === 0);
 }
 
-function createSubmissionJournal({ handle, directory, key }) {
+function createSubmissionJournal({ handle, directory, key, profileGuard }) {
   const context = getPrivacyContext(handle);
   const { subject } = context;
   if (subject.kind !== 'public-address' || subject.role !== 'transaction-rpc' ||
       subject.chainId !== 11155111 || subject.operation !== null || subject.protocol !== null || subject.deployment !== null) {
     throw privacyError('PRIVATE_JOURNAL_SCOPE', 'Unsupported submission journal scope');
   }
-  const storage = createPrivacyStorage({ handle, directory, key });
+  const storage = createPrivacyStorage({ handle, directory, key, profileGuard });
   const invalid = () => privacyError('PRIVATE_JOURNAL_INVALID', 'Submission state could not be validated');
   function decode(value) {
     if (value === null) return [];
@@ -50,6 +52,7 @@ function createSubmissionJournal({ handle, directory, key }) {
         if (record.revision !== undefined && (!Number.isSafeInteger(record.revision) || record.revision < 0)) throw invalid();
         if (record.intent !== undefined && !validIntent(record.intent)) throw invalid();
         if (record.observation !== undefined && !validObservation(record.observation)) throw invalid();
+        if (record.observation?.status === 'nonce-consumed' && record.observation.finalizedNonce <= record.nonce) throw invalid();
         if (record.resolution && (!record.observation || record.resolution.blockHash !== record.observation.blockHash ||
             !Number.isSafeInteger(record.resolution.minimumConfirmations) || record.resolution.minimumConfirmations < 1 ||
             record.observation.confirmations < record.resolution.minimumConfirmations ||
@@ -96,11 +99,13 @@ function createSubmissionJournal({ handle, directory, key }) {
       await modify((records) => {
         const record = records.find((entry) => entry.hash === hash);
         if (!record || (record.revision || 0) !== revision) throw privacyError('PRIVATE_RECONCILIATION_STALE', 'Submission observation was superseded');
+        if (observation.status === 'nonce-consumed' && observation.finalizedNonce <= record.nonce) throw invalid();
         if (!Number.isSafeInteger(revision + 1)) throw invalid();
         const previous = record.observation;
         record.observation = { ...observation }; record.revision = revision + 1;
         if (record.resolution && (record.resolution.blockHash !== observation.blockHash || previous?.status !== observation.status ||
-            previous?.blockNumber !== observation.blockNumber || observation.confirmations < record.resolution.minimumConfirmations)) record.resolution = null;
+            previous?.blockNumber !== observation.blockNumber || previous?.finalizedNonce !== observation.finalizedNonce ||
+            observation.confirmations < record.resolution.minimumConfirmations)) record.resolution = null;
         updated = record;
         return records;
       });
@@ -113,7 +118,7 @@ function createSubmissionJournal({ handle, directory, key }) {
         const record = records.find((entry) => entry.hash === hash);
         if (!record || record.revision !== revision) throw privacyError('PRIVATE_RECONCILIATION_STALE', 'Submission observation was superseded');
         if (!Number.isSafeInteger(minimumConfirmations) || minimumConfirmations < 1 ||
-            !Number.isSafeInteger(revision + 1) || !['included', 'reverted'].includes(record.observation?.status) ||
+            !Number.isSafeInteger(revision + 1) || !['included', 'reverted', 'nonce-consumed'].includes(record.observation?.status) ||
             record.observation.confirmations < minimumConfirmations) throw invalid();
         record.resolution = { blockHash: record.observation.blockHash, minimumConfirmations, reviewedAt: Date.now() };
         record.revision += 1; updated = record;
@@ -152,7 +157,7 @@ function getPrivateSubmissionJournal(handle) {
   try {
     key = createHmac('sha256', seed).update('Freedom wallet submission journal v1\0')
       .update(JSON.stringify([profileId, context.subject])).digest();
-    const journal = createSubmissionJournal({ handle, directory: path.join(profile.userDataDir, 'wallet-private-submissions'), key });
+    const journal = createSubmissionJournal({ handle, directory: path.join(profile.userDataDir, 'wallet-private-submissions'), key, profileGuard: createPrivacyProfileGuard({ handle, profile, seed }) });
     journals.set(handle, journal);
     return journal;
   } finally { seed.fill(0); key?.fill(0); }

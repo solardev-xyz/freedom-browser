@@ -44,7 +44,9 @@ function createPrivacyArtifactLoader({ handle, directory, manifest }) {
       const info = await file.stat();
       if (!info.isFile() || info.size !== entry.size) throw invalid();
       assertActive();
-      bytes = Buffer.allocUnsafe(entry.size);
+      // IPC clones the entire backing ArrayBuffer. A pooled Buffer can carry
+      // unrelated main-process bytes, even when the visible slice is public.
+      bytes = Buffer.alloc(entry.size);
       const digest = createHash('sha256');
       let offset = 0;
       while (offset < entry.size) {

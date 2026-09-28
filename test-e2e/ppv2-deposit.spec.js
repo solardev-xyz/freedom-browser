@@ -27,6 +27,8 @@ test('real Kohaku session prepares a verified native deposit through the utility
     });
     config.artifacts.manifest = sdk.DEFAULT_CIRCUIT_MANIFEST;
     const entrypoint = new Interface(abis.ENTRYPOINT_ABI);
+    const registrationABI = new Interface(['function nullifyingKeys(address) view returns(uint256)', 'function viewingKeys(address) view returns(bytes32)']);
+    let registrationKeys, registered = false;
     let feeBps = 100n;
     const methods = new Set();
     // Test-local controlled chain, through the real restricted Kohaku provider.
@@ -34,16 +36,34 @@ test('real Kohaku session prepares a verified native deposit through the utility
     const productionGate = settings.isWalletTorExperimentAvailable();
     settings.isWalletTorExperimentAvailable = () => true;
     tor.getWalletSocksEndpoint = () => endpoint;
-    rpc.createPrivateRpc = (handle) => ({ assertActive: () => getPrivacyContext(handle), ready: async () => {},
+    rpc.createPrivateRpc = (handle) => ({ signal: getPrivacyContext(handle).signal, assertActive: () => getPrivacyContext(handle), ready: async () => {},
       trust: { level: 'unverified' }, privacy: { mode: 'controlled-fixture' },
       async request(method, params, validate) {
         getPrivacyContext(handle); methods.add(method);
         let result;
         if (method === 'eth_blockNumber') result = '0x100';
-        else if (method === 'eth_getLogs') result = [];
+        else if (method === 'eth_getLogs') {
+          result = [];
+          // Registered state must include auth history: the real candidate
+          // re-discovers the owner's revocable-key index on every reopen.
+          const authInterface = new Interface(abis.KEYSTORE_AUTH_EVENTS_ABI);
+          const event = authInterface.getEvent('AuthPolicySet'), filter = params[0];
+          const registrationBlock = BigInt(config.deploymentBlock + 1);
+          if (registered && filter.address === config.deployment.keystoreAddress && filter.topics[0].includes(event.topicHash) &&
+              BigInt(filter.fromBlock) <= registrationBlock && BigInt(filter.toBlock) >= registrationBlock) {
+            result.push({ address: config.deployment.keystoreAddress,
+              ...authInterface.encodeEventLog(event, [config.ownerAddress, BigInt(registrationKeys.nullifyingKeyHash), BigInt(registrationKeys.authDigest)]),
+              blockNumber: `0x${registrationBlock.toString(16)}`, blockHash: `0x${'ca'.repeat(32)}`, transactionHash: `0x${'cb'.repeat(32)}`,
+              logIndex: '0x0', transactionIndex: '0x0', removed: false });
+          }
+        }
         else if (method === 'eth_call') {
           if (params[0].to === config.deployment.entrypointAddress && params[0].data.startsWith(entrypoint.getFunction('assets').selector)) {
             result = entrypoint.encodeFunctionResult('assets', [[true, 1n, feeBps, 0n]]);
+          } else if (registered && params[0].to === config.deployment.keystoreAddress &&
+              ['nullifyingKeys', 'viewingKeys'].some((name) => params[0].data.startsWith(registrationABI.getFunction(name).selector))) {
+            const name = registrationABI.parseTransaction({ data: params[0].data }).name;
+            result = name === 'nullifyingKeys' ? registrationKeys.nullifyingKeyHash : registrationKeys.viewingKey;
           } else result = `0x${'00'.repeat(32)}`;
         } else throw new Error('Unexpected RPC request');
         if (!validate(result)) throw new Error('Invalid controlled response');
@@ -62,13 +82,16 @@ test('real Kohaku session prepares a verified native deposit through the utility
       const { PPV2_CANDIDATE, openPPv2Session } = req('./src/main/wallet/ppv2-session');
       const source = JSON.parse(fs.readFileSync(`${artifact}/candidate.json`, 'utf8'));
       if (source.sdk !== PPV2_CANDIDATE.sdk || source.kohaku !== PPV2_CANDIDATE.kohaku) throw new Error('Candidate mismatch');
-      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin };
+      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin,
+        inspectRegistration: async (...args) => (registrationKeys = await req(`${artifact}/plugin.cjs`).inspectRegistration(...args)),
+        inspectChange: req(`${artifact}/plugin.cjs`).inspectChange };
       let cancelOnProof = false, progressCount = 0;
       const proving = { sdkEntry: `${artifact}/sdk.cjs`, directory: artifactDir,
         onProgress: () => { progressCount += 1; if (cancelOnProof) vault.lockVault(); } };
       const open = () => openPPv2Session({ candidate, configuration: config, proving });
       session = await open();
       const registration = await session.prepareRegisterKeystore();
+      registered = true; // Controlled chain now exposes this account's exact public keys.
       const start = performance.now();
       const deposit = await session.prepareNativeDeposit({ amount: 10000n, maxFee: 100n });
       const elapsedMs = Math.round(performance.now() - start);

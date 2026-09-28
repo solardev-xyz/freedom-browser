@@ -81,10 +81,10 @@ test('uses the upstream millisecond quote deadline and refuses seconds or expire
     const payload = JSON.parse(request.body); payload.signedFeeCommitment.expiration = expiration;
     await expect(gate.prepare({ ...request, body: JSON.stringify(payload) })).rejects.toThrow();
   }
-  const payload = JSON.parse(request.body); payload.signedFeeCommitment.expiration = Date.now() + 50;
+  const payload = JSON.parse(request.body); payload.signedFeeCommitment.expiration = Date.now() + 60000;
   payload.signedFeeCommitment.signedRelayerCommitment = signQuote(payload.signedFeeCommitment, request.intent.processor);
   const prepared = await gate.prepare({ ...request, body: JSON.stringify(payload) });
-  jest.useFakeTimers(); jest.setSystemTime(Date.now() + 51);
+  jest.useFakeTimers(); jest.setSystemTime(Date.now() + 45001);
   await expect(gate.submit(prepared, { review: async () => true, invoke })).rejects.toThrow();
   expect(network.fetch).not.toHaveBeenCalled();
 });
@@ -179,6 +179,35 @@ test('rechecks main-owned eligibility after review before durable intent or netw
   expect(network.fetch).not.toHaveBeenCalled();
 });
 
+test.each([110000, 121000])('eligibility recheck consuming %i ms leaves no attempt inside the delivery margin or after expiry', async (elapsed) => {
+  jest.useFakeTimers();
+  gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal, network, verifyProof,
+    beforeBegin: async () => { jest.setSystemTime(Date.now() + elapsed); } });
+  const prepared = await gate.prepare(request);
+  await expect(gate.submit(prepared, { review: async () => true, invoke })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_RELAY_REFUSED' });
+  expect(await journal.list()).toEqual([]);
+  await expect(journal.assertCanSubmit()).resolves.toBeUndefined();
+  expect(network.fetch).not.toHaveBeenCalled();
+});
+
+test('bounds a stalled eligibility recheck and prevents its late completion from sending', async () => {
+  jest.useFakeTimers();
+  let release, recheckSignal;
+  gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal, network, verifyProof,
+    beforeBegin: (signal) => new Promise((resolve) => { recheckSignal = signal; release = resolve; }) });
+  const prepared = await gate.prepare(request);
+  const rejected = expect(gate.submit(prepared, { review: async () => true, invoke }))
+    .rejects.toMatchObject({ code: 'PRIVATE_PPV2_RELAY_REFUSED' });
+  await jest.advanceTimersByTimeAsync(121000);
+  await rejected;
+  expect(release).toEqual(expect.any(Function));
+  expect(recheckSignal.aborted).toBe(true);
+  release();
+  await jest.advanceTimersByTimeAsync(0);
+  expect(await journal.list()).toEqual([]);
+  expect(network.fetch).not.toHaveBeenCalled();
+});
+
 test('accepts the SDK native-asset checksum spelling while preserving exact reviewed bytes', async () => {
   const payload = JSON.parse(request.body);
   payload.signedFeeCommitment.asset = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
@@ -186,6 +215,14 @@ test('accepts the SDK native-asset checksum spelling while preserving exact revi
   const prepared = await gate.prepare(request);
   await gate.submit(prepared, { review: async () => true, invoke });
   expect(network.fetch.mock.calls[0][1].body).toBe(request.body);
+});
+
+test('settlement note digests normalize byte casing and object key order without changing submitted bytes', () => {
+  const expected = validateRelay(request).settlement.noteDigest;
+  const payload = JSON.parse(request.body), note = payload.noteData[0];
+  payload.noteData[0] = { data: `0x${note.data.slice(2).toUpperCase()}`, hint: `0x${note.hint.slice(2).toUpperCase()}` };
+  request.body = JSON.stringify(payload);
+  expect(validateRelay(request).settlement.noteDigest).toBe(expected);
 });
 
 test('binds token withdrawal review and settlement to the same asset and rejects asset substitution', async () => {
@@ -225,4 +262,13 @@ test('authenticates the configured signer independently of the fee recipient', a
   expect(prepared.quoteSigner).not.toBe(prepared.relayer);
   expect(prepared.quoteSignatureVerified).toBe(true);
   expect(prepared.chainStateVerified).toBe(false);
+});
+
+test('a recheck finishing just outside the delivery margin still submits once', async () => {
+  jest.useFakeTimers();
+  gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal, network, verifyProof,
+    beforeBegin: async () => { jest.setSystemTime(Date.now() + 104000); } });
+  const prepared = await gate.prepare(request);
+  await gate.submit(prepared, { review: async () => true, invoke });
+  expect(network.fetch).toHaveBeenCalledTimes(1); expect(await journal.list()).toHaveLength(1);
 });
