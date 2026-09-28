@@ -36,6 +36,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       !Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex > 65535 ||
       !candidate || typeof candidate.createPlugin !== 'function' || typeof candidate.inspectRegistration !== 'function' ||
       Object.keys(PPV2_CANDIDATE).some((name) => candidate[name] !== PPV2_CANDIDATE[name])) throw unavailable();
+  require('./ppv2-runtime').assertPPv2Candidate(candidate, proving);
   // Snapshot before any await; neither the caller nor SDK may change grants.
   let config;
   try { config = structuredClone(configuration); } catch { throw unavailable(); }
@@ -154,7 +155,9 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       await availableToSpend();
       const note = (await plugin.notes(undefined, true)).find((n) => n.commitment === request.commitment);
       if (!note || note.status !== 'active' || (token === NATIVE ? note.asset?.__type !== 'native' :
-          note.asset?.__type !== 'erc20' || note.asset.contract.toLowerCase() !== token.toLowerCase())) throw unavailable();
+          note.asset?.__type !== 'erc20' || note.asset.contract.toLowerCase() !== token.toLowerCase())) {
+        throw privacyError('PRIVATE_PPV2_NOTE_UNAVAILABLE', 'Selected note is not currently spendable');
+      }
       // Start before both observed heads with a reorg margin. Scanning from
       // deployment for every new attempt would make old pools impractical.
       // Both observations remain unverified, like the settlement logs themselves.
@@ -226,7 +229,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
             await availableToSpend();
             await publicOperations.checkRegistration(true);
             const state = await tokenPolicy.read(args[0]);
-            if (state.allowance !== state.total) throw unavailable();
+            if (state.allowance !== state.total) throw privacyError('PRIVATE_PPV2_ALLOWANCE_REQUIRED', 'Exact token allowance is required before deposit');
             proofKind = 'deposit';
             return depositProver.prepare({ ...state, ownerAddress: config.ownerAddress, entrypointAddress: config.deployment.entrypointAddress },
               () => plugin.prepareShield({ asset: { __type: 'erc20', contract: state.token }, amount: state.amount }));
@@ -242,6 +245,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
             const token = method === 'prepareTokenRagequit' ? args[0].token : NATIVE;
             if (method === 'prepareTokenRagequit') tokenPolicy.assertToken(token);
             const commitment = method === 'prepareTokenRagequit' ? args[0].commitment : args[0];
+            await relayJournal.assertCanExit(commitment);
             const note = (await plugin.notes(undefined, true)).find((note) => note.commitment === commitment);
             if (!note || ['spent', 'exited', 'exit_pending'].includes(note.status) ||
                 (token === NATIVE ? note.asset?.__type !== 'native' : note.asset?.contract?.toLowerCase() !== token.toLowerCase())) throw unavailable();
@@ -255,7 +259,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       } catch (error) {
         // Never forward SDK exceptions (URLs, notes, payloads or nested causes).
         getPrivacyContext(sessionHandle);
-        const safe = ['PRIVATE_PPV2_REGISTRATION_MISMATCH', 'PRIVATE_SUBMISSION_UNRESOLVED', 'PRIVATE_PPV2_RELAY_UNRESOLVED',
+        const safe = ['PRIVATE_PPV2_RELAY_REUSE_REFUSED', 'PRIVATE_PPV2_NOTE_UNAVAILABLE', 'PRIVATE_PPV2_ALLOWANCE_REQUIRED', 'PRIVATE_PPV2_REGISTRATION_MISMATCH', 'PRIVATE_SUBMISSION_UNRESOLVED', 'PRIVATE_PPV2_RELAY_UNRESOLVED',
           'PRIVATE_PPV2_RELAY_REFUSED', 'PRIVATE_PPV2_RECONCILIATION_REFUSED', 'PRIVATE_RECONCILIATION_UNAVAILABLE',
           'PRIVATE_PROFILE_MOVED', 'PRIVATE_PROFILE_STORE_MISSING', 'PRIVATE_PROFILE_INVENTORY_INVALID', 'PRIVATE_PROFILE_INVENTORY_MISSING'];
         if (safe.includes(error?.code)) throw privacyError(error.code, 'Controlled PPv2 operation refused');
@@ -288,6 +292,14 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
         submitTokenWithdrawal: submitWithdrawal,
         prepareTokenWithdrawal: (args) => call('prepareTokenWithdrawal', { ...args }),
       } : {}),
+      archiveRelayHistory: async (policy) => {
+        const result = await exclusive(() => relayReconciliation().archiveResolved(policy));
+        close(); return Object.freeze({ ...result, sessionClosed: true });
+      },
+      archivePublicHistory: async (policy) => {
+        const result = await exclusive(() => publicNetwork().archiveResolvedSubmissions(policy));
+        close(); return Object.freeze({ ...result, sessionClosed: true });
+      },
       observeRelayAttempt: (id, options) => exclusive(() => relayReconciliation().observe(id, options)),
       resolveRelayAttempt: (id, review) => exclusive(() => relayReconciliation().resolve(id, review)),
       submitPublicOperation: async (prepared, options) => {
@@ -298,7 +310,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
           const exiting = ['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(prepared?.kind);
           const checkRelay = async () => {
             if (exiting) {
-              if ((await relayJournal.list()).some((r) => r.commitment === prepared.commitment && r.resolution)) throw unavailable();
+              await relayJournal.assertCanExit(prepared.commitment);
             } else {
               if ((await relayJournal.list()).some((r) => r.resolution)) await relayReconciliation().refreshResolved();
               await relayJournal.assertCanSubmit();

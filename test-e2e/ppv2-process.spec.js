@@ -68,3 +68,48 @@ test('PPv2 proves from ASAR in a managed utility process; cancellation, crash an
   expect(report.recovered.result.verified).toBe(true);
   if (report.packaged) expect(report.hostFromAsar).toBe(true);
 });
+
+test('PPv2 runtime identity is checked in main and again inside the prover before SDK execution', async ({ electronApp }, testInfo) => {
+  test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the reviewed packed runtime');
+  test.setTimeout(120000);
+  const report = await electronApp.evaluate(async ({ app }, artifact) => {
+    const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
+    const fs = req('original-fs'), virtualFs = req('fs'), path = req('path');
+    const runtime = req('./src/main/wallet/ppv2-runtime');
+    const archive = runtime.verifyPPv2Runtime(artifact);
+    const directory = fs.mkdtempSync(path.join(app.getPath('userData'), 'ppv2-runtime-integrity-'));
+    const copy = path.join(directory, 'runtime.asar'); fs.copyFileSync(archive, copy);
+    const loaded = runtime.loadPPv2Runtime(copy);
+    const { createPrivacyScope } = req('./src/main/networks/privacy-context');
+    const scope = createPrivacyScope({ profileId: 'integrity-fixture', signal: new AbortController().signal });
+    const handle = scope.getContext({ kind: 'private-account', principal: 'synthetic', protocol: 'ppv2-fixture',
+      deployment: 'fixture', chainId: 11155111, role: 'prover' });
+    const { ARTIFACTS, NATIVE } = req('./src/main/wallet/ppv2-deposit-policy');
+    const artifacts = {};
+    for (const entry of ARTIFACTS) {
+      const bytes = virtualFs.readFileSync(`${archive}/artifacts/${entry.name}`);
+      artifacts[entry.kind] = Buffer.alloc(bytes.length); bytes.copy(artifacts[entry.kind]);
+    }
+    const run = req('./src/main/wallet/privacy-process').runPrivacyProcess;
+    let progressed;
+    const args = { handle, filename: req.resolve('./src/main/wallet/ppv2-deposit-job'),
+      input: { sdkEntry: loaded.sdkEntry, artifacts, witness: { tokenId: NATIVE, value: '0x64', context: '0x3', noteAddressHash: '0x1', depositSecret: '0x2' } },
+      onProgress: () => { progressed = true; }, validateResult: (value) => value?.verified === true };
+    try {
+      const healthy = await run(args);
+      const fd = fs.openSync(copy, 'r+'), last = Buffer.alloc(1), position = fs.fstatSync(fd).size - 1;
+      try { fs.readSync(fd, last, 0, 1, position); last[0] ^= 1; fs.writeSync(fd, last, 0, 1, position); }
+      finally { fs.closeSync(fd); }
+      const refusal = (task) => { try { task(); return null; } catch (error) { return error.code; } };
+      const main = refusal(() => runtime.loadPPv2Runtime(copy));
+      const staleCandidate = refusal(() => runtime.assertPPv2Candidate(loaded.candidate));
+      progressed = false;
+      const child = await run(args).then(() => null, (error) => error.code);
+      return { healthy: healthy.result.verified, main, staleCandidate, child, progressed, packaged: app.isPackaged,
+        liveTransactionSubmitted: false, archiveSha256: req('./src/main/wallet/ppv2-runtime-manifest').sha256 };
+    } finally { scope.close(); }
+  }, artifact);
+  await testInfo.attach('ppv2-runtime-integrity-report', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
+  expect(report).toMatchObject({ healthy: true, main: 'PRIVATE_PPV2_RUNTIME_INVALID', staleCandidate: 'PRIVATE_PPV2_RUNTIME_INVALID',
+    child: 'PRIVATE_PROCESS_FAILED', progressed: false, liveTransactionSubmitted: false });
+});

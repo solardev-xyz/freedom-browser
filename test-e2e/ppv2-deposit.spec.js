@@ -6,6 +6,8 @@ test('real Kohaku session prepares a verified native deposit through the utility
   test.setTimeout(120000);
   const report = await electronApp.evaluate(async ({ app }, artifact) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
+    const runtimeLoader = req('./src/main/wallet/ppv2-runtime');
+    artifact = runtimeLoader.verifyPPv2Runtime(artifact);
     const fs = req('fs'), path = req('path');
     const { Interface } = req('ethers');
     const vault = req('./src/main/identity/vault');
@@ -79,19 +81,21 @@ test('real Kohaku session prepares a verified native deposit through the utility
     try {
       await vault.importVault(directory, 'fixture-password', 'test test test test test test test test test test test junk');
       await vault.unlockVault(directory, 'fixture-password', 0);
-      const { PPV2_CANDIDATE, openPPv2Session } = req('./src/main/wallet/ppv2-session');
-      const source = JSON.parse(fs.readFileSync(`${artifact}/candidate.json`, 'utf8'));
-      if (source.sdk !== PPV2_CANDIDATE.sdk || source.kohaku !== PPV2_CANDIDATE.kohaku) throw new Error('Candidate mismatch');
-      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin,
-        inspectRegistration: async (...args) => (registrationKeys = await req(`${artifact}/plugin.cjs`).inspectRegistration(...args)),
-        inspectChange: req(`${artifact}/plugin.cjs`).inspectChange };
+      const { openPPv2Session } = req('./src/main/wallet/ppv2-session');
+      const { candidate } = runtimeLoader.loadPPv2Runtime(artifact);
       let cancelOnProof = false, progressCount = 0;
       const proving = { sdkEntry: `${artifact}/sdk.cjs`, directory: artifactDir,
         onProgress: () => { progressCount += 1; if (cancelOnProof) vault.lockVault(); } };
       const open = () => openPPv2Session({ candidate, configuration: config, proving });
       session = await open();
       const registration = await session.prepareRegisterKeystore();
-      registered = true; // Controlled chain now exposes this account's exact public keys.
+      const register = new Interface(req('./src/main/wallet/ppv2-public-operations').REGISTRATION_ABI);
+      const auth = register.parseTransaction({ data: registration.txs[0].data });
+      const viewing = register.parseTransaction({ data: registration.txs[1].data });
+      registrationKeys = { authDigest: `0x${auth.args[0].toString(16).padStart(64, '0')}`,
+        nullifyingKeyHash: `0x${auth.args[1].toString(16).padStart(64, '0')}`, viewingKey: viewing.args[0] };
+      registered = true; // Controlled chain exposes keys from the prepared registration.
+
       const start = performance.now();
       const deposit = await session.prepareNativeDeposit({ amount: 10000n, maxFee: 100n });
       const elapsedMs = Math.round(performance.now() - start);

@@ -6,6 +6,8 @@ test('PPv2 token reset, approval, deposit and restart recovery', async ({ electr
   test.setTimeout(120000);
   const exercise = async ({ app }, { artifact, phase }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
+    const runtimeLoader = req('./src/main/wallet/ppv2-runtime');
+    artifact = runtimeLoader.verifyPPv2Runtime(artifact);
     const fs = req('fs'), path = req('path');
     const { Interface, Wallet, Transaction } = req('ethers');
     const vault = req('./src/main/identity/vault'), settings = req('./src/main/settings-store');
@@ -125,9 +127,8 @@ test('PPv2 token reset, approval, deposit and restart recovery', async ({ electr
     try {
       if (!phase) await vault.importVault(directory, 'fixture-password', 'test test test test test test test test test test test junk');
       await vault.unlockVault(directory, 'fixture-password', 0);
-      const { PPV2_CANDIDATE, openPPv2Session } = req('./src/main/wallet/ppv2-session');
-      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin,
-        inspectRegistration: req(`${artifact}/plugin.cjs`).inspectRegistration, inspectChange: req(`${artifact}/plugin.cjs`).inspectChange };
+      const { openPPv2Session } = req('./src/main/wallet/ppv2-session');
+      const { candidate } = runtimeLoader.loadPPv2Runtime(artifact);
       const open = () => openPPv2Session({ candidate, configuration: config,
         proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];
@@ -153,9 +154,12 @@ test('PPv2 token reset, approval, deposit and restart recovery', async ({ electr
         const second=await session.submitPublicOperation(await session.prepareRegisterKeystore(),options); await resolve(second.hash);
         stage='reset';
         const reset=await session.prepareTokenApproval(intent);
-        const refused=await session.prepareTokenDeposit(intent).then(()=>false,()=>true);
+        const beforeRefusal = JSON.stringify((await session.listPublicSubmissions()).map(r=>({hash:r.hash,nonce:r.nonce,state:r.state,intent:r.intent}))), sendsBeforeRefusal = sends.length;
+        const depositRefusalCode=await session.prepareTokenDeposit(intent).then(()=>null,e=>e.code);
+        const refused = depositRefusalCode === 'PRIVATE_PPV2_ALLOWANCE_REQUIRED' && sends.length === sendsBeforeRefusal &&
+          JSON.stringify((await session.listPublicSubmissions()).map(r=>({hash:r.hash,nonce:r.nonce,state:r.state,intent:r.intent}))) === beforeRefusal;
         const outcome=await uncertain(reset);
-        return {kind:reset.kind,approvalAmount:reset.approvalAmount.toString(),depositRefused:refused,outcome,
+        return {kind:reset.kind,approvalAmount:reset.approvalAmount.toString(),depositRefused:refused,depositRefusalCode,outcome,
           productionGate,packaged:app.isPackaged};
       }
       stage='restored reservation';

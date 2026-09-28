@@ -12,6 +12,7 @@ function createPPv2TransactProver({ handle, artifactHandle, sdkEntry, proverEntr
   if (a.subject.role !== 'prover' || b.subject.role !== 'artifacts' || a.profileId !== b.profileId || a.generation !== b.generation ||
       JSON.stringify(sa) !== JSON.stringify(sb) || !path.isAbsolute(sdkEntry) || !path.isAbsolute(proverEntry) ||
       ARTIFACTS.some((e) => manifest?.transact_1x1?.[`${e.kind}Sha256`]?.replace(/^0x/, '').toLowerCase() !== e.sha256)) throw fail();
+  require('./ppv2-runtime').assertPPv2RuntimeEntries({ sdkEntry, proverEntry });
   const loader = createPrivacyArtifactLoader({ handle: artifactHandle, directory, manifest: ARTIFACTS });
   let current;
   const service = Object.freeze({

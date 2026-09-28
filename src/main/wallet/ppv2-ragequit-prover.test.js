@@ -1,3 +1,4 @@
+jest.mock('./ppv2-runtime', () => ({ assertPPv2Candidate: jest.fn(), assertPPv2RuntimeEntries: jest.fn() }));
 jest.mock('./privacy-process', () => ({ runPrivacyProcess: (args) => mockRun(args) }));
 jest.mock('./privacy-artifacts', () => ({ createPrivacyArtifactLoader: () => ({ load: mockLoad }) }));
 const { Interface } = require('ethers');

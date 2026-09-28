@@ -20,6 +20,7 @@ function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, 
       JSON.stringify(subject) !== JSON.stringify(artifactSubject) || !path.isAbsolute(sdkEntry) ||
       ARTIFACTS.some((entry) => manifest?.deposit?.[`${entry.kind}Sha256`]?.replace(/^0x/, '').toLowerCase() !== entry.sha256) ||
       (onProgress !== undefined && typeof onProgress !== 'function') || typeof inspectNote !== 'function') throw fail();
+  require('./ppv2-runtime').assertPPv2RuntimeEntries({ sdkEntry });
   const loader = createPrivacyArtifactLoader({ handle: artifactHandle, directory, manifest: ARTIFACTS });
   let operation = null;
   const unsupported = () => { getPrivacyContext(handle); throw fail(); };

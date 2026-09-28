@@ -9,6 +9,7 @@ exports.run = async function run(input, { progress }) {
     if (!(bytes instanceof Uint8Array) || bytes.length !== entry.size ||
         createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw new Error('Invalid exit artifact');
   }
+  require('./ppv2-runtime').assertPPv2RuntimeEntries(input);
   const sdk = require(input.sdkEntry), prover = require(input.proverEntry);
   const artifact = (name, kind) => {
     if (name !== 'ragequit') throw new Error('Unsupported exit circuit');

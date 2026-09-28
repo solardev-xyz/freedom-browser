@@ -152,7 +152,9 @@ function createSubmissionReconciler({ rpc, journal, principal, assertActive }) {
     assertActive();
     return journal.resolve(after.hash, after.revision, minimumConfirmations);
   }
-  return Object.freeze({ observe, resolve, refreshResolved });
+  const archiveResolved = require('./privacy-journal-archiver').createJournalArchiver({ journal, kind: 'public', assertActive, lifetime: rpc.signal,
+    withRpc: (_record, _signal, task) => task(rpc) });
+  return Object.freeze({ observe, resolve, refreshResolved, archiveResolved });
 }
 
 module.exports = { createSubmissionReconciler };

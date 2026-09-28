@@ -1,3 +1,9 @@
+jest.mock('./ppv2-deposit-prover', () => ({ createPPv2DepositProver: () => ({ service: {} }) }));
+jest.mock('./ppv2-ragequit-prover', () => ({ createPPv2RagequitProver: () => ({ service: {}, prepare: (...args) => mockExitPrepare(...args) }) }));
+const mockExitPrepare = jest.fn();
+jest.mock('./privacy-session', () => { const actual = jest.requireActual('./privacy-session');
+  return { ...actual, openPrivacySession: jest.fn(actual.openPrivacySession) }; });
+jest.mock('./ppv2-runtime', () => ({ assertPPv2Candidate: jest.fn(), assertPPv2RuntimeEntries: jest.fn() }));
 jest.mock('../identity/vault', () => ({ getMnemonic: () => 'test test test test test test test test test test test junk',
   getSessionSignal: () => mockVault.signal }));
 jest.mock('../profile-resolver', () => ({ getActiveProfile: () => mockProfile }));
@@ -207,4 +213,56 @@ test('missing initialized storage reports the recovery-specific error and releas
   await expect(openPPv2Session({ candidate, configuration: config })).rejects.toMatchObject({ code: 'PRIVATE_PROFILE_STORE_MISSING' });
   fs.renameSync(`${directory}.preserved`, directory);
   const restored = await openPPv2Session({ candidate, configuration: config }); restored.close();
+});
+
+test('runtime rejection precedes privacy lifetime creation and all external side effects', async () => {
+  const runtime = require('./ppv2-runtime');
+  runtime.assertPPv2Candidate.mockImplementationOnce(() => { throw Object.assign(new Error('Unreviewed runtime'), { code: 'PRIVATE_PPV2_RUNTIME_INVALID' }); });
+  const privacy = require('./privacy-session').openPrivacySession; privacy.mockClear();
+  const endpoint = jest.spyOn(require('../tor-manager'), 'getWalletSocksEndpoint');
+  const storage = jest.spyOn(require('./ppv2-storage'), 'createPPv2Storage');
+  try {
+    await expect(openPPv2Session({ candidate, configuration: config })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_RUNTIME_INVALID' });
+    expect(privacy).not.toHaveBeenCalled(); expect(endpoint).not.toHaveBeenCalled(); expect(storage).not.toHaveBeenCalled();
+    expect(candidate.createPlugin).not.toHaveBeenCalled(); expect(mockCall).not.toHaveBeenCalled();
+  } finally { endpoint.mockRestore(); storage.mockRestore(); }
+});
+
+test('archived relay commitment cannot reach emergency-exit proving or public simulation even if the SDK reports it active', async () => {
+  const { relayFixture, word } = require('../../../test/helpers/ppv2-relay-fixture');
+  const { validateRelay } = require('./ppv2-relay-policy');
+  const { attempt, settlement } = validateRelay(relayFixture());
+  const journal = getPPv2RelayJournal(handle('storage'), 0);
+  await journal.begin(attempt, settlement);
+  await journal.observe(attempt.id, { status: 'included', transactionHash: word(71), blockHash: word(72),
+    blockNumber: 16, trust: 'unverified-rpc' }, 0);
+  const old = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(old);
+  try { await journal.resolve(attempt.id, 1); } finally { clock.mockRestore(); }
+  await journal.archiveResolved([{ id: attempt.id, revision: 2 }], [{ blockNumber: 20, blockHash: word(73) }]);
+  const notes = jest.fn(async () => [{ commitment: attempt.commitment, value: 10000n, asset: { __type: 'native' }, status: 'active' }]);
+  candidate.createPlugin.mockImplementation(async () => ({ ...snapshot(), notes }));
+  const session = await openPPv2Session({ candidate, configuration: config,
+    proving: { sdkEntry: '/reviewed/sdk.cjs', ragequitProverEntry: '/reviewed/serial-prover.cjs' } });
+  mockCall.mockClear(); mockExitPrepare.mockClear();
+  await expect(session.prepareNativeRagequit(attempt.commitment)).rejects.toMatchObject({ code: 'PRIVATE_PPV2_RELAY_REUSE_REFUSED' });
+  await expect(session.submitPublicOperation({ kind: 'ppv2-native-ragequit', commitment: attempt.commitment }, {}))
+    .rejects.toMatchObject({ code: 'PRIVATE_PPV2_RELAY_REUSE_REFUSED' });
+  expect(notes).not.toHaveBeenCalled(); expect(mockExitPrepare).not.toHaveBeenCalled(); expect(mockCall).not.toHaveBeenCalled();
+  session.close();
+});
+
+test('successful reviewed public archival closes its session and frees the account lease; a refused archival does not', async () => {
+  const network = jest.spyOn(require('./private-transaction-network'), 'getPrivateTransactionNetwork');
+  const archive = jest.fn().mockRejectedValueOnce(Object.assign(new Error('Not eligible'), { code: 'PRIVATE_HISTORY_ARCHIVE_REFUSED' }))
+    .mockResolvedValueOnce({ archived: 1, retained: 1, capacity: 1024, stopsRevalidation: true, evidence: 'unverified-rpc' });
+  network.mockReturnValue({ archiveResolvedSubmissions: archive });
+  try {
+    const session = await openPPv2Session({ candidate, configuration: config });
+    await expect(session.archivePublicHistory({})).rejects.toMatchObject({ code: 'PRIVATE_HISTORY_ARCHIVE_REFUSED' });
+    expect(await session.notes()).toEqual([]);
+    expect(await session.archivePublicHistory({})).toMatchObject({ archived: 1, sessionClosed: true });
+    await expect(session.notes()).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
+    const reopened = await openPPv2Session({ candidate, configuration: config }); reopened.close();
+  } finally { network.mockRestore(); }
 });

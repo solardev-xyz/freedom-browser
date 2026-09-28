@@ -1,3 +1,4 @@
+jest.mock('./ppv2-runtime', () => ({ assertPPv2Candidate: jest.fn(), assertPPv2RuntimeEntries: jest.fn() }));
 jest.mock('./privacy-process', () => ({ runPrivacyProcess: (input) => mockRun(input) }));
 jest.mock('./privacy-artifacts', () => ({ createPrivacyArtifactLoader: () => ({ load: (name) => mockLoad(name) }) }));
 const { Interface, AbiCoder, keccak256 } = require('ethers');

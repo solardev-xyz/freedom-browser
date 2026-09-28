@@ -124,7 +124,17 @@ function createPPv2RelayReconciliation({ handle, journal, getOperationHandle }) 
       result.observation ? result.scan : settled(result) ? null : undefined);
   }
   const observe = (id, options) => observeRecord(id, options);
-  return Object.freeze({ observe,
+  const archiveResolved = require('./privacy-journal-archiver').createJournalArchiver({ journal, kind: 'relay', lifetime: context.signal,
+    assertActive: () => getPrivacyContext(handle),
+    withRpc: async (record, signal, task) => {
+      const operationHandle = getOperationHandle(record.id), operation = getPrivacyContext(operationHandle);
+      if (operation.profileId !== context.profileId || operation.generation !== context.generation ||
+          operation.subject.operation !== record.id || Object.keys(context.subject).some((key) =>
+            key !== 'operation' && operation.subject[key] !== context.subject[key])) throw fail();
+      const rpc = createPrivateRpc(operationHandle, 'protocol-rpc', { signal });
+      try { return await task(rpc); } finally { rpc.release?.(); }
+    } });
+  return Object.freeze({ observe, archiveResolved,
     async refreshResolved(signal) {
       const records = (await journal.list()).filter((r) => r.resolution);
       for (let offset = 0; offset < records.length; offset += 4) {

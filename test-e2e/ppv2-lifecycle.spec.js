@@ -6,6 +6,8 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
   test.setTimeout(120000);
   const exercise = async ({ app }, { artifact, restart, exit }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
+    const runtimeLoader = req('./src/main/wallet/ppv2-runtime');
+    artifact = runtimeLoader.verifyPPv2Runtime(artifact);
     const fs = req('fs'), path = req('path');
     const { Interface, Wallet, Transaction } = req('ethers');
     const vault = req('./src/main/identity/vault'), settings = req('./src/main/settings-store');
@@ -110,9 +112,8 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
     try {
       if (!restart) await vault.importVault(directory, 'fixture-password', 'test test test test test test test test test test test junk');
       await vault.unlockVault(directory, 'fixture-password', 0);
-      const { PPV2_CANDIDATE, openPPv2Session } = req('./src/main/wallet/ppv2-session');
-      const candidate = { ...PPV2_CANDIDATE, createPlugin: req(`${artifact}/plugin.cjs`).createPPv2Plugin,
-        inspectRegistration: req(`${artifact}/plugin.cjs`).inspectRegistration, inspectChange: req(`${artifact}/plugin.cjs`).inspectChange };
+      const { openPPv2Session } = req('./src/main/wallet/ppv2-session');
+      const { candidate } = runtimeLoader.loadPPv2Runtime(artifact);
       const open = () => openPPv2Session({ candidate, configuration: config,
         proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];

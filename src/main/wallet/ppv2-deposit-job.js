@@ -11,6 +11,7 @@ exports.run = async function run(input, { progress }) {
     if (!(bytes instanceof Uint8Array) || bytes.length !== entry.size ||
         createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw new Error('Invalid deposit artifacts');
   }
+  require('./ppv2-runtime').assertPPv2RuntimeEntries(input);
   const sdk = require(input.sdkEntry);
   const groth16 = new sdk.Groth16Prover();
   const artifact = (name, kind) => {

@@ -119,6 +119,11 @@ for (const [module, methods] of [['http', ['request', 'get']], ['https', ['reque
   for (const method of methods) require(module)[method] = refuse;
 }
 syncBuiltinESMExports();
+// Raw-source derivation/rotation probe only; production sessions require a
+// loader-issued candidate. Electron qualification exercises that real loader.
+const runtimePath = require.resolve('../src/main/wallet/ppv2-runtime');
+require(runtimePath);
+require.cache[runtimePath].exports = { assertPPv2Candidate: () => {} };
 const { PPV2_CANDIDATE, openPPv2Session } = require('../src/main/wallet/ppv2-session');
 assert.equal(PPV2_CANDIDATE.sdk, previous.sdkRevision);
 assert.equal(PPV2_CANDIDATE.kohaku, previous.kohakuRevision);
@@ -231,7 +236,7 @@ async function main() {
   registered = false; // A previously persisted registration cannot reset to index zero.
   await assert.rejects(openPPv2Session({ candidate, configuration: config }), { code: 'PRIVATE_PPV2_UNAVAILABLE' });
   assert.equal(ambientAttempts, 0);
-  const report = { candidate: PPV2_CANDIDATE, compatibilityPatchSha256: previous.compatibilityPatchSha256,
+  const report = { runtimeIntegrityTested: false, rawSourceProbe: true, candidate: PPV2_CANDIDATE, compatibilityPatchSha256: previous.compatibilityPatchSha256,
     pluginSha256: digest(fs.readFileSync(path.join(directory, 'plugin.cjs'))), node: process.version,
     realKohakuFactory: true, realSdk: true, syntheticMnemonic: true, independentDerivation: 'viem/scure BIP32',
     registrationCallsPrepared: registration.txs.length, rpcWindowsBounded: true, failureAttempts: attempts,

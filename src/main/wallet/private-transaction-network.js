@@ -122,7 +122,8 @@ function getPrivateTransactionNetwork(handle) {
   const client = Object.freeze({ request, getFeeQuote, broadcastRawTransaction, assertSigner, assertActive, signal: rpc.signal,
     assertCanSubmit, listSubmissions: () => journal().list(),
     reconcileSubmission: (hash) => reconciliation().observe(hash),
-    resolveSubmission: (hash, policy) => reconciliation().resolve(hash, policy) });
+    resolveSubmission: (hash, policy) => reconciliation().resolve(hash, policy),
+    archiveResolvedSubmissions: (policy) => reconciliation().archiveResolved(policy) });
   clients.set(handle, client);
   return client;
 }

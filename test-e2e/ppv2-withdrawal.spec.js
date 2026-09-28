@@ -7,6 +7,8 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
   test.setTimeout(240000);
   const exercise = async ({ app }, { artifact, restart, exit, second, checkpoint, tokenMode, cancel }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
+    const runtimeLoader = req('./src/main/wallet/ppv2-runtime');
+    artifact = runtimeLoader.verifyPPv2Runtime(artifact);
     const fs = req('fs'), path = req('path');
     const { Interface, Wallet, Transaction } = req('ethers');
     const vault = req('./src/main/identity/vault'), settings = req('./src/main/settings-store');
@@ -184,11 +186,15 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
     try {
       if (!restart) await vault.importVault(directory, 'fixture-password', 'test test test test test test test test test test test junk');
       await vault.unlockVault(directory, 'fixture-password', 0);
-      const { PPV2_CANDIDATE, openPPv2Session } = req('./src/main/wallet/ppv2-session');
+      const { openPPv2Session } = req('./src/main/wallet/ppv2-session');
       const adapter = req(`${artifact}/plugin.cjs`);
-      const candidate = { ...PPV2_CANDIDATE,
-        createPlugin: async (host, params) => (fixturePlugin = await adapter.createPPv2Plugin(host, params)),
-        createBroadcaster: adapter.createPPv2Broadcaster, inspectChange: adapter.inspectChange, inspectRegistration: adapter.inspectRegistration };
+      // Main-only access to synthetic note labels for the controlled ASP.
+      const createPlugin = adapter.createPPv2Plugin;
+      req.cache[req.resolve(`${artifact}/plugin.cjs`)].exports = { ...adapter,
+        createPPv2Plugin: async (...args) => (fixturePlugin = await createPlugin(...args)) };
+      // This evaluated fixture owns main and instruments exports solely for
+      // synthetic ASP state; the loader itself and its digest check are real.
+      const { candidate } = runtimeLoader.loadPPv2Runtime(artifact);
       const open = () => openPPv2Session({ candidate, configuration: config,
         proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, transactProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];
@@ -218,8 +224,11 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
           // The compatibility fix must demote an active note on an empty set.
           aspLeaves=[]; head+=3; session.close(); session=await open();
           const emptySet=await session.notes();
-          const emptySetSpendBlocked=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,
-            recipient:`0x${'77'.repeat(20)}`}).then(()=>false,()=>true);
+          const emptyBefore = JSON.stringify(await session.listRelayAttempts()), emptySends = relaySends;
+          const emptySetSpendCode=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,
+            recipient:`0x${'77'.repeat(20)}`}).then(()=>null,e=>e.code);
+          const emptySetSpendBlocked = emptySetSpendCode === 'PRIVATE_PPV2_NOTE_UNAVAILABLE' && relaySends === emptySends &&
+            JSON.stringify(await session.listRelayAttempts()) === emptyBefore;
           aspLeaves=['0x123']; head+=3; session.close(); session=await open(); const revoked=await session.notes();
           aspLeaves=approvedLeaves; head+=3; session.close(); session=await open(); await session.notes();
           stage='withdrawal quote authentication'; invalidQuote=true; errorCodes.length=0;
@@ -243,7 +252,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
           const blocked=await session.submitPublicOperation({},{}).then(()=>null,e=>e.code);
           save(saved.commitment,saved.depositHash);
           return {pending:pending[0].status,mismatched:mismatched[0].status,approved:approved[0].status,revoked:revoked[0].status,
-            emptySetStatus:emptySet[0].status,emptySetSpendBlocked,invalidQuoteBlocked,invalidQuoteCode,shortQuoteBlocked,shortQuoteCode,shortQuoteElapsedMs,shortQuoteExpiration,shortQuoteRejectedAt,
+            emptySetStatus:emptySet[0].status,emptySetSpendBlocked,emptySetSpendCode,invalidQuoteBlocked,invalidQuoteCode,shortQuoteBlocked,shortQuoteCode,shortQuoteElapsedMs,shortQuoteExpiration,shortQuoteRejectedAt,
             outcome,blocked,relaySends,proofVerified:prepared.proofVerified,quoteSignatureVerified:prepared.quoteSignatureVerified};
         }
         stage='withdrawal recovery';
@@ -278,7 +287,11 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
         const recovered=await session.notes(); const change=recovered.find(n=>n.status==='active');
         if(!change)throw new Error('Change not recovered');
         reorg=true;
-        const reorgBlocked=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:change.commitment,amount:1000n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`}).then(()=>false,()=>true);
+        const reorgSends = relaySends;
+        const reorgCode=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:change.commitment,amount:1000n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`}).then(()=>null,e=>e.code);
+        const reorgRecords = await session.listRelayAttempts();
+        const reorgBlocked = reorgCode === 'PRIVATE_PPV2_RELAY_UNRESOLVED' && relaySends === reorgSends &&
+          reorgRecords.length === attempts.length && reorgRecords[0].resolution === null;
         reorg=false; await session.observeRelayAttempt(attempts[0].id); await session.resolveRelayAttempt(attempts[0].id,async()=>({allowNextOperation:true,acceptedEvidence:'unverified-rpc'}));
         stage='second spend';
         const prepared=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:change.commitment,amount:1000n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`});
@@ -288,7 +301,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
         await session.resolveRelayAttempt(last.id,async()=>({allowNextOperation:true,acceptedEvidence:'unverified-rpc'}));
         const after=await session.notes();
         return {checkpointPersisted:!!resumed.scan && resumed.observation.status==='unknown',
-          observation:observation.observation.status,trust:observation.observation.trust,recoveredChange:change.value.toString(),reorgBlocked,
+          observation:observation.observation.status,trust:observation.observation.trust,recoveredChange:change.value.toString(),reorgBlocked,reorgCode,
           secondHash:!!result.txHash,remaining:after.filter(n=>n.status==='active').map(n=>n.value.toString()),
           resolved:(await session.listRelayAttempts()).filter(r=>r.resolution).length,relaySends};
       }

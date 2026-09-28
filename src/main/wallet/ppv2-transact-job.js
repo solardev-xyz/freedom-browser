@@ -8,6 +8,7 @@ exports.run = async function run(input, { progress }) {
     const bytes = input.artifacts[e.kind];
     if (!(bytes instanceof Uint8Array) || bytes.length !== e.size || createHash('sha256').update(bytes).digest('hex') !== e.sha256) throw new Error('Invalid artifact');
   }
+  require('./ppv2-runtime').assertPPv2RuntimeEntries(input);
   const sdk = require(input.sdkEntry), prover = require(input.proverEntry), w = input.witness;
   const hashService = await sdk.PoseidonHashService.create();
   const notes = new sdk.NoteComputationService({ hashService, cryptoService: new sdk.CryptoService() });

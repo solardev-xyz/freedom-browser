@@ -18,6 +18,7 @@ function createPPv2RagequitProver({ handle, artifactHandle, sdkEntry, proverEntr
       JSON.stringify(subject) !== JSON.stringify(artifactSubject) || !path.isAbsolute(sdkEntry) || !path.isAbsolute(proverEntry) ||
       ARTIFACTS.some((entry) => manifest?.ragequit?.[`${entry.kind}Sha256`]?.replace(/^0x/, '').toLowerCase() !== entry.sha256) ||
       (onProgress !== undefined && typeof onProgress !== 'function')) throw fail();
+  require('./ppv2-runtime').assertPPv2RuntimeEntries({ sdkEntry, proverEntry });
   const loader = createPrivacyArtifactLoader({ handle: artifactHandle, directory, manifest: ARTIFACTS });
   let operation = null;
   const service = Object.freeze({

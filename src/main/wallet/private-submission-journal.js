@@ -12,6 +12,7 @@ const { validIntent } = require('./private-transaction-intent');
 const journals = new WeakMap();
 const HASH = /^0x[0-9a-f]{64}$/;
 const KEY = 'submissions-v1';
+const retention = require('./privacy-journal-retention');
 const unresolved = (records) => records.some((record) => !record.resolution);
 function snapshot(record) {
   if (record.intent) Object.freeze(record.intent);
@@ -39,10 +40,10 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
   const storage = createPrivacyStorage({ handle, directory, key, profileGuard });
   const invalid = () => privacyError('PRIVATE_JOURNAL_INVALID', 'Submission state could not be validated');
   function decode(value) {
-    if (value === null) return [];
+    if (value === null) return { records: [], archive: [] };
     try {
       const data = JSON.parse(value);
-      if (data.version !== 1 || !Array.isArray(data.records) || data.records.length > 64) throw invalid();
+      if (![1, 2].includes(data.version) || !Array.isArray(data.records) || data.records.length > 64) throw invalid();
       const hashes = new Set();
       for (const record of data.records) {
         if (!HASH.test(record.hash) || hashes.has(record.hash) ||
@@ -59,37 +60,56 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
             !Number.isSafeInteger(record.resolution.reviewedAt) || record.resolution.reviewedAt < 0)) throw invalid();
         hashes.add(record.hash);
       }
-      return data.records;
+      const archive = data.version === 1 ? [] : data.archive;
+      if (!retention.validArchive(archive, 'public') ||
+          new Set([...data.records, ...archive].map((r) => r.hash)).size !== data.records.length + archive.length ||
+          archive.some((r, i) => i > 0 && r.nonce <= archive[i - 1].nonce) ||
+          data.records.some((r) => archive.length && r.nonce <= archive.at(-1).nonce)) throw invalid();
+      return { records: data.records, archive };
     } catch { throw invalid(); }
   }
   async function list() {
     getPrivacyContext(handle);
     const value = await storage.get(KEY);
     getPrivacyContext(handle);
-    return decode(value).map(snapshot);
+    return decode(value).records.map(snapshot);
   }
   function modify(change) {
-    return storage.update(KEY, (value) => JSON.stringify({ version: 1, records: change(decode(value)) }));
+    return storage.update(KEY, (value) => {
+      const state = decode(value);
+      return JSON.stringify({ version: 2, records: change(state.records, state.archive), archive: state.archive });
+    });
   }
   async function assertCanSubmit() {
     if (unresolved(await list())) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
   }
   return Object.freeze({
     list, assertCanSubmit,
-    async has(hash) { return (await list()).some((record) => record.hash === hash?.toLowerCase()); },
+    async listArchive() { const state = decode(await storage.get(KEY)); getPrivacyContext(handle); return structuredClone(state.archive); },
+    async archiveResolved(expected, anchors) {
+      await storage.update(KEY, (value) => {
+        const state = decode(value);
+        return JSON.stringify({ version: 2, ...retention.archivePrefix(state.records, state.archive, expected, anchors, 'public') });
+      });
+      getPrivacyContext(handle);
+    },
+    async has(hash) {
+      const state = decode(await storage.get(KEY)); getPrivacyContext(handle);
+      return [...state.records, ...state.archive].some((r) => r.hash === hash?.toLowerCase());
+    },
     async begin(hash, nonce, intent) {
       if (!HASH.test(hash) || !Number.isSafeInteger(nonce) || nonce < 0 ||
           (intent !== undefined && !validIntent(intent))) throw invalid();
       const metadata = intent === undefined ? {} : { intent: { ...intent } };
-      await modify((records) => {
-        if (records.some((record) => record.hash === hash)) {
+      await modify((records, archive) => {
+        if ([...records, ...archive].some((record) => record.hash === hash)) {
           throw Object.assign(privacyError('PRIVATE_BROADCAST_ALREADY_ATTEMPTED', 'Query the existing submission before any further action'), { transactionHash: hash });
         }
         // Conservatively serialize all sends for this account. Unverified RPC
         // receipts alone cannot clear the gate; an explicit review must.
         if (unresolved(records)) throw privacyError('PRIVATE_SUBMISSION_UNRESOLVED', 'Reconcile the recorded submission before creating another transaction');
         if (records.length >= 64) throw privacyError('PRIVATE_TRANSACTION_LIMIT', 'Submission history capacity reached');
-        if (records.some((record) => record.nonce >= nonce)) throw privacyError('PRIVATE_NONCE_REUSE_REFUSED', 'Nonce must advance beyond recorded submissions');
+        if ([...records, ...archive].some((record) => record.nonce >= nonce)) throw privacyError('PRIVATE_NONCE_REUSE_REFUSED', 'Nonce must advance beyond recorded submissions');
         return [...records, { hash, nonce, state: 'attempted', attemptedAt: Date.now(), ...metadata }];
       });
     },
