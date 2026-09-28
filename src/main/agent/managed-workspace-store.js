@@ -132,7 +132,8 @@ class AgentManagedWorkspaceStore {
     this.db = new this.Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
-    this.#migrate();
+    try { this.db.transaction(() => this.#migrate())(); }
+    catch (error) { this.close(); throw error; }
     return this.db;
   }
 

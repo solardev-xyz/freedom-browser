@@ -27,6 +27,14 @@ class FakeBetterSqlite3NodeOperationsDatabase {
     return null;
   }
 
+  transaction(fn) {
+    return (...args) => {
+      const snapshot = structuredClone(this.state);
+      try { return fn(...args); }
+      catch (error) { Object.assign(this.state, snapshot); throw error; }
+    };
+  }
+
   exec() {}
 
   close() {}

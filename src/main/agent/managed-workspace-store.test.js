@@ -85,6 +85,11 @@ describe('AgentManagedWorkspaceStore', () => {
     const { DatabaseSync } = require('node:sqlite');
     class SqliteAdapter {
       constructor(filename) { this.database = new DatabaseSync(filename); }
+      transaction(fn) { return () => {
+        this.database.exec('BEGIN');
+        try { const result = fn(); this.database.exec('COMMIT'); return result; }
+        catch (error) { this.database.exec('ROLLBACK'); throw error; }
+      }; }
       exec(sql) { this.database.exec(sql); }
       prepare(sql) { return this.database.prepare(sql); }
       close() { this.database.close(); }

@@ -244,6 +244,7 @@ class AgentSessionHistoryStore {
   #migrate() {
     const version = this.db.pragma('user_version', { simple: true });
     if (version < 1) {
+      this.db.transaction(() => {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS agent_sessions (
           id TEXT PRIMARY KEY,
@@ -277,22 +278,28 @@ class AgentSessionHistoryStore {
           ON agent_turns(session_id, position ASC);
       `);
       this.db.pragma('user_version = 1');
+      })();
     }
     if (version < 2) {
+      this.db.transaction(() => {
       this.db.exec(`
         ALTER TABLE agent_turns
           ADD COLUMN guidance_json TEXT NOT NULL DEFAULT '[]';
       `);
       this.db.pragma('user_version = 2');
+      })();
     }
     if (version < 3) {
+      this.db.transaction(() => {
       this.db.exec(`
         ALTER TABLE agent_turns
           ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';
       `);
       this.db.pragma('user_version = 3');
+      })();
     }
     if (version < 4) {
+      this.db.transaction(() => {
       this.db.exec(`
         ALTER TABLE agent_turns
           ADD COLUMN approval_mode TEXT NOT NULL DEFAULT 'every_interaction';
@@ -304,6 +311,7 @@ class AgentSessionHistoryStore {
           );
       `);
       this.db.pragma('user_version = 4');
+      })();
     }
     if (version < 5) {
       this.db.transaction(() => {

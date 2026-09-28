@@ -101,7 +101,8 @@ class AgentNodeOperationStore {
     log.info('[AgentNodeOperations] Opening database:', dbPath);
     this.db = new this.Database(dbPath);
     this.db.pragma('journal_mode = WAL');
-    this.#migrate();
+    try { this.db.transaction(() => this.#migrate())(); }
+    catch (error) { this.close(); throw error; }
     return this.db;
   }
 
