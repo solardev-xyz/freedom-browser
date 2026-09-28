@@ -13,6 +13,7 @@ const QUOTE_TYPES = { RelayWithdrawalCommitment: [
   { name: 'expiration', type: 'uint256' }, { name: 'amountSent', type: 'uint256' },
   { name: 'amountReceived', type: 'uint256' },
 ] };
+const quoteDomain = (chainId, processor) => ({ name: 'Privacy Pools Relayer', version: '1', chainId, verifyingContract: processor });
 const hash = (v) => `0x${createHash('sha256').update(v).digest('hex')}`;
 const keys = (v, names) => v && typeof v === 'object' && !Array.isArray(v) &&
   Object.keys(v).length === names.length && names.every((k) => Object.hasOwn(v, k));
@@ -56,8 +57,7 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
     const context = BigInt(keccak256(coder.encode(['tuple(address processor,bytes data)', 'tuple(bytes32 hint,bytes data)[]'],
       [[intent.processor, routing], payload.noteData]))) % FIELD;
     if (BigInt(publicSignals[5]) !== BigInt(fee.amountSent) || BigInt(publicSignals[6]) !== BigInt(token) || BigInt(publicSignals[7]) !== context) throw fail();
-    const signer = verifyTypedData({ name: 'Privacy Pools Relayer', version: '1', chainId: intent.chainId,
-      verifyingContract: intent.processor }, QUOTE_TYPES, { data: fee.data, asset: fee.asset, expiration: fee.expiration,
+    const signer = verifyTypedData(quoteDomain(intent.chainId, intent.processor), QUOTE_TYPES, { data: fee.data, asset: fee.asset, expiration: fee.expiration,
       amountSent: fee.amountSent, amountReceived: fee.amountReceived }, fee.signedRelayerCommitment);
     if (signer.toLowerCase() !== intent.quoteSigner) throw fail();
     const intentDigest = hash(JSON.stringify(intent)), endpointDigest = hash(endpoint), payloadDigest = hash(body);
@@ -72,4 +72,4 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
         endpoint, payloadDigest, proofVerified: true, chainStateVerified: false, quoteSignatureVerified: true } };
   } catch { throw fail(); }
 }
-module.exports = { validateRelay, hash, ROUTING };
+module.exports = { validateRelay, hash, ROUTING, QUOTE_TYPES, quoteDomain };

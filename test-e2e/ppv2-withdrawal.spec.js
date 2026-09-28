@@ -63,7 +63,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
     const quantity = (v) => `0x${v.toString(16)}`;
     rpc.createPrivateRpc = (handle) => {
       const context = getPrivacyContext(handle); contexts.set(context.subject.role, context);
-      return { signal: context.signal, assertActive: () => getPrivacyContext(handle), ready: async () => {},
+      return { signal: context.signal, assertActive: () => getPrivacyContext(handle), ready: async () => {}, release() {},
         trust: { level: 'unverified' }, privacy: { mode: 'controlled-fixture' },
         async request(method, params, validate) {
           getPrivacyContext(handle); methods.add(method);
@@ -88,6 +88,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
             else if (call.name === 'latestASPRoot') result = iface.encodeFunctionResult(call.fragment, [badRoot ? 1n : BigInt(await merkle.computeRoot(aspLeaves))]);
             else if (call.name === 'nullifyingKeys') result = iface.encodeFunctionResult(call.fragment, [auth]);
             else if (call.name === 'viewingKeys') result = iface.encodeFunctionResult(call.fragment, [viewing]);
+            else if (call.name === 'isKnownRoot') result = iface.encodeFunctionResult(call.fragment, [true]);
             else result = `0x${'00'.repeat(32)}`;
           } else if (method === 'eth_gasPrice') result = '0x64';
           else if (method === 'eth_getTransactionCount') result = quantity(nonce);
@@ -246,7 +247,15 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
             (shortQuoteCode === 'PRIVATE_PPV2_OPERATION_FAILED' && shortQuoteExpiration !== null && shortQuoteRejectedAt >= shortQuoteExpiration);
           if(relaySends!==0 || (await session.listRelayAttempts()).length!==0) throw new Error('Short quote reserved or sent');
           quoteLifetime=60000; stage='withdrawal preparation';
-          const prepared=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`});
+          let prepared=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`});
+          if (!tokenMode && !cancel) {
+            // A root changes while the user reviews. Refuse before reserving
+            // the note, then allow a freshly prepared operation to proceed.
+            const stale = await session.submitNativeWithdrawal(prepared, async () => { badRoot = true; return true; }).then(() => null, (e) => e.code);
+            badRoot = false;
+            if (stale !== 'PRIVATE_PPV2_RELAY_REFUSED' || relaySends !== 0 || (await session.listRelayAttempts()).length !== 0) throw new Error('Stale root was journaled or relayed');
+            prepared = await session.prepareNativeWithdrawal({ commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}` });
+          }
           stage='withdrawal lost response'; relayLost=true;
           const outcome=await session[tokenMode?'submitTokenWithdrawal':'submitNativeWithdrawal'](prepared,async()=>true).then(()=>null,e=>e.code);
           const blocked=await session.submitPublicOperation({},{}).then(()=>null,e=>e.code);

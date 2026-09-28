@@ -34,6 +34,33 @@ beforeEach(() => {
 });
 afterEach(() => scope.close());
 
+test('known contract deployment floors skip ancient windows and retain the inclusive boundary', async () => {
+  const floors = [{ address: target, fromBlock: 2 }];
+  provider = createKohakuProvider({ handle, contracts, logFloors: floors });
+  floors[0].fromBlock = 100; // Snapshot the main grant before SDK work.
+  const logs = (fromBlock, toBlock) => provider.request({ method: 'eth_getLogs', params: [{ ...filter(), fromBlock, toBlock }] });
+  expect(await logs('0x0', '0x1')).toEqual([]); expect(mockRequest).not.toHaveBeenCalled();
+  results.eth_getLogs[0].blockNumber = '0x2';
+  expect(await logs('0x1', '0x2')).toEqual(results.eth_getLogs);
+  expect(requests.at(-1).params[0]).toMatchObject({ fromBlock: '0x2', toBlock: '0x2' });
+  await logs('0x2', '0x2');
+  results.eth_getLogs[0].blockNumber = '0x1';
+  await expect(logs('0x1', '0x2')).rejects.toMatchObject({ code: 'PRIVATE_RPC_INVALID' });
+  await expect(logs('0x0', '0x1388')).rejects.toMatchObject({ code: 'PRIVATE_SDK_RPC_REFUSED' });
+  scope.close(); await expect(logs('0x0', '0x1')).rejects.toThrow();
+});
+
+test('a pool floor does not truncate history of another granted contract', async () => {
+  const pool = `0x${'2'.repeat(40)}`;
+  provider = createKohakuProvider({ handle, contracts: [...contracts, { ...contracts[0], address: pool }], logFloors: [{ address: pool, fromBlock: 100 }] });
+  expect(await provider.request({ method: 'eth_getLogs', params: [filter()] })).toEqual(results.eth_getLogs);
+  expect(requests.at(-1).params[0].fromBlock).toBe('0x1');
+});
+
+test.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '2'])('refuses invalid deployment floor %s', (fromBlock) => {
+  expect(() => createKohakuProvider({ handle, contracts, logFloors: [{ address: target, fromBlock }] })).toThrow();
+});
+
 test('owner contract reads use the public-address connection while pool reads retain their private context', async () => {
   const owner = scope.getContext({ kind: 'public-address', principal: `0x${'9'.repeat(40)}`, chainId: 11155111, role: 'transaction-rpc' });
   const pool = `0x${'2'.repeat(40)}`;

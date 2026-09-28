@@ -172,7 +172,10 @@ test('corruption, wrong key and another account fail closed', async () => {
 test('rechecks main-owned eligibility after review before durable intent or network', async () => {
   const events = [];
   gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal, network, verifyProof,
-    beforeBegin: async () => { events.push('recheck'); throw new Error('Evidence changed'); } });
+    beforeBegin: async (signal, id) => {
+      expect(signal.aborted).toBe(false); expect(id).toBe(validateRelay(request).attempt.id);
+      events.push('recheck'); throw new Error('Evidence changed');
+    } });
   const prepared = await gate.prepare(request);
   await expect(gate.submit(prepared, { review: async () => { events.push('review'); return true; }, invoke })).rejects.toThrow();
   expect(events).toEqual(['review', 'recheck']); expect(await journal.list()).toEqual([]);

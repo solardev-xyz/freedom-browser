@@ -49,7 +49,7 @@ function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeB
       const handoffDeadline = plan.expiresAt - HANDOFF_MARGIN_MS;
       if (await beforeDeadline(() => plan.review(plan.summary), handoffDeadline) !== true) throw refused();
       checkPlan();
-      if (beforeBegin) { await beforeDeadline(beforeBegin, handoffDeadline); checkPlan(); }
+      if (beforeBegin) { await beforeDeadline((signal) => beforeBegin(signal, plan.attempt.id), handoffDeadline); checkPlan(); }
       // Reconciliation may outlast the reviewed quote. A known pre-send
       // expiry must not become a durable, permanently uncertain attempt.
       if (Date.now() >= handoffDeadline) throw refused();

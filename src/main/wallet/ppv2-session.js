@@ -15,6 +15,7 @@ const { inspectPPv2NoteRecovery } = require('./ppv2-note-recovery');
 const { createPPv2RagequitProver } = require('./ppv2-ragequit-prover');
 const { createPPv2TransactProver } = require('./ppv2-transact-prover');
 const { createPPv2RelayHandoff } = require('./ppv2-relay-handoff');
+const { assertCurrentPPv2Roots } = require('./ppv2-relay-roots');
 const { createPPv2RelayReconciliation } = require('./ppv2-relay-reconciliation');
 const { createPPv2TokenPolicy } = require('./ppv2-token-policy');
 const { NATIVE } = require('./ppv2-deposit-policy');
@@ -84,7 +85,8 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     await relayJournal.list(); // Corrupt/foreign state must not look like no attempts.
     const ownerHandle = scope.getContext({ kind: 'public-address', principal: config.ownerAddress.toLowerCase(), chainId: 11155111, role: 'transaction-rpc' });
     const provider = createKohakuProvider({ handle: handle('protocol-rpc'), contracts: config.contracts, publicReadHandle: ownerHandle,
-      publicContracts: [config.deployment.keystoreAddress, ...(config.erc20Tokens || [])] });
+      publicContracts: [config.deployment.keystoreAddress, ...(config.erc20Tokens || [])],
+      logFloors: deploymentKeys.slice(0, 4).map((name) => ({ address: config.deployment[name], fromBlock: config.deploymentBlock })) });
     const transport = createKohakuNetworkRouter(config.networks.map(({ role, endpoints }) => ({ handle: handle(role), endpoints })));
     let capture = null;
     const network = Object.freeze({ fetch: async (input, init = {}) => {
@@ -191,7 +193,11 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       if (BigInt(change.commitment) !== BigInt(proof.publicSignals[1]) || BigInt(change.value) !== note.value - BigInt(proof.publicSignals[5]) ||
           BigInt(change.tokenId) !== BigInt(token)) throw unavailable();
       const word = (v) => `0x${BigInt(v).toString(16).padStart(64, '0')}`;
-      const gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal: relayJournal, network: transport, beforeBegin: availableToSpend,
+      const gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal: relayJournal, network: transport, beforeBegin: async (signal, id) => {
+        await availableToSpend(signal);
+        await assertCurrentPPv2Roots({ handle: scope.getContext({ ...subject, role: 'protocol-rpc', operation: id }),
+          deployment: config.deployment, publicSignals: proof.publicSignals, signal });
+      },
         verifyProof: async (p) => JSON.stringify(p) === JSON.stringify(proof) }); // Exact proof already verified by the owned process.
       const summary = await gate.prepare({ ...prepared.value, fromBlock, intent: { ...(token === NATIVE ? {} : { token: token.toLowerCase() }),
         kind: token === NATIVE ? 'ppv2-native-withdrawal' : 'ppv2-token-withdrawal', chainId: 11155111,

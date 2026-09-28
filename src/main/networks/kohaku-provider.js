@@ -12,7 +12,7 @@ const block = (value) => isQuantity(value) && BigInt(value) <= BigInt(Number.MAX
 const onlyKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).every((key) => keys.includes(key));
 
-function createKohakuProvider({ handle, contracts, signal, publicReadHandle, publicContracts = [] }) {
+function createKohakuProvider({ handle, contracts, signal, publicReadHandle, publicContracts = [], logFloors = [] }) {
   const context = getPrivacyContext(handle);
   if (context.subject.kind !== 'private-account' || context.subject.role !== 'protocol-rpc') {
     throw privacyError('PRIVATE_SDK_UNAVAILABLE', 'Protocol provider requires its own private-account context');
@@ -29,6 +29,15 @@ function createKohakuProvider({ handle, contracts, signal, publicReadHandle, pub
       selectors: new Set(contract.selectors.map((value) => value.toLowerCase())),
       events: new Set(contract.eventTopics.map((value) => value.toLowerCase())),
     });
+  }
+  // Only main may declare an audited lower bound for a particular contract.
+  // Token contracts may predate the pool, so there is no provider-wide floor.
+  const floors = new Map();
+  if (!Array.isArray(logFloors) || logFloors.length > contracts.length) throw refused();
+  for (const floor of logFloors) {
+    if (!onlyKeys(floor, ['address', 'fromBlock']) || !address(floor.address) || !grants.has(floor.address.toLowerCase()) ||
+        !Number.isSafeInteger(floor.fromBlock) || floor.fromBlock < 0 || floors.has(floor.address.toLowerCase())) throw refused();
+    floors.set(floor.address.toLowerCase(), BigInt(floor.fromBlock));
   }
   const rpc = createPrivateRpc(handle, 'protocol-rpc', { signal });
   let publicRpc;
@@ -80,9 +89,12 @@ function createKohakuProvider({ handle, contracts, signal, publicReadHandle, pub
       // Copy before the first await: the SDK cannot mutate a validated grant
       // or filter while the chain check/head request is in flight.
       const allowedTopics = new Set(topics.map((value) => value.toLowerCase()));
-      const from = BigInt(filter.fromBlock);
+      let from = BigInt(filter.fromBlock);
       const to = BigInt(filter.toBlock === 'latest' ? await head(target) : filter.toBlock);
       if (to < from || to - from >= 5000n) throw refused();
+      const floor = floors.get(target) || 0n;
+      if (to < floor) { rpc.assertActive(); return []; }
+      if (from < floor) from = floor;
       const query = { address: target, topics: [[...allowedTopics]], fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` };
       return read(method, [query], (logs) => Array.isArray(logs) && logs.length <= 2048 && logs.every((log) =>
         log && address(log.address) && log.address.toLowerCase() === target && Array.isArray(log.topics) &&
