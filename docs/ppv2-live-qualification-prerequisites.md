@@ -2,6 +2,17 @@
 
 This is the concrete handoff needed to move the controlled Kohaku/PPv2 experiment onto live Sepolia. It does not authorize a transaction, enable a product feature, or assume the final upstream release is available. No new outreach has been sent.
 
+## Published environment checked on September 28
+
+The [live v2 frontend](https://v2.privacypools.com/) publishes Sepolia staging configuration. The [Sepolia deployment documentation](https://privacy-pools-v2-docs.vercel.app/deployments/sepolia) already provides a V9 deployment and service configuration; discovering a deployment is not an upstream blocker. These are candidate configuration values to verify against our pinned SDK and on-chain state, not an approved signing configuration.
+
+- The public [dev ASP entrypoint feed](https://api-dev.0xbow.io/global/public/entrypoints) responded with Sepolia pool ID `4`, pool `0x09b94d3127019298757A6ceeB7911922085f7C01`, entrypoint `0xEB3e3961008952348445513e418ad6F43C23ca9a`, and `fromBlock: 10994884`. The feed also lists an older Sepolia pool, so selecting only by chain ID is insufficient. Its response carried `cacheTimestamp: 2026-09-24T19:09:31.909Z`; this is not fresh on-chain evidence, nor proof of the correct keystore recovery start block.
+- The public [staging relayer details](https://relayer-v2-staging-149184580131.us-east1.run.app/v1/details) responded with chain `11155111`, the same pool/entrypoint, and ETH, USDC and USDT assets. Service-reported assets and fees still need comparison with contract configuration.
+- **Concrete documentation drift:** the relayer reports processor `0x7430cc030d7eb8C83E76cD983996982C8C054204`. The current frontend's public `CURRENT_RELAY` constant agrees, whereas the Sepolia docs and quickstart show `0x762665Dc7aAeeA25DC1759AEBef1F61730497f6e`. Do not copy the older processor into our configuration. Verify the current contract, quote signer and signed-quote binding before use; `/v1/details` did not identify the quote signer.
+- The downloaded frontend publishes staging ASP `https://api-dev.0xbow.io`, the documented Sepolia pool and keystore, and the same staging relayer URL. Inspection was static, read-only inspection of public JavaScript and GET service responses, not a connected-wallet flow or proof that deposits/relaying currently succeed. No wallet identifiers or secrets were sent.
+
+Extract and cross-check these published values before asking PP for information. Remaining questions should focus on compatibility/provenance, any unresolved signer or deployment discrepancies, and test onboarding/approval behavior. The production audit remains a release gate; a completed audit is not required merely to conduct a bounded disposable testnet experiment.
+
 ## Information to confirm with Privacy Pools
 
 | Item | Exact information needed | Why it matters |
