@@ -1,5 +1,7 @@
 # Wallet privacy implementation plan
 
+**Latest continuation:** [Runtime integrity and reviewed history retention](privacy-runtime-retention-2026-09-28.md) adds authenticated SDK loading and explicit journal compaction. Its archival trust tradeoff, permanent bounds and one-way state format are documented there. [Live qualification prerequisites](ppv2-live-qualification-prerequisites.md) lists the remaining PP handoff.
+
 Date: 2026-09-14; updated 2026-09-28. Status: current main and managed nodes synchronized; reviewed submission reconciliation, restricted protocol reads, local artifact verification and worker cancellation have unit and Electron coverage. Complete protocol qualification and production activation remain pending.
 
 ## Implementation status

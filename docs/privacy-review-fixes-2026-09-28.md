@@ -1,5 +1,7 @@
 # Privacy branch review and fixes — 2026-09-28
 
+**Subsequent continuation:** [Runtime integrity and reviewed history retention](privacy-runtime-retention-2026-09-28.md) updates the code-authentication and journal-capacity limitations below. This report preserves the earlier reviewed checkpoint.
+
 The independent Claude reviewer reviewed the whole `feat/wallet-privacy-foundation` branch, starting at `35e4a68b` against merge base `2983dc62`, cross-checking relevant pinned upstream SDK, circuit, contract and relayer sources. See the reviewer record’s method section for exclusions, including other platforms, visual UI checks and a line-by-line compatibility-patch audit. The [reviewer-owned record](../research/privacy-branch-review-2026-09-28-reviewer.md) preserves findings and subsequent acceptance. This is engineering review of a gated experiment, not a protocol security audit or production approval.
 
 **Closeout:** Claude approved the gated experiment at `6c8b35a821eed0c492bb95d7e2fcc73338fa1ada` after reviewing the completed package results and independently verifying source/package digests. All review closeout conditions are met; the release limitations below remain.
