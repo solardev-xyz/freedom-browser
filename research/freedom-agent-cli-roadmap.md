@@ -8,7 +8,7 @@ Planning basis: current Freedom mainline, current product requirements, and fres
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-25
+## Current working status — 2026-09-28
 
 ### Project viewer and recovery implementation — 2026-09-25
 
@@ -44,7 +44,7 @@ Real-Git fault qualification on the designated Mac mini is pending: automatic ap
 review rejected the prepared private-source transfer and explicit user approval
 has been requested. No new remote/native qualification is claimed yet.
 
-### Current backlog and next decision — 2026-09-25
+### Current backlog and next decision — 2026-09-28
 
 This is the active backlog. The dated implementation records below preserve
 historical scope and test evidence; older statements of “next” or “remaining”
@@ -59,15 +59,19 @@ checkpoints; actionable tool recovery; bounded command access review in
 restart/reattachment and the accepted Vite HMR workflow are already implemented.
 This does not imply every provider, platform or edge case has been qualified.
 
-**Active experiment — subagents:** selected by the user on 2026-09-25. The new
-`experiment/agent-subagents` branch implements the first foreground read-only
-helper: same model connection, scoped project/attachment reads, bounded
-task/context, complete saved reports, cancellation on Stop/Pause/steering, visible reports and
-history. The user accepted single-helper review, steering and Stop smokes on
-2026-09-25, followed by parallel-helper acceptance. Background parent continuation,
-same-session helper follow-ups, individual report persistence and neutral summaries
-are implemented and user smoke-tested on 2026-09-26. Scoped editing now adds explicit file lists, exclusive file ownership for concurrent disjoint writers, live grant/revision checks and persisted write evidence; the user accepted fresh-workspace editing and external-project permission smokes on 2026-09-26. Browser helpers now use exclusive fresh tabs, queued existing approvals, cancellation guards, parent handoff and persisted browser receipts; the Mercury/Venus smoke exposed the shared token cutoff, now removed (2026-09-27); the repeated browser comparison passed. Helper cards, compact styling and Markdown reports are user-accepted; individual Stop is implemented. Existing-tab delegation is now implemented; its user smoke is next. See the
-[implementation contract and smoke steps](../docs/agent-subagents.md).
+**Subagents — core integrated 2026-09-28:** developed on
+`experiment/agent-subagents`; development continues on `feature/freedom-automation-kernel`.
+Foreground/background helpers, follow-ups, six concurrent slots, read-only and
+scoped concurrent editing, fresh/existing browser tabs, individual Stop, Markdown
+cards and full saved-report retrieval are implemented. Real-model smokes accepted
+inspection, editing permission flow, browser delegation, report retrieval and
+three-way autonomous research without redundant parent reads. The latest build
+passed with actual file-based review and parent fixes; concurrent implementation
+is supported but its speed benefit was not demonstrated by that run. The user
+accepted leaving model orchestration as-is and authorized the merge. Individual
+editing interruption and reopened-receipt smoke remain unconfirmed; automated
+coverage does not turn them into manual passes. See the
+[implementation contract and deferred extensions](../docs/agent-subagents.md#delivery-status-and-remaining-roadmap--2026-09-28).
 
 **Other product candidates — not implementation authorization:**
 
@@ -75,14 +79,13 @@ are implemented and user smoke-tested on 2026-09-26. Scoped editing now adds exp
 | --- | --- | --- |
 | Saved-server management | Rename, edit and remove saved command/directory/port definitions. Define active-process behavior explicitly; removal must not silently stop a process or erase project files. | Smaller continuation: keep the Workspace panel useful as projects accumulate servers. Restart/reattach already exists. |
 | Broader existing-project support | First support linked Git worktrees and their separately located metadata through explicit, validated ownership. Individual file grants and multiple writable projects are separate subsequent slices. | Useful for real development repositories; requires careful metadata and writer-coordination work. |
-| Subagents (active experiment) | Single and parallel-helper smokes accepted. Background continuation and bounded same-session follow-ups implemented with up to six concurrent helpers and individual report persistence. Background/messaging smokes accepted. Initial scoped editing passed fresh-workspace and external-permission smokes. Concurrent disjoint file ownership and dependency-aware implementation review are now implemented; fresh workflow smoke pending. Browser helpers implemented with exclusive fresh tabs, queued approvals, handoff and action receipts. Helper-specific execution budgets removed after the Mercury/Venus smoke; browser comparison accepted. Helper cards accepted; individual Stop implemented. Existing-tab delegation smoke accepted. Complete report storage, lazy cards and paginated retrieval across turns/compaction implemented; retrieval smoke accepted. Provider-aware orchestration guidance implemented: hosted models autonomously delegate independent workstreams by default; Ollama prefers direct/sequential work, with explicit user requests honored. Manual editing interruption/overlap checks remain. | A focused review/inspection through the existing connection. No extra provider required; reports are evidence for the parent to review. |
+| Subagent extensions (deferred) | Per-helper models/reusable roles, nested delegation, remote Herdr placement, durable child-session continuation and optional Jev workers. All remain unimplemented; see the [detailed backlog](#subagents-and-parallel-delegation). | Core delegation already works through one existing model connection. Select an extension for a concrete need; no additional provider or runtime is required for current use. |
 | Workspace/history scale | Raise managed checkpoint limits with explicit storage/retention and large-file behavior; improve rename matching where actual projects justify it. | Makes larger projects practical. Current checkpoint ingestion remains 200 files, 64 KiB per file and 512 KiB total; pagination, comparisons and selected restore are already implemented. |
 | Browser/WebMCP coverage | Choose a real blocked website/tool schema, then add the missing schema constraints or frame-scoped tools with origin/approval checks. Embedded or ambiguous-source dialogs remain a separate gap. | Broader compatibility, driven by real tasks rather than speculative API breadth. |
 
-**Selected direction:** build and qualify the subagent lifecycle before parallel
-code editing. Saved-server management remains a smaller independent candidate;
-broader existing-project support remains relevant if linked worktrees or multiple
-project contexts block everyday work.
+**Selected direction:** the subagent experiment is integrated; continue on the
+main feature branch. No deferred extension is selected for implementation. Saved-server
+management and broader existing-project support remain independent candidates.
 
 **External-project read qualification — 2026-09-26:** fixed ordinary SSH usernames
 being misclassified as embedded credentials and Electron's ASAR virtual filesystem
@@ -643,7 +646,7 @@ simple, and measured benefit justifies the additional runtime complexity.
 ### Possible later experiment — not scheduled
 
 **Sequencing clarification:** build the planned
-[subagent capability](#todo--subagents-and-parallel-delegation) with existing
+[subagent capability](#subagents-and-parallel-delegation) with existing
 supported models first, then revisit Jev as an optional specialized browser
 worker. Share the delegation contract for goals, scoped permissions, budgets,
 progress, cancellation, and attributed results; allow worker implementations to
@@ -2607,26 +2610,61 @@ The numbered inventory below records completed foundations and remaining capabil
 - Promote stable consequential mechanisms into deterministic runtime-owned boundaries when Freedom can observe them exactly; the generic intended-consequence classifier remains a conservative interruption layer rather than a substitute for those boundaries.
 - Add identity use, payments beyond the explicit wallet transaction primitive, and decentralized publication as separate explicit capability and approval packages. Website approval settings must never grant them implicitly.
 
-#### TODO — Subagents and parallel delegation
+#### Subagents and parallel delegation
 
-Added 2026-09-17; implementation authorized 2026-09-25 on
-`experiment/agent-subagents`. First delivery is an isolated foreground read-only
-Pi helper with existing provider access, explicit tasks/context, scoped tools,
-bounded input/result pages, cancellation and persisted activity reports. Deterministic
-SDK and UI coverage is implemented. Single-helper review, steering and Stop were
-accepted in user smokes on 2026-09-25, followed by two parallel read-only helpers.
-Background parent continuation, status/wait/message controls, same-session follow-ups,
-per-helper report persistence passed real-model user smokes on 2026-09-26. Scoped editing now enforces exclusive ownership of explicit files with existing grants, allows disjoint helper/parent writes, blocks overlapping writes and commands/history while writers run, rechecks revisions, and retains partial-write evidence. The user accepted fresh-workspace editing and external-project permission smokes on 2026-09-26. Browser helpers now have their own fresh tabs, preserved browser approvals/freshness, queued prompts, cancellation guards and receipts. Disposable real-page Electron tests pass. The real-model Mercury/Venus smoke confirmed separate tabs and parent recovery but exposed an overly restrictive shared token cutoff; helper-specific execution budgets were removed on 2026-09-27, and the repeated browser comparison passed. Helper cards are user-accepted; individual Stop is implemented. Routine result-summary cards are now hidden, retaining individual helper cards, useful receipts and actionable failure/uncertainty notices. Existing-tab delegation now transfers explicit task tabs exclusively, preserves approvals and requires fresh observations at handoff; the user smoke passed on 2026-09-27. Full reports now persist separately from activity previews, with lazy card loading and conversation-scoped, paginated `helper_reports` lookup for later turns and after compaction. A subsequent Wikipedia smoke exposed a resume guard that blocked fresh reads; it is replaced with per-tab observed references and recoverable observation/busy-tab errors. The helper handoff → next turn → open/read regression passes in Electron; ownership, origin, approval and Stop checks remain enforced. Saved-report retrieval passed user acceptance on 2026-09-27. The main Agent now receives orchestration/review guidance with provider-aware scheduling: hosted models autonomously delegate independent workstreams by default without waiting for users to request helpers, while Ollama prefers direct execution or sequential focused helpers. Explicit user requests remain supported; no new settings, provider switching or concurrency restriction. Real-model judgment/performance qualification of this guidance remains. Larger orchestration batches now support 2–6 helpers (six concurrent plus the parent), with consistent receipt/history validation and all helper cards rendered. The parent is guided to delegate independent topics together and retain review/synthesis; the user confirmed the three-article smoke uses three helpers on a hosted connection (2026-09-28). That smoke exposed redundant parent source reads; task-specific review guidance now uses completed routine summaries directly, while retaining code/diff review and consequential-outcome checks. The repeated summary smoke passed without duplicate parent reads. The fresh build smoke then exposed a stale browser-only base instruction; the prompt now follows supplied tool capabilities and explains first-operation workspace activation. The fresh build smoke passed; log review found an advisory accessibility helper rather than a code reviewer. Guidance now sequences implementation before concrete file review and allows parent build/preview checks alongside read-only review. Concurrent file ownership replaces the global writer lock; a repeat workflow smoke and individual writer Stop check remain. Capacity errors support scheduling later batches; exclusive file ownership and Ollama scheduling rules remain. Legacy shortened reports remain marked; full child transcripts and resumable child sessions remain deferred. Manual editing interruption, reader/writer overlap and reopened-receipt checks remain separate.
-See [the contract, upstream inspiration and smoke steps](../docs/agent-subagents.md).
-The broader items below remain the direction, not a claim they all shipped.
+Added 2026-09-17; implemented on `experiment/agent-subagents` from 2026-09-25.
+Integrated into `feature/freedom-automation-kernel` on 2026-09-28 at the user's request.
 
-- Let the main Agent delegate bounded subtasks to specialized child agents, run independent work in parallel, and incorporate their results into the parent conversation. Initial use cases include parallel research, code review, and independent project tasks.
-- First support workers using existing model connections. Keep the delegation contract independent of the worker's internal decision loop so the [deferred Jev proposal](#2026-09-18--jev-browser-acceleration-research-deferred) can later become an optional specialized browser worker using the same permissions, budgets, progress, cancellation, and result handling. A Pi delegation tool may invoke it; no second provider is required for core Agent or initial subagent functionality. Subagents are now authorized; Jev integration remains deferred.
-- Give each child an explicit task, selected context and accountable result. Define parent/child messaging, follow-up work, result attribution and history persistence; avoid copying the entire conversation or unrelated private data by default.
-- Keep every child behind Freedom's existing automation and approval boundaries. Delegation may narrow the parent's permissions, never expand them. Define exclusive tab-control leases and coordinated workspace writes so agents cannot race on the same page or overwrite each other's work. Sensitive actions retain their existing approval requirements.
-- Show delegated tasks, status, results and failures in the parent conversation, with details available on demand. Support stopping an individual child; stopping the parent must cancel its descendants, pending model/tool requests and approvals, and reconcile any effects already performed.
-- Bound concurrent children and nesting. Do not impose separate helper execution budgets; any future user-configured usage/cost budget must apply consistently to the entire task. Decide model/provider selection and disclose any additional provider receiving delegated context; do not silently move data to a different provider or weaken the parent's privacy requirements.
-- Qualify delegation, concurrent resource access, child failure, cancellation, parent/session closure, permission revocation and restart recovery. Treat child output as task evidence rather than new authority, and preserve the actual platform limits on managed-process cleanup.
+**Delivered core:** isolated in-process Pi sessions using the parent's connected
+model; foreground/background work and same-turn follow-ups; up to six concurrent
+helpers; read-only project/attachment inspection; explicit disjoint file ownership
+with revision checks and parent/helper concurrent writes; new/existing browser-tab
+ownership with queued approvals and fresh observations; individual and whole-task
+Stop; progress cards and sanitized Markdown; complete saved reports with paginated,
+conversation-scoped retrieval after compaction and reopening history. No separate
+helper token/time/tool-call quota remains. Commands/builds/history wait for active
+writers and unsettled writes. Delegation never expands permissions.
+
+**Orchestration and acceptance:** hosted models delegate independent workstreams
+autonomously; Ollama prefers direct/sequential execution unless the user requests
+parallel helpers. Three-topic research now uses three helpers and synthesizes
+routine reports without duplicate parent reads. Code review inspects implemented
+files rather than supplying only upfront advice. The latest Next.js/Three.js smoke
+passed its build and preview, with concrete review findings fixed by the parent.
+Review overlapped installation, but implementation used one helper; this is not a
+parallel speed benchmark. The user accepted leaving that model behavior as-is.
+Native local/Mac mini fixtures cover concurrent disjoint editing. The preview
+WebMCP document.domain rejection now returns an unavailable capability with normal
+browser-tool guidance; unrelated discovery errors remain visible.
+
+**Remaining validation:** individual Stop during editing, sibling continuation,
+partial-edit inspection and reopening the saved receipt still need a confirmed
+manual smoke. Broader model performance/provider qualification and Windows/Linux
+coverage remain separate, with cross-platform work on the user's backburner.
+These are recorded limitations, not newly imposed merge gates.
+
+**Deferred, not implemented:**
+
+- **Per-helper model selection and reusable roles:** use already-connected models
+  with explicit capability ceilings and usage attribution. Decide defaults and
+  consent/disclosure for cross-provider context; preserve local/privacy preferences.
+- **Nested delegation:** define tree-wide admission, descendant cancellation,
+  resource/approval ownership and attributable results before allowing helper spawns.
+- **Remote Herdr execution:** separate logical ownership from placement; define
+  authenticated transport, approved source/context transfer, remote capabilities,
+  lost-connection recovery and cancellation. No ambient remote host authority.
+- **Durable child sessions:** support continuation beyond the current parent turn
+  or across restart, with transcript retention/cleanup, fresh grants and ownership,
+  and side-effect reconciliation. Today's durable reports do not resume child work.
+- **Optional Jev browser workers:** preserve the [research and proposed integration](#2026-09-18--jev-browser-acceleration-research-deferred).
+  Build a separate typed-decision worker with controller-backed actions, normal
+  approvals, cancellation, evidence and fallback. It is not a drop-in Pi model;
+  core Agent must remain usable with one ordinary connection and no Jev account.
+
+These are future candidates, not authorization to start them. Full child transcripts
+and whole-task cost controls remain design questions; do not reintroduce arbitrary
+helper-only execution budgets. The [subagent contract](../docs/agent-subagents.md)
+records extension scope, constraints, implementation history and validation evidence.
 
 #### TODO — Agent-created home/start-page widgets
 

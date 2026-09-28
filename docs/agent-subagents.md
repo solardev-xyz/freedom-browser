@@ -1,8 +1,52 @@
 # Freedom subagents: inspections, scoped editing and browser tasks
 
-Branch: `experiment/agent-subagents`, started from
-`feature/freedom-automation-kernel` on 2026-09-25. Delegation supports up to six concurrent helpers, parent continuation,
+Developed on `experiment/agent-subagents` from 2026-09-25 and integrated into
+`feature/freedom-automation-kernel` on 2026-09-28. Delegation supports up to six concurrent helpers, parent continuation,
 and follow-up messages. Scoped editing uses exclusive file ownership with concurrent disjoint writers. Browser helpers use fresh or explicitly assigned existing tabs with the existing approval boundary.
+
+
+## Delivery status and remaining roadmap — 2026-09-28
+
+The core subagent implementation is complete for integration into the feature
+branch. Delivered: foreground and background delegation, six concurrent helpers,
+follow-up messaging, read-only inspection, concurrent disjoint file editing,
+new/existing browser-tab delegation, individual Stop, Markdown progress cards,
+complete saved reports and retrieval after compaction. Helpers use the existing
+model connection and Freedom permissions. Hosted-model orchestration and Ollama's
+direct/sequential preference are implemented; routine summary synthesis avoids
+repeating helper reads, while code review inspects actual implementation.
+
+The latest solar-system build smoke produced a working preview and successful
+production build. Its reviewer inspected actual source/diffs and the parent fixed
+concrete findings. Review overlapped dependency installation; the model still
+chose one implementation helper and waited before writing its own scaffold.
+This validates the workflow, not parallel implementation speed. The user accepted
+leaving that orchestration behavior as-is for now. Concurrent disjoint writes are
+implemented and covered by local and Mac mini native tests, not a future feature.
+
+Remaining manual validation: stop one editing helper during a write task, confirm
+its sibling/parent can continue once pending operations settle, inspect retained
+partial edits, then reopen the chat and inspect the saved editing receipt. Do not
+claim this smoke passed. Broader provider/performance and Windows/Linux
+qualification remain separate; the latter stays on the user's backburner. The
+user authorized integration without making these checks a merge prerequisite.
+
+### Deferred extensions — not implemented
+
+These are retained for later prioritization, not prerequisites for the delivered
+core or authorization to start them now.
+
+| Extension | Scope to revisit | Required design decisions |
+| --- | --- | --- |
+| Per-helper models and reusable roles | Select an existing connected model/thinking setting and a reusable researcher, implementer or reviewer definition. Today every helper inherits the parent's connection and thinking setting; capability modes are not configurable role profiles. | Selection defaults, capability ceilings, usage attribution and disclosure/consent before sending context to another provider. Preserve local/private-model preferences; never require a second connection. |
+| Nested delegation | Let a helper delegate a subtask and return an attributable descendant result. Today only the parent can spawn helpers. | Tree-wide concurrency/depth admission, ownership and approval routing, cancellation of descendants, result delivery and understandable progress. Authority can only narrow; no return to arbitrary helper token/time quotas. |
+| Remote execution through Herdr | Place selected workers in a separate local process or on an explicitly configured remote machine, potentially the Mac mini or Hetzner. Today helpers are local in-process Pi sessions. | Authenticated placement/transport, explicit source/context transfer, remote filesystem/browser capability mapping, network-loss recovery and verified cancellation. Keep logical task ownership independent of physical placement; a remote host does not inherit ambient user access. |
+| Durable helper sessions and restart continuation | Resume actual child work across parent turns or app restart. Today reports survive, but live child sessions end with the parent turn and unfinished work is marked interrupted on restart. | Transcript/checkpoint retention, storage/cleanup controls, restored grants and resource ownership, provider reconciliation and prevention of duplicate side effects. Saved-report retrieval already works and is not the same feature. |
+| Optional Jev specialist workers | A typed-decision browser worker behind the delegation interface, using the existing controller for actions and returning evidence to the parent. | Separate runtime/adapter, capability limits, fallback to the normal model, approvals/cancellation and measured benefit on real tasks. Jev is not a drop-in Pi chat model and must remain opt-in; core Agent must work with one ordinary model connection. See the preserved [Jev research](../research/freedom-agent-cli-roadmap.md#2026-09-18--jev-browser-acceleration-research-deferred). |
+
+Full child transcripts and configurable whole-task usage/cost controls are design
+questions for future work, not delivered features. Any future budget must cover
+the whole task consistently rather than silently rationing helper execution.
 
 ## User behavior
 
@@ -384,10 +428,10 @@ browser approval; its action must not execute later.
 
 The user accepted the helper-card UI, including the compact Markdown refinement.
 Existing-tab handoff passed the user smoke (2026-09-27).
-Saved-report retrieval passed the user smoke (2026-09-27). Remaining acceptance checks: Stop during editing and background editing/reviewer overlap, including reopening the editing receipt; then reassess readiness to merge the experiment.
-Broader writer concurrency,
-model/role selection, nested delegation, remote execution and optional Jev workers
-remain later work. No claim of complete provider/platform qualification.
+Saved-report retrieval passed the user smoke (2026-09-27). The September 28
+build acceptance and remaining manual validation are recorded in the current
+status above. Deferred extensions are tracked there separately from delivered
+concurrent file ownership. No claim of complete provider/platform qualification.
 
 
 Existing-tab smoke: on an ordinary website, ask “Delegate reviewing this current
