@@ -34,6 +34,27 @@ const CLASSIFICATION = Object.freeze({
 });
 
 const EXPECTED_TOOL_NAMES = Object.freeze([
+  'bash',
+  'browser_call_page_tool',
+  'browser_get_dialog',
+  'browser_handle_dialog',
+  'browser_list_frames',
+  'browser_list_page_tools',
+  'browser_read_frame',
+  'browser_recall_evidence',
+  'browser_scroll',
+  'edit',
+  'find',
+  'grep',
+  'helper_reports',
+  'helper_task',
+  'ls',
+  'request_permissions',
+  'workspace_history',
+  'workspace_preview',
+  'workspace_server',
+  'write',
+  'write_stdin',
   'delegate_task',
   'read',
   'attachment_list',
@@ -164,7 +185,8 @@ function toolEnvelopes(messages) {
   for (const message of messages) {
     if (message?.role !== 'tool') continue;
     try {
-      envelopes.push(JSON.parse(contentText(message.content)));
+      // Pi appends the historical-evidence note after the one-line JSON envelope.
+      envelopes.push(JSON.parse(contentText(message.content).split('\n')[0]));
     } catch {
       // Typed Pi tool failures are intentionally not success envelopes.
     }
@@ -868,6 +890,11 @@ async function handleCompletion(request, response) {
 
 test.beforeAll(async () => {
   server = http.createServer((request, response) => {
+    if (request.method === 'GET' && request.url === '/api/tags') {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ models: [{ name: MODEL_ID }] }));
+      return;
+    }
     if (request.method === 'POST' && request.url === '/v1/chat/completions') {
       handleCompletion(request, response).catch(() => {
         if (!response.headersSent) response.writeHead(500);
@@ -931,11 +958,14 @@ async function selectApprovalMode(window, mode) {
 
 async function configureFixtureProvider(window, approvalMode = 'allow') {
   await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-select').selectOption('ollama');
-  await window.locator('#agent-ollama-model').fill(MODEL_ID);
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
   await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
   await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${MODEL_ID}`);
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
   await selectApprovalMode(window, approvalMode);
 }
 
@@ -1279,9 +1309,7 @@ test('baseline: same-origin multi-page research passes with attributable evidenc
   expect(result.assistantOutput).toContain(URLS.researchMeridian);
   expect(result.assistantOutput).toContain('6 credits more');
   expect(result.finalUrl).toBe(URLS.researchMeridian);
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
-    'Result checked in the browser'
-  );
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   await expect(window.locator('.agent-turn-activity summary').last()).toContainText(
     'Result checked'
   );
@@ -1368,12 +1396,7 @@ test('baseline: rich form passes with semantic select and bounded keyboard capab
       keysTrusted: ['ArrowDown=true', 'Enter=true'],
     },
   });
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
-    'Browser actions recorded'
-  );
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
-    'did not recheck the page after its last change'
-  );
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   expect(operations).toEqual([
     'browser_snapshot',
     'browser_select',
@@ -1458,9 +1481,7 @@ test('baseline: Take over, human edit, Resume, and fresh approval preserve colla
 
   expect(confirmation).toBe('Submitted human-edited@example.test — trusted click=true');
   expect(result.assistantOutput).toContain('human-edited application');
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
-    'Approved destination: https://agent-product.test'
-  );
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   expect(operations).toEqual([
     'browser_snapshot',
     'browser_type',
@@ -1656,7 +1677,7 @@ test('baseline: file delivery uses scoped download authority and a verified rece
   expect(result.artifact).not.toHaveProperty('savePath');
   expect(JSON.stringify(result.artifact)).not.toContain('/Users/');
   await expect(window.locator('.agent-artifact')).toContainText('freedom-quarterly-report.txt');
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText('File downloaded');
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   expect(operations).toEqual(['browser_snapshot', 'browser_download', 'browser_list_downloads']);
 });
 
@@ -2065,7 +2086,7 @@ test('node intelligence: reports redacted integrated-service status without a br
     /endpoint|port|path|pid|config|raw|log|errorMessage|stack/i
   );
   expect(result.assistantOutput).toContain('Checked 6 Freedom services');
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText('Node status checked');
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   expect(operations).toEqual(['node_status']);
 });
 
@@ -2115,16 +2136,7 @@ test('node request classifier: confidently reads the registry-selected Ant API w
       bytes: expect.any(Number),
     },
   });
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
-    'Node request completed'
-  );
-  const completionLayout = await window.locator('.agent-turn-outcome').last().evaluate((card) => {
-    card.style.width = '220px';
-    const detail = card.querySelector('.agent-turn-outcome-copy > span');
-    detail.textContent = `ant returned 200 for GET /stamps/${'a'.repeat(64)}. Freedom classified its effect as read.`;
-    return { clientWidth: card.clientWidth, scrollWidth: card.scrollWidth };
-  });
-  expect(completionLayout.scrollWidth).toBeLessThanOrEqual(completionLayout.clientWidth);
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   expect(operations).toEqual(['node_request']);
 });
 
@@ -2229,7 +2241,7 @@ test('node lifecycle: exact approval is followed by verified manager state', asy
     verified: true,
   });
   expect(result.assistantOutput).toContain('Restarted IPFS and verified its state as running');
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText('Node state verified');
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   expect(operations).toEqual(['node_lifecycle']);
 });
 
@@ -2243,7 +2255,7 @@ test('node diagnostics: one honest disclosure grants bounded raw node and app ev
     .fill('PRODUCT_RAW_DIAGNOSTICS: inspect IPFS logs, then Freedom application logs.');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-approval-action')).toHaveText(
-    'Share recent ipfs node diagnostics with Ollama?'
+    'Let Agent inspect recent ipfs node logs?'
   );
   await expect(window.locator('#agent-approval-origin')).toContainText(
     'Raw diagnostic logs will be added to this conversation with Ollama'
@@ -2298,8 +2310,6 @@ test('node diagnostics: one honest disclosure grants bounded raw node and app ev
   expect(result.nodeDiagnostics.logs.bytes).toBeLessThanOrEqual(8192);
   expect(result.appDiagnostics.logs.bytes).toBeLessThanOrEqual(8192);
   expect(result.assistantOutput).toContain('Inspected');
-  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
-    'Diagnostics inspected'
-  );
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   expect(operations).toEqual(['node_diagnostics', 'app_diagnostics']);
 });

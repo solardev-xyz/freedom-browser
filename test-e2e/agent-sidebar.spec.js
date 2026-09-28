@@ -28,6 +28,22 @@ const test = baseTest.extend({
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
+for (const database of ['agent-history.sqlite', 'agent-node-operations.sqlite', 'agent-workspaces.sqlite']) {
+  test(`browser starts without resetting unavailable ${database}`, async ({ userDataDir, relaunchApp }) => {
+    const databasePath = path.join(userDataDir, database);
+    const damaged = Buffer.from('Corrupt database fixture: preserve these bytes');
+    fs.writeFileSync(databasePath, damaged);
+    const app = await relaunchApp();
+    const window = await app.firstWindow();
+    await expect(window.locator('[data-test="address-input"]')).toBeVisible();
+    await window.locator('[data-test="agent-toggle-btn"]').click();
+    await expect(window.locator('#agent-provider-message')).toContainText('Agent storage is unavailable');
+    const state = await window.evaluate(() => window.electronAPI.getAgentState());
+    expect(state).toMatchObject({ ok: false, error: { code: 'AGENT_STORAGE_UNAVAILABLE' } });
+    expect(fs.readFileSync(databasePath).equals(damaged)).toBe(true);
+  });
+}
+
 test('read-only external projects accept SSH remotes and physical ASAR archives', async ({ electronApp, userDataDir }) => {
   const result = await electronApp.evaluate(async (_electron, { root, userDataDir }) => {
     const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
@@ -632,14 +648,14 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await window.locator('#agent-approval-mode-button').click();
   await expect(window.locator('#agent-approval-mode-popover')).toBeVisible();
   await expect(window.locator('#agent-approval-mode-every')).toContainText(
-    'Ask before every interaction'
+    'Ask frequently'
   );
   await expect(window.locator('#agent-approval-mode-sensitive')).toBeEnabled();
   await expect(window.locator('#agent-approval-mode-sensitive')).toContainText(
-    'Ask for consequential actions'
+    'Ask when needed'
   );
   await expect(window.locator('#agent-approval-mode-allow')).toContainText(
-    'Allow website interactions'
+    'Fewer interruptions'
   );
 
   await window.locator('#agent-model-menu-button').click();
@@ -813,7 +829,8 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   expect(unifiedChrome.sessions).not.toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.conversation).toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.workspace).toBe(unifiedChrome.titlebar);
-  expect(unifiedChrome.composer).toBe(unifiedChrome.titlebar);
+  // The floating composer exposes the conversation background beneath it.
+  expect(unifiedChrome.composer).toBe('rgba(0, 0, 0, 0)');
   await expect(window.locator('[data-test="agent-attachment"]')).toBeEnabled();
   await window.locator('[data-test="agent-attachment"]').click();
   await expect(window.locator('#agent-attachment-menu')).toBeVisible();
@@ -869,7 +886,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   expect(composerLayout.model.left).toBeLessThan(composerLayout.dictation.left);
   expect(composerLayout.dictation.left).toBeLessThan(composerLayout.send.left);
   expect(composerLayout.borderRadius).toBeGreaterThanOrEqual(20);
-  expect(composerLayout.promptFontSize).toBe(14);
+  expect(composerLayout.promptFontSize).toBe(15);
   expect(composerLayout.promptMinHeight).toBeGreaterThanOrEqual(60);
   expect(Math.abs(composerLayout.send.width - composerLayout.send.height)).toBeLessThan(1);
   expect(composerLayout.sendRadius).toBeGreaterThanOrEqual(composerLayout.send.width / 2 - 1);
@@ -890,9 +907,9 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
         getComputedStyle(document.querySelector(selector)).backgroundColor;
       const browserChrome = background('#agent-workspace-nav');
       const browserAddress = background('#agent-workspace-address-host #address-input');
-      const titlebarDivider = getComputedStyle(
+      const titlebarBorderWidth = getComputedStyle(
         document.querySelector('.title-bar')
-      ).borderBottomColor;
+      ).borderBottomWidth;
       return {
         sidebar: intensity(
           getComputedStyle(document.querySelector('#agent-session-sidebar')).backgroundColor
@@ -903,7 +920,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
         browserChromeIntensity: intensity(browserChrome),
         browserAddressIntensity: intensity(browserAddress),
         activeTab: background('#agent-task-page-list .tab.active'),
-        titlebarDivider,
+        titlebarBorderWidth,
         workspaceDivider: getComputedStyle(document.querySelector('#agent-page-surface'))
           .borderLeftColor,
         navigationDivider: getComputedStyle(document.querySelector('#agent-workspace-nav'))
@@ -924,10 +941,10 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
     expect(theme.activeTab).toBe(theme.browserChrome);
     expect(theme.browserChrome).not.toBe(theme.browserAddress);
     expect(theme.browserChromeIntensity).toBeGreaterThan(theme.browserAddressIntensity);
-    expect(theme.workspaceDivider).toBe(theme.titlebarDivider);
-    expect(theme.navigationDivider).toBe(theme.titlebarDivider);
-    expect(theme.activeTabDivider).toBe(theme.titlebarDivider);
-    expect(theme.composerBorder).toBe(theme.titlebarDivider);
+    expect(theme.titlebarBorderWidth).toBe('0px');
+    expect(theme.navigationDivider).toBe(theme.workspaceDivider);
+    expect(theme.activeTabDivider).toBe(theme.workspaceDivider);
+    expect(theme.composerBorder).toBe(theme.workspaceDivider);
   }
 
   const paneMotion = await window.evaluate(() => ({
@@ -1059,7 +1076,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await window.locator('#agent-approval-mode-button').click();
   await window.locator('#agent-approval-mode-allow').click();
   await expect(window.locator('#agent-active-approval-mode-label')).toHaveText(
-    'Allow website actions'
+    'Fewer interruptions'
   );
   await expect(window.locator('#agent-run-message')).toHaveText(
     'Approval setting updated for the next message.'

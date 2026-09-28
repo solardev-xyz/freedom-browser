@@ -81,7 +81,8 @@ function latestSnapshotElements(body) {
   for (const message of [...(body.messages || [])].reverse()) {
     if (message?.role !== 'tool') continue;
     try {
-      const envelope = JSON.parse(contentText(message.content));
+      // Pi appends the historical-evidence note after the one-line JSON envelope.
+      const envelope = JSON.parse(contentText(message.content).split('\n')[0]);
       if (Array.isArray(envelope?.result?.elements)) return envelope.result.elements;
     } catch {
       // Ignore non-snapshot tool results.
@@ -266,6 +267,11 @@ async function handleCompletion(request, response) {
 
 test.beforeAll(async () => {
   server = http.createServer((request, response) => {
+    if (request.method === 'GET' && request.url === '/api/tags') {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ models: [{ name: MODEL_ID }] }));
+      return;
+    }
     if (request.method === 'POST' && request.url === '/v1/chat/completions') {
       handleCompletion(request, response).catch(() => {
         if (!response.headersSent) response.writeHead(500);
@@ -294,11 +300,16 @@ test.afterAll(async () => {
 
 async function configureFixtureProvider(window) {
   await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-select').selectOption('ollama');
-  await window.locator('#agent-ollama-model').fill(MODEL_ID);
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
   await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
   await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${MODEL_ID}`);
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
+  await window.locator('#agent-approval-mode-button').click();
+  await window.locator('#agent-approval-mode-every').click();
   await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
 }
 
@@ -373,7 +384,7 @@ test('follow-up prompts retain Pi context and the visible chat across sidebar re
   await expect(window.locator('.agent-user-message')).toHaveText(['FIRST_CONTEXT']);
   await expect(window.locator('.agent-output')).toHaveText(['READY']);
   await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
-  await expect(window.locator('#agent-approval-mode-button')).toBeDisabled();
+  await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
 
   await window.locator('#agent-prompt').fill('FOLLOWUP_CONTEXT');
   await window.locator('#agent-run').click();
@@ -409,8 +420,8 @@ test('Take over preserves the Pi session and resume re-observes the page', async
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
   await expect(window.locator('#agent-output')).toContainText('RESUMED');
   await expect(window.locator('.agent-tool-item')).toContainText([
-    'Checked https://agent-cancellation.test',
-    'Read https://agent-cancellation.test',
+    'Checked Shared start',
+    'Read Shared start',
   ]);
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 });

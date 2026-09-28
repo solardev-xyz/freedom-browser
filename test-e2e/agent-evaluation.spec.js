@@ -179,7 +179,8 @@ function snapshotElements(messages) {
   for (const message of [...messages].reverse()) {
     if (message?.role !== 'tool') continue;
     try {
-      const envelope = JSON.parse(contentText(message.content));
+      // Pi appends the historical-evidence note after the one-line JSON envelope.
+      const envelope = JSON.parse(contentText(message.content).split('\n')[0]);
       if (Array.isArray(envelope?.result?.elements)) return envelope.result.elements;
     } catch {
       // Non-snapshot tool results are expected later in the conversation.
@@ -193,7 +194,8 @@ function allSnapshotElements(messages) {
   for (const message of messages) {
     if (message?.role !== 'tool') continue;
     try {
-      const envelope = JSON.parse(contentText(message.content));
+      // Pi appends the historical-evidence note after the one-line JSON envelope.
+      const envelope = JSON.parse(contentText(message.content).split('\n')[0]);
       if (Array.isArray(envelope?.result?.elements)) snapshots.push(envelope.result.elements);
     } catch {
       // Tool failures and non-snapshot results are expected in multi-step cases.
@@ -207,7 +209,8 @@ function toolEnvelopes(messages) {
   for (const message of messages) {
     if (message?.role !== 'tool') continue;
     try {
-      envelopes.push(JSON.parse(contentText(message.content)));
+      // Pi appends the historical-evidence note after the one-line JSON envelope.
+      envelopes.push(JSON.parse(contentText(message.content).split('\n')[0]));
     } catch {
       // Pi tool failures need not contain a JSON success envelope.
     }
@@ -729,8 +732,14 @@ async function handleCompletion(request, response) {
 
 test.beforeAll(async () => {
   server = http.createServer((request, response) => {
+    if (request.method === 'GET' && request.url === '/api/tags') {
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ models: [{ name: MODEL_ID }] }));
+      return;
+    }
     if (request.method === 'POST' && request.url === '/v1/chat/completions') {
-      handleCompletion(request, response).catch(() => {
+      handleCompletion(request, response).catch((error) => {
+        console.error('Fixture completion failed:', error);
         if (!response.headersSent) response.writeHead(500);
         response.end();
       });
@@ -780,11 +789,14 @@ async function approveInteraction(window, label) {
 
 async function configureAgentProvider(window, approvalMode = 'allow') {
   await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-select').selectOption('ollama');
-  await window.locator('#agent-ollama-model').fill(MODEL_ID);
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
   await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
   await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${MODEL_ID}`);
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
   await selectApprovalMode(window, approvalMode);
 }
 
@@ -809,11 +821,15 @@ test('Pi completes a deterministic multi-step task in the visible controlled tab
     .toBe(PAGE_URL);
 
   await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-select').selectOption('ollama');
-  await window.locator('#agent-ollama-model').fill(MODEL_ID);
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
   await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
   await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${MODEL_ID}`);
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
+  await selectApprovalMode(window, 'every');
 
   const startedAt = Date.now();
   await window
@@ -1505,11 +1521,15 @@ test('every-interaction mode blocks a prompt-injected page action without approv
     .toBe(INJECTION_PAGE_URL);
 
   await window.locator('[data-test="agent-toggle-btn"]').click();
-  await window.locator('#agent-provider-select').selectOption('ollama');
-  await window.locator('#agent-ollama-model').fill(MODEL_ID);
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
   await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
   await window.locator('#agent-provider-save').click();
-  await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${MODEL_ID}`);
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await expect(window.locator('#agent-active-model-label')).toHaveText(MODEL_ID);
+  await selectApprovalMode(window, 'every');
 
   await window
     .locator('#agent-prompt')
