@@ -8,6 +8,7 @@ const {
   OPENAI_DEVICE_VERIFICATION_URL,
   normalizeSubscriptionAuthEvent,
   registerFreedomAgentIpc,
+  registerUnavailableAgentIpc,
 } = require('./ipc');
 
 function createIpcMain() {
@@ -18,6 +19,26 @@ function createIpcMain() {
     removeHandler: jest.fn((channel) => handlers.delete(channel)),
   };
 }
+
+test('unavailable Agent rejects every request safely while preserving chrome ownership', async () => {
+  const ipcMain = createIpcMain();
+  const sender = createSender();
+  const dispose = registerUnavailableAgentIpc({ ipcMain, isTrustedSender: candidate => candidate === sender });
+  const requestChannels = Object.entries(IPC).filter(([name]) => name.startsWith('AGENT_') && !name.endsWith('_EVENT'));
+  expect(ipcMain.handlers.size).toBe(requestChannels.length);
+  expect(ipcMain.handlers.has(IPC.AGENT_EVENT)).toBe(false);
+  expect(ipcMain.handlers.has(IPC.AGENT_PROVIDER_AUTH_EVENT)).toBe(false);
+  for (const handler of ipcMain.handlers.values()) {
+    expect(await handler({ sender })).toMatchObject({
+      ok: false, error: { code: 'AGENT_STORAGE_UNAVAILABLE', message: expect.stringContaining('Restart Freedom') },
+    });
+    expect(await handler({ sender: createSender() })).toMatchObject({
+      ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+  }
+  dispose();
+  expect(ipcMain.handlers.size).toBe(0);
+});
 
 function createSender() {
   const sender = new EventEmitter();

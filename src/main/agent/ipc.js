@@ -62,6 +62,25 @@ function errorEnvelope(code, message) {
   return { ok: false, error: { code, message } };
 }
 
+function registerUnavailableAgentIpc({ ipcMain, isTrustedSender }) {
+  const channels = Object.entries(IPC)
+    .filter(([name]) => name.startsWith('AGENT_') && !name.endsWith('_EVENT'))
+    .map(([, channel]) => channel);
+  for (const channel of channels) {
+    ipcMain.handle(channel, (event) => {
+      if (!isTrustedSender(event.sender))
+        return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
+      return errorEnvelope(
+        'AGENT_STORAGE_UNAVAILABLE',
+        'Agent storage is unavailable. Restart Freedom; if this persists, check profile-folder access or restore Agent data from a backup.'
+      );
+    });
+  }
+  return () => {
+    for (const channel of channels) ipcMain.removeHandler(channel);
+  };
+}
+
 function safeServiceError(error) {
   if (error instanceof FreedomAgentError) return errorEnvelope(error.code, error.message);
   return errorEnvelope(
@@ -1388,6 +1407,7 @@ module.exports = {
   OPENAI_DEVICE_VERIFICATION_URL,
   normalizeSubscriptionAuthEvent,
   registerFreedomAgentIpc,
+  registerUnavailableAgentIpc,
   safeProviderError,
   safeServiceError,
   validateStartPayload,

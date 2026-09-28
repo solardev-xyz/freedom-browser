@@ -1,7 +1,8 @@
 'use strict';
 
 const { FreedomAgentService } = require('./freedom-agent-service');
-const { registerFreedomAgentIpc } = require('./ipc');
+const { registerFreedomAgentIpc, registerUnavailableAgentIpc } = require('./ipc');
+const log = require('../logger');
 const { AgentProviderResolver } = require('./provider-resolver');
 const { AgentProviderStore } = require('./provider-store');
 const { AgentSessionHistoryStore } = require('./session-history-store');
@@ -30,10 +31,26 @@ function createFreedomAgentRuntime(options = {}) {
     store: providerStore,
     dataDir: options.dataDir,
   });
-  const historyStore = new AgentSessionHistoryStore({
-    userDataDir: options.profile?.userDataDir,
-  });
-  historyStore.markStaleRunningAsInterrupted();
+  let historyStore;
+  let nodeOperationStore;
+  let workspaceStore;
+  try {
+    // Reconcile persistent state before installing controllers or IPC listeners.
+    // Agent storage failure must not prevent ordinary browser startup.
+    historyStore = new AgentSessionHistoryStore({ userDataDir: options.profile?.userDataDir });
+    nodeOperationStore = new AgentNodeOperationStore({ userDataDir: options.profile?.userDataDir });
+    workspaceStore = new AgentManagedWorkspaceStore({ userDataDir: options.profile?.userDataDir });
+    historyStore.markStaleRunningAsInterrupted();
+    nodeOperationStore.markStaleInFlightAsUncertain();
+    workspaceStore.markStaleRunningAsInterrupted();
+  } catch (error) {
+    log.error('[Agent] Storage initialization failed:', error?.code || 'AGENT_STORAGE_INIT_FAILED');
+    for (const store of [workspaceStore, nodeOperationStore, historyStore]) {
+      try { store?.close(); } catch { log.warn('[Agent] Could not close an unavailable store'); }
+    }
+    const unregisterIpc = registerUnavailableAgentIpc(options);
+    return { unavailable: true, dispose: async () => unregisterIpc() };
+  }
   const pdfProcessor = new PdfProcessor({
     BrowserWindow: options.BrowserWindow,
     ipcMain: options.ipcMain,
@@ -43,14 +60,6 @@ function createFreedomAgentRuntime(options = {}) {
     dialog: options.dialog,
     pdfProcessor,
   });
-  const nodeOperationStore = new AgentNodeOperationStore({
-    userDataDir: options.profile?.userDataDir,
-  });
-  nodeOperationStore.markStaleInFlightAsUncertain();
-  const workspaceStore = new AgentManagedWorkspaceStore({
-    userDataDir: options.profile?.userDataDir,
-  });
-  workspaceStore.markStaleRunningAsInterrupted();
   const workspaceController = new ManagedWorkspaceController({
     store: workspaceStore,
     runtimeOptions: options.workspaceRuntimeOptions,

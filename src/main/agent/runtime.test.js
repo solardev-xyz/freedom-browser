@@ -20,7 +20,7 @@ jest.mock('./managed-workspace-source-reader');
 jest.mock('./workspace-preview-controller');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
-const { registerFreedomAgentIpc } = require('./ipc');
+const { registerFreedomAgentIpc, registerUnavailableAgentIpc } = require('./ipc');
 const { AgentProviderResolver } = require('./provider-resolver');
 const { AgentProviderStore } = require('./provider-store');
 const { AgentSessionHistoryStore } = require('./session-history-store');
@@ -42,6 +42,34 @@ const { createFreedomAgentRuntime } = require('./runtime');
 describe('Freedom agent runtime', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  test.each(['history', 'node', 'workspace'])('%s storage failure closes stores and disables only Agent', async (failedStore) => {
+    const stores = Object.fromEntries(['history', 'node', 'workspace'].map(name => [name, {
+      markStaleRunningAsInterrupted: jest.fn(),
+      markStaleInFlightAsUncertain: jest.fn(),
+      close: jest.fn(),
+    }]));
+    const method = failedStore === 'node' ? 'markStaleInFlightAsUncertain' : 'markStaleRunningAsInterrupted';
+    stores[failedStore][method].mockImplementation(() => {
+      throw Object.assign(new Error('private database details'), { code: 'SQLITE_NOTADB' });
+    });
+    AgentSessionHistoryStore.mockImplementation(() => stores.history);
+    AgentNodeOperationStore.mockImplementation(() => stores.node);
+    AgentManagedWorkspaceStore.mockImplementation(() => stores.workspace);
+    const unregister = jest.fn();
+    registerUnavailableAgentIpc.mockReturnValue(unregister);
+    const options = { profile: { userDataDir: '/test-profile' }, ipcMain: {}, isTrustedSender: jest.fn() };
+    const runtime = createFreedomAgentRuntime(options);
+    expect(runtime.unavailable).toBe(true);
+    for (const store of Object.values(stores)) expect(store.close).toHaveBeenCalledTimes(1);
+    expect(PdfProcessor).not.toHaveBeenCalled();
+    expect(ManagedWorkspaceController).not.toHaveBeenCalled();
+    expect(FreedomAgentService).not.toHaveBeenCalled();
+    expect(registerFreedomAgentIpc).not.toHaveBeenCalled();
+    expect(registerUnavailableAgentIpc).toHaveBeenCalledWith(options);
+    await runtime.dispose();
+    expect(unregister).toHaveBeenCalledTimes(1);
   });
 
   test('composes one profile-bound runtime and disposes IPC before the service', async () => {
