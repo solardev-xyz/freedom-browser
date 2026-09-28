@@ -59,7 +59,7 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
   'WORKSPACE_SANDBOX_DENIED',
 ]);
 const WORKSPACE_ERROR_MESSAGES = Object.freeze({
-  WORKSPACE_WRITER_BUSY: 'A helper owns editing or project changes are still running. Wait for the helper and pending writes before editing, running commands or changing history.',
+  WORKSPACE_WRITER_BUSY: 'A helper owns a conflicting file or a file operation is still running. Edit a different unassigned file, or wait and re-read before editing. Commands and history operations must wait for all editing helpers and pending writes.',
   DELEGATED_PATH_DENIED: 'This file is outside the delegated file list. Return to the parent to revise the assignment; do not work around it.',
   UNSAFE_GIT_CONFIGURATION: 'Project Git configuration is incompatible with the workspace sandbox. Additional editing permission does not resolve this.',
   WORKSPACE_CHANGED_DURING_VALIDATION: 'The project changed while Freedom was checking its filesystem. Wait for changes to settle before retrying; editing permission is not required.',

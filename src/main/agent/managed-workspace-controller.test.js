@@ -1188,11 +1188,13 @@ describe('ManagedWorkspaceController', () => {
     expect(dependencies.executor.execute).not.toHaveBeenCalled();
   });
 
-  test('delegated writer owns exact files and blocks competing mutations until pending work settles', async () => {
+  test('disjoint writers coexist and Stop retains only the stopped helper files until pending work settles', async () => {
     const { controller, dependencies } = createController();
     const scope = await controller.createDelegatedWriter('conversation_one', ['README.md']);
-    await expect(controller.createDelegatedWriter('conversation_one', ['other.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
-    await expect(controller.writeFile('conversation_one', 'other.md', 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    const sibling = await controller.createDelegatedWriter('conversation_one', ['other.md']);
+    dependencies.executor.execute.mockResolvedValue(completedExecution(''));
+    await controller.writeFile('conversation_one', 'parent.md', 'parent');
+    await expect(controller.writeFile('conversation_one', 'README.md', 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
     await expect(controller.execute('conversation_one', { command: 'echo parent' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
     await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'status' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
     await expect(scope.controller.writeFile('conversation_one', 'other.md', 'outside')).rejects.toMatchObject({ code: 'DELEGATED_PATH_DENIED' });
@@ -1203,14 +1205,63 @@ describe('ManagedWorkspaceController', () => {
     for (let i = 0; i < 40 && !finish; i++) await Promise.resolve();
     expect(finish).toBeDefined();
     scope.release();
-    await expect(controller.createDelegatedWriter('conversation_one', ['other.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.createDelegatedWriter('conversation_one', ['README.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    const unrelated = await controller.createDelegatedWriter('conversation_one', ['third.md']);
+    unrelated.release();
     finish(completedExecution(''));
     await writing;
     await Promise.resolve(); await Promise.resolve();
     expect(scope.evidence()).toMatchObject({ changedFiles: ['README.md'], attemptedFiles: ['README.md'], writesPending: false });
     await expect(scope.controller.writeFile('conversation_one', 'README.md', 'late')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
-    const next = await controller.createDelegatedWriter('conversation_one', ['other.md']);
-    next.release();
+    const next = await controller.createDelegatedWriter('conversation_one', ['README.md']);
+    dependencies.executor.execute.mockResolvedValue(completedExecution(''));
+    await sibling.controller.writeFile('conversation_one', 'other.md', 'still active');
+    await expect(controller.startProcess('conversation_one', { command: 'npm run build' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    sibling.release(); next.release();
+  });
+
+  test.each([
+    ['app/Page.js', 'app/page.js'], ['café.js', 'cafe\u0301.js'], ['Σ.js', 'ς.js'], ['ẞ.js', 'ss.js'],
+    ['app/page.js', 'app'], ['app', 'app/page.js'],
+  ])('file ownership rejects aliases and file/directory overlap: %s / %s', async (first, second) => {
+    const { controller } = createController();
+    const scope = await controller.createDelegatedWriter('conversation_one', [first]);
+    await expect(controller.createDelegatedWriter('conversation_one', [second])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.writeFile('conversation_one', second, 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    scope.release();
+  });
+
+  test('pending parent writes prevent conflicting admission but permit disjoint work and shared directories', async () => {
+    const { controller, dependencies } = createController();
+    let finish;
+    dependencies.executor.execute.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const writing = controller.writeFile('conversation_one', 'app/parent.js', 'parent');
+    for (let i = 0; i < 40 && !finish; i++) await Promise.resolve();
+    await expect(controller.createDelegatedWriter('conversation_one', ['app/parent.js'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.execute('conversation_one', { command: 'echo parent' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.startProcess('conversation_one', { command: 'npm run build' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'status' })).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    const a = await controller.createDelegatedWriter('conversation_one', ['app/a.js']);
+    const b = await controller.createDelegatedWriter('conversation_one', ['app/b.js']);
+    dependencies.executor.execute.mockResolvedValue(completedExecution(''));
+    await Promise.all([a.controller.createDirectory('conversation_one', 'app'), b.controller.createDirectory('conversation_one', 'app')]);
+    await Promise.all([a.controller.writeFile('conversation_one', 'app/a.js', 'a'), b.controller.writeFile('conversation_one', 'app/b.js', 'b')]);
+    await expect(controller.createDirectory('conversation_one', 'app/a.js/sub')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    await expect(controller.writeFile('other_conversation', 'different.js', 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
+    finish(completedExecution('')); await writing;
+    a.release(); b.release();
+  });
+
+  test('parent reads remain versioned after collaboration and stale writes carry the earlier revision', async () => {
+    const { controller, dependencies } = createController();
+    const scope = await controller.createDelegatedWriter('conversation_one', ['helper.js']);
+    const version = 'a'.repeat(64);
+    dependencies.executor.execute.mockResolvedValue(completedExecution(JSON.stringify({ version, content: Buffer.from('before').toString('base64') })));
+    expect((await controller.readFile('conversation_one', 'helper.js')).toString()).toBe('before');
+    scope.release(); await Promise.resolve(); await Promise.resolve();
+    dependencies.executor.execute.mockResolvedValue({ ...completedExecution(''), exitCode: 1, stderr: 'FREEDOM_FILE_ERROR:WORKSPACE_HISTORY_CHANGED' });
+    await expect(controller.writeFile('conversation_one', 'helper.js', 'stale')).rejects.toMatchObject({ code: 'WORKSPACE_HISTORY_CHANGED' });
+    expect(dependencies.executor.execute.mock.calls.at(-1)[1].args).toContain(version);
   });
 
   test('writer admission preserves read-only grants, rejects protected paths and running commands', async () => {
@@ -1220,7 +1271,7 @@ describe('ManagedWorkspaceController', () => {
     dependencies.store.projectAccess = { resolve: jest.fn(async () => { throw Object.assign(new Error('read-only'), { code: 'PROJECT_READ_ONLY' }); }) };
     await expect(controller.createDelegatedWriter('conversation_one', ['README.md'])).rejects.toMatchObject({ code: 'PROJECT_READ_ONLY' });
     await Promise.resolve();
-    expect(controller.delegatedWriter).toBeNull();
+    expect(controller.delegatedWriters.size).toBe(0);
     controller.processManager.entries.set('pending', { state: 'running' });
     await expect(controller.createDelegatedWriter('conversation_one', ['README.md'])).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
   });

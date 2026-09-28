@@ -283,7 +283,12 @@ function ensureDirectory(relativeDirectory) {
       if (stats.isSymbolicLink() || !stats.isDirectory()) fail('WORKSPACE_FILE_UNSAFE');
     } catch (error) {
       if (!error || error.code !== 'ENOENT') throw error;
-      fs.mkdirSync(current, { mode: 0o700 });
+      try { fs.mkdirSync(current, { mode: 0o700 }); }
+      catch (created) {
+        if (created.code !== 'EEXIST') throw created;
+        const stats = fs.lstatSync(current);
+        if (stats.isSymbolicLink() || !stats.isDirectory()) fail('WORKSPACE_FILE_UNSAFE');
+      }
     }
   }
   return current;
@@ -629,6 +634,14 @@ function assertWritableWorkspacePath(value) {
   return relative;
 }
 
+// Reserve conservatively across case-insensitive and Unicode-normalizing filesystems.
+// Directories may be shared, but a reserved file cannot also become a directory.
+function workspacePathsConflict(first, second, operation = 'write') {
+  const a = first.normalize('NFD').toLowerCase().toUpperCase().toLowerCase().normalize('NFD');
+  const b = second.normalize('NFD').toLowerCase().toUpperCase().toLowerCase().normalize('NFD');
+  return a === b || a.startsWith(b + '/') || (operation !== 'mkdir' && b.startsWith(a + '/'));
+}
+
 function validateWorkspaceContent(content) {
   if (typeof content !== 'string') {
     throw new ManagedWorkspaceError(
@@ -755,8 +768,9 @@ class ManagedWorkspaceController {
     this.leasePromises = new Map();
     this.activeCommands = new Map();
     this.pendingOperations = new Set();
-    this.pendingMutations = new Set();
-    this.delegatedWriter = null;
+    this.pendingMutations = new Map();
+    this.delegatedWriters = new Set();
+    this.collaborativeConversations = new Set();
     this.shutdownController = new AbortController();
     this.disposePromise = null;
     this.shutdownFinished = false;
@@ -1347,25 +1361,37 @@ class ManagedWorkspaceController {
     });
   }
 
-  #assertWriter(token) {
-    if ((this.delegatedWriter && this.delegatedWriter !== token) || (token && (this.delegatedWriter !== token || token.closed))) {
-      throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'A helper owns project editing. Wait for its report and pending writes to finish before editing, running commands or changing history.');
+  #assertWriter(token, relativePath = null, operation = 'write', conversationId = token?.conversationId) {
+    const invalid = token && (!this.delegatedWriters.has(token) || token.closed);
+    const conflict = [...this.delegatedWriters].some(writer => writer !== token &&
+      (relativePath === null ? !token : writer.conversationId !== conversationId || [...writer.allowed].some(file => workspacePathsConflict(relativePath, file, operation))));
+    const pendingFiles = !token && relativePath === null && [...this.pendingMutations.values()].some(mutation => mutation !== true);
+    if (invalid || conflict || pendingFiles) {
+      throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'An editing helper owns a conflicting file or has pending writes. Edit a different unassigned file, or wait for its report and writes to settle. Commands and history operations must wait for all editing helpers.');
     }
+  }
+
+  #pendingWriteConflict(relativePath, operation = 'write', conversationId, includeCommands = true) {
+    return [...this.pendingMutations.values()].some(mutation => mutation === true ? includeCommands :
+      mutation.conversationId !== conversationId || (operation !== 'mkdir' || mutation.operation !== 'mkdir') && workspacePathsConflict(relativePath, mutation.path, operation) &&
+      workspacePathsConflict(mutation.path, relativePath, mutation.operation));
   }
 
   async createDelegatedWriter(conversationId, paths, { signal } = {}) {
     throwIfWorkspaceAborted(signal);
     if (!Array.isArray(paths) || !paths.length || paths.length > 20) throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'Choose 1–20 exact project-relative files for the helper.');
     const allowed = new Set(paths.map(value => assertWritableWorkspacePath(value)));
-    if (this.delegatedWriter || this.pendingMutations.size || this.historyLocks.size || [...(this.processManager.entries?.values() || [])].some(entry => entry.state === 'running')) throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'Wait for active project commands, edits or history operations to finish before delegating editing.');
-    const token = { closed: false, reads: new Map(), pending: new Set(), pendingWrites: 0, changed: new Set(), attempted: new Set() };
-    this.delegatedWriter = token;
+    for (const file of allowed) this.#assertWriter(null, file, 'write', conversationId);
+    if ([...allowed].some(file => this.#pendingWriteConflict(file, 'write', conversationId)) || this.historyLocks.size || [...(this.processManager.entries?.values() || [])].some(entry => entry.state === 'running')) throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'Wait for active project commands, edits or history operations to finish before delegating editing.');
+    const token = { conversationId, allowed, closed: false, reads: new Map(), pending: new Set(), pendingWrites: 0, changed: new Set(), attempted: new Set() };
+    this.delegatedWriters.add(token);
+    this.collaborativeConversations.add(conversationId);
     const release = () => {
       token.closed = true;
       // Stop can detach a provider immediately, but ownership lasts until its
       // already-started file operations settle. No new writer can race them.
       void Promise.allSettled([...token.pending]).then(() => {
-        if (this.delegatedWriter === token) this.delegatedWriter = null;
+        this.delegatedWriters.delete(token);
       });
     };
     try {
@@ -1415,7 +1441,7 @@ class ManagedWorkspaceController {
       : this.shutdownController.signal;
     const pending = Promise.resolve().then(() => operation({ ...request, signal }));
     this.pendingOperations.add(pending);
-    if (mutation) this.pendingMutations.add(pending);
+    if (mutation) this.pendingMutations.set(pending, mutation);
     try {
       return await pending;
     } finally {
@@ -1426,11 +1452,15 @@ class ManagedWorkspaceController {
 
   #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
     const mutation = ['write', 'mkdir', 'history_restore'].includes(operation);
-    if (mutation) this.#assertWriter(request.delegatedWriter);
+    if (mutation) {
+      validateWorkspacePath(relativePath, { allowRoot: operation === 'mkdir' });
+      this.#assertWriter(request.delegatedWriter, relativePath, operation, conversationId);
+      if (this.#pendingWriteConflict(relativePath, operation, conversationId, false)) throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'A conflicting file operation or command is still running. Wait for it to settle, then re-read the file before editing.');
+    }
     return this.#runOperation(request, (executionRequest) => {
-      if (mutation) this.#assertWriter(executionRequest.delegatedWriter);
+      if (mutation) this.#assertWriter(executionRequest.delegatedWriter, relativePath, operation, conversationId);
       return this.#executeFileOperation(conversationId, operation, relativePath, content, executionRequest);
-    }, mutation);
+    }, mutation && { path: relativePath, operation, conversationId });
   }
 
   async #executeFileOperation(conversationId, operation, relativePath, content, request) {
@@ -1489,7 +1519,7 @@ class ManagedWorkspaceController {
           operation,
           relative,
           content ? content.toString('base64') : '',
-          (workspace.project || request.delegatedWriter) && operation === 'write' ? (request.projectReadVersions || this.projectReads.get(conversationId))?.get(relative) || 'missing' : '',
+          (workspace.project || request.delegatedWriter || this.collaborativeConversations.has(conversationId)) && operation === 'write' ? (request.projectReadVersions || this.projectReads.get(conversationId))?.get(relative) || 'missing' : '',
           grant ? `${grant.dev}:${grant.ino}` : '',
         ],
         signal: controller.signal,
@@ -1855,7 +1885,7 @@ class ManagedWorkspaceController {
   }
 
   async readFile(conversationId, relativePath, request = {}) {
-    const project = this.store.getForConversation(conversationId)?.project || request.delegatedWriter;
+    const project = this.store.getForConversation(conversationId)?.project || request.delegatedWriter || this.collaborativeConversations.has(conversationId);
     const bytes = await this.#fileOperation(conversationId, project ? 'read_version' : 'read', relativePath, null, request);
     if (project) {
       const result = JSON.parse(bytes.toString('utf8'));
@@ -2298,6 +2328,7 @@ class ManagedWorkspaceController {
   async deleteConversation(conversationId) {
     this.cancelConversation(conversationId);
     await this.historySettlements.get(conversationId);
+    this.collaborativeConversations.delete(conversationId);
     this.servers.deleteConversation(conversationId);
     this.processManager.deleteConversation(conversationId);
     const workspace = this.store.getForConversation(conversationId);
@@ -2364,5 +2395,6 @@ module.exports = {
   validatePermissionCommand,
   validateWorkspaceSearchPattern,
   validateWorkspacePath,
+  workspacePathsConflict,
   validateWorkingDirectory,
 };

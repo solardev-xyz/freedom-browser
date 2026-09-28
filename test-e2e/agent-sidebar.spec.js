@@ -198,6 +198,82 @@ for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} fi
   if (kind === 'external') expect(result.permissionError).toBe('PROJECT_READ_ONLY');
 });
 
+for (const kind of ['managed', 'external']) test(`parallel helper and parent edits preserve ${kind} file ownership in the real sandbox`, async ({ electronApp, userDataDir }) => {
+  const result = await electronApp.evaluate(async (_electron, { root, userDataDir, kind }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('original-fs'); const path = require('path');
+    const { AgentManagedWorkspaceStore } = require(root + '/src/main/agent/managed-workspace-store');
+    const { ManagedWorkspaceController } = require(root + '/src/main/agent/managed-workspace-controller');
+    const { createSubagentTool } = require(root + '/src/main/agent/pi-subagent-tools');
+    const { createWorkspaceTools } = require(root + '/src/main/agent/pi-workspace-tools');
+    const sdk = await require(root + '/src/main/agent/pi-sdk').loadPiSdk();
+    const profile = path.join(userDataDir, 'parallel-profile'); fs.mkdirSync(profile);
+    const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
+    const controller = new ManagedWorkspaceController({ store });
+    const conversationId = 'parallel';
+    const owner = { userText: 'Build separate components', subagentAbortController: new AbortController() };
+    let release; const barrier = new Promise(resolve => { release = resolve; });
+    let ready; const admitted = new Promise(resolve => { ready = resolve; });
+    let started = 0; const failures = [];
+    try {
+      let project;
+      if (kind === 'external') {
+        project = path.join(userDataDir, 'parallel-project'); fs.mkdirSync(project);
+        await store.attachProject(conversationId, project);
+        await controller.setProjectAccess(conversationId, 'write');
+      } else {
+        await controller.enable(conversationId);
+        project = await store.resolvePath(store.getForConversation(conversationId).workspaceId);
+      }
+      fs.mkdirSync(path.join(project, 'app'));
+      fs.writeFileSync(path.join(project, 'app/a.js'), 'before');
+      const tool = createSubagentTool({ sdk, getOwner: () => owner,
+        createWriter: (_owner, files, signal) => controller.createDelegatedWriter(conversationId, files, { signal }),
+        createTools: (_owner, scoped) => createWorkspaceTools({ sdk, controller: scoped, conversationId, requestApproval: () => { throw new Error('Unexpected approval'); } }),
+        createSession: async ({ customTools }) => {
+          let listener;
+          const get = name => customTools.find(tool => tool.name === name);
+          return { session: { subscribe: fn => { listener = fn; return () => {}; }, abort: async () => {}, dispose: () => {},
+            prompt: async prompt => {
+              const { assignment: name } = JSON.parse(prompt);
+              if (++started === 2) ready();
+              await barrier;
+              try {
+                if (name === 'a') await get('read').execute('read', { path: 'app/a.js' });
+                await get('write').execute('write', { path: `app/${name}.js`, content: name });
+                await get('write').execute('new', { path: `shared/new/${name}.js`, content: name });
+                listener({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Implemented assigned component.' }] } });
+              } catch (error) { failures.push({ code: error.code, message: error.message }); throw error; }
+            } } };
+        },
+      });
+      const pending = tool.execute('batch', { tasks: ['a', 'b'].map(name => ({ title: name, task: name, mode: 'edit', files: [`app/${name}.js`, `shared/new/${name}.js`] })) });
+      await admitted;
+      await controller.readFile(conversationId, 'app/a.js');
+      const blocked = {};
+      for (const [name, action] of Object.entries({
+        overlap: () => controller.writeFile(conversationId, 'app/a.js', 'wrong'),
+        alias: () => controller.writeFile(conversationId, 'app/A.js', 'wrong'),
+        command: () => controller.execute(conversationId, { command: 'echo unsafe' }),
+        history: () => controller.reviewWorkspaceHistory(conversationId, { action: 'status' }),
+      })) { try { await action(); } catch (error) { blocked[name] = error.code; } }
+      await controller.writeFile(conversationId, 'parent.js', 'parent');
+      release();
+      const reports = (await pending).details.subagents;
+      let stale;
+      try { await controller.writeFile(conversationId, 'app/a.js', 'stale'); } catch (error) { stale = error.code; }
+      await controller.readFile(conversationId, 'app/a.js');
+      await controller.writeFile(conversationId, 'app/a.js', 'integrated');
+      return { started, failures, blocked, stale, reports: reports.map(report => ({ state: report.state, changedFiles: report.changedFiles })),
+        files: ['app/a.js', 'app/b.js', 'shared/new/a.js', 'shared/new/b.js', 'parent.js'].map(file => fs.readFileSync(path.join(project, file), 'utf8')) };
+    } finally { release(); owner.subagentAbortController.abort(); await controller.dispose(); store.close(); }
+  }, { root: repositoryRoot, userDataDir, kind });
+  expect(result.failures).toEqual([]);
+  expect(result).toMatchObject({ started: 2, blocked: { overlap: 'WORKSPACE_WRITER_BUSY', alias: 'WORKSPACE_WRITER_BUSY', command: 'WORKSPACE_WRITER_BUSY', history: 'WORKSPACE_WRITER_BUSY' },
+    stale: 'WORKSPACE_HISTORY_CHANGED', files: ['integrated', 'b', 'a', 'b', 'parent'],
+    reports: [{ state: 'completed', changedFiles: ['app/a.js', 'shared/new/a.js'] }, { state: 'completed', changedFiles: ['app/b.js', 'shared/new/b.js'] }] });
+});
+
 test('helper history persists reports and marks crash-left work interrupted in real SQLite', async ({ electronApp }) => {
   const result = await electronApp.evaluate(({ app }, root) => {
     const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);

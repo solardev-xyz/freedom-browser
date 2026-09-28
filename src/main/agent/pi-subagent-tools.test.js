@@ -329,7 +329,42 @@ test('editing follow-ups acquire fresh ownership and retain earlier changed-file
   f.owner.subagentAbortController.abort();
 });
 
-test('editing admission cannot broaden a read-only grant or admit two writers', async () => {
+test.each([false, true])('disjoint editing scopes remain independent when one helper stops: %s', async stopFirst => {
+  const scopes = [];
+  const f = backgroundFixture();
+  f.options.createWriter = jest.fn(async (_owner, files) => {
+    const scope = { controller: { files }, release: jest.fn(), evidence: () => ({ changedFiles: files, attemptedFiles: files, writesPending: false }) };
+    scopes.push(scope); return scope;
+  });
+  const started = await f.run({ background: true, tasks: [
+    { title: 'Scene', task: 'Implement agreed scene props', mode: 'edit', files: ['app/scene.js'] },
+    { title: 'UI', task: 'Use agreed scene props', mode: 'edit', files: ['app/page.js', 'app/style.css'] },
+  ] });
+  await flush();
+  expect(f.children).toHaveLength(2);
+  expect(started.details.subagents).toHaveLength(2);
+  if (stopFirst) await f.tool.stop(f.owner, started.details.subagents[0].taskId);
+  f.children.forEach(child => child.finish());
+  await flush();
+  const reports = await f.tool.collect(f.owner);
+  expect(reports.map(report => report.state)).toEqual([stopFirst ? 'cancelled' : 'completed', 'completed']);
+  expect(reports.map(report => report.changedFiles)).toEqual([['app/scene.js'], ['app/page.js', 'app/style.css']]);
+  expect(scopes.every(scope => scope.release.mock.calls.length === 1)).toBe(true);
+  f.owner.subagentAbortController.abort();
+});
+
+test.each([
+  ['app/Page.js', 'app/page.js'], ['café.js', 'cafe\u0301.js'], ['Σ.js', 'ς.js'], ['ẞ.js', 'ss.js'], ['app', 'app/page.js'],
+])('conflicting editing batch is rejected before starting any helper: %s / %s', async (a, b) => {
+  const f = fixture({ createWriter: jest.fn() });
+  const result = await f.run({ tasks: [a, b].map(file => ({ title: file, task: 'Implement', mode: 'edit', files: [file] })) });
+  expect(result.isError).toBe(true);
+  expect(result.details.subagent.report).toContain('No helper in this batch was started');
+  expect(f.options.createWriter).not.toHaveBeenCalled();
+  expect(f.options.createSession).not.toHaveBeenCalled();
+});
+
+test('editing admission preserves read-only grants and rejects overlapping batch assignments', async () => {
   const createWriter = jest.fn(async () => { throw Object.assign(new Error('private path'), { code: 'PROJECT_READ_ONLY' }); });
   const f = fixture({ createWriter });
   const task = { title: 'Edit', task: 'Improve README', mode: 'edit', files: ['README.md'] };

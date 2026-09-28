@@ -2,7 +2,7 @@
 
 Branch: `experiment/agent-subagents`, started from
 `feature/freedom-automation-kernel` on 2026-09-25. Delegation supports up to six concurrent helpers, parent continuation,
-and follow-up messages. Scoped editing uses one writer. Browser helpers use fresh or explicitly assigned existing tabs with the existing approval boundary.
+and follow-up messages. Scoped editing uses exclusive file ownership with concurrent disjoint writers. Browser helpers use fresh or explicitly assigned existing tabs with the existing approval boundary.
 
 ## User behavior
 
@@ -71,21 +71,25 @@ or directory grants. Read-only remains the default. An editing helper can use
 shell commands, browser tools, history operations, approvals or nested delegation.
 The parent handles testing, review and checkpoints/commits after the helper finishes.
 
-Freedom reserves one writer in the workspace controller before creating its
-session. Existing project commands, edits and history operations must settle
-first. While reserved, competing writes, commands and history operations are
-rejected with recovery guidance; ordinary reads remain available. One writer can
-run alongside a read-only helper, including in the background. Follow-ups retain
-the original file list and acquire fresh ownership when resuming a completed helper.
-This first implementation reserves writing across the controller, rather than
-allowing simultaneous writers in different projects.
+Freedom reserves each helper's explicit files in the workspace controller before
+creating its session. Disjoint editing helpers can run together, and the parent
+may edit unassigned files. Overlapping file lists (including case/Unicode aliases
+and file/directory conflicts) are rejected. Shared parent directories can be created
+concurrently. Pending parent file operations also block conflicting admission.
+Commands, installs, builds and history operations wait for all writers and pending
+writes; a running project command prevents new editing delegation. Ordinary reads
+remain available. Follow-ups retain the original file list and acquire fresh
+ownership. Simultaneous editing across different conversations remains blocked
+conservatively, since attached folders could overlap on disk.
 
 The project must already be enabled and, for external projects, have an active
 editing grant. A read-only grant is never upgraded by delegation: the failure tells
 the parent to request editing permission and then create a new assignment.
 File scope and live grants are checked on every delegated file operation.
 Existing files require the helper's own read revision; another reader cannot
-refresh its write authority. Both managed and external files reject stale revisions.
+refresh its write authority. Both managed and external files reject stale revisions. After editing delegation
+starts, parent reads/writes in that conversation also use file revisions, so a
+parent cannot overwrite a helper change using an earlier read after handoff.
 Parent directories of assigned new files may be created. Unrelated paths and Git
 metadata cannot be written. External editors/processes can still change files;
 this is coordination between Freedom agents, not a lock on other applications.
@@ -444,7 +448,7 @@ default to useful parallel work for independent workstreams; Ollama prefers dire
 helper for focused context/review. This is a heuristic, not a hardware benchmark
 or concurrency restriction. Explicit requests for helpers, including parallel
 ones on Ollama, remain supported. No provider switching, new settings or capability
-grants are introduced. The six-helper ceiling and one-writer rule remain. Child prompts
+grants are introduced. The six-helper ceiling remains; file ownership is described above. Child prompts
 stay role-specific and cannot delegate. The guidance is built with the parent
 session, including a reconstructed session after reopening history.
 
@@ -466,7 +470,7 @@ model guidance makes this decomposition explicit and keeps task-specific review 
 synthesis with the parent; larger tasks use later batches as capacity frees.
 Simple/tightly coupled tasks still stay direct and Ollama scheduling remains
 preferentially direct/sequential. No quota on total helpers, turns or tokens is
-introduced. One writer, exclusive tab ownership, normal approvals and Stop remain.
+introduced. Exclusive file and tab ownership, normal approvals and Stop remain.
 
 The main process owns admission and receipt validation in the existing delegation
 modules; the renderer consumes the complete trusted batch instead of maintaining
@@ -507,3 +511,38 @@ instructions. The base prompt now follows the supplied capabilities, and workspa
 instructions explain first-operation activation through the existing permission
 flow. No tool access or approval policy changed. Repeat the fresh-project build
 smoke to validate model behavior beyond the prompt-wiring checks.
+
+
+Build coordination and file ownership (2026-09-28): the user accepted the fresh
+build smoke after the capability-prompt fix. Inspection showed one scene writer
+and an accessibility adviser with no file reads. Guidance now distinguishes
+upfront design advice from implementation review: agree on interfaces and file
+ownership, finish the relevant code, then have a reviewer inspect actual files.
+The parent can build/test the preview while the read-only reviewer works, once
+writers finish. Small tightly coupled apps may be delegated as one coherent task;
+there is no requirement to fill every helper slot.
+
+The former workspace-wide writer token is now a set of explicit file reservations.
+The controller still owns admission, mutation enforcement, revision checks and
+Stop settlement. Delegation preflights overlapping batch assignments using the
+same path-conflict predicate. No new IPC, renderer responsibilities, dependencies,
+permission expansion or nested delegation is introduced. Runtime checks remain
+authoritative even when model instructions are ignored.
+
+Acceptance: repeat a fresh app build without mentioning helpers. For a larger
+app with separable scene/UI work, disjoint editing may overlap; a small app may
+use one coherent writer. An implementation reviewer should inspect existing files
+and report concrete findings, while the parent builds/tests. Also stop one editing
+helper and confirm the other continues; partial edits remain available for review.
+
+
+Validation for concurrent editing: 316 targeted tests across seven suites and lint
+pass locally. Four native Electron scenarios (original scoped editing and parallel
+helper/parent editing, each for managed and external projects) pass with Electron
+44.3.0 / Pi 0.86.0; the two parallel scenarios also pass after expanded Unicode
+alias coverage. Mac mini qualification independently passes all four native cases
+with its existing Electron 43 / Pi 0.84 stack. That review exposed a pending-parent-
+write admission gap after helper release; it is fixed and an independent regression
+confirms commands, process starts and history reject until settlement, then succeed.
+Existing parent edits alongside an already-running preview server remain supported;
+this does not make arbitrary shell commands isolated snapshots of the project.

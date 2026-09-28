@@ -3839,6 +3839,8 @@ describe('provider-aware orchestration guidance', () => {
       expect(settings.systemPrompt).toContain('use the helper reports and their source links directly');
       expect(settings.systemPrompt).toContain('For code changes, inspect changedFiles/attemptedFiles and the diff');
       expect(settings.systemPrompt).toContain('without rereading the three articles yourself');
+      expect(settings.systemPrompt).toContain('have a reviewer inspect the actual code');
+      expect(settings.systemPrompt).toContain('Multiple editing helpers and the parent may write disjoint files concurrently');
       expect(settings.systemPrompt).toContain('handle simple requests directly');
       expect(settings.systemPrompt).toContain('do not wait for the user to mention helpers');
       expect(settings.systemPrompt).toContain('start three browser helpers in one batch');
