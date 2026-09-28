@@ -12,6 +12,8 @@ const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 10_000;
 const DEFAULT_PROGRESS_POLL_MS = 500;
 const DEFAULT_PROGRESS_TIMEOUT_MS = 120_000;
 const PUBLICATION_STATES = Object.freeze({
+  WAITING_POSTAGE: 'waiting_postage',
+  CONFIRMING: 'confirming',
   UPLOADING: 'uploading',
   VERIFYING: 'verifying',
   COMPLETED: 'completed',
@@ -73,7 +75,7 @@ function publicReceipt(operation) {
       operation.state === PUBLICATION_STATES.COMPLETED
         ? 'applied'
         : operation.state === PUBLICATION_STATES.FAILED
-          ? 'not_applied'
+          ? operation.dispatched ? 'possibly_applied' : 'not_applied'
           : 'possibly_applied',
     kind: operation.kind,
     name: operation.name,
@@ -85,6 +87,8 @@ function publicReceipt(operation) {
     ...(operation.bzzUrl && { bzzUrl: operation.bzzUrl }),
     ...(typeof operation.verified === 'boolean' && { verified: operation.verified }),
     ...(operation.error && { error: operation.error }),
+    ...(operation.message && { message: operation.message }),
+    ...(operation.batchId && { batchId: operation.batchId }),
   });
 }
 
@@ -145,12 +149,35 @@ class SwarmPublicationController {
     this.statusWaitTimeoutMs = options.statusWaitTimeoutMs || DEFAULT_STATUS_WAIT_TIMEOUT_MS;
     this.progressPollMs = options.progressPollMs || DEFAULT_PROGRESS_POLL_MS;
     this.progressTimeoutMs = options.progressTimeoutMs || DEFAULT_PROGRESS_TIMEOUT_MS;
-    this.operations = new Map();
+    this.postageReadiness = options.postageReadiness || null;
+    this.store = options.store || null;
+    this.now = options.now || Date.now;
+    this.jobTimeoutMs = options.jobTimeoutMs || 10 * 60_000;
+    this.readinessPollMs = options.readinessPollMs || 5_000;
+    this.retryDelayMs = options.retryDelayMs || 30_000;
+    this.operations = new Map((this.store?.list() || []).map(record => [record.publicationId, record]));
+    for (const operation of this.operations.values()) {
+      if (!['completed', 'failed'].includes(operation.state)) {
+        operation.recovered = true;
+        operation.state = operation.dispatched ? PUBLICATION_STATES.OUTCOME_UNKNOWN : PUBLICATION_STATES.FAILED;
+        operation.message = operation.dispatched ? 'Observation was interrupted. Check this publication before starting another upload.' : 'Freedom stopped before uploading. Start publication again to review the content.';
+      }
+    }
     this.active = new Map();
+    this.preparingOwners = new Set();
     this.disposed = false;
   }
 
   async publish(input, context = {}) {
+    const ownerId = context.conversationId || 'local';
+    if (this.preparingOwners.has(ownerId)) throw new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE,
+      'A publication is already being prepared in this conversation. Wait for its receipt and check its status; do not submit another upload.');
+    this.preparingOwners.add(ownerId);
+    try { return await this.#publish(input, context); }
+    finally { this.preparingOwners.delete(ownerId); }
+  }
+
+  async #publish(input, context) {
     if (this.disposed) {
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
@@ -161,6 +188,8 @@ class SwarmPublicationController {
       throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The publication was cancelled');
     }
     const ownerId = context.conversationId || 'local';
+    const unresolved = [...this.operations.values()].find(item => item.ownerId === ownerId && !['completed', 'failed'].includes(item.state));
+    if (unresolved) return this.status({ publicationId: unresolved.publicationId }, context);
     const sourceDescriptor = input.resourceId
       ? await this.readAttachmentSource(await this.attachmentStore.resolvePublicationSource(ownerId, input.resourceId))
       : input.workspacePath
@@ -235,7 +264,10 @@ class SwarmPublicationController {
     const operation = {
       publicationId,
       ownerId,
-      state: PUBLICATION_STATES.UPLOADING,
+      state: this.postageReadiness ? PUBLICATION_STATES.WAITING_POSTAGE : PUBLICATION_STATES.UPLOADING,
+      backendKey: this.postageReadiness?.backendKey(),
+      createdAt: this.now(),
+      dispatched: false,
       kind: source.kind,
       name: source.name,
       public: true,
@@ -245,9 +277,18 @@ class SwarmPublicationController {
       ...(input.indexDocument && { indexDocument: input.indexDocument }),
     };
     this.operations.set(publicationId, operation);
-    this.#emitProgress(operation, context.onProgress);
+    try { this.#emitProgress(operation, context.onProgress); }
+    catch (error) {
+      operation.state = PUBLICATION_STATES.FAILED;
+      operation.message = 'Publication could not be recorded. No upload was sent; check available disk space before retrying.';
+      this.updateHistoryEntry(operation.historyId, { status: 'failed', errorMessage: operation.message });
+      throw error;
+    }
 
+    const onAbort = () => { operation.stopRequested = true; };
+    context.signal?.addEventListener('abort', onAbort, { once: true });
     const active = this.#run(operation, source, input, context.onProgress);
+    active.finally(() => context.signal?.removeEventListener('abort', onAbort)).catch(() => {});
     this.active.set(publicationId, active);
     active.then(
       () => this.active.delete(publicationId),
@@ -278,19 +319,98 @@ class SwarmPublicationController {
         'That Swarm publication is not available in this conversation'
       );
     }
+    if (!this.active.has(input.publicationId) && operation.state === PUBLICATION_STATES.OUTCOME_UNKNOWN && operation.reference) {
+      if (operation.backendKey && operation.backendKey !== this.postageReadiness?.backendKey()) return operationResult(operation);
+      operation.stopRequested = false;
+      const active = this.#finishUpload(operation, context.onProgress).catch(error => {
+        operation.state = PUBLICATION_STATES.OUTCOME_UNKNOWN;
+        operation.message = safeMessage(error, 'Publication could not be confirmed');
+        this.#emitProgress(operation, context.onProgress);
+      }).finally(() => this.active.delete(input.publicationId));
+      this.active.set(input.publicationId, active);
+    }
     const active = this.active.get(input.publicationId);
-    if (active) await observe(active, this.statusWaitTimeoutMs);
+    if (active) await observe(active, this.statusWaitTimeoutMs, context.signal);
     return operationResult(operation);
+  }
+
+  async waitForPublications(ownerId, ids, signal) {
+    const receipts = [];
+    for (const id of new Set(ids)) {
+      const operation = this.operations.get(id);
+      if (!operation || operation.ownerId !== ownerId) continue;
+      const active = this.active.get(id);
+      if (active) {
+        const result = await observe(active, this.jobTimeoutMs + this.progressTimeoutMs + 1000, signal);
+        if (result.kind === 'aborted') { operation.stopRequested = true; return []; }
+        if (result.kind === 'timeout') {
+          operation.stopRequested = true;
+          operation.state = PUBLICATION_STATES.OUTCOME_UNKNOWN;
+          operation.message = 'Monitoring reached its deadline. Check this upload before retrying.';
+          this.#emitProgress(operation);
+        }
+      }
+      receipts.push(publicReceipt(operation));
+    }
+    return receipts;
+  }
+
+  stopObserving(ownerId, ids) {
+    const receipts = [];
+    for (const id of ids) {
+      const operation = this.operations.get(id);
+      if (!operation || operation.ownerId !== ownerId || ['completed', 'failed'].includes(operation.state)) continue;
+      operation.stopRequested = true;
+      operation.state = operation.dispatched ? PUBLICATION_STATES.OUTCOME_UNKNOWN : PUBLICATION_STATES.FAILED;
+      operation.message = operation.dispatched ? 'Monitoring stopped. The upload may still finish; check it before retrying.' : 'Stopped before uploading. No content was sent.';
+      this.#emitProgress(operation);
+      receipts.push(publicReceipt(operation));
+    }
+    return receipts;
+  }
+
+  deleteConversation(ownerId) {
+    this.store?.deleteConversation(ownerId);
+    for (const [id, operation] of this.operations) if (operation.ownerId === ownerId) {
+      operation.stopRequested = true;
+      this.operations.delete(id);
+    }
   }
 
   dispose() {
     this.disposed = true;
     for (const operation of this.operations.values()) {
       if (this.active.has(operation.publicationId)) {
+        operation.stopRequested = true;
         operation.state = PUBLICATION_STATES.OUTCOME_UNKNOWN;
-        operation.error = 'Freedom stopped observing the publication before it completed';
+        operation.message = 'Freedom stopped observing the publication before it completed';
+        this.store?.save(operation);
       }
     }
+  }
+
+  #checkOperation(operation) {
+    if (this.disposed || operation.stopRequested) throw new Error('Publication monitoring was stopped. An upload already sent may still finish; check its receipt before retrying.');
+    if (operation.backendKey && operation.backendKey !== this.postageReadiness?.backendKey()) throw new Error('The Swarm node changed. Reconnect the original node to check this publication.');
+  }
+
+  async #waitForPostage(operation, deadline, onProgress) {
+    operation.state = PUBLICATION_STATES.WAITING_POSTAGE;
+    operation.message = 'Waiting for postage to become ready';
+    this.#emitProgress(operation, onProgress);
+    while (this.now() < deadline) {
+      this.#checkOperation(operation);
+      try {
+        const result = await this.postageReadiness.inspect(operation.batchId, operation.bytes || 0, operation.firstConfirmedBlock);
+        operation.firstConfirmedBlock = result.firstConfirmedBlock;
+        operation.message = result.ready ? 'Postage is ready' : result.blocksRemaining > 0
+          ? `Waiting for postage · ${result.blocksRemaining} more blocks` : 'Waiting for the node to accept this postage batch';
+        this.#emitProgress(operation, onProgress);
+        if (result.ready) return;
+      } catch (error) { if (error.permanent) throw error; }
+      await this.sleep(this.readinessPollMs);
+    }
+    throw new Error('Postage readiness could not be confirmed in time. The existing batch was retained; no additional purchase was made.');
   }
 
   async #readWorkspaceSource(ownerId, workspacePath) {
@@ -314,69 +434,117 @@ class SwarmPublicationController {
 
   async #run(operation, source, input, onProgress) {
     try {
-      const result =
-        source.kind === 'folder'
-          ? await this.publishCollection(source.files, { indexDocument: input.indexDocument })
+      const deadline = this.now() + this.jobTimeoutMs;
+      if (this.postageReadiness) {
+        operation.batchId = await this.postageReadiness.select(operation.ownerId, operation.bytes || 0);
+        operation.firstConfirmedBlock = [...this.operations.values()].find(previous => previous !== operation && previous.batchId === operation.batchId && previous.backendKey === operation.backendKey && Number.isSafeInteger(previous.firstConfirmedBlock))?.firstConfirmedBlock;
+        await this.#waitForPostage(operation, deadline, onProgress);
+      }
+      let result;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        this.#checkOperation(operation);
+        operation.state = PUBLICATION_STATES.UPLOADING;
+        operation.message = attempt ? 'Retrying upload with the same postage batch' : 'Uploading to Swarm';
+        operation.dispatched = true;
+        operation.failureKnown = false;
+        this.#emitProgress(operation, onProgress); // Persist before dispatch.
+        const options = operation.batchId ? { batchId: operation.batchId } : {};
+        const upload = source.kind === 'folder'
+          ? this.publishCollection(source.files, { ...options, indexDocument: input.indexDocument })
           : source.kind === 'file'
-            ? await this.publishData(source.data, { name: source.name, contentType: source.contentType })
-            : await this.publishData(source.text, { contentType: source.contentType });
-      operation.reference = result.reference;
-      operation.bzzUrl = result.bzzUrl;
-      if (Number.isSafeInteger(result.bytesSize)) operation.bytes = result.bytesSize;
-      this.updateHistoryEntry(operation.historyId, { status: 'completed', ...result });
-
-      if (Number.isSafeInteger(result.tagUid)) {
-        await this.#pollProgress(operation, result.tagUid, onProgress);
+            ? this.publishData(source.data, { ...options, name: source.name, contentType: source.contentType })
+            : this.publishData(source.text, { ...options, contentType: source.contentType });
+        const observed = await observe(Promise.resolve(upload), Math.max(1, deadline - this.now()));
+        if (observed.kind === 'timeout') {
+          // The transport may still resolve. Retain its late receipt without
+          // waking a stopped turn or dispatching any further network request.
+          Promise.resolve(upload).then(result => {
+            if (!this.operations.has(operation.publicationId)) return;
+            this.#recordUploadResult(operation, result);
+            this.#emitProgress(operation);
+          }).catch(() => {});
+          throw new Error('The upload has not returned a result. Its outcome is unknown; do not start another upload.');
+        }
+        if (observed.kind === 'result') { result = observed.value; break; }
+        const error = observed.error;
+        // Only the explicit peer batch-not-found response is a propagation
+        // retry. A transport timeout or arbitrary 422 may have applied.
+        const propagation = operation.batchId && new RegExp(String.raw`postage batch (?:0x)?${operation.batchId} rejected by \d+ peer\(s\) as not found on-chain`, 'i').test(error?.message || '');
+        operation.failureKnown = propagation || (error?.status >= 400 && error.status < 500);
+        if (!propagation || attempt === 2 || this.now() + this.retryDelayMs >= deadline) throw error;
+        operation.state = PUBLICATION_STATES.WAITING_POSTAGE;
+        operation.message = 'Peers have not recognized this batch yet. Waiting before retrying the same upload.';
+        this.#emitProgress(operation, onProgress);
+        await this.sleep(this.retryDelayMs);
+        await this.#waitForPostage(operation, deadline, onProgress);
       }
-      operation.state = PUBLICATION_STATES.VERIFYING;
+      this.#recordUploadResult(operation, result);
       this.#emitProgress(operation, onProgress);
-      try {
-        await this.verifyPublication(result.reference);
-        operation.verified = true;
-      } catch (error) {
-        operation.verified = false;
-        operation.error = safeMessage(error, 'The publication could not be verified yet');
-      }
-      operation.progress = 100;
-      operation.state = PUBLICATION_STATES.COMPLETED;
-      this.#emitProgress(operation, onProgress);
+      await this.#finishUpload(operation, onProgress);
       return operationResult(operation);
     } catch (error) {
-      operation.state = PUBLICATION_STATES.FAILED;
+      operation.state = operation.dispatched && !operation.failureKnown ? PUBLICATION_STATES.OUTCOME_UNKNOWN : PUBLICATION_STATES.FAILED;
       operation.error = safeMessage(error, 'The Swarm publication failed');
+      operation.message = operation.state === 'outcome_unknown' ? 'Publication could not be confirmed. Inspect the existing upload before retrying.' : operation.dispatched ? 'Upload failed. The existing postage batch was retained.' : 'Publication could not start. Check postage readiness.';
       if (error?.capacity) operation.error += ` Upload: ${error.capacity.uploadBytes} bytes; required with safety margin: ${error.capacity.requiredBytes} bytes; largest usable batch remaining: ${error.capacity.largestRemainingBytes} bytes.`;
-      this.updateHistoryEntry(operation.historyId, {
-        status: 'failed',
-        errorMessage: operation.error,
-      });
+      this.updateHistoryEntry(operation.historyId, { status: operation.state === 'failed' ? 'failed' : 'uploading', errorMessage: operation.error });
       this.#emitProgress(operation, onProgress);
-      throw error instanceof AutomationError
-        ? error
-        : new AutomationError([ERROR_CODES.POSTAGE_CAPACITY_INSUFFICIENT, ERROR_CODES.POSTAGE_UNAVAILABLE].includes(error?.code)
-          ? error.code : ERROR_CODES.CAPABILITY_UNAVAILABLE, operation.error, {
-            suggestedAction: 'Check existing stamps and compare effective remaining capacity with the upload requirement. Obtain approval before purchasing or changing a batch. Do not repeat a completed purchase.',
-          });
+      throw error instanceof AutomationError ? error : new AutomationError(
+        [ERROR_CODES.POSTAGE_CAPACITY_INSUFFICIENT, ERROR_CODES.POSTAGE_UNAVAILABLE].includes(error?.code) ? error.code : ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        operation.error, { suggestedAction: 'Check this publication and existing stamps; compare effective remaining capacity. Do not repeat a completed purchase or an upload with unknown outcome.' });
     }
   }
 
-  async #pollProgress(operation, tagUid, onProgress) {
-    const deadline = Date.now() + this.progressTimeoutMs;
-    while (!this.disposed && Date.now() < deadline) {
-      try {
-        const status = await this.getUploadStatus(tagUid);
-        if (Number.isSafeInteger(status.progress)) {
-          operation.progress = Math.max(operation.progress || 0, status.progress);
+  #recordUploadResult(operation, result) {
+    if (!/^[a-f0-9]{64}$/.test(result?.reference || '') || result.bzzUrl !== `bzz://${result.reference}`) throw new Error('The node returned no valid publication reference. Inspect the upload before retrying.');
+    operation.reference = result.reference;
+    operation.bzzUrl = result.bzzUrl;
+    operation.tagUid = result.tagUid;
+    operation.batchId = operation.batchId || result.batchIdUsed;
+    if (Number.isSafeInteger(result.bytesSize)) operation.bytes = result.bytesSize;
+  }
+
+  async #finishUpload(operation, onProgress) {
+    this.#checkOperation(operation);
+    if (Number.isSafeInteger(operation.tagUid)) {
+      operation.state = PUBLICATION_STATES.CONFIRMING;
+      operation.message = 'Waiting for network confirmation';
+      this.#emitProgress(operation, onProgress);
+      const deadline = this.now() + this.progressTimeoutMs;
+      let confirmed = false;
+      while (this.now() < deadline) {
+        this.#checkOperation(operation);
+        try {
+          const observed = await observe(Promise.resolve().then(() => this.getUploadStatus(operation.tagUid)), Math.min(10_000, Math.max(1, deadline - this.now())));
+          if (observed.kind !== 'result') throw new Error('Status unavailable');
+          const status = observed.value;
+          if (Number.isSafeInteger(status.progress)) operation.progress = Math.min(99, Math.max(operation.progress || 0, status.progress));
           this.#emitProgress(operation, onProgress);
-        }
-        if (status.done) return;
-      } catch {
-        return;
+          const matches = !status.reference || status.reference === operation.reference;
+          if (status.done && matches && (!operation.recovered || status.reference === operation.reference)) { confirmed = true; break; }
+        } catch { /* A failed poll is not evidence of successful publication. */ }
+        await this.sleep(this.progressPollMs);
       }
-      await this.sleep(this.progressPollMs);
+      if (!confirmed) throw new Error('Network confirmation is still unavailable. Keep this upload receipt and check it again; do not upload another copy.');
     }
+    this.#checkOperation(operation);
+    operation.state = PUBLICATION_STATES.VERIFYING;
+    operation.message = 'Checking retrieval';
+    this.#emitProgress(operation, onProgress);
+    const verified = await observe(Promise.resolve().then(() => this.verifyPublication(operation.reference)), 30_000);
+    this.#checkOperation(operation);
+    operation.verified = verified.kind === 'result' && verified.value !== false;
+    operation.state = PUBLICATION_STATES.COMPLETED;
+    operation.progress = 100;
+    operation.message = operation.verified ? 'Published · retrieval verified' : 'Published · retrieval verification unavailable';
+    delete operation.error;
+    if (verified.kind === 'error') operation.error = safeMessage(verified.error, 'Retrieval could not be verified');
+    this.updateHistoryEntry(operation.historyId, { status: 'completed', reference: operation.reference, bzzUrl: operation.bzzUrl, tagUid: operation.tagUid, batchIdUsed: operation.batchId });
+    this.#emitProgress(operation, onProgress);
   }
 
   #emitProgress(operation, onProgress) {
+    if (this.operations.has(operation.publicationId)) this.store?.save(operation);
     if (typeof onProgress !== 'function') return;
     onProgress({
       state: operation.state,

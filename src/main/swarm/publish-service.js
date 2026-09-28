@@ -51,13 +51,16 @@ function normalizeTag(tag) {
 
   return {
     tagUid: tag.uid,
+    ...(/^[a-f0-9]{64}$/i.test(tag.address || '') && { reference: tag.address.toLowerCase() }),
     split,
     seen,
     stored,
     sent,
     synced,
     progress: Math.round(progressRatio * 100),
-    done: split > 0 && sent >= split,
+    // Dispatched chunks are not necessarily acknowledged. Already-seen chunks
+    // need no new receipt; newly sent chunks must be synced.
+    done: split > 0 && synced + seen >= split,
   };
 }
 
@@ -235,7 +238,7 @@ async function estimateDirSize(dirPath) {
  */
 async function getUploadStatus(tagUid) {
   const bee = getBee();
-  const tag = await bee.tag.get(tagUid);
+  const tag = await bee.tag.get(tagUid, { timeout: 10_000 });
   return normalizeTag(tag);
 }
 

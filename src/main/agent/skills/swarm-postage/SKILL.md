@@ -42,8 +42,8 @@ Use this skill when the user wants to inspect, price, buy, top up, dilute, or tr
 - A purchase can remain in progress while the blockchain transaction is mined. If `node_request` returns `in_flight`, keep the `operationId` and call `node_operation_status` for that operation. Do not issue the POST again.
 - If the model connection fails or the conversation resumes, call `node_operation_status` without an ID to discover recent operations, then inspect the relevant operation ID.
 - If a receipt reports `delivery_uncertain` and retry safety is unsafe, do not repeat the purchase. Reconcile with `GET /stamps`, the operation journal, and—when needed—bounded diagnostics.
-- A successful HTTP response should contain a `batchID` and transaction hash. Treat that as transaction submission, then verify the batch with `GET /stamps` or `GET /stamps/<batchID>`.
-- A newly purchased batch may take time to propagate. Distinguish “transaction submitted,” “batch visible locally,” and “batch usable”; do not collapse them into one claim.
+- A successful purchase response contains a `batchID`; Ant currently does not return a transaction hash for this endpoint. Do not invent one or treat its absence as a failure. Verify the batch with `GET /stamps/<batchID>` and `GET /batches/<batchID>`.
+- Ant can report `usable: true` before peers recognize a new batch; its creation-block fields can be zero placeholders. On-chain existence and local usability do not guarantee peer readiness. For deployment, continue with `swarm_publish`: Freedom checks the selected batch on-chain and waits for additional blocks before uploading. Do not make test uploads or buy another batch to test readiness. A newly purchased batch may take time to propagate. Distinguish “transaction submitted,” “batch visible locally,” and “batch usable”; do not collapse them into one claim.
 
 ## Completion report
 

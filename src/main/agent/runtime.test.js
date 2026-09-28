@@ -13,6 +13,8 @@ jest.mock('../node-request-controller');
 jest.mock('../node-lifecycle-controller');
 jest.mock('../node-diagnostics-controller');
 jest.mock('./swarm-publication-controller');
+jest.mock('./swarm-publication-store');
+jest.mock('./swarm-postage-readiness');
 jest.mock('./pdf-processor');
 jest.mock('./managed-workspace-store');
 jest.mock('./managed-workspace-controller');
@@ -222,6 +224,8 @@ describe('Freedom agent runtime', () => {
     );
     expect(options.controller.setDiagnosticsController).toHaveBeenCalledWith(diagnosticsController);
     expect(SwarmPublicationController).toHaveBeenCalledWith({
+      store: expect.any(Object),
+      postageReadiness: expect.any(Object),
       attachmentStore,
       workspaceSourceReader,
     });
@@ -231,6 +235,7 @@ describe('Freedom agent runtime', () => {
       subscribeTabLifecycle: options.subscribeTabLifecycle,
       historyStore,
       nodeOperationStore,
+      publicationController,
       cancelAgentDownloads: undefined,
       walletController,
       attachmentStore,

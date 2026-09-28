@@ -3862,3 +3862,57 @@ describe('provider-aware orchestration guidance', () => {
     }
   );
 });
+
+describe('publication continuation', () => {
+  const id = `swarm_pub_${'a'.repeat(24)}`;
+  const initial = { publicationId: id, state: 'uploading', applicationState: 'possibly_applied', kind: 'folder', name: 'dist', public: true };
+  async function fixture() {
+    const fake = createFakeSession();
+    const waiting = createDeferred();
+    const publicationController = { waitForPublications: jest.fn((_owner, _ids, signal) => {
+      signal.addEventListener('abort', () => waiting.resolve([]), { once: true });
+      return waiting.promise;
+    }) };
+    const { service, dependencies } = createService(fake, { publicationController });
+    await service.start(startOptions());
+    fake.emit({ type: 'tool_execution_start', toolName: 'swarm_publish', toolCallId: 'publish', args: { workspacePath: 'dist' } });
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({ toolCallId: 'publish', operation: 'swarm_publish', status: 'succeeded', publication: initial });
+    fake.emit({ type: 'tool_execution_end', toolName: 'swarm_publish', toolCallId: 'publish', result: {} });
+    fake.prompt.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    return { service, fake, waiting, publicationController };
+  }
+
+  test('keeps the turn alive and resumes the parent exactly once with the terminal receipt', async () => {
+    const { service, fake, waiting, publicationController } = await fixture();
+    expect(service.activeRun).not.toBeNull();
+    expect(publicationController.waitForPublications).toHaveBeenCalledWith('conversation_test', [id], expect.any(AbortSignal));
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+    waiting.resolve([{ ...initial, state: 'completed', applicationState: 'applied', reference: 'b'.repeat(64), bzzUrl: `bzz://${'b'.repeat(64)}` }]);
+    await service.waitForIdle();
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'freedom_publication_results', content: expect.stringContaining('completed') }), { triggerTurn: true });
+    await service.dispose();
+  });
+
+  test('Stop cancels the wait without delivering a stale completion to the model', async () => {
+    const { service, fake } = await fixture();
+    await service.stop('run_test');
+    await service.waitForIdle();
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  test('separates distinct assistant messages without splitting streamed chunks', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, { historyStore });
+    await service.start(startOptions());
+    const start = () => fake.emit({ type: 'message_start', message: { role: 'assistant' } });
+    const text = delta => fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } });
+    start(); text('Uploading'); text(' now.'); start(); text('Published.');
+    fake.prompt.resolve(); await service.waitForIdle();
+    expect(historyStore.finishTurn.mock.calls[0][0].assistantText).toBe('Uploading now.\n\nPublished.');
+    await service.dispose();
+  });
+});

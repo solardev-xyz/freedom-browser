@@ -126,11 +126,11 @@ describe('publish-service', () => {
   describe('normalizeTag', () => {
     test('computes progress from sent count and done flag', () => {
       expect(
-        normalizeTag({ uid: 1, split: 100, synced: 75, seen: 80, stored: 90, sent: 85 })
+        normalizeTag({ uid: 1, split: 100, synced: 75, seen: 10, stored: 90, sent: 85 })
       ).toEqual({
         tagUid: 1,
         split: 100,
-        seen: 80,
+        seen: 10,
         stored: 90,
         sent: 85,
         synced: 75,
@@ -139,7 +139,7 @@ describe('publish-service', () => {
       });
     });
 
-    test('marks done when sent >= split', () => {
+    test('marks done when acknowledged and already-seen chunks cover split', () => {
       const tag = normalizeTag({ uid: 2, split: 10, synced: 5, seen: 10, stored: 10, sent: 10 });
       expect(tag.done).toBe(true);
       expect(tag.progress).toBe(100);
@@ -326,7 +326,7 @@ describe('publish-service', () => {
         uid: 42,
         split: 200,
         synced: 150,
-        seen: 180,
+        seen: 10,
         stored: 190,
         sent: 170,
       });

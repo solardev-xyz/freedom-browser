@@ -1372,3 +1372,46 @@ test('upgrades populated legacy helper history with the Electron SQLite driver',
   expect(result.legacyAfterFailure.reportId).toBeUndefined();
   expect(result).toMatchObject({ version: 5, count: 205, reopenedCount: 205, allReportsMatch: true, lastTruncated: true });
 });
+
+test('publication card follows one job through waiting, confirmation and completion in both themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
+  await window.locator('#agent-ollama-url').fill(ollamaServer);
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const page = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    const emit = event => page.webContents.send('agent:event', { runId: 'run_publication_ui', ...event });
+    emit({ type: 'run_started', userText: 'Publish my website' });
+    emit({ type: 'tool_started', toolCallId: 'publish', operation: 'swarm_publish', intent: 'Publish site' });
+  });
+  const publication = { publicationId: `swarm_pub_${'c'.repeat(24)}`, kind: 'folder', name: 'dist', public: true, applicationState: 'possibly_applied' };
+  for (const stage of [
+    { state: 'waiting_postage', message: 'Waiting for postage · 8 more blocks' },
+    { state: 'confirming', message: 'Waiting for network confirmation', progress: 80 },
+    { state: 'outcome_unknown', message: 'Publication needs checking', error: 'A detailed fixture-only node error' },
+    { state: 'completed', message: 'Published · retrieval verified', verified: true, reference: 'd'.repeat(64), bzzUrl: `bzz://${'d'.repeat(64)}` },
+  ]) {
+    await electronApp.evaluate(({ BrowserWindow }, publication) => {
+      BrowserWindow.getAllWindows().find(item => !item.isDestroyed()).webContents.send('agent:event', {
+        type: 'tool_progress', runId: 'run_publication_ui', toolCallId: 'publish', operation: 'swarm_publish', publication,
+      });
+    }, { ...publication, ...stage });
+    const card = window.locator('.agent-publication');
+    await expect(card).toHaveCount(1);
+    await expect(card).toContainText(stage.message);
+    await expect(card.getByRole('button', { name: 'Open', exact: true })).toHaveCount(stage.state === 'completed' ? 1 : 0);
+    if (stage.error) {
+      await expect(card.locator('details')).not.toHaveAttribute('open', '');
+      await card.getByText('Technical details').click();
+      await expect(card.locator('details p')).toBeVisible();
+    }
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+      await window.screenshot({ path: testInfo.outputPath(`publication-${stage.state}-${theme}.png`) });
+    }
+  }
+});

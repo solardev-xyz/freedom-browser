@@ -13,6 +13,8 @@ const { NodeRequestController } = require('../node-request-controller');
 const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 const { ConversationAttachmentStore } = require('./conversation-attachment-store');
+const { SwarmPublicationStore } = require('./swarm-publication-store');
+const { SwarmPostageReadiness } = require('./swarm-postage-readiness');
 const { SwarmPublicationController } = require('./swarm-publication-controller');
 const { PdfProcessor } = require('./pdf-processor');
 const { AgentManagedWorkspaceStore } = require('./managed-workspace-store');
@@ -34,12 +36,14 @@ function createFreedomAgentRuntime(options = {}) {
   let historyStore;
   let nodeOperationStore;
   let workspaceStore;
+  let publicationStore;
   try {
     // Reconcile persistent state before installing controllers or IPC listeners.
     // Agent storage failure must not prevent ordinary browser startup.
     historyStore = new AgentSessionHistoryStore({ userDataDir: options.profile?.userDataDir });
     nodeOperationStore = new AgentNodeOperationStore({ userDataDir: options.profile?.userDataDir });
     workspaceStore = new AgentManagedWorkspaceStore({ userDataDir: options.profile?.userDataDir });
+    publicationStore = new SwarmPublicationStore(options.profile?.userDataDir);
     historyStore.markStaleRunningAsInterrupted();
     nodeOperationStore.markStaleInFlightAsUncertain();
     workspaceStore.markStaleRunningAsInterrupted();
@@ -85,6 +89,8 @@ function createFreedomAgentRuntime(options = {}) {
   const publicationController = new SwarmPublicationController({
     attachmentStore,
     workspaceSourceReader,
+    store: publicationStore,
+    postageReadiness: new SwarmPostageReadiness({ operationStore: nodeOperationStore }),
     ...options.swarmPublicationControllerOptions,
   });
   options.controller.setWalletTransferController(walletController);
@@ -98,6 +104,7 @@ function createFreedomAgentRuntime(options = {}) {
     subscribeTabLifecycle: options.subscribeTabLifecycle,
     historyStore,
     nodeOperationStore,
+    publicationController,
     cancelAgentDownloads: options.cancelAgentDownloads,
     walletController,
     attachmentStore,

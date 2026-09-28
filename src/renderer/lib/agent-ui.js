@@ -3068,6 +3068,7 @@ function formatToolError(code, operation) {
 // receipts belong beside the answer; downloads/publications have their own cards.
 function visibleOutcome(outcome) {
   if (!outcome || typeof outcome !== 'object') return null;
+  if (outcome.publication?.publicationId) return null;
   if (outcome.kind === 'recovery') return outcome;
   if (outcome.notice) return outcome.notice;
   if (outcome.kind === 'interrupted') return outcome.counts?.changed > 0
@@ -3196,16 +3197,13 @@ function renderPublication(runId, publication) {
     !view ||
     !publication ||
     !/^swarm_pub_[a-f0-9]{24}$/.test(publication.publicationId) ||
-    publication.state !== 'completed' ||
-    typeof publication.name !== 'string' ||
-    !/^bzz:\/\/[a-f0-9]{64}$/.test(publication.bzzUrl)
+    typeof publication.name !== 'string'
   ) {
     return;
   }
-  if (view.artifactList.querySelector(`[data-publication-id="${publication.publicationId}"]`)) {
-    return;
-  }
-  const card = document.createElement('div');
+  const card = view.artifactList.querySelector(`[data-publication-id="${publication.publicationId}"]`) || document.createElement('div');
+  const detailsOpen = card.querySelector('details')?.open;
+  card.replaceChildren();
   card.className = 'agent-artifact agent-publication';
   card.dataset.publicationId = publication.publicationId;
   const copy = document.createElement('div');
@@ -3213,17 +3211,26 @@ function renderPublication(runId, publication) {
   const name = document.createElement('strong');
   name.textContent = publication.kind === 'text' ? 'Text' : publication.name;
   const meta = document.createElement('span');
-  meta.textContent = publication.verified
-    ? 'Swarm · retrieval verified'
-    : 'Swarm · published, verification pending';
+  meta.textContent = publication.message || ({ waiting_postage: 'Waiting for postage', uploading: 'Uploading to Swarm', confirming: 'Waiting for network confirmation', verifying: 'Checking retrieval', failed: 'Upload failed', outcome_unknown: 'Publication needs checking', completed: publication.verified ? 'Swarm · retrieval verified' : 'Swarm · published, verification pending' })[publication.state];
+  if (publication.state === 'confirming' && Number.isSafeInteger(publication.progress)) meta.textContent += ` · ${publication.progress}%`;
+  if (publication.error) {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = 'Technical details';
+    const error = document.createElement('p');
+    error.textContent = publication.error;
+    details.append(summary, error);
+    details.open = Boolean(detailsOpen);
+    copy.appendChild(details);
+  }
   copy.appendChild(name);
   copy.appendChild(meta);
   const actions = document.createElement('div');
   actions.className = 'agent-artifact-actions';
-  for (const [label, action] of [
+  for (const [label, action] of (publication.state === 'completed' && /^bzz:\/\/[a-f0-9]{64}$/.test(publication.bzzUrl) ? [
     ['Open', () => window.electronAPI.openAgentPublication(publication.bzzUrl)],
     ['Copy URL', () => window.electronAPI.copyText(publication.bzzUrl)],
-  ]) {
+  ] : [])) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = label;
@@ -3580,7 +3587,7 @@ function updateToolProgress(event) {
           : publication.state === 'failed'
             ? `Publication failed for ${subject}`
             : `Publishing ${subject}${Number.isSafeInteger(event.progress) ? ` · ${event.progress}%` : ''}`;
-    if (publication.state === 'completed') renderPublication(event.runId, publication);
+    renderPublication(event.runId, publication);
     return;
   }
   const received = Math.max(0, Number(event.receivedBytes) || 0);

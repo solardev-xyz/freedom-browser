@@ -513,7 +513,7 @@ function normalizeNodeLifecycleReceipt(value) {
 function normalizePublicationReceipt(value) {
   if (!value || typeof value !== 'object') return null;
   const publicationId = boundedString(value.publicationId, 160);
-  const states = new Set(['uploading', 'verifying', 'completed', 'failed', 'outcome_unknown']);
+  const states = new Set(['waiting_postage', 'uploading', 'confirming', 'verifying', 'completed', 'failed', 'outcome_unknown']);
   const applicationStates = new Set(['not_applied', 'possibly_applied', 'applied']);
   const kind = ['file', 'folder', 'text'].includes(value.kind) ? value.kind : null;
   // eslint-disable-next-line no-control-regex
@@ -553,6 +553,7 @@ function normalizePublicationReceipt(value) {
     ...(bzzUrl && { bzzUrl }),
     ...(typeof value.verified === 'boolean' && { verified: value.verified }),
     ...(error && { error }),
+    ...(typeof value.message === 'string' && { message: boundedString(value.message, 500) }),
   });
 }
 
@@ -1444,13 +1445,13 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
           counts,
         });
       }
-      if (publication.state === 'uploading' || publication.state === 'verifying') {
+      if (['waiting_postage', 'uploading', 'confirming', 'verifying'].includes(publication.state)) {
         return Object.freeze({
           kind: 'completed',
           verification: 'swarm_publication_in_flight',
           tone: 'caution',
           headline: 'Swarm publication still running',
-          detail: `Freedom is still ${publication.state === 'verifying' ? 'verifying' : 'publishing'} ${publicationObject(publication)}. Publication ${publication.publicationId} must be checked before any repeat.`,
+          detail: publication.message || `Freedom is still publishing ${publicationObject(publication)}. Check this upload before starting another.`,
           publication,
           destinations,
           counts,
@@ -1468,8 +1469,8 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
             ? 'Swarm publication failed'
             : 'Swarm publication outcome uncertain',
         detail:
-          publication.error ||
-          `Publication ${publication.publicationId} requires reconciliation before any repeat.`,
+          publication.message || 'Check the existing publication before starting another upload.',
+        technicalDetails: publication.error || '',
         publication,
         destinations,
         counts,

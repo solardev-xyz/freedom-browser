@@ -10,6 +10,17 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-09-28
 
+### Swarm deployment continuation — 2026-09-28
+
+Publication now waits for on-chain postage readiness and advancing blocks, retains
+the selected batch and approved bytes for bounded propagation retries, and keeps
+the main Agent turn alive until its publication receipt resolves. Persistent
+operation metadata supports observation after reopening without replaying uploads
+or purchases. Tag timeout is no longer completion; the sidebar shows one updating
+card and technical details separately. See the [lifecycle and qualification
+contract](../docs/agent-swarm-publication-lifecycle.md). Real-network smoke remains
+unconfirmed; no postage was purchased during automated qualification.
+
 ### Whole-feature review — 2026-09-28
 
 An independent Claude review covered the complete feature-branch diff, followed
