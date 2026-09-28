@@ -124,6 +124,48 @@ test.afterEach(async ({ electronApp }) => {
   await electronApp.evaluate(() => globalThis.__PAGE_TOOLS_TEST__?.adapter.dispose());
 });
 
+test('workspace preview discovery is unavailable without failing ordinary browsing', async ({ electronApp }) => {
+  const result = await electronApp.evaluate(async ({ BrowserWindow, session }, main) => {
+    const req = (file) => process.mainModule.require(`${main}/${file}`);
+    const { WebContentsPageAdapter } = req('adapters/web-contents-page-adapter');
+    const { AutomationController } = req('automation-controller');
+    const { createInitialAutomationPolicy } = req('policy-controller');
+    const previewSession = session.fromPartition('page-tools-preview-test');
+    previewSession.protocol.handle('freedom-preview', () => new Response(
+      '<!doctype html><h1>Workspace preview</h1><button onclick="this.textContent=\'Clicked\'">Try it</button>',
+      { headers: { 'Content-Type': 'text/html' } }
+    ));
+    const preview = new BrowserWindow({
+      show: false,
+      webPreferences: { session: previewSession, contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    const adapter = new WebContentsPageAdapter(preview.webContents);
+    try {
+      await preview.loadURL('freedom-preview://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/');
+      const controller = new AutomationController({ policyController: createInitialAutomationPolicy() });
+      const tabId = controller.registerPage(adapter);
+      const discovery = await controller.execute('browser_list_page_tools', { tabId });
+      const snapshot = await controller.execute('browser_snapshot', { tabId });
+      return { discovery, snapshot, preview: await adapter.pageTools.preview() };
+    } finally {
+      adapter.dispose();
+      preview.destroy();
+      previewSession.protocol.unhandle('freedom-preview');
+    }
+  }, MAIN);
+  expect(result.discovery).toMatchObject({
+    ok: true,
+    result: {
+      available: false,
+      tools: [],
+      message: 'WebMCP unavailable on this page. Continue with normal browser tools.',
+    },
+  });
+  expect(result.preview.tools).toEqual([]);
+  expect(result.snapshot.ok, JSON.stringify(result.snapshot)).toBe(true);
+  expect(JSON.stringify(result.snapshot.result)).toContain('Workspace preview');
+});
+
 for (const mode of ['hidden', 'desktop'])
   test(`native WebMCP works in ${mode} pages with approvals and isolated discovery`, async ({
     electronApp,
