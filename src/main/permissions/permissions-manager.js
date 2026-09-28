@@ -443,6 +443,49 @@ function getEffectiveDecision(origin, key, privatePartition = null) {
 }
 
 /**
+ * The site a guest's top-level document belongs to, as a permission-store
+ * origin, or null for a non-site surface (internal page, about:blank, data:).
+ * The popup blocker keys its per-site allow on this (#442): like Chrome's
+ * pop-up content setting, it follows the top-level site, not the frame that
+ * called window.open.
+ */
+function siteOriginForWebContents(webContents) {
+  return originForRequest(webContents, {});
+}
+
+/**
+ * Record an allow the user gave from chrome UI rather than from a prompt:
+ * the popup blocker's "Always allow pop-ups on this site" (#442). An
+ * explicit "always", so a normal window persists it (the remembered tier —
+ * Settings > Site Permissions lists it and removes it). A private window
+ * keeps it in its own partition tier only and drops it with the window,
+ * exactly like a remembered prompt answer given there.
+ *
+ * @param {string} origin
+ * @param {string} key - storage key (e.g. 'popups')
+ * @param {{ privatePartition?: string|null }} [options]
+ * @returns {boolean} true when recorded
+ */
+function allowSitePermission(origin, key, { privatePartition = null } = {}) {
+  if (typeof key !== 'string' || !key) return false;
+  const normalized = typeof origin === 'string' ? normalizeOrigin(origin) : null;
+  if (!normalized || !VALID_ORIGIN_KEY_SHAPE.test(normalized)) return false;
+  if (privatePartition) {
+    setPrivateDecision(privatePartition, normalized, key, 'allow');
+  } else {
+    store.setDecision(normalized, key, 'allow');
+    // A stale session answer must not shadow a later revoke.
+    clearSessionDecision(normalized, key);
+  }
+  broadcastChanged();
+  log.info(
+    `[permissions] allow ${key} for ${originForLog(normalized, privatePartition)}` +
+      (privatePartition ? ' (private window)' : ' (remembered)')
+  );
+  return true;
+}
+
+/**
  * PRIVATE MODE GUARD (permission logging): `log.info` is written to the
  * persistent <userData>/logs/main.log, which outlives the private window and
  * the app — so an origin a private tab prompted for must never appear there.
@@ -1338,6 +1381,9 @@ module.exports = {
   registerPermissionsIpc,
   permissionKeysForRequest,
   requestOpenExternal,
+  getEffectiveDecision,
+  siteOriginForWebContents,
+  allowSitePermission,
   getDecisionsForOrigin,
   clearPrivateDecisions,
   revokeDecision,

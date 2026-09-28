@@ -1,2 +1,3 @@
 - Links to other apps (`magnet:`, `mailto:`, …) ask to open that app instead of doing nothing
   - Typed into the address bar, they open straight away
+  - Only after a click or key press on the page itself, not on load

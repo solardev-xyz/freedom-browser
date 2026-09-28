@@ -47,6 +47,9 @@ const PERMISSION_LABELS = {
   'clipboard-read': 'Clipboard reading',
   geolocation: 'Location',
   midi: 'MIDI devices',
+  // Never prompted for: set by the pop-up-blocked icon's "Always allow"
+  // (popup-blocker-ui.js, #442), listed and removed here like any grant.
+  popups: 'Pop-ups',
 };
 
 // Storage-key → prompt verb phrase ("example.com wants to <phrase>").

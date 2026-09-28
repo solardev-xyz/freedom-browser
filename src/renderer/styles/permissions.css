@@ -223,3 +223,91 @@
   /* theme-literal: the light half of the pair above */
   background: rgba(0, 0, 0, 0.06);
 }
+
+/* Pop-up-blocked icon (#442): shown while the active tab's page has had a
+   popup blocked. Sits left of the permission indicator when that is shown,
+   and shifts over for the GitHub-bridge button the same way. */
+.popup-blocked-indicator {
+  right: 36px;
+}
+
+.address-wrapper:has(.permission-indicator:not(.hidden)) .popup-blocked-indicator,
+.address-wrapper:has(.github-bridge-btn:not(.hidden)) .popup-blocked-indicator {
+  right: 66px;
+}
+
+.address-wrapper:has(.permission-indicator:not(.hidden)):has(.github-bridge-btn:not(.hidden))
+  .popup-blocked-indicator {
+  right: 96px;
+}
+
+/* Its popover reuses .permission-popover's chrome; only the body is its own. */
+.popup-blocked-popover {
+  width: 320px;
+}
+
+.popup-blocked-origin {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+  margin: -6px 0 12px;
+}
+
+.popup-blocked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* One "Open <url>" per blocked popup. The whole URL stays readable: it
+   wraps instead of being cut, since it is what the user decides on. */
+.popup-blocked-open {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  word-break: break-all;
+  cursor: default;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.popup-blocked-open:hover {
+  /* theme-literal: neutral hover tint; the light override is the rule below */
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme='light'] .popup-blocked-open:hover {
+  /* theme-literal: the light half of the pair above */
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.popup-blocked-more {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.popup-blocked-more.hidden,
+.popup-blocked-allowed.hidden,
+.popup-blocked-actions .permission-btn.hidden {
+  display: none;
+}
+
+.popup-blocked-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.popup-blocked-allowed {
+  font-size: 12px;
+  color: var(--muted);
+}

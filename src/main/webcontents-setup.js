@@ -7,6 +7,7 @@ const { cleanupAdblockWebContents } = require('./adblock/service');
 const { isPrivateWebContents, getPartitionForWebContents } = require('./private/private-windows');
 const { isExternalProtocolUrl, trackUserGestures } = require('./external-protocol');
 const { requestOpenExternal } = require('./permissions/permissions-manager');
+const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -257,12 +258,30 @@ function registerWebContentsHandlers() {
           });
           return { action: 'deny' };
         }
+        // Pass targetName for named link targets (e.g. target="mywindow")
+        // Skip special targets (_blank, _self, _parent, _top) - they should use default behavior
+        const isNamedTarget = !!frameName && !frameName.startsWith('_');
+        // Popup blocker (#442): a new tab needs a user gesture on this page
+        // (consumed, so one click opens one tab), or the site's "Always
+        // allow pop-ups"; Freedom's internal pages are exempt. A blocked one
+        // is reported to the tab's window for the address-bar icon. See
+        // popup-blocker.js.
+        const verdict = claimPopup(contents);
+        if (!verdict.allowed) {
+          log.info(`${tag} blocked popup without a user gesture: ${navUrlForLog(contents, url)}`);
+          reportBlockedPopup(contents, {
+            url,
+            targetName: isNamedTarget ? frameName : null,
+            // A plain named open (no modifier, not a sized popup) may still
+            // re-navigate a tab that already carries the name, as in Chrome.
+            reuseOnly: isNamedTarget && disposition === 'foreground-tab',
+            origin: verdict.origin,
+          });
+          return { action: 'deny' };
+        }
         // Send message to the owning BrowserWindow to open URL in new tab
         const parentWindow = ownerWindowOf(contents);
         if (parentWindow) {
-          // Pass targetName for named link targets (e.g. target="mywindow")
-          // Skip special targets (_blank, _self, _parent, _top) - they should use default behavior
-          const isNamedTarget = frameName && !frameName.startsWith('_');
           // Chromium already resolved the activation's modifiers into a
           // disposition: Ctrl/Cmd+click (and middle-click) give
           // `background-tab`, Shift+click and sized `window.open` popups give
@@ -275,6 +294,9 @@ function registerWebContentsHandlers() {
           parentWindow.webContents.send('tab:new-with-url', url, isNamedTarget ? frameName : null, {
             background: disposition === 'background-tab',
             newWindow: disposition === 'new-window',
+            // The opener, so the renderer can record which tab opened a named
+            // target (a later gesture-less reuse is scoped to it).
+            openerGuestId: contents.id,
           });
         }
         return { action: 'deny' };

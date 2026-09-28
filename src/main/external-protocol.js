@@ -28,7 +28,11 @@
  *    only right after the user interacted with the page (see
  *    `consumeUserGesture`): a page cannot pop a prompt — or, once allowed,
  *    launch an app — on load, and an embedded third-party frame (an ad)
- *    cannot ask in the top site's name.
+ *    cannot ask in the top site's name. "On load" includes a page reached
+ *    by a same-tab link click: the new document starts with no gesture
+ *    (see `trackUserGestures`), so an "open in app" landing page that sets
+ *    `location = 'zoommtg:…'` on load is refused with no prompt and the user
+ *    clicks on that page instead. Chrome prompts in that case; we don't.
  * 3. The existing per-site prompt, keyed by origin + scheme
  *    (`external:<scheme>`), so allowing `magnet:` for a site never allows
  *    `ms-settings:` for it too. Remembered decisions, the dismissal embargo
@@ -160,18 +164,71 @@ const BLOCKED_SCHEMES = new Set([
 // user's doing.
 const USER_GESTURE_WINDOW_MS = 5000;
 
-// Input events that count as user activation. Mouse moves, wheel and focus
-// changes don't (the same split Chromium's user activation uses).
-const GESTURE_INPUT_TYPES = new Set([
-  'mouseDown',
-  'mouseUp',
-  'keyDown',
-  'rawKeyDown',
-  'char',
-  'touchStart',
-  'touchEnd',
-  'gestureTap',
+// Input events that count as user activation: the ones Chromium grants
+// transient activation on (HTML's "activation triggering input events").
+// One physical press must stamp the gesture once, not once per phase — the
+// gesture is *consumed* by a popup or an external launch, and a second
+// stamp from the same press (the mouseUp after a mouseDown, the char after a
+// keyDown) would re-arm it and let one click buy two. So:
+//
+//   mouse/pen press → mouseDown only (Chromium activates at pointerdown)
+//   key press       → the keyDown, unless the key is Escape or a lone
+//                     modifier (Chromium grants nothing for those)
+//   touch tap       → touchEnd (Chromium activates at pointerup for touch),
+//                     unless the touch became a scroll or pinch first: then
+//                     Chromium sends pointercancel and grants nothing, but
+//                     the browser still forwards the raw touchEnd. The
+//                     tracker watches for that (see TOUCH_TURNED_GESTURE).
+//
+// Mouse moves, wheel, focus changes, keyUp and char never count. The same
+// rule webview-preload.js used for its dweb-link budget (#443), which now
+// asks this tracker instead (see popup-blocker.js).
+const GESTURE_INPUT_TYPES = new Set(['mouseDown', 'keyDown', 'rawKeyDown', 'touchEnd']);
+
+// Keys whose keydown is not a user activation in Chromium.
+const NON_ACTIVATING_KEYS = new Set([
+  'Escape',
+  'Alt',
+  'AltGraph',
+  'CapsLock',
+  'Control',
+  'Fn',
+  'FnLock',
+  'Hyper',
+  'Meta',
+  'NumLock',
+  'OS',
+  'ScrollLock',
+  'Shift',
+  'Super',
+  'Symbol',
+  'SymbolLock',
 ]);
+
+// Events that, between a touchStart and its touchEnd, mean the touch became
+// a scroll/pinch (or was cancelled) rather than a tap. Probed on Electron 44
+// with CDP `Input.dispatchTouchEvent`, which runs Chromium's real gesture
+// detector (2026-09-28): a drag's input-event stream is
+//   touchStart, gestureTapDown, touchMove…, gestureTapCancel,
+//   gestureScrollBegin, touchScrollStarted, …, touchEnd
+// while a tap — including one with a few px of finger jitter, whose
+// touchMoves are forwarded too — is
+//   touchStart, gestureTapDown, [touchMove…], touchEnd, gestureTap
+// so the touchMoves alone can't tell them apart; the gesture events can.
+const TOUCH_TURNED_GESTURE = new Set([
+  'gestureScrollBegin',
+  'touchScrollStarted',
+  'gesturePinchBegin',
+  'touchCancel',
+]);
+
+function isActivatingInput(input) {
+  if (!GESTURE_INPUT_TYPES.has(input?.type)) return false;
+  if (input.type === 'keyDown' || input.type === 'rawKeyDown') {
+    return !NON_ACTIVATING_KEYS.has(input.key);
+  }
+  return true;
+}
 
 // Last user input per webview guest, in ms since epoch.
 const lastUserGesture = new WeakMap();
@@ -254,10 +311,33 @@ function escapeExternalHandlerValue(url) {
  */
 function trackUserGestures(contents) {
   if (!contents || typeof contents.on !== 'function') return;
+  // Whether the current touch turned into a scroll/pinch (see
+  // TOUCH_TURNED_GESTURE); its touchEnd then grants nothing.
+  let touchTurnedGesture = false;
   contents.on('input-event', (_event, input) => {
-    if (GESTURE_INPUT_TYPES.has(input?.type)) {
+    const type = input?.type;
+    if (type === 'touchStart') {
+      touchTurnedGesture = false;
+      return;
+    }
+    if (TOUCH_TURNED_GESTURE.has(type)) {
+      touchTurnedGesture = true;
+      return;
+    }
+    if (type === 'touchEnd' && touchTurnedGesture) return;
+    if (isActivatingInput(input)) {
       lastUserGesture.set(contents, Date.now());
     }
+  });
+  // Transient activation belongs to a document: Chromium does not carry it
+  // across a cross-document navigation. So when a new document commits in
+  // the tab's top frame, input on the previous page no longer counts —
+  // otherwise a click on a plain same-tab link would pay for a popup the
+  // destination opens on load. Same-document navigations (pushState,
+  // #fragment) keep it, as in Chromium; `did-navigate` fires only for
+  // cross-document main-frame commits.
+  contents.on('did-navigate', () => {
+    lastUserGesture.delete(contents);
   });
 }
 
@@ -265,7 +345,9 @@ function trackUserGestures(contents) {
  * True, once, when the guest had user input within the activation window.
  * Consumed like Chromium consumes activation for a popup: one interaction
  * buys one launch (or one prompt), so a page cannot turn a single click
- * into a burst of app launches.
+ * into a burst of app launches. The popup blocker (popup-blocker.js) spends
+ * the same budget, as Chromium's single transient activation is spent by
+ * whichever of the two asks first.
  */
 function consumeUserGesture(contents, now = Date.now()) {
   if (!contents) return false;
@@ -359,6 +441,7 @@ module.exports = {
   permissionKeyForExternalUrl,
   externalUrlForLog,
   escapeExternalHandlerValue,
+  isActivatingInput,
   trackUserGestures,
   consumeUserGesture,
   handlerNameForScheme,

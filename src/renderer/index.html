@@ -341,6 +341,39 @@
               <div class="permission-popover-title" id="permission-popover-title"></div>
               <div class="permission-popover-list" id="permission-popover-list"></div>
             </div>
+            <!-- Popover behind the pop-up-blocked icon (#442): the popups this
+                 tab's page tried to open without a user gesture, each with an
+                 Open action, plus the per-site "Always allow". -->
+            <div
+              id="popup-blocked-popover"
+              class="permission-popover popup-blocked-popover chrome-popover"
+              role="dialog"
+              aria-labelledby="popup-blocked-title"
+              data-test="popup-blocked-popover"
+              hidden
+            >
+              <div class="permission-popover-title" id="popup-blocked-title">Pop-ups blocked</div>
+              <div class="popup-blocked-origin" id="popup-blocked-origin"></div>
+              <div class="popup-blocked-list" id="popup-blocked-list"></div>
+              <div class="popup-blocked-more hidden" id="popup-blocked-more"></div>
+              <div class="popup-blocked-actions">
+                <button
+                  id="popup-blocked-allow"
+                  class="permission-btn"
+                  type="button"
+                  data-test="popup-blocked-allow"
+                >
+                  Always allow pop-ups on this site
+                </button>
+                <div
+                  class="popup-blocked-allowed hidden"
+                  id="popup-blocked-allowed"
+                  data-test="popup-blocked-allowed"
+                >
+                  Pop-ups are allowed on this site. Remove it in Settings &gt; Site Permissions.
+                </div>
+              </div>
+            </div>
             <span id="protocol-icon" class="protocol-icon" aria-hidden="true">
               <!-- Swarm icon (official logo) -->
               <svg class="icon-swarm" viewBox="18 34 44 45" fill="currentColor">
@@ -440,6 +473,32 @@
                 <line x1="1" y1="14" x2="7" y2="14" />
                 <line x1="9" y1="8" x2="15" y2="8" />
                 <line x1="17" y1="16" x2="23" y2="16" />
+              </svg>
+            </button>
+            <button
+              id="popup-blocked-indicator"
+              class="icon-btn input-action-btn popup-blocked-indicator hidden"
+              type="button"
+              aria-label="Pop-up blocked"
+              title="Pop-up blocked"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="popup-blocked-popover"
+              data-test="popup-blocked-indicator"
+            >
+              <!-- A window with a cross: this tab's page had a pop-up blocked -->
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <line x1="3" y1="9" x2="21" y2="9" />
+                <line x1="9.5" y1="12.5" x2="14.5" y2="17.5" />
+                <line x1="14.5" y1="12.5" x2="9.5" y2="17.5" />
               </svg>
             </button>
             <button

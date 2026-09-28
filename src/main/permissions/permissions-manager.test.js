@@ -1886,6 +1886,25 @@ describe('permissions-manager: external protocols (#406)', () => {
     expect(shell.openExternal).toHaveBeenCalledTimes(1);
   });
 
+  // Deliberate, and unlike Chrome: the click on a same-tab link is spent by
+  // the navigation it caused, so an "open in app" landing page that launches
+  // on load gets no prompt. The user clicks again on that page.
+  test('a click on a same-tab link does not carry over to the page it opens', async () => {
+    load();
+    const host = makeHost();
+    const guest = guestFor(host, 'https://example.com/');
+
+    guest.navigate('https://meet.example/join');
+    openExternal(normalSession, guest, 'zoommtg:join?confno=1');
+    expect(prompts(host)).toHaveLength(0);
+    expect(allLogs()).toContain('refused: no recent user input');
+
+    // A click on the landing page itself asks as usual.
+    clickGesture(guest);
+    openExternal(normalSession, guest, 'zoommtg:join?confno=1');
+    expect(prompts(host)).toHaveLength(1);
+  });
+
   test('one click buys one launch: a burst from a single gesture is cut to the first', async () => {
     load();
     const host = makeHost();

@@ -161,6 +161,100 @@ describe('external-protocol', () => {
     );
   });
 
+  // #442: one press stamps the gesture once, on the event Chromium grants
+  // activation on; the popup blocker spends the same gesture.
+  test('only activating input counts, and one press does not re-arm a spent gesture', () => {
+    const { mod } = load();
+    expect(mod.isActivatingInput({ type: 'mouseDown' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'rawKeyDown', key: 'a' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'keyDown', key: 'Enter' })).toBe(true);
+    expect(mod.isActivatingInput({ type: 'touchEnd' })).toBe(true);
+    for (const input of [
+      { type: 'mouseUp' },
+      { type: 'mouseMove' },
+      { type: 'mouseWheel' },
+      { type: 'char', key: 'a' },
+      { type: 'keyUp', key: 'a' },
+      { type: 'rawKeyDown', key: 'Escape' },
+      { type: 'rawKeyDown', key: 'Shift' },
+      { type: 'keyDown', key: 'Meta' },
+      { type: 'touchStart' },
+      { type: 'gestureTap' },
+      null,
+    ]) {
+      expect(mod.isActivatingInput(input)).toBe(false);
+    }
+
+    const contents = new EventEmitter();
+    mod.trackUserGestures(contents);
+    contents.emit('input-event', {}, { type: 'mouseDown' });
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+    contents.emit('input-event', {}, { type: 'mouseUp' });
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+  });
+
+  // A touch that becomes a scroll/pinch ends in pointercancel in Chromium and
+  // grants nothing, though the raw touchEnd still arrives. Event sequences
+  // are the ones probed on Electron 44 (see TOUCH_TURNED_GESTURE).
+  test('a touch tap stamps the gesture; a touch that became a scroll does not', () => {
+    const { mod } = load();
+    const contents = new EventEmitter();
+    mod.trackUserGestures(contents);
+    const feed = (types) => types.forEach((type) => contents.emit('input-event', {}, { type }));
+
+    // A tap, with a few px of jitter.
+    feed(['touchStart', 'gestureTapDown', 'touchMove', 'touchMove', 'touchEnd', 'gestureTap']);
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+
+    // A swipe that scrolled.
+    feed([
+      'touchStart',
+      'gestureTapDown',
+      'touchMove',
+      'gestureTapCancel',
+      'gestureScrollBegin',
+      'touchScrollStarted',
+      'gestureScrollUpdate',
+      'touchMove',
+      'touchEnd',
+      'gestureFlingStart',
+      'gestureScrollEnd',
+    ]);
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+
+    // A pinch, and a cancelled touch.
+    feed(['touchStart', 'gesturePinchBegin', 'touchEnd']);
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+    feed(['touchStart', 'touchCancel', 'touchEnd']);
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+
+    // The next plain tap after a scroll counts again.
+    feed(['touchStart', 'touchEnd']);
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+  });
+
+  // Chromium's transient activation does not survive a cross-document
+  // navigation: input on page A must not pay for a popup page B opens on load.
+  test('a main-frame document commit clears the gesture; a same-document one does not', () => {
+    const { mod } = load();
+    const contents = new EventEmitter();
+    mod.trackUserGestures(contents);
+
+    contents.emit('input-event', {}, { type: 'mouseDown' });
+    contents.emit('did-navigate', {}, 'https://b.example/');
+    expect(mod.consumeUserGesture(contents)).toBe(false);
+
+    contents.emit('input-event', {}, { type: 'mouseDown' });
+    contents.emit('did-navigate-in-page', {}, 'https://b.example/#x', true);
+    contents.emit('did-frame-navigate', {}, 'https://ad.example/', 200, 'OK', false);
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+
+    // Input on the new document counts as usual.
+    contents.emit('did-navigate', {}, 'https://c.example/');
+    contents.emit('input-event', {}, { type: 'keyDown', key: 'Enter' });
+    expect(mod.consumeUserGesture(contents)).toBe(true);
+  });
+
   test('launchExternal hands the escaped URL to shell.openExternal', async () => {
     const { mod, shell } = load();
     await expect(mod.launchExternal('magnet:?dn=a b')).resolves.toBe(true);

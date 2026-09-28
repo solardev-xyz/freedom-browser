@@ -3320,15 +3320,15 @@ export const initNavigation = () => {
               // reuse their existing tab instead of always opening a
               // new one.
               //
-              // `reuseOnly` marks a named-target link activated without a
-              // user gesture (webview-preload): it may re-navigate the tab
-              // already carrying that name, but may not open one (O-12).
-              // `openerTabId` scopes both the name's opener record and that
-              // gesture-less reuse to the tab the link was clicked in.
+              // The preload only sends a new-tab disposition after main's
+              // popup blocker let it through (popup-blocker.js, #442); a
+              // gesture-less named-target reuse arrives as
+              // `popups:blocked` instead (popup-blocker-ui.js).
+              // `openerTabId` records which tab opened the named tab, which
+              // is what scopes that gesture-less reuse.
               openInNewTabWithTarget(url, namedTarget, {
                 background: disposition === 'newBackgroundTab',
                 ...(typeof data.tabId === 'number' ? { openerTabId: data.tabId } : {}),
-                ...(payload.reuseOnly === true ? { reuseOnly: true } : {}),
               });
             } else {
               // Same-tab link click: a page-driven commit, so it must not

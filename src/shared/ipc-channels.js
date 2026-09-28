@@ -300,6 +300,16 @@ module.exports = {
   // Main→renderer broadcast after any decision is recorded or revoked, so
   // the address-bar indicator and the settings page can re-query.
   PERMISSIONS_CHANGED: 'permissions:changed',
+  // Popup blocker for tab webviews (#442), src/main/popup-blocker.js.
+  // Webview preload → main: may this guest open a new tab for the dweb link
+  // it intercepted (gesture consumed if so)? Answers a boolean.
+  POPUPS_CLAIM: 'popups:claim',
+  // Main → the owning window: a popup was blocked
+  // ({guestId, url, targetName, reuseOnly, origin}).
+  POPUPS_BLOCKED: 'popups:blocked',
+  // Chrome → main: "Always allow pop-ups on this site" (origin). Recorded as
+  // the `popups` site permission in the asking window's scope.
+  POPUPS_ALLOW_SITE: 'popups:allow-site',
   // Address bar → main: open a typed external-protocol URL (magnet:, mailto:,
   // …) in its OS handler. Answers {opened, reason?}; see
   // src/main/external-protocol.js (#406).

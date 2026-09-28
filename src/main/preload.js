@@ -198,6 +198,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tab:new-with-url', handler);
     return () => ipcRenderer.removeListener('tab:new-with-url', handler);
   },
+  // Main's popup blocker refused a tab's popup (#442):
+  // {guestId, url, targetName, reuseOnly, origin}. `guestId` is the tab's
+  // webview webContents id; the address-bar icon shows while it is active.
+  onPopupBlocked: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('popups:blocked', handler);
+    return () => ipcRenderer.removeListener('popups:blocked', handler);
+  },
   onOpenPublishSetup: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('sidebar:open-publish-setup', handler);
@@ -679,6 +687,11 @@ contextBridge.exposeInMainWorld('sitePermissions', {
     ipcRenderer.invoke('permissions:revoke', origin, permission, { scope: 'window' }),
   revokeOrigin: (origin) =>
     ipcRenderer.invoke('permissions:revoke-origin', origin, { scope: 'window' }),
+  // The pop-up-blocked icon's "Always allow pop-ups on this site" (#442).
+  // Recorded as the site's `popups` permission in this window's scope
+  // (persisted from a normal window, partition-only from a private one);
+  // main resolves which window from the IPC sender.
+  allowPopups: (origin) => ipcRenderer.invoke('popups:allow-site', origin),
 });
 
 // External-protocol URLs typed into the address bar (magnet:, mailto:, …).

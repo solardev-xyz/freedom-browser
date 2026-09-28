@@ -3557,6 +3557,8 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     'clipboard-read': 'Clipboard reading',
     geolocation: 'Location',
     midi: 'MIDI devices',
+    // The pop-up-blocked icon's "Always allow pop-ups on this site" (#442).
+    popups: 'Pop-ups',
   };
   // `external:<scheme>` — one decision per external-protocol scheme
   // (#406); mirrors permissionLabel in lib/site-permissions-ui.js.

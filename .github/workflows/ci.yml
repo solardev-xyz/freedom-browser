@@ -741,6 +741,14 @@ jobs:
   # prompt for magnet:/mailto: links (#406), and its user-gesture gate reads
   # real input events on the guest webContents — a scripted click must not
   # count, so only a real input path can prove it.
+  #
+  # `popup-blocker.spec.js` (#442) is gated on that same input tracking — a
+  # real click opens a popup, a script's window.open is blocked — and drives
+  # the address-bar "Pop-up blocked" icon, a private window's session-only
+  # allow and an allow that must survive a real app restart.
+  # `dweb-link-gesture.spec.js` covers the dweb-link side of the same gate
+  # (#443), which now asks the main-process popup blocker instead of keeping
+  # its own budget.
   e2e-tabs:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -766,7 +774,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -776,7 +784,9 @@ jobs:
             test-e2e/bookmarks.spec.js \
             test-e2e/page-context-menu.spec.js \
             test-e2e/permissions.spec.js \
-            test-e2e/external-protocol.spec.js
+            test-e2e/external-protocol.spec.js \
+            test-e2e/dweb-link-gesture.spec.js \
+            test-e2e/popup-blocker.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

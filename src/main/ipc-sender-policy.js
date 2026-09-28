@@ -67,6 +67,10 @@ const PUBLIC_CHANNELS = [
   'private:is-private',
   'internal:get-ethereum-inject-source',
   'internal:get-pages',
+  // The popup blocker's gesture check for a dweb link the preload
+  // intercepted (#442). It only ever spends the asking guest's own gesture
+  // and reports a blocked popup to that guest's own window.
+  'popups:claim',
 ];
 
 // freedomAPI methods wrapped in guardInternal (plus the internal-page theme

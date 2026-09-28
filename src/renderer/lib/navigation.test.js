@@ -3266,7 +3266,10 @@ describe('navigation', () => {
       });
     });
 
-    test('ipc-message link:navigate forwards reuseOnly for a gesture-less named target', async () => {
+    test('ipc-message link:navigate never forwards a page-supplied reuseOnly', async () => {
+      // A gesture-less named-target reuse is decided by main's popup blocker
+      // and arrives as `popups:blocked` (#442); link:navigate is only sent
+      // for an open main allowed, so a reuseOnly flag on it is ignored.
       const ctx = await setupEnsDispatch();
       const rawHref = 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
 
@@ -3280,7 +3283,6 @@ describe('navigation', () => {
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, 'viewer', {
         openerTabId: ctx.activeRef.tab.id,
         background: false,
-        reuseOnly: true,
       });
     });
 

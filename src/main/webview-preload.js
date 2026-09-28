@@ -450,93 +450,6 @@ const getHostRoutedHref = (anchor) => {
 // only listened to `click` and relied on `event.button === 1` inside that
 // handler, which never fired for real middle-clicks (it only matched
 // dispatched-from-script synthetic events used by the unit tests).
-const hasUserActivation = (event) => {
-  if (event.isTrusted === true) return true;
-  try {
-    return globalThis.navigator?.userActivation?.isActive === true;
-  } catch {
-    return false;
-  }
-};
-
-// One new dweb tab per user gesture. Chromium's popup blocker *consumes* the
-// transient activation when it lets a popup through, so a second scripted
-// open inside the same gesture is blocked. The web platform has no API to
-// consume activation without a side effect, so the preload keeps its own
-// budget: every physical gesture opens a new epoch, and a synthetic click may
-// spend the current epoch once. A real click is a gesture of its own and
-// always passes, but spends the epoch too, so a script can't piggyback a
-// second tab on it.
-//
-// An epoch is opened only by an event Chromium itself counts as user
-// activation, and only by the one that grants it for a given press. Probed in
-// the real Electron build (2026-09-28, CDP-driven input on a fresh page,
-// `navigator.userActivation.isActive` read in a capture listener):
-//
-//   keydown, printable/Enter          → activates
-//   keydown, Escape or a modifier     → does not (Shift/Control/Alt/Meta…)
-//   mouse or pen press                → activates at pointerdown
-//   touch tap                         → activates at pointerup, not pointerdown
-//   touch that becomes a scroll       → never (pointercancel, no pointerup)
-//
-// Opening an epoch on a non-activating event would be a leak: the transient
-// activation of an earlier real click is never consumed (the preload calls
-// preventDefault, so Chromium's popup blocker never sees the open), so a page
-// could turn every Escape press or scroll into one more scripted tab. And one
-// press fires several activation-triggering events (pointerdown, mousedown,
-// pointerup, touchend); counting each would give one click several epochs, so
-// the compatibility events (mousedown, touchend, the mouse/pen pointerup) are
-// not listened to at all. Registered on window in the capture phase so no page
-// listener can hide the event from it (the preload runs before any page script).
-const NON_ACTIVATING_KEYS = new Set([
-  'Escape',
-  'Alt',
-  'AltGraph',
-  'CapsLock',
-  'Control',
-  'Fn',
-  'FnLock',
-  'Hyper',
-  'Meta',
-  'NumLock',
-  'OS',
-  'ScrollLock',
-  'Shift',
-  'Super',
-  'Symbol',
-  'SymbolLock',
-]);
-const opensActivationEpoch = (event) => {
-  switch (event?.type) {
-    case 'keydown':
-      return !NON_ACTIVATING_KEYS.has(event.key);
-    case 'pointerdown':
-      return event.pointerType !== 'touch';
-    case 'pointerup':
-      return event.pointerType === 'touch';
-    default:
-      return false;
-  }
-};
-let activationEpoch = 0;
-let spentActivationEpoch = -1;
-const noteActivation = (event) => {
-  if (event?.isTrusted === true && opensActivationEpoch(event)) activationEpoch += 1;
-};
-for (const type of ['keydown', 'pointerdown', 'pointerup']) {
-  window.addEventListener(type, noteActivation, true);
-}
-const claimNewTabActivation = (event) => {
-  if (event.isTrusted === true) {
-    spentActivationEpoch = activationEpoch;
-    return true;
-  }
-  if (!hasUserActivation(event)) return false;
-  if (spentActivationEpoch === activationEpoch) return false;
-  spentActivationEpoch = activationEpoch;
-  return true;
-};
-
 const handleDwebLinkActivation = (event) => {
   if (event.defaultPrevented) return;
   // Primary (0, click) or middle (1, auxclick) — that's the only
@@ -591,39 +504,47 @@ const handleDwebLinkActivation = (event) => {
     disposition = 'currentTab';
   }
 
-  // A new tab or window needs a user gesture, the same rule Chromium's popup
-  // blocker applies to `target="_blank"` (docs/security-audit-electron.md,
-  // O-12), and each gesture opens at most one (see claimNewTabActivation).
-  // Without it a page could open any number of dweb tabs with a scripted
-  // `anchor.click()`. A real click is trusted; a script's `.click()` inside a
-  // real click handler still carries the transient activation, once. The
-  // event is still cancelled, or Chromium would open the tab itself through
-  // setWindowOpenHandler. A same-tab link needs no gesture: it is no more
-  // than the page setting `location`.
-  //
-  // A plain named-target link without a gesture is forwarded as `reuseOnly`:
-  // like Chromium, it may navigate a tab that already carries that name (no
-  // gesture is needed to navigate an existing browsing context), but it may
-  // not create one, and the host does not switch to it. The host also scopes
-  // it to the tab that opened the named tab (tabs.js `namedTargetOpeners`), so
-  // an unrelated site in another tab can't re-navigate it by name.
-  let reuseOnly = false;
-  if (disposition !== 'currentTab' && !claimNewTabActivation(event)) {
-    if (disposition === 'newTab' && isNamedTarget && !wantsNewTab && !event.shiftKey) {
-      reuseOnly = true;
-    } else {
-      event.preventDefault();
-      return;
-    }
+  event.preventDefault();
+  const payload = { url: href, disposition, target: target || null };
+  if (disposition === 'currentTab') {
+    // A same-tab link needs no gesture: it is no more than the page setting
+    // `location`.
+    ipcRenderer.sendToHost('link:navigate', payload);
+    return;
   }
 
-  event.preventDefault();
-  ipcRenderer.sendToHost('link:navigate', {
+  // A new tab or window is a popup, and goes through the same popup blocker
+  // Chromium's own window-open path does (src/main/popup-blocker.js, #442):
+  // it needs a user gesture on this tab within the last 5 s — consumed, so
+  // one gesture opens one tab — or the site's "Always allow pop-ups".
+  // The event is cancelled either way, or Chromium would open the tab itself
+  // through setWindowOpenHandler (lowercasing a CIDv0 host on the way).
+  //
+  // Main decides, not this preload: it tracks the guest's trusted input and
+  // spends one budget for every popup and external-app launch, so a click
+  // that opened a dweb tab cannot also pay for a `window.open` (or the other
+  // way round), and a scripted `anchor.click()` gets exactly what a scripted
+  // `window.open` would. A blocked popup is reported to the tab's window by
+  // main (the address-bar "Pop-up blocked" icon), so nothing is sent here.
+  //
+  // A plain named-target link (`target="viewer"`) is marked `reuseOnly`: if
+  // it is blocked, the host may still re-navigate the tab that already
+  // carries that name, in place and without switching to it — Chromium needs
+  // no gesture to navigate an existing named browsing context, only to
+  // create one. The host scopes that to the tab that opened the named tab
+  // (tabs.js `namedTargetOpeners`), so an unrelated site in another tab
+  // can't re-navigate it by name.
+  const reuseOnly = disposition === 'newTab' && isNamedTarget && !wantsNewTab && !event.shiftKey;
+  const claim = ipcRenderer.invoke('popups:claim', {
     url: href,
-    disposition,
-    target: target || null,
-    ...(reuseOnly ? { reuseOnly: true } : {}),
+    targetName: isNamedTarget ? target : null,
+    reuseOnly,
   });
+  Promise.resolve(claim)
+    .then((allowed) => {
+      if (allowed === true) ipcRenderer.sendToHost('link:navigate', payload);
+    })
+    .catch(() => {});
 };
 
 document.addEventListener('click', handleDwebLinkActivation, true);

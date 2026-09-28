@@ -102,7 +102,7 @@ const namedTargets = new Map();
 // window name only within the opener's browsing context group: an unrelated
 // site in another tab must not be able to re-navigate someone else's named tab
 // in the background just by knowing (or guessing) its name. Absent entry (the
-// tab was opened by the chrome or the `tab:new-with-url` path, which carries no
+// tab was opened by the chrome, or by a `tab:new-with-url` that carried no
 // opener) means no gesture-less reuse at all — fail closed.
 const namedTargetOpeners = new Map();
 
@@ -268,6 +268,22 @@ export const getTabIdForWebview = (webview) => {
   if (raw === undefined) return null;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+// The tab whose webview is guest webContents `guestId`, or null. Main names
+// a tab by its guest's webContents id (a blocked popup, a window-open's
+// opener); a webview that is not attached yet has no id and never matches.
+export const getTabByGuestId = (guestId) => {
+  if (typeof guestId !== 'number') return null;
+  return (
+    tabState.tabs.find((t) => {
+      try {
+        return t.webview?.getWebContentsId?.() === guestId;
+      } catch {
+        return false;
+      }
+    }) || null
+  );
 };
 
 // True when `tabId` matches the currently active tab. Used by async
@@ -1950,8 +1966,8 @@ export const switchTab = (tabId, options = {}) => {
  *
  * @param {string} url - target URL
  * @param {string|null} targetName - HTML `target` attribute, if any
- * `options.reuseOnly` (a named-target dweb link the page activated without a
- * user gesture, see webview-preload.js) only re-navigates the tab already
+ * `options.reuseOnly` (a named-target open the popup blocker refused for want
+ * of a user gesture, see popup-blocker-ui.js) only re-navigates the tab already
  * carrying `targetName`, in place and without switching to it: no gesture is
  * needed to navigate an existing named browsing context, but one is needed to
  * create a tab or to take focus. With no such tab, nothing opens. It is also
@@ -2347,7 +2363,14 @@ export const initTabs = async () => {
       electronAPI?.openUrlInNewWindow?.(url);
       return;
     }
-    openInNewTabWithTarget(url, targetName || null, { background: !!options?.background });
+    // A page's window-open names its tab (`openerGuestId`), so a named target
+    // it opens records that tab as the name's opener — the only tab a later
+    // gesture-less reuse of the name may come from (#442).
+    const opener = getTabByGuestId(options?.openerGuestId);
+    openInNewTabWithTarget(url, targetName || null, {
+      background: !!options?.background,
+      ...(opener ? { openerTabId: opener.id } : {}),
+    });
   });
 
   electronAPI?.onNavigateToUrl?.((url) => {

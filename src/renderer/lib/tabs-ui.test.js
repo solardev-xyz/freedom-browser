@@ -1742,6 +1742,45 @@ describe('tabs ui behavior', () => {
     expect(mod.getTabs()).toHaveLength(1);
   });
 
+  // #442: a page's window-open reaches the chrome as `tab:new-with-url` naming
+  // the opener guest, so a named tab it opens records its opener tab — the only
+  // tab a later gesture-less (reuse-only) open of that name may come from.
+  test('tab:new-with-url records the opener guest of a named tab for reuse-only opens', async () => {
+    jest.useFakeTimers();
+    const { mod, electronHandlers } = await loadTabsModule();
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    await mod.initTabs();
+    const home = mod.getActiveTab();
+    home.webview.getWebContentsId = () => 501;
+    expect(mod.getTabByGuestId(501)).toBe(home);
+    expect(mod.getTabByGuestId(999)).toBeNull();
+    expect(mod.getTabByGuestId(undefined)).toBeNull();
+
+    electronHandlers.newTabWithUrl('https://site.example/v1', 'viewer', { openerGuestId: 501 });
+    jest.runOnlyPendingTimers();
+    const viewer = mod.getActiveTab();
+    expect(viewer.id).not.toBe(home.id);
+    mod.switchTab(home.id);
+    const reused = mod.openInNewTabWithTarget('https://site.example/v2', 'viewer', {
+      reuseOnly: true,
+      openerTabId: home.id,
+    });
+    expect(reused?.id).toBe(viewer.id);
+
+    // Without the opener (a chrome-initiated open) the name has no opener, so
+    // a gesture-less reuse is refused.
+    electronHandlers.newTabWithUrl('https://site.example/d1', 'docs', {});
+    jest.runOnlyPendingTimers();
+    mod.switchTab(home.id);
+    expect(
+      mod.openInNewTabWithTarget('https://site.example/d2', 'docs', {
+        reuseOnly: true,
+        openerTabId: home.id,
+      })
+    ).toBeNull();
+  });
+
   // R4-F1: the name is window-wide, so without an opener scope an unrelated
   // site in another tab could silently re-navigate the named tab in the
   // background (no switch, nothing visible changes).
