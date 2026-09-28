@@ -7,7 +7,7 @@
  * it are what decides whether "tor", "api key" or "restart" is findable.
  *
  * Same extraction approach as `settings-tor-rows.test.js` and
- * `settings-radicle-launch.test.js`: the settings page is one inline classic
+ * `settings-radicle-launch.test.js`: the settings page is one classic
  * script, so the helpers are lifted out of the shipped source (between the
  * markers the page keeps for exactly this) and driven directly, keeping the
  * assertions on the real code rather than on a copy.
@@ -25,7 +25,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The page's markup plus the classic script it loads (`scripts/settings.js`,
+// moved out of an inline <script> by #432 so the CSP can drop 'unsafe-inline').
+const SOURCE = [
+  fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), 'utf8'),
+].join('\n');
 
 const START = '/* settings-search helpers: start */';
 const END = '/* settings-search helpers: end */';

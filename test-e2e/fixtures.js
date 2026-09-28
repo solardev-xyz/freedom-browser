@@ -12,12 +12,16 @@
 // `packaged` project (`npm run test:e2e:packaged`) smoke-tests a release
 // artifact. Unset, everything below behaves exactly as it did before.
 
-const { test: base, expect, _electron: electron } = require('@playwright/test');
+const { test: base, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { isPackagedRun, packagedLaunchTarget } = require('./packaged-launch');
+const {
+  isPackagedRun,
+  packagedLaunchTarget,
+  launchApp: launchTarget,
+} = require('./packaged-launch');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -47,7 +51,8 @@ function launchOptions(userDataDir) {
 // `relaunchApp` fixture rather than directly so every app a spec opens is
 // closed at teardown.
 async function launchApp(userDataDir) {
-  const app = await electron.launch(launchOptions(userDataDir));
+  const app = await launchTarget(launchOptions(userDataDir));
+  if (isPackagedRun()) return app; // CDP launcher owns readiness and bounded shutdown.
   const originalClose = app.close.bind(app);
   let closing;
   app.close = () => closing ||= (async () => {

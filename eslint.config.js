@@ -49,6 +49,20 @@ module.exports = [
     },
   },
   {
+    // Internal pages (src/renderer/pages/*.html) load these as classic
+    // <script src> files — their CSP is `script-src 'self'`, no inline script
+    // (#432) — and reach the main process through the `freedomAPI` global
+    // the webview preload exposes.
+    files: ['src/renderer/pages/scripts/**/*.js'],
+    ignores: ['**/*.test.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: {
+        freedomAPI: 'readonly',
+      },
+    },
+  },
+  {
     files: ['**/*.test.js'],
     languageOptions: {
       globals: {

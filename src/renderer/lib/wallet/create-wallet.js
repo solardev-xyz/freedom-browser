@@ -163,11 +163,6 @@ async function handleCreateWalletTouchIdUnlock() {
       throw new Error(result.error || 'Touch ID cancelled');
     }
 
-    const unlockResult = await window.identity.unlock(result.password);
-    if (!unlockResult.success) {
-      throw new Error(unlockResult.error || 'Failed to unlock vault');
-    }
-
     showCreateWalletStep('name');
   } catch (err) {
     console.error('[WalletUI] Touch ID unlock failed:', err);

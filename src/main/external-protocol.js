@@ -121,7 +121,39 @@ const DANGEROUS_OS_SCHEMES = [
   'x-man-page', // macOS Terminal man-page injection
 ];
 
-const BLOCKED_SCHEMES = new Set([...INTERNAL_SCHEMES, ...DANGEROUS_OS_SCHEMES]);
+// Network shares, remote file systems, directory services and OS settings
+// panes (docs/security-audit-electron.md, O-9). A link to one of these makes
+// the OS connect to or mount an attacker-chosen server, or opens a system
+// settings pane or an app installer, rather than launching an app for the
+// user. On Windows, `smb://attacker/share` (and `ldap:`/`webdav:` through the
+// WebClient service) authenticates to the attacker with the user's NTLM
+// hash. The per-site prompt would sit in front of all of these, but they are
+// never worth offering: none of them is a legitimate "open this in my app"
+// link on the open web. `file:` is already refused as an internal scheme.
+const NETWORK_AND_SETTINGS_SCHEMES = [
+  'smb',
+  'cifs',
+  'nfs',
+  'afp',
+  'webdav',
+  'webdavs',
+  'dav',
+  'davs',
+  'ftp',
+  'ftps',
+  'sftp',
+  'ldap',
+  'ldaps',
+  'ms-settings', // Windows Settings panes
+  'x-apple.systempreferences', // macOS System Settings panes
+  'itms-services', // Apple enterprise/ad-hoc app install manifests
+];
+
+const BLOCKED_SCHEMES = new Set([
+  ...INTERNAL_SCHEMES,
+  ...DANGEROUS_OS_SCHEMES,
+  ...NETWORK_AND_SETTINGS_SCHEMES,
+]);
 
 // Chromium's transient user activation lasts 5s (kActivationLifespan); a
 // launch requested more than that after the last real input is not the

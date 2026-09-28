@@ -21,7 +21,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The page's markup plus the classic script it loads (`scripts/settings.js`,
+// moved out of an inline <script> by #432 so the CSP can drop 'unsafe-inline').
+const SOURCE = [
+  fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), 'utf8'),
+].join('\n');
 
 // Containers a `.rpc-input` may sit in. Each establishes a flex or grid
 // formatting context, so the input's `flex: 1` (or the track it is placed in)

@@ -193,6 +193,7 @@ async function loadSendScreen({ chains = [{ chainId: 100, name: 'Gnosis' }], rev
     electronAPI: reverseLookup ? { resolveEnsReverse: reverseLookup } : {},
     wallet: {
       parseAmount: jest.fn().mockResolvedValue({ success: true, value: '1000' }),
+      confirmSigning: jest.fn().mockResolvedValue({ success: true, token: 'confirm-token' }),
       sendTransaction: jest.fn(() => send.promise),
       estimateGas: jest.fn().mockResolvedValue({ success: true, gasLimit: '21000' }),
       getGasPrice: jest.fn().mockResolvedValue({ success: true, type: 'legacy', gasPrice: '1' }),
@@ -251,6 +252,11 @@ describe('send screen sidebar ownership', () => {
     await flush();
     expect(window.wallet.sendTransaction).toHaveBeenCalled();
     expect(flight.isSignatureInFlight()).toBe(true);
+    // Main signs only against a confirmation minted for exactly these
+    // fields (security audit O-7).
+    const [txParams, , authorization] = window.wallet.sendTransaction.mock.calls[0];
+    expect(window.wallet.confirmSigning).toHaveBeenCalledWith('wallet-send', null, txParams);
+    expect(authorization).toEqual({ confirmation: 'confirm-token' });
 
     send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
     await flush();
@@ -452,5 +458,31 @@ describe('send screen sidebar ownership', () => {
     mod.openSend();
     expect(elements['sidebar-send'].classList.contains('hidden')).toBe(false);
     expect(elements['send-input-view'].classList.contains('hidden')).toBe(false);
+  });
+
+  test('the explorer link opens a tab on click and on middle-click, never a popup', async () => {
+    const { mod, elements, send } = await loadSendScreen();
+    const { createTab } = await import('../tabs.js');
+
+    mod.openSend();
+    elements['send-confirm-btn'].dispatch('click');
+    await flush();
+    send.resolve({ success: true, hash: '0xfeedface', explorerUrl: 'https://ex/0xfeedface' });
+    await flush();
+    const link = elements['send-explorer-link'];
+    expect(link.href).toBe('https://ex/0xfeedface');
+
+    const click = { button: 0, preventDefault: jest.fn() };
+    link.dispatch('click', click);
+    expect(click.preventDefault).toHaveBeenCalled();
+    expect(createTab).toHaveBeenLastCalledWith('https://ex/0xfeedface', { background: false });
+
+    // Middle-click arrives as auxclick; the chrome window denies the popup
+    // target="_blank" would ask for, so without this it did nothing.
+    const middle = { button: 1, preventDefault: jest.fn() };
+    link.dispatch('auxclick', middle);
+    expect(middle.preventDefault).toHaveBeenCalled();
+    expect(createTab).toHaveBeenLastCalledWith('https://ex/0xfeedface', { background: true });
+    expect(createTab).toHaveBeenCalledTimes(2);
   });
 });

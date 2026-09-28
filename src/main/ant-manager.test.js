@@ -268,6 +268,7 @@ function loadAntManagerModule(options = {}) {
     writeFileSync: jest.fn(),
   };
   const httpGet = createHttpGetMock(options.httpResponse);
+  const noteAntApiUrl = jest.fn();
   const Socket = createSocketClass(options.portSequence || options.portResolver || false);
   const randomBytes = options.randomBytes || jest.fn(() => Buffer.from('ab'.repeat(32), 'hex'));
 
@@ -291,6 +292,7 @@ function loadAntManagerModule(options = {}) {
         Socket,
       }),
       [require.resolve('./logger')]: () => log,
+      [require.resolve('./swarm/ant-api-guard')]: () => ({ noteAntApiUrl }),
       [require.resolve('./migrate-user-data')]: () => ({
         isBeeDataMigrationPending: options.isBeeDataMigrationPending || jest.fn(() => false),
       }),
@@ -343,6 +345,7 @@ function loadAntManagerModule(options = {}) {
     loadSettings,
     log,
     mod,
+    noteAntApiUrl,
     randomBytes,
     setErrorState,
     setStatusMessage,
@@ -370,7 +373,7 @@ describe('ant-manager', () => {
     ctx.mod.registerAntIpc();
 
     expect([...ctx.ipcMain.handlers.keys()].sort()).toEqual(
-      [IPC.ANT_START, IPC.ANT_STOP, IPC.ANT_GET_STATUS, IPC.ANT_CHECK_BINARY].sort()
+      [IPC.ANT_START, IPC.ANT_STOP, IPC.ANT_GET_STATUS, IPC.ANT_CHECK_BINARY, IPC.ANT_API_GET].sort()
     );
 
     await expect(ctx.ipcMain.invoke(IPC.ANT_GET_STATUS)).resolves.toEqual({
@@ -569,6 +572,16 @@ describe('ant-manager', () => {
     const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
     expect(configContent).toContain('api-addr: 127.0.0.1:11633');
     expect(configContent).toContain('p2p-addr: :12633');
+    // No browser origin may read the node's API — not even `null` (the
+    // chrome's `file:` origin, shared with every data:/sandboxed frame).
+    // The chrome reads it over IPC instead (security audit O-1, #428).
+    expect(configContent).not.toMatch(/cors-allowed-origins/);
+    // The web-content guard learns the port before the node is healthy
+    // (the registry only learns it after), so it is never live unguarded.
+    expect(ctx.noteAntApiUrl).toHaveBeenCalledWith('http://127.0.0.1:11633');
+    expect(ctx.noteAntApiUrl.mock.invocationCallOrder[0]).toBeLessThan(
+      ctx.spawn.mock.invocationCallOrder[0]
+    );
 
     const stopPromise = ctx.mod.stopAnt();
     await jest.advanceTimersByTimeAsync(0);

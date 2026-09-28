@@ -87,11 +87,11 @@ async function loadDappTx() {
   global.document = createDocument({ elementsById });
 
   const send = deferred();
-  const addTransactionAutoApprove = jest.fn().mockResolvedValue({ success: true });
+  let minted = 0;
+  const confirmSigning = jest.fn(async () => ({ success: true, token: `token-${++minted}` }));
   global.window = {
     dappPermissions: {
       getPermission: jest.fn().mockResolvedValue({ walletIndex: LEDGER_INDEX, chainId: 8453 }),
-      addTransactionAutoApprove,
     },
     networks: {
       getChains: jest.fn().mockResolvedValue({
@@ -114,6 +114,7 @@ async function loadDappTx() {
         gasPrice: '1000000000',
         effectiveGasPrice: '1000000000',
       }),
+      confirmSigning,
       dappSendTransaction: jest.fn(() => send.promise),
     },
   };
@@ -168,7 +169,14 @@ async function loadDappTx() {
     return { settled, promise };
   }
 
-  return { mod, elements: elementsById, send, addTransactionAutoApprove, openApproval, txParams };
+  // "Always allow" now travels with the confirmed send; main records the
+  // rule from it (security audit O-7). One entry per send that asked for it.
+  const rememberedRules = () =>
+    window.wallet.dappSendTransaction.mock.calls
+      .map((call) => call[3]?.rememberAutoApprove)
+      .filter(Boolean);
+
+  return { mod, elements: elementsById, send, rememberedRules, confirmSigning, openApproval, txParams };
 }
 
 describe('dapp-tx approval lifecycle', () => {
@@ -179,7 +187,7 @@ describe('dapp-tx approval lifecycle', () => {
   });
 
   test('reject and back are inert while a Ledger signature is in flight', async () => {
-    const { elements, send, addTransactionAutoApprove, openApproval } = await loadDappTx();
+    const { elements, send, rememberedRules, openApproval } = await loadDappTx();
     const { settled, promise } = await openApproval();
 
     elements['dapp-tx-auto-approve'].checked = true;
@@ -201,7 +209,7 @@ describe('dapp-tx approval lifecycle', () => {
     await promise;
 
     expect(settled).toMatchObject({ state: 'resolved', value: '0xhash' });
-    expect(addTransactionAutoApprove).toHaveBeenCalledTimes(1);
+    expect(rememberedRules()).toHaveLength(1);
   });
 
   test('a second request cannot take the screen from an in-flight signature', async () => {
@@ -257,7 +265,7 @@ describe('dapp-tx approval lifecycle', () => {
   });
 
   test('rejecting before confirming settles 4001 and installs no auto-approve rule', async () => {
-    const { elements, addTransactionAutoApprove, openApproval } = await loadDappTx();
+    const { elements, rememberedRules, openApproval } = await loadDappTx();
     const { settled, promise } = await openApproval();
 
     elements['dapp-tx-auto-approve'].checked = true;
@@ -266,20 +274,20 @@ describe('dapp-tx approval lifecycle', () => {
 
     expect(settled.state).toBe('rejected');
     expect(settled.value).toMatchObject({ code: 4001 });
-    expect(addTransactionAutoApprove).not.toHaveBeenCalled();
+    expect(rememberedRules()).toHaveLength(0);
     // Closing clears the checkbox so the intent cannot leak into the next request.
     expect(elements['dapp-tx-auto-approve'].checked).toBe(false);
   });
 
   test('auto-approve intent does not leak into the next request', async () => {
-    const { elements, send, addTransactionAutoApprove, openApproval } = await loadDappTx();
+    const { elements, send, rememberedRules, openApproval } = await loadDappTx();
     const first = await openApproval();
 
     elements['dapp-tx-auto-approve'].checked = true;
     elements['dapp-tx-approve'].dispatch('click');
     send.resolve({ success: true, hash: '0xhash' });
     await first.promise;
-    expect(addTransactionAutoApprove).toHaveBeenCalledTimes(1);
+    expect(rememberedRules()).toHaveLength(1);
     expect(elements['dapp-tx-auto-approve'].checked).toBe(false);
 
     const second = await openApproval();
@@ -289,10 +297,10 @@ describe('dapp-tx approval lifecycle', () => {
     await second.promise;
 
     expect(second.settled).toMatchObject({ state: 'resolved', value: '0xhash' });
-    expect(addTransactionAutoApprove).toHaveBeenCalledTimes(1);
+    expect(rememberedRules()).toHaveLength(1);
   });
   test('an onchain app is quoted, signed and recorded on the chain it is pinned to', async () => {
-    const { elements, send, addTransactionAutoApprove, openApproval, txParams } =
+    const { elements, send, rememberedRules, confirmSigning, openApproval, txParams } =
       await loadDappTx();
     // Stored grant and the wallet's current selection both say Base (8453);
     // the app's own origin is pinned to Gnosis (100) and must win. Anything
@@ -317,15 +325,51 @@ describe('dapp-tx approval lifecycle', () => {
     expect(window.wallet.dappSendTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ chainId: 100 }),
       LEDGER_INDEX,
-      expect.anything()
+      expect.anything(),
+      { confirmation: 'token-1', rememberAutoApprove: 'https://app.example' }
     );
-    // The rule has to be filed under the chain the next request checks.
-    expect(addTransactionAutoApprove).toHaveBeenCalledWith(
-      'https://app.example',
-      txParams.to,
-      '0x095ea7b3',
-      100
-    );
+    // The confirmation — and so the rule main files from it — is bound to
+    // the transaction on the chain the next request checks.
+    const [sentTx] = window.wallet.dappSendTransaction.mock.calls[0];
+    expect(confirmSigning).toHaveBeenCalledWith('dapp-send', LEDGER_INDEX, sentTx);
+    expect(sentTx).toMatchObject({ to: txParams.to, data: txParams.data, chainId: 100 });
+    expect(rememberedRules()).toEqual(['https://app.example']);
+  });
+
+  test('every Confirm mints a fresh confirmation for exactly the transaction it sends', async () => {
+    const { elements, send, confirmSigning, openApproval } = await loadDappTx();
+    const first = await openApproval();
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({ success: true, hash: '0xhash' });
+    await first.promise;
+    const second = await openApproval();
+    elements['dapp-tx-approve'].dispatch('click');
+    await second.promise;
+
+    const calls = window.wallet.dappSendTransaction.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call[3])).toEqual([
+      { confirmation: 'token-1' },
+      { confirmation: 'token-2' },
+    ]);
+    expect(confirmSigning.mock.calls).toEqual([
+      ['dapp-send', LEDGER_INDEX, calls[0][0]],
+      ['dapp-send', LEDGER_INDEX, calls[1][0]],
+    ]);
+  });
+
+  test('a refused confirmation never reaches the signing call', async () => {
+    const { elements, confirmSigning, openApproval } = await loadDappTx();
+    confirmSigning.mockResolvedValueOnce({ success: false, error: 'Invalid gasLimit' });
+    const { settled } = await openApproval();
+
+    elements['dapp-tx-approve'].dispatch('click');
+    await flush();
+    await flush();
+
+    expect(window.wallet.dappSendTransaction).not.toHaveBeenCalled();
+    expect(settled.state).toBe('pending');
+    expect(elements['dapp-tx-reject'].disabled).toBe(false);
   });
 
   test('the chain the provider resolved outranks the grant and the selection', async () => {

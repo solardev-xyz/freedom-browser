@@ -1,5 +1,20 @@
 // Set app name early, before electron-log initializes (it uses app name for log path)
-const { app, dialog } = require('electron');
+const { app, dialog, ipcMain } = require('electron');
+
+// Sender checks for every IPC handler (docs/security-audit-electron.md, E-1).
+// Installed before anything below can register a handler, so none escapes it.
+// The logger is resolved lazily: electron-log must not initialise before the
+// app name is set just below.
+require('./ipc-sender-policy').installIpcSenderPolicy(ipcMain, {
+  logger: { warn: (...args) => require('./logger').warn(...args) },
+});
+
+// Packaged builds drop --remote-debugging-port/-pipe unless the launch was
+// pointed at a scratch E2E profile (docs/security-audit-electron.md, O-4).
+// Must run before Chromium starts its DevTools handler; logged further down,
+// once the logger may initialise.
+const removedDebugSwitches = require('./remote-debugging-gate').applyRemoteDebuggingGate({ app });
+
 const appName = app.isPackaged
   ? process.platform === 'linux'
     ? 'freedom'
@@ -31,7 +46,10 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
     require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
   );
 }
-const TEST_MODE = process.env.FREEDOM_TEST_MODE === '1';
+// Honoured in a packaged build only when the launch also kept a CDP debug port
+// on a scratch profile, i.e. the packaged E2E launcher
+// (docs/security-audit-electron.md, O-4/O-12); see test-mode.js.
+const TEST_MODE = require('./test-mode').isTestModeRequested();
 const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
@@ -118,6 +136,13 @@ app.setAboutPanelOptions({
 
 const log = require('./logger');
 
+if (removedDebugSwitches.length) {
+  log.warn(
+    `[security] Ignored ${removedDebugSwitches.map((name) => `--${name}`).join(', ')}: ` +
+      'remote debugging is only available to E2E runs on a scratch profile'
+  );
+}
+
 // Global error handlers - must be set up early
 process.on('uncaughtException', (error) => {
   log.error('Uncaught exception:', error);
@@ -136,6 +161,7 @@ const { installRequestRewriter } = require('./request-rewriter');
 const { installAdblockInterception, registerAdblockIpc } = require('./adblock/service');
 const { installAdblockUpdater } = require('./adblock/update-scheduler');
 const { attachWebRequestDispatcher } = require('./webrequest-dispatcher');
+const { installAntApiGuard } = require('./swarm/ant-api-guard');
 const { installX402Interception } = require('./x402/intercept');
 const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
@@ -286,9 +312,9 @@ const {
 const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
+const { registerClientCertificateHandler } = require('./client-certificate');
 const { installTestHarness, registerStubProtocols } = require('./test-harness');
 
-app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 log.info('[profile] Active profile:', {
   id: activeProfile.id,
   source: activeProfile.source,
@@ -387,6 +413,10 @@ async function bootstrap() {
   }
   // All consumers register their handlers first, then the dispatcher
   // attaches exactly one Electron listener per event to the session.
+  // First in the chain, so no rewrite or later handler can wave a request
+  // to the local Ant API past it (docs/security-audit-electron.md, O-1).
+  // Runs in test mode too — it is browser policy, like onchain-app-guard.
+  installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
   // x402, so blocked requests never reach the payment flow.
@@ -455,6 +485,7 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
 
   registerWebContentsHandlers();
+  registerClientCertificateHandler();
   setupApplicationMenu();
 
   // Profiles are shared across processes (one process per profile). When any

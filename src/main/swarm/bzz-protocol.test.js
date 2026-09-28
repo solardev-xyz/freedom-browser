@@ -436,18 +436,152 @@ describe('handleBzzRequest', () => {
     }
   });
 
-  test('does not retry non-idempotent methods', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue(new Response('', { status: 404 }));
-    const req = {
-      url: `bzz://${HASH}/x`,
-      method: 'POST',
-      headers: new Headers(),
-      body: null,
-      signal: new AbortController().signal,
-    };
-    const res = await handleBzzRequest(req, { fetchImpl });
-    expect(res.status).toBe(404);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  // Security audit O-2 (#429): `bzz:` is read-only, like `rad:`. Chromium
+  // enforces no CORS on a custom scheme, so any page could otherwise POST /
+  // PUT / DELETE through this handler with the node's authority.
+  test.each(['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'post'])(
+    'refuses %s with 405 without contacting the node',
+    async (method) => {
+      const fetchImpl = jest.fn();
+      const req = {
+        url: `bzz://${HASH}/x`,
+        method,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        body: new Response('{"x":1}').body,
+        signal: new AbortController().signal,
+      };
+      const res = await handleBzzRequest(req, { fetchImpl });
+      expect(res.status).toBe(405);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  );
+
+  test('forwards HEAD (and GET) to the node', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const res = await handleBzzRequest(makeRequest(`bzz://${HASH}/x`, { method: 'HEAD' }), {
+      fetchImpl,
+    });
+    expect(res.status).toBe(200);
+    expect(fetchImpl.mock.calls[0][1].method).toBe('HEAD');
+    expect(fetchImpl.mock.calls[0][1].body).toBeUndefined();
+  });
+
+  // O-2: an encoded separator could steer the node's router out of
+  // `/bzz/<ref>/` after we already picked the ref.
+  test.each([
+    `bzz://${HASH}/..%2F..%2Fstamps`,
+    `bzz://${HASH}/a%2fb`,
+    `bzz://${HASH}/a%5Cb`,
+    `bzz://${HASH}/a%5cb`,
+    'bzz://meinhard.eth/..%2Fwallet',
+  ])('refuses encoded path separators: %s', async (url) => {
+    const fetchImpl = jest.fn();
+    const res = await handleBzzRequest(makeRequest(url), { fetchImpl });
+    expect(res.status).toBe(400);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test('still serves ordinary percent-encoded paths', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    const res = await handleBzzRequest(makeRequest(`bzz://${HASH}/my%20file%2Etxt?q=%2F`), {
+      fetchImpl,
+    });
+    expect(res.status).toBe(200);
+    expect(fetchImpl.mock.calls[0][0]).toBe(
+      `http://127.0.0.1:1633/bzz/${HASH}/my%20file%2Etxt?q=%2F`
+    );
+  });
+
+  test('forwards only allowlisted request headers to the node', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 206 }));
+    await handleBzzRequest(
+      makeRequest(`bzz://${HASH}/video.mp4`, {
+        headers: {
+          Range: 'bytes=0-99',
+          'If-None-Match': '"abc"',
+          'If-Modified-Since': 'Tue, 01 Sep 2026 00:00:00 GMT',
+          Accept: 'video/*',
+          'Accept-Language': 'de',
+          'Swarm-Act': 'true',
+          'Swarm-Act-Publisher': '02ab',
+          'Swarm-Act-History-Address': 'ff',
+          'Swarm-Postage-Batch-Id': 'deadbeef',
+          'Swarm-Pin': 'true',
+          'X-Custom': '1',
+          'Content-Type': 'text/plain',
+        },
+      }),
+      { fetchImpl }
+    );
+    const sent = fetchImpl.mock.calls[0][1].headers;
+    expect(sent.get('range')).toBe('bytes=0-99');
+    expect(sent.get('if-none-match')).toBe('"abc"');
+    expect(sent.get('if-modified-since')).toBe('Tue, 01 Sep 2026 00:00:00 GMT');
+    expect(sent.get('accept')).toBe('video/*');
+    expect(sent.get('accept-language')).toBe('de');
+    const names = [...sent.keys()];
+    expect(names.filter((n) => n.startsWith('swarm-')).sort()).toEqual([
+      'swarm-chunk-retrieval-timeout',
+      'swarm-redundancy-fallback-mode',
+      'swarm-redundancy-strategy',
+    ]);
+    expect(sent.has('x-custom')).toBe(false);
+    expect(sent.has('content-type')).toBe(false);
+  });
+
+  test('a page cannot override the retrieval hints we set', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    await handleBzzRequest(
+      makeRequest(`bzz://${HASH}/x`, {
+        headers: { 'Swarm-Chunk-Retrieval-Timeout': '999h', 'Swarm-Redundancy-Strategy': '0' },
+      }),
+      { fetchImpl }
+    );
+    const sent = fetchImpl.mock.calls[0][1].headers;
+    expect(sent.get('swarm-chunk-retrieval-timeout')).toBe('30s');
+    expect(sent.get('swarm-redundancy-strategy')).toBe('3');
+  });
+
+  // O-12 (#439): a user-configured external Ant gateway's cookies and
+  // service-worker scope never reach the bzz:// page.
+  test('strips Set-Cookie and Service-Worker-Allowed from the upstream response', async () => {
+    const upstreamHeaders = new Headers({
+      'Content-Type': 'text/html',
+      'Service-Worker-Allowed': '/',
+      ETag: '"v1"',
+    });
+    upstreamHeaders.append('Set-Cookie', 'track=1; Path=/');
+    upstreamHeaders.append('Set-Cookie', 'other=2');
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(new Response('<p>hi</p>', { status: 200, headers: upstreamHeaders }));
+    const res = await handleBzzRequest(makeRequest(`bzz://${HASH}/index.html`), { fetchImpl });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(res.headers.get('service-worker-allowed')).toBeNull();
+    expect(res.headers.get('content-type')).toBe('text/html');
+    expect(res.headers.get('etag')).toBe('"v1"');
+    await expect(res.text()).resolves.toBe('<p>hi</p>');
+  });
+
+  test('strips page-state headers from a 304 and a rewritten redirect too', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 304, headers: { 'Set-Cookie': 'a=1' } }))
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 308,
+          headers: { location: `/bzz/${HASH}/blog/`, 'Set-Cookie': 'a=1' },
+        })
+      );
+    const notModified = await handleBzzRequest(makeRequest(`bzz://${HASH}/x`), { fetchImpl });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers.get('set-cookie')).toBeNull();
+    const redirect = await handleBzzRequest(makeRequest(`bzz://${HASH}/blog`), { fetchImpl });
+    expect(redirect.status).toBe(308);
+    expect(redirect.headers.get('location')).toBe('./blog/');
+    expect(redirect.headers.get('set-cookie')).toBeNull();
   });
 
   test('does not retry permanent non-retryable statuses (e.g. 403)', async () => {

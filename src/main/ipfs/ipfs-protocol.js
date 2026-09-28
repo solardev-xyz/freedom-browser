@@ -158,56 +158,19 @@ async function buildGatewayUrl(namespace, sourceUrl) {
   let effectiveNs = namespace;
 
   // Gateway-form rewrite — see the equivalent comment in
-  // `src/renderer/lib/url-utils.js#parseIpfsInput` for the full rationale.
-  // Reaches here for sub-resource requests (`<img>`, `<script>`, `fetch`,
-  // CSS `url(...)`, etc.) that bypass the renderer's address-bar pipeline
-  // — top-level navigations get rewritten upstream so the address bar
-  // and origin both end up canonical. Sub-resources keep the original
-  // `ipfs://localhost/...` URL (and therefore the wrong storage origin)
-  // but at least the bytes load.
-  //
-  // The gate is now an explicit known-public-gateway / loopback host
-  // allowlist (see isKnownGatewayHost). Earlier versions used a negative
-  // "host doesn't look like a content reference" check, which over-fired
-  // for DNSLink hosts: e.g. `ipns://docs.ipfs.tech/ipfs/coverage` would
-  // try to rewrite even though `docs.ipfs.tech` is the actual content
-  // host (a DNSLink site that genuinely serves a `/ipfs/coverage` page).
-  // Restricting the rewrite to outer hosts we recognize as gateways
-  // disambiguates that case purely from the URL.
-  //
-  // `parsed.pathname` keeps original case (Chromium only lowercases the
-  // host segment for standard schemes), so an embedded CIDv0, CIDv1
-  // base58btc, or base58 IPNS key survives intact and can be
-  // canonicalised below.
-  if (isKnownGatewayHost(host)) {
-    const gatewayMatch = pathname.match(/^\/(ipfs|ipns)\/([^/]+)(.*)$/);
-    if (gatewayMatch) {
-      const innerNs = gatewayMatch[1];
-      const ref = gatewayMatch[2];
-      // For /ipfs/, the embedded ref must be a CID (looksLikeContentKey).
-      // For /ipns/, also accept DNSLink-shaped names so e.g.
-      // `ipfs://dweb.link/ipns/docs.ipfs.tech/install` rewrites to
-      // `ipns://docs.ipfs.tech/install`. Ethereum-name-style hosts are valid
-      // DNSLink targets too and route through the
-      // resolver branch below.
-      const refOk = looksLikeContentKey(ref) || (innerNs === 'ipns' && isLikelyDnsLinkName(ref));
-      if (refOk) {
-        effectiveNs = innerNs;
-        let embeddedRef = ref;
-        if (innerNs === 'ipfs') {
-          // CIDv0 (Qm…) → CIDv1 base32, OR CIDv1 base58btc (z…) → base32.
-          const canonical = cidV0ToV1Base32(embeddedRef) || cidV1B58btcToBase32(embeddedRef);
-          if (canonical) embeddedRef = canonical;
-        } else if (looksLikeContentKey(embeddedRef)) {
-          // Base58 peer ID → libp2p-key base36, or CIDv1 base58btc → base32.
-          // DNSLink-shaped names skip canonicalisation and pass through.
-          const canonical = ipnsMhToCidV1Base36(embeddedRef) || cidV1B58btcToBase32(embeddedRef);
-          if (canonical) embeddedRef = canonical;
-        }
-        host = embeddedRef;
-        pathname = gatewayMatch[3] || '/';
-      }
-    }
+  // `src/renderer/lib/url-utils.js#parseIpfsInput` for the full rationale,
+  // and `matchGatewayForm` below for the matcher. `handleRequest` never
+  // serves a gateway-form URL itself any more: it answers with a redirect
+  // to the canonical `ipfs://<cid>/…` form first (see
+  // `gatewayFormRedirect`), so content never runs under the gateway host's
+  // shared origin. The rewrite stays here so `buildGatewayUrl` keeps
+  // producing the right gateway path for any caller that hands it a
+  // gateway-form URL directly.
+  const gatewayForm = matchGatewayForm(host, pathname);
+  if (gatewayForm) {
+    effectiveNs = gatewayForm.ns;
+    host = gatewayForm.ref;
+    pathname = gatewayForm.rest;
   }
 
   const gw = NATIVE_GATEWAY_BASE;
@@ -386,6 +349,96 @@ function isKnownGatewayHost(host) {
   // `ipfs:` origin).
   if (lower.endsWith('.localhost')) return true;
   return false;
+}
+
+// Gateway-form match: a known gateway / loopback OUTER host carrying the
+// real content reference in a path-gateway path (`/ipfs/<cid>/…`,
+// `/ipns/<key|dnslink-name>/…`). Typical sources: Kubo directory listings'
+// protocol-relative links (`//localhost:8080/ipfs/<cid>`) resolved against
+// an `ipfs:` page, old gateway-form bookmarks, and hand-written
+// `<iframe src="ipfs://localhost/ipfs/<cid>/">`.
+//
+// The gate is an explicit known-public-gateway / loopback host allowlist
+// (see isKnownGatewayHost). Earlier versions used a negative "host doesn't
+// look like a content reference" check, which over-fired for DNSLink hosts:
+// e.g. `ipns://docs.ipfs.tech/ipfs/coverage` would try to rewrite even
+// though `docs.ipfs.tech` is the actual content host (a DNSLink site that
+// genuinely serves a `/ipfs/coverage` page).
+//
+// `pathname` keeps original case (Chromium only lowercases the host segment
+// for standard schemes), so an embedded CIDv0, CIDv1 base58btc, or base58
+// IPNS key survives intact and is canonicalised here where possible.
+//
+// Returns `{ ns, ref, rest }` (ref canonicalised when it could be), or null
+// when the URL is not gateway-form.
+function matchGatewayForm(host, pathname) {
+  if (!isKnownGatewayHost(host)) return null;
+  const gatewayMatch = pathname.match(/^\/(ipfs|ipns)\/([^/]+)(.*)$/);
+  if (!gatewayMatch) return null;
+  const ns = gatewayMatch[1];
+  let ref = gatewayMatch[2];
+  // For /ipfs/, the embedded ref must be a CID (looksLikeContentKey).
+  // For /ipns/, also accept DNSLink-shaped names so e.g.
+  // `ipfs://dweb.link/ipns/docs.ipfs.tech/install` rewrites to
+  // `ipns://docs.ipfs.tech/install`. Ethereum-name-style hosts are valid
+  // DNSLink targets too and route through the resolver branch.
+  const refOk = looksLikeContentKey(ref) || (ns === 'ipns' && isLikelyDnsLinkName(ref));
+  if (!refOk) return null;
+  if (ns === 'ipfs') {
+    // CIDv0 (Qm…) → CIDv1 base32, OR CIDv1 base58btc (z…) → base32.
+    const canonical = cidV0ToV1Base32(ref) || cidV1B58btcToBase32(ref);
+    if (canonical) ref = canonical;
+  } else if (looksLikeContentKey(ref)) {
+    // Base58 peer ID → libp2p-key base36, or CIDv1 base58btc → base32.
+    // DNSLink-shaped names skip canonicalisation and pass through.
+    const canonical = ipnsMhToCidV1Base36(ref) || cidV1B58btcToBase32(ref);
+    if (canonical) ref = canonical;
+  }
+  return { ns, ref, rest: gatewayMatch[3] || '/' };
+}
+
+// A canonical host must survive Chromium lowercasing the host of a
+// standard-scheme URL unchanged in meaning: CIDv1 base32 (`ba…`),
+// libp2p-key base36 (`k…`, IPNS only) and DNSLink / Ethereum names (IPNS
+// only). A base58 ref that could not be re-encoded (bad multihash, a
+// lowercased `qm…`) has no such form.
+function isCaseSafeCanonicalRef(ns, ref) {
+  if (/^ba[a-z2-7]{49,}$/i.test(ref)) return true;
+  if (ns !== 'ipns') return false;
+  return /^k[a-z0-9]{40,}$/i.test(ref) || isLikelyDnsLinkName(ref);
+}
+
+/**
+ * O-3: a gateway-form URL (`ipfs://localhost/ipfs/<cid>/…`,
+ * `ipfs://dweb.link/ipns/<name>/…`, any `*.localhost` host) must not have
+ * its content served under the gateway host's origin — every CID loaded
+ * that way would share one localStorage / IndexedDB / cookie jar. The
+ * renderer rewrites top-level address-bar input and page-initiated
+ * top-level navigations (PR #352), but iframes (no `will-navigate`) and
+ * sub-resources reach this handler as-is.
+ *
+ * Returns:
+ *  - null                 — not gateway-form; serve normally.
+ *  - `{ location }`       — redirect to this canonical `ipfs://<cid>/…` /
+ *                           `ipns://<name>/…` URL (path and query kept; a
+ *                           fragment never reaches the handler).
+ *  - `{ refuse: true }`   — gateway-form, but there is no canonical URL to
+ *                           send it to; refuse rather than serve it under
+ *                           the gateway origin.
+ */
+function gatewayFormRedirect(sourceUrl) {
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    return null;
+  }
+  const match = matchGatewayForm(parsed.hostname, parsed.pathname);
+  if (!match) return null;
+  if (!isCaseSafeCanonicalRef(match.ns, match.ref)) return { refuse: true };
+  return {
+    location: `${match.ns}://${match.ref.toLowerCase()}${match.rest}${parsed.search}`,
+  };
 }
 
 // Cheap pre-filter for hosts with empty labels (e.g. `.eth`, `foo..eth`).
@@ -602,6 +655,37 @@ async function handleRequest(
     attemptTimeoutMs = ATTEMPT_TIMEOUT_MS,
   } = {}
 ) {
+  // O-12: the native gateway is read-only. Answer anything but GET/HEAD
+  // with 405 up front (matching `rad:`), rather than keying on whether the
+  // request happens to carry a body.
+  const method = (request.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    return jsonErrorResponse(405, 'freedom-ipfs native gateway supports GET and HEAD');
+  }
+
+  // O-3: never serve a gateway-form URL under the gateway host's origin.
+  // A redirect is followed by Chromium for navigations (top-level and
+  // iframe) and for sub-resources alike, and moves the document onto the
+  // canonical per-CID origin. Whatever cannot be redirected is refused.
+  const redirect = gatewayFormRedirect(request.url);
+  if (redirect?.location) {
+    return new Response(null, {
+      status: 307,
+      headers: { Location: redirect.location, 'Access-Control-Allow-Origin': '*' },
+    });
+  }
+  if (redirect?.refuse) {
+    log.info(
+      `[${namespace}-protocol] 400 for ${redactUrlForLog(request.url)}: ` +
+        'gateway-form reference has no canonical form'
+    );
+    return jsonErrorResponse(
+      400,
+      `gateway-form ${namespace} URL has no canonical ipfs:// or ipns:// form; not serving it ` +
+        `under the gateway host's origin`
+    );
+  }
+
   const built = await buildGatewayUrl(namespace, request.url);
   if (!built) {
     return jsonErrorResponse(400, `invalid ${namespace} reference`);
@@ -619,13 +703,8 @@ async function handleRequest(
   }
 
   const headers = sanitizeRequestHeaders(request.headers);
-  const method = request.method || 'GET';
-  const body = method === 'GET' || method === 'HEAD' ? undefined : request.body;
 
   if (!fetchImpl) {
-    if (body) {
-      return jsonErrorResponse(405, 'freedom-ipfs native gateway supports GET and HEAD');
-    }
     const gatewayPath = gatewayPathFromUrl(built.url);
     if (!gatewayPath) {
       return jsonErrorResponse(400, `invalid ${namespace} reference`);
@@ -662,10 +741,6 @@ async function handleRequest(
   // Kept for fetchImpl-based tests and legacy gateway smoke paths. Production
   // native requests do not fetch built.url over HTTP.
   const init = { method, headers, signal: attemptCtl.signal, redirect: 'follow' };
-  if (body) {
-    init.body = body;
-    init.duplex = 'half';
-  }
 
   try {
     return await renderSmallTextResponse(await fetchImpl(built.url, init), method, request);
@@ -743,6 +818,7 @@ module.exports = {
   registerIpnsProtocol,
   handleRequest,
   buildGatewayUrl,
+  gatewayFormRedirect,
   gatewayPathFromUrl,
   sanitizeRequestHeaders,
   ATTEMPT_TIMEOUT_MS,

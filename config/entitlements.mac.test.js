@@ -55,6 +55,35 @@ describe('macOS media entitlements and usage descriptions', () => {
     expect(pkg.build.mac.extendInfo.LSMultipleInstancesProhibited).toBe(false);
   });
 
+  // docs/security-audit-electron.md, O-11. `allow-jit` is all V8 needs (it is
+  // the only code-signing entitlement in Electron's own default plist,
+  // @electron/osx-sign's default.darwin.plist). `disable-library-validation`
+  // would let the process load a dylib signed by anyone; it is not needed
+  // because every native addon Freedom loads (better-sqlite3 and the other
+  // `**/*.node` files asarUnpack puts in app.asar.unpacked, and the
+  // extraResources copies of libradicle, freedom-ipfs and Myotis) sits inside
+  // Freedom.app, and @electron/osx-sign signs every binary it finds under
+  // Contents/ with the same Developer ID as the app. Only a signed macOS
+  // release run proves that last part (the packaged smoke legs load the
+  // IPFS, Radicle and SQLite addons); see the PR that dropped these.
+  test('V8 gets allow-jit only: no unsigned executable memory, no foreign dylibs', () => {
+    expect(entitlements['com.apple.security.cs.allow-jit']).toBe(true);
+    expect(entitlements).not.toHaveProperty(
+      'com.apple.security.cs.allow-unsigned-executable-memory'
+    );
+    expect(entitlements).not.toHaveProperty('com.apple.security.cs.disable-library-validation');
+  });
+
+  test('native addons ship outside app.asar, where signing reaches them', () => {
+    expect(pkg.build.asarUnpack).toEqual(expect.arrayContaining(['**/*.node']));
+    const addonDirs = [...pkg.build.extraResources, ...(pkg.build.mac.extraResources || [])]
+      .filter((r) => (r.filter || []).some((f) => f.endsWith('.node')))
+      .map((r) => r.to);
+    expect(addonDirs).toEqual(
+      expect.arrayContaining(['radicle-bin', 'freedom-ipfs-node', 'myotis-node'])
+    );
+  });
+
   // The assertions above are only worth anything if the parser refuses what
   // it does not understand instead of quietly dropping it.
   test.each([

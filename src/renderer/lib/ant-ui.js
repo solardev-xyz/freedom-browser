@@ -1,5 +1,6 @@
 // Bee/Swarm node UI controls
-import { state, buildAntUrl, getDisplayMessage } from './state.js';
+import { state, getDisplayMessage } from './state.js';
+import { fetchAntJson } from './wallet/ant-api.js';
 import { pushDebug } from './debug.js';
 import { UNKNOWN, versionText } from './ui-format.js';
 
@@ -44,10 +45,10 @@ const fetchConnectedPeers = async () => {
   if (!beeInfoPanel?.classList.contains('visible')) return;
 
   try {
-    const response = await fetch(buildAntUrl('/peers'));
+    const response = await fetchAntJson('/peers');
     if (!beeInfoPanel?.classList.contains('visible')) return;
     if (response.ok) {
-      const peersData = await response.json();
+      const peersData = response.data;
       const peers = peersData?.peers || peersData || [];
       const count = Array.isArray(peers) ? peers.length : peers?.total || 0;
       if (beePeersCount) beePeersCount.textContent = String(count ?? 0);
@@ -68,10 +69,10 @@ const fetchVisiblePeers = async () => {
   if (!beeInfoPanel?.classList.contains('visible')) return;
 
   try {
-    const response = await fetch(buildAntUrl('/topology'));
+    const response = await fetchAntJson('/topology');
     if (!beeInfoPanel?.classList.contains('visible')) return;
     if (response.ok) {
-      const topologyData = await response.json();
+      const topologyData = response.data;
       const populationSum = Object.values(topologyData?.bins || {}).reduce(
         (sum, bin) => sum + (bin?.population || 0),
         0
@@ -88,9 +89,9 @@ const fetchVisiblePeers = async () => {
 const fetchAntVersionOnce = async () => {
   if (state.antVersionFetched) return;
   try {
-    const healthResponse = await fetch(buildAntUrl('/health'));
+    const healthResponse = await fetchAntJson('/health');
     if (healthResponse.ok) {
-      const healthData = await healthResponse.json();
+      const healthData = healthResponse.data;
       // antd reports a wire-format version like "antd/0.5.8-<build>"; surface
       // it as the product label "Ant v0.5.8" to match the rest of the UI.
       const rawVersion = (healthData?.version || '').split('-')[0];

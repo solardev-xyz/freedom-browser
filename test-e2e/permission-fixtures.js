@@ -96,6 +96,16 @@ async function answerPrompt(window, action) {
 // Electron app rather than the `harness` fixture so a spec can also seed an
 // instance it started itself (the relaunch in the packaged spec).
 async function setPermissionFixture(electronApp, body = FIXTURE_BODY) {
+  // A packaged build is driven over CDP and has no main-process evaluate; it
+  // takes the same fixture through the harness's named op (packaged-launch.js).
+  if (typeof electronApp.testOp === 'function') {
+    const result = await electronApp.testOp('set-content-fixture', {
+      url: `${FIXTURE_URL}/`,
+      body,
+    });
+    if (!result?.ok) throw new Error(`set-content-fixture failed: ${JSON.stringify(result)}`);
+    return;
+  }
   await electronApp.evaluate(
     (_electron, { url, fixture }) => {
       globalThis.__FREEDOM_TEST_HARNESS__.setContentFixture(url, fixture);

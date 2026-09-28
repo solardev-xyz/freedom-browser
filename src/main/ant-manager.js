@@ -24,6 +24,8 @@ const {
   clearErrorState,
   clearService,
 } = require('./service-registry');
+const { noteAntApiUrl } = require('./swarm/ant-api-guard');
+const { antApiGet } = require('./swarm/ant-api-chrome');
 
 // States
 const STATUS = {
@@ -200,6 +202,11 @@ function getPrimaryEthereumRpcUrl() {
   return getPrimaryKeylessRpcUrl(ETHEREUM_CHAIN_ID) || DEFAULT_ANT_RESOLVER_RPC_URL;
 }
 
+// No `cors-allowed-origins`: nothing in a browser origin may read the API.
+// The chrome reaches the node over IPC (`ant:api-get`) and the main process
+// over Node's fetch, neither of which is subject to CORS. The old `"null"`
+// entry, there for the chrome's `file:` origin, also let every `data:` frame
+// and sandboxed iframe read API responses (security audit O-1, #428).
 function buildAntConfigContent({
   dataDir, apiPort, p2pPort, password, nodeMode, blockchainRpcEndpoint, resolverRpcEndpoint,
 }) {
@@ -212,7 +219,6 @@ swap-enable: ${isLightNode ? 'true' : 'false'}
 mainnet: true
 full-node: false
 blockchain-rpc-endpoint: ${isLightNode ? `"${blockchainRpcEndpoint}"` : '""'}
-cors-allowed-origins: "null"
 skip-postage-snapshot: true
 resolver-options: "${resolverRpcEndpoint}"
 storage-incentives-enable: false
@@ -480,6 +486,7 @@ async function startExternalAnt(config) {
   }
 
   currentApiUrl = apiUrl;
+  noteAntApiUrl(currentApiUrl);
   currentApiPort = getPortFromUrl(apiUrl);
   currentMode = MODE.EXTERNAL;
 
@@ -550,6 +557,7 @@ async function startAnt() {
     // Reuse existing daemon
     currentApiPort = existing.port;
     currentApiUrl = `http://127.0.0.1:${currentApiPort}`;
+    noteAntApiUrl(currentApiUrl);
     currentMode = MODE.REUSED;
 
     updateService('ant', {
@@ -657,6 +665,7 @@ async function startAnt() {
 
   currentApiPort = apiPort;
   currentApiUrl = `http://127.0.0.1:${currentApiPort}`;
+  noteAntApiUrl(currentApiUrl);
   currentMode = MODE.BUNDLED;
 
   const configuredNodeMode = getConfiguredAntNodeMode();
@@ -901,6 +910,10 @@ function registerAntIpc() {
   ipcMain.handle(IPC.ANT_CHECK_BINARY, () => {
     return { available: checkBinary() };
   });
+
+  // Chrome-only (no webview tier in ipc-sender-policy.js): read-only node
+  // API access for the chrome's status/wallet screens. See ant-api-chrome.js.
+  ipcMain.handle(IPC.ANT_API_GET, (_event, endpoint) => antApiGet(endpoint));
 }
 
 function hasLiveProcess() {

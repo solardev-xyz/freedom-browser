@@ -117,6 +117,35 @@ describe('onBeforeRequest dispatch', () => {
     expect(result).toEqual({ redirectURL: 'https://ok.example/' });
   });
 
+  test('a throwing fail-closed handler cancels the request', async () => {
+    const later = jest.fn(() => null);
+    registerWebRequestHandler(
+      'onBeforeRequest',
+      'gate',
+      () => {
+        throw new Error('boom');
+      },
+      { failClosed: true }
+    );
+    registerWebRequestHandler('onBeforeRequest', 'later', later);
+
+    const result = await drive({ url: 'radapi://api/v1/repos' });
+    expect(result).toEqual({ cancel: true });
+    expect(later).not.toHaveBeenCalled();
+  });
+
+  test('a fail-closed handler that does not throw passes the request through', async () => {
+    registerWebRequestHandler('onBeforeRequest', 'gate', () => null, { failClosed: true });
+    const result = await drive({ url: 'https://example.com/' });
+    expect(result).toEqual({});
+  });
+
+  test('failClosed is refused on header events', () => {
+    expect(() =>
+      registerWebRequestHandler('onHeadersReceived', 'gate', () => null, { failClosed: true })
+    ).toThrow(/only supported for onBeforeRequest/);
+  });
+
   test('awaits async handlers in registration order', async () => {
     const order = [];
     registerWebRequestHandler('onBeforeRequest', 'a', async () => {

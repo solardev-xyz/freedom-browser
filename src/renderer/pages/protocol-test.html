@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src * data: bzz: ipfs:; media-src * bzz: ipfs:;"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data: bzz: ipfs:; media-src * bzz: ipfs:; object-src 'none'; base-uri 'none'; form-action 'none';"
     />
     <title>Protocol Test</title>
     <link rel="stylesheet" href="styles/theme.css" />
@@ -89,14 +89,7 @@
         <img
           src="bzz://48a905ac0970d342371dec73b1e2a7c81fd3d6cac42e70a197533195a7e87d75"
           alt="Swarm hosted image"
-          onload="
-            this.parentElement.querySelector('.status').className = 'status success';
-            this.parentElement.querySelector('.status').textContent = '✓ Loaded successfully';
-          "
-          onerror="
-            this.parentElement.querySelector('.status').className = 'status error';
-            this.parentElement.querySelector('.status').textContent = '✗ Failed to load';
-          "
+          data-load-status
         />
         <div class="status loading">Loading…</div>
       </div>
@@ -111,14 +104,7 @@
         <img
           src="ipfs://bafybeiccfclkdtucu6y4yc5cpr6y3yuinr67svmii46v5cfcrkp47ihehy/frontend/thumbnails/21710806961_f87f821c9b_o.jpg._t.jpg"
           alt="IPFS hosted image"
-          onload="
-            this.parentElement.querySelector('.status').className = 'status success';
-            this.parentElement.querySelector('.status').textContent = '✓ Loaded successfully';
-          "
-          onerror="
-            this.parentElement.querySelector('.status').className = 'status error';
-            this.parentElement.querySelector('.status').textContent = '✗ Failed to load';
-          "
+          data-load-status
         />
         <div class="status loading">Loading…</div>
       </div>
@@ -133,17 +119,11 @@
         <video
           src="ipfs://bafybeickamvn3owc6wm2rsw2bifr2ufrlm7d7ulekuc5mpiqnumffi2yle/video.mp4"
           controls
-          onloadeddata="
-            this.parentElement.querySelector('.status').className = 'status success';
-            this.parentElement.querySelector('.status').textContent = '✓ Loaded successfully';
-          "
-          onerror="
-            this.parentElement.querySelector('.status').className = 'status error';
-            this.parentElement.querySelector('.status').textContent = '✗ Failed to load';
-          "
+          data-load-status
         ></video>
         <div class="status loading">Loading…</div>
       </div>
     </div>
+    <script src="scripts/protocol-test.js"></script>
   </body>
 </html>

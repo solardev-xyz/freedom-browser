@@ -1,0 +1,2 @@
+- Site-supplied titles, filenames and payment details show only as text on the History, Downloads and Payments pages ([#432](https://github.com/solardev-xyz/freedom-browser/issues/432))
+  - A site you paid through x402 could put markup in its payment receipt that ran as script on the Payments page

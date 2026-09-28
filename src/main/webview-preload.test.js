@@ -141,6 +141,9 @@ function loadWebviewPreloadModule(options = {}) {
   global.location = location;
   global.navigator = {
     clipboard,
+    // `navigator.userActivation`, when a spec models one (the dweb-link
+    // new-tab gate reads `isActive`).
+    ...(options.userActivation ? { userActivation: options.userActivation } : {}),
   };
   // The theme bootstrap falls back to observing `document` when <html> does
   // not exist yet at document-start.
@@ -949,6 +952,7 @@ describe('webview-preload', () => {
       shiftKey: false,
       altKey: false,
       defaultPrevented: false,
+      isTrusted: true,
       preventDefault: jest.fn(),
     };
 
@@ -1067,6 +1071,8 @@ describe('webview-preload', () => {
         shiftKey: false,
         altKey: false,
         defaultPrevented: false,
+        // A real click or middle-click: new-tab dispositions need a gesture.
+        isTrusted: true,
         preventDefault: jest.fn(),
         ...overrides,
       };
@@ -1081,6 +1087,250 @@ describe('webview-preload', () => {
       });
       expect(ipcRenderer.sendToHost.mock.calls[0][0]).toBe('link:navigate');
     }
+  });
+
+  // docs/security-audit-electron.md, O-12: a page must not be able to open
+  // dweb tabs with a scripted `anchor.click()` — the popup-blocker rule
+  // Chromium applies to `target="_blank"`.
+  describe('new-tab dispositions need a user gesture', () => {
+    const blankAnchor = (target = '_blank') => ({
+      tagName: 'A',
+      getAttribute: jest.fn((name) => {
+        if (name === 'href') return 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+        if (name === 'target') return target;
+        return null;
+      }),
+      parentElement: global.document.body,
+    });
+    // Trusted input events as the window capture listener sees them.
+    const press = (type, overrides = {}) => ({
+      type,
+      pointerType: 'mouse',
+      isTrusted: true,
+      ...overrides,
+    });
+    const key = (k, overrides = {}) => ({ type: 'keydown', key: k, isTrusted: true, ...overrides });
+    const syntheticClick = (anchor, overrides = {}) => ({
+      target: anchor,
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      defaultPrevented: false,
+      isTrusted: false,
+      preventDefault: jest.fn(),
+      ...overrides,
+    });
+
+    test.each([
+      ['target=_blank', '_blank', {}],
+      ['a ctrl-click on a named target', 'docs', { ctrlKey: true }],
+      ['a synthetic ctrl-click', '', { ctrlKey: true }],
+      ['a synthetic shift-click (new window)', '', { shiftKey: true }],
+    ])('a synthetic click on %s without activation opens nothing', (_label, target, extra) => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: true },
+      });
+      const event = syntheticClick(blankAnchor(target), extra);
+      documentCaptureHandlers.click(event);
+      expect(ipcRenderer.sendToHost).not.toHaveBeenCalledWith('link:navigate', expect.anything());
+      // Cancelled all the same, so Chromium does not open it through
+      // setWindowOpenHandler instead.
+      expect(event.preventDefault).toHaveBeenCalled();
+    });
+
+    test('no userActivation API at all counts as no activation', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule();
+      const event = syntheticClick(blankAnchor());
+      documentCaptureHandlers.click(event);
+      expect(ipcRenderer.sendToHost).not.toHaveBeenCalledWith('link:navigate', expect.anything());
+    });
+
+    test('a scripted click inside a real gesture still opens the tab', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: true, hasBeenActive: true },
+      });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'newTab',
+        target: '_blank',
+      });
+    });
+
+    test('a real click opens the tab', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: false },
+      });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { isTrusted: true }));
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'newTab',
+        target: '_blank',
+      });
+    });
+
+    // Chromium's popup blocker consumes the activation it lets a popup
+    // through on; the preload's own budget must do the same, or one real
+    // click would let a script open any number of tabs.
+    test('one gesture opens one tab: a second scripted click in it opens nothing', () => {
+      const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
+        loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      windowCaptureHandlers.pointerdown(press('pointerdown'));
+
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      const second = syntheticClick(blankAnchor());
+      documentCaptureHandlers.click(second);
+      const third = syntheticClick(blankAnchor(), { ctrlKey: true });
+      documentCaptureHandlers.click(third);
+
+      const opens = ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate');
+      expect(opens).toHaveLength(1);
+      expect(second.preventDefault).toHaveBeenCalled();
+      expect(third.preventDefault).toHaveBeenCalled();
+
+      // A page dispatching its own "activation" events earns nothing.
+      windowCaptureHandlers.pointerdown(press('pointerdown', { isTrusted: false }));
+      windowCaptureHandlers.keydown(key('a', { isTrusted: false }));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(1);
+
+      // The next real gesture buys exactly one more.
+      windowCaptureHandlers.keydown(key('a'));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(2);
+    });
+
+    // One physical press fires several activation-triggering events, all
+    // trusted. Only the one Chromium grants activation on opens an epoch, or a
+    // page with a handler on each could open one tab per event of a single
+    // click. Mouse and pen activate at pointerdown, touch at pointerup.
+    test.each([
+      ['mouse', 'mouse', ['pointerdown', 'mousedown', 'pointerup', 'mouseup']],
+      ['pen', 'pen', ['pointerdown', 'mousedown', 'pointerup', 'mouseup']],
+      ['touch', 'touch', ['pointerdown', 'touchstart', 'pointerup', 'touchend', 'mousedown']],
+    ])('one %s press is one gesture however many of its events a page handles', (_l, pt, seq) => {
+      const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
+        loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      // Spend the page's initial epoch first, so only epochs the press itself
+      // opens are counted (touch's pointerdown comes before its epoch).
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      for (const type of seq) {
+        windowCaptureHandlers[type]?.(press(type, { pointerType: pt }));
+        documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      }
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(2);
+      for (const type of ['mousedown', 'touchend', 'touchstart']) {
+        expect(windowCaptureHandlers[type]).toBeUndefined();
+      }
+    });
+
+    // R3-M1: the transient activation of an earlier real click is never
+    // consumed (the preload cancels the click, so Chromium's popup blocker
+    // never spends it), so an event that is *not* an activation in Chromium
+    // must not open an epoch either, or it buys one more scripted tab while
+    // isActive is still true. Probed in real Electron: Escape and modifier
+    // keydowns don't activate; a touch that becomes a scroll fires
+    // pointerdown + pointercancel and never activates.
+    test.each([
+      ['Escape', [['keydown', key('Escape')]]],
+      ['a lone Shift', [['keydown', key('Shift')]]],
+      ['a lone Control', [['keydown', key('Control')]]],
+      ['a lone Meta', [['keydown', key('Meta')]]],
+      [
+        'a touch scroll',
+        [
+          ['pointerdown', press('pointerdown', { pointerType: 'touch' })],
+          ['pointercancel', press('pointercancel', { pointerType: 'touch' })],
+        ],
+      ],
+      ['a mouse button release', [['pointerup', press('pointerup')]]],
+    ])('%s after a spent gesture buys no extra tab', (_l, events) => {
+      const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
+        loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      const opens = () =>
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate').length;
+      windowCaptureHandlers.pointerdown(press('pointerdown'));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      expect(opens()).toBe(1);
+
+      for (const [type, event] of events) windowCaptureHandlers[type]?.(event);
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      expect(opens()).toBe(1);
+
+      // Control: an activating key or a completed tap is a gesture of its own.
+      windowCaptureHandlers.keydown(key('Enter'));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      expect(opens()).toBe(2);
+      windowCaptureHandlers.pointerdown(press('pointerdown', { pointerType: 'touch' }));
+      windowCaptureHandlers.pointerup(press('pointerup', { pointerType: 'touch' }));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { ctrlKey: true }));
+      expect(opens()).toBe(3);
+    });
+
+    test('a real click spends the gesture, so a scripted click riding on it opens nothing', () => {
+      const { documentCaptureHandlers, windowCaptureHandlers, ipcRenderer } =
+        loadWebviewPreloadModule({ userActivation: { isActive: true, hasBeenActive: true } });
+      windowCaptureHandlers.pointerdown(press('pointerdown'));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { isTrusted: true }));
+      documentCaptureHandlers.click(syntheticClick(blankAnchor()));
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(1);
+      // A further real click is its own gesture and still works.
+      documentCaptureHandlers.click(syntheticClick(blankAnchor(), { isTrusted: true }));
+      expect(
+        ipcRenderer.sendToHost.mock.calls.filter(([ch]) => ch === 'link:navigate')
+      ).toHaveLength(2);
+    });
+
+    // Navigating an existing named browsing context needs no gesture in
+    // Chromium; creating one does. The preload can't see the tab strip, so it
+    // forwards the link as reuse-only and the host opens nothing new.
+    test('a gesture-less named-target click is forwarded as reuse-only', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: true },
+      });
+      const event = syntheticClick(blankAnchor('viewer'));
+      documentCaptureHandlers.click(event);
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'newTab',
+        target: 'viewer',
+        reuseOnly: true,
+      });
+    });
+
+    test('a named-target click with a gesture is not reuse-only', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule();
+      documentCaptureHandlers.click(syntheticClick(blankAnchor('viewer'), { isTrusted: true }));
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'newTab',
+        target: 'viewer',
+      });
+    });
+
+    test('a synthetic same-tab click still navigates (no more than setting location)', () => {
+      const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+        userActivation: { isActive: false, hasBeenActive: false },
+      });
+      documentCaptureHandlers.click(syntheticClick(blankAnchor('')));
+      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+        url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+        disposition: 'currentTab',
+        target: null,
+      });
+    });
   });
 
   test('ignores non-dweb anchor clicks', () => {
@@ -1478,6 +1728,64 @@ describe('webview-preload private windows', () => {
     expect(head.insertBefore).toHaveBeenNthCalledWith(1, scripts[0], null);
     expect(scripts[0].remove).toHaveBeenCalled();
   });
+});
+
+// #432: internal pages run `script-src 'self'`, so an inline <script> shim
+// injected into them is refused by their CSP and only logs a violation. They
+// reach main through freedomAPI and have no use for window.swarm /
+// window.radicle, so those two DOM-injected shims are skipped there — and
+// still injected into every web page.
+describe('webview-preload page-world shims on internal pages', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    jest.restoreAllMocks();
+  });
+
+  // Source of every <script> actually inserted into the page.
+  const injectedScripts = (location) => {
+    const head = { firstChild: null, insertBefore: jest.fn() };
+    loadWebviewPreloadModule({
+      location,
+      documentOverrides: {
+        createElement: jest.fn(() => ({ remove: jest.fn(), textContent: '' })),
+        head,
+        readyState: 'complete',
+      },
+    });
+    return head.insertBefore.mock.calls.map(([script]) => script.textContent);
+  };
+
+  test('a web page gets the window.swarm and window.radicle shims', () => {
+    const sources = injectedScripts({
+      href: 'https://dapp.example/',
+      protocol: 'https:',
+      pathname: '/',
+    });
+    expect(sources.some((source) => source.includes('FREEDOM_SWARM_REQUEST'))).toBe(true);
+    expect(sources.some((source) => source.includes('FREEDOM_RADICLE_REQUEST'))).toBe(true);
+  });
+
+  test.each(['history.html', 'settings.html', 'error.html'])(
+    'internal page %s gets no inline shim at all',
+    (file) => {
+      const sources = injectedScripts({
+        href: `file:///app/pages/${file}`,
+        protocol: 'file:',
+        pathname: `/app/pages/${file}`,
+      });
+      expect(sources).toEqual([]);
+    }
+  );
 });
 
 // #233: internal pages used to follow the OS colour scheme only, so a dark app

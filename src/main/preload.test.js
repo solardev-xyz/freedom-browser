@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const IPC = require('../shared/ipc-channels');
 const {
   createContextBridgeMock,
@@ -374,5 +376,61 @@ describe('preload', () => {
 
     expect(callback).not.toHaveBeenCalled();
     cleanup();
+  });
+
+  describe('E2E harness bridge (freedomTest)', () => {
+    const { TEST_HARNESS_RENDERER_ARG } = require('./test-mode');
+    const originalArgv = process.argv;
+    const originalTestMode = process.env.FREEDOM_TEST_MODE;
+    const withArg = () => {
+      process.argv = [...originalArgv, TEST_HARNESS_RENDERER_ARG];
+    };
+    afterEach(() => {
+      process.argv = originalArgv;
+      if (originalTestMode === undefined) delete process.env.FREEDOM_TEST_MODE;
+      else process.env.FREEDOM_TEST_MODE = originalTestMode;
+    });
+
+    test('keys on the same renderer argument test-mode.js hands the chrome window', () => {
+      // preload.js cannot require test-mode.js (sandboxed), so it spells the
+      // argument out; this pins the two copies together.
+      const source = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+      expect(source).toContain(`process.argv.includes('${TEST_HARNESS_RENDERER_ARG}')`);
+    });
+
+    test('is absent without the renderer argument, whatever FREEDOM_TEST_MODE says', () => {
+      // The env var is the main process's input, not the renderer's: a packaged
+      // build ignores it on its own (test-mode.js), so the bridge must too.
+      for (const value of [undefined, '', '0', 'true', '1']) {
+        if (value === undefined) delete process.env.FREEDOM_TEST_MODE;
+        else process.env.FREEDOM_TEST_MODE = value;
+        const { exposures } = loadPreloadModule();
+        expect(exposures).not.toHaveProperty('freedomTest');
+      }
+    });
+
+    test('in test mode, forwards only its named operations to test:* channels', async () => {
+      withArg();
+      const { exposures, ipcRenderer } = loadPreloadModule({
+        invokeResponses: { 'test:app-facts': { packaged: true } },
+      });
+      expect(Object.keys(exposures.freedomTest)).toEqual(['invoke']);
+
+      await expect(exposures.freedomTest.invoke('app-facts')).resolves.toEqual({ packaged: true });
+      expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('test:app-facts', undefined);
+
+      const fixture = { url: 'bzz://x/', body: '<p>' };
+      await exposures.freedomTest.invoke('set-content-fixture', fixture);
+      expect(ipcRenderer.invoke).toHaveBeenLastCalledWith('test:set-content-fixture', fixture);
+
+      // Not a generic channel: anything else is refused before it reaches IPC,
+      // including real test:* handlers the bridge does not list and non-test
+      // channels spelled to look like one.
+      ipcRenderer.invoke.mockClear();
+      for (const op of ['reset-fixtures', 'set-ens-fixture', '../wallet:send-transaction', '']) {
+        await expect(exposures.freedomTest.invoke(op)).rejects.toThrow(/Unknown test harness/);
+      }
+      expect(ipcRenderer.invoke).not.toHaveBeenCalled();
+    });
   });
 });

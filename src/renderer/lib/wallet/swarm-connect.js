@@ -953,11 +953,6 @@ async function handleFeedTouchIdUnlock() {
       throw new Error(result.error || 'Touch ID failed');
     }
 
-    const unlockResult = await window.identity.unlock(result.password);
-    if (!unlockResult.success) {
-      throw new Error(unlockResult.error || 'Failed to unlock vault');
-    }
-
     swarmFeedUnlock?.classList.add('hidden');
     swarmFeedVaultUnlocked = true;
     syncFeedApproveButton();

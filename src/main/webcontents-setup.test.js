@@ -122,10 +122,92 @@ describe('webcontents-setup', () => {
     const webPreferences = { preload: '/app/webview-preload.js', sandbox: true };
     host.emit('will-attach-webview', {}, webPreferences, {});
     expect(webPreferences).toEqual({
-      preload: '/app/webview-preload.js',
+      preload: ctx.mod.WEBVIEW_PRELOAD_PATH,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      contextIsolation: true,
       sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
       nodeIntegrationInSubFrames: true,
     });
+  });
+
+  // Security audit (docs/security-audit-electron.md, E-3): the guest's
+  // preferences come from a renderer-written attribute, so main overrides
+  // anything weaker and pins the preload to the one tab preload.
+  test('forces hardened guest preferences whatever the embedder asked for', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    const webPreferences = {
+      preload: '/tmp/evil-preload.js',
+      preloadURL: 'file:///tmp/evil-preload.js',
+      nodeIntegration: true,
+      nodeIntegrationInWorker: true,
+      contextIsolation: false,
+      sandbox: false,
+      webSecurity: false,
+      allowRunningInsecureContent: true,
+      experimentalFeatures: true,
+      enableBlinkFeatures: 'SomethingRisky',
+    };
+    host.emit('will-attach-webview', {}, webPreferences, { src: 'https://example.com' });
+    expect(webPreferences).toEqual({
+      preload: ctx.mod.WEBVIEW_PRELOAD_PATH,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
+      nodeIntegrationInSubFrames: true,
+    });
+    expect(ctx.mod.WEBVIEW_PRELOAD_PATH).toMatch(/[\\/]src[\\/]main[\\/]webview-preload\.js$/);
+  });
+
+  test('a webview that asked for no preload is not given one', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    const webPreferences = {};
+    host.emit('will-attach-webview', {}, webPreferences, {});
+    expect(webPreferences).not.toHaveProperty('preload');
+    expect(webPreferences.sandbox).toBe(true);
+  });
+
+  // E-2: the chrome renderer carries the privileged preload; a dropped link
+  // or scripted navigation must never replace index.html in its top frame.
+  test('locks the chrome window to index.html: no navigation, redirect or popup', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    for (const event of ['will-navigate', 'will-redirect']) {
+      const nav = { preventDefault: jest.fn() };
+      host.emit(event, nav, 'https://evil.example/phish.html');
+      expect(nav.preventDefault).toHaveBeenCalled();
+    }
+    expect(host.windowOpenHandler({ url: 'https://evil.example/' })).toEqual({ action: 'deny' });
+  });
+
+  test('the chrome-window lock does not apply to tab webviews', () => {
+    const ctx = loadWebContentsSetupModule();
+    const guest = createContentsMock({ id: 9, type: 'webview', url: 'https://example.com' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, guest);
+
+    const nav = { preventDefault: jest.fn() };
+    guest.emit('will-navigate', nav, 'https://example.org/next');
+    guest.emit('will-redirect', nav, 'https://example.org/next');
+    expect(nav.preventDefault).not.toHaveBeenCalled();
   });
 
   test('skips css injection for internal file pages and intercepts external window opens', () => {

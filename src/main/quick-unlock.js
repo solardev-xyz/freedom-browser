@@ -187,42 +187,103 @@ async function enableQuickUnlock(password) {
 }
 
 /**
- * Retrieve password using Touch ID
- * @returns {Promise<{success: boolean, password?: string, error?: string}>}
+ * Touch ID, then the stored vault password — main-internal only. The
+ * password never crosses IPC: every caller below finishes the job
+ * (unlock, export) in main and returns only its outcome (security audit
+ * O-8). Throws on any failure.
+ * @returns {Promise<string>}
  */
-async function unlockWithTouchId() {
+async function retrievePasswordWithTouchId() {
   if (!canUseTouchId()) {
-    return { success: false, error: 'Touch ID not available' };
+    throw new Error('Touch ID not available');
   }
 
   if (!isQuickUnlockEnabled()) {
-    return { success: false, error: 'Quick unlock not enabled' };
+    throw new Error('Quick unlock not enabled');
   }
 
+  const credPath = getCredentialPath();
+  const credential = parseCredential(fs.readFileSync(credPath));
+  if (credential.type === 'bound') {
+    const bindingError = validateCredentialBinding(credential.payload);
+    if (bindingError) {
+      throw new Error(bindingError);
+    }
+  }
+
+  // Prompt for Touch ID
+  await systemPreferences.promptTouchID('unlock Freedom Browser');
+
+  const password = safeStorage.decryptString(credential.encrypted);
+  await verifyCredentialPassword(password);
+
+  if (credential.type === 'legacy') {
+    writeCredential(password);
+  }
+  return password;
+}
+
+// Lazy: identity-manager pulls in the whole identity stack, which this
+// module's own callers (and tests) don't otherwise need.
+function identityManager() {
+  return require('./identity-manager');
+}
+
+/**
+ * Unlock the vault with Touch ID. Main unlocks the vault itself — exactly
+ * what `identity:unlock` does with a typed password — and the renderer
+ * learns only whether it worked.
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+async function unlockWithTouchId() {
   try {
-    const credPath = getCredentialPath();
-    const credential = parseCredential(fs.readFileSync(credPath));
-    if (credential.type === 'bound') {
-      const bindingError = validateCredentialBinding(credential.payload);
-      if (bindingError) {
-        return { success: false, error: bindingError };
-      }
-    }
-
-    // Prompt for Touch ID
-    await systemPreferences.promptTouchID('unlock Freedom Browser');
-
-    const password = safeStorage.decryptString(credential.encrypted);
-    await verifyCredentialPassword(password);
-
-    if (credential.type === 'legacy') {
-      writeCredential(password);
-    }
-
+    const password = await retrievePasswordWithTouchId();
+    await identityManager().unlockVault(password);
     console.log('[QuickUnlock] Unlocked with Touch ID');
-    return { success: true, password };
+    return { success: true };
   } catch (err) {
     console.error('[QuickUnlock] Failed to unlock:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Touch ID in place of the password re-entry `identity:export-mnemonic`
+ * asks for. Unlocks the vault (as the password flow does first) and
+ * returns the recovery phrase the user asked to see — never the password.
+ * @returns {Promise<{success: boolean, mnemonic?: string, error?: string}>}
+ */
+async function exportMnemonicWithTouchId() {
+  try {
+    const password = await retrievePasswordWithTouchId();
+    const identity = identityManager();
+    await identity.unlockVault(password);
+    const mnemonic = await identity.exportMnemonic();
+    return { success: true, mnemonic };
+  } catch (err) {
+    console.error('[QuickUnlock] Failed to export recovery phrase:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Touch ID in place of the password re-entry
+ * `identity:export-private-key` asks for. Same shape as
+ * exportMnemonicWithTouchId.
+ * @param {number} accountIndex
+ * @returns {Promise<{success: boolean, privateKey?: string, error?: string}>}
+ */
+async function exportPrivateKeyWithTouchId(accountIndex) {
+  try {
+    const identity = identityManager();
+    // Refuse a device/Safe account before prompting for Touch ID.
+    identity.assertPrivateKeyExportable(accountIndex);
+    const password = await retrievePasswordWithTouchId();
+    await identity.unlockVault(password);
+    const privateKey = await identity.exportPrivateKeyForAccount(accountIndex);
+    return { success: true, privateKey };
+  } catch (err) {
+    console.error('[QuickUnlock] Failed to export private key:', err.message);
     return { success: false, error: err.message };
   }
 }
@@ -264,9 +325,19 @@ function registerQuickUnlockIpc() {
     return enableQuickUnlock(password);
   });
 
-  // Unlock with Touch ID (retrieve password)
+  // Unlock the vault with Touch ID. Returns success/failure only — the
+  // stored password never leaves main (security audit O-8).
   ipcMain.handle('quick-unlock:unlock', async () => {
     return unlockWithTouchId();
+  });
+
+  // Touch ID instead of the password re-entry for the two export screens.
+  ipcMain.handle('quick-unlock:export-mnemonic', async () => {
+    return exportMnemonicWithTouchId();
+  });
+
+  ipcMain.handle('quick-unlock:export-private-key', async (_event, accountIndex) => {
+    return exportPrivateKeyWithTouchId(accountIndex);
   });
 
   // Disable quick unlock
@@ -284,6 +355,8 @@ module.exports = {
   isQuickUnlockEnabled,
   enableQuickUnlock,
   unlockWithTouchId,
+  exportMnemonicWithTouchId,
+  exportPrivateKeyWithTouchId,
   disableQuickUnlock,
   registerQuickUnlockIpc,
 };

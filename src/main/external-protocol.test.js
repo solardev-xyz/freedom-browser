@@ -73,6 +73,43 @@ describe('external-protocol', () => {
     }
   });
 
+  // docs/security-audit-electron.md, O-9: a link to a network share makes the
+  // OS connect to an attacker-chosen server (on Windows, with the user's NTLM
+  // hash); a settings/installer scheme opens a system pane. None may ever get
+  // a prompt, let alone a launch.
+  test('network-share, directory-service and OS-settings schemes are refused outright', async () => {
+    const { mod, shell } = load({ appName: 'Some Handler' });
+    const blocked = [
+      'smb://attacker.example/share',
+      'SMB://attacker.example/share',
+      'cifs://attacker.example/share',
+      'nfs://attacker.example/export',
+      'afp://attacker.example/vol',
+      'webdav://attacker.example/dav',
+      'webdavs://attacker.example/dav',
+      'dav://attacker.example/dav',
+      'davs://attacker.example/dav',
+      'ftp://attacker.example/pub',
+      'ftps://attacker.example/pub',
+      'sftp://attacker.example/home',
+      'ldap://attacker.example/dc=x',
+      'ldaps://attacker.example/dc=x',
+      'ms-settings:network-proxy',
+      'x-apple.systempreferences:com.apple.preference.security',
+      'itms-services://?action=download-manifest&url=https://attacker.example/m.plist',
+      'file://attacker.example/share/x',
+    ];
+    for (const url of blocked) {
+      expect([url, mod.permissionKeyForExternalUrl(url)]).toEqual([url, null]);
+      // Typed into the address bar, it is refused rather than launched too.
+      await expect(mod.openFromAddressBar(url)).resolves.toEqual({
+        opened: false,
+        reason: expect.stringMatching(/^(blocked|not-external)$/),
+      });
+    }
+    expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+
   test('isExternalProtocolUrl counts dangerous OS schemes as external but not browser ones', () => {
     const { mod } = load();
     expect(mod.isExternalProtocolUrl('magnet:?xt=x')).toBe(true);

@@ -10,6 +10,7 @@
 
 import { getPermissionKey } from './dapp-provider.js';
 import { getDisplayUrlForWebview } from './tabs.js';
+import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
 import {
   showRadicleConnect,
   showRadicleSeedApproval,
@@ -52,8 +53,11 @@ export function setupRadicleProvider(webview) {
   if (!webview) return;
   providerWebviews.add(webview);
 
+  trackGuestMainFrame(webview);
   webview.addEventListener('ipc-message', (event) => {
     if (event.channel === 'radicle:provider-request') {
+      // Top frame only — see guest-main-frame.js (audit O-6).
+      if (!isFromGuestMainFrame(webview, event)) return;
       handleRadicleRequest(webview, event.args[0]);
     }
   });

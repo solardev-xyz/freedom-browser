@@ -3236,6 +3236,7 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        openerTabId: ctx.activeRef.tab.id,
         background: false,
       });
       expect(ctx.tabsMocks.createTab).not.toHaveBeenCalled();
@@ -3260,7 +3261,26 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, 'docs', {
+        openerTabId: ctx.activeRef.tab.id,
         background: false,
+      });
+    });
+
+    test('ipc-message link:navigate forwards reuseOnly for a gesture-less named target', async () => {
+      const ctx = await setupEnsDispatch();
+      const rawHref = 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'link:navigate',
+        args: [{ url: rawHref, disposition: 'newTab', target: 'viewer', reuseOnly: true }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, 'viewer', {
+        openerTabId: ctx.activeRef.tab.id,
+        background: false,
+        reuseOnly: true,
       });
     });
 
@@ -3280,6 +3300,7 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        openerTabId: ctx.activeRef.tab.id,
         background: false,
       });
     });
@@ -3299,6 +3320,7 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        openerTabId: ctx.activeRef.tab.id,
         background: true,
       });
       expect(ctx.electronAPI.openUrlInNewWindow).not.toHaveBeenCalled();

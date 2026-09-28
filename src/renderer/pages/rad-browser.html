@@ -2,6 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Script-only CSP: this page renders repository data from the network
+         (README, file names, commit messages) into innerHTML, and it runs
+         with freedomAPI. Only the page's own files may execute; an escaping
+         bug can't turn into script (docs/security-audit-electron.md, E-7).
+         Fetch/img/style stay open: the page reads radapi:, public seeds and
+         README images. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
     <title>Radicle Repository</title>
     <link rel="stylesheet" href="styles/theme.css" />
     <link rel="stylesheet" id="hljs-theme" href="../vendor/hljs-github-dark.css" />

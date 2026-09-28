@@ -186,11 +186,18 @@ async function serveRepoApi(
   apiPath,
   { method = 'GET', search = '', allowPrivate = false } = {}
 ) {
+  // `rad:` (public repos only, served to any dweb page) keeps the wildcard
+  // ACAO; `radapi:` (allowPrivate: node-level and private-repo data, internal
+  // viewer only) sends none. The frame guard is the real boundary there —
+  // Chromium does not enforce CORS on custom schemes — but a private
+  // response should not advertise itself as readable by any origin either
+  // (docs/security-audit-electron.md, O-12).
+  const reply = (payload, status = 200) => json(payload, status, { cors: !allowPrivate });
   if (!RID_RE.test(rid)) {
-    return json({ error: 'invalid RID' }, 400);
+    return reply({ error: 'invalid RID' }, 400);
   }
   const parts = decodeRepoApiPath(apiPath);
-  if (!parts) return json({ error: 'invalid repository path' }, 400);
+  if (!parts) return reply({ error: 'invalid repository path' }, 400);
   const section = parts[0] || null;
   const revision = parts[1];
 
@@ -198,42 +205,42 @@ async function serveRepoApi(
     if (!allowPrivate) {
       const info = await embedded.repoInfo(rid);
       if (info?.visibility?.type !== 'public') {
-        return json({ error: 'repository is not public' }, 403);
+        return reply({ error: 'repository is not public' }, 403);
       }
     }
     let response;
     if (!section) {
-      response = json(await embedded.buildRepoMeta(rid));
+      response = reply(await embedded.buildRepoMeta(rid));
     } else {
       switch (section) {
         case 'tree':
           response = REVISION_RE.test(revision || '')
-            ? json(await embedded.treeAt(rid, revision, parts.slice(2).join('/')))
-            : json({ error: 'missing revision' }, 400);
+            ? reply(await embedded.treeAt(rid, revision, parts.slice(2).join('/')))
+            : reply({ error: 'missing revision' }, 400);
           break;
         case 'blob': {
           const blobPath = parts.slice(2).join('/');
           response =
             REVISION_RE.test(revision || '') && blobPath
-              ? json(await embedded.blobAt(rid, revision, blobPath))
-              : json({ error: 'missing path' }, 400);
+              ? reply(await embedded.blobAt(rid, revision, blobPath))
+              : reply({ error: 'missing path' }, 400);
           break;
         }
         case 'readme': {
           if (!REVISION_RE.test(revision || '')) {
-            response = json({ error: 'missing revision' }, 400);
+            response = reply({ error: 'missing revision' }, 400);
           } else {
             const readme = await embedded.readmeAt(rid, revision);
-            response = readme ? json(readme) : json({ error: 'no readme' }, 404);
+            response = readme ? reply(readme) : reply({ error: 'no readme' }, 404);
           }
           break;
         }
         case 'commits': {
-          if (parts.length > 2) return json({ error: 'invalid commit path' }, 400);
+          if (parts.length > 2) return reply({ error: 'invalid commit path' }, 400);
           if (revision) {
             response = REVISION_RE.test(revision)
-              ? json(await embedded.commit(rid, revision))
-              : json({ error: 'invalid revision' }, 400);
+              ? reply(await embedded.commit(rid, revision))
+              : reply({ error: 'invalid revision' }, 400);
           } else {
             const params =
               search instanceof URLSearchParams
@@ -241,10 +248,10 @@ async function serveRepoApi(
                 : new URLSearchParams(search || '');
             const parent = params.get('parent');
             if (!REVISION_RE.test(parent || '')) {
-              response = json({ error: 'missing parent revision' }, 400);
+              response = reply({ error: 'missing parent revision' }, 400);
             } else {
               const { page, perPage } = pageParams(params);
-              response = json(await embedded.commits(rid, parent, page, perPage));
+              response = reply(await embedded.commits(rid, parent, page, perPage));
             }
           }
           break;
@@ -252,26 +259,26 @@ async function serveRepoApi(
         case 'stats':
           response =
             parts[1] === 'tree' && REVISION_RE.test(parts[2] || '')
-              ? json(await embedded.repoStats(rid, parts[2]))
-              : json({ error: 'invalid stats path' }, 400);
+              ? reply(await embedded.repoStats(rid, parts[2]))
+              : reply({ error: 'invalid stats path' }, 400);
           break;
         case 'remotes':
-          response = json(await embedded.remotes(rid));
+          response = reply(await embedded.remotes(rid));
           break;
         case 'issues':
-          if (parts.length > 2) return json({ error: 'invalid issue path' }, 400);
+          if (parts.length > 2) return reply({ error: 'invalid issue path' }, 400);
           response = parts[1]
-            ? json(await embedded.issue(rid, parts[1]))
-            : json(paginate(await embedded.issues(rid), search));
+            ? reply(await embedded.issue(rid, parts[1]))
+            : reply(paginate(await embedded.issues(rid), search));
           break;
         case 'patches':
-          if (parts.length > 2) return json({ error: 'invalid patch path' }, 400);
+          if (parts.length > 2) return reply({ error: 'invalid patch path' }, 400);
           response = parts[1]
-            ? json(await embedded.patch(rid, parts[1]))
-            : json(paginate(await embedded.patches(rid), search));
+            ? reply(await embedded.patch(rid, parts[1]))
+            : reply(paginate(await embedded.patches(rid), search));
           break;
         default:
-          response = json({ error: `unsupported endpoint: ${section}` }, 404);
+          response = reply({ error: `unsupported endpoint: ${section}` }, 404);
       }
     }
     return method === 'HEAD' ? withoutBody(response) : response;
@@ -284,7 +291,7 @@ async function serveRepoApi(
       // for a private window.
       log.warn('[radapi]', redactForLog(rid), redactForLog(apiPath), '→', redactForLog(err.message));
     }
-    return json({ error: err.message }, missing ? 404 : 500);
+    return reply({ error: err.message }, missing ? 404 : 500);
   }
 }
 
@@ -342,7 +349,7 @@ async function handleRadicleApiRequest(request) {
   try {
     rid = decodeURIComponent(parts[3]);
   } catch {
-    return json({ error: 'invalid RID encoding' }, 400);
+    return json({ error: 'invalid RID encoding' }, 400, { cors: false });
   }
   const apiPath = parts.length > 4 ? `/${parts.slice(4).join('/')}` : '';
   return serveRepoApi(rid, apiPath, {
@@ -369,7 +376,9 @@ function registerRadicleApiProtocol(targetSession, { privatePartition = null } =
     return;
   }
   if (!guardRegistered) {
-    registerWebRequestHandler('onBeforeRequest', 'radapi-guard', guardRadicleApiRequest);
+    registerWebRequestHandler('onBeforeRequest', 'radapi-guard', guardRadicleApiRequest, {
+      failClosed: true,
+    });
     guardRegistered = true;
   }
   // PRIVATE MODE GUARD (request logging): same contract as registerRadProtocol

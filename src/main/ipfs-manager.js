@@ -22,6 +22,7 @@ const {
 // remote endpoint follows the session's proxy policy (the Tor PAC) instead of
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
 const { gatewayFetch, isLoopbackHostname, isOnionHostname } = require('./ipfs/gateway-transport');
+const { stripPageStateHeaders } = require('./lib/gateway-response-headers');
 const { redactForLog } = require('./private/private-log-context');
 const { rewriteGatewayLocation } = require('./lib/gateway-location');
 const { normalizeHttpEndpoint } = require('../shared/http-endpoint');
@@ -823,7 +824,9 @@ function proxiedResponseHeaders(upstreamHeaders) {
   for (const name of DROPPED_UPSTREAM_RESPONSE_HEADERS) {
     headers.delete(name);
   }
-  return headers;
+  // Nor may the external gateway set cookies or widen a service worker's
+  // scope on the `ipfs://` origin (security audit O-12, #439).
+  return stripPageStateHeaders(headers);
 }
 
 // 3xx from the gateway: rewrite `Location` in place when it can be expressed in

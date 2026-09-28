@@ -1,4 +1,5 @@
 const log = require('./logger');
+const path = require('path');
 const { BrowserWindow, app } = require('electron');
 const { activeBzzBases } = require('./state');
 const { cleanupWebContents: cleanupX402WebContents } = require('./x402/intercept');
@@ -112,6 +113,61 @@ function ownerWindowOf(contents) {
   }
 }
 
+// The only preload a tab <webview> may run. tabs.js asks for it through
+// `internal:get-webview-preload-path`, which answers this same path.
+const WEBVIEW_PRELOAD_PATH = path.join(__dirname, 'webview-preload.js');
+
+// Guest preferences every tab <webview> gets regardless of what the embedder
+// asked for. tabs.js already requests these through the `webpreferences`
+// attribute, but that attribute is written by a renderer; the main process is
+// the only place a (compromised or buggy) chrome renderer cannot talk its way
+// past. Electron security checklist items 2-4, 6, 8, 9 and 12.
+const FORCED_WEBVIEW_PREFERENCES = Object.freeze({
+  nodeIntegration: false,
+  nodeIntegrationInWorker: false,
+  contextIsolation: true,
+  sandbox: true,
+  webSecurity: true,
+  allowRunningInsecureContent: false,
+  experimentalFeatures: false,
+  enableBlinkFeatures: undefined,
+});
+
+function hardenWebviewPreferences(webPreferences) {
+  for (const [key, value] of Object.entries(FORCED_WEBVIEW_PREFERENCES)) {
+    if (value === undefined) {
+      delete webPreferences[key];
+    } else {
+      webPreferences[key] = value;
+    }
+  }
+  // Pin the preload rather than trusting the path the renderer supplied: a
+  // guest that asked for a preload gets ours, never another file on disk.
+  if (webPreferences.preload || webPreferences.preloadURL) {
+    webPreferences.preload = WEBVIEW_PRELOAD_PATH;
+  }
+  delete webPreferences.preloadURL;
+}
+
+// The chrome renderer (index.html) holds the full privileged preload API, so
+// its top frame must never leave index.html: a link or HTML file dropped on
+// the window outside a <webview>, or any scripted navigation, would otherwise
+// load that content with `window.electronAPI` et al. attached. It never
+// navigates itself (tabs navigate inside their webviews) and never opens
+// windows of its own.
+function lockChromeWindow(contents, tag) {
+  const block = (event, url) => {
+    log.warn(`${tag} blocked chrome-window navigation: ${navUrlForLog(contents, url)}`);
+    event.preventDefault();
+  };
+  contents.on('will-navigate', block);
+  contents.on('will-redirect', block);
+  contents.setWindowOpenHandler?.(({ url }) => {
+    log.warn(`${tag} blocked chrome-window popup: ${navUrlForLog(contents, url)}`);
+    return { action: 'deny' };
+  });
+}
+
 function registerWebContentsHandlers() {
   app.on('web-contents-created', (_event, contents) => {
     contents.once('destroyed', () => {
@@ -139,8 +195,13 @@ function registerWebContentsHandlers() {
     // child frame's preload working IPC with it set; browsers and extensions
     // inject into every frame too (uBlock Origin's `all_frames`, Brave).
     contents.on('will-attach-webview', (_event, webPreferences) => {
+      hardenWebviewPreferences(webPreferences);
       webPreferences.nodeIntegrationInSubFrames = true;
     });
+
+    if (type === 'window') {
+      lockChromeWindow(contents, tag);
+    }
 
     // For webview contents, fix dark defaults and intercept navigation
     if (type === 'webview') {
@@ -283,4 +344,5 @@ function registerWebContentsHandlers() {
 
 module.exports = {
   registerWebContentsHandlers,
+  WEBVIEW_PRELOAD_PATH,
 };

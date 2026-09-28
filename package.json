@@ -84,6 +84,16 @@
     "appId": "baby.freedom.browser",
     "productName": "Freedom",
     "afterPack": "./scripts/remove-locales.js",
+    "electronFuses": {
+      "runAsNode": true,
+      "enableCookieEncryption": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": true,
+      "resetAdHocDarwinSignature": true
+    },
     "directories": {
       "output": "dist"
     },

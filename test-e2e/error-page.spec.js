@@ -13,10 +13,7 @@ const { test, expect, SAMPLE_BZZ_HASH, SAMPLE_IPFS_CID } = require('./fixtures')
 // document.
 const NO_TITLE_IPFS_CID = 'bafybeic' + 'b'.repeat(51);
 
-test('a probe-not-found bzz:// navigation lands on the error page', async ({
-  window,
-  harness,
-}) => {
+test('a probe-not-found bzz:// navigation lands on the error page', async ({ window, harness }) => {
   // Force the Swarm probe stub to time out for this hash so navigation
   // routes to error.html instead of the (also-stubbed) bzz:// fixture.
   await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found' });
@@ -145,4 +142,103 @@ test('a page without a title does not record the previous page title in history'
   await expect.poll(() => historyFor(NO_TITLE_IPFS_CID), { timeout: 10_000 }).not.toBeNull();
   const entry = await historyFor(NO_TITLE_IPFS_CID);
   expect(entry.title).not.toBe('Alpha fixture page');
+});
+
+// #445 R1-M3: the "node is not running" copy on a refused bzz:/ipfs: load
+// used to come from a check that could never work in a tab (no
+// `window.serviceRegistry` in a webview, a `bee.api` key the registry never
+// had, a direct `fetch()` of the node's /health). It now reads the registry
+// snapshot internal pages get through `freedomAPI.getServiceRegistry`.
+test.describe('the error page reads node state from the registry', () => {
+  let loads = 0;
+  const descriptionFor = async (window, protocol) => {
+    // A per-load marker, so the poll can never read the previous error page.
+    const nonce = `load-${(loads += 1)}`;
+    await window.evaluate(
+      ([proto, marker]) => {
+        const wv = document.querySelector('webview.active, webview:not(.hidden)');
+        const page = new URL('pages/error.html', window.location.href);
+        page.search = new URLSearchParams({
+          error: 'net::ERR_CONNECTION_REFUSED',
+          protocol: proto,
+          url: proto === 'swarm' ? `bzz://${'a'.repeat(64)}/` : 'ipfs://bafyfixture/',
+          n: marker,
+        }).toString();
+        wv.loadURL(page.href);
+      },
+      [protocol, nonce]
+    );
+    let text = null;
+    await expect
+      .poll(
+        async () => {
+          text = await window.evaluate(async (marker) => {
+            const wv = document.querySelector('webview.active, webview:not(.hidden)');
+            try {
+              // `details` is filled last, after the registry check settled.
+              if (
+                !(await wv.executeJavaScript(
+                  `/error\\.html/.test(location.href) &&
+                   new URLSearchParams(location.search).get('n') === ${JSON.stringify(marker)} &&
+                   !!document.getElementById('details').textContent`
+                ))
+              ) {
+                return null;
+              }
+              return await wv.executeJavaScript(
+                'document.getElementById("description").textContent'
+              );
+            } catch {
+              return null;
+            }
+          }, nonce);
+          return text;
+        },
+        { timeout: 10_000, intervals: [200, 500, 1000] }
+      )
+      .not.toBeNull();
+    return text;
+  };
+
+  test('a running node keeps the generic copy; a stopped one says so', async ({
+    electronApp,
+    window,
+  }) => {
+    // The harness seeds a running bundled Ant and IPFS node.
+    expect(await descriptionFor(window, 'swarm')).not.toMatch(/node is not running/);
+    expect(await descriptionFor(window, 'ipfs')).not.toMatch(/node is not running/);
+
+    await electronApp.evaluate(() => {
+      const registry = process.mainModule.require('./src/main/service-registry');
+      registry.clearService('ant');
+      registry.clearService('ipfs');
+    });
+
+    expect(await descriptionFor(window, 'swarm')).toMatch(/The Swarm node is not running/);
+    expect(await descriptionFor(window, 'ipfs')).toMatch(/The IPFS node is not running/);
+  });
+  // #445 R2-M2: the health check's soft-ERROR keeps `api`/`gateway` published
+  // (so it can recover in place) and only raises the error overlay. A node in
+  // that state is not serving, so the page must say so, and go back to the
+  // generic copy once the node recovers.
+  test('a published node that stopped answering says so, until it recovers', async ({
+    electronApp,
+    window,
+  }) => {
+    await electronApp.evaluate(() => {
+      const registry = process.mainModule.require('./src/main/service-registry');
+      registry.setErrorState('ant', 'Node unreachable. Retrying…');
+      registry.setErrorState('ipfs', 'External node unreachable. Retrying…');
+    });
+    expect(await descriptionFor(window, 'swarm')).toMatch(/The Swarm node is not running/);
+    expect(await descriptionFor(window, 'ipfs')).toMatch(/The IPFS node is not running/);
+
+    await electronApp.evaluate(() => {
+      const registry = process.mainModule.require('./src/main/service-registry');
+      registry.clearErrorState('ant');
+      registry.clearErrorState('ipfs');
+    });
+    expect(await descriptionFor(window, 'swarm')).not.toMatch(/node is not running/);
+    expect(await descriptionFor(window, 'ipfs')).not.toMatch(/node is not running/);
+  });
 });

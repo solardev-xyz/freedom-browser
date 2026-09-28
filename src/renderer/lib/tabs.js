@@ -96,6 +96,16 @@ const tabState = {
 // Used to reuse tabs when links specify target="mywindow"
 const namedTargets = new Map();
 
+// Target name -> id of the tab whose page opened the named tab (O-12). A
+// gesture-less `reuseOnly` open may only re-navigate a named tab from the tab
+// that opened it (or from the named tab itself), the way Chromium resolves a
+// window name only within the opener's browsing context group: an unrelated
+// site in another tab must not be able to re-navigate someone else's named tab
+// in the background just by knowing (or guessing) its name. Absent entry (the
+// tab was opened by the chrome or the `tab:new-with-url` path, which carries no
+// opener) means no gesture-less reuse at all — fail closed.
+const namedTargetOpeners = new Map();
+
 // Stack of recently closed tabs for Ctrl+Shift+T (reopen closed tab)
 const closedTabsStack = [];
 const MAX_CLOSED_TABS = 20;
@@ -1600,6 +1610,7 @@ export const closeTab = (tabId) => {
   for (const [targetName, tid] of namedTargets) {
     if (tid === tabId) {
       namedTargets.delete(targetName);
+      namedTargetOpeners.delete(targetName);
       break;
     }
   }
@@ -1939,7 +1950,17 @@ export const switchTab = (tabId, options = {}) => {
  *
  * @param {string} url - target URL
  * @param {string|null} targetName - HTML `target` attribute, if any
- * @param {{ background?: boolean }} [options] - opening disposition
+ * `options.reuseOnly` (a named-target dweb link the page activated without a
+ * user gesture, see webview-preload.js) only re-navigates the tab already
+ * carrying `targetName`, in place and without switching to it: no gesture is
+ * needed to navigate an existing named browsing context, but one is needed to
+ * create a tab or to take focus. With no such tab, nothing opens. It is also
+ * scoped to `options.openerTabId`, the tab the link was clicked in: only the
+ * tab that opened the named tab (or the named tab itself) may re-navigate it
+ * this way — see `namedTargetOpeners`.
+ *
+ * @param {{ background?: boolean, reuseOnly?: boolean, openerTabId?: number }} [options]
+ *   opening disposition, and the tab the request came from (dweb links only)
  * @returns {object|null} the (possibly new) tab, or null on noop
  */
 // Parse a `freedom://<page>[/<sub-path>]` URL into `{ pageName, subPath }` when
@@ -1966,6 +1987,31 @@ const freedomInternalPageTarget = (url) => {
 export const openInNewTabWithTarget = (url, targetName, options = {}) => {
   if (!url) return null;
   const background = !!options.background;
+
+  if (options.reuseOnly) {
+    const existingTabId = targetName ? namedTargets.get(targetName) : undefined;
+    const existingTab =
+      existingTabId === undefined ? null : tabState.tabs.find((t) => t.id === existingTabId);
+    if (!existingTab) {
+      pushDebug(`Blocked gesture-less open of target "${targetName}": ${url}`);
+      return null;
+    }
+    const openerTabId = options.openerTabId;
+    const related =
+      openerTabId !== undefined &&
+      openerTabId !== null &&
+      (openerTabId === existingTabId || namedTargetOpeners.get(targetName) === openerTabId);
+    if (!related) {
+      pushDebug(
+        `Blocked gesture-less re-navigation of target "${targetName}" from unrelated tab ${openerTabId}: ${url}`
+      );
+      return null;
+    }
+    pushDebug(`Re-navigating tab ${existingTabId} for target "${targetName}": ${url}`);
+    // Page-driven: it must not discard an address-bar edit in that tab (#305).
+    if (onLoadTarget) onLoadTarget(url, null, existingTab.webview, { pageInitiated: true });
+    return existingTab;
+  }
 
   // EVERY freedom:// internal page (profiles, history, settings, …) is treated
   // as a singleton: an untargeted open focuses the existing tab instead of
@@ -2010,6 +2056,7 @@ export const openInNewTabWithTarget = (url, targetName, options = {}) => {
       return existingTab;
     }
     namedTargets.delete(targetName);
+    namedTargetOpeners.delete(targetName);
   }
 
   pushDebug(`Opening new tab with URL: ${url}${targetName ? ` (target: ${targetName})` : ''}`);
@@ -2026,6 +2073,13 @@ export const openInNewTabWithTarget = (url, targetName, options = {}) => {
 
   if (targetName && newTab) {
     namedTargets.set(targetName, newTab.id);
+    // A fresh tab taking over the name also takes a fresh opener: the tab the
+    // link was clicked in, or none (chrome/main-process opens carry no opener).
+    if (typeof options.openerTabId === 'number') {
+      namedTargetOpeners.set(targetName, options.openerTabId);
+    } else {
+      namedTargetOpeners.delete(targetName);
+    }
   }
 
   return newTab;

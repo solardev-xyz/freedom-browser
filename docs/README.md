@@ -20,4 +20,5 @@ Freedom's README is the short project overview. Use these guides for detailed se
 - [Wallet privacy engineering status](privacy-engineering-status.md) — tested behavior, qualification evidence, remaining technical work and product boundaries.
 - [Wallet privacy implementation plan](wallet-privacy-implementation-plan.md) — staged wallet transport, Kohaku, and PPv2 work with acceptance criteria.
 - [Native IPFS desktop integration](freedom-ipfs-native-desktop.md) — native addon architecture and packaging.
+- [Electron security audit](security-audit-electron.md) — threat model, the IPC sender policy and other hardening, and open security items.
 - [Agent playbooks](agent-playbooks/README.md) — detailed maintenance and release procedures.

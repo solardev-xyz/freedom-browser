@@ -27,9 +27,9 @@
  *    always genuine "asset doesn't exist" cases — e.g. SPAs feature-
  *    detecting endpoints — and need to fail fast so the page can render
  *    its own fallback rather than stalling for ~50 s per missing asset.
- *  - Other methods are single-shot: the request body is a consumable
- *    ReadableStream, so we can't replay it. This primarily affects POST,
- *    which bzz sites don't use for reads.
+ *  - Every other method gets 405: `bzz:` is read-only, like `rad:`
+ *    (security audit O-2, #429). Request headers are allowlisted and a
+ *    path with an encoded `/` or `\` is refused — see below.
  *  - Every outgoing request carries `Swarm-Chunk-Retrieval-Timeout`,
  *    `Swarm-Redundancy-Strategy`, and `Swarm-Redundancy-Fallback-Mode`
  *    so Bee gets extra server-side runway per chunk. These are ignored
@@ -48,6 +48,10 @@ const {
 } = require('../content-name-resolver');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { rewriteGatewayLocation } = require('../lib/gateway-location');
+const {
+  PAGE_STATE_RESPONSE_HEADERS,
+  stripPageStateHeaders,
+} = require('../lib/gateway-response-headers');
 const {
   runWithPrivateLogContext,
   redactForLog,
@@ -80,38 +84,51 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD']);
 // 64-char or 128-char lowercase/uppercase hex (unencrypted / encrypted refs).
 const BZZ_HASH_RE = /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/;
 
-// Request headers we should not forward to Bee — either Chromium-injected
-// privileged-scheme noise or headers that refer to the bzz:// origin and
-// would confuse the gateway. `cookie` / `authorization` aren't a real
-// security risk against localhost Bee but stripping them keeps the request
-// shape consistent with how we strip Origin / Referer.
-const STRIPPED_REQUEST_HEADERS = new Set([
-  'host',
-  'origin',
-  'referer',
-  'cookie',
-  'authorization',
-  // Connection / hop-by-hop
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
+// Request headers a page may have forwarded to the node — an allowlist, not a
+// strip list (docs/security-audit-electron.md, O-2; #429). Chromium enforces
+// no CORS on a custom scheme, so without it any page could put arbitrary
+// `Swarm-*` headers (ACT decryption with this node's key, pinning, tags …) on
+// a request the node answers with its own authority. Only content-negotiation
+// and cache/range validators pass; the retrieval hints below are set by us.
+// `User-Agent` is harmless and keeps gateway logs meaningful.
+const FORWARDED_REQUEST_HEADERS = new Set([
+  'accept',
+  'accept-encoding',
+  'accept-language',
+  'if-match',
+  'if-modified-since',
+  'if-none-match',
+  'if-range',
+  'if-unmodified-since',
+  'range',
+  'user-agent',
 ]);
 
 function sanitizeRequestHeaders(requestHeaders) {
   const out = new Headers();
   for (const [name, value] of requestHeaders.entries()) {
-    if (STRIPPED_REQUEST_HEADERS.has(name.toLowerCase())) continue;
+    if (!FORWARDED_REQUEST_HEADERS.has(name.toLowerCase())) continue;
     out.append(name, value);
   }
   out.set('Swarm-Chunk-Retrieval-Timeout', '30s');
   out.set('Swarm-Redundancy-Strategy', '3');
   out.set('Swarm-Redundancy-Fallback-Mode', 'true');
   return out;
+}
+
+// An encoded `/` or `\` in the path reaches the node verbatim, after we have
+// already decided which `/bzz/<ref>/` the request belongs to. Whether the
+// node's router can be steered out of `/bzz/` with one
+// (`bzz://<ref>/..%2F..%2Fstamps`) is unconfirmed (O-2); it is not worth
+// finding out, since a manifest path never needs either. Case-insensitive.
+const ENCODED_SEPARATOR_RE = /%(?:2f|5c)/i;
+
+function hasEncodedSeparator(bzzUrl) {
+  try {
+    return ENCODED_SEPARATOR_RE.test(new URL(bzzUrl).pathname);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -419,6 +436,19 @@ function canonicalizeRedirect(response, gatewayUrl) {
   return new Response(null, { status: response.status, statusText: response.statusText, headers });
 }
 
+// Upstream `Set-Cookie` / `Service-Worker-Allowed` never reach the page — a
+// user-configured external Ant node's headers are not content (O-12, #439).
+// Re-wrapped only when one is present, so the common case streams the
+// upstream response untouched.
+const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+
+function withoutPageStateHeaders(response) {
+  if (!PAGE_STATE_RESPONSE_HEADERS.some((name) => response.headers.has(name))) return response;
+  const headers = stripPageStateHeaders(new Headers(response.headers));
+  const body = NULL_BODY_STATUSES.has(response.status) ? null : response.body;
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
+
 /**
  * Core handler, exported for testability. `fetchImpl` defaults to global
  * fetch but tests can inject a stub. `attemptTimeoutMs` is exposed for
@@ -434,6 +464,15 @@ async function handleBzzRequest(
   request,
   { fetchImpl = fetch, attemptTimeoutMs = ATTEMPT_TIMEOUT_MS } = {}
 ) {
+  // Read-only, like `rad:`: the node's write endpoints are not reachable
+  // through `bzz:` at all (O-2). Pages publish through `window.swarm`.
+  const method = (request.method || 'GET').toUpperCase();
+  if (!IDEMPOTENT_METHODS.has(method)) {
+    return jsonErrorResponse(405, 'method not allowed');
+  }
+  if (hasEncodedSeparator(request.url)) {
+    return jsonErrorResponse(400, 'invalid bzz path');
+  }
   const built = await buildGatewayUrl(request.url);
   if (!built) {
     return jsonErrorResponse(400, 'invalid bzz reference');
@@ -452,17 +491,15 @@ async function handleBzzRequest(
   const gatewayUrl = built.url;
 
   const headers = sanitizeRequestHeaders(request.headers);
-  const method = request.method || 'GET';
-  const body = method === 'GET' || method === 'HEAD' ? undefined : request.body;
 
   try {
     const response = await fetchWithRetry(
       gatewayUrl,
-      { method, headers, body, signal: request.signal },
+      { method, headers, signal: request.signal },
       fetchImpl,
       attemptTimeoutMs
     );
-    return canonicalizeRedirect(response, gatewayUrl);
+    return withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl));
   } catch (err) {
     const code = err?.cause?.code || err?.code || '';
     const isConnRefused = code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND';

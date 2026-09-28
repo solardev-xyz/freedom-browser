@@ -256,6 +256,19 @@ function registerX402Ipc() {
     };
   });
 
+  // Not gated by wallet:confirm-signing (O-7). This handler signs an
+  // EIP-3009 authorization on a bare chrome call: there is no
+  // param-bound confirmation token, and `webContentsId`,
+  // `detectionId`, `selectedAcceptIndex` and `grant` are all taken from
+  // the renderer as-is. What bounds it is that the payment requirements
+  // themselves are main-held (a detected 402, so the renderer can only
+  // pick among a seller's own `accepts[]`), and that the channel is
+  // exposed only through the chrome preload. Note the renderer also
+  // chooses *which* detection is signed: on the tab-keyed path (no
+  // detectionId) `webContentsId` selects the tab, so a compromised
+  // chrome can approve any tab's pending main-held 402, not just the
+  // one on screen. Bringing x402 under the signing
+  // confirmation is a separate follow-up, not covered by O-7.
   ipcMain.handle(IPC.X402_APPROVE, async (event, args = {}) => {
     const id = args.webContentsId ?? event.sender.id;
     const { detectionId, grant, selectedAcceptIndex } = args;

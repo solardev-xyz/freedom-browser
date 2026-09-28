@@ -136,6 +136,7 @@ describe('service-registry', () => {
       statusMessage: null,
       tempMessage: null,
       tempMessageTimeout: null,
+      errorState: false,
     });
 
     mod.updateService('tor', {
@@ -150,7 +151,33 @@ describe('service-registry', () => {
       statusMessage: null,
       tempMessage: null,
       tempMessageTimeout: null,
+      errorState: false,
     });
+  });
+
+  test('errorState tracks the error overlay, not the published URL (#445 R2-M2)', () => {
+    const { mod } = loadServiceRegistry();
+    mod.updateService('ant', { api: 'http://127.0.0.1:1633', mode: mod.MODE.BUNDLED });
+    expect(mod.getService('ant').errorState).toBe(false);
+
+    mod.setErrorState('ant', 'Node unreachable. Retrying…');
+    expect(mod.getRegistry().ant).toEqual(
+      expect.objectContaining({ api: 'http://127.0.0.1:1633', errorState: true })
+    );
+
+    mod.clearErrorState('ant');
+    expect(mod.getService('ant').errorState).toBe(false);
+
+    // Any message that replaces the overlay clears the flag with it.
+    mod.setErrorState('ant', 'down');
+    mod.setStatusMessage('ant', 'Online');
+    expect(mod.getService('ant').errorState).toBe(false);
+    mod.setErrorState('ant', 'down');
+    mod.setTempStatusMessage('ant', 'Fallback Port: 1634');
+    expect(mod.getService('ant').errorState).toBe(false);
+    mod.setErrorState('ant', 'down');
+    mod.clearService('ant');
+    expect(mod.getService('ant').errorState).toBe(false);
   });
 
   test('registers an IPC handler that returns the current registry state', async () => {

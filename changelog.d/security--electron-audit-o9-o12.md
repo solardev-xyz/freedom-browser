@@ -1,0 +1,7 @@
+- Sites can't ask Freedom to open network shares, directory servers or system settings panes (`smb:`, `nfs:`, `webdav:`, `ftp:`, `ldap:`, `ms-settings:`, `itms-services:` and similar) ([#436](https://github.com/solardev-xyz/freedom-browser/issues/436))
+- A site that asks for a TLS client certificate gets one only if you pick it: normal windows ask, and private windows never send one ([#437](https://github.com/solardev-xyz/freedom-browser/issues/437))
+- macOS builds drop two code-signing exceptions: unsigned executable memory, and loading libraries signed by someone else ([#438](https://github.com/solardev-xyz/freedom-browser/issues/438))
+- Smaller hardening from the Electron security audit ([#439](https://github.com/solardev-xyz/freedom-browser/issues/439))
+  - A page can't open `ipfs:`/`ipns:` tabs with a scripted click; a real click still opens them
+  - A permission prompt can be answered only from the window that shows it
+  - Packaged builds ignore `FREEDOM_TEST_MODE` unless launched under a debugger

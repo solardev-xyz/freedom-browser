@@ -166,7 +166,6 @@ p2p-addr: :${p2pPort}
 swap-enable: false
 mainnet: true
 full-node: false
-cors-allowed-origins: "*"
 skip-postage-snapshot: true
 resolver-options: https://ethereum.publicnode.com
 storage-incentives-enable: false

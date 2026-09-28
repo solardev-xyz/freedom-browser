@@ -24,6 +24,29 @@ function makeFakeSession() {
 
 let nextHostId = 1;
 
+// Every host (chrome window) a test made, so `respond` can answer a prompt
+// from the window it was actually sent to — the only one allowed to.
+const allHosts = [];
+
+// The host a prompt id was sent to (the most recent one, should ids repeat
+// across tests' hosts).
+function hostOfPrompt(id) {
+  for (let i = allHosts.length - 1; i >= 0; i -= 1) {
+    const sent = allHosts[i].send.mock.calls.some(
+      ([ch, payload]) => ch === IPC.PERMISSIONS_PROMPT_REQUEST && payload?.id === id
+    );
+    if (sent) return allHosts[i];
+  }
+  return null;
+}
+
+// Answer a prompt over IPC the way the chrome does. `from` overrides the
+// sender (a different window); by default it is the window that got it.
+function respondVia(ctx, response, from) {
+  const sender = from === undefined ? hostOfPrompt(response?.id) || { id: -1 } : from;
+  return ctx.ipcMain.handlers.get(IPC.PERMISSIONS_PROMPT_RESPONSE)({ sender }, response);
+}
+
 function makeHost() {
   const host = {
     id: nextHostId++,
@@ -39,6 +62,7 @@ function makeHost() {
       for (const cb of host.destroyedCallbacks) cb();
     },
   };
+  allHosts.push(host);
   return host;
 }
 
@@ -111,11 +135,12 @@ describe('permissions-manager', () => {
   const cancelPayloads = (host) =>
     host.send.mock.calls.filter(([ch]) => ch === IPC.PERMISSIONS_PROMPT_CANCEL).map(([, p]) => p);
 
-  const respond = (response) => ctx.ipcMain.invoke(IPC.PERMISSIONS_PROMPT_RESPONSE, response);
+  const respond = async (response, from) => respondVia(ctx, response, from);
 
   beforeEach(() => {
     userDataDir = createTempUserDataDir();
     nextHostId = 1;
+    allHosts.length = 0;
     nextGuestId = 100;
   });
 
@@ -551,6 +576,46 @@ describe('permissions-manager', () => {
     expect(prompts[0].id).not.toBe(prompts[1].id);
   });
 
+  // docs/security-audit-electron.md, O-12: a prompt answer is bound to the
+  // chrome window the prompt was shown in, and its id can't be guessed.
+  test('only the window that owns a prompt can answer it', async () => {
+    load();
+    const owner = makeHost();
+    const other = makeHost();
+    const callback = request('notifications', { host: owner });
+    const { id } = lastPrompt(owner);
+
+    expect(await respond({ id, decision: 'allow', remember: true }, other)).toBe(false);
+    expect(await respond({ id, decision: 'allow', remember: true }, {})).toBe(false);
+    expect(await respond({ id, decision: 'allow', remember: true }, null)).toBe(false);
+    expect(callback).not.toHaveBeenCalled();
+    expect(ctx.mod.getDecisionsForOrigin('https://example.com').notifications).toBeUndefined();
+
+    // The owner's own answer still lands.
+    expect(await respond({ id, decision: 'deny', remember: false }, owner)).toBe(true);
+    expect(callback).toHaveBeenCalledWith(false);
+  });
+
+  test('prompt ids are random, not sequential', () => {
+    load();
+    const host = makeHost();
+    for (let i = 0; i < 8; i += 1) {
+      request('notifications', { host, url: `https://site${i}.example/` });
+    }
+    // One prompt in flight per tab: each request above is its own tab.
+    const ids = host.send.mock.calls
+      .filter(([ch]) => ch === IPC.PERMISSIONS_PROMPT_REQUEST)
+      .map(([, payload]) => payload.id);
+    expect(ids).toHaveLength(8);
+    expect(new Set(ids).size).toBe(8);
+    for (const id of ids) expect(Number.isSafeInteger(id) && id > 0).toBe(true);
+    // A counter would give n, n+1, n+2, …; random ids essentially never
+    // land next to each other.
+    const sorted = [...ids].sort((a, b) => a - b);
+    const gaps = sorted.slice(1).map((id, i) => id - sorted[i]);
+    expect(gaps.every((gap) => gap > 1000)).toBe(true);
+  });
+
   test('destroying the window denies everything still pending', () => {
     load();
     const host = makeHost();
@@ -937,7 +1002,7 @@ describe('permissions-manager private windows', () => {
     return calls.length ? calls[calls.length - 1][1] : null;
   };
 
-  const respond = (response) => ctx.ipcMain.invoke(IPC.PERMISSIONS_PROMPT_RESPONSE, response);
+  const respond = async (response, from) => respondVia(ctx, response, from);
 
   // The address-bar indicator/popover query, asked by ONE window's chrome:
   // `partition` names a private window's scope, null a normal window's.
@@ -950,6 +1015,7 @@ describe('permissions-manager private windows', () => {
   beforeEach(() => {
     userDataDir = createTempUserDataDir();
     nextHostId = 1;
+    allHosts.length = 0;
     nextGuestId = 100;
   });
 
@@ -1676,13 +1742,14 @@ describe('permissions-manager: external protocols (#406)', () => {
   const prompts = (host) =>
     host.send.mock.calls.filter(([ch]) => ch === IPC.PERMISSIONS_PROMPT_REQUEST).map(([, p]) => p);
 
-  const respond = (response) => ctx.ipcMain.invoke(IPC.PERMISSIONS_PROMPT_RESPONSE, response);
+  const respond = async (response, from) => respondVia(ctx, response, from);
 
   const allLogs = () => log.info.mock.calls.map((args) => args.join(' ')).join('\n');
 
   beforeEach(() => {
     userDataDir = createTempUserDataDir();
     nextHostId = 1;
+    allHosts.length = 0;
     nextGuestId = 100;
   });
 

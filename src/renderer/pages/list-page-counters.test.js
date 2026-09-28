@@ -4,8 +4,9 @@
 // rendered `1 entries`, Downloads rendered `1 downloads`, and neither of the
 // two moved at all when the user typed in the search box (#254).
 //
-// The pages' CSP is `script-src 'unsafe-inline'`, so they cannot import
-// src/renderer/lib/ui-format.js; each carries an inline copy of `formatCount`.
+// The pages run classic `<script src>` files (scripts/<page>.js), which cannot
+// import the ES module src/renderer/lib/ui-format.js; each carries its own copy
+// of `formatCount`.
 // This suite is the drift guard for those copies: identical to each other, and
 // behaving exactly like the shared helper.
 
@@ -15,14 +16,16 @@ import { formatCount } from '../lib/ui-format.js';
 
 const PAGES = ['history.html', 'downloads.html', 'payments.html'];
 
+// A page's runtime lives in scripts/<page>.js since #432 moved it out of an
+// inline <script>.
 function readPage(name) {
-  return fs.readFileSync(path.join(__dirname, name), 'utf8');
+  return fs.readFileSync(path.join(__dirname, 'scripts', name.replace(/\.html$/, '.js')), 'utf8');
 }
 
-// Pull `function formatCount(...) { ... }` out of a page's inline script.
+// Pull the top-level `function formatCount(...) { ... }` out of a page script.
 function extractFormatCount(source) {
-  const match = source.match(/ {6}function formatCount\([\s\S]*?\n {6}\}\n/);
-  if (!match) throw new Error('inline formatCount not found');
+  const match = source.match(/^function formatCount\([\s\S]*?\n\}\n/m);
+  if (!match) throw new Error('formatCount not found');
   return match[0];
 }
 
@@ -32,7 +35,7 @@ function compileFormatCount(source) {
 
 const COPIES = Object.fromEntries(PAGES.map((page) => [page, readPage(page)]));
 
-describe('inline formatCount copies', () => {
+describe('per-page formatCount copies', () => {
   test('every list page carries one', () => {
     for (const page of PAGES) {
       expect(() => extractFormatCount(COPIES[page])).not.toThrow();

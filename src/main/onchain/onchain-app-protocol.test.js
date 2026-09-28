@@ -515,3 +515,23 @@ describe('registerOnchainAppProtocol private sessions', () => {
     expect(logged).toContain('web3://<private>');
   });
 });
+
+describe('onchain-app-guard registration', () => {
+  // docs/security-audit-electron.md E-6: the guard is the only thing between
+  // a page's background fetch and the web3 approval token, so a throw inside
+  // it must cancel the request rather than let the dispatcher skip it.
+  test('registers the frame guard fail-closed', () => {
+    jest.isolateModules(() => {
+      jest.doMock('../webrequest-dispatcher', () => ({ registerWebRequestHandler: jest.fn() }));
+      const dispatcher = require('../webrequest-dispatcher');
+      const fresh = require('./onchain-app-protocol');
+      fresh.installOnchainProvenanceCapture();
+      expect(dispatcher.registerWebRequestHandler).toHaveBeenCalledWith(
+        'onBeforeRequest',
+        'onchain-app-guard',
+        fresh.guardOnchainAppRequest,
+        { failClosed: true }
+      );
+    });
+  });
+});

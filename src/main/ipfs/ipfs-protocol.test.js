@@ -887,25 +887,206 @@ describe('handleRequest', () => {
     expect(res.status).toBe(502);
   });
 
-  test('forwards POST body and uses duplex: half', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
-    const body = 'payload';
-    const req = {
-      url: `ipfs://${CIDV0}/api`,
-      method: 'POST',
-      headers: new Headers({ 'Content-Type': 'text/plain' }),
-      body,
-      signal: new AbortController().signal,
-    };
+  // O-12: the native gateway is read-only; anything but GET/HEAD is a 405,
+  // whether or not the request carries a body. (It used to key on `body`,
+  // so a bodiless DELETE/OPTIONS/POST was forwarded to the gateway.)
+  test.each([
+    ['POST with a body', 'POST', 'payload'],
+    ['POST without a body', 'POST', null],
+    ['PUT without a body', 'PUT', null],
+    ['DELETE', 'DELETE', null],
+    ['OPTIONS', 'OPTIONS', null],
+    ['PATCH', 'PATCH', null],
+    ['lower-case post', 'post', null],
+  ])('native path answers %s with 405 without touching the gateway', async (_l, method, body) => {
+    const requestImpl = jest.fn();
+    const fetchImpl = jest.fn();
+    for (const opts of [{ requestImpl }, { fetchImpl }]) {
+      const res = await handleRequest(
+        'ipfs',
+        {
+          url: `ipfs://${CIDV1_BASE32}/api`,
+          method,
+          headers: new Headers(),
+          body,
+          signal: new AbortController().signal,
+        },
+        opts
+      );
+      expect(res.status).toBe(405);
+    }
+    expect(requestImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
-    const res = await handleRequest('ipfs', req, { fetchImpl });
+  test.each(['GET', 'HEAD'])('native path still serves %s', async (method) => {
+    const requestImpl = jest.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const res = await handleRequest(
+      'ipfs',
+      {
+        url: `ipfs://${CIDV1_BASE32}/file.txt`,
+        method,
+        headers: new Headers(),
+        body: null,
+        signal: new AbortController().signal,
+      },
+      { requestImpl }
+    );
     expect(res.status).toBe(200);
-    const init = fetchImpl.mock.calls[0][1];
-    expect(init.method).toBe('POST');
-    expect(init.body).toBe('payload');
-    expect(init.duplex).toBe('half');
+    expect(requestImpl).toHaveBeenCalledWith(
+      expect.objectContaining({ method, path: `/ipfs/${CIDV1_BASE32}/file.txt` })
+    );
   });
 });
+
+// O-3: gateway-form URLs must never be served under the gateway host's
+// origin — `ipfs://localhost/ipfs/<cidA>/` and `ipfs://localhost/ipfs/<cidB>/`
+// would otherwise share one localStorage/IndexedDB/cookie jar. The handler
+// redirects them to the canonical per-CID origin before serving anything.
+describe('gateway-form redirect (O-3)', () => {
+  const NAVIGATION_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
+  const call = async (namespace, url, { method = 'GET', accept = NAVIGATION_ACCEPT } = {}) => {
+    const requestImpl = jest.fn().mockResolvedValue(new Response('bytes', { status: 200 }));
+    const res = await handleRequest(
+      namespace,
+      new Request(url, { method, headers: accept ? { accept } : {} }),
+      { requestImpl }
+    );
+    return { res, requestImpl };
+  };
+
+  test.each([
+    [
+      'localhost /ipfs/<cidv1>',
+      'ipfs',
+      `ipfs://localhost/ipfs/${CIDV1_BASE32}/`,
+      `ipfs://${CIDV1_BASE32}/`,
+    ],
+    [
+      'loopback with Kubo port + query',
+      'ipfs',
+      `ipfs://127.0.0.1:8080/ipfs/${CIDV1_BASE32}/a/b.html?x=1`,
+      `ipfs://${CIDV1_BASE32}/a/b.html?x=1`,
+    ],
+    [
+      'bare gateway root (no trailing path)',
+      'ipfs',
+      `ipfs://localhost/ipfs/${CIDV1_BASE32}`,
+      `ipfs://${CIDV1_BASE32}/`,
+    ],
+    [
+      '*.localhost host',
+      'ipfs',
+      `ipfs://evil.localhost/ipfs/${CIDV1_BASE32}/x`,
+      `ipfs://${CIDV1_BASE32}/x`,
+    ],
+    [
+      'public gateway, CIDv0 → base32',
+      'ipfs',
+      `ipfs://ipfs.io/ipfs/${CIDV0}/sub`,
+      `ipfs://${CIDV0_AS_BASE32}/sub`,
+    ],
+    [
+      'CIDv1 base58btc → base32',
+      'ipfs',
+      `ipfs://dweb.link/ipfs/${CIDV1_BASE58}/img.png`,
+      `ipfs://${CIDV1_BASE58_AS_BASE32}/img.png`,
+    ],
+    [
+      'dweb.link /ipns/<dnslink-name>',
+      'ipfs',
+      'ipfs://dweb.link/ipns/docs.ipfs.tech/install',
+      'ipns://docs.ipfs.tech/install',
+    ],
+    [
+      '/ipns/<base36 key>',
+      'ipfs',
+      `ipfs://localhost/ipns/${IPNS_KEY_BASE36}/p`,
+      `ipns://${IPNS_KEY_BASE36}/p`,
+    ],
+    [
+      '/ipns/<base58 peer id> → base36',
+      'ipfs',
+      `ipfs://localhost/ipns/${IPNS_KEY_BASE58_ED25519}/foo`,
+      'ipns://k51qzi5uqu5dit2ibca2nikouuslvo21d3trnsklq7f1c3zdelrq38i7nahsgk/foo',
+    ],
+    [
+      'ipns: outer scheme, /ipfs/ inner',
+      'ipns',
+      `ipns://localhost/ipfs/${CIDV1_BASE32}/`,
+      `ipfs://${CIDV1_BASE32}/`,
+    ],
+    ['/ipns/<ens name>', 'ipfs', 'ipfs://localhost/ipns/vitalik.eth/', 'ipns://vitalik.eth/'],
+  ])('redirects %s to the canonical origin', async (_l, ns, url, location) => {
+    for (const accept of [NAVIGATION_ACCEPT, '*/*', 'image/avif,image/webp,*/*', null]) {
+      for (const method of ['GET', 'HEAD']) {
+        const { res, requestImpl } = await call(ns, url, { accept, method });
+        expect(res.status).toBe(307);
+        expect(res.headers.get('location')).toBe(location);
+        expect(requestImpl).not.toHaveBeenCalled();
+      }
+    }
+    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test('two CIDs behind one gateway host land on two different origins', async () => {
+    const other = CIDV0_AS_BASE32;
+    const a = await call('ipfs', `ipfs://localhost/ipfs/${CIDV1_BASE32}/`);
+    const b = await call('ipfs', `ipfs://localhost/ipfs/${other}/`);
+    // Node's URL has no notion of `ipfs:` as a standard scheme (origin is
+    // "null"), so compare the host that Chromium keys the origin on.
+    const originA = new URL(a.res.headers.get('location')).host;
+    const originB = new URL(b.res.headers.get('location')).host;
+    expect(originA).toBe(CIDV1_BASE32);
+    expect(originB).toBe(other);
+    expect(originA).not.toBe(originB);
+  });
+
+  test.each([
+    // Looks like a CIDv0 but its base58 was lowercased, so it has no
+    // canonical, case-safe form to redirect to.
+    ['lower-cased CIDv0', 'ipfs', `ipfs://localhost/ipfs/${CIDV0.toLowerCase()}/`],
+    // A libp2p key under /ipfs/ is not a CID.
+    ['IPNS key under /ipfs/', 'ipfs', `ipfs://localhost/ipfs/${IPNS_KEY_BASE36}/`],
+  ])('refuses %s instead of serving it under the gateway origin', async (_l, ns, url) => {
+    const { res, requestImpl } = await call(ns, url);
+    expect(res.status).toBe(400);
+    expect((await res.json()).message).toMatch(/gateway-form .* has no canonical/);
+    expect(res.headers.get('location')).toBeNull();
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['a CID host', `ipfs://${CIDV1_BASE32}/index.html`, `/ipfs/${CIDV1_BASE32}/index.html`],
+    [
+      'a CID host whose own path starts with /ipfs/',
+      `ipfs://${CIDV1_BASE32}/ipfs/somefile`,
+      `/ipfs/${CIDV1_BASE32}/ipfs/somefile`,
+    ],
+  ])('does not redirect %s', async (_l, url, path) => {
+    const { res, requestImpl } = await call('ipfs', url);
+    expect(res.status).toBe(200);
+    expect(requestImpl).toHaveBeenCalledWith(expect.objectContaining({ path }));
+  });
+
+  test('does not redirect a DNSLink host that is not a known gateway', async () => {
+    const { res, requestImpl } = await call('ipns', 'ipns://docs.ipfs.tech/ipfs/coverage');
+    expect(res.status).toBe(200);
+    expect(requestImpl).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/ipns/docs.ipfs.tech/ipfs/coverage' })
+    );
+  });
+
+  test('a non-GET gateway-form request is a 405, not a redirect', async () => {
+    const { res } = await call('ipfs', `ipfs://localhost/ipfs/${CIDV1_BASE32}/`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(405);
+  });
+});
+
+// PRIVATE MODE GUARD (request logging) — same contract as the bzz handler,
+// for both namespaces this module registers.
 
 
 // PRIVATE MODE GUARD (request logging) — same contract as the bzz handler,

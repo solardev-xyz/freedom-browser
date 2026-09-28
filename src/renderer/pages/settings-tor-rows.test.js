@@ -7,7 +7,7 @@
  * build actually bundles instead of the platform it runs on.
  *
  * Same extraction approach as settings-radicle-launch.test.js: the settings
- * page is an inline classic script, so the helper is lifted out of the shipped
+ * page is one classic script, so the helper is lifted out of the shipped
  * source and evaluated with its collaborators injected, keeping the assertion
  * on the real code rather than on a copy.
  */
@@ -15,10 +15,15 @@
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The page's markup plus the classic script it loads (`scripts/settings.js`,
+// moved out of an inline <script> by #432 so the CSP can drop 'unsafe-inline').
+const SOURCE = [
+  fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), 'utf8'),
+].join('\n');
 
 const START = 'const applyTorRowVisibility = (settings = cachedSettings) => {';
-const END = '\n      };\n';
+const END = '\n};\n';
 
 function loadApply({ torBundled, cachedSettings, document }) {
   const start = SOURCE.indexOf(START);
@@ -113,7 +118,7 @@ describe('the settings page no longer gates Tor on the platform', () => {
   test('the Nodes-section Tor row is gated on the setting alone', () => {
     const start = SOURCE.indexOf('const isProfileServiceVisible = ');
     expect(start).toBeGreaterThanOrEqual(0);
-    const body = SOURCE.slice(start, SOURCE.indexOf('\n      };\n', start));
+    const body = SOURCE.slice(start, SOURCE.indexOf('\n};\n', start));
 
     expect(body).toContain('definition.settingKey');
     expect(body).not.toMatch(/platform|win32|Windows/i);

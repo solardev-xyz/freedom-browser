@@ -40,7 +40,12 @@ const {
   luminance,
 } = require('../../../test/helpers/css-audit');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The page's markup plus the classic script it loads (`scripts/settings.js`,
+// moved out of an inline <script> by #432 so the CSP can drop 'unsafe-inline').
+const SOURCE = [
+  fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), 'utf8'),
+].join('\n');
 // The palette both themes are declared in since #261, linked by every internal
 // page. Settings' own sheet is asserted against it below.
 const THEME_SOURCE = fs.readFileSync(path.join(__dirname, 'styles', 'theme.css'), 'utf8');

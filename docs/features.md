@@ -221,7 +221,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 - **Ledger Support**: Connect Ledger Ethereum accounts over USB and confirm signatures and transactions on the device.
 - **Phone Signing**: Pair your phone by QR code and approve signatures and transactions there — wallet requests are relayed to the phone over an end-to-end encrypted OpenLV channel via the hosted bridge, and every returned signature is verified before use.
 - **Ethereum Provider**: Sites can request wallet access, signatures, and transactions through the permissioned `window.ethereum` provider.
-- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging.
+- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD).
 - **Radicle Provider**: Permissioned `window.radicle` APIs cover repository data, node operations, signing, and seeding; see the [provider reference](radicle-provider-api.md).
 - **x402 Payments**: Approve pay-as-you-browse requests, configure per-origin auto-pay allowances, and inspect payment history.
 

@@ -37,6 +37,15 @@ function rendererSources() {
 
 const rel = (file) => path.relative(path.join(__dirname, '..', '..'), file);
 const read = (file) => fs.readFileSync(file, 'utf8');
+// An internal page's markup plus the page scripts it loads with
+// `<script src="scripts/…">` — its runtime copy moved there with #432.
+const readPage = (file) => {
+  const html = read(file);
+  const scripts = [...html.matchAll(/<script\b[^>]*\bsrc="(scripts\/[^"]+\.js)"/g)].map((m) =>
+    read(path.join(path.dirname(file), m[1]))
+  );
+  return [html, ...scripts].join('\n');
+};
 
 const SOURCES = rendererSources();
 
@@ -247,7 +256,7 @@ describe('empty states and bulk-clear labels (#258)', () => {
     ['pages/settings.html', 'No custom search engines yet'],
     ['pages/settings.html', 'No custom RPCs yet'],
   ])('%s keeps its unpunctuated empty state: %s', (file, message) => {
-    const source = read(path.join(RENDERER, file));
+    const source = readPage(path.join(RENDERER, file));
     expect(source).toContain(message);
     expect(source).not.toContain(`${message}.`);
   });
@@ -275,7 +284,7 @@ describe('empty states and bulk-clear labels (#258)', () => {
 // ---------------------------------------------------------------------------
 
 describe('error page heading case (#260)', () => {
-  const errorHtml = read(path.join(RENDERER, 'pages/error.html'));
+  const errorHtml = readPage(path.join(RENDERER, 'pages/error.html'));
 
   test('the static <title> and <h1> share one sentence-case default', () => {
     const title = errorHtml.match(/<title>([^<]*)<\/title>/)[1];

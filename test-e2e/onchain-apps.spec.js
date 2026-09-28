@@ -622,3 +622,8 @@ test("the trust gate's Go back button traverses, it does not re-navigate", async
   await expect.poll(guestUrl, { timeout: 15_000 }).toMatch(/^ipfs:\/\/qmgateback/);
   await expect(window.locator('#forward-btn')).toBeEnabled();
 });
+
+// Provider frame attribution (O-6, #433). The tests live in their own module
+// and are registered here so they run in CI's `e2e-tabs` job; see that file's
+// header.
+require('./provider-frame-attribution.cases');

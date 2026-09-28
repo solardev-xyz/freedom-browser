@@ -16,12 +16,12 @@
 // for the `live` project; a packaged spec has to ask the app under test
 // where its bundled binaries are (e.g. `window.tor.checkBinary()`).
 
-const { test: base, expect, _electron: electron } = require('@playwright/test');
+const { test: base, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { isPackagedRun, packagedLaunchTarget } = require('./packaged-launch');
+const { isPackagedRun, packagedLaunchTarget, launchApp } = require('./packaged-launch');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -126,7 +126,7 @@ const test = base.extend({
       );
     }
 
-    const app = await electron.launch({
+    const app = await launchApp({
       // Source tree or FREEDOM_E2E_EXECUTABLE — see packaged-launch.js.
       ...packagedLaunchTarget(),
       cwd: repoRoot,

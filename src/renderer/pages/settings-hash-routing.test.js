@@ -11,7 +11,7 @@
  * longer disagree.
  *
  * Same extraction approach as `settings-search.test.js`: the page is one
- * inline classic script, so the routing block is lifted out of the shipped
+ * classic script, so the routing block is lifted out of the shipped
  * source between the markers it keeps for this, and driven directly. The
  * block's only free names are `SECTIONS`, `DEFAULT_SECTION`, `location`,
  * `history` and `showSection`, so a fake `location`/`history` pair modelling
@@ -23,7 +23,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The page's markup plus the classic script it loads (`scripts/settings.js`,
+// moved out of an inline <script> by #432 so the CSP can drop 'unsafe-inline').
+const SOURCE = [
+  fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), 'utf8'),
+].join('\n');
 
 const START = '/* settings-hash routing: start */';
 const END = '/* settings-hash routing: end */';

@@ -502,3 +502,9 @@ test('arrow keys stop at both ends of the dropdown and return to the typed text 
   const hovered = await suggestionRows(window);
   expect(hovered[hovered.length - 1].selected).toBe(true);
 });
+
+// Gateway-form `ipfs:` iframes/links/sub-resources redirect onto their own
+// canonical origin (security audit O-3, #430). Declared here rather than in
+// a spec file of its own so the `e2e-address-bar-ens` CI job runs them; see
+// the header of `ipfs-gateway-form.cases.js`.
+require('./ipfs-gateway-form.cases');

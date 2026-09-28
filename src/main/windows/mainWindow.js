@@ -3,6 +3,7 @@ const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { loadSettings } = require('../settings-store');
+const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
 
 let currentWindowTitle = 'Freedom';
 
@@ -65,10 +66,27 @@ function createMainWindow(initialUrl = null, options = {}) {
     ...(linuxFrameless && { frame: false }),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
+      // Pinned explicitly rather than left to Electron's defaults, so a
+      // future default change or a stray option can't silently weaken the
+      // renderer that holds the privileged preload API
+      // (docs/security-audit-electron.md, E-4).
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
       webviewTag: true,
-      enableRemoteModule: false,
+      // Tells preload.js to expose the E2E harness bridge. Decided here, from
+      // test-mode.js's verdict, rather than by the preload reading
+      // FREEDOM_TEST_MODE itself: a packaged build honours that variable only
+      // under an honoured CDP debug port (docs/security-audit-electron.md,
+      // O-4/O-12), which the renderer cannot see.
+      ...(require('../test-harness').isTestMode() && {
+        additionalArguments: [TEST_HARNESS_RENDERER_ARG],
+      }),
     },
   });
 
