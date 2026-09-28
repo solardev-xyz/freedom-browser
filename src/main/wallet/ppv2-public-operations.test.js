@@ -18,10 +18,10 @@ const iface = new Interface(REGISTRATION_ABI);
 let mockVault, mockProfile, scope, operations, config, receipts, nonce, lost, sent, signer, registered;
 const mockRequest = jest.fn();
 const blockHash = `0x${'c'.repeat(64)}`;
-function open() {
+function open(tokenPolicy) {
   scope = createPrivacyScope({ signal: mockVault.signal, profileId: createHash('sha256')
     .update(JSON.stringify([mockProfile.id, mockProfile.userDataDir])).digest('hex') });
-  operations = createPPv2PublicOperations({ scope, configuration: config,
+  operations = createPPv2PublicOperations({ scope, configuration: config, tokenPolicy,
     provider: { call: async () => `0x${(registered ? '1' : '0').padStart(64, '0')}` } });
 }
 function registration() {
@@ -195,4 +195,46 @@ test('native ragequit review exposes its full note amount and uses the public su
   expect(review).toMatchObject({ operation: 'ppv2-native-ragequit', amount: 10000n, noteCommitment: prepared.commitment,
     protocolFee: 0n, chainStateVerified: false });
   expect(sent[0].value).toBe(0n); expect((await operations.list())[0].intent.kind).toBe('ppv2-native-ragequit');
+});
+
+function tokenOperations() {
+  const { createPPv2TokenPolicy, TOKEN_ABI } = require('./ppv2-token-policy');
+  const token=`0x${'55'.repeat(20)}`, tokenABI=new Interface(TOKEN_ABI);
+  const assetABI=new Interface(['function assets(address) view returns(tuple(bool,uint256,uint256,uint256))']);
+  const state={allowance:1n,fee:100n};
+  config.erc20Tokens=[token]; config.contracts.push({address:token});
+  const policy=createPPv2TokenPolicy({configuration:config,provider:{call:async({to,data})=>{
+    if(to===config.deployment.entrypointAddress)return assetABI.encodeFunctionResult('assets',[[true,1n,state.fee,0n]]);
+    const call=tokenABI.parseTransaction({data});return tokenABI.encodeFunctionResult(call.name,[call.name==='allowance'?state.allowance:20000n]);
+  }}});
+  scope.close(); open(policy);
+  return {state,intent:{token,amount:10000n,maxFee:100n}};
+}
+test('zero-reset approval requires durable reconciliation before exact replacement before the next reviewed operation', async () => {
+  const {state,intent}=tokenOperations();
+  const reset=await operations.tokenApproval(intent);
+  const result=await operations.submit(reset,options());
+  expect(sent).toHaveLength(1); expect(reset.approvalAmount).toBe(0n);
+  expect((await operations.list())[0].intent.kind).toBe('ppv2-token-approval');
+  state.allowance=0n;
+  await expect(operations.submit(await operations.tokenApproval(intent),options())).rejects.toThrow();
+  mine(result.hash); await resolve(result.hash);
+  const approval=await operations.tokenApproval(intent);
+  expect(approval.approvalAmount).toBe(10100n);
+  const approved=await operations.submit(approval,options());
+  expect(sent).toHaveLength(2); expect(approved.hash).toBeTruthy();
+});
+test.each(['allowance','fee','simulation'])('refuses token changes during review or simulation: %s', async change => {
+  const {state,intent}=tokenOperations();
+  const prepared=await operations.tokenApproval(intent);
+  if(change==='simulation') {
+    const normal=mockRequest.getMockImplementation();
+    mockRequest.mockImplementation((method,params,valid)=>method==='eth_call'?Promise.resolve({result:`0x${'0'.repeat(64)}`}):normal(method,params,valid));
+  }
+  await expect(operations.submit(prepared,options({review:async()=>{
+    if(change==='allowance')state.allowance=0n;
+    if(change==='fee')state.fee=99n;
+    return true;
+  }}))).rejects.toThrow();
+  expect(sent).toHaveLength(0); expect(signer.signTransaction).not.toHaveBeenCalled();
 });

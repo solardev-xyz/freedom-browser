@@ -91,3 +91,12 @@ test('a caught final proof failure cannot return the preliminary proof as final'
     await prover.service.proveTransact(witness, 1, 1).catch(() => {});
   })).rejects.toThrow();
 });
+
+test('binds the selected token across witness and both final public signals', async () => {
+  const token=`0x${'66'.repeat(20)}`;
+  witness.tokenId=witness.tokenIdOut=proof.publicSignals[6]=token;
+  await expect(prover.prepare({...intent,token},prepare)).resolves.toHaveProperty('proof');
+  await expect(prover.prepare(intent,prepare)).rejects.toThrow();
+  proof.publicSignals[6]=NATIVE;
+  await expect(prover.prepare({...intent,token},prepare)).rejects.toThrow();
+});

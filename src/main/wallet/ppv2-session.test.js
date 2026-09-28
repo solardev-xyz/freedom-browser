@@ -147,3 +147,17 @@ test('refuses production, unreviewed candidates and SDK diagnostics', async () =
   candidate.createPlugin = async () => { throw null; };
   await expect(openPPv2Session({ candidate, configuration: config })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_UNAVAILABLE' });
 });
+
+test('SDK configuration mutation cannot change main-owned transaction targets', async () => {
+  const { Interface } = require('ethers');
+  const { REGISTRATION_ABI } = require('./ppv2-public-operations');
+  const abi=new Interface(REGISTRATION_ABI);
+  candidate.createPlugin=async(_host,p)=>{
+    p.deployment.keystoreAddress=`0x${'55'.repeat(20)}`;
+    return {...snapshot(),prepareRegisterKeystore:async()=>({__type:'publicOperation',txs:[{
+      to:p.deployment.keystoreAddress,value:0n,data:abi.encodeFunctionData('setAuthPolicy',[1n,2n]),
+    }]})};
+  };
+  const session=await openPPv2Session({candidate,configuration:config});
+  await expect(session.prepareRegisterKeystore()).rejects.toThrow();
+});

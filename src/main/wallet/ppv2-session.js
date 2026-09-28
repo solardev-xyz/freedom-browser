@@ -16,6 +16,7 @@ const { createPPv2RagequitProver } = require('./ppv2-ragequit-prover');
 const { createPPv2TransactProver } = require('./ppv2-transact-prover');
 const { createPPv2RelayHandoff } = require('./ppv2-relay-handoff');
 const { createPPv2RelayReconciliation } = require('./ppv2-relay-reconciliation');
+const { createPPv2TokenPolicy } = require('./ppv2-token-policy');
 const { NATIVE } = require('./ppv2-deposit-policy');
 const { getPPv2RelayJournal } = require('./ppv2-relay-journal');
 const PPV2_CANDIDATE = Object.freeze({
@@ -113,13 +114,14 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       } });
     const host = Object.freeze({ provider, network, keystore, storage });
     const params = { chainId: 11155111n, ownerAddress: config.ownerAddress, accountIndex,
-      deployment: config.deployment, deploymentBlock: `0x${config.deploymentBlock.toString(16)}`,
-      asp: config.asp, relayers: config.relayers, artifacts: config.artifacts,
+      deployment: structuredClone(config.deployment), deploymentBlock: `0x${config.deploymentBlock.toString(16)}`,
+      asp: structuredClone(config.asp), relayers: structuredClone(config.relayers), artifacts: structuredClone(config.artifacts),
       storeKey: 'controlled', revocableKeyGapLimit: 20, factories: { proofService } };
     const created = await scope.run(sessionHandle, () => createPlugin(host, params));
     getPrivacyContext(sessionHandle);
     plugin = created;
-    const publicOperations = createPPv2PublicOperations({ scope, configuration: config, provider });
+    const tokenPolicy = createPPv2TokenPolicy({ configuration: config, provider });
+    const publicOperations = createPPv2PublicOperations({ scope, configuration: config, provider, tokenPolicy });
     const relayReconciliation = () => createPPv2RelayReconciliation({ handle: handle('protocol-rpc'), journal: relayJournal });
     const publicNetwork = () => require('./private-transaction-network').getPrivateTransactionNetwork(
       scope.getContext({ kind: 'public-address', principal: config.ownerAddress.toLowerCase(), chainId: 11155111, role: 'transaction-rpc' }));
@@ -134,15 +136,19 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     async function prepareWithdrawal(args) {
       if (!transactProver || !address(args.recipient)) throw unavailable();
       const request = { ...args, recipient: args.recipient.toLowerCase() };
+      const token = request.token ?? NATIVE;
+      if (token !== NATIVE) tokenPolicy.assertToken(token);
+      const asset = token === NATIVE ? { __type: 'native' } : { __type: 'erc20', contract: token.toLowerCase() };
       await availableToSpend();
       const note = (await plugin.notes(undefined, true)).find((n) => n.commitment === request.commitment);
-      if (!note || note.asset?.__type !== 'native' || note.status !== 'active') throw unavailable();
+      if (!note || note.status !== 'active' || (token === NATIVE ? note.asset?.__type !== 'native' :
+          note.asset?.__type !== 'erc20' || note.asset.contract.toLowerCase() !== token.toLowerCase())) throw unavailable();
       const fromBlock = Number(await provider.getBlockNumber());
       proofKind = 'transact';
       const captured = {};
       const prepared = await transactProver.prepare({ commitment: note.commitment, value: note.value, owner: config.ownerAddress,
-        amount: request.amount, maxFee: request.maxFee }, async () => {
-        const op = await plugin.prepareUnshield({ asset: { __type: 'native' }, amount: request.amount }, request.recipient);
+        amount: request.amount, maxFee: request.maxFee, token }, async () => {
+        const op = await plugin.prepareUnshield({ asset, amount: request.amount }, request.recipient);
         const selected = op?.relayParams?.selectedQuote?.relayerInfo;
         if (op?.kind !== 'withdrawal' || !selected || !config.relayers.some((r) => r.url === selected.url &&
             r.address.toLowerCase() === selected.address.toLowerCase() && r.processorAddress.toLowerCase() === selected.processorAddress.toLowerCase()) ||
@@ -160,11 +166,12 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       const change = await candidate.inspectChange(keystore, accountIndex, config.ownerAddress, body.noteData);
       getPrivacyContext(sessionHandle);
       if (BigInt(change.commitment) !== BigInt(proof.publicSignals[1]) || BigInt(change.value) !== note.value - BigInt(proof.publicSignals[5]) ||
-          BigInt(change.tokenId) !== BigInt(NATIVE)) throw unavailable();
+          BigInt(change.tokenId) !== BigInt(token)) throw unavailable();
       const word = (v) => `0x${BigInt(v).toString(16).padStart(64, '0')}`;
       const gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal: relayJournal, network: transport, beforeBegin: availableToSpend,
         verifyProof: async (p) => JSON.stringify(p) === JSON.stringify(proof) }); // Exact proof already verified by the owned process.
-      const summary = await gate.prepare({ ...prepared.value, fromBlock, intent: { kind: 'ppv2-native-withdrawal', chainId: 11155111,
+      const summary = await gate.prepare({ ...prepared.value, fromBlock, intent: { ...(token === NATIVE ? {} : { token: token.toLowerCase() }),
+        kind: token === NATIVE ? 'ppv2-native-withdrawal' : 'ppv2-token-withdrawal', chainId: 11155111,
         pool: config.deployment.poolAddress.toLowerCase(), processor: captured.relayer.processorAddress.toLowerCase(),
         relayer: captured.relayer.address.toLowerCase(), recipient: request.recipient, amount: request.amount.toString(), maxFee: request.maxFee.toString(),
         commitment: note.commitment, publicSignals: proof.publicSignals.map(word) } });
@@ -175,23 +182,47 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       busy = true;
       try { return await scope.run(sessionHandle, task); } finally { busy = false; }
     }
+    const submitWithdrawal = (prepared, review) => exclusive(async () => {
+      const plan = withdrawals.get(prepared); if (!plan) throw unavailable(); withdrawals.delete(prepared);
+      await availableToSpend();
+      return plan.gate.submit(prepared, { review, invoke: async (net) => {
+        const response = await net.fetch(plan.request.endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: plan.request.body });
+        return response.json();
+      } });
+    });
     async function call(method, ...args) {
       getPrivacyContext(sessionHandle);
       if (busy) throw privacyError('PRIVATE_PPV2_BUSY', 'A PPv2 operation is already in progress');
       busy = true;
       try {
         return await scope.run(sessionHandle, async () => {
-          if (method === 'prepareNativeWithdrawal') return prepareWithdrawal(args[0]);
+          if (method === 'prepareTokenWithdrawal') tokenPolicy.assertToken(args[0].token);
+          if (['prepareNativeWithdrawal', 'prepareTokenWithdrawal'].includes(method)) return prepareWithdrawal(args[0]);
+          if (method === 'prepareTokenApproval') {
+            await availableToSpend(); return publicOperations.tokenApproval(args[0]);
+          }
+          if (method === 'prepareTokenDeposit') {
+            await availableToSpend();
+            const state = await tokenPolicy.read(args[0]);
+            if (state.allowance !== state.total) throw unavailable();
+            proofKind = 'deposit';
+            return depositProver.prepare({ ...state, ownerAddress: config.ownerAddress, entrypointAddress: config.deployment.entrypointAddress },
+              () => plugin.prepareShield({ asset: { __type: 'erc20', contract: state.token }, amount: state.amount }));
+          }
           if (method === 'prepareNativeDeposit') {
             proofKind = 'deposit';
             return depositProver.prepare({ ...args[0], ownerAddress: config.ownerAddress, entrypointAddress: config.deployment.entrypointAddress },
               () => plugin.prepareShield({ asset: { __type: 'native' }, amount: args[0].amount }));
           }
-          if (method === 'prepareNativeRagequit') {
-            const note = (await plugin.notes(undefined, true)).find((note) => note.commitment === args[0]);
-            if (!note || note.asset?.__type !== 'native' || ['spent', 'exited', 'exit_pending'].includes(note.status)) throw unavailable();
+          if (['prepareNativeRagequit', 'prepareTokenRagequit'].includes(method)) {
+            const token = method === 'prepareTokenRagequit' ? args[0].token : NATIVE;
+            if (method === 'prepareTokenRagequit') tokenPolicy.assertToken(token);
+            const commitment = method === 'prepareTokenRagequit' ? args[0].commitment : args[0];
+            const note = (await plugin.notes(undefined, true)).find((note) => note.commitment === commitment);
+            if (!note || ['spent', 'exited', 'exit_pending'].includes(note.status) ||
+                (token === NATIVE ? note.asset?.__type !== 'native' : note.asset?.contract?.toLowerCase() !== token.toLowerCase())) throw unavailable();
             proofKind = 'ragequit';
-            return ragequitProver.prepare({ commitment: note.commitment, amount: note.value, ownerAddress: config.ownerAddress,
+            return ragequitProver.prepare({ token, commitment: note.commitment, amount: note.value, ownerAddress: config.ownerAddress,
               poolAddress: config.deployment.poolAddress }, () => plugin.prepareRageQuit(note.commitment));
           }
           if (method === 'inspectNoteRecovery') return inspectPPv2NoteRecovery({ handle: sessionHandle, createPlugin, host, params, plugin });
@@ -207,7 +238,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       close,
       descriptor: Object.freeze({ chainId: 11155111, accountIndex, experimental: true, verified: false,
         candidate: PPV2_CANDIDATE, proving: !!depositProver, exitProving: !!ragequitProver, withdrawalProving: !!transactProver,
-        broadcasting: transactProver ? 'reviewed-public-and-native-withdrawal' : 'reviewed-public-only' }),
+        broadcasting: transactProver ? 'reviewed-public-and-single-asset-withdrawal' : 'reviewed-public-only' }),
       instanceId: () => call('instanceId'),
       isRegistered: () => call('isRegistered'),
       balance: () => call('balance', undefined),
@@ -215,17 +246,17 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       inspectNoteRecovery: () => call('inspectNoteRecovery'),
       prepareRegisterKeystore: async () => publicOperations.registration(await call('prepareRegisterKeystore')),
       ...(depositProver ? { prepareNativeDeposit: async ({ amount, maxFee }) => publicOperations.deposit(await call('prepareNativeDeposit', { amount, maxFee })) } : {}),
+      ...(depositProver ? {
+        prepareTokenApproval: (args) => call('prepareTokenApproval', { ...args }),
+        prepareTokenDeposit: async (args) => publicOperations.deposit(await call('prepareTokenDeposit', { ...args })),
+      } : {}),
       ...(ragequitProver ? { prepareNativeRagequit: async (commitment) => publicOperations.ragequit(await call('prepareNativeRagequit', commitment)) } : {}),
+      ...(ragequitProver ? { prepareTokenRagequit: async (args) => publicOperations.ragequit(await call('prepareTokenRagequit', { ...args })) } : {}),
       ...(transactProver ? {
-        prepareNativeWithdrawal: (args) => call('prepareNativeWithdrawal', { ...args }),
-        submitNativeWithdrawal: (prepared, review) => exclusive(async () => {
-          const plan = withdrawals.get(prepared); if (!plan) throw unavailable(); withdrawals.delete(prepared);
-          await availableToSpend();
-          return plan.gate.submit(prepared, { review, invoke: async (net) => {
-            const response = await net.fetch(plan.request.endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: plan.request.body });
-            return response.json();
-          } });
-        }),
+        prepareNativeWithdrawal: (args) => call('prepareNativeWithdrawal', { ...args, token: NATIVE }),
+        submitNativeWithdrawal: submitWithdrawal,
+        submitTokenWithdrawal: submitWithdrawal,
+        prepareTokenWithdrawal: (args) => call('prepareTokenWithdrawal', { ...args }),
       } : {}),
       observeRelayAttempt: (id) => exclusive(() => relayReconciliation().observe(id)),
       resolveRelayAttempt: (id, review) => exclusive(() => relayReconciliation().resolve(id, review)),
@@ -236,11 +267,11 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
         try {
           if ((await relayJournal.list()).some((r) => r.resolution)) await relayReconciliation().refreshResolved();
           await relayJournal.assertCanSubmit(); getPrivacyContext(sessionHandle);
-          if (prepared?.kind === 'ppv2-native-ragequit') {
+          if (['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(prepared?.kind)) {
             const note = (await plugin.notes(undefined, true)).find((n) => n.commitment === prepared.commitment);
             if (!note || ['spent', 'exited', 'exit_pending'].includes(note.status)) throw unavailable();
           }
-          if (prepared?.kind === 'ppv2-native-ragequit' &&
+          if (['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(prepared?.kind) &&
               (await relayJournal.list()).some((r) => r.commitment === prepared.commitment)) throw unavailable();
           const review = options?.review;
           return await publicOperations.submit(prepared, { ...options, review: typeof review === 'function' ? async (request) => {

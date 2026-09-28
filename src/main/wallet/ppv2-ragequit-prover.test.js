@@ -86,3 +86,13 @@ test('snapshots mutable arrays, refuses unissued formatting, and refuses late re
   mockRun.mockImplementationOnce(async () => { scope.close(); return { result: { proof } }; });
   await expect(prover.prepare(intent, () => prepare())).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
 });
+
+test('binds a token emergency exit to the recovered asset and rejects substitution', async () => {
+  const token=`0x${'66'.repeat(20)}`;
+  witness.tokenId=proof.publicSignals[5]=token;
+  const prepared=await prover.prepare({...intent,token},prepare);
+  expect(prepared).toMatchObject({kind:'ppv2-token-ragequit',token,value:0n,amount:100n});
+  await expect(prover.prepare(intent,prepare)).rejects.toThrow();
+  proof.publicSignals[5]=NATIVE;
+  await expect(prover.prepare({...intent,token},prepare)).rejects.toThrow();
+});

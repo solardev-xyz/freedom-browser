@@ -97,3 +97,13 @@ test('artifact failure starts no process; revocation refuses late process and tr
   mockRun.mockImplementationOnce(async () => { scope.close(); return { result: { proof } }; });
   await expect(prover.prepare(intent, () => prepare())).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
 });
+
+test('binds a token deposit proof to its asset and amount with zero native value', async () => {
+  const token = `0x${'66'.repeat(20)}`;
+  witness.tokenId = proof.publicSignals[1] = token;
+  const result = await prover.prepare({...intent,token,fee:1n}, () => prepare(v=>{v.txs[0].value=0n; return v;}));
+  expect(result).toMatchObject({kind:'ppv2-token-deposit',token,fee:1n,value:0n,amount:100n});
+  await expect(prover.prepare({...intent,token,fee:1n},prepare)).rejects.toThrow();
+  proof.publicSignals[1]=NATIVE;
+  await expect(prover.prepare({...intent,token,fee:1n},()=>prepare(v=>{v.txs[0].value=0n;return v;}))).rejects.toThrow();
+});

@@ -1,4 +1,4 @@
-/** Main-owned native withdrawal proof service: at most preliminary + final proof. */
+/** Main-owned single-asset withdrawal proof service: at most preliminary + final proof. */
 const path = require('path');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const { createPrivacyArtifactLoader } = require('./privacy-artifacts');
@@ -19,13 +19,13 @@ function createPPv2TransactProver({ handle, artifactHandle, sdkEntry, proverEntr
       getPrivacyContext(handle);
       const op = current;
       if (!op || op.running || op.count >= 2 || n !== 1 || m !== 1 || !validWitness(witness) ||
-          BigInt(witness.ownerAddress) !== BigInt(op.owner) || BigInt(witness.value[0]) !== op.value ||
+          BigInt(witness.tokenId) !== BigInt(op.token) || BigInt(witness.ownerAddress) !== BigInt(op.owner) || BigInt(witness.value[0]) !== op.value ||
           BigInt(witness.amountOut) < op.amount || BigInt(witness.amountOut) > op.amount + op.maxFee) throw fail();
       op.running = true; op.count++; op.proof = null;
       const w = structuredClone(witness), artifacts = {};
       try {
         for (const e of ARTIFACTS) artifacts[e.kind] = await loader.load(e.name);
-        const expected = [w.stateRoot, w.keystoreRoot, w.associationSetRoot, w.amountOut, NATIVE, `0x${(BigInt(w.context) % FIELD).toString(16)}`];
+        const expected = [w.stateRoot, w.keystoreRoot, w.associationSetRoot, w.amountOut, op.token, `0x${(BigInt(w.context) % FIELD).toString(16)}`];
         const { result } = await runPrivacyProcess({ handle, filename: path.join(__dirname, 'ppv2-transact-job.js'), onProgress,
           input: { sdkEntry, proverEntry, witness: w, artifacts, commitment: op.commitment },
           validateResult: (v) => v?.verified === true && validProof(v.proof, 8) && expected.every((x, i) => BigInt(x) === BigInt(v.proof.publicSignals[i + 2])) });
@@ -42,7 +42,9 @@ function createPPv2TransactProver({ handle, artifactHandle, sdkEntry, proverEntr
       if (current || typeof intent.amount !== 'bigint' || intent.amount <= 0n || typeof intent.maxFee !== 'bigint' || intent.maxFee < 0n ||
           typeof intent.value !== 'bigint' || intent.value <= intent.amount || intent.value >= 1n << 128n || intent.maxFee >= 1n << 128n ||
           !/^0x[0-9a-f]{64}$/i.test(intent.commitment) || !/^0x[0-9a-f]{40}$/i.test(intent.owner)) throw fail();
-      current = { ...intent, count: 0 };
+      const token = intent.token ?? NATIVE;
+      if (typeof token !== 'string' || !/^0x[0-9a-f]{40}$/i.test(token) || BigInt(token) === 0n) throw fail();
+      current = { ...intent, token, count: 0 };
       try { const value = await task(); getPrivacyContext(handle); if (current.running || current.count !== 2 || !current.proof) throw fail();
         return { value, proof: current.proof }; }
       catch { getPrivacyContext(handle); throw fail(); }

@@ -101,7 +101,7 @@ module.exports = defineConfig({
           },
           {
             name: 'packaged',
-            testMatch: [/[\\/]packaged[\\/].*\.spec\.js$/, /(?:wallet-private-balances|wallet-private-recovery|kohaku-runtime|ppv2-process|ppv2-deposit|ppv2-lifecycle|ppv2-exit-circuits|ppv2-relay|ppv2-withdrawal)\.spec\.js$/],
+            testMatch: [/[\\/]packaged[\\/].*\.spec\.js$/, /(?:wallet-private-balances|wallet-private-recovery|kohaku-runtime|ppv2-process|ppv2-deposit|ppv2-lifecycle|ppv2-exit-circuits|ppv2-relay|ppv2-withdrawal|ppv2-token-deposit)\.spec\.js$/],
             dependencies: ['packaged-preflight'],
             // `harness` plus headroom: a just-installed package launches with a
             // cold asar and cold shared libraries, and the persistence spec pays

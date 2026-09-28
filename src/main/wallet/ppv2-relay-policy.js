@@ -1,4 +1,4 @@
-/** Narrow native 1x1 withdrawal wire policy, pinned to SDK fe0244e3. Main
+/** Narrow single-asset 1x1 withdrawal wire policy, pinned to SDK fe0244e3. Main
  * supplies witness-derived signals; payload acceptance is not proof verification. */
 const { AbiCoder, keccak256 } = require('ethers');
 const { createHash } = require('crypto');
@@ -16,8 +16,10 @@ const hex = (v, max) => typeof v === 'string' && /^0x(?:[0-9a-f]{2})*$/i.test(v)
 const fail = () => privacyError('PRIVATE_PPV2_RELAY_REFUSED', 'Relay payload does not match its reviewed intent');
 function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
   try {
-    if (!keys(intent, ['kind', 'chainId', 'pool', 'processor', 'relayer', 'recipient', 'amount', 'maxFee', 'commitment', 'publicSignals']) ||
-        intent.kind !== 'ppv2-native-withdrawal' || intent.chainId !== 11155111 ||
+    const token = intent?.kind === 'ppv2-token-withdrawal' ? intent.token : NATIVE;
+    if (!address(token) || (intent?.kind === 'ppv2-token-withdrawal' && token === NATIVE)) throw fail();
+    if (!keys(intent, [...(intent?.kind === 'ppv2-token-withdrawal' ? ['token'] : []), 'kind', 'chainId', 'pool', 'processor', 'relayer', 'recipient', 'amount', 'maxFee', 'commitment', 'publicSignals']) ||
+        !['ppv2-native-withdrawal', 'ppv2-token-withdrawal'].includes(intent.kind) || intent.chainId !== 11155111 ||
         !['pool', 'processor', 'relayer', 'recipient'].every((k) => address(intent[k])) ||
         !amount(intent.amount) || BigInt(intent.amount) <= 0n || !amount(intent.maxFee) || !word(intent.commitment) ||
         !Array.isArray(intent.publicSignals) || intent.publicSignals.length !== 8 || !intent.publicSignals.every(word)) throw fail();
@@ -34,7 +36,7 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
     if (!validProof(result, 8) || !publicSignals.every((v, i) => BigInt(v) === BigInt(intent.publicSignals[i]))) throw fail();
     const fee = payload.signedFeeCommitment;
     if (!keys(fee, ['data', 'asset', 'expiration', 'feeAmount', 'signedRelayerCommitment', 'recipient', 'amountSent', 'amountReceived', 'extraGas']) ||
-        typeof fee.asset !== 'string' || fee.asset.toLowerCase() !== NATIVE || fee.recipient !== intent.recipient || fee.extraGas !== false ||
+        typeof fee.asset !== 'string' || fee.asset.toLowerCase() !== token || fee.recipient !== intent.recipient || fee.extraGas !== false ||
         !amount(fee.feeAmount) || BigInt(fee.feeAmount) > BigInt(intent.maxFee) || !amount(fee.amountSent) ||
         fee.amountReceived !== intent.amount || BigInt(fee.amountSent) !== BigInt(intent.amount) + BigInt(fee.feeAmount) ||
         !Number.isSafeInteger(fee.expiration) || fee.expiration <= Date.now() ||
@@ -45,12 +47,12 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
           hex(note.data, 4098) && note.data.length > 2)) throw fail();
     const context = BigInt(keccak256(coder.encode(['tuple(address processor,bytes data)', 'tuple(bytes32 hint,bytes data)[]'],
       [[intent.processor, routing], payload.noteData]))) % FIELD;
-    if (BigInt(publicSignals[5]) !== BigInt(fee.amountSent) || BigInt(publicSignals[6]) !== BigInt(NATIVE) || BigInt(publicSignals[7]) !== context) throw fail();
+    if (BigInt(publicSignals[5]) !== BigInt(fee.amountSent) || BigInt(publicSignals[6]) !== BigInt(token) || BigInt(publicSignals[7]) !== context) throw fail();
     const intentDigest = hash(JSON.stringify(intent)), endpointDigest = hash(endpoint), payloadDigest = hash(body);
     return { proof: result, expiresAt: Math.min(Date.now() + 120000, fee.expiration),
       attempt: { id: hash(JSON.stringify([intentDigest, endpointDigest, payloadDigest])), intentDigest, endpointDigest, payloadDigest,
         commitment: intent.commitment, nullifier: intent.publicSignals[0] },
-      settlement: { pool: intent.pool, processor: intent.processor, outputCommitment: intent.publicSignals[1],
+      settlement: { ...(token === NATIVE ? {} : { token }), pool: intent.pool, processor: intent.processor, outputCommitment: intent.publicSignals[1],
         amountOut: fee.amountSent, noteDigest: hash(JSON.stringify(payload.noteData)), fromBlock },
       summary: { ...intent, publicSignals: Object.freeze([...intent.publicSignals]), fee: fee.feeAmount,
         endpoint, payloadDigest, proofVerified: true, chainStateVerified: false, quoteSignatureVerified: false } };

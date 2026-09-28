@@ -26,7 +26,7 @@ function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, 
   const service = Object.freeze({
     async proveDeposit(witness) {
       getPrivacyContext(handle);
-      if (!operation || operation.started || !validWitness(witness) || BigInt(witness.tokenId) !== BigInt(NATIVE) ||
+      if (!operation || operation.started || !validWitness(witness) || BigInt(witness.tokenId) !== BigInt(operation.token) ||
           BigInt(witness.value) !== operation.amount) throw fail();
       const current = operation;
       current.started = true;
@@ -36,7 +36,7 @@ function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, 
       for (const entry of ARTIFACTS) input.artifacts[entry.kind] = await loader.load(entry.name);
       const { result } = await runPrivacyProcess({ handle, filename: path.join(__dirname, 'ppv2-deposit-job.js'), input,
         onProgress, validateResult: (value) => value?.verified === true && validProof(value.proof) &&
-          BigInt(value.proof.publicSignals[1]) === BigInt(NATIVE) && BigInt(value.proof.publicSignals[2]) === current.amount &&
+          BigInt(value.proof.publicSignals[1]) === BigInt(current.token) && BigInt(value.proof.publicSignals[2]) === current.amount &&
           BigInt(value.proof.publicSignals[3]) === current.context });
       getPrivacyContext(handle);
       if (operation !== current) throw fail();
@@ -57,11 +57,15 @@ function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, 
   });
   return Object.freeze({
     service,
-    async prepare({ amount, maxFee, ownerAddress, entrypointAddress }, prepare) {
+    async prepare({ amount, maxFee, ownerAddress, entrypointAddress, token = NATIVE, fee = 0n }, prepare) {
       getPrivacyContext(handle);
       if (operation || typeof amount !== 'bigint' || amount <= 0n || amount >= (1n << 128n) ||
           typeof maxFee !== 'bigint' || maxFee < 0n || maxFee >= (1n << 128n)) throw fail();
-      const current = { amount, started: false };
+      if (typeof token !== 'string' || !/^0x[0-9a-f]{40}$/i.test(token) || BigInt(token) === 0n ||
+          typeof fee !== 'bigint' || fee < 0n || fee > maxFee || amount + fee >= 1n << 128n) throw fail();
+      token = token.toLowerCase();
+      const native = token === NATIVE;
+      const current = { amount, token, started: false };
       operation = current;
       try {
         const result = await prepare();
@@ -69,7 +73,7 @@ function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, 
         if (!current.proof || result?.__type !== 'publicOperation' || !Array.isArray(result.txs) || result.txs.length !== 1) throw fail();
         const tx = result.txs[0];
         if (!tx || typeof tx.to !== 'string' || tx.to.toLowerCase() !== entrypointAddress.toLowerCase() ||
-            typeof tx.value !== 'bigint' || tx.value < amount || tx.value - amount > maxFee ||
+            typeof tx.value !== 'bigint' || (native ? tx.value < amount || tx.value - amount > maxFee : tx.value !== 0n) ||
             typeof tx.data !== 'string' || !/^0x(?:[0-9a-f]{2})+$/i.test(tx.data) || tx.data.length > 16386) throw fail();
         const decoded = abi.decodeFunctionData('deposit', tx.data);
         const expected = formatProof(current.proof);
@@ -77,8 +81,9 @@ function createPPv2DepositProver({ handle, artifactHandle, sdkEntry, directory, 
         if (note.data.length <= 2 || note.data.length > 4098 || decoded._aspCiphertext.length <= 66 || decoded._aspCiphertext.length > 4098 ||
             BigInt(keccak256(coder.encode(['tuple(bytes32 hint,bytes data)'], [note]))) % FIELD !== current.context ||
             abi.encodeFunctionData('deposit', [expected, note, decoded._aspCiphertext]).toLowerCase() !== tx.data.toLowerCase()) throw fail();
-        return Object.freeze({ kind: 'ppv2-native-deposit', chainId: 11155111, from: ownerAddress,
-          to: entrypointAddress, value: tx.value, data: tx.data, amount, fee: tx.value - amount,
+        return Object.freeze({ kind: native ? 'ppv2-native-deposit' : 'ppv2-token-deposit', chainId: 11155111, from: ownerAddress,
+          to: entrypointAddress, value: tx.value, data: tx.data, amount, fee: native ? tx.value - amount : fee,
+          ...(native ? {} : { token, maxFee }),
           proofVerified: true, chainStateVerified: false });
       } catch (error) {
         getPrivacyContext(handle);

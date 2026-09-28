@@ -154,3 +154,20 @@ test('concurrent observers cannot overwrite a newer checkpoint', async () => {
   expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
   expect((await journal.list())[0].scan.nextBlock).toBe(5000);
 });
+
+test('token settlement requires the journaled asset rather than the native sentinel', async () => {
+  const token=`0x${'66'.repeat(20)}`;
+  await reconcile.resolve(record.id,accept);
+  const request=relayFixture(), payload=JSON.parse(request.body);
+  request.intent={...request.intent,kind:'ppv2-token-withdrawal',token,commitment:word(85)};
+  request.intent.publicSignals[0]=word(84);request.intent.publicSignals[6]=word(BigInt(token));
+  payload.proof.publicSignals=request.intent.publicSignals;payload.signedFeeCommitment.asset=token;
+  const plan=validateRelay({...request,body:JSON.stringify(payload)});
+  await journal.begin(plan.attempt,plan.settlement);const id=plan.attempt.id;
+  const event=iface.encodeEventLog(iface.getEvent('Transacted'),[[2n],[84n],token,6000n,record.settlement.processor]);
+  logs=[{...logs[0],...event}];receipt.logs[0]=logs[0];
+  await reconcile.resolve(id,accept);
+  logs[0]={...logs[0],...iface.encodeEventLog(iface.getEvent('Transacted'),[[2n],[84n],`0x${'ee'.repeat(20)}`,6000n,record.settlement.processor])};
+  await reconcile.refreshResolved();
+  expect((await journal.list()).find(r=>r.id===id).resolution).toBeNull();
+});

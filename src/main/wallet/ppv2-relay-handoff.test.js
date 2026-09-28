@@ -186,3 +186,18 @@ test('accepts the SDK native-asset checksum spelling while preserving exact revi
   await gate.submit(prepared, { review: async () => true, invoke });
   expect(network.fetch.mock.calls[0][1].body).toBe(request.body);
 });
+
+test('binds token withdrawal review and settlement to the same asset and rejects asset substitution', async () => {
+  const token=`0x${'66'.repeat(20)}`, payload=JSON.parse(request.body);
+  request.intent={...request.intent,kind:'ppv2-token-withdrawal',token};
+  request.intent.publicSignals[6]=word(BigInt(token));
+  payload.proof.publicSignals[6]=request.intent.publicSignals[6];
+  payload.signedFeeCommitment.asset=token;
+  request.body=JSON.stringify(payload);
+  const prepared=await gate.prepare(request);
+  expect(prepared.token).toBe(token);
+  await gate.submit(prepared,{review:async()=>true,invoke});
+  expect((await journal.list())[0].settlement.token).toBe(token);
+  payload.signedFeeCommitment.asset='0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  expect(()=>validateRelay({...request,body:JSON.stringify(payload)})).toThrow();
+});

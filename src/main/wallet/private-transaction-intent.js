@@ -1,7 +1,7 @@
 /** Non-secret correlation metadata, stored only inside the encrypted journal. */
 const { AbiCoder, keccak256 } = require('ethers');
 const { privacyError } = require('../networks/privacy-context');
-const kinds = ['ppv2-register-auth', 'ppv2-register-viewing', 'ppv2-native-deposit', 'ppv2-native-ragequit'];
+const kinds = ['ppv2-register-auth', 'ppv2-register-viewing', 'ppv2-native-deposit', 'ppv2-native-ragequit', 'ppv2-token-approval', 'ppv2-token-deposit', 'ppv2-token-ragequit'];
 function validIntent(value) {
   return value && Object.keys(value).length === 2 && kinds.includes(value.kind) &&
     typeof value.digest === 'string' && /^0x[0-9a-f]{64}$/.test(value.digest);

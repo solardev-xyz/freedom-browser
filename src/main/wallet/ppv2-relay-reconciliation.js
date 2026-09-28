@@ -56,7 +56,7 @@ function createPPv2RelayReconciliation({ handle, journal }) {
     if (matches.length !== 1) return empty('conflict');
     const found = matches[0], event = iface.parseLog(found).args;
     if (event.nullifierHashes.length !== 1 || event.outputCommitments.length !== 1 || event.outputCommitments[0] !== BigInt(s.outputCommitment) ||
-        event.asset.toLowerCase() !== NATIVE || event.withdrawnValue !== BigInt(s.amountOut) || event.caller.toLowerCase() !== s.processor) return empty('conflict');
+        event.asset.toLowerCase() !== (s.token || NATIVE) || event.withdrawnValue !== BigInt(s.amountOut) || event.caller.toLowerCase() !== s.processor) return empty('conflict');
     const receipt = await read('eth_getTransactionReceipt', [found.transactionHash], (v) => v === null ||
       (v && HASH.test(v.transactionHash) && HASH.test(v.blockHash) && block(v.blockNumber) && Array.isArray(v.logs) && v.logs.length <= 2048));
     if (!receipt || receipt.status !== '0x1' || receipt.transactionHash.toLowerCase() !== found.transactionHash.toLowerCase() ||

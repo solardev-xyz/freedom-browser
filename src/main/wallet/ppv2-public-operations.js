@@ -12,7 +12,7 @@ const readInterface = new Interface(['function nullifyingKeys(address) view retu
   'function viewingKeys(address) view returns (bytes32)']);
 const refused = () => privacyError('PRIVATE_PPV2_HANDOFF_REFUSED', 'PPv2 transaction handoff refused');
 
-function createPPv2PublicOperations({ scope, configuration, provider }) {
+function createPPv2PublicOperations({ scope, configuration, provider, tokenPolicy }) {
   const owner = configuration.ownerAddress.toLowerCase();
   const keystore = configuration.deployment.keystoreAddress.toLowerCase();
   const handle = scope.getContext({ kind: 'public-address', principal: owner, chainId: 11155111, role: 'transaction-rpc' });
@@ -43,13 +43,18 @@ function createPPv2PublicOperations({ scope, configuration, provider }) {
   }
   function deposit(prepared) {
     // Only the session's verified deposit bridge calls this, not renderer/SDK.
-    if (prepared?.kind !== 'ppv2-native-deposit' || prepared.chainId !== 11155111 ||
+    if (!['ppv2-native-deposit', 'ppv2-token-deposit'].includes(prepared?.kind) || prepared.chainId !== 11155111 ||
         prepared.from?.toLowerCase() !== owner || prepared.to?.toLowerCase() !== configuration.deployment.entrypointAddress.toLowerCase() ||
         prepared.proofVerified !== true || prepared.chainStateVerified !== false || !Object.isFrozen(prepared)) throw refused();
     return issue(prepared, [prepared]);
   }
+  async function tokenApproval(intent) {
+    if (!tokenPolicy) throw refused();
+    const prepared = await tokenPolicy.approval(intent);
+    return prepared ? issue(prepared, [prepared]) : null;
+  }
   function ragequit(prepared) {
-    if (prepared?.kind !== 'ppv2-native-ragequit' || prepared.chainId !== 11155111 || prepared.value !== 0n ||
+    if (!['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(prepared?.kind) || prepared.chainId !== 11155111 || prepared.value !== 0n ||
         prepared.from?.toLowerCase() !== owner || prepared.to?.toLowerCase() !== configuration.deployment.poolAddress.toLowerCase() ||
         prepared.proofVerified !== true || prepared.chainStateVerified !== false || !Object.isFrozen(prepared)) throw refused();
     return issue(prepared, [prepared]);
@@ -73,7 +78,7 @@ function createPPv2PublicOperations({ scope, configuration, provider }) {
       getPrivacyContext(handle);
       if (Date.now() >= plan.expiresAt) throw refused();
       const tx = plan.txs[step];
-      if (tx.kind === 'ppv2-native-deposit') {
+      if (['ppv2-native-deposit', 'ppv2-token-deposit'].includes(tx.kind)) {
         // isRegistered() in the SDK checks only the auth slot. Deposits from
         // this wallet require BOTH public registration steps to be observed.
         for (const name of ['nullifyingKeys', 'viewingKeys']) {
@@ -83,8 +88,12 @@ function createPPv2PublicOperations({ scope, configuration, provider }) {
           catch { throw refused(); }
         }
       }
-      await client.request(tx.chainId, 'eth_call', [{ from: owner, to: tx.to,
+      const tokenOperation = ['ppv2-token-deposit', 'ppv2-token-approval'].includes(tx.kind);
+      if (tokenOperation) { if (!tokenPolicy) throw refused(); await tokenPolicy.check(tx); }
+      const simulation = await client.request(tx.chainId, 'eth_call', [{ from: owner, to: tx.to,
         value: `0x${tx.value.toString(16)}`, data: tx.data }, 'latest']);
+      if (tx.kind === 'ppv2-token-approval' && simulation.result !== '0x' &&
+          simulation.result.toLowerCase() !== `0x${'1'.padStart(64, '0')}`) throw refused();
       getPrivacyContext(handle);
       if (Date.now() >= plan.expiresAt) throw refused();
       const intent = transactionIntent(tx.kind, tx);
@@ -101,9 +110,12 @@ function createPPv2PublicOperations({ scope, configuration, provider }) {
           if (request.from.toLowerCase() !== owner || transactionIntent(tx.kind, { ...actual, from: owner }).digest !== intent.digest ||
               BigInt(actual.gasLimit) !== gasLimit || gasLimit * BigInt(actual.gasPrice ?? actual.maxFeePerGas) > maxGasFee ||
               Date.now() >= plan.expiresAt) throw refused();
-          return review(Object.freeze({ ...request, intent, operation: tx.kind, step, steps: plan.txs.length,
+          const approved = await review(Object.freeze({ ...request, intent, operation: tx.kind, step, steps: plan.txs.length,
             amount: tx.amount ?? null, noteCommitment: tx.commitment ?? null,
+            ...(tx.token ? { token: tx.token, spender: tx.spender ?? tx.to, approvalAmount: tx.approvalAmount ?? null } : {}),
             protocolFee: tx.fee ?? 0n, maxGasFee, proofVerified: tx.proofVerified === true, chainStateVerified: false }));
+          if (approved === true && tokenOperation) await tokenPolicy.check(tx);
+          return approved;
         } });
       plan.hashes[step] = result.hash;
       return Object.freeze(result);
@@ -112,7 +124,7 @@ function createPPv2PublicOperations({ scope, configuration, provider }) {
       throw error;
     } finally { busy = false; }
   }
-  return Object.freeze({ registration, deposit, ragequit, submit,
+  return Object.freeze({ registration, deposit, ragequit, tokenApproval, submit,
     list: () => network().listSubmissions(), observe: (hash) => network().reconcileSubmission(hash),
     resolve: (hash, policy) => network().resolveSubmission(hash, policy) });
 }

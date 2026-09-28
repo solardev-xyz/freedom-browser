@@ -17,7 +17,8 @@ function validAttempt(v) {
   return keys(v, fields) && fields.every((k) => typeof v[k] === 'string' && HASH.test(v[k]));
 }
 function validSettlement(v) {
-  return keys(v, ['pool', 'processor', 'outputCommitment', 'amountOut', 'noteDigest', 'fromBlock']) &&
+  return keys(v, [...(v && Object.hasOwn(v, 'token') ? ['token'] : []), 'pool', 'processor', 'outputCommitment', 'amountOut', 'noteDigest', 'fromBlock']) &&
+    (v.token === undefined || (typeof v.token === 'string' && /^0x[0-9a-f]{40}$/.test(v.token) && BigInt(v.token) !== 0n)) &&
     [v.pool, v.processor].every((x) => typeof x === 'string' && /^0x[0-9a-f]{40}$/.test(x)) &&
     [v.outputCommitment, v.noteDigest].every((x) => typeof x === 'string' && HASH.test(x)) &&
     typeof v.amountOut === 'string' && /^[1-9][0-9]{0,38}$/.test(v.amountOut) &&
