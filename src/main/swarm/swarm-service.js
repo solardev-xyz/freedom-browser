@@ -75,8 +75,8 @@ async function selectBestBatch(estimatedSizeBytes, options = {}) {
     const remaining = batch.remainingSize && typeof batch.remainingSize.toBytes === 'function'
       ? batch.remainingSize.toBytes()
       : 0;
-    if (Number.isFinite(remaining)) largestRemaining = Math.max(largestRemaining, remaining);
 
+    if (Number.isFinite(remaining)) largestRemaining = Math.max(largestRemaining, remaining);
     const ttl = batch.duration && typeof batch.duration.toSeconds === 'function'
       ? batch.duration.toSeconds()
       : 0;
@@ -101,9 +101,9 @@ async function selectBestBatch(estimatedSizeBytes, options = {}) {
 
   if (!best && options.requireCapacity) {
     const message = usableCount
-      ? `No postage batch has enough effective capacity. Upload: ${estimatedSizeBytes} bytes; required with safety margin: ${Math.ceil(requiredBytes)} bytes; largest usable batch remaining: ${largestRemaining} bytes. Usable does not mean large enough. Compare effective capacity, not theoretical capacity; propose a suitable batch or an existing-batch depth increase and obtain approval before spending.`
-      : `No usable postage batch available for this ${estimatedSizeBytes}-byte upload (${Math.ceil(requiredBytes)} bytes with safety margin). Check existing stamps and pending purchases before proposing a purchase sized by effective capacity.`;
-    throw Object.assign(new Error(message), { code: usableCount ? 'POSTAGE_CAPACITY_INSUFFICIENT' : 'POSTAGE_UNAVAILABLE' });
+      ? 'No postage batch has enough capacity for this upload. Select or purchase a suitable batch.'
+      : 'No usable postage batch is available. Check your stamps before publishing.';
+    throw Object.assign(new Error(message), { code: usableCount ? 'POSTAGE_CAPACITY_INSUFFICIENT' : 'POSTAGE_UNAVAILABLE', capacity: { uploadBytes: estimatedSizeBytes, requiredBytes: Math.ceil(requiredBytes), largestRemainingBytes: largestRemaining } });
   }
   if (!best) return null;
 

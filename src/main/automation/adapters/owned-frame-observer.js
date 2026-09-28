@@ -43,7 +43,7 @@ class OwnedFrameObserver {
     this.generation = 0;
   }
 
-  list() {
+  list(authorizeFrame) {
     return this.#connected(async (connection) => {
       const discovered = await this.#discover(connection);
       const frames = [];
@@ -56,6 +56,10 @@ class OwnedFrameObserver {
           ...this.#publicFrame(frame, references.get(frame.id)),
           parentRef: references.get(frame.parentId) || null,
         };
+        if (typeof authorizeFrame === 'function' && !authorizeFrame(item)) {
+          item.url = item.origin;
+          item.name = '';
+        }
         bytes += Buffer.byteLength(JSON.stringify(item));
         if (bytes > MAX_METADATA_BYTES) {
           truncated = true;
@@ -142,7 +146,13 @@ class OwnedFrameObserver {
         await opened.assertCurrent();
         return result.result?.value;
       };
-      return task({
+      let focusEmulated = false;
+      try { return await task({
+        emulateFocus: async () => {
+          await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+          if (opened.frame.sessionId) await connection.send('Emulation.setFocusEmulationEnabled', { enabled: true }, opened.frame.sessionId);
+          focusEmulated = true;
+        },
         reference,
         insertText: async (text) => {
           await opened.assertCurrent();
@@ -161,7 +171,12 @@ class OwnedFrameObserver {
         frame: this.#publicFrame(opened.frame, reference.frameRef),
         checkedInputPoint: (point, viewport, options = {}) =>
           this.#checkedInputPoint(connection, opened, point, viewport, authorizeFrame, options),
-      });
+      }); } finally {
+        if (focusEmulated) {
+          if (opened.frame.sessionId) await connection.send('Emulation.setFocusEmulationEnabled', { enabled: false }, opened.frame.sessionId).catch(() => {});
+          await connection.send('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => {});
+        }
+      }
     });
   }
 

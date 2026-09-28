@@ -1917,7 +1917,7 @@ export const switchTab = (tabId, options = {}) => {
   const tabHasAddressBarEdit = typeof tab.navigationState?.addressBarPendingInput === 'string';
   const tabIsOnNewTabPage =
     !tabHasAddressBarEdit && isNewTabPageUrl(tab.url || tab.navigationState?.currentPageUrl || '');
-  if (!options.isNewTab && !tabHasAddressBarEdit && !tabIsOnNewTabPage) {
+  if (options.focus !== false && !options.isNewTab && !tabHasAddressBarEdit && !tabIsOnNewTabPage) {
     tab.webview?.focus?.();
   }
 
@@ -1935,6 +1935,7 @@ export const switchTab = (tabId, options = {}) => {
       tabId,
       tab,
       isNewTab: options.isNewTab || false,
+      focus: options.focus !== false,
       fromAddressBarCommit: options.fromAddressBarCommit || false,
     });
   }

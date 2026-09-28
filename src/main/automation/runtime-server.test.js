@@ -165,6 +165,10 @@ describe('automation runtime server', () => {
       result: { ok: true, result: { operation: 'browser_list_tabs' } },
     });
     expect(controller.execute).toHaveBeenCalledWith('browser_list_tabs', {});
+    await expect(client.request({ id: 'unapproved', method: 'automation.execute',
+      params: { operation: 'browser_click', input: { tabId: 'tab', ref: 'submit' } },
+    })).resolves.toMatchObject({ ok: true, result: { ok: false, error: { code: 'APPROVAL_REQUIRED' } } });
+    expect(controller.execute).toHaveBeenCalledTimes(1);
 
     await expect(client.request({ id: 'shutdown', method: 'runtime.shutdown' })).resolves.toEqual({
       id: 'shutdown',

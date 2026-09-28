@@ -230,6 +230,7 @@ describe('Freedom agent runtime', () => {
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,
       historyStore,
+      nodeOperationStore,
       cancelAgentDownloads: undefined,
       walletController,
       attachmentStore,

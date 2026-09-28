@@ -2140,7 +2140,7 @@ test('node request classifier: confidently reads the registry-selected Ant API w
   expect(operations).toEqual(['node_request']);
 });
 
-test('node request classifier: shows the exact persistent request before sending it', async ({
+test('node request classifier: keeps postage purchases financial and shows the exact request', async ({
   window,
 }) => {
   await configureFixtureProvider(window);
@@ -2155,7 +2155,7 @@ test('node request classifier: shows the exact persistent request before sending
   await expect(window.locator('#agent-node-request-summary')).toContainText(
     'POST /stamps/100/20'
   );
-  await expect(window.locator('#agent-node-request-summary')).toContainText('Persistent change');
+  await expect(window.locator('#agent-node-request-summary')).toContainText('Financial action');
   await expect(window.locator('#agent-node-request-summary')).toContainText(
     'Creates a durable Ant postage batch.'
   );
@@ -2170,7 +2170,7 @@ test('node request classifier: shows the exact persistent request before sending
   );
   expect(result.nodeRequest).toMatchObject({
     service: 'ant',
-    effect: 'persistent_change',
+    effect: 'financial',
     request: { method: 'POST', path: '/stamps/100/20' },
     response: { status: 201, body: '{"batchID":"test-postage-batch"}' },
   });

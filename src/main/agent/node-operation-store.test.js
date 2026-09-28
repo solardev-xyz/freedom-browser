@@ -27,6 +27,14 @@ describe('AgentNodeOperationStore', () => {
     fs.rmSync(userDataDir, { recursive: true, force: true });
   });
 
+  test('deleting a conversation removes only its operation journal', () => {
+    for (const owner of ['one', 'two']) store.create({ operationId: `node_op_${owner}`, ownerId: owner,
+      service: 'ant', transport: 'http', effect: 'read', request: { method: 'GET', path: '/wallet' } });
+    expect(store.deleteConversation('one')).toBe(1);
+    expect(store.getAny('node_op_one')).toBeNull();
+    expect(store.getAny('node_op_two')).toHaveProperty('ownerId', 'two');
+  });
+
   test('persists bounded operation receipts without raw request bodies or header values', () => {
     store.create({
       operationId: 'node_op_aaaaaaaaaaaaaaaaaaaaaaaa',

@@ -49,6 +49,20 @@ const downloadActivityListeners = new Set();
 // download is attributed to the exact Agent operation that caused it.
 const controlledIntentByWebContents = new WeakMap();
 const pendingControlledIntents = new Set();
+const controlledPages = new WeakSet();
+const blockedDownloads = new WeakMap();
+
+function setControlledPage(page, controlled) {
+  if (!page) return;
+  if (controlled) controlledPages.add(page);
+  else { controlledPages.delete(page); blockedDownloads.delete(page); }
+}
+
+function takeBlockedDownload(page) {
+  const error = page && blockedDownloads.get(page);
+  if (page) blockedDownloads.delete(page);
+  return error;
+}
 const CONTROLLED_DOWNLOAD_START_TIMEOUT_MS = 10_000;
 const DOWNLOAD_CANCELLATION_REASONS = Object.freeze({
   USER: 'user',
@@ -280,9 +294,20 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
   let reservedPath = null;
   const isPrivate = !!privatePartition;
   const controlledIntent = isPrivate ? null : controlledIntentByWebContents.get(webContents) || null;
-  if (controlledIntent && controlledIntent.downloadId !== null) {
-    log.warn('[Downloads] Cancelled an extra download outside the armed Agent operation');
+  const chain = item.getURLChain?.() || [item.getURL()];
+  const unexpected = !isPrivate && ((controlledPages.has(webContents) && !controlledIntent) ||
+    (controlledIntent && (controlledIntent.downloadId !== null ||
+      (controlledIntent.expectedUrl && (!chain.includes(controlledIntent.expectedUrl) || sourceOrigin(item.getURL()) !== sourceOrigin(controlledIntent.expectedUrl))))));
+  if (unexpected) {
     item.cancel();
+    const error = new AutomationError(ERROR_CODES.APPROVAL_REQUIRED,
+      'The page attempted an unapproved download. Inspect the intended file and use browser_download to request approval; do not retry the click.',
+      { suggestedAction: 'Use browser_download for the intended file. Other download attempts were cancelled.' });
+    blockedDownloads.set(webContents, error);
+    if (controlledIntent && controlledIntent.downloadId === null) {
+      controlledIntent.failure = error;
+      controlledIntent.started.resolve(null);
+    }
     return;
   }
   const destinationKind = settings.askWhereToSave === true ? 'chosen' : 'downloads';
@@ -566,6 +591,7 @@ async function runControlledDownload(options = {}) {
   }
 
   const intent = {
+    expectedUrl: options.expectedUrl || null,
     artifactId: createArtifactId(),
     conversationId,
     sourceWebContents,
@@ -606,6 +632,7 @@ async function runControlledDownload(options = {}) {
         aborted.promise.then(() => ({ kind: 'aborted' })),
         startTimeout,
       ]);
+      if (intent.failure) throw intent.failure;
       if (started.kind === 'aborted') {
         if (controlledIntentByWebContents.get(sourceWebContents) === intent) {
           controlledIntentByWebContents.delete(sourceWebContents);
@@ -890,6 +917,8 @@ function registerDownloadsIpc() {
 }
 
 module.exports = {
+  setControlledPage,
+  takeBlockedDownload,
   attachDownloadsManager,
   cancelPartitionDownloads,
   getActiveDownloadCount,

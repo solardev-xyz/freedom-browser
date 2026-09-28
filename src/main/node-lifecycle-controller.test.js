@@ -25,6 +25,15 @@ function statusController(service, states) {
 }
 
 describe('NodeLifecycleController', () => {
+  test('cannot start an integration disabled in settings', async () => {
+    const startTor = jest.fn();
+    const requestApproval = jest.fn();
+    const controller = new NodeLifecycleController({ nodeStatusController: statusController('tor', ['disabled']), dependencies: { startTor } });
+    await expect(controller.lifecycle({ service: 'tor', action: 'start' }, { requestApproval })).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' });
+    expect(startTor).not.toHaveBeenCalled();
+    expect(requestApproval).not.toHaveBeenCalled();
+  });
+
   test('requires exact approval, applies a start, and verifies the resulting state', async () => {
     const nodeStatusController = statusController('ant', ['stopped', 'running']);
     const startAnt = jest.fn(async () => {});

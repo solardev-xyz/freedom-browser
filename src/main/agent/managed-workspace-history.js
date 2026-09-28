@@ -27,7 +27,7 @@ function fingerprint(snapshot) {
   return crypto
     .createHash('sha256')
     .update(
-      JSON.stringify(snapshot.files.map(({ path, content, mode }) => ({ path, content, mode })))
+      JSON.stringify([...snapshot.files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0).map(({ path, content, mode }) => ({ path, content, mode })))
     )
     .digest('hex');
 }
@@ -146,7 +146,10 @@ class ManagedWorkspaceHistory {
     let count = 0;
     const visit = async (directory) => {
       for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
-        if (++count > 20000)
+        const relative = path.relative(this.gitDirectory, path.join(directory, entry.name)).split(path.sep).join('/');
+        const managedObject = /^objects\/[a-f0-9]{2}\/[a-f0-9]{38}$/.test(relative) || /^freedom-history\/[a-f0-9]{40}\.json$/.test(relative);
+        if (this.signal?.aborted || Date.now() >= this.deadline) throw new WorkspaceHistoryError('Workspace history inspection stopped or timed out');
+        if (!managedObject && ++count > 20000)
           throw new WorkspaceHistoryError('Workspace history metadata limit reached');
         const filename = path.join(directory, entry.name);
         const stats = await fs.promises.lstat(filename);
@@ -456,6 +459,12 @@ class ManagedWorkspaceHistory {
     );
     await atomicMetadata(path.join(this.gitDirectory, 'index'), index);
     await this.git(['update-ref', 'refs/heads/main', id, parent || '0'.repeat(40)]);
+    // Pack immutable loose objects before repeated milestones accumulate thousands
+    // of individual files. Failure leaves the completed checkpoint intact.
+    try {
+      const loose = Number.parseInt((await this.git(['count-objects'])).toString(), 10);
+      if (loose >= 1024) await this.git(['repack', '-d']);
+    } catch { /* The checkpoint above is already durable; maintenance can retry later. */ }
     return { saved: true, id, label: record.label, excludedCount: record.excludedCount };
   }
 }

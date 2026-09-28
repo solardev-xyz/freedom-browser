@@ -139,7 +139,7 @@ test('publication reports effective capacity shortage separately from unusable s
   resetBeeClient();
   getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
   mockGetPostageBatches.mockResolvedValue([{ usable: true, remainingSize: { toBytes: () => 40890 }, duration: { toSeconds: () => 2700000 } }]);
-  await expect(selectBestBatch(1000000, { requireCapacity: true })).rejects.toMatchObject({ code: 'POSTAGE_CAPACITY_INSUFFICIENT', message: expect.stringContaining('1500000 bytes; largest usable batch remaining: 40890 bytes') });
+  await expect(selectBestBatch(1000000, { requireCapacity: true })).rejects.toMatchObject({ code: 'POSTAGE_CAPACITY_INSUFFICIENT', message: 'No postage batch has enough capacity for this upload. Select or purchase a suitable batch.' });
   mockGetPostageBatches.mockResolvedValue([]);
   await expect(selectBestBatch(1000000, { requireCapacity: true })).rejects.toMatchObject({ code: 'POSTAGE_UNAVAILABLE' });
 });

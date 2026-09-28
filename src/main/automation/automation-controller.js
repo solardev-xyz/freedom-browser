@@ -165,6 +165,16 @@ class AutomationController {
     return this.pages.register(adapter, metadata);
   }
 
+  markPageControlled(tabId) {
+    try { this.downloadController?.setControlledPage?.(this.pages.require(tabId).adapter.webContents, true); } catch { /* Closed page. */ }
+  }
+
+  releasePageControl(tabId) {
+    try { const adapter = this.pages.require(tabId).adapter;
+      this.downloadController?.setControlledPage?.(adapter.webContents, false);
+      adapter.nativeDialogs?.stop(); } catch { /* Closed tabs already released their connection. */ }
+  }
+
   unregisterPage(tabId) {
     return this.pages.unregister(tabId);
   }
@@ -227,6 +237,8 @@ class AutomationController {
       }
 
       const result = await this.#dispatch(operation, input, entry, execution);
+      const blockedDownload = this.downloadController?.takeBlockedDownload?.(entry?.adapter.webContents);
+      if (blockedDownload) throw blockedDownload;
       return this.#successEnvelope(entry, result);
     } catch (error) {
       const rawTabId = typeof rawInput?.tabId === 'string' ? rawInput.tabId.trim() : '';
@@ -370,7 +382,7 @@ class AutomationController {
       case OPERATIONS.TARGET_POINT:
         return entry.adapter.targetPoint(input);
       case OPERATIONS.LIST_FRAMES:
-        return entry.adapter.listFrames();
+        return entry.adapter.listFrames(execution.authorizeFrame);
       case OPERATIONS.READ_FRAME:
         return entry.adapter.readFrame(
           input.frameRef,

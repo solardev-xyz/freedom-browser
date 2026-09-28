@@ -907,6 +907,7 @@ async function describeReferencedElement(ref, action, key) {
   }
   return {
     ok: true,
+    sensitiveInput: inputType === 'password' || /password|one-time-code/i.test(element.getAttribute('autocomplete') || ''),
     label: actionLabel,
     ...(uploadsFile
       ? { effect: 'file_upload' }
@@ -1250,9 +1251,9 @@ class WebContentsPageAdapter extends EventEmitter {
 
   handleDialog(input, execution) { return this.nativeDialogs.respond(input, execution); }
 
-  async listFrames() {
+  async listFrames(authorizeFrame) {
     this.#assertAvailable();
-    return this.frameObserver.list();
+    return this.frameObserver.list(authorizeFrame);
   }
 
   async readFrame(frameRef, options, authorizeFrame) {
@@ -1364,7 +1365,6 @@ class WebContentsPageAdapter extends EventEmitter {
             before: state.scroll,
             after: state.scroll,
           };
-        this.webContents.focus?.();
         await point(state.point, { prepare: true });
         state = await read(true);
         if (state.boundary)
@@ -1425,7 +1425,6 @@ class WebContentsPageAdapter extends EventEmitter {
           deltaY: after.y - before.y,
         };
       }
-      this.webContents.focus?.();
       if (input.operation === 'browser_select') {
         await point((await inspect('click')).point, { prepare: true });
         await confirm();
@@ -1454,6 +1453,7 @@ class WebContentsPageAdapter extends EventEmitter {
         });
         return { clicked: true, ref };
       }
+      await session.emulateFocus();
       if (input.operation === 'browser_type') {
         this.#assertActionResult(await session.evaluate('prepareText', [input.replace !== false]));
       } else await inspect('press');
@@ -1562,8 +1562,7 @@ class WebContentsPageAdapter extends EventEmitter {
     const before = prepared.scroll;
     if (prepared.boundary)
       return { ref, direction, moved: false, outcome: 'boundary', before, after: before };
-    this.webContents.focus?.();
-    // Focusing may run page handlers; resolve the point and position again.
+    // Resolve the point and position again immediately before input.
     const confirmed = await inspect(true);
     if (confirmed.boundary)
       return {
@@ -1652,7 +1651,7 @@ class WebContentsPageAdapter extends EventEmitter {
     if (described.effect !== 'file_download') {
       throw new AutomationError(
         ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
-        'The referenced element is not a downloadable link'
+        'This download control is not supported. Ask the user to download it manually; do not retry other controls.'
       );
     }
     return this.#trustedClick(ref);
@@ -1760,7 +1759,6 @@ class WebContentsPageAdapter extends EventEmitter {
         'Trusted pointer input is unavailable for this page'
       );
     }
-    this.webContents.focus?.();
     const pointer = { x: result.point.x, y: result.point.y, button: 'left' };
     this.webContents.sendInputEvent({ type: 'mouseMove', x: pointer.x, y: pointer.y });
     const confirmed = await this.#execute(inspectReferencedElement, [ref, 'click'], true);
@@ -1806,10 +1804,6 @@ class WebContentsPageAdapter extends EventEmitter {
             : operation === 'browser_select'
               ? 'select'
               : 'click';
-    if (action === 'press' || action === 'upload') {
-      const prepared = await this.#execute(inspectReferencedElement, [ref, action], true);
-      this.#assertActionResult(prepared);
-    }
     const describeAction = operation === 'browser_download' ? 'download' : action;
     const result = await this.#execute(
       describeReferencedElement,
@@ -1820,6 +1814,7 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#assertActionResult(result);
     return {
       label: typeof result.label === 'string' ? result.label : '',
+      ...(result.sensitiveInput === true && { sensitiveInput: true }),
       ...(['form_submission', 'file_download', 'file_upload'].includes(result.effect) && {
         effect: result.effect,
       }),
@@ -1871,7 +1866,6 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#assertActionResult(prepared);
     this.#requireReference(ref);
     this.#requireTrustedKeyInput();
-    this.webContents.focus?.();
     await this.#confirmFocusedReference(ref);
     this.#sendKey(key);
     return { pressed: true, ref, key };
@@ -1904,7 +1898,6 @@ class WebContentsPageAdapter extends EventEmitter {
 
   async clickVisual(ref, authorization) {
     this.#assertAvailable();
-    this.webContents.focus?.();
     return this.visualTargets.click(ref, authorization);
   }
 

@@ -322,6 +322,17 @@ describe('AgentWalletController', () => {
     expect(harness.dependencies.grantPermission).not.toHaveBeenCalled();
   });
 
+  test('rejects transaction data that cannot be displayed in full', async () => {
+    const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+    const approval = jest.fn();
+    const result = await harness.controller.handleRequest(context(approval), request('eth_sendTransaction', [{
+      to: '0x3333333333333333333333333333333333333333', data: '0x' + 'ab'.repeat(35000),
+    }]));
+    expect(result.errorCode).toBe('INVALID_ARGUMENT');
+    expect(approval).not.toHaveBeenCalled();
+    expect(harness.dependencies.estimateGas).not.toHaveBeenCalled();
+  });
+
   test('shows estimated transaction details and broadcasts the exact approved payload', async () => {
     const wallet = {
       index: 0,

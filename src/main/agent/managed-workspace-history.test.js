@@ -160,7 +160,7 @@ describe('managed workspace checkpoints and restore', () => {
       'excluded'
     );
     expect((await history({ action: 'list' })).exclusions).toEqual([
-      { path: 'customer-export.csv', reason: 'Private customer data' },
+      { path: 'customer-export.csv', reason: 'Private customer data', source: 'agent' },
     ]);
     await expect(review({ action: 'review', path: 'customer-export.csv' })).rejects.toThrow(
       'excluded'
@@ -303,6 +303,45 @@ describe('managed workspace checkpoints and restore', () => {
     expect(fs.readFileSync(path.join(root, 'a.txt'), 'utf8')).toBe('new a');
     expect(fs.readFileSync(path.join(root, 'b.txt'), 'utf8')).toBe('new b');
     expect(await history({ action: 'recovery' })).toEqual({ pending: false });
+  });
+
+  test('recovery preserves the original backup across interruptions and removes restored additions', async () => {
+    write('README.md', 'old readme'); write('index.html', 'old index'); write('_extra.txt', 'old extra');
+    const first = await checkpoint(['README.md', 'index.html', '_extra.txt'], 'First');
+    write('README.md', 'new readme'); write('index.html', 'new index');
+    fs.unlinkSync(path.join(root, '_extra.txt'));
+    await checkpoint(['README.md', 'index.html', '_extra.txt'], 'Second');
+    const execute = executor.execute.getMockImplementation();
+    const interrupt = () => {
+      let mutations = 0;
+      executor.execute.mockImplementation(async (policy, request) => request.args[6] === 'history_restore' && ++mutations === 3
+        ? { state: 'failed', exitCode: 73, stdout: '', stderr: 'FREEDOM_FILE_ERROR:WORKSPACE_WRITE_FAILED' }
+        : execute(policy, request));
+    };
+    const plan = await history({ action: 'prepare_restore', versionId: first.id });
+    interrupt();
+    await expect(history({ action: 'restore', token: plan.token })).rejects.toThrow('Before restore');
+    executor.execute.mockImplementation(execute);
+    const original = await history({ action: 'recovery' });
+    const recovery = await history({ action: 'prepare_recovery' });
+    // Interrupt recovery before its first write; a subsequent attempt must still
+    // target the original complete backup, never the current mixed disk state.
+    executor.execute.mockImplementation(async (policy, request) => request.args[6] === 'history_restore'
+      ? { state: 'failed', exitCode: 73, stdout: '', stderr: 'FREEDOM_FILE_ERROR:WORKSPACE_WRITE_FAILED' }
+      : execute(policy, request));
+    await expect(history({ action: 'restore', token: recovery.token })).rejects.toThrow('Before restore');
+    executor.execute.mockImplementation(execute);
+    expect(await history({ action: 'recovery' })).toEqual(original);
+    const retry = await history({ action: 'prepare_recovery' });
+    await history({ action: 'restore', token: retry.token });
+    expect(fs.readFileSync(path.join(root, 'README.md'), 'utf8')).toBe('new readme');
+    expect(fs.readFileSync(path.join(root, 'index.html'), 'utf8')).toBe('new index');
+    expect(fs.existsSync(path.join(root, '_extra.txt'))).toBe(false);
+    expect(await history({ action: 'recovery' })).toEqual({ pending: false });
+    const next = await history({ action: 'prepare_restore', versionId: first.id });
+    await history({ action: 'restore', token: next.token });
+    expect(fs.readFileSync(path.join(root, '_extra.txt'), 'utf8')).toBe('old extra');
+    await expect(history({ action: 'prepare_restore', versionId: original.backupId })).resolves.toHaveProperty('token');
   });
 
   test('working comparisons distinguish staged and unstaged content and filename search', async () => {

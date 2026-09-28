@@ -10,6 +10,23 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-09-28
 
+### Whole-feature review — 2026-09-28
+
+An independent Claude review covered the complete feature-branch diff, followed
+by repeated fix/review rounds and disposable Electron/Mac mini qualification.
+Cancellation and approval races, provider-recipient privacy, read-only project
+inspection, publication snapshots, session recovery, persistence, file/history
+recovery and external Git behavior were repaired. The reviewer found no remaining
+blocking defect in the final reviewed protocols. See the
+[review record, validation limits and explicit follow-ups](../docs/audits/freedom-agent-feature-review-2026-09.md).
+
+Before release, add a deliberate acknowledgment/discard flow for a manually
+reconciled external-Git recovery journal: changing the repository in another Git
+client alone cannot clear Freedom's pending record. Scripted downloads, recovery
+evidence retention/pack consolidation, classifier-request cancellation, additional
+approval/IPC hardening and native containment qualification remain recorded in
+the audit. No optional subagent extension was added or removed by this review.
+
 ### Project viewer and recovery implementation — 2026-09-25
 
 The approved viewer plan is implemented on `feature/freedom-automation-kernel`:
@@ -40,9 +57,11 @@ Validation by change: the initial viewer implementation passed 302 tests across
 header change passed six viewer tests. Lint and all four disposable-Electron
 viewer cases passed on the final header revision, in both themes and layouts.
 These are separate runs, not an aggregate unique-test count.
-Real-Git fault qualification on the designated Mac mini is pending: automatic approval
-review rejected the prepared private-source transfer and explicit user approval
-has been requested. No new remote/native qualification is claimed yet.
+Real-Git fault qualification on the designated Mac mini is now complete for the
+reviewed bounded protocol: 43 tests passed, plus focused interruption/foreign-lock
+checks. The review added exact-baseline not-applied cleanup; no repository rollback
+or history rewrite was introduced. Remote dependency versions and remaining
+manual-reconciliation limits are recorded in the whole-feature audit above.
 
 ### Current backlog and next decision — 2026-09-28
 

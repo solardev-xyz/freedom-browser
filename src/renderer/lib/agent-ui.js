@@ -104,6 +104,7 @@ let lastFinishedRunId = null;
 let stopRequestedRunId = null;
 let pendingApproval = null;
 let lastApprovalDecisionAt = -Infinity;
+let lastDisplayedApprovalId = null;
 let approvalReadyAt = 0;
 let lastGuidanceSentAt = -Infinity;
 let panelOpen = false;
@@ -749,7 +750,7 @@ function renderSessionSidebar() {
     rename.setAttribute('role', 'menuitem');
     rename.addEventListener('click', () => {
       closeSessionContextMenu(true);
-      void renameSavedSession(session);
+      void renameSavedSession(session, row, select);
     });
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -2111,6 +2112,8 @@ function createTurnView(turn) {
   for (const previous of turnViews.values()) {
     previous.output.removeAttribute('id');
     previous.toolList.removeAttribute('id');
+    previous.outcomeActions.hidden = true;
+    previous.outcomeRetry.hidden = true;
   }
 
   const section = document.createElement('section');
@@ -2480,7 +2483,7 @@ function renderPublicationApproval(request) {
         ? 'Project folder'
         : 'Project file'
       : publication.kind === 'folder'
-        ? 'Attached folder · current contents'
+        ? 'Attached folder'
         : publication.kind === 'file'
           ? 'Attached file'
           : 'Text'
@@ -2490,6 +2493,10 @@ function renderPublicationApproval(request) {
   if (Number.isSafeInteger(publication.bytes)) {
     appendPublicationSummary('Size', formatArtifactBytes(publication.bytes));
   }
+  appendPublicationSummary('Media type', publication.contentType);
+  appendPublicationSummary('Text to publish', publication.text);
+  if (publication.files?.length) appendPublicationSummary('Files to publish', publication.files.map(file => `${file.path} (${formatArtifactBytes(file.bytes)})`).join('\n'));
+  if (publication.excludedCount) appendPublicationSummary('Excluded', `${publication.excludedCount} private or credential entries`);
   appendPublicationSummary('Default document', publication.indexDocument);
   appendPublicationSummary('Network', 'Public Swarm network');
 }
@@ -2683,7 +2690,8 @@ function workspaceCommandPermissionDetails(permission, reason) {
 }
 
 function renderApproval(request) {
-  approvalReadyAt = Math.max(Date.now(), lastApprovalDecisionAt + 600);
+  approvalReadyAt = Math.max(Date.now(), lastApprovalDecisionAt + 600, lastDisplayedApprovalId && lastDisplayedApprovalId !== request?.approvalId ? Date.now() + 600 : 0);
+  lastDisplayedApprovalId = request?.approvalId || lastDisplayedApprovalId;
   if (!request || typeof request.approvalId !== 'string') return;
   pendingApproval = request;
   closeComposerPopovers();
@@ -2750,7 +2758,9 @@ function renderApproval(request) {
                           ? 'Send these funds from your Freedom wallet?'
                           : request.action === 'wallet_signature'
                             ? 'Approve this wallet signature?'
-                            : interaction
+                            : request.operation === 'browser_handle_dialog'
+                              ? 'Respond to this website dialog?'
+                              : interaction
                               ? interaction.kind === 'uncertain'
                                 ? interactionCopy[request.operation] ||
                                   `Let Agent interact with “${label}”?`
@@ -2767,9 +2777,9 @@ function renderApproval(request) {
       ? 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
       : publication
         ? publication.workspacePath
-          ? 'This publishes the managed project source’s current files using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+          ? 'This publishes the managed project source snapshot listed below using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
           : publication.kind === 'folder'
-            ? 'This publishes the attached folder’s current contents using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+            ? 'This publishes the attached folder snapshot listed below using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
             : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
         : nodeRequest
           ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
@@ -2790,6 +2800,9 @@ function renderApproval(request) {
                       ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
                       : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
                     : approvalOriginSummary(request);
+  if (request.pageMessage) elements.approvalOrigin.textContent += `\n\nPage says: “${request.pageMessage}”`;
+  if (request.inputPreview) elements.approvalOrigin.textContent += `\n\n${request.inputPreview}`;
+  if (interaction?.uncertainties?.length) elements.approvalOrigin.textContent += `\n\n${interaction.uncertainties.join('\n')}`;
   elements.pageToolDetails.hidden = !pageTool;
   elements.pageToolDetails.open = Boolean(pageTool);
   elements.pageToolArguments.textContent = pageTool?.argumentsJSON || '';
@@ -3700,9 +3713,31 @@ async function claimAgentOwnedTab(rendererTabId) {
   }
 }
 
-async function renameSavedSession(session) {
+async function renameSavedSession(session, row, select) {
   if (currentRunStatus !== 'idle') return;
-  const title = window.prompt('Rename session', session.title || '');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'agent-session-select';
+  input.setAttribute('aria-label', 'Session title');
+  input.maxLength = 120;
+  input.value = session.title || '';
+  select.hidden = true;
+  row.appendChild(input);
+  const title = await new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true; input.remove(); select.hidden = false; resolve(value);
+    };
+    input.addEventListener('keydown', event => {
+      if (!['Enter', 'Escape'].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      finish(event.key === 'Enter' ? input.value : null);
+      select.focus();
+    });
+    input.addEventListener('blur', () => finish(null));
+    input.focus(); input.select?.();
+  });
   if (title === null || !title.trim() || title.trim() === session.title) return;
   try {
     const response = await window.electronAPI.renameAgentSession(
@@ -3978,6 +4013,7 @@ function handleAgentEvent(event) {
   } else if (event.type === 'approval_requested') {
     updateToolApproval(event.runId, event.toolCallId, 'requested');
     renderApproval(event);
+    setPanelOpen(true);
     setRunState('running', 'Approval needed');
     setLiveStatus(event.runId, 'Waiting for your approval', { active: false });
   } else if (
@@ -4116,7 +4152,7 @@ async function retryProviderTurn(view) {
   if (
     currentRunStatus !== 'idle' ||
     !currentConversationId ||
-    !view ||
+    !view || view !== [...turnViews.values()].at(-1) ||
     typeof view.userText !== 'string' ||
     !view.userText.trim()
   ) {
@@ -4783,7 +4819,7 @@ export function initAgentUi(options = {}) {
     setModeMenuOpen(false);
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector?.('dialog[open]')) return;
     if (!elements.modeMenu.hidden) {
       event.preventDefault();
       setModeMenuOpen(false, true);
@@ -4838,7 +4874,11 @@ export function initAgentUi(options = {}) {
   tabPresentationUnsubscribe =
     typeof options.subscribeTabPresentation === 'function'
       ? options.subscribeTabPresentation((tabs) => {
+          const previousActive = openTabs.find(tab => tab.isActive)?.id;
           openTabs = Array.isArray(tabs) ? tabs : [];
+          const active = openTabs.find(tab => tab.isActive);
+          if (agentFirstMode && active && active.id !== previousActive &&
+              !workspacePages().some(entry => entry.rendererTabId === active.id)) setAgentFirstMode(false);
           if (
             dismissedPageContextTabId &&
             !openTabs.some((tab) => tab.id === dismissedPageContextTabId && tab.isActive)
@@ -4848,7 +4888,6 @@ export function initAgentUi(options = {}) {
           void pageActions?.refresh();
           renderPageContext();
           renderTaskPages();
-          ensureWorkspacePageVisible();
           renderPageInterlock();
         })
       : null;

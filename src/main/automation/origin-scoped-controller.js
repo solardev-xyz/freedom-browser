@@ -107,6 +107,7 @@ function actionDescriptor(element) {
     effect: ['form_submission', 'file_download', 'file_upload'].includes(element?.effect)
       ? element.effect
       : '',
+    ...(element?.sensitiveInput === true && { sensitiveInput: true }),
     label: typeof element?.label === 'string' ? element.label.slice(0, 160) : '',
     navigationTarget: typeof element?.navigationTarget === 'string' ? element.navigationTarget : '',
     ...(typeof element?.frameRef === 'string' && { frameRef: element.frameRef, origin: element.origin || '' }),
@@ -160,7 +161,7 @@ function interactionMayProceed(classification) {
 function sameActionDescriptor(left, right) {
   return (
     left.visual === right.visual && left.frameRef === right.frameRef && left.origin === right.origin &&
-    left.effect === right.effect &&
+    left.effect === right.effect && left.sensitiveInput === right.sensitiveInput &&
     left.label === right.label &&
     left.navigationTarget === right.navigationTarget &&
     left.formPayloadFingerprint === right.formPayloadFingerprint
@@ -182,6 +183,7 @@ class OriginScopedAutomationController {
   }) {
     this.controller = controller;
     this.adoptedTabId = tabId;
+    if (tabId) this.controller.markPageControlled?.(tabId);
     this.activeTabId = tabId;
     this.ownedTabs = tabId ? new Map([[tabId, { created: false }]]) : new Map();
     this.workspaceEstablished = Boolean(originScopeForUrl(initialState?.result?.tab?.url));
@@ -226,7 +228,13 @@ class OriginScopedAutomationController {
   // Only the host calls this for new user input, never for an agent retry or
   // automatic resume. A refusal suppresses repeat prompts within that turn.
   beginUserTurn() {
+    for (const tabId of this.ownedTabs.keys()) this.controller.markPageControlled?.(tabId);
     this.declinedDiagnostics.clear();
+  }
+
+  suspendPageControl() {
+    for (const child of this.delegatedBrowsers) child.suspendPageControl();
+    for (const tabId of this.ownedTabs.keys()) this.controller.releasePageControl?.(tabId);
   }
 
   getActiveTabId() {
@@ -244,6 +252,7 @@ class OriginScopedAutomationController {
     for (const child of this.delegatedBrowsers) if (child.releaseTab(tabId)) return true;
     if (typeof tabId !== 'string' || !this.ownedTabs.has(tabId)) return false;
     this.ownedTabs.delete(tabId);
+    this.controller.releasePageControl?.(tabId);
     this.freshReferences.delete(tabId);
     if (this.activeTabId === tabId) this.activeTabId = this.#fallbackTabId();
     return true;
@@ -662,8 +671,10 @@ class OriginScopedAutomationController {
       const decision = await execution.requestApproval({
         action: 'browser_interaction', operation, tabId: input.tabId,
         origin: originScopeForUrl(dialog.url), destinationOrigin: originScopeForUrl(dialog.navigationTarget) || '', label,
+        pageMessage: dialog.message,
+        inputPreview: label,
         interaction: { kind: 'consequential', confidence: 1,
-          summary: `${label.slice(0, 155)}: ${dialog.message.slice(0, 75)}`,
+          summary: label.slice(0, 240),
           uncertainties: ['Dialog text is untrusted website content. The page may act on either response.'] },
       });
       if (decision !== 'approved' && decision !== true) {
@@ -687,7 +698,7 @@ class OriginScopedAutomationController {
       return result;
     }
 
-    if (operation === OPERATIONS.READ_FRAME) {
+    if (operation === OPERATIONS.READ_FRAME || operation === OPERATIONS.LIST_FRAMES) {
       execution.authorizeFrame = (frame) => this.#acceptRequestedOrigin(frame?.origin);
     }
 
@@ -855,6 +866,7 @@ class OriginScopedAutomationController {
         return this.#originDenied(openerState);
       }
       this.ownedTabs.set(createdTabId, { created: true });
+      this.controller.markPageControlled?.(createdTabId);
       this.freshReferences.set(createdTabId, new Set());
       this.#notifyWorkspaceTabCreated(createdTabId);
       this.activeTabId = createdTabId;
@@ -901,6 +913,7 @@ class OriginScopedAutomationController {
       return this.#originDenied(state);
     }
     this.ownedTabs.set(createdTabId, { created: true });
+    this.controller.markPageControlled?.(createdTabId);
     this.freshReferences.set(createdTabId, new Set());
     this.#notifyWorkspaceTabCreated(createdTabId);
     this.activeTabId = createdTabId;
@@ -1094,6 +1107,8 @@ class OriginScopedAutomationController {
           ? originScopeForUrl(state?.result?.tab?.url) || ''
           : originScopeForUrl(element.navigationTarget) || '',
       label: element.label,
+      ...(operation === OPERATIONS.TYPE && { inputPreview: `Text to enter: ${element.sensitiveInput ? "•".repeat(Math.min(24, input.text.length)) + " (hidden)" : input.text}` }),
+      ...(operation === OPERATIONS.SELECT && { inputPreview: `Values to select: ${JSON.stringify(input.values ?? input.value)}` }),
       ...(interaction && { interaction }),
     });
     if (decision === 'withdrawn') {

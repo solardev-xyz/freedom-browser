@@ -97,6 +97,7 @@ function createFreedomAgentRuntime(options = {}) {
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
     historyStore,
+    nodeOperationStore,
     cancelAgentDownloads: options.cancelAgentDownloads,
     walletController,
     attachmentStore,

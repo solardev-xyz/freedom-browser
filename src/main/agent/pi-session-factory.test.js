@@ -278,6 +278,7 @@ describe('isolated Pi session factory', () => {
               createdAt: 1_100,
               status: 'applied',
             },
+            { text: 'Cancelled instruction', status: 'cancelled' },
           ],
           activity: [
             {
@@ -286,6 +287,10 @@ describe('isolated Pi session factory', () => {
             },
           ],
         },
+        {
+          userText: 'Stopped instruction', status: 'cancelled',
+        },
+        { userText: 'Interrupted instruction', status: 'interrupted' },
         {
           userText: 'Retry the request that never reached the provider',
           assistantText: 'An incomplete provider response',

@@ -55,6 +55,7 @@ function historyPathReason(value, includeGenerated = false) {
   )
     return 'credential directory';
   const name = parts[parts.length - 1];
+  if (/^\.freedom-write-[a-f0-9]{32}$/.test(name)) return 'interrupted private write';
   if (
     /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|credentials(?:\..*)?|secrets?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519))$/.test(
       name

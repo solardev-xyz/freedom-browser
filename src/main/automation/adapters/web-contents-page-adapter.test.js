@@ -226,7 +226,7 @@ describe('WebContentsPageAdapter', () => {
       clicked: true,
       ref: 'ref_test_0',
     });
-    expect(webContents.focus).toHaveBeenCalledTimes(1);
+    expect(webContents.focus).not.toHaveBeenCalled();
     expect(webContents.sendInputEvent.mock.calls).toEqual([
       [{ type: 'mouseMove', x: 20, y: 30 }],
       [{ type: 'mouseDown', x: 20, y: 30, button: 'left', clickCount: 1 }],
@@ -353,11 +353,10 @@ describe('WebContentsPageAdapter', () => {
     expect(inspectionCode).toContain('crypto.subtle.digest');
   });
 
-  test('focuses a press target before inspecting its live action semantics', async () => {
+  test('inspects a press target without granting focus or user activation', async () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld
       .mockResolvedValueOnce(snapshotResult())
-      .mockResolvedValueOnce({ ok: true })
       .mockResolvedValueOnce({
         ok: true,
         effect: 'form_submission',
@@ -378,8 +377,9 @@ describe('WebContentsPageAdapter', () => {
       navigationTarget: 'https://example.test/submit',
       formPayloadFingerprint: 'payload_hash',
     });
-    expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][2]).toBe(true);
-    expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[2][2]).toBe(false);
+    expect(webContents.executeJavaScriptInIsolatedWorld).toHaveBeenCalledTimes(2);
+    expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][2]).toBe(false);
+    expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][1][0].code).not.toContain('element.focus()');
     expect(webContents.sendInputEvent).not.toHaveBeenCalled();
   });
 

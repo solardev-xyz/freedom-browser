@@ -1176,6 +1176,9 @@ describe('ManagedWorkspaceController', () => {
     dependencies.store.projectAccess = { grants: new Map([[workspace.workspaceId, grant]]), resolve: jest.fn(async () => grant) };
     dependencies.executor.execute.mockResolvedValue(completedExecution(JSON.stringify({ entries: [], limitReached: false })));
     await controller.listDirectory('conversation_one');
+    dependencies.executor.execute.mockResolvedValue(completedExecution(JSON.stringify({ available: true, changes: [] })));
+    dependencies.store.projectEdits = () => [];
+    await controller.inspectWorkspace('conversation_one', { kind: 'changes' });
     expect(dependencies.createReadPolicy).toHaveBeenCalledWith(expect.objectContaining({ network: 'none' }));
     expect(dependencies.createPolicy).not.toHaveBeenCalled();
     expect(controller.leases.size).toBe(0);
@@ -1250,6 +1253,17 @@ describe('ManagedWorkspaceController', () => {
     await expect(controller.writeFile('other_conversation', 'different.js', 'parent')).rejects.toMatchObject({ code: 'WORKSPACE_WRITER_BUSY' });
     finish(completedExecution('')); await writing;
     a.release(); b.release();
+  });
+
+  test('read-only helpers cannot refresh the parent stale-write version', async () => {
+    const { controller, dependencies } = createController();
+    controller.collaborativeConversations.add('conversation_one');
+    const reply = version => completedExecution(JSON.stringify({ version, content: Buffer.from('fixture').toString('base64') }));
+    dependencies.executor.execute.mockResolvedValue(reply('a'.repeat(64)));
+    await controller.readFile('conversation_one', 'README.md');
+    dependencies.executor.execute.mockResolvedValue(reply('b'.repeat(64)));
+    await controller.createDelegatedReader('conversation_one').readFile('conversation_one', 'README.md');
+    expect(controller.projectReads.get('conversation_one').get('README.md')).toBe('a'.repeat(64));
   });
 
   test('parent reads remain versioned after collaboration and stale writes carry the earlier revision', async () => {

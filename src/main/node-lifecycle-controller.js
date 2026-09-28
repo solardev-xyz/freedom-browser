@@ -64,6 +64,9 @@ class NodeLifecycleController {
 
   async lifecycle(input, context = {}) {
     const before = await this.#readService(input.service);
+    if (before.state === 'disabled' && input.action !== 'stop') {
+      throw new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE, 'This integration is disabled. Enable it in Settings before starting its node.');
+    }
     const classification =
       typeof context.classifyEffect === 'function'
         ? await context.classifyEffect({

@@ -34,6 +34,17 @@ function createStore(options = {}) {
 }
 
 describe('AgentProviderStore', () => {
+  test('a failed credential replacement preserves the previous complete file', () => {
+    const { store, dataDir } = createStore();
+    store.saveHosted({ providerId: 'openai', modelId: 'test', apiKey: 'old-fixture-key' });
+    const before = fs.readFileSync(path.join(dataDir, 'provider.json'));
+    const write = jest.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => { throw new Error('ENOSPC'); });
+    try { expect(() => store.saveHosted({ providerId: 'openai', modelId: 'test', apiKey: 'new-fixture-key' })).toThrow(); }
+    finally { write.mockRestore(); }
+    expect(fs.readFileSync(path.join(dataDir, 'provider.json'))).toEqual(before);
+    expect(store.getSelection().apiKey).toBe('old-fixture-key');
+  });
+
   test('favorites and privacy survive key replacement, model switches and reopening', () => {
     const { store, dataDir, safeStorage } = createStore();
     store.saveHosted({ providerId: 'venice', modelId: 'one', apiKey: 'first' });

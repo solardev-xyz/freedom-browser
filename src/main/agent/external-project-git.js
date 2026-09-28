@@ -92,13 +92,14 @@ class ExternalProjectGit {
     if (this.signal?.aborted || Date.now() >= this.deadline) fail('Git operation stopped or timed out.');
     if (expected && JSON.stringify(await this.baseline()) !== JSON.stringify(expected)) fail('Git changed before commit dispatch. Review the files again.');
     return new Promise((resolve, reject) => {
-      onDispatch?.();
+      const remaining = this.deadline - Date.now();
+      if (remaining <= 0) { reject(new WorkspaceHistoryError('Git operation timed out before dispatch. Review repository state and retry.')); return; }
       const child = execFile(executable, ['--no-pager', `--git-dir=${this.directory}`, `--work-tree=${this.root}`,
         '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=/dev/null',
         '-c', 'core.excludesFile=/dev/null', '-c', 'core.logAllRefUpdates=true', '-c', 'gc.auto=0',
         '-c', 'maintenance.auto=false', '-c', 'commit.gpgSign=false', '-c', 'log.showSignature=false', '-c', 'protocol.allow=never', ...args], {
-        cwd: this.root, signal: this.signal, timeout: Math.min(5000, this.deadline - Date.now()),
-        killSignal: 'SIGKILL', maxBuffer: 1024 * 1024, encoding: 'buffer',
+        cwd: this.root, signal: this.signal, timeout: Math.min(5000, remaining),
+        killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, encoding: 'buffer',
         env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: '/dev/null',
           GIT_CONFIG_GLOBAL: '/dev/null', GIT_ATTR_NOSYSTEM: '1', GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1',
           GIT_TERMINAL_PROMPT: '0', ...(args[0] !== 'check-ignore' && { GIT_LITERAL_PATHSPECS: '1' }), GIT_OPTIONAL_LOCKS: '0',
@@ -110,6 +111,7 @@ class ExternalProjectGit {
         if (error && !codes.includes(error.code)) reject(new WorkspaceHistoryError('Git could not complete this operation. Check repository state before retrying.'));
         else resolve(stdout);
       });
+      if (child.pid) onDispatch?.();
       child.stdin.on('error', () => {});
       child.stdin.end(input);
     });
@@ -197,9 +199,12 @@ class ExternalProjectGit {
     const lockPath = path.join(this.directory, 'index.lock');
     const lock = await this.read(lockPath, true);
     const lockStat = lock ? await fs.promises.lstat(lockPath) : null;
-    const ownedLock = Boolean(lockStat && lockStat.dev === record.indexLock?.dev && lockStat.ino === record.indexLock?.ino && digest(lock) === record.preparedIndex);
-    const repairable = current.id === record.candidate && current.head === record.baseline.head &&
-      ((ownedLock && current.index === record.baseline.index) || (!lock && current.index === record.preparedIndex));
+    const ownedLock = Boolean(lockStat && lockStat.dev === record.indexLock?.dev && lockStat.ino === record.indexLock?.ino && lockStat.birthtimeMs === record.indexLock?.birthtimeMs && lockStat.ctimeMs === record.indexLock?.ctimeMs && digest(lock) === record.preparedIndex);
+    const branchLock = path.resolve(this.directory, `${record.baseline.head.replace(/^ref: /, '').trim()}.lock`);
+    const blockedRef = !branchLock.startsWith(this.directory + path.sep) || fs.existsSync(branchLock) || fs.existsSync(path.join(this.directory, 'packed-refs.lock'));
+    const repairable = !blockedRef && current.head === record.baseline.head && (
+      (current.id === record.candidate && ((ownedLock && current.index === record.baseline.index) || (!lock && current.index === record.preparedIndex))) ||
+      (current.id === record.baseline.id && (ownedLock || !lock) && current.index === record.baseline.index));
     const token = digest(JSON.stringify({ journal: digest(bytes), current, lock: lock ? digest(lock) : null, inode: lockStat?.ino }));
     const state = current.id === record.candidate ? 'committed' : current.id === record.baseline.id && current.head === record.baseline.head ? 'not_applied' : 'uncertain';
     return { pending: true, state, repairable, token, candidate: record.candidate, currentId: current.id,
@@ -223,11 +228,22 @@ class ExternalProjectGit {
     await this.checkMetadataIdentity();
     if (this.signal?.aborted) fail('Recovery was stopped. Inspect recovery again before retrying.');
     const lockPath = path.join(this.directory, 'index.lock');
-    if (fs.existsSync(lockPath)) await fs.promises.rename(lockPath, path.join(this.directory, 'index'));
+    if (fs.existsSync(lockPath)) {
+      // recovery() verified the original lock inode and prepared bytes. A
+      // not-applied repair never installs an index or writes the branch.
+      const stat = await fs.promises.lstat(lockPath);
+      if (stat.dev !== record.indexLock.dev || stat.ino !== record.indexLock.ino || stat.birthtimeMs !== record.indexLock.birthtimeMs || stat.ctimeMs !== record.indexLock.ctimeMs) fail('The Git lock changed. Inspect repository state before retrying.');
+      if (state.state === 'not_applied') {
+        await fs.promises.unlink(lockPath);
+      }
+      else await fs.promises.rename(lockPath, path.join(this.directory, 'index'));
+    }
     // Archive our journal, retaining evidence. Never remove an unrelated lock or
     // write working files. A failed archive can be finalized by inspecting again.
     await fs.promises.rename(journalPath, path.join(this.temporaryRoot, `git-commit-recovered-${record.candidate}-${crypto.randomBytes(8).toString('hex')}.json`));
-    return { repaired: true, id: record.candidate, message: 'Commit finalization completed. Working files were not changed.' };
+    return { repaired: true, id: state.state === 'not_applied' ? record.baseline.id : record.candidate, message: state.state === 'not_applied'
+      ? 'The commit was not applied. Its owned lock was released; review changes before retrying.'
+      : 'Commit finalization completed. Working files were not changed.' };
   }
 
   async configuration() {
@@ -238,9 +254,9 @@ class ExternalProjectGit {
       configuration.push([filename, digest(bytes)]);
       if (!bytes) continue;
       if (/^\s*\[\s*include(?:if)?\b/im.test(bytes.toString())) fail('Git configuration includes require your Git client for commits.');
-      for (const key of ['user.name', 'user.email', 'core.hooksPath', 'commit.gpgSign', 'core.autocrlf', 'core.attributesFile', 'core.excludesFile']) {
+      for (const key of ['user.name', 'user.email', 'core.hooksPath', 'commit.gpgSign', 'core.autocrlf', 'core.fileMode', 'core.attributesFile', 'core.excludesFile']) {
         const value = (await this.git(['config', '--no-includes', '--file', filename,
-          ...(['commit.gpgSign', 'core.autocrlf'].includes(key) ? ['--type=bool'] : []), '--get', key], { codes: [0, 1] })).toString().trim();
+          ...(['commit.gpgSign', 'core.autocrlf', 'core.fileMode'].includes(key) ? ['--type=bool'] : []), '--get', key], { codes: [0, 1] })).toString().trim();
         if (value) settings[key] = value;
       }
     }
@@ -257,7 +273,7 @@ class ExternalProjectGit {
     const name = settings['user.name']; const email = settings['user.email'];
     // eslint-disable-next-line no-control-regex
     if (!name || !email || [name, email].some(value => value.length > 200 || /[\x00-\x1f<>]/.test(value))) fail('Configure your Git user.name and user.email before committing.');
-    return { name, email, fingerprint: digest(JSON.stringify(configuration)) };
+    return { name, email, fileMode: settings['core.fileMode'] !== 'false', fingerprint: digest(JSON.stringify(configuration)) };
   }
 
   async commit(reviews, expected, message, recheck) {
@@ -283,7 +299,7 @@ class ExternalProjectGit {
     }
     const lockPath = path.join(this.directory, 'index.lock');
     const journalPath = path.join(this.temporaryRoot, 'git-commit-pending.json');
-    if (fs.existsSync(journalPath)) fail('A previous commit needs inspection. Use your Git client and the retained commit recovery record before committing again.');
+    if (fs.existsSync(journalPath)) fail('A previous commit needs inspection. Open project History and inspect commit recovery before retrying. If repair is unavailable, preserve the recovery record and reconcile the repository in your Git client. Agent commits remain blocked until the recovery record is resolved; Git changes alone do not clear it.');
     let lock; let lockIdentity; let temporary; let candidate = null; let committed = null; let refAttempted = false; let journalWritten = false;
     const ownsLock = async () => {
       try {
@@ -304,7 +320,7 @@ class ExternalProjectGit {
       if ((await this.git(['ls-files', '--unmerged'], { index: nextIndex })).length) fail('Resolve Git conflicts before committing.');
       const flags = (await this.git(['ls-files', '-v', '-z'], { index: nextIndex })).toString().split('\0').filter(Boolean);
       if (flags.some(entry => !entry.startsWith('H '))) fail('Special index flags require your Git client.');
-      const indexDebug = (await this.git(['ls-files', '--debug'], { index: nextIndex })).toString();
+      const indexDebug = (await this.git(['ls-files', '--debug', '--', ...reviews.map(review => review.path)], { index: nextIndex })).toString();
       if ([...indexDebug.matchAll(/flags: (\w+)/g)].some(match => match[1] !== '0')) fail('Extended index flags require your Git client.');
       await this.git(['read-tree', ...(baseline.id ? [baseline.id] : ['--empty'])], { index: treeIndex });
       const baseEntries = new Map((baseline.id ? await this.entries(baseline.id) : []).map(entry => [entry.path, entry]));
@@ -315,6 +331,12 @@ class ExternalProjectGit {
         return [match[3], { mode: match[1], oid: match[2] }];
       }));
       const changes = [];
+      const fold = name => name.normalize('NFC').toLowerCase();
+      const names = [...baseEntries.keys(), ...stagedEntries.keys()];
+      for (const review of reviews) {
+        if (names.some(name => name !== review.path && fold(name) === fold(review.path)))
+          fail('The selected filename differs in case or Unicode normalization from Git history. Use the exact tracked name or rename it with your Git client.');
+      }
       for (const review of reviews) {
         if (!baseEntries.has(review.path) && (await this.git(['check-ignore', '--no-index', '-z', '--stdin'],
           { input: `./${review.path}\0`, codes: [0, 1] })).length) fail('A selected file is ignored by the repository. It was not committed.');
@@ -325,9 +347,10 @@ class ExternalProjectGit {
         const oid = file ? (await this.git(['hash-object', '-w', '--stdin', '--no-filters'], { input: Buffer.from(file.content, 'base64') })).toString().trim() : null;
         if (base && !['100644', '100755'].includes(base.mode)) fail('Submodule and symlink commits require your Git client.');
         const same = (entry, other) => (!entry && !other) || (entry?.oid === other?.oid && entry?.mode === other?.mode);
-        const desired = file ? { mode: file.mode, oid } : undefined;
+        const mode = file && !identity.fileMode ? (base?.mode || stage?.mode || '100644') : file?.mode;
+        const desired = file ? { mode, oid } : undefined;
         if (!same(stage, base) && !same(stage, desired)) fail('A selected file has different staged changes. Resolve its staging before committing.');
-        changes.push(`${file ? file.mode : '0'} ${oid || '0'.repeat(40)}\t${review.path}\0`);
+        changes.push(`${file ? mode : '0'} ${oid || '0'.repeat(40)}\t${review.path}\0`);
       }
       for (const index of [treeIndex, nextIndex]) await this.git(['update-index', '-z', '--index-info'], { index, input: changes.join('') });
       const tree = (await this.git(['write-tree'], { index: treeIndex })).toString().trim();
@@ -343,8 +366,9 @@ class ExternalProjectGit {
       if (!await ownsLock()) fail('The Git index lock changed. Inspect repository state before retrying.');
       const journal = await fs.promises.open(journalPath, 'wx', 0o600);
       try {
+        const preparedLock = await lock.stat();
         await journal.writeFile(JSON.stringify({ root: this.root, baseline, candidate: id, temporary,
-          preparedIndex: digest(await this.read(nextIndex)), indexLock: { dev: lockIdentity.dev, ino: lockIdentity.ino }, phase: 'ref_update_pending' }));
+          preparedIndex: digest(await this.read(nextIndex)), indexLock: { dev: preparedLock.dev, ino: preparedLock.ino, birthtimeMs: preparedLock.birthtimeMs, ctimeMs: preparedLock.ctimeMs }, phase: 'ref_update_pending' }));
         await journal.sync();
         journalWritten = true;
       } finally { await journal.close(); }

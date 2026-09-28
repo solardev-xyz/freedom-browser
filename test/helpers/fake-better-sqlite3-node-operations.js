@@ -169,6 +169,13 @@ class FakeBetterSqlite3NodeOperationsDatabase {
         },
       };
     }
+    if (query === 'DELETE FROM agent_node_operations WHERE owner_id = ?') {
+      return { run: ownerId => {
+        const before = this.state.operations.length;
+        this.state.operations = this.state.operations.filter(row => row.owner_id !== ownerId);
+        return { changes: before - this.state.operations.length };
+      } };
+    }
     if (query.startsWith('DELETE FROM agent_node_operations WHERE id IN')) {
       return { run: () => ({ changes: 0 }) };
     }

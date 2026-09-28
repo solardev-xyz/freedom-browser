@@ -912,7 +912,9 @@ const updateNavigationState = () => {
     if (forwardBtn) forwardBtn.disabled = true;
     if (agentBackBtn) agentBackBtn.disabled = true;
     if (agentForwardBtn) agentForwardBtn.disabled = true;
-    if (agentReloadBtn) agentReloadBtn.disabled = false;
+    if (reloadBtn) reloadBtn.disabled = agentOwned;
+    if (homeBtn) homeBtn.disabled = agentOwned;
+    if (agentReloadBtn) agentReloadBtn.disabled = agentOwned;
   }
 };
 
@@ -1250,6 +1252,8 @@ const parseInternalPageTarget = (value) => {
 };
 
 export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
+  if (!targetWebview && !options.pageInitiated && !options.continuesNavigation &&
+      isTabAgentOwned(getActiveTab()?.id) && typeof value === 'string' && value.trim()) return createTab(value);
   if (!targetWebview && getActiveTab()?.kind === 'workspace-viewer') {
     if (!options.pageInitiated && !options.continuesNavigation && !options.keepsAddressBarEdit
       && typeof value === 'string' && value.trim()) return createTab(value);
@@ -3083,7 +3087,7 @@ export const initNavigation = () => {
             !isViewingSource && !addressInput.value && (isNewTabPageUrl(url) || !url);
           const ownsFocusForThisSwitch =
             data.isNewTab || (!isAddressBarEditInProgress(tabNavState) && isNewTabPageUrl(url));
-          if (ownsFocusForThisSwitch) {
+          if (data.focus !== false && ownsFocusForThisSwitch) {
             if (isEmptyNewTab) {
               addressInput.focus();
               // Match the explicit focus-address-bar shortcut (tabs.js), which

@@ -428,3 +428,19 @@ test('page actions are discoverable from the toolbar and hand off to chat withou
   await window.waitForTimeout(3500);
   await expect(hint).toBeHidden();
 });
+
+test('page-world WebMCP APIs respect cross-origin document boundaries', async ({ electronApp, window, harness }) => {
+  await setup({ electronApp, window, harness });
+  await harness.setContentFixture('https://foreign-tools.test/frame', { body: `<!doctype html><script>
+    document.modelContext.registerTool({name:'foreign_tool',description:'Cross-origin fixture',execute:()=>({foreign:true})});
+  </script>` });
+  await script(electronApp, `new Promise(resolve => { const frame = document.createElement('iframe'); frame.src='https://foreign-tools.test/frame'; frame.onload=resolve; document.body.append(frame); })`);
+  const result = await electronApp.evaluate(async () => {
+    const owner = globalThis.__PAGE_TOOLS_TEST__.owner;
+    const source = `(async()=>{try { const tools = await document.modelContext.getTools(); return {names:tools.map(t=>t.name),testing:typeof navigator.modelContextTesting}; } catch(e) {return {error:e.name,message:e.message};}})()`;
+    return { top: await owner.executeJavaScript(source), child: await owner.mainFrame.frames.find(frame=>frame.url.startsWith('https://foreign-tools.test')).executeJavaScript(source) };
+  });
+  expect(result.top.names).toContain('echo');
+  expect(result.top.names).not.toContain('foreign_tool');
+  expect(result.child.error).toBe('NotAllowedError');
+});

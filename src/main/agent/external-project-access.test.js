@@ -12,6 +12,11 @@ class SqliteAdapter {
   exec(sql) { this.db.exec(sql); }
   prepare(sql) { return this.db.prepare(sql); }
   close() { this.db.close(); }
+  transaction(fn) { return (...args) => {
+    this.db.exec('BEGIN');
+    try { const result = fn(...args); this.db.exec('COMMIT'); return result; }
+    catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }; }
   pragma(sql, options = {}) {
     const rows = this.db.prepare(`PRAGMA ${sql}`).all();
     return options.simple ? Object.values(rows[0])[0] : rows;

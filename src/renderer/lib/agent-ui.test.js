@@ -2603,6 +2603,9 @@ describe('Agent UI', () => {
     row.dispatch('contextmenu', { clientX: 30, clientY: 80, preventDefault: jest.fn() });
     expect(row.children[1].hidden).toBe(false);
     row.children[1].children[0].dispatch('click');
+    const renameInput = row.children.at(-1);
+    renameInput.value = 'Renamed title';
+    renameInput.dispatch('keydown', { key: 'Enter', preventDefault: jest.fn(), stopPropagation: jest.fn() });
     await flush();
     expect(ctx.electronAPI.renameAgentSession).toHaveBeenCalledWith(
       'conversation_saved',
@@ -3809,7 +3812,7 @@ describe('Agent UI', () => {
     });
 
     expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “website” to Swarm?');
-    expect(ctx.elements['agent-approval-origin'].textContent).toContain('current contents');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('snapshot listed below');
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('public, unencrypted');
     expect(ctx.elements['agent-publication-details'].hidden).toBe(false);
     expect(ctx.elements['agent-publication-summary'].textContent).not.toContain('/Users/');
@@ -3879,7 +3882,7 @@ describe('Agent UI', () => {
 
     expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “dist” to Swarm?');
     expect(ctx.elements['agent-approval-origin'].textContent).toContain(
-      'managed project source’s current files'
+      'managed project source snapshot listed below'
     );
     const summaryText = ctx.elements['agent-publication-summary'].children
       .map((child) => child.textContent)

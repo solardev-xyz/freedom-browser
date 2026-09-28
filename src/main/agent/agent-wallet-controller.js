@@ -497,6 +497,9 @@ class AgentWalletController {
         'Transaction parameters are incomplete'
       );
     }
+    if (txParams.data !== undefined && (typeof txParams.data !== 'string' || txParams.data.length > 65_536 || !/^0x(?:[a-f0-9]{2})*$/i.test(txParams.data))) {
+      throw new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'Use valid transaction data no larger than the approval display limit.');
+    }
     if (txParams.from && txParams.from.toLowerCase() !== wallet.address.toLowerCase()) {
       throw new AutomationError(
         ERROR_CODES.POLICY_DENIED,

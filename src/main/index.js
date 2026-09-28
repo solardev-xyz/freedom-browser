@@ -255,6 +255,8 @@ const {
   listAgentDownloads,
   onDownloadActivity,
   runControlledDownload,
+  setControlledPage,
+  takeBlockedDownload,
 } = require('./downloads/downloads-manager');
 const { closeDb: closeDownloadsDb } = require('./downloads/downloads-store');
 const { createAgentFileUploadController } = require('./agent/file-upload-controller');
@@ -420,8 +422,11 @@ async function bootstrap() {
   registerHistoryIpc();
   registerDownloadsIpc();
   automationController.setDownloadController({
-    download: ({ pageAdapter, ref, conversationId, signal, onProgress }) =>
+    setControlledPage,
+    takeBlockedDownload,
+    download: async ({ pageAdapter, ref, conversationId, signal, onProgress }) =>
       runControlledDownload({
+        expectedUrl: (await pageAdapter.inspectAction(ref)).navigationTarget,
         pageAdapter,
         conversationId,
         signal,

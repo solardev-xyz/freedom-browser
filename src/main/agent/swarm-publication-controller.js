@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
+const path = require('path');
+const { ManagedWorkspaceSourceReader } = require('./managed-workspace-source-reader');
 const { OPERATIONS } = require('../automation/contract/operations');
 const { AutomationError, ERROR_CODES } = require('../automation/contract/errors');
 
@@ -114,6 +116,14 @@ class SwarmPublicationController {
         ? {}
         : require('../swarm/publish-history'));
     this.attachmentStore = options.attachmentStore;
+    this.readAttachmentSource = options.readAttachmentSource || (async (descriptor) => {
+      const root = descriptor.kind === 'folder' ? descriptor.path : path.dirname(descriptor.path);
+      const reader = new ManagedWorkspaceSourceReader({ workspaceController: {
+        resolveWorkspacePath: async () => ({ path: root }),
+      } });
+      const source = await reader.read('attachment', descriptor.kind === 'folder' ? '.' : path.basename(descriptor.path));
+      return { ...source, sourceType: 'attachment', workspacePath: undefined, name: descriptor.name };
+    });
     this.workspaceSourceReader = options.workspaceSourceReader || null;
     this.publishData = options.publishData || publishService.publishData;
     this.publishFile = options.publishFile || publishService.publishFile;
@@ -152,9 +162,9 @@ class SwarmPublicationController {
     }
     const ownerId = context.conversationId || 'local';
     const sourceDescriptor = input.resourceId
-      ? await this.attachmentStore.resolvePublicationSource(ownerId, input.resourceId)
+      ? await this.readAttachmentSource(await this.attachmentStore.resolvePublicationSource(ownerId, input.resourceId))
       : input.workspacePath
-        ? await this.#describeWorkspaceSource(ownerId, input.workspacePath)
+        ? await this.#readWorkspaceSource(ownerId, input.workspacePath)
         : {
             kind: 'text',
             name: 'Text',
@@ -182,6 +192,9 @@ class SwarmPublicationController {
         kind: sourceDescriptor.kind,
         name: sourceDescriptor.name,
         public: true,
+        ...(sourceDescriptor.files && { files: sourceDescriptor.files.map(file => ({ path: file.path, bytes: file.bytes.length })) }),
+        ...(sourceDescriptor.excludedCount && { excludedCount: sourceDescriptor.excludedCount }),
+        ...(sourceDescriptor.kind === 'text' && { text: sourceDescriptor.text }),
         ...(Number.isSafeInteger(sourceDescriptor.bytes) && { bytes: sourceDescriptor.bytes }),
         ...(sourceDescriptor.contentType && { contentType: sourceDescriptor.contentType }),
         ...(sourceDescriptor.sourceType === 'workspace' && {
@@ -199,11 +212,8 @@ class SwarmPublicationController {
     if (context.signal?.aborted) {
       throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The publication was cancelled');
     }
-    const source = input.workspacePath
-      ? await this.#readWorkspaceSource(ownerId, input.workspacePath)
-      : sourceDescriptor;
+    const source = sourceDescriptor;
     if (
-      source.sourceType === 'workspace' &&
       source.kind === 'folder' &&
       input.indexDocument &&
       !source.files.some((file) => file.path === input.indexDocument)
@@ -283,25 +293,6 @@ class SwarmPublicationController {
     }
   }
 
-  async #describeWorkspaceSource(ownerId, workspacePath) {
-    if (typeof this.workspaceSourceReader?.describe !== 'function') {
-      throw new AutomationError(
-        ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        'Managed workspace publication is unavailable'
-      );
-    }
-    try {
-      return await this.workspaceSourceReader.describe(ownerId, workspacePath);
-    } catch (error) {
-      throw new AutomationError(
-        error?.code === 'INVALID_WORKSPACE_PUBLICATION_PATH'
-          ? ERROR_CODES.INVALID_ARGUMENT
-          : ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        safeMessage(error, 'The requested managed workspace source is unavailable')
-      );
-    }
-  }
-
   async #readWorkspaceSource(ownerId, workspacePath) {
     if (typeof this.workspaceSourceReader?.read !== 'function') {
       throw new AutomationError(
@@ -324,22 +315,11 @@ class SwarmPublicationController {
   async #run(operation, source, input, onProgress) {
     try {
       const result =
-        source.sourceType === 'workspace' && source.kind === 'folder'
+        source.kind === 'folder'
           ? await this.publishCollection(source.files, { indexDocument: input.indexDocument })
-          : source.sourceType === 'workspace' && source.kind === 'file'
-            ? await this.publishData(source.data, {
-                name: source.name,
-                contentType: source.contentType,
-              })
-            : source.kind === 'folder'
-              ? await this.publishDirectory(source.path, { indexDocument: input.indexDocument })
-              : source.kind === 'file'
-                ? await this.publishFile(source.path, {
-                    name: source.name,
-                  })
-                : await this.publishData(source.text, {
-                    contentType: source.contentType,
-                  });
+          : source.kind === 'file'
+            ? await this.publishData(source.data, { name: source.name, contentType: source.contentType })
+            : await this.publishData(source.text, { contentType: source.contentType });
       operation.reference = result.reference;
       operation.bzzUrl = result.bzzUrl;
       if (Number.isSafeInteger(result.bytesSize)) operation.bytes = result.bytesSize;
@@ -364,6 +344,7 @@ class SwarmPublicationController {
     } catch (error) {
       operation.state = PUBLICATION_STATES.FAILED;
       operation.error = safeMessage(error, 'The Swarm publication failed');
+      if (error?.capacity) operation.error += ` Upload: ${error.capacity.uploadBytes} bytes; required with safety margin: ${error.capacity.requiredBytes} bytes; largest usable batch remaining: ${error.capacity.largestRemainingBytes} bytes.`;
       this.updateHistoryEntry(operation.historyId, {
         status: 'failed',
         errorMessage: operation.error,

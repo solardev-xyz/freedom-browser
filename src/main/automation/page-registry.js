@@ -64,6 +64,7 @@ class PageRegistry {
     if (typeof entry.adapter.off === 'function') {
       entry.adapter.off('destroyed', entry.onDestroyed);
     }
+    entry.adapter.dispose?.();
     this.tabsByAdapter.delete(entry.adapter);
     this.entries.delete(tabId);
     return true;

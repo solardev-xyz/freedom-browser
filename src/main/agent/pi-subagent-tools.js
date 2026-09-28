@@ -160,7 +160,7 @@ function createSubagentTool(options) {
       const tasks = batch ? params.tasks : [params];
       const respond = values => {
         const details = batch && values.length > 1 ? { subagents: values } : { subagent: values[0] };
-        const failed = values.some(value => value.state !== 'completed');
+        const failed = !values.some(value => value.state === 'completed');
         options.onResult?.(owner, { toolCallId, operation: SUBAGENT_TOOL_NAME,
           status: failed ? 'failed' : 'succeeded', ...details });
         return { content: [{ type: 'text', text: JSON.stringify({ ...details,
@@ -243,6 +243,9 @@ function createSubagentTool(options) {
       }
     },
   });
+  tool.settle = async owner => {
+    await Promise.allSettled([...(owners.get(owner)?.jobs.values() || [])].map(job => job.promise));
+  };
   tool.hasPending = owner => [...(owners.get(owner)?.jobs.values() || [])].some(job => job.background && available(owner, job.generation) && !job.result);
   tool.collect = async owner => {
     const jobs = [...(owners.get(owner)?.jobs.values() || [])].filter(job => job.background && available(owner, job.generation));
@@ -374,12 +377,12 @@ function createSubagentTool(options) {
         stopReason = undefined;
         await session.prompt(nextPrompt, { expandPromptTemplates: false, source: 'interactive' });
         if (!isCurrent()) return receipt('cancelled');
-        nextPrompt = job?.pendingMessages.length ? JSON.stringify({ parentFollowUps: job.pendingMessages.splice(0) }) : '';
+        nextPrompt = stopReason === 'stop' && job?.pendingMessages.length ? JSON.stringify({ parentFollowUps: job.pendingMessages.splice(0) }) : '';
       } while (nextPrompt && stopReason === 'stop');
       if (!isCurrent()) return receipt('cancelled');
       return stopReason === 'stop' && finalText.trim()
         ? receipt('completed', finalText)
-        : receipt('failed', 'The helper did not return a complete report. Inspect the available evidence yourself.');
+        : receipt('failed', 'The helper did not return a complete report. Inspect the available evidence yourself.' + (job?.pendingMessages.length ? ' Queued follow-up messages were not delivered.' : ''));
     })().catch(() => receipt('failed', 'The helper could not complete its model or tool request. Check the model connection and project access; continue directly if needed.'));
     let outcome;
     try { outcome = await Promise.race([work, interrupted]); }

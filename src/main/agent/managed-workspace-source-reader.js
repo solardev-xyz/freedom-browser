@@ -2,6 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
+const { historyPathReason, historyContainsSecret } = require('./workspace-history-policy');
+
+function excludedPublicationPath(value) {
+  return historyPathReason(value, true) || value.split('/').some(part => part.startsWith('.') && part !== '.well-known');
+}
 
 const MAX_WORKSPACE_PUBLICATION_BYTES = 50 * 1024 * 1024;
 const MAX_WORKSPACE_PUBLICATION_ENTRIES = 1_000;
@@ -227,11 +232,13 @@ class ManagedWorkspaceSourceReader {
     }
     if (descriptor.kind === 'file') {
       try {
+        if (excludedPublicationPath(descriptor.workspacePath)) throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'This file is private or contains credentials. Select public build output instead.');
         const bytes = await readRegularFile(
           workspaceRoot,
           descriptor.workspacePath,
           MAX_WORKSPACE_PUBLICATION_BYTES
         );
+        if (historyContainsSecret(bytes)) throw sourceError('WORKSPACE_PUBLICATION_UNSAFE', 'This file appears to contain credentials. Remove them before publishing.');
         const contentType = contentTypeForPath(descriptor.workspacePath);
         return Object.freeze({
           ...descriptor,
@@ -251,6 +258,7 @@ class ManagedWorkspaceSourceReader {
     const files = [];
     let totalBytes = 0;
     let entriesSeen = 0;
+    let excludedCount = 0;
     const selectedRoot = descriptor.workspacePath;
 
     const walk = async (relativeDirectory) => {
@@ -272,7 +280,7 @@ class ManagedWorkspaceSourceReader {
       const names = await fs.promises.readdir(checked.candidate);
       names.sort((left, right) => left.localeCompare(right));
       for (const name of names) {
-        if (name.toLowerCase() === '.git') continue;
+        if (excludedPublicationPath(name)) { excludedCount++; continue; }
         entriesSeen += 1;
         if (entriesSeen > MAX_WORKSPACE_PUBLICATION_ENTRIES) {
           throw sourceError(
@@ -310,6 +318,7 @@ class ManagedWorkspaceSourceReader {
           child,
           MAX_WORKSPACE_PUBLICATION_BYTES - totalBytes
         );
+        if (historyContainsSecret(bytes)) { excludedCount++; continue; }
         totalBytes += bytes.byteLength;
         const collectionPath =
           selectedRoot === '.' ? child : path.posix.relative(selectedRoot, child);
@@ -335,6 +344,7 @@ class ManagedWorkspaceSourceReader {
     return Object.freeze({
       ...descriptor,
       bytes: totalBytes,
+      excludedCount,
       files: Object.freeze(files),
     });
   }

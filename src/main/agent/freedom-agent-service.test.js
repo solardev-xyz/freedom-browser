@@ -2577,6 +2577,7 @@ describe('FreedomAgentService', () => {
     await service.start(startOptions());
     const scopedController = dependencies.createTools.mock.calls[0][0].controller;
     const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    scopedController.suspendPageControl = jest.fn();
     const approvalDecision = requestApproval({ action: 'form_submission' });
 
     await expect(service.pause('run_other')).resolves.toBe(false);
@@ -2589,6 +2590,7 @@ describe('FreedomAgentService', () => {
       decision: 'withdrawn',
     });
     expect(service.getState()).toMatchObject({ status: 'paused', runId: 'run_test' });
+    expect(scopedController.suspendPageControl).toHaveBeenCalledTimes(1);
     expect(fake.session.dispose).not.toHaveBeenCalled();
     expect(cancelAgentDownloads).not.toHaveBeenCalled();
 

@@ -435,23 +435,34 @@ try {
     } catch (error) {
       if (!error || error.code !== 'ENOENT') throw error;
     }
-    const flags = expected ? fs.constants.O_RDWR : fs.constants.O_WRONLY | fs.constants.O_CREAT;
-    const fd = fs.openSync(target, flags | (expected === 'missing' ? fs.constants.O_CREAT | fs.constants.O_EXCL : 0) | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW || 0), 0o600);
+    let fd;
+    let original;
     try {
-      const stats = fs.fstatSync(fd);
-      if (!stats.isFile() || stats.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
-      if (expected && expected !== 'missing') {
-        if (stats.size > READ_LIMIT) fail('WORKSPACE_HISTORY_CHANGED');
-        const previous = Buffer.alloc(stats.size + 1);
-        const count = fs.readSync(fd, previous, 0, previous.length, 0);
-        const after = fs.fstatSync(fd);
-        if (count !== stats.size || after.mtimeMs !== stats.mtimeMs || after.ctimeMs !== stats.ctimeMs || fileVersion(after, previous.subarray(0, count)) !== expected) fail('WORKSPACE_HISTORY_CHANGED');
+      fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW || 0));
+      original = fs.fstatSync(fd);
+      if (!original.isFile() || original.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
+      if (expected === 'missing') fail('WORKSPACE_HISTORY_CHANGED');
+      if (expected) {
+        if (original.size > READ_LIMIT) fail('WORKSPACE_HISTORY_CHANGED');
+        const previous = fs.readFileSync(fd);
+        if (fileVersion(original, previous) !== expected) fail('WORKSPACE_HISTORY_CHANGED');
       }
-      fs.ftruncateSync(fd, 0);
-      fs.writeFileSync(fd, content);
+    } catch (error) {
+      if (error.code !== 'ENOENT' || (expected && expected !== 'missing')) throw error;
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
+    const temporary = path.join(parent, '.freedom-write-' + require('crypto').randomBytes(16).toString('hex'));
+    const output = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), original ? original.mode & 0o777 : 0o600);
+    try {
+      if (original) fs.fchmodSync(output, original.mode & 0o777);
+      try { fs.writeFileSync(output, content); fs.fsyncSync(output); } finally { fs.closeSync(output); }
+      let current;
+      try { current = fs.lstatSync(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (original ? !current || current.dev !== original.dev || current.ino !== original.ino || current.mtimeMs !== original.mtimeMs || current.ctimeMs !== original.ctimeMs : current) fail('WORKSPACE_HISTORY_CHANGED');
+      fs.renameSync(temporary, target);
     } finally {
-      fs.closeSync(fd);
+      try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
+
   } else {
     fail('INVALID_WORKSPACE_REQUEST');
   }
@@ -1377,6 +1388,18 @@ class ManagedWorkspaceController {
       workspacePathsConflict(mutation.path, relativePath, mutation.operation));
   }
 
+  createDelegatedReader(conversationId) {
+    const reads = new Map();
+    return new Proxy(this, { get: (target, property) => {
+      if (property === 'readFile') return (owner, filename, request = {}) => {
+        if (owner !== conversationId) throw new ManagedWorkspaceError('DELEGATED_PATH_DENIED', 'Read only the assigned conversation project.');
+        return target.readFile(owner, filename, { ...request, projectReadVersions: reads });
+      };
+      const value = target[property];
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  }
+
   async createDelegatedWriter(conversationId, paths, { signal } = {}) {
     throwIfWorkspaceAborted(signal);
     if (!Array.isArray(paths) || !paths.length || paths.length > 20) throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'Choose 1–20 exact project-relative files for the helper.');
@@ -1483,7 +1506,7 @@ class ManagedWorkspaceController {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
     // Select by the fixed operation, never by model-supplied request flags.
-    const fileReadOnly = ['access', 'read', 'read_version', 'list', 'find', 'grep'].includes(operation);
+    const fileReadOnly = readOnlyOperations.has(operation);
     const attached = this.store.getForConversation(conversationId);
     if (attached?.project && !readOnlyOperations.has(operation)) {
       await this.store.projectAccess.resolve(attached.workspaceId, { write: true });
@@ -1600,8 +1623,16 @@ class ManagedWorkspaceController {
     return second;
   }
 
-  async #withHistory(conversationId, action, { signal } = {}) {
+  async #withHistory(conversationId, action, { signal, readOnly = false } = {}) {
     this.#assertWriter();
+    if (readOnly) {
+      signal ||= new AbortController().signal;
+      throwIfWorkspaceAborted(signal);
+      const { lease, grant } = await this.#enabledLease(conversationId, { signal });
+      const workspace = this.store.getForConversation(conversationId);
+      return action(workspace.project ? await this.#projectGit(workspace, lease, grant, signal)
+        : new ManagedWorkspaceHistory(lease.workspaceRoot, { signal }));
+    }
     if (this.historyLocks.has(conversationId)) throw new WorkspaceHistoryError('Workspace history is busy');
     this.historyLocks.add(conversationId);
     const cancellation = new AbortController();
@@ -1662,8 +1693,10 @@ class ManagedWorkspaceController {
       }
       if (request.action === 'exclude' || request.action === 'include') {
         if (historyPathReason(request.path) || typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 160 || historyContainsSecret(request.reason)) throw new WorkspaceHistoryError('Use an eligible exact file path and a short reason without private data');
+        const previous = exclusions.find(entry => entry.path === request.path);
+        if (previous && previous.source !== 'agent' && !options.userAction) throw new WorkspaceHistoryError('This exclusion was set by the user. Ask them to change it in checkpoint settings; do not include it yourself.');
         const next = exclusions.filter((entry) => entry.path !== request.path);
-        if (request.action === 'exclude') next.push({ path: request.path, reason: request.reason });
+        if (request.action === 'exclude') next.push({ path: request.path, reason: request.reason, source: options.userAction ? 'user' : 'agent' });
         await history.setExclusions(next);
         for (const [id, review] of this.historyReviews) if (review.conversationId === conversationId && review.path === request.path) this.historyReviews.delete(id);
         return { exclusions: next, message: 'Exclusions affect future checkpoints and restores, not copies in earlier versions. Including a path does not approve its contents.' };
@@ -1700,7 +1733,7 @@ class ManagedWorkspaceController {
       for (const id of request.reviewIds) this.historyReviews.delete(id);
       this.historyNotices.delete(conversationId);
       return { ...result, source: 'repository', reviewedPaths: reviews.map((review) => review.path), message: 'Committed only selected revisions. Other changes remain uncommitted. This does not certify testing.' };
-    }, options);
+    }, { ...options, readOnly: ['status', 'diff'].includes(request.action) });
   }
 
   async #reviewProjectGit(conversationId, history, request) {
@@ -1747,7 +1780,7 @@ class ManagedWorkspaceController {
       const { workspace, lease, grant } = await this.#enabledLease(conversationId);
       return (await this.#projectGit(workspace, lease, grant)).inspect(request);
     }
-    if (['exclude', 'include'].includes(request.action)) return this.reviewWorkspaceHistory(conversationId, request);
+    if (['exclude', 'include'].includes(request.action)) return this.reviewWorkspaceHistory(conversationId, request, { userAction: true });
     const perform = async (history) => {
       if (request.action === 'list') {
         return { ...(await history.list(request)), exclusions: await history.exclusions(), notice: this.historyNotices.get(conversationId) || '', running: this.listProcesses(conversationId).length > 0 };
@@ -1794,7 +1827,7 @@ class ManagedWorkspaceController {
           latest.files = latest.files.filter(file => selected.has(file.path));
           target = { ...target, files: target.files.filter(file => selected.has(file.path)) };
         }
-        const paths = [...new Set([...latest.files, ...target.files].map((file) => file.path))];
+        const paths = [...new Set([...latest.files, ...target.files].map((file) => file.path).concat(recovering ? recovery.changedPaths || [] : []))];
         const current = await this.#stableHistorySnapshot(conversationId, paths);
         if (recovering) {
           const interrupted = await history.snapshot(recovery.targetId);
@@ -1816,7 +1849,7 @@ class ManagedWorkspaceController {
         await this.#fileOperation(conversationId, 'history_validate', '.', preflight);
         for (const [id, plan] of this.restorePlans) if (plan.conversationId === conversationId || plan.expires < Date.now()) this.restorePlans.delete(id);
         const token = 'restore_' + crypto.randomBytes(16).toString('hex');
-        this.restorePlans.set(token, { conversationId, versionId: request.versionId, fingerprint: fingerprint(current), operations, target, retained, paths, head: await history.currentId(), preflight, expires: Date.now() + 5 * 60000 });
+        this.restorePlans.set(token, { conversationId, versionId: request.versionId, fingerprint: fingerprint(current), operations, target, retained, paths, recovery: recovering ? recovery : null, head: await history.currentId(), preflight, expires: Date.now() + 5 * 60000 });
         return { token, changes: operations.map((entry) => ({ path: entry.path, action: entry.action, before: byPath.get(entry.path) ? { text: Buffer.from(byPath.get(entry.path).content, 'base64').toString('utf8') } : { text: '', missing: true }, after: desired.get(entry.path) ? { text: Buffer.from(desired.get(entry.path).content, 'base64').toString('utf8') } : { text: '', missing: true } })), excludedCount: current.excludedCount || 0 };
       }
       const plan = this.restorePlans.get(request.token);
@@ -1826,9 +1859,9 @@ class ManagedWorkspaceController {
       const current = await this.#stableHistorySnapshot(conversationId, plan.paths);
       if (current.excludedCount || fingerprint(current) !== plan.fingerprint) throw new WorkspaceHistoryError('Workspace changed; review the restore again');
       await this.#fileOperation(conversationId, 'history_validate', '.', plan.preflight);
-      const preservedSnapshot = snapshot => ({ ...snapshot, files: [...plan.retained, ...snapshot.files].sort((a, b) => a.path.localeCompare(b.path)) });
-      const backup = await history.save(preservedSnapshot(current), { label: 'Before restore', kind: 'backup', reviewed: true });
-      await history.setRecovery({ pending: true, backupId: backup.id, targetId: plan.versionId, paths: plan.paths, changedPaths: plan.operations.map(operation => operation.path), createdAt: Date.now() });
+      const preservedSnapshot = snapshot => ({ ...snapshot, files: [...plan.retained, ...snapshot.files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) });
+      const backup = plan.recovery ? { id: plan.recovery.backupId } : await history.save(preservedSnapshot(current), { label: 'Before restore', kind: 'backup', reviewed: true });
+      if (!plan.recovery) await history.setRecovery({ pending: true, backupId: backup.id, targetId: plan.versionId, paths: plan.paths, changedPaths: plan.operations.map(operation => operation.path), createdAt: Date.now() });
       const deadline = Date.now() + 15000;
       try {
         for (const operation of plan.operations) {
@@ -2225,6 +2258,7 @@ class ManagedWorkspaceController {
       const { restartServerId, ...launch } = request;
       return this.servers.restart(conversationId, restartServerId, launch);
     }
+    if (request.previewPort) await this.servers.checkStart(conversationId, request.previewPort);
     const process = await this.processManager.start(conversationId, {
       ...request,
       timeoutMs: Number.isFinite(request.timeoutMs)

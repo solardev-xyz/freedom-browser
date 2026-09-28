@@ -51,6 +51,14 @@ describe('sandboxed workspace inspection', () => {
     expect(fs.readFileSync(path.join(workspace, 'game.js'), 'utf8')).toBe('game');
   });
 
+  test('rejects filters hidden behind same-line config sections before Git inspects files', () => {
+    fs.writeFileSync(path.join(workspace, '.gitattributes'), '*.md filter=evil');
+    fs.writeFileSync(path.join(workspace, 'README.md'), 'fixture');
+    fs.appendFileSync(path.join(workspace, '.git/config'), '\n[core][filter "evil"]\n clean = touch marker; cat\n');
+    expect(inspect('changes').available).toBe(false);
+    expect(fs.existsSync(path.join(workspace, 'marker'))).toBe(false);
+  });
+
   test('lists folders first, hides Git metadata and toggles generated files', () => {
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.mkdirSync(path.join(workspace, 'node_modules'));

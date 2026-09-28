@@ -449,16 +449,24 @@ class AgentProviderStore {
       'utf8'
     );
     const noFollow = fs.constants.O_NOFOLLOW || 0;
+    const temporary = `${this.filePath}.${crypto.randomBytes(12).toString('hex')}.tmp`;
     const descriptor = fs.openSync(
-      this.filePath,
-      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | noFollow,
+      temporary,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
       0o600
     );
     try {
-      fs.writeFileSync(descriptor, payload);
-      fs.fsyncSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
+      try {
+        fs.writeFileSync(descriptor, payload);
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      assertRegularFile(this.filePath);
+      fs.renameSync(temporary, this.filePath);
+    } catch (error) {
+      try { fs.unlinkSync(temporary); } catch { /* Preserve the original storage error. */ }
+      throw error;
     }
     try {
       fs.chmodSync(this.filePath, 0o600);

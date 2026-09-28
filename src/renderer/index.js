@@ -189,7 +189,8 @@ electronAPI.onAutomationCloseTab?.(({ rendererTabId }) => {
 });
 electronAPI.onAutomationFocusTab?.(({ rendererTabId }) => {
   if (!getTabById(rendererTabId)) return false;
-  switchTab(rendererTabId);
+  // Agent switches its working page without taking the user's keyboard focus.
+  switchTab(rendererTabId, { focus: false });
   return true;
 });
 // When any popover/menu opens, dismiss other transient surfaces so we

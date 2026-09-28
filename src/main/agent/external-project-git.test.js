@@ -30,6 +30,69 @@ qualified('external project Git integration', () => {
   });
   afterEach(() => fs.rmSync(temporary, { recursive: true, force: true }));
 
+  test.each([['README.md', 'readme.md'], ['caf\u00e9.md', 'cafe\u0301.md']])('rejects a case or Unicode alias of %s', async (tracked, alias) => {
+    if (tracked !== 'README.md') { write(tracked, 'base'); git('add', tracked); git('commit', '-qm', 'Unicode fixture'); }
+    const head = git('rev-parse', 'HEAD');
+    const index = fs.readFileSync(path.join(root, '.git/index'));
+    write(alias, 'changed');
+    await expect(commit([review(alias, 'changed')])).rejects.toThrow('case or Unicode normalization');
+    expect(git('rev-parse', 'HEAD')).toBe(head);
+    expect(fs.readFileSync(path.join(root, '.git/index'))).toEqual(index);
+  });
+
+  test('preserves tracked modes when core.fileMode is false', async () => {
+    git('config', 'core.fileMode', 'false'); write('README.md', 'changed'); fs.chmodSync(path.join(root, 'README.md'), 0o755);
+    const selected = review('README.md', 'changed'); selected.file.mode = '100755';
+    await commit([selected]);
+    expect(git('ls-tree', 'HEAD', '--', 'README.md')).toMatch(/^100644 /);
+  });
+
+  test('commits one selected file in a repository with thousands of tracked files', async () => {
+    for (let i = 0; i < 6600; i++) write(`tracked/file-${i}-long-name-for-index-debug-output.txt`, 'same');
+    git('add', '.'); git('commit', '-qm', 'Large fixture'); write('README.md', 'selected');
+    await expect(commit([review('README.md', 'selected')])).resolves.toMatchObject({ saved: true });
+    expect(git('diff', 'HEAD^', 'HEAD', '--name-only')).toBe('README.md');
+  });
+
+  test('a deadline reached before ref dispatch cleans up the owned lock', async () => {
+    const instance = service(); const real = instance.git.bind(instance); const baseline = instance.baseline.bind(instance);
+    let dispatching = false;
+    instance.git = async (args, options) => { if (args[0] === 'update-ref') dispatching = true; return real(args, options); };
+    instance.baseline = async () => { const result = await baseline(); if (dispatching) instance.deadline = Date.now() - 1; return result; };
+    await expect(instance.commit([review('README.md', 'changed')], await instance.baseline(), 'Change', async () => {})).rejects.toThrow('timed out before dispatch');
+    expect(fs.existsSync(path.join(root, '.git/index.lock'))).toBe(false);
+    expect(await service().recovery()).toEqual({ pending: false });
+  });
+
+  test('unapplied repair resumes after journal archival fails and never overwrites other files', async () => {
+    const instance = service(); const real = instance.git.bind(instance);
+    instance.git = async (args, options) => {
+      if (args[0] === 'update-ref') { options.onDispatch(); throw new Error('Dispatched but not applied'); }
+      return real(args, options);
+    };
+    const before = await instance.baseline(); write('README.md', 'changed');
+    await expect(instance.commit([review('README.md', 'changed')], before, 'Change', async () => {})).rejects.toThrow('uncertain');
+    const journal = path.join(storage, 'git-commit-pending.json');
+    const record = JSON.parse(fs.readFileSync(journal));
+    const foreign = path.join(root, '.git', `freedom-unapplied-${record.candidate}-${record.indexLock.ino}.index`);
+    fs.writeFileSync(foreign, 'foreign bytes');
+    const rename = fs.promises.rename;
+    const spy = jest.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (from === journal) throw new Error('Interrupted journal cleanup');
+      return rename(from, to);
+    });
+    try { const fresh = service(); await expect(fresh.repairCommit((await fresh.recovery()).token)).rejects.toThrow('Interrupted journal cleanup'); }
+    finally { spy.mockRestore(); }
+    expect(fs.existsSync(path.join(root, '.git/index.lock'))).toBe(false);
+    expect(fs.readFileSync(foreign, 'utf8')).toBe('foreign bytes');
+    const fresh = service(); const retry = await fresh.recovery();
+    expect(retry).toMatchObject({ state: 'not_applied', repairable: true });
+    await fresh.repairCommit(retry.token);
+    expect(await service().baseline()).toEqual(before);
+    await expect(commit([review('README.md', 'changed')])).resolves.toMatchObject({ saved: true });
+    expect(fs.readFileSync(foreign, 'utf8')).toBe('foreign bytes');
+  });
+
   test('compares actual commit deltas, exact renames and file history', async () => {
     const first = git('rev-parse', 'HEAD');
     git('mv', 'other.txt', 'renamed.txt'); write('README.md', 'updated'); git('add', '.'); git('commit', '-qm', 'Update');

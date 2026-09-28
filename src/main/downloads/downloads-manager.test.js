@@ -306,6 +306,31 @@ describe('downloads-manager', () => {
     await expect(pending).rejects.toMatchObject({ code: 'USER_CANCELLED' });
   });
 
+  test('blocks unsolicited Agent downloads and releases ordinary downloads after control ends', () => {
+    const mod = loadManager();
+    const source = { hostWebContents: { id: 42 }, isDestroyed: () => false };
+    mod.setControlledPage(source, true);
+    const blocked = new FakeDownloadItem({ url: 'https://files.example/report', filename: 'report.txt' });
+    session.emit('will-download', {}, blocked, source);
+    expect(blocked.cancel).toHaveBeenCalledTimes(1);
+    expect(mod.takeBlockedDownload(source)).toMatchObject({ code: 'APPROVAL_REQUIRED' });
+    mod.setControlledPage(source, false);
+    const ordinary = new FakeDownloadItem({ url: 'https://files.example/report', filename: 'report.txt' });
+    session.emit('will-download', {}, ordinary, source);
+    expect(ordinary.cancel).not.toHaveBeenCalled();
+    ordinary.emit('done', {}, 'cancelled');
+  });
+
+  test('refuses a different download substituted while an approved target is armed', async () => {
+    const mod = loadManager();
+    const source = { hostWebContents: { id: 42 }, isDestroyed: () => false };
+    const item = new FakeDownloadItem({ url: 'https://files.example/other', filename: 'other.exe' });
+    await expect(mod.runControlledDownload({ pageAdapter: { webContents: source }, conversationId: 'conversation_download',
+      expectedUrl: 'https://files.example/report', trigger: async () => session.emit('will-download', {}, item, source),
+    })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+    expect(item.cancel).toHaveBeenCalledTimes(1);
+  });
+
   test('reports a shelf cancellation as an explicit user decision without an artifact', async () => {
     const mod = loadManager();
     const item = new FakeDownloadItem({

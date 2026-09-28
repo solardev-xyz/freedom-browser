@@ -15,24 +15,27 @@ function inspectPath(value, allowRoot = false) {
 
 function gitRead(args, acceptedCodes = [0]) {
   const { spawnSync } = require('child_process');
-  // Workspace metadata is protected by the execution policy. Refuse legacy
-  // configurations capable of loading other configs or invoking programs.
-  for (const name of ['config', 'config.worktree']) {
-    const filename = path.join(root, '.git', name);
-    if (!fs.existsSync(filename)) continue;
-    const stats = regularFile(filename);
-    if (stats.size > 65536) throw new Error('Git unavailable');
-    const config = fs.readFileSync(filename, 'utf8');
-    if (/^\s*\[\s*(?:include|includeif|filter|diff|credential|extensions)\b/im.test(config)) throw new Error('Git unavailable');
-  }
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0',
     GIT_LITERAL_PATHSPECS: '1', LC_ALL: 'C',
   });
+  const gitDirectory = fs.lstatSync(path.join(root, '.git'));
+  if (!gitDirectory.isDirectory() || gitDirectory.isSymbolicLink()) throw new Error('Git unavailable');
   const executable = workspaceGitCommand();
   if (!executable) throw new Error('Git unavailable');
+  for (const name of ['config', 'config.worktree']) {
+    const filename = path.join(root, '.git', name);
+    if (!fs.existsSync(filename)) continue;
+    const stats = regularFile(filename);
+    if (stats.size > 65536) throw new Error('Git unavailable');
+    const parsed = spawnSync(executable, ['config', '--file', filename, '--no-includes', '--null', '--list'],
+      { cwd: root, env, encoding: 'utf8', timeout: 5000, maxBuffer: 262144, windowsHide: true });
+    if (parsed.error || parsed.status !== 0 || parsed.stdout.split('\0').some(entry =>
+      /^(?:include|includeif|filter|diff|credential|extensions)\./i.test(entry.split('\n')[0]))) throw new Error('Git unavailable');
+  }
+
   const result = spawnSync(executable, [
     '--no-pager', '--git-dir=.git', '--work-tree=.',
     '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',

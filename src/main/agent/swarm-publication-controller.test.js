@@ -28,6 +28,7 @@ function createController(overrides = {}) {
         path: '/private/live/website',
       })),
     },
+    readAttachmentSource: jest.fn(async descriptor => ({ ...descriptor, bytes: 5, files: [{ path: 'index.html', bytes: Buffer.from('hello') }] })),
     workspaceSourceReader: {
       describe: jest.fn(async () => ({
         sourceType: 'workspace',
@@ -77,7 +78,7 @@ function createController(overrides = {}) {
 }
 
 describe('SwarmPublicationController', () => {
-  test('publishes an attached folder directly from its live main-process path', async () => {
+  test('publishes an attached folder snapshot and discloses its exact manifest', async () => {
     const { controller, dependencies } = createController();
     const requestApproval = jest.fn(async () => 'approved');
     const onProgress = jest.fn();
@@ -99,11 +100,13 @@ describe('SwarmPublicationController', () => {
         kind: 'folder',
         name: 'website',
         public: true,
+        bytes: 5,
+        files: [{ path: 'index.html', bytes: 5 }],
         indexDocument: 'index.html',
       },
     });
     expect(JSON.stringify(requestApproval.mock.calls)).not.toContain('/private/live/website');
-    expect(dependencies.publishDirectory).toHaveBeenCalledWith('/private/live/website', {
+    expect(dependencies.publishCollection).toHaveBeenCalledWith([{ path: 'index.html', bytes: Buffer.from('hello') }], {
       indexDocument: 'index.html',
     });
     expect(result.publication).toMatchObject({
@@ -121,6 +124,18 @@ describe('SwarmPublicationController', () => {
     expect(onProgress).toHaveBeenLastCalledWith(
       expect.objectContaining({ state: PUBLICATION_STATES.COMPLETED, progress: 100 })
     );
+  });
+
+  test('publishes the reviewed bytes even if files change during approval', async () => {
+    const { controller, dependencies } = createController();
+    await controller.publish({ workspacePath: 'dist' }, { requestApproval: async () => {
+      dependencies.workspaceSourceReader.read.mockResolvedValue({ kind: 'folder', name: 'dist', files: [{ path: 'evil.txt', bytes: Buffer.from('changed') }] });
+      return 'approved';
+    } });
+    expect(dependencies.workspaceSourceReader.read).toHaveBeenCalledTimes(1);
+    expect(dependencies.publishCollection).toHaveBeenCalledWith([
+      { path: 'index.html', bytes: Buffer.from('hello') }, { path: 'app.js', bytes: Buffer.from('world!!') },
+    ], { indexDocument: undefined });
   });
 
   test('declines before dispatching or writing history', async () => {
@@ -147,7 +162,7 @@ describe('SwarmPublicationController', () => {
       { conversationId: 'conversation_test', requestApproval }
     );
 
-    expect(dependencies.workspaceSourceReader.describe).toHaveBeenCalledWith(
+    expect(dependencies.workspaceSourceReader.read).toHaveBeenCalledWith(
       'conversation_test',
       'dist'
     );
@@ -159,6 +174,8 @@ describe('SwarmPublicationController', () => {
         kind: 'folder',
         name: 'dist',
         public: true,
+        bytes: 12,
+        files: [{ path: 'index.html', bytes: 5 }, { path: 'app.js', bytes: 7 }],
         workspacePath: 'dist',
         indexDocument: 'index.html',
       },
@@ -188,7 +205,7 @@ describe('SwarmPublicationController', () => {
     expect(JSON.stringify(requestApproval.mock.calls)).not.toContain('/private/');
   });
 
-  test('does not read a managed workspace source when publication approval is declined', async () => {
+  test('snapshots a managed workspace but never publishes it when approval is declined', async () => {
     const { controller, dependencies } = createController();
 
     await expect(
@@ -200,8 +217,7 @@ describe('SwarmPublicationController', () => {
         }
       )
     ).rejects.toMatchObject({ code: ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER });
-    expect(dependencies.workspaceSourceReader.describe).toHaveBeenCalled();
-    expect(dependencies.workspaceSourceReader.read).not.toHaveBeenCalled();
+    expect(dependencies.workspaceSourceReader.read).toHaveBeenCalledTimes(1);
     expect(dependencies.publishCollection).not.toHaveBeenCalled();
   });
 
@@ -264,7 +280,7 @@ describe('SwarmPublicationController', () => {
   test('returns an operation ID for long work and recovers it without publishing twice', async () => {
     const upload = deferred();
     const { controller, dependencies } = createController({
-      publishDirectory: jest.fn(() => upload.promise),
+      publishCollection: jest.fn(() => upload.promise),
       interactiveTimeoutMs: 5,
       statusWaitTimeoutMs: 100,
     });
@@ -295,7 +311,7 @@ describe('SwarmPublicationController', () => {
       state: PUBLICATION_STATES.COMPLETED,
       reference: REFERENCE,
     });
-    expect(dependencies.publishDirectory).toHaveBeenCalledTimes(1);
+    expect(dependencies.publishCollection).toHaveBeenCalledTimes(1);
   });
 
   test('reports a completed publication honestly when retrieval verification lags', async () => {

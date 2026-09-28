@@ -12,6 +12,8 @@ const {
   getRuntimePaths,
 } = require('../../shared/automation-runtime-contract');
 
+const { OPERATION_CLASSES } = require('./policy-controller');
+
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const MAX_DISCOVERY_BYTES = 64 * 1024;
@@ -336,7 +338,10 @@ function createRuntimeServer(options = {}) {
           );
           return;
         }
-        const result = await controller.execute(params.operation, params.input);
+        const operationClass = OPERATION_CLASSES[params.operation];
+        const result = ['interact', 'transfer', 'privileged'].includes(operationClass)
+          ? { ok: false, error: { code: 'APPROVAL_REQUIRED', message: 'This action requires Freedom Agent approval. Use the Agent sidebar; CLI approvals are not available yet.', retryable: false } }
+          : await controller.execute(params.operation, params.input);
         writeResponse(socketState.socket, { id, ok: true, result });
         return;
       }

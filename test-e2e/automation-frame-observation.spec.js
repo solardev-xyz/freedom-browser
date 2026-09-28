@@ -114,8 +114,9 @@ for (const mode of ['desktop', 'hidden']) {
       expect(copies[0].ref).not.toBe(copies[1].ref);
       const child = copies.find((frame) => frame.name === 'First copy');
       expect(child).toBeTruthy();
-      const opaque = frames.find((frame) => frame.name === 'Opaque sandbox');
-      expect(opaque.origin).toBe('null');
+      const opaque = frames.find((frame) => frame.origin === 'null');
+      expect(opaque).toBeTruthy();
+      expect(opaque.name).toBe('');
       expect(
         await execute(electronApp, 'browser_read_frame', { frameRef: opaque.ref })
       ).toMatchObject({ ok: false, error: { code: 'POLICY_DENIED' } });

@@ -59,6 +59,11 @@ class ManagedWorkspaceServers {
     return server;
   }
 
+  async checkStart(conversationId, port) {
+    if (this.unconfirmedPorts.get(conversationId)?.has(port)) throw serverError('Previous server exit is unconfirmed; verify it has stopped before starting another preview');
+    await this.checkPort(port);
+  }
+
   async restart(conversationId, id, request = {}) {
     const server = this.get(conversationId, id);
     if (this.unconfirmedPorts.get(conversationId)?.has(server.port)) throw serverError('Previous server exit is unconfirmed');

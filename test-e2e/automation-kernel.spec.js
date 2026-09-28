@@ -504,3 +504,25 @@ test('desktop and hidden adapters preserve HTTPS, Swarm, and IPFS behavior', asy
   await window.locator(`[data-test="tab"][data-tab-id="${desktopRendererTabId}"]`).click();
   await expect(addressInput).toHaveValue(PROTOCOL_CASES.at(-1).url);
 });
+
+test('typing and keys work while chrome retains keyboard focus', async ({ electronApp, window, harness }) => {
+  const url = 'https://automation.example.test/focus';
+  await harness.setContentFixture(url, { body: `<!doctype html><title>Focus fixture</title>
+    <input aria-label="Message"><p id="output">Waiting</p><script>
+    document.querySelector('input').addEventListener('keydown', e => {
+      if(e.key === 'Enter') document.querySelector('#output').textContent = 'Submitted ' + e.target.value;
+    });</script>` });
+  const address = window.locator('[data-test="address-input"]');
+  await address.fill(url); await address.press('Enter');
+  await expect.poll(() => tabForUrl(electronApp, url)).toBeTruthy();
+  const tab = await tabForUrl(electronApp, url);
+  const snapshot = await executeAutomation(electronApp, 'browser_snapshot', { tabId: tab.tabId });
+  const ref = snapshot.result.elements.find(element => element.name === 'Message').ref;
+  await window.evaluate(() => {
+    const input = document.createElement('input'); input.id = 'review-focus-fixture'; document.body.appendChild(input); input.focus();
+  });
+  expect(await executeAutomation(electronApp, 'browser_type', { tabId: tab.tabId, ref, text: 'hello' })).toMatchObject({ ok: true });
+  expect(await executeAutomation(electronApp, 'browser_press', { tabId: tab.tabId, ref, key: 'Enter' })).toMatchObject({ ok: true });
+  expect(await executeAutomation(electronApp, 'browser_snapshot', { tabId: tab.tabId })).toMatchObject({ ok: true, result: { text: expect.stringContaining('Submitted hello') } });
+  expect(await window.evaluate(() => ({ active: document.activeElement.id, value: document.querySelector('#review-focus-fixture').value }))).toEqual({ active: 'review-focus-fixture', value: '' });
+});

@@ -235,6 +235,10 @@ class AgentNodeOperationStore {
     return this.getAny(operationId);
   }
 
+  deleteConversation(ownerId) {
+    return this.getDb().prepare('DELETE FROM agent_node_operations WHERE owner_id = ?').run(requiredString(ownerId, 'Owner ID', 160)).changes;
+  }
+
   markResponded(operationId, response) {
     this.#getStatements().markResponded.run(
       OPERATION_STATES.RESPONDED,

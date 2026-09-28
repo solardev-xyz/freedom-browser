@@ -108,7 +108,7 @@ function hydrateVisibleTranscript(sessionManager, turns, model) {
 
   for (const turn of turns) {
     if (typeof turn?.userText !== 'string' || !turn.userText.trim()) continue;
-    if (turn.status === 'failed') continue;
+    if (['failed', 'cancelled', 'interrupted'].includes(turn.status)) continue;
     const timestamp = Number.isFinite(turn.startedAt) ? turn.startedAt : Date.now();
     sessionManager.appendMessage({
       role: 'user',
@@ -116,7 +116,7 @@ function hydrateVisibleTranscript(sessionManager, turns, model) {
       timestamp,
     });
     for (const guidance of Array.isArray(turn.guidance) ? turn.guidance : []) {
-      if (typeof guidance?.text !== 'string' || !guidance.text.trim()) continue;
+      if (guidance?.status !== 'applied' || typeof guidance.text !== 'string' || !guidance.text.trim()) continue;
       sessionManager.appendMessage({
         role: 'user',
         content: guidance.text,

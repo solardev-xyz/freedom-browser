@@ -31,6 +31,19 @@ describe('ManagedWorkspaceSourceReader', () => {
     await fs.promises.rm(workspaceRoot, { recursive: true, force: true });
   });
 
+  test('excludes hidden files and credentials while retaining public well-known resources', async () => {
+    await fs.promises.mkdir(path.join(workspaceRoot, '.well-known'));
+    await fs.promises.writeFile(path.join(workspaceRoot, '.well-known', 'security.txt'), 'Contact: public@example.test');
+    await fs.promises.writeFile(path.join(workspaceRoot, '.env'), 'PRIVATE=secret');
+    await fs.promises.writeFile(path.join(workspaceRoot, 'credentials.json'), '{}');
+    await fs.promises.writeFile(path.join(workspaceRoot, 'config.txt'), 'api_key="not-a-real-credential-123456"');
+    const source = await reader.read('conversation_test', '.');
+    expect(source.files.map(file => file.path)).toEqual(['.well-known/security.txt']);
+    expect(source.excludedCount).toBe(4);
+    await expect(reader.read('conversation_test', '.env')).rejects.toMatchObject({ code: 'WORKSPACE_PUBLICATION_UNSAFE' });
+    await expect(reader.read('conversation_test', 'config.txt')).rejects.toMatchObject({ code: 'WORKSPACE_PUBLICATION_UNSAFE' });
+  });
+
   test('reads a project subtree as exact relative file content and excludes Git metadata', async () => {
     await fs.promises.mkdir(path.join(workspaceRoot, 'dist', 'assets'), { recursive: true });
     await fs.promises.writeFile(path.join(workspaceRoot, 'dist', 'index.html'), '<h1>Hello</h1>');

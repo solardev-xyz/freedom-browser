@@ -191,7 +191,7 @@ class PdfProcessor {
     const validated = validateInput(data, options, operation);
     if (options.signal?.aborted) throw Object.assign(new Error('PDF processing was cancelled'), { code: 'ABORT_ERR' });
     const jobId = `pdf_${crypto.randomUUID()}`;
-    const partition = `pdf-processor-${crypto.randomUUID()}`;
+    const partition = 'freedom-pdf-processor';
     const window = new this.BrowserWindow(processorWindowOptions(this.BrowserWindow, partition));
     this.windows.add(window);
     const rendererRoot = path.resolve(__dirname, '..', '..', 'renderer');
