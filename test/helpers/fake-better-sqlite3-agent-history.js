@@ -11,7 +11,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
     if (existing) {
       this.state = existing;
     } else {
-      this.state = { sessions: [], turns: [], userVersion: 0 };
+      this.state = { sessions: [], turns: [], reports: [], userVersion: 0 };
       databases.set(filePath, this.state);
     }
   }
@@ -38,6 +38,39 @@ class FakeBetterSqlite3AgentHistoryDatabase {
 
   prepare(sql) {
     const query = normalize(sql);
+
+    if (query === 'SELECT id, session_id, activity_json, started_at FROM agent_turns WHERE id > ? ORDER BY id ASC LIMIT 100') {
+      return { all: cursor => this.state.turns.filter(row => row.id > cursor)
+        .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).slice(0, 100).map(clone) };
+    }
+    if (query === 'SELECT id FROM agent_turns WHERE id = ? AND session_id = ?') {
+      return { get: (id, sessionId) => clone(this.state.turns.find(row => row.id === id && row.session_id === sessionId)) };
+    }
+    if (query === 'UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ?') {
+      return { run: (json, id, sessionId) => {
+        const row = this.state.turns.find(row => row.id === id && row.session_id === sessionId);
+        if (row) row.activity_json = json;
+        return { changes: row ? 1 : 0 };
+      } };
+    }
+    if (query.startsWith('INSERT OR IGNORE INTO agent_helper_reports')) {
+      return { run: (id, session_id, run_id, task_id, title, state, report, report_chars, truncated, created_at) => {
+        if (this.state.reports.some(row => row.id === id)) return { changes: 0 };
+        this.state.reports.push({ id, session_id, run_id, task_id, title, state, report, report_chars, truncated, created_at });
+        return { changes: 1 };
+      } };
+    }
+    if (query.startsWith('SELECT id, run_id, task_id, title, state, report_chars')) {
+      return { all: (id, query, _query, limit, offset) => this.state.reports.filter(row => row.session_id === id &&
+        (row.title.toLowerCase().includes(query.toLowerCase()) || row.report.toLowerCase().includes(query.toLowerCase())))
+        .sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id)).slice(offset, offset + limit).map(clone) };
+    }
+    if (query.startsWith('SELECT substr(report,')) {
+      return { get: (start, limit, sessionId, id) => {
+        const row = this.state.reports.find(row => row.id === id && row.session_id === sessionId);
+        return row && { text: Array.from(row.report).slice(start - 1, start - 1 + limit).join(''), report_chars: row.report_chars, truncated: row.truncated };
+      } };
+    }
 
     if (query.startsWith('INSERT INTO agent_sessions')) {
       return {
@@ -140,7 +173,8 @@ class FakeBetterSqlite3AgentHistoryDatabase {
 
     if (
       query ===
-      "UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ? AND status != 'running'"
+      "UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ? AND status != 'running'" ||
+      query === "UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ? AND status = 'running'"
     ) {
       return {
         run: (activityJson, id, sessionId) => {
@@ -148,7 +182,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
             (candidate) =>
               candidate.id === id &&
               candidate.session_id === sessionId &&
-              candidate.status !== 'running'
+              (query.includes("status !=") ? candidate.status !== 'running' : candidate.status === 'running')
           );
           if (!row) return { changes: 0 };
           row.activity_json = activityJson;
@@ -231,6 +265,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
     if (query === 'DELETE FROM agent_turns WHERE session_id = ?') {
       return {
         run: (sessionId) => {
+          this.state.reports = this.state.reports.filter(row => row.session_id !== sessionId);
           const before = this.state.turns.length;
           this.state.turns = this.state.turns.filter((row) => row.session_id !== sessionId);
           return { changes: before - this.state.turns.length };

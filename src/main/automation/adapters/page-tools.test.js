@@ -78,6 +78,34 @@ test('unsupported contexts have no executable fallback', async () => {
   expect(await page.list()).toMatchObject({ available: false, tools: [] });
 });
 
+test('document.domain discovery rejection is unavailable and invalidates old references', async () => {
+  const { page, context } = fixture();
+  const { input, execution } = await request(page);
+  context.getTools.mockRejectedValue(new DOMException(
+    'document.modelContext cannot be used when document.domain is enabled.',
+    'SecurityError'
+  ));
+  expect(await page.preview()).toMatchObject({ tools: [] });
+  expect(await page.list()).toMatchObject({
+    available: false,
+    tools: [],
+    message: 'WebMCP unavailable on this page. Continue with normal browser tools.',
+  });
+  await expect(page.call(input, execution)).rejects.toMatchObject({ code: 'STALE_ELEMENT_REFERENCE' });
+  expect(context.executeTool).not.toHaveBeenCalled();
+});
+
+test.each([
+  new Error('Discovery failed'),
+  new DOMException('Another security failure', 'SecurityError'),
+  new Error('document.modelContext cannot be used when document.domain is enabled.'),
+])('other discovery errors remain visible: %s', async (error) => {
+  const { page, context } = fixture();
+  context.getTools.mockRejectedValue(error);
+  await expect(page.list()).rejects.toBe(error);
+  await expect(page.preview()).rejects.toBe(error);
+});
+
 test('exact approval binds document, definition and arguments', async () => {
   const { page, context } = fixture();
   const { input, execution } = await request(page);

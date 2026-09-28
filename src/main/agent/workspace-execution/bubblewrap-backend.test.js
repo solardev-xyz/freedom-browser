@@ -18,7 +18,7 @@ const {
   collectStream,
   detectBubblewrapCapabilities,
 } = require('./bubblewrap-backend');
-const { createWorkspaceExecutionPolicy } = require('./execution-policy');
+const { createWorkspaceExecutionPolicy, createWorkspaceFileReadPolicy } = require('./execution-policy');
 const { resolveExecutableAccess } = require('./executable-access');
 
 function expectArgumentSequence(args, sequence) {
@@ -84,6 +84,17 @@ describe('Bubblewrap backend contract', () => {
     await Promise.all(
       fixtureRoots.splice(0).map((root) => fs.promises.rm(root, { recursive: true, force: true }))
     );
+  });
+
+  test('file-read policy mounts the workspace read-only in the offline namespace', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceFileReadPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const launch = await buildBubblewrapArguments(policy, { command: '/bin/sh', args: ['-c', 'printf ok'] });
+    fixtureRoots.push(launch.stagingDirectory);
+    const index = launch.args.indexOf(policy.filesystem.readableRoots[0].sourcePath);
+    expect(launch.args.slice(index - 1, index + 2)).toEqual(['--ro-bind', policy.filesystem.readableRoots[0].sourcePath, '/workspace']);
+    expect(launch.args).not.toContain('--share-net');
   });
 
   test('generates a fail-closed namespace invocation with no host home, run, or tmp mount', async () => {
@@ -485,7 +496,7 @@ describe('Bubblewrap backend contract', () => {
     if (state === 'cancelled') expect(receipt.error?.code).toBe(complete ? undefined : 'LINUX_OWNER_INCOMPLETE');
     expect(receipt.exitCode).toBe(final.monitorObserved === false ? null : code);
   });
-  test('unavailable owner denies capability without invoking an unowned fallback', async () => {
+  linuxOnlyTest('unavailable owner denies capability without invoking an unowned fallback', async () => {
     const runOwner = jest.fn(async () => { throw new Error('missing helper'); });
     const result = await detectBubblewrapCapabilities({ binary: '/usr/bin/true', runOwner });
     expect(result.available).toBe(false); expect(result.denial.code).toBe('LINUX_OWNER_UNAVAILABLE');

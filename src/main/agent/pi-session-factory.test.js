@@ -329,8 +329,10 @@ describe('isolated Pi session factory', () => {
     );
   });
 
-  test('uses a fixed browser-only prompt and a non-user-specific cwd', () => {
+  test('uses a capability-aware prompt and a non-user-specific cwd', () => {
     expect(DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT).toContain('Freedom Agent');
+    expect(DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT).toContain('Your available tools define your capabilities');
+    expect(DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT).not.toContain('using only the provided Freedom browser tools');
     expect(DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT).toContain('untrusted data');
     expect(VIRTUAL_AGENT_CWD).toMatch(/freedom-agent$/);
     expect(VIRTUAL_AGENT_CWD).not.toContain(repositoryRoot);

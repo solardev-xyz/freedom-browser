@@ -16,6 +16,7 @@ const {
   ExecutionPolicyError,
   NETWORK_POSTURES,
   createWorkspaceExecutionPolicy,
+  createWorkspaceFileReadPolicy,
   insidePath,
   isValidatedWorkspaceExecutionPolicy,
   restrictWorkspaceExecutionPolicy,
@@ -72,6 +73,28 @@ describe('workspace execution policy', () => {
     await Promise.all(
       fixtureRoots.splice(0).map((root) => fs.promises.rm(root, { recursive: true, force: true }))
     );
+  });
+
+  test('file reads do not scan live project contents or consult Git, and cannot gain writes or networking', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    await fs.promises.writeFile(path.join(fixture.workspaceRoot, '.git/config'), '[include]\n path = /outside/config\n');
+    const outside = path.join(fixture.fixtureRoot, 'outside');
+    await fs.promises.writeFile(outside, 'outside');
+    await fs.promises.link(outside, path.join(fixture.workspaceRoot, 'hardlink'));
+    const scan = jest.spyOn(fs.promises, 'readdir');
+    try {
+      const policy = await createWorkspaceFileReadPolicy({ workspaceRoot: fixture.workspaceRoot, network: 'full' });
+      expect(isValidatedWorkspaceExecutionPolicy(policy)).toBe(true);
+      expect(policy.filesystem.writableRoots).toEqual([]);
+      expect(policy.filesystem.protectedPaths).toEqual([]);
+      expect(policy.network).toBe('none');
+      expect(scan).not.toHaveBeenCalled();
+      expect(() => restrictWorkspaceExecutionPolicy(policy, { network: 'full' })).toThrow();
+      expect(restrictWorkspaceExecutionPolicy(policy).filesystem.writableRoots).toEqual([]);
+    } finally { scan.mockRestore(); }
+    await expect(createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot }))
+      .rejects.toMatchObject({ code: 'UNSAFE_GIT_CONFIGURATION' });
   });
 
   test('resolves one writable workspace with read-only Git metadata and private temporary storage', async () => {
@@ -694,6 +717,18 @@ describe('workspace execution policy', () => {
     ).rejects.toMatchObject({
       code: 'UNSAFE_GIT_CONFIGURATION',
     });
+  });
+
+  test.each(['ssh://git@example.com/repo.git', 'git+ssh://git@example.com/repo.git', 'ssh+git://git@example.com/repo.git', 'git@example.com:repo.git'])('accepts ordinary SSH account names: %s', async url => {
+    const fixture = await createFixture(); fixtureRoots.push(fixture.fixtureRoot);
+    await fs.promises.appendFile(path.join(fixture.workspaceRoot, '.git', 'config'), `[remote "origin"]\n url = ${url}\n`);
+    await expect(createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })).resolves.toMatchObject({ kind: 'freedom.workspace-execution-policy' });
+  });
+
+  test.each(['https://token@example.com/repo.git', 'ssh://git:secret@example.com/repo.git', 'git+ssh://git:secret@example.com/repo.git'])('still rejects credential-bearing URLs: %s', async url => {
+    const fixture = await createFixture(); fixtureRoots.push(fixture.fixtureRoot);
+    await fs.promises.appendFile(path.join(fixture.workspaceRoot, '.git', 'config'), `[remote "origin"]\n url = ${url}\n`);
+    await expect(createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })).rejects.toMatchObject({ code: 'UNSAFE_GIT_CONFIGURATION' });
   });
 
   test('represents unavailable aggregate limits without weakening them in validation', async () => {

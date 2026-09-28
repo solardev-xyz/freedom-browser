@@ -3,6 +3,7 @@
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
+const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts, summarizeSubagents } = require('./subagent-receipt');
 const {
   classifyProviderFailure,
   providerFailurePresentation,
@@ -37,6 +38,21 @@ const WORKSPACE_OPERATIONS = Object.freeze({
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
 const OPERATION_PROGRESS = Object.freeze({
+  helper_reports: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Reading saved helper reports',
+    completed: 'Read saved helper reports',
+  },
+  helper_task: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Checking or messaging a helper',
+    completed: 'Checked helper task',
+  },
+  [SUBAGENT_TOOL_NAME]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Delegating a read-only task',
+    completed: 'Received helper report',
+  },
   [WORKSPACE_OPERATIONS.HISTORY]: {
     effect: ACTIVITY_EFFECTS.MANAGED,
     intent: 'Checking project history',
@@ -282,6 +298,8 @@ const ERROR_LABELS = Object.freeze({
   [ERROR_CODES.ELEMENT_NOT_FOUND]: 'The page element is no longer available.',
   [ERROR_CODES.ELEMENT_NOT_INTERACTABLE]: 'The page element could not be used.',
   [ERROR_CODES.APPROVAL_REQUIRED]: 'This action still needs approval.',
+  [ERROR_CODES.OBSERVATION_REQUIRED]: 'A fresh page observation is needed before this action.',
+  [ERROR_CODES.TAB_BUSY]: 'A helper is currently using this tab.',
   [ERROR_CODES.POLICY_DENIED]: 'Freedom blocked this browser action.',
   [ERROR_CODES.USER_CANCELLED]: 'The browser action was not applied.',
   [ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER]: 'The user cancelled file selection.',
@@ -306,6 +324,8 @@ const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
   ERROR_CODES.ELEMENT_NOT_FOUND,
   ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
   ERROR_CODES.APPROVAL_REQUIRED,
+  ERROR_CODES.OBSERVATION_REQUIRED,
+  ERROR_CODES.TAB_BUSY,
   ERROR_CODES.POLICY_DENIED,
   ERROR_CODES.USER_CANCELLED,
   ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER,
@@ -806,6 +826,22 @@ function activityProgress(operation, receipt = {}) {
   const attachment = normalizeAttachmentReceipt(receipt.attachment, operation);
   const publication = normalizePublicationReceipt(receipt.publication);
   const workspace = normalizeWorkspaceReceipt(receipt.workspace);
+  const subagent = normalizeSubagentReceipt(receipt.subagent);
+  const subagents = normalizeSubagentReceipts(receipt.subagents);
+
+  if (operation === SUBAGENT_TOOL_NAME) {
+    const title = subagent?.title || boundedString(receipt.title, 100);
+    intent = title ? `Delegating: ${title}` : copy.intent;
+    label = subagent && subagent.state !== 'completed'
+      ? ({ running: 'Helper working', cancelled: 'Helper stopped', timed_out: 'Helper timed out', limited: 'Helper reached its limit', failed: 'Helper could not finish' }[subagent.state])
+      : copy.completed;
+    if (title) label += ` — ${title}`;
+    if (subagents) { intent = subagents.some(item => item.mode === 'browser') ? 'Delegating browser tasks' : subagents.some(item => item.mode === 'edit') ? 'Delegating editing and review' : 'Delegating two read-only tasks'; label = summarizeSubagents(subagents).detail; }
+  }
+  if (operation === 'helper_task') {
+    const labels = { status: ['Checking helper status', 'Checked helper status'], wait: ['Waiting for a helper', 'Received helper result'], message: ['Messaging a helper', 'Sent helper message'] };
+    if (labels[receipt.helperAction]) [intent, label] = labels[receipt.helperAction];
+  }
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -1016,6 +1052,8 @@ function activityProgress(operation, receipt = {}) {
     ...(attachment && { attachment }),
     ...(publication && { publication }),
     ...(workspace && { workspace }),
+    ...(subagent && { subagent }),
+    ...(subagents && { subagents }),
   });
 }
 
@@ -1091,6 +1129,48 @@ function errorExplanation(code) {
 
 function buildAgentOutcome(activity, status, error) {
   const items = Array.isArray(activity) ? activity : [];
+  const helpers = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .filter(receipt => receipt?.mode === 'browser');
+  const actions = helpers.flatMap(receipt => receipt.browserActions);
+  const outcome = buildAgentOutcomeFromReceipts([...items, ...actions], status, error);
+  const browserItems = items.flatMap(item => item?.operation === SUBAGENT_TOOL_NAME
+    ? [item, ...(normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+      .filter(receipt => receipt?.mode === 'browser').flatMap(receipt => receipt.browserActions)] : [item]);
+  const uncertainBrowserAction = browserItems.some((item, index) => {
+    if (!item?.operation?.startsWith('browser_') || normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED ||
+        !['failed', 'running'].includes(item.status) || CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode)) return false;
+    const later = browserItems.slice(index + 1);
+    if (item.pageTool?.executionRef) return !later.some(next =>
+      next.pageTool?.executionRef === item.pageTool.executionRef && next.pageTool.status === 'completed');
+    // A failed action followed by a fresh read can be reconciled by the agent.
+    // A read of another page or metadata alone does not check its effects.
+    return !later.some(next => next.status === 'succeeded' &&
+      [OPERATIONS.SNAPSHOT, OPERATIONS.SCREENSHOT, OPERATIONS.READ_FRAME].includes(next.operation) &&
+      item.pageId && next.pageId === item.pageId);
+  });
+  const unfinishedEdits = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .some(receipt => receipt?.mode === 'edit' && (receipt.writesPending ||
+      (receipt.state !== 'completed' && receipt.attemptedFiles.length > 0)));
+  const notice = uncertainBrowserAction || helpers.some(receipt => receipt.browserPending)
+    ? { tone: 'caution', headline: 'Browser action outcome uncertain',
+      detail: 'An action may have taken effect without a confirmed result. Check the page before repeating it.' }
+    : unfinishedEdits ? { tone: 'caution', headline: 'Helper stopped during editing',
+      detail: 'The helper may have left partial changes. Review its file changes before continuing.' } : null;
+  return Object.freeze({ ...outcome, ...(notice && { notice }),
+    ...(helpers.length && { detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs. Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim() }),
+  });
+}
+
+function buildAgentOutcomeFromReceipts(activity, status, error) {
+  const items = Array.isArray(activity) ? activity : [];
+  const editingHelpers = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .filter(receipt => receipt?.mode === 'edit');
+  const helperChangedFiles = new Set(editingHelpers.flatMap(receipt => receipt.changedFiles));
+  const helperEditNote = editingHelpers.length
+    ? ` Editing helpers recorded ${helperChangedFiles.size} changed ${helperChangedFiles.size === 1 ? 'file' : 'files'}. Review current changes before testing or committing; stopped tasks can leave partial edits.` : '';
   const succeeded = items.filter((item) => item?.status === 'succeeded');
   const cancelledDownloads = items.filter(
     (item) => item?.errorCode === ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
@@ -1173,6 +1253,8 @@ function buildAgentOutcome(activity, status, error) {
     .map((item) => normalizeWorkspaceReceipt(item?.workspace))
     .filter(Boolean);
   const nonBrowserObservations = new Set([
+    'helper_reports',
+    SUBAGENT_TOOL_NAME,
     OPERATIONS.NODE_STATUS,
     OPERATIONS.NODE_REQUEST,
     OPERATIONS.NODE_OPERATION_STATUS,
@@ -1251,8 +1333,9 @@ function buildAgentOutcome(activity, status, error) {
     approvals,
   });
   const browserActionCopy = `${browserSucceeded.length} successful browser ${browserSucceeded.length === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
-  const recoveryNote = counts.failed
-    ? ` Agent recovered from ${counts.failed} failed browser ${counts.failed === 1 ? 'action' : 'actions'}.`
+  const browserFailures = failed.filter(item => !nonBrowserObservations.has(item.operation)).length;
+  const recoveryNote = browserFailures
+    ? ` ${browserFailures} browser ${browserFailures === 1 ? 'action did' : 'actions did'} not complete successfully.`
     : '';
   const approvalNote = approvals.approved
     ? ` ${approvals.approved} browser ${approvals.approved === 1 ? 'action was' : 'actions were'} approved by the user.`
@@ -1523,8 +1606,8 @@ function buildAgentOutcome(activity, status, error) {
           ? serverPreviewOpened
             ? 'Server preview opened'
             : 'Static preview opened'
-          : changedFiles.length
-            ? changedFiles.length === 1
+          : changedFiles.length || helperChangedFiles.size
+            ? changedFiles.length + helperChangedFiles.size === 1
               ? 'Project file updated'
               : 'Project files updated'
             : shellCommands.length
@@ -1532,9 +1615,9 @@ function buildAgentOutcome(activity, status, error) {
                 ? 'Project command completed'
                 : 'Project commands completed'
               : 'Project files inspected',
-        detail: historyOnly ? historyCopy.detail : previewOpened
+        detail: (historyOnly ? historyCopy.detail : previewOpened
           ? `Freedom opened ${serverPreviewOpened ? 'a managed workspace server' : 'the current workspace HTML'} in an isolated Agent tab${serverPreviewOpened ? ' through its approved localhost port' : ' without network access'}.${workspaceCommands.length > 1 ? ` ${workspaceCommands.length - 1} earlier project ${workspaceCommands.length === 2 ? 'operation was' : 'operations were'} also recorded.` : ''}`
-          : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}${historyCopy ? ` ${historyCopy.detail}` : ''}`,
+          : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}${historyCopy ? ` ${historyCopy.detail}` : ''}`) + helperEditNote,
         workspace: lastOperation,
         destinations,
         counts,
@@ -1586,6 +1669,20 @@ function buildAgentOutcome(activity, status, error) {
         counts,
       });
     }
+    const delegated = items.filter(item => item.operation === SUBAGENT_TOOL_NAME);
+    if (delegated.length) {
+      const receipts = delegated.flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)]);
+      const summary = summarizeSubagents(receipts);
+      return Object.freeze({
+        kind: 'completed', verification: 'delegated_report', ...summary,
+        detail: `${summary.detail}.${helperEditNote || (receipts.some(receipt => receipt?.mode === 'browser') ? ' Model-generated findings.' : ' Read-only, model-generated findings.')}`,
+        destinations, counts,
+      });
+    }
+    if (succeeded.some(item => item.operation === 'helper_reports') && !failed.length) {
+      return Object.freeze({ kind: 'completed', verification: 'historical_report', tone: 'neutral',
+        headline: 'Read saved helper reports', detail: 'Freedom retrieved historical helper findings. They do not verify the current state of files or pages.', destinations, counts });
+    }
     if (!items.length) {
       return Object.freeze({
         kind: 'completed',
@@ -1626,7 +1723,8 @@ function buildAgentOutcome(activity, status, error) {
     const projectState = `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded.${completedFileChanges ? ' Completed project changes were not rolled back.' : ''}${workspaceShellCommands.some((receipt) => receipt.sideEffects === 'unknown') ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`;
     browserState = `${hasBrowserActivity ? `${browserState} ` : ''}${projectState}`;
   }
-  const retryNeedsReview = counts.changed > 0 || uncertainChanges.length > 0;
+  if (helperEditNote) browserState += helperEditNote;
+  const retryNeedsReview = counts.changed > 0 || uncertainChanges.length > 0 || editingHelpers.some(receipt => receipt.attemptedFiles.length || receipt.writesPending);
   if (status === 'cancelled') {
     return Object.freeze({
       kind: 'interrupted',

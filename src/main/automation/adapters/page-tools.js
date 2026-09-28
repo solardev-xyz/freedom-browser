@@ -32,7 +32,27 @@ async function pageToolsBridge(action, input = {}) {
   if (action === 'status') return publicJob();
 
   const revision = state.revision;
-  const nativeTools = await context.getTools();
+  let nativeTools;
+  try {
+    nativeTools = await context.getTools();
+  } catch (error) {
+    // Chromium exposes WebMCP on some secure custom schemes (including our
+    // previews) but rejects discovery in document.domain-enabled contexts.
+    // Catch inside the isolated world: Electron loses DOMException details.
+    if (
+      (action === 'list' || action === 'preview') &&
+      error?.name === 'SecurityError' &&
+      error.message === 'document.modelContext cannot be used when document.domain is enabled.'
+    ) {
+      state.tools.clear();
+      return {
+        available: false,
+        tools: [],
+        message: 'WebMCP unavailable on this page. Continue with normal browser tools.',
+      };
+    }
+    throw error;
+  }
   if (revision !== state.revision) return { stale: true };
   const describe = (tool) => {
     const schemaText =

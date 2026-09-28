@@ -78,6 +78,14 @@ describe('preload', () => {
     jest.restoreAllMocks();
   });
 
+  test('reads saved helper report pages through the narrow history bridge', async () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    await exposures.electronAPI.readAgentHelperReport('conversation', 'report_' + 'a'.repeat(64), 16000);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.AGENT_HELPER_REPORTS, {
+      conversationId: 'conversation', reportId: 'report_' + 'a'.repeat(64), offset: 16000,
+    });
+  });
+
   test('exposes the preload bridges and routes direct wrappers to ipcRenderer', async () => {
     const { contextBridge, exposures, internalPages, ipcRenderer } = loadPreloadModule({
       antApiEnv: null,
@@ -234,6 +242,7 @@ describe('preload', () => {
         IPC.AGENT_RESUME,
         [{ runId: 'run_test', prompt: 'I logged in' }],
       ],
+      [exposures.electronAPI, 'stopAgentHelper', ['run_1', 'delegate_1'], IPC.AGENT_STOP, [{ runId: 'run_1', taskId: 'delegate_1' }]],
       [exposures.electronAPI, 'stopAgent', ['run_1'], IPC.AGENT_STOP, [{ runId: 'run_1' }]],
       [
         exposures.electronAPI,

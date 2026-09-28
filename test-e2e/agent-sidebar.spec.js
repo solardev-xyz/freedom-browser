@@ -28,6 +28,404 @@ const test = baseTest.extend({
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
+test('read-only external projects accept SSH remotes and physical ASAR archives', async ({ electronApp, userDataDir }) => {
+  const result = await electronApp.evaluate(async (_electron, { root, userDataDir }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('original-fs'); const path = require('path');
+    const { AgentManagedWorkspaceStore } = require(root + '/src/main/agent/managed-workspace-store');
+    const { ManagedWorkspaceController } = require(root + '/src/main/agent/managed-workspace-controller');
+    const profile = path.join(userDataDir, 'read-profile');
+    const project = path.join(userDataDir, 'read-project');
+    fs.mkdirSync(profile, { recursive: true });
+    fs.mkdirSync(path.join(project, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(project, 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.git/config'), '[remote "origin"]\n url = ssh://git@example.com/project.git\n');
+    fs.writeFileSync(path.join(project, 'README.md'), 'External project fixture');
+    fs.copyFileSync(path.join(process.resourcesPath, 'default_app.asar'), path.join(project, 'node_modules/app.asar'));
+    // An archive outside ignored dependencies must stay a file during search too.
+    fs.copyFileSync(path.join(process.resourcesPath, 'default_app.asar'), path.join(project, 'build.asar'));
+    const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
+    const controller = new ManagedWorkspaceController({ store });
+    try {
+      const workspace = await store.attachProject('read-project', project);
+      const [read, listing, found] = await Promise.all([
+        controller.readFile('read-project', 'README.md'),
+        controller.listDirectory('read-project', '.'),
+        controller.findFiles('read-project', '.', { pattern: '**/README*' }),
+      ]);
+      let writeError;
+      try { await controller.writeFile('read-project', 'README.md', 'Unauthorized'); } catch (error) { writeError = error.code; }
+      return { mode: workspace.project.mode, read: read.toString('utf8'), listed: listing.entries.some(entry => entry.name === 'README.md'),
+        found: found.results.includes('README.md'), writeError,
+        unchanged: fs.readFileSync(path.join(project, 'README.md'), 'utf8') === 'External project fixture' };
+    } finally { await controller.dispose(); store.close(); }
+  }, { root: repositoryRoot, userDataDir });
+  expect(result).toEqual({ mode: 'read', read: 'External project fixture', listed: true, found: true, writeError: 'PROJECT_READ_ONLY', unchanged: true });
+});
+
+test('reads a live external project without granting writes or socket access', async ({ electronApp, userDataDir }) => {
+  test.skip(process.platform === 'win32', 'Unix socket fixture');
+  const result = await electronApp.evaluate(async (_electron, { root, userDataDir }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('original-fs'); const path = require('path'); const net = require('net');
+    const { AgentManagedWorkspaceStore } = require(root + '/src/main/agent/managed-workspace-store');
+    const { ManagedWorkspaceController } = require(root + '/src/main/agent/managed-workspace-controller');
+    const { createWorkspaceFileReadPolicy, createWorkspaceExecutionPolicy } = require(root + '/src/main/agent/workspace-execution/execution-policy');
+    const directory = fs.mkdtempSync(path.join(require('os').tmpdir(), 'fr-'));
+    const project = path.join(directory, 'p');
+    fs.mkdirSync(project);
+    fs.mkdirSync(path.join(project, '.git'));
+    fs.writeFileSync(path.join(project, 'README.md'), 'Live project fixture');
+    const outside = path.join(directory, 'outside.txt');
+    fs.writeFileSync(outside, 'outside fixture');
+    fs.symlinkSync(outside, path.join(project, 'link.txt'));
+    fs.linkSync(outside, path.join(project, 'hardlink.txt'));
+    let connections = 0;
+    const socket = net.createServer(connection => { connections += 1; connection.end(); });
+    await new Promise((resolve, reject) => { socket.once('error', reject); socket.listen(path.join(project, 'live.sock'), resolve); });
+    const changing = setInterval(() => fs.writeFileSync(path.join(project, 'runtime.log'), String(Date.now())), 10);
+    const profile = path.join(userDataDir, 'live-read-profile');
+    fs.mkdirSync(profile);
+    const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
+    let readPolicy;
+    const controller = new ManagedWorkspaceController({ store, createReadPolicy: async options => {
+      readPolicy = await createWorkspaceFileReadPolicy(options); return readPolicy;
+    } });
+    try {
+      await store.attachProject('live-project', project);
+      const [read, listing, found, matches] = await Promise.all([
+        controller.readFile('live-project', 'README.md'), controller.listDirectory('live-project', '.'),
+        controller.findFiles('live-project', '.', { pattern: '*.md' }),
+        controller.grepFiles('live-project', '.', { pattern: 'Live project', glob: '*.md', literal: true }),
+      ]);
+      const denied = {};
+      for (const name of ['live.sock', 'link.txt', 'hardlink.txt']) {
+        try { await controller.readFile('live-project', name); } catch (error) { denied[name] = error.code; }
+      }
+      let writeError;
+      try { await controller.writeFile('live-project', 'README.md', 'changed'); } catch (error) { writeError = error.code; }
+      const executionRoot = process.platform === 'linux' ? '/workspace' : fs.realpathSync(project);
+      const attemptedWrite = await controller.executor.execute(readPolicy, {
+        command: '/bin/sh', args: ['-c', 'printf changed > "$1"', 'write-probe', executionRoot + '/README.md'],
+      });
+      const socketProbe = await controller.executor.execute(readPolicy, {
+        command: controller.runtime.sandboxExecutablePath,
+        args: ['-e', "const c=require('net').connect(process.argv[1]); c.on('connect',()=>{c.end();process.exitCode=1;}); c.on('error',()=>{process.exitCode=0;});", executionRoot + '/live.sock'],
+      });
+      let commandPolicyError;
+      try { await createWorkspaceExecutionPolicy({ workspaceRoot: project }); } catch (error) { commandPolicyError = error.code; }
+      return { read: read.toString(), listed: listing.entries.some(entry => entry.name === 'README.md'),
+        found: found.results.includes('README.md'), matched: matches.output.includes('Live project'), denied, writeError,
+        sandboxWriteDenied: attemptedWrite.exitCode !== 0, socketDenied: socketProbe.exitCode === 0 && connections === 0,
+        unchanged: fs.readFileSync(path.join(project, 'README.md'), 'utf8') === 'Live project fixture',
+        commandStillValidated: ['WORKSPACE_SPECIAL_FILE_DENIED', 'WORKSPACE_HARDLINK_DENIED', 'WORKSPACE_CHANGED_DURING_VALIDATION'].includes(commandPolicyError) };
+    } finally {
+      clearInterval(changing); await controller.dispose(); store.close();
+      await new Promise(resolve => socket.close(resolve));
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }, { root: repositoryRoot, userDataDir });
+  expect(result).toEqual({ read: 'Live project fixture', listed: true, found: true, matched: true,
+    denied: { 'live.sock': 'WORKSPACE_PATH_TYPE_MISMATCH', 'link.txt': 'WORKSPACE_FILE_UNSAFE', 'hardlink.txt': 'WORKSPACE_FILE_UNSAFE' },
+    writeError: 'PROJECT_READ_ONLY', sandboxWriteDenied: true, socketDenied: true, unchanged: true, commandStillValidated: true });
+});
+
+for (const kind of ['managed', 'external']) test(`scoped helper edits ${kind} files through Pi tools and the real sandbox`, async ({ electronApp, userDataDir }) => {
+  const result = await electronApp.evaluate(async (_electron, { root, userDataDir, kind }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('original-fs'); const path = require('path');
+    const { AgentManagedWorkspaceStore } = require(root + '/src/main/agent/managed-workspace-store');
+    const { ManagedWorkspaceController } = require(root + '/src/main/agent/managed-workspace-controller');
+    const { createSubagentTool } = require(root + '/src/main/agent/pi-subagent-tools');
+    const { createWorkspaceTools } = require(root + '/src/main/agent/pi-workspace-tools');
+    const sdk = await require(root + '/src/main/agent/pi-sdk').loadPiSdk();
+    const profile = path.join(userDataDir, 'editing-profile'); fs.mkdirSync(profile);
+    const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
+    const controller = new ManagedWorkspaceController({ store });
+    const conversationId = 'editing';
+    const owner = { userText: 'Improve README', subagentAbortController: new AbortController() };
+    try {
+      let project;
+      if (kind === 'external') {
+        project = path.join(userDataDir, 'editing-project'); fs.mkdirSync(project); fs.mkdirSync(path.join(project, '.git'));
+        await store.attachProject(conversationId, project);
+      } else {
+        await controller.enable(conversationId);
+        project = await store.resolvePath(store.getForConversation(conversationId).workspaceId);
+      }
+      fs.writeFileSync(path.join(project, 'README.md'), 'before');
+      let permissionError;
+      if (kind === 'external') {
+        try { await controller.createDelegatedWriter(conversationId, ['README.md']); } catch (error) { permissionError = error.code; }
+        await controller.setProjectAccess(conversationId, 'write');
+      }
+      let parentDenied = false; let scopeDenied = false; let toolFailure; let toolStage;
+      const tool = createSubagentTool({ sdk, getOwner: () => owner,
+        createWriter: (_owner, files, signal) => controller.createDelegatedWriter(conversationId, files, { signal }),
+        createTools: (_owner, scoped) => createWorkspaceTools({ sdk, controller: scoped, conversationId, requestApproval: () => { throw new Error('Unexpected approval'); } }),
+        createSession: async ({ customTools }) => {
+          let listener;
+          const get = name => customTools.find(tool => tool.name === name);
+          return { session: { subscribe: fn => { listener = fn; return () => {}; }, abort: async () => {}, dispose: () => {},
+            prompt: async () => {
+              try { await controller.execute(conversationId, { command: 'echo competing' }); } catch (error) { parentDenied = error.code === 'WORKSPACE_WRITER_BUSY'; }
+              try { await get('write').execute('outside', { path: 'outside.md', content: 'denied' }); } catch (error) { scopeDenied = error.code === 'DELEGATED_PATH_DENIED'; }
+              try {
+              toolStage = 'read'; await get('read').execute('read', { path: 'README.md' });
+              toolStage = 'edit'; await get('edit').execute('edit', { path: 'README.md', edits: [{ oldText: 'before', newText: 'after' }] });
+              toolStage = 'new'; await get('write').execute('new', { path: 'docs/helper.md', content: 'created by helper' });
+              } catch (error) { toolFailure = { stage: toolStage, code: error.code, message: error.message }; throw error; }
+              listener({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Updated README and added documentation; tests are for the parent.' }] } });
+            } } };
+        },
+      });
+      const report = await tool.execute('delegate', { title: 'Improve docs', task: 'Improve the assigned files', mode: 'edit', files: ['README.md', 'docs/helper.md'] });
+      const scope = await controller.createDelegatedWriter(conversationId, ['README.md']);
+      let staleDenied;
+      try {
+        await scope.controller.readFile(conversationId, 'README.md');
+        fs.writeFileSync(path.join(project, 'README.md'), 'external change');
+        try { await scope.controller.writeFile(conversationId, 'README.md', 'stale overwrite'); } catch (error) { staleDenied = error.code; }
+      } finally { scope.release(); }
+      return { report: report.details.subagent, parentDenied, scopeDenied, permissionError, staleDenied, toolFailure,
+        current: fs.readFileSync(path.join(project, 'README.md'), 'utf8'), created: fs.existsSync(path.join(project, 'docs/helper.md')) ? fs.readFileSync(path.join(project, 'docs/helper.md'), 'utf8') : null,
+        outsideExists: fs.existsSync(path.join(project, 'outside.md')) };
+    } finally { owner.subagentAbortController.abort(); await controller.dispose(); store.close(); }
+  }, { root: repositoryRoot, userDataDir, kind });
+  expect(result.toolFailure).toBeUndefined();
+  expect(result).toMatchObject({ report: { mode: 'edit', state: 'completed', changedFiles: ['README.md', 'docs/helper.md'], writesPending: false },
+    parentDenied: true, scopeDenied: true, staleDenied: 'WORKSPACE_HISTORY_CHANGED', current: 'external change', created: 'created by helper', outsideExists: false });
+  if (kind === 'external') expect(result.permissionError).toBe('PROJECT_READ_ONLY');
+});
+
+for (const kind of ['managed', 'external']) test(`parallel helper and parent edits preserve ${kind} file ownership in the real sandbox`, async ({ electronApp, userDataDir }) => {
+  const result = await electronApp.evaluate(async (_electron, { root, userDataDir, kind }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('original-fs'); const path = require('path');
+    const { AgentManagedWorkspaceStore } = require(root + '/src/main/agent/managed-workspace-store');
+    const { ManagedWorkspaceController } = require(root + '/src/main/agent/managed-workspace-controller');
+    const { createSubagentTool } = require(root + '/src/main/agent/pi-subagent-tools');
+    const { createWorkspaceTools } = require(root + '/src/main/agent/pi-workspace-tools');
+    const sdk = await require(root + '/src/main/agent/pi-sdk').loadPiSdk();
+    const profile = path.join(userDataDir, 'parallel-profile'); fs.mkdirSync(profile);
+    const store = new AgentManagedWorkspaceStore({ userDataDir: profile });
+    const controller = new ManagedWorkspaceController({ store });
+    const conversationId = 'parallel';
+    const owner = { userText: 'Build separate components', subagentAbortController: new AbortController() };
+    let release; const barrier = new Promise(resolve => { release = resolve; });
+    let ready; const admitted = new Promise(resolve => { ready = resolve; });
+    let started = 0; const failures = [];
+    try {
+      let project;
+      if (kind === 'external') {
+        project = path.join(userDataDir, 'parallel-project'); fs.mkdirSync(project);
+        await store.attachProject(conversationId, project);
+        await controller.setProjectAccess(conversationId, 'write');
+      } else {
+        await controller.enable(conversationId);
+        project = await store.resolvePath(store.getForConversation(conversationId).workspaceId);
+      }
+      fs.mkdirSync(path.join(project, 'app'));
+      fs.writeFileSync(path.join(project, 'app/a.js'), 'before');
+      const tool = createSubagentTool({ sdk, getOwner: () => owner,
+        createWriter: (_owner, files, signal) => controller.createDelegatedWriter(conversationId, files, { signal }),
+        createTools: (_owner, scoped) => createWorkspaceTools({ sdk, controller: scoped, conversationId, requestApproval: () => { throw new Error('Unexpected approval'); } }),
+        createSession: async ({ customTools }) => {
+          let listener;
+          const get = name => customTools.find(tool => tool.name === name);
+          return { session: { subscribe: fn => { listener = fn; return () => {}; }, abort: async () => {}, dispose: () => {},
+            prompt: async prompt => {
+              const { assignment: name } = JSON.parse(prompt);
+              if (++started === 2) ready();
+              await barrier;
+              try {
+                if (name === 'a') await get('read').execute('read', { path: 'app/a.js' });
+                await get('write').execute('write', { path: `app/${name}.js`, content: name });
+                await get('write').execute('new', { path: `shared/new/${name}.js`, content: name });
+                listener({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Implemented assigned component.' }] } });
+              } catch (error) { failures.push({ code: error.code, message: error.message }); throw error; }
+            } } };
+        },
+      });
+      const pending = tool.execute('batch', { tasks: ['a', 'b'].map(name => ({ title: name, task: name, mode: 'edit', files: [`app/${name}.js`, `shared/new/${name}.js`] })) });
+      await admitted;
+      await controller.readFile(conversationId, 'app/a.js');
+      const blocked = {};
+      for (const [name, action] of Object.entries({
+        overlap: () => controller.writeFile(conversationId, 'app/a.js', 'wrong'),
+        alias: () => controller.writeFile(conversationId, 'app/A.js', 'wrong'),
+        command: () => controller.execute(conversationId, { command: 'echo unsafe' }),
+        history: () => controller.reviewWorkspaceHistory(conversationId, { action: 'status' }),
+      })) { try { await action(); } catch (error) { blocked[name] = error.code; } }
+      await controller.writeFile(conversationId, 'parent.js', 'parent');
+      release();
+      const reports = (await pending).details.subagents;
+      let stale;
+      try { await controller.writeFile(conversationId, 'app/a.js', 'stale'); } catch (error) { stale = error.code; }
+      await controller.readFile(conversationId, 'app/a.js');
+      await controller.writeFile(conversationId, 'app/a.js', 'integrated');
+      return { started, failures, blocked, stale, reports: reports.map(report => ({ state: report.state, changedFiles: report.changedFiles })),
+        files: ['app/a.js', 'app/b.js', 'shared/new/a.js', 'shared/new/b.js', 'parent.js'].map(file => fs.readFileSync(path.join(project, file), 'utf8')) };
+    } finally { release(); owner.subagentAbortController.abort(); await controller.dispose(); store.close(); }
+  }, { root: repositoryRoot, userDataDir, kind });
+  expect(result.failures).toEqual([]);
+  expect(result).toMatchObject({ started: 2, blocked: { overlap: 'WORKSPACE_WRITER_BUSY', alias: 'WORKSPACE_WRITER_BUSY', command: 'WORKSPACE_WRITER_BUSY', history: 'WORKSPACE_WRITER_BUSY' },
+    stale: 'WORKSPACE_HISTORY_CHANGED', files: ['integrated', 'b', 'a', 'b', 'parent'],
+    reports: [{ state: 'completed', changedFiles: ['app/a.js', 'shared/new/a.js'] }, { state: 'completed', changedFiles: ['app/b.js', 'shared/new/b.js'] }] });
+});
+
+test('helper history persists reports and marks crash-left work interrupted in real SQLite', async ({ electronApp }) => {
+  const result = await electronApp.evaluate(({ app }, root) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const path = require('path');
+    const fs = require('fs');
+    const { AgentSessionHistoryStore } = require(path.join(root, 'src/main/agent/session-history-store'));
+    const userDataDir = path.join(app.getPath('userData'), 'helper-history-fixture');
+    fs.mkdirSync(userDataDir, { recursive: true });
+    let store = new AgentSessionHistoryStore({ userDataDir });
+    store.createSession({ conversationId: 'helper-history', title: 'Review', approvalMode: 'every_interaction' });
+    store.startTurn({ conversationId: 'helper-history', runId: 'finished', userText: 'Review', approvalMode: 'every_interaction' });
+    store.finishTurn({ conversationId: 'helper-history', runId: 'finished', status: 'completed', assistantText: 'Reviewed', activity: [
+      { toolCallId: 'first', operation: 'delegate_task', status: 'succeeded', label: 'Received helper report',
+        subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Edit README', mode: 'edit', changedFiles: ['README.md'], attemptedFiles: ['README.md'], state: 'completed', report: 'Check README.md', toolCalls: 1 } },
+    ] });
+    store.updateTurnActivity({ conversationId: 'helper-history', runId: 'finished', activity: [
+      { toolCallId: 'batch', operation: 'delegate_task', status: 'failed', subagents: [
+        { taskId: 'delegate_' + 'a'.repeat(24), title: 'First', state: 'completed', report: 'Check README.md' },
+        { taskId: 'delegate_' + 'b'.repeat(24), title: 'Second', state: 'cancelled', report: '' },
+      ] },
+    ] });
+    const lateWrite = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'finished', running: true, activity: [] });
+    store.startTurn({ conversationId: 'helper-history', runId: 'interrupted', position: 1, userText: 'Review more', approvalMode: 'every_interaction' });
+    const runningSaved = store.updateTurnActivity({ conversationId: 'helper-history', runId: 'interrupted', running: true, activity: [
+      { toolCallId: 'second', operation: 'delegate_task', status: 'succeeded', label: '1 report received · 1 helper working', subagents: [
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Finished sibling', state: 'completed', report: 'Retained before crash' },
+        { taskId: 'delegate_' + 'd'.repeat(24), title: 'Active sibling', mode: 'browser', tabIds: ['tab_helper'], browserActions: [{ operation: 'browser_snapshot', status: 'succeeded', pageTitle: 'Fixture', origin: 'https://helper.test' }], state: 'running', report: '' },
+      ] },
+    ] });
+    store.startTurn({ conversationId: 'helper-history', runId: 'six-helpers', position: 2, userText: 'Six topics', approvalMode: 'every_interaction' });
+    store.updateTurnActivity({ conversationId: 'helper-history', runId: 'six-helpers', running: true, activity: [
+      { toolCallId: 'six', operation: 'delegate_task', subagents: Array.from({ length: 6 }, (_, i) => ({
+        taskId: 'delegate_' + String(i).repeat(24), title: `Topic ${i}`, state: i < 3 ? 'completed' : 'running', report: i < 3 ? `Report ${i}` : '',
+      })) },
+    ] });
+    store.close();
+    store = new AgentSessionHistoryStore({ userDataDir });
+    store.markStaleRunningAsInterrupted();
+    const transcript = store.getSession('helper-history').transcript;
+    store.close();
+    return { lateWrite, runningSaved, transcript };
+  }, repositoryRoot);
+  expect(result.lateWrite).toBe(false);
+  expect(result.runningSaved).toBe(true);
+  expect(result.transcript[2].activity[0].subagents.map(item => item.state)).toEqual(['completed', 'completed', 'completed', 'cancelled', 'cancelled', 'cancelled']);
+  expect(result.transcript[2].activity[0].subagents.slice(0, 3).map(item => item.report)).toEqual(['Report 0', 'Report 1', 'Report 2']);
+  expect(result.transcript[0].activity[0].subagents[0].report).toBe('Check README.md');
+  expect(result.transcript[0].activity[0].subagents[1].state).toBe('cancelled');
+  expect(result.transcript[1]).toMatchObject({ status: 'interrupted', activity: [
+    { operation: 'delegate_task', status: 'failed', label: 'Helper interrupted', subagents: [
+      { state: 'completed', report: 'Retained before crash' }, { mode: 'browser', tabIds: ['tab_helper'], browserActions: [expect.objectContaining({ pageTitle: 'Fixture' })], state: 'cancelled', report: expect.stringContaining('not restarted') },
+    ] },
+  ] });
+});
+
+test('delegated reports are expandable, inert and coherent in both themes and layouts', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
+  await window.locator('#agent-ollama-url').fill(ollamaServer);
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
+    emit({ type: 'run_started', userText: 'Review the solar-system project' });
+    emit({ type: 'tool_started', toolCallId: 'parent-read', operation: 'read', intent: 'Read README.md' });
+    emit({ type: 'tool_finished', toolCallId: 'parent-read', operation: 'read', status: 'succeeded', label: 'Read README.md' });
+    emit({ type: 'tool_started', toolCallId: 'helper', operation: 'delegate_task', intent: 'Delegating: Review planet controls' });
+  });
+  await expect(window.locator('.agent-tool-list')).toContainText('Delegating: Review planet controls');
+  await window.screenshot({ path: testInfo.outputPath('helper-running.png') });
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    window.webContents.send('agent:event', { runId: 'run_helper_ui', type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '1 report received · 1 helper working',
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], attemptedFiles: ['app/PlanetControls.tsx'], state: 'completed', report: 'Updated planet controls, while the reviewer works.' },
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'running', report: '' }] });
+  });
+  await expect(window.locator('.agent-subagent-report')).toHaveCount(2);
+  await expect(window.locator('.agent-tool-item:visible')).toHaveCount(1);
+  await window.locator('.agent-subagent-report').first().locator('summary').click();
+  const helperStop = window.getByRole('button', { name: 'Stop helper: Review accessibility' });
+  await expect(helperStop).toBeVisible();
+  await expect(helperStop.locator('svg rect')).toHaveAttribute('width', '10');
+  await expect(helperStop).toHaveText('');
+  await helperStop.focus();
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    window.webContents.send('agent:event', { runId: 'run_helper_ui', type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded',
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], state: 'completed', report: 'Updated planet controls, while the reviewer works.' },
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'running', activity: 'Reading a file', report: '' }] });
+  });
+  await expect(helperStop).toBeFocused();
+  await expect(window.locator('.agent-helper-status').last()).toContainText('Reading a file');
+  await window.locator('.agent-turn-activity > summary').click();
+  await expect(helperStop).toBeVisible();
+
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
+    await window.screenshot({ path: testInfo.outputPath(`helper-background-${theme}.png`) });
+  }
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    const emit = event => window.webContents.send('agent:event', { runId: 'run_helper_ui', ...event });
+    emit({ type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', label: '2 reports received',
+      subagents: [{ taskId: 'delegate_' + 'a'.repeat(24), title: 'Update planet controls', mode: 'edit', changedFiles: ['app/PlanetControls.tsx'], attemptedFiles: ['app/PlanetControls.tsx'], state: 'completed', toolCalls: 3,
+        report: '### Findings\n- **Playback controls** are wired correctly in `app/SolarScene.tsx`.\n- Keyboard focus needs a visible style.\n\nNo tests were run.\n<img src="https://invalid.test/tracker"> <script>globalThis.helperInjection = true</script>' },
+        { taskId: 'delegate_' + 'c'.repeat(24), title: 'Review accessibility', state: 'completed', toolCalls: 2, report: 'Add a visible keyboard focus style.' },
+        ...Array.from({ length: 4 }, (_, i) => ({ taskId: 'delegate_' + String(i).repeat(24), title: `Research topic ${i + 3}`, state: 'completed', toolCalls: 2, report: `Findings for topic ${i + 3}.` }))] });
+    emit({ type: 'tool_started', toolCallId: 'stopped', operation: 'delegate_task', intent: 'Delegating: Check labels' });
+    emit({ type: 'tool_finished', toolCallId: 'stopped', operation: 'delegate_task', status: 'failed', label: 'Helper stopped — Check labels',
+      subagent: { taskId: 'delegate_' + 'b'.repeat(24), title: 'Check labels', mode: 'browser', state: 'cancelled', toolCalls: 2, browserPending: true, browserActions: [{ operation: 'browser_snapshot', label: 'Read page', status: 'succeeded', pageTitle: 'Planet preview' }, { operation: 'browser_click', label: 'Clicked on page', status: 'failed', pageTitle: '<img src=x> Untrusted title' }], report: '' } });
+    emit({ type: 'run_finished', status: 'completed', durationMs: 2000, actionCount: 2, outcome: { kind: 'completed', verification: 'delegated_report', tone: 'neutral', headline: 'Helper reports received', detail: '2 reports received · 1 task stopped. Editing helpers recorded 1 changed file. Review current changes before testing or committing; stopped tasks can leave partial edits.' } });
+  });
+  await expect(window.locator('.agent-subagent-report')).toHaveCount(7);
+  await expect(window.locator('.agent-subagent-report').nth(5)).toContainText('Research topic 6');
+  await expect(window.locator('.agent-turn-outcome')).toBeHidden();
+  await expect(window.locator('.agent-turn-outcome.caution')).toHaveCount(0);
+  await window.locator('.agent-turn-activity > summary').click();
+  const report = window.locator('.agent-subagent-report').first();
+  await expect(report).toHaveAttribute('open', '');
+  await expect(report.locator('p').last()).toBeVisible();
+  await expect(report.locator('img, script')).toHaveCount(0);
+  await expect(report.locator('.agent-helper-report-body strong')).toHaveText('Playback controls');
+  await expect(report.locator('.agent-helper-report-body li')).toHaveCount(2);
+  expect(await window.evaluate(() => globalThis.helperInjection)).toBeUndefined();
+  await expect(window.locator('.agent-helper-status').last()).toContainText('Stopped');
+  const browserReport = window.locator('.agent-subagent-report').last();
+  await browserReport.locator('summary').click();
+  await expect(browserReport).toContainText('Browser helper');
+  await expect(browserReport).toContainText('Planet preview');
+  await expect(browserReport.locator('img')).toHaveCount(0);
+  for (const layout of ['browser', 'agent']) {
+    if (layout === 'agent') await window.locator('[data-test="agent-first-toggle"]').click();
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
+      await expect(report).toBeVisible();
+      expect(await report.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await report.scrollIntoViewIfNeeded();
+      await window.screenshot({ path: testInfo.outputPath(`helper-report-${layout}-${theme}.png`) });
+      const sixth = window.locator('.agent-subagent-report').nth(5);
+      await sixth.scrollIntoViewIfNeeded();
+      await expect(sixth).toBeVisible();
+      await window.screenshot({ path: testInfo.outputPath(`helper-sixth-${layout}-${theme}.png`) });
+      await browserReport.scrollIntoViewIfNeeded();
+      await window.screenshot({ path: testInfo.outputPath(`helper-browser-${layout}-${theme}.png`) });
+    }
+  }
+});
+
 // Presentation coverage only: a main-process fixture emits the same bounded
 // events as the service. Authority/grant application is covered by production
 // qualification and unit tests; this test does not grant project access.
@@ -709,4 +1107,251 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   } finally {
     await reopened.close();
   }
+});
+
+test('browser helpers use separate real pages with approval, handoff and Stop', async ({ electronApp, window, harness }) => {
+  await expect(window.locator('body')).toBeVisible();
+  const urls = ['parent', 'approved', 'declined', 'stopped', 'next-turn', 'approved-third'].map(name => `https://helper-browser.test/${name}`);
+  for (const url of urls) await harness.setContentFixture(url, { body: `<!doctype html><title>Helper fixture</title>
+    <button onclick="globalThis.clicks++;document.querySelector('output').textContent=globalThis.clicks">Increment</button>
+    <output>0</output><script>globalThis.clicks=0</script>` });
+  const result = await electronApp.evaluate(async ({ webContents }, { root, urls }) => {
+    const req = file => process.mainModule.require(root + '/src/main/' + file);
+    const { WebContentsPageAdapter } = req('automation/adapters/web-contents-page-adapter');
+    const { AutomationController } = req('automation/automation-controller');
+    const { createInitialAutomationPolicy } = req('automation/policy-controller');
+    const { createOriginScopedAutomationController } = req('automation/origin-scoped-controller');
+    const { createFreedomBrowserTools } = req('agent/pi-browser-tools');
+    const { createSubagentTool } = req('agent/pi-subagent-tools');
+    const { loadPiSdk } = req('agent/pi-sdk');
+    const sdk = await loadPiSdk();
+    const controller = new AutomationController({ policyController: createInitialAutomationPolicy() });
+    const pages = new Map(); const nativeIds = []; const approvals = []; const deniedParentReads = [];
+    const createPage = async url => {
+      nativeIds.push(await globalThis.__FREEDOM_TEST_HARNESS__.createHiddenAutomationPage(url));
+      const content = webContents.getAllWebContents().find(w => w.getURL() === url);
+      const adapter = new WebContentsPageAdapter(content); const id = controller.registerPage(adapter);
+      pages.set(id, { content, adapter }); return id;
+    };
+    controller.setPageLifecycle({ createPage, closePage: async id => pages.get(id)?.content.close() });
+    const parentTab = await createPage(urls[0]);
+    const scoped = await createOriginScopedAutomationController({ controller, tabId: parentTab,
+      approvalMode: 'every_interaction', createWorkspacePage: createPage });
+    const owner = { userText: 'Test browser helpers', subagentAbortController: new AbortController() };
+    let reachedApproval; const approvalReached = new Promise(resolve => { reachedApproval = resolve; });
+    let releaseApproval; const pendingApproval = new Promise(resolve => { releaseApproval = resolve; });
+    const delegate = createSubagentTool({ sdk, getOwner: () => owner,
+      createBrowser: (_owner, signal, _taskId, tabIds) => scoped.createDelegatedBrowser({ signal, tabIds, requestApproval: request => {
+        approvals.push(request);
+        const url = pages.get(request.tabId)?.content.getURL();
+        if (url === urls[3]) { reachedApproval(); return pendingApproval; }
+        return url === urls[2] ? 'declined' : 'approved';
+      } }),
+      createTools: (_owner, _writer, browser) => createFreedomBrowserTools({ sdk, controller: browser.controller,
+        tabId: null, onToolOutcome: outcome => browser.recordOutcome(outcome) }),
+      createSession: async ({ customTools }) => {
+        let listener;
+        const tool = name => customTools.find(item => item.name === name);
+        return { session: { subscribe: fn => { listener = fn; return () => {}; }, abort: async () => {}, dispose: () => {},
+          prompt: async prompt => {
+            const assignment = JSON.parse(prompt);
+            const opened = assignment.assignedTabIds ? null : await tool('browser_create_tab').execute('open', { url: assignment.assignment });
+            const tabId = assignment.assignedTabIds?.[0] || opened.details.envelope.result.tab.tabId;
+            deniedParentReads.push(!(await scoped.execute('browser_snapshot', { tabId })).ok);
+            const observation = await tool('browser_snapshot').execute('read', {});
+            const ref = observation.details.envelope.result.elements.find(element => element.name === 'Increment').ref;
+            await tool('browser_click').execute('click', { ref, intent: 'Increment the fixture counter' });
+            listener({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Inspected fixture; review tool receipts.' }] } });
+          },
+        } };
+      },
+    });
+    try {
+      const running = delegate.execute('parallel', { tasks: [
+        { title: 'Approved page', task: urls[1], mode: 'browser' }, { title: 'Declined page', task: urls[2], mode: 'browser' },
+        { title: 'Third independent page', task: urls[5], mode: 'browser' },
+      ] });
+      const parentRead = await scoped.execute('browser_snapshot', { tabId: parentTab });
+      const reports = (await running).details.subagents;
+      const returned = await scoped.execute('browser_list_tabs');
+      const stopping = await delegate.execute('stopped', { title: 'Stopped page', task: urls[3], mode: 'browser', background: true });
+      await approvalReached;
+      const individuallyStopped = await delegate.stop(owner, stopping.details.subagent.taskId);
+      const stopped = (await delegate.collect(owner))[0];
+      const parentStillActive = !owner.subagentAbortController.signal.aborted && (await scoped.execute('browser_snapshot', { tabId: parentTab })).ok;
+      releaseApproval('approved');
+      for (let i = 0; i < 25; i++) await new Promise(resolve => setTimeout(resolve, 10));
+      const originalPage = pages.get(parentTab).content.id;
+      const delegatedExisting = (await delegate.execute('existing', {
+        title: 'Use existing page', task: 'Click the existing counter', mode: 'browser', tabIds: [parentTab],
+      })).details.subagent;
+      const requiredFresh = await scoped.execute('browser_click', { tabId: parentTab, ref: 'old_ref' });
+      const handedBack = await scoped.execute('browser_snapshot', { tabId: parentTab });
+      const existingPagePreserved = originalPage === pages.get(parentTab).content.id;
+      // Reproduce a new user turn opening and reading a page after delegation.
+      await scoped.prepareResume();
+      const parentTools = await createFreedomBrowserTools({ sdk, controller: scoped, tabId: parentTab });
+      const parentTool = name => parentTools.find(tool => tool.name === name);
+      const nextPage = await parentTool('browser_create_tab').execute('next-open', { url: urls[4] });
+      const nextRead = await parentTool('browser_snapshot').execute('next-read', {});
+      const staleParent = await parentTool('browser_click').execute('stale-parent', { tabId: parentTab, ref: 'old_ref', intent: 'Increment' })
+        .then(() => null, error => ({ code: error.code, recovery: error.recovery }));
+      const counts = {};
+      for (const { content } of pages.values()) counts[content.getURL()] = await content.executeJavaScript('globalThis.clicks');
+      return { nextPage: nextPage.details.envelope.ok, nextRead: nextRead.details.envelope.ok,
+        nextElements: nextRead.details.envelope.result?.elements, staleParent,
+        delegatedExisting, requiredFresh: requiredFresh.error?.message, handedBack: handedBack.ok, existingPagePreserved, parentRead: parentRead.ok, individuallyStopped, parentStillActive, deniedParentReads, reports, stopped, counts,
+        returnedTabs: returned.result.tabs.length, activeUnchanged: scoped.getActiveTabId() === parentTab,
+        approvals: approvals.length, remainingOwners: scoped.delegatedBrowsers.size };
+    } finally {
+      owner.subagentAbortController.abort();
+      for (const { adapter } of pages.values()) adapter.dispose();
+      for (const id of nativeIds) globalThis.__FREEDOM_TEST_HARNESS__.closeHiddenAutomationPage(id);
+    }
+  }, { root: repositoryRoot, urls });
+  expect(result.parentRead).toBe(true);
+  expect(result.individuallyStopped).toBe(true);
+  expect(result.parentStillActive).toBe(true);
+  expect(result.deniedParentReads).toEqual([true, true, true, true, true]);
+  expect(result.delegatedExisting).toMatchObject({ state: 'completed', mode: 'browser' });
+  expect(result.requiredFresh).toContain('fresh browser_snapshot');
+  expect(result.handedBack).toBe(true);
+  expect(result.existingPagePreserved).toBe(true);
+  expect(result.nextPage).toBe(true);
+  expect(result.nextRead).toBe(true);
+  expect(result.nextElements).toContainEqual(expect.objectContaining({ name: 'Increment' }));
+  expect(result.staleParent.code).toBe('OBSERVATION_REQUIRED');
+  expect(result.staleParent.recovery.action).toBe('refresh_state');
+  expect(result.counts).toEqual({ [urls[0]]: 1, [urls[1]]: 1, [urls[2]]: 0, [urls[3]]: 0, [urls[4]]: 0, [urls[5]]: 1 });
+  expect(result.returnedTabs).toBe(4);
+  expect(result.activeUnchanged).toBe(false); // Keep the other available parent tab selected after the lease.
+  expect(result.approvals).toBe(5);
+  expect(result.remainingOwners).toBe(0);
+  expect(result.reports[0]).toMatchObject({ mode: 'browser', state: 'completed', browserActions: expect.arrayContaining([
+    expect.objectContaining({ operation: 'browser_click', status: 'succeeded' }),
+  ]) });
+  expect(result.reports).toHaveLength(3);
+  expect(result.reports[2]).toMatchObject({ mode: 'browser', state: 'completed' });
+  expect(result.reports[1].browserActions).toContainEqual(expect.objectContaining({ operation: 'browser_click', status: 'failed' }));
+  expect(result.stopped).toMatchObject({ mode: 'browser', state: 'cancelled', browserPending: true });
+});
+
+test('saved helper reports load on expansion and page through complete SQLite text', async ({ electronApp, window, ollamaServer, userDataDir }, testInfo) => {
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Ollama', exact: true }).click();
+  await window.locator('#agent-provider-advanced > summary').click();
+  await window.locator('#agent-ollama-url').fill(ollamaServer);
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await window.locator('#agent-sidebar-back').click();
+  await electronApp.evaluate(({ BrowserWindow, ipcMain }, { root, userDataDir }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const { AgentSessionHistoryStore } = require(root + '/src/main/agent/session-history-store');
+    const path = require('path'); const fs = require('fs');
+    const directory = path.join(userDataDir, 'report-fixture'); fs.mkdirSync(directory);
+    const store = new AgentSessionHistoryStore({ userDataDir: directory });
+    store.createSession({ conversationId: 'reports', title: 'Saved reports', approvalMode: 'every_interaction' });
+    store.startTurn({ conversationId: 'reports', runId: 'report-turn', userText: 'Review', approvalMode: 'every_interaction' });
+    const receipt = store.saveHelperReport('reports', 'report-turn', { taskId: 'delegate_' + 'f'.repeat(24), title: 'Accessibility review', state: 'completed',
+      report: '# Review findings\n\n**Keyboard access** needs review.\n\n' + 'Detailed supporting evidence. '.repeat(650) + '\n\n## Final recommendation\n\nUse semantic buttons. <img src=x onerror=alert(1)>' });
+    store.finishTurn({ conversationId: 'reports', runId: 'report-turn', status: 'completed', activity: [{ operation: 'delegate_task', subagent: receipt }] });
+    globalThis.helperReportReads = 0;
+    ipcMain.removeHandler('agent:helper-reports');
+    ipcMain.handle('agent:helper-reports', (_event, payload) => {
+      globalThis.helperReportReads++;
+      return { ok: true, result: store.helperReports(payload.conversationId, { action: 'read', reportId: payload.reportId, offset: payload.offset, limit: 16000 }) };
+    });
+    const host = BrowserWindow.getAllWindows().find(item => !item.isDestroyed());
+    for (const event of [
+      { type: 'run_started', conversationId: 'reports', userText: 'Review saved findings' },
+      { type: 'tool_started', toolCallId: 'helper', operation: 'delegate_task' },
+      { type: 'tool_finished', toolCallId: 'helper', operation: 'delegate_task', status: 'succeeded', subagent: receipt },
+      { type: 'run_finished', status: 'completed' },
+    ]) host.webContents.send('agent:event', { runId: 'report-turn', ...event });
+  }, { root: repositoryRoot, userDataDir });
+  const card = window.locator('.agent-subagent-report');
+  await expect(card).toBeVisible();
+  expect(await electronApp.evaluate(() => globalThis.helperReportReads)).toBe(0);
+  await card.locator('summary').click();
+  await expect(card.getByRole('button', { name: 'Show more', exact: true })).toBeVisible();
+  expect(await electronApp.evaluate(() => globalThis.helperReportReads)).toBe(1);
+  await expect(card.locator('.agent-helper-report-body')).not.toContainText('Final recommendation');
+  await card.getByRole('button', { name: 'Show more', exact: true }).click();
+  await expect(card.locator('.agent-helper-report-body h2')).toHaveText('Final recommendation');
+  await expect(card.locator('.agent-helper-report-body img')).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Show more', exact: true })).toBeHidden();
+  for (const layout of ['browser', 'agent']) {
+    if (layout === 'agent') await window.locator('[data-test="agent-first-toggle"]').click();
+    for (const theme of ['dark', 'light']) {
+      await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
+      await card.locator('summary').scrollIntoViewIfNeeded();
+      expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await window.screenshot({ path: testInfo.outputPath(`saved-report-${layout}-${theme}.png`) });
+    }
+  }
+  expect(await electronApp.evaluate(() => globalThis.helperReportReads)).toBe(2);
+});
+
+test('upgrades populated legacy helper history with the Electron SQLite driver', async ({ electronApp, userDataDir }) => {
+  const result = await electronApp.evaluate((_electron, { root, userDataDir }) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const fs = require('fs'); const path = require('path');
+    const Database = require('better-sqlite3');
+    const { AgentSessionHistoryStore } = require(root + '/src/main/agent/session-history-store');
+    const dir = path.join(userDataDir, 'legacy-helper-upgrade'); fs.mkdirSync(dir);
+    const store = new AgentSessionHistoryStore({ userDataDir: dir });
+    store.createSession({ conversationId: 'legacy', title: 'Legacy conversation', approvalMode: 'every_interaction' });
+    for (let i = 0; i < 205; i++) {
+      const runId = `turn_${String(i).padStart(3, '0')}`;
+      store.startTurn({ conversationId: 'legacy', runId, userText: `Review ${i}`, approvalMode: 'every_interaction' });
+      const subagent = { taskId: 'delegate_' + i.toString(16).padStart(24, '0'), title: `Review ${i}`,
+        state: 'completed', report: `Legacy findings ${i}`, reportTruncated: i === 204 };
+      store.getDb().prepare('UPDATE agent_turns SET activity_json = ? WHERE id = ?').run(JSON.stringify([{ operation: 'delegate_task', subagent }]), runId);
+    }
+    store.getDb().exec('DROP TABLE agent_helper_reports');
+    store.getDb().pragma('user_version = 4'); store.close();
+    let injectFailure = true;
+    class FaultOnceDatabase extends Database {
+      prepare(sql) {
+        const statement = super.prepare(sql);
+        if (injectFailure && sql.startsWith('UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ?')) {
+          return { run: (...args) => {
+            if (args[1] === 'turn_102') throw new Error('Injected migration write failure');
+            return statement.run(...args);
+          } };
+        }
+        return statement;
+      }
+    }
+    const upgraded = new AgentSessionHistoryStore({ userDataDir: dir, Database: FaultOnceDatabase });
+    let failure;
+    try { upgraded.getDb(); } catch (error) { failure = error.message; }
+    const closedAfterFailure = upgraded.db === null;
+    const probe = new Database(path.join(dir, 'agent-history.sqlite'));
+    const versionAfterFailure = probe.pragma('user_version', { simple: true });
+    const legacyAfterFailure = JSON.parse(probe.prepare('SELECT activity_json FROM agent_turns WHERE id = ?').get('turn_000').activity_json)[0].subagent;
+    probe.close();
+    if (failure !== 'Injected migration write failure' || !closedAfterFailure) {
+      upgraded.close();
+      return { failure, closedAfterFailure, versionAfterFailure, legacyAfterFailure };
+    }
+    injectFailure = false;
+    upgraded.markStaleRunningAsInterrupted();
+    const transcript = upgraded.getSession('legacy').transcript;
+    const reports = transcript.map(turn => upgraded.helperReports('legacy', { action: 'read', reportId: turn.activity[0].subagent.reportId }));
+    const version = upgraded.getDb().pragma('user_version', { simple: true });
+    const count = upgraded.getDb().prepare('SELECT count(*) AS n FROM agent_helper_reports').get().n;
+    upgraded.close();
+    const reopenedCount = upgraded.getSession('legacy').transcript.length;
+    upgraded.close();
+    return { failure, closedAfterFailure, versionAfterFailure, legacyAfterFailure, version, count, reopenedCount,
+      allReportsMatch: reports.every((report, i) => report.text === `Legacy findings ${i}`), lastTruncated: reports.at(-1).reportTruncated };
+  }, { root: repositoryRoot, userDataDir });
+  expect(result.failure).toBe('Injected migration write failure');
+  expect(result.closedAfterFailure).toBe(true);
+  expect(result.versionAfterFailure).toBe(4);
+  expect(result.legacyAfterFailure.report).toBe('Legacy findings 0');
+  expect(result.legacyAfterFailure.reportId).toBeUndefined();
+  expect(result).toMatchObject({ version: 5, count: 205, reopenedCount: 205, allReportsMatch: true, lastTruncated: true });
 });

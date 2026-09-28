@@ -6,6 +6,14 @@ const { trustBuiltInToolOverride, isTrustedBuiltInToolOverride } = require('./pi
 describe('model-facing tool error recovery', () => {
   test.each([
     ['PROJECT_READ_ONLY', 'workspace_history', 'request_permission', 'request_permissions'],
+    ['UNSAFE_GIT_CONFIGURATION', 'read', 'stop'],
+    ['WORKSPACE_CHANGED_DURING_VALIDATION', 'find', 'refresh_state'],
+    ['WORKSPACE_HARDLINK_DENIED', 'ls', 'stop'],
+    ['WORKSPACE_SPECIAL_FILE_DENIED', 'read', 'stop'],
+    ['WORKSPACE_VALIDATION_LIMIT', 'find', 'unsupported'],
+    ['EXTERNAL_GIT_METADATA_DENIED', 'read', 'unsupported'],
+    ['PROTECTED_PATH_MISSING', 'read', 'stop'],
+    ['INVALID_WORKSPACE', 'read', 'ask_user'],
     ['WORKSPACE_COMMAND_NOT_FOUND', 'bash', 'request_permission', 'request_permissions'],
     ['WORKSPACE_HISTORY_CHANGED', 'edit', 'refresh_state', 'read'],
     ['STALE_ELEMENT_REFERENCE', 'browser_click', 'refresh_state', 'browser_snapshot'],
@@ -78,4 +86,17 @@ test('untyped cancellation from an upstream tool instructs stopping', async () =
   const controller = new AbortController(); controller.abort();
   const tool = withToolErrorRecovery({ name: 'read', execute: async () => { throw new Error('Operation aborted'); } });
   await expect(tool.execute('id', {}, controller.signal)).rejects.toMatchObject({ code: 'ABORT_ERR', recovery: { action: 'stop' } });
+});
+
+test.each(['browser_click', 'browser_call_page_tool', 'browser_target_point'])('freshness errors recover without user approval or replaying an action (%s)', async operation => {
+  const tool = withToolErrorRecovery({ name: operation, execute: async () => {
+    throw Object.assign(new Error('Take a fresh browser_snapshot of this tab. The action was not run.'), { code: 'OBSERVATION_REQUIRED' });
+  } });
+  await expect(tool.execute()).rejects.toMatchObject({ recovery: { action: 'refresh_state', instruction: expect.stringContaining('No new user permission') } });
+  expect(recoveryForToolError('POLICY_DENIED', operation).action).toBe('stop');
+  expect(recoveryForToolError('USER_CANCELLED', operation).action).toBe('stop');
+});
+
+test('temporarily delegated tabs recover by waiting, without taking control from a helper', () => {
+  expect(recoveryForToolError('TAB_BUSY', 'browser_snapshot')).toMatchObject({ action: 'refresh_state', instruction: expect.stringContaining('Wait for its report') });
 });

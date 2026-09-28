@@ -39,6 +39,7 @@ function createFakeSession() {
       return turn.promise;
     }),
     steer: jest.fn(async () => {}),
+    sendCustomMessage: jest.fn(async () => {}),
     clearQueue: jest.fn(() => ({ steering: [], followUp: [] })),
     abort: jest.fn(async () => prompts.at(-1)?.resolve()),
     dispose: jest.fn(),
@@ -111,6 +112,152 @@ function createHistoryStore(overrides = {}) {
     ...overrides,
   };
 }
+
+describe('delegated task ownership', () => {
+  const flushHelpers = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  async function backgroundService() {
+    const parent = createFakeSession(); const child = createFakeSession();
+    const historyStore = createHistoryStore();
+    const ctx = createService(parent, { historyStore, createSubagentSession: jest.fn(async () => ({ session: child.session })) });
+    await ctx.service.start(startOptions());
+    const tool = ctx.dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+    parent.emit({ type: 'tool_execution_start', toolName: tool.name, toolCallId: 'background', args: { title: 'Inspect' } });
+    const result = await tool.execute('background', { title: 'Inspect', task: 'Review', background: true });
+    parent.emit({ type: 'tool_execution_end', toolName: tool.name, toolCallId: 'background', result });
+    await flushHelpers();
+    const finishChild = () => {
+      child.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Helper findings' }] } });
+      child.prompt.resolve();
+    };
+    return { ...ctx, parent, child, historyStore, finishChild };
+  }
+
+  test('parent can continue while a helper runs; reports persist immediately and resume the parent as untrusted evidence', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.session.sendCustomMessage.mockImplementation(async () => {
+        ctx.parent.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Synthesis.' } });
+      });
+      ctx.parent.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Independent parent work.' } });
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      ctx.finishChild(); await flushHelpers();
+      expect(ctx.historyStore.updateTurnActivity).toHaveBeenLastCalledWith(expect.objectContaining({ activity: [expect.objectContaining({ subagent: expect.objectContaining({ report: 'Helper findings' }) })] }));
+      expect(ctx.historyStore.finishTurn).not.toHaveBeenCalled();
+      ctx.parent.prompt.resolve(); await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'freedom_helper_reports', display: false, content: expect.stringMatching(/not user instructions or authorization.*use the helper reports and their source links directly/s) }), { triggerTurn: true });
+      expect(ctx.historyStore.finishTurn.mock.calls[0][0]).toMatchObject({ status: 'completed', assistantText: 'Independent parent work.\n\nSynthesis.' });
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('an idle parent waits for its helpers before ending the user turn', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      expect(ctx.historyStore.finishTurn).not.toHaveBeenCalled();
+      ctx.finishChild(); await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('parent failure cancels background work and saves no misleading running helper', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'Provider unavailable' } });
+      ctx.parent.prompt.resolve(); await ctx.service.waitForIdle(); await flushHelpers();
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', activity: [expect.objectContaining({ subagent: expect.objectContaining({ state: 'cancelled' }) })] }));
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test.each(['stop', 'pause'])('%s interrupts background collection without waking the parent with stale reports', async action => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      await ctx.service[action]('run_test');
+      ctx.finishChild(); await flushHelpers();
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      expect(ctx.child.session.abort).toHaveBeenCalled();
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+      if (action === 'stop') expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
+      else expect(ctx.service.getState().status).toBe('paused');
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('steering while waiting wakes the parent for the new guidance without delivering cancelled findings', async () => {
+    const ctx = await backgroundService();
+    const guidance = 'Instead explain what you have done so far';
+    try {
+      ctx.parent.session.sendCustomMessage.mockImplementation(async () => {
+        ctx.parent.emit({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: guidance }] } });
+        ctx.parent.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+      });
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      await ctx.service.steer('run_test', guidance);
+      await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.parent.session.sendCustomMessage.mock.calls[0][0].content).toContain('new guidance');
+      expect(ctx.parent.session.sendCustomMessage.mock.calls[0][0].content).not.toContain('Helper findings');
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed', guidance: [expect.objectContaining({ status: 'applied', text: guidance })] }));
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('keeps child messages out of the parent transcript and persists attributable reports', async () => {
+    const parent = createFakeSession();
+    const child = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service, dependencies } = createService(parent, {
+      historyStore, createSubagentSession: jest.fn(async () => ({ session: child.session })),
+    });
+    try {
+      await service.start(startOptions());
+      const tool = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+      parent.emit({ type: 'tool_execution_start', toolName: tool.name, toolCallId: 'child', args: { title: 'Review' } });
+      const pending = tool.execute('child', { title: 'Review', task: 'Review supplied evidence' });
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      child.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'private child draft' } });
+      child.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Bounded report' }] } });
+      child.prompt.resolve();
+      const result = await pending;
+      parent.emit({ type: 'tool_execution_end', toolName: tool.name, toolCallId: 'child', result });
+      parent.prompt.resolve();
+      await service.waitForIdle();
+      const turn = historyStore.finishTurn.mock.calls[0][0];
+      expect(turn.assistantText).not.toContain('private child draft');
+      expect(turn.activity).toEqual([expect.objectContaining({ operation: 'delegate_task', status: 'succeeded',
+        subagent: expect.objectContaining({ state: 'completed', report: 'Bounded report' }) })]);
+      expect(historyStore.updateTurnActivity).toHaveBeenCalled();
+    } finally { await service.dispose(); }
+  });
+
+  test.each(['stop', 'pause', 'steer'].flatMap(action => [1, 2].map(count => [action, count])))('%s cancels %s owned helpers even when providers are unresponsive', async (action, count) => {
+    const parent = createFakeSession();
+    const children = Array.from({ length: count }, () => createFakeSession());
+    children.forEach(child => child.session.abort.mockImplementation(() => new Promise(() => {})));
+    let index = 0;
+    const { service, dependencies } = createService(parent, {
+      createSubagentSession: jest.fn(async () => ({ session: children[index++].session })),
+    });
+    try {
+      await service.start(startOptions());
+      const tool = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+      const task = { title: 'Review', task: 'Inspect' };
+      const pending = tool.execute('child', count === 2 ? { tasks: [task, task] } : task);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      await service[action]('run_test', ...(action === 'steer' ? ['Stop reviewing; explain the plan instead'] : []));
+      const result = await pending;
+      const receipts = result.details.subagents || [result.details.subagent];
+      expect(receipts.map(item => item.state)).toEqual(Array(count).fill('cancelled'));
+      for (const child of children) {
+        expect(child.session.abort).toHaveBeenCalled();
+        expect(child.session.dispose).toHaveBeenCalled();
+      }
+    } finally { await service.dispose(); }
+  });
+});
 
 describe('independent command access review', () => {
   const permissionRequest = () => ({ action: 'workspace_permission', operation: 'request_permissions', label: 'Run the task',
@@ -243,13 +390,13 @@ describe('independent command access review', () => {
     const ctx = await setup('sensitive_actions', () => deferred.promise);
     const request = permissionRequest();
     const pending = ctx.request(request);
-    expect(await ctx.request(permissionRequest())).toBe('declined');
     if (change === 'stop') await stop(ctx);
     if (change === 'pause') await ctx.service.pause('run_test');
     if (change === 'steer') await ctx.service.steer('run_test', 'Stop installing; inspect files only');
     if (change === 'mutate') request.workspacePermission.command = 'node other.js';
+    else expect(await pending).toBe('withdrawn'); // Do not wait for an unresponsive reviewer.
     deferred.resolve({ decision: 'approve_once' });
-    expect(await pending).toBe('declined');
+    expect(await pending).toBe(change === 'mutate' ? 'declined' : 'withdrawn');
     expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
     if (change !== 'stop') await stop(ctx);
   });
@@ -404,7 +551,7 @@ describe('FreedomAgentService', () => {
       model: { id: 'model_test', provider: 'test' },
       modelRuntime: { kind: 'model-runtime' },
       thinkingLevel: 'low',
-      customTools: [{ name: 'browser_snapshot' }],
+      customTools: [{ name: 'browser_snapshot' }, expect.objectContaining({ name: 'delegate_task' }), expect.objectContaining({ name: 'helper_task' }), expect.objectContaining({ name: 'helper_reports' })],
       enableBuiltInSkills: true,
       systemPrompt: expect.stringContaining('You are Freedom Agent inside Freedom Browser'),
     });
@@ -695,6 +842,8 @@ describe('FreedomAgentService', () => {
       { name: 'browser_snapshot' },
       { name: 'attachment_list' },
       { name: 'attachment_read' },
+      expect.objectContaining({ name: 'delegate_task' }),
+      expect.objectContaining({ name: 'helper_task' }), expect.objectContaining({ name: 'helper_reports' }),
     ]);
     expect(fake.session.prompt.mock.calls[0][0]).toContain('attachment_aaaaaaaaaaaaaaaaaaaa');
     expect(fake.session.prompt.mock.calls[0][0]).not.toContain('/Users/');
@@ -774,6 +923,8 @@ describe('FreedomAgentService', () => {
         { name: 'grep' },
         { name: 'find' },
         { name: 'ls' },
+        { name: 'delegate_task' },
+        { name: 'helper_task' }, { name: 'helper_reports' },
       ],
       systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
     });
@@ -1003,6 +1154,12 @@ describe('FreedomAgentService', () => {
 
     await service.start(startOptions());
 
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'For a new project, use these tools directly'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
+      'using only the provided Freedom browser tools'
+    );
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'grant direct networking to an exact workspace command'
     );
@@ -2398,7 +2555,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
-  test('declines a pending approval when the user takes over', async () => {
+  test('withdraws a pending approval when the user takes over', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
     await service.start(startOptions());
@@ -2407,7 +2564,7 @@ describe('FreedomAgentService', () => {
 
     await service.stop('run_test');
 
-    await expect(decision).resolves.toBe('declined');
+    await expect(decision).resolves.toBe('withdrawn');
     await service.waitForIdle();
   });
 
@@ -3605,4 +3762,101 @@ describe('FreedomAgentService', () => {
 
     expect(events.map((event) => event.type)).toEqual(['run_started', 'run_finished']);
   });
+});
+
+describe('concurrent helper approvals', () => {
+  const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  test('queues exact requests instead of declining while another sheet is open', async () => {
+    const fake = createFakeSession(); const { service, dependencies } = createService(fake);
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const request = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const first = request({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'First helper' });
+    const second = request({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'Second helper' });
+    const prompts = () => events.filter(event => event.type === 'approval_requested');
+    expect(prompts()).toHaveLength(1);
+    await service.decideApproval('run_test', prompts()[0].approvalId, false);
+    expect(await first).toBe('declined'); await flush();
+    expect(prompts()).toHaveLength(2);
+    expect(prompts()[1].label).toBe('Second helper');
+    await service.decideApproval('run_test', prompts()[1].approvalId, true);
+    expect(await second).toBe('approved');
+    await service.stop('run_test'); await service.waitForIdle();
+  });
+
+  test('Stop withdraws queued requests without opening a later sheet', async () => {
+    const fake = createFakeSession(); const { service, dependencies } = createService(fake);
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const request = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const requests = [request({ action: 'form_submission', label: 'First' }), request({ action: 'form_submission', label: 'Second' })];
+    await service.stop('run_test');
+    expect(await Promise.all(requests)).toEqual(['withdrawn', 'withdrawn']);
+    expect(events.filter(event => event.type === 'approval_requested')).toHaveLength(1);
+    await service.waitForIdle();
+  });
+
+  test('browser helpers get scoped tools, route approval through the parent and withdraw their own sheet on cancellation', async () => {
+    const parent = createFakeSession(); const child = createFakeSession();
+    const browser = { controller: { execute: jest.fn() }, recordOutcome: jest.fn(), evidence: () => ({ tabIds: [], browserActions: [] }), release: jest.fn() };
+    const createBrowser = jest.fn(() => browser);
+    const { service, dependencies } = createService(parent, {
+      createControllerScope: jest.fn(async () => ({ execute: jest.fn(), prepareResume: async () => ({ ok: true }), createDelegatedBrowser: createBrowser })),
+      createSubagentSession: jest.fn(async () => ({ session: child.session })),
+    });
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const delegate = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+    const started = await delegate.execute('browser-helper', { title: 'Browse', task: 'Inspect a page', mode: 'browser', tabIds: ['tab_test'], background: true }); await flush();
+    expect(dependencies.createTools.mock.calls[1][0]).toMatchObject({ controller: browser.controller, tabId: null });
+    expect(createBrowser.mock.calls[0][0].tabIds).toEqual(['tab_test']);
+    const { signal, requestApproval } = createBrowser.mock.calls[0][0];
+    const decision = requestApproval({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'Helper click' });
+    expect(events.at(-1).label).toBe('Helper click');
+    const taskId = started.details.subagent.taskId;
+    expect(await service.stopHelper('run_stale', taskId)).toBe(false);
+    expect(await service.stopHelper('run_test', taskId)).toBe(true); await flush();
+    expect(parent.session.abort).not.toHaveBeenCalled();
+    expect(signal.aborted).toBe(true);
+    expect(await decision).toBe('withdrawn');
+    expect(browser.release).toHaveBeenCalled();
+    await service.stop('run_test'); await service.waitForIdle();
+  });
+});
+
+
+describe('provider-aware orchestration guidance', () => {
+  test.each(['ollama', 'openai', 'openai-codex', 'openrouter'])(
+    'guides the parent for %s while preserving delegation tools and the selected model', async provider => {
+      const fake = createFakeSession();
+      const { service, dependencies } = createService(fake);
+      const model = { id: 'selected-model', provider, baseUrl: 'http://private-endpoint', apiKey: 'private-credential' };
+      await service.start(startOptions({ model, prompt: 'Investigate this project and improve it' }));
+      const settings = dependencies.createSession.mock.calls[0][0];
+      expect(settings.model).toBe(model);
+      expect(settings.customTools.map(tool => tool.name)).toEqual(expect.arrayContaining(['delegate_task', 'helper_task', 'helper_reports']));
+      expect(settings.systemPrompt).toContain('For each substantial task, identify independent subtasks');
+      expect(settings.systemPrompt).toContain('use the helper reports and their source links directly');
+      expect(settings.systemPrompt).toContain('For code changes, inspect changedFiles/attemptedFiles and the diff');
+      expect(settings.systemPrompt).toContain('without rereading the three articles yourself');
+      expect(settings.systemPrompt).toContain('have a reviewer inspect the actual code');
+      expect(settings.systemPrompt).toContain('Multiple editing helpers and the parent may write disjoint files concurrently');
+      expect(settings.systemPrompt).toContain('handle simple requests directly');
+      expect(settings.systemPrompt).toContain('do not wait for the user to mention helpers');
+      expect(settings.systemPrompt).toContain('start three browser helpers in one batch');
+      expect(settings.customTools.find(tool => tool.name === 'delegate_task').parameters.properties.tasks.maxItems).toBe(6);
+      expect(settings.systemPrompt).not.toContain('private-endpoint');
+      expect(settings.systemPrompt).not.toContain('private-credential');
+      if (provider === 'ollama') {
+        expect(settings.systemPrompt).toContain('Prefer sequential delegation: start one foreground helper');
+        expect(settings.systemPrompt).toContain('Honor explicit user requests for helpers, including parallel helpers');
+        expect(settings.systemPrompt).not.toContain('this conversation uses a hosted model connection');
+      } else {
+        expect(settings.systemPrompt).toContain('use parallel helpers as the normal approach');
+        expect(settings.systemPrompt).not.toContain('this conversation uses an Ollama connection');
+      }
+      fake.prompt.resolve();
+      await service.waitForIdle();
+    }
+  );
 });

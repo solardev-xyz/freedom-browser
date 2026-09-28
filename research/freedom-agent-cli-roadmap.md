@@ -1,14 +1,14 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-25
+Last updated: 2026-09-28
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-25
+## Current working status — 2026-09-28
 
 ### Project viewer and recovery implementation — 2026-09-25
 
@@ -44,7 +44,7 @@ Real-Git fault qualification on the designated Mac mini is pending: automatic ap
 review rejected the prepared private-source transfer and explicit user approval
 has been requested. No new remote/native qualification is claimed yet.
 
-### Current backlog and next decision — 2026-09-25
+### Current backlog and next decision — 2026-09-28
 
 This is the active backlog. The dated implementation records below preserve
 historical scope and test evidence; older statements of “next” or “remaining”
@@ -59,22 +59,53 @@ checkpoints; actionable tool recovery; bounded command access review in
 restart/reattachment and the accepted Vite HMR workflow are already implemented.
 This does not imply every provider, platform or edge case has been qualified.
 
-**Next product candidates — discussion, not implementation authorization:**
+**Subagents — core integrated 2026-09-28:** developed on
+`experiment/agent-subagents`; development continues on `feature/freedom-automation-kernel`.
+Foreground/background helpers, follow-ups, six concurrent slots, read-only and
+scoped concurrent editing, fresh/existing browser tabs, individual Stop, Markdown
+cards and full saved-report retrieval are implemented. Real-model smokes accepted
+inspection, editing permission flow, browser delegation, report retrieval and
+three-way autonomous research without redundant parent reads. The latest build
+passed with actual file-based review and parent fixes; concurrent implementation
+is supported but its speed benefit was not demonstrated by that run. The user
+accepted leaving model orchestration as-is and authorized the merge. Individual
+editing interruption and reopened-receipt smoke remain unconfirmed; automated
+coverage does not turn them into manual passes. See the
+[implementation contract and deferred extensions](../docs/agent-subagents.md#delivery-status-and-remaining-roadmap--2026-09-28).
+
+**Other product candidates — not implementation authorization:**
 
 | Candidate | Concrete first slice | User benefit / scope |
 | --- | --- | --- |
 | Saved-server management | Rename, edit and remove saved command/directory/port definitions. Define active-process behavior explicitly; removal must not silently stop a process or erase project files. | Smaller continuation: keep the Workspace panel useful as projects accumulate servers. Restart/reattach already exists. |
 | Broader existing-project support | First support linked Git worktrees and their separately located metadata through explicit, validated ownership. Individual file grants and multiple writable projects are separate subsequent slices. | Useful for real development repositories; requires careful metadata and writer-coordination work. |
-| Subagents | One bounded worker through the existing model connection, explicit task/context, attributable progress/result, shared budgets, parent/child approval ownership and reliable Stop. Expand concurrency only after that lifecycle works. | Largest new capability: delegate independent research, review or implementation without requiring a second provider. Parallel writes need ownership/conflict rules. |
+| Subagent extensions (deferred) | Per-helper models/reusable roles, nested delegation, remote Herdr placement, durable child-session continuation and optional Jev workers. All remain unimplemented; see the [detailed backlog](#subagents-and-parallel-delegation). | Core delegation already works through one existing model connection. Select an extension for a concrete need; no additional provider or runtime is required for current use. |
 | Workspace/history scale | Raise managed checkpoint limits with explicit storage/retention and large-file behavior; improve rename matching where actual projects justify it. | Makes larger projects practical. Current checkpoint ingestion remains 200 files, 64 KiB per file and 512 KiB total; pagination, comparisons and selected restore are already implemented. |
 | Browser/WebMCP coverage | Choose a real blocked website/tool schema, then add the missing schema constraints or frame-scoped tools with origin/approval checks. Embedded or ambiguous-source dialogs remain a separate gap. | Broader compatibility, driven by real tasks rather than speculative API breadth. |
 
-**Recommendation for discussion:** saved-server management is the smallest useful
-continuation. Subagents are the strongest candidate for the next substantial
-capability; start with one worker and a complete lifecycle before parallel code
-editing. Broader existing-project support takes priority if linked worktrees or
-multiple project contexts are blocking the user's everyday workflow. No next
-implementation slice is selected by this roadmap update.
+**Selected direction:** the subagent experiment is integrated; continue on the
+main feature branch. No deferred extension is selected for implementation. Saved-server
+management and broader existing-project support remain independent candidates.
+
+**External-project read qualification — 2026-09-26:** fixed ordinary SSH usernames
+being misclassified as embedded credentials and Electron's ASAR virtual filesystem
+being used for physical workspace validation and sandboxed file search. A real Electron fixture now checks
+concurrent read/list/find on an external read-only project containing an SSH remote
+and an ASAR archive, while confirming writes remain denied. Preserve actionable
+validation codes instead of collapsing them into command execution failures.
+Both reported projects now pass concurrent directory listing, file search and
+README reading with fresh read-only grants, including the running Freedom
+checkout with its live node socket. External file read/list/find/grep helpers now
+use a separate offline policy with no workspace write authority; they validate
+individual regular files rather than running whole-tree command validation.
+Search reads recheck opened inodes and reject links/special files. The Electron
+regression covers concurrent reads alongside a changing file and socket, OS-level
+write/socket denial, and continued denial of direct symlink/hardlink/socket reads.
+Command execution, writes, Git operations and history/viewer inspection retain
+their existing stricter validation; extending those operations to more live
+project layouts remains separate work. Linux read-only mount generation is
+unit-tested; the live sandbox regression was run on macOS.
+
 
 **Additional open candidates:**
 
@@ -615,7 +646,7 @@ simple, and measured benefit justifies the additional runtime complexity.
 ### Possible later experiment — not scheduled
 
 **Sequencing clarification:** build the planned
-[subagent capability](#todo--subagents-and-parallel-delegation) with existing
+[subagent capability](#subagents-and-parallel-delegation) with existing
 supported models first, then revisit Jev as an optional specialized browser
 worker. Share the delegation contract for goals, scoped permissions, budgets,
 progress, cancellation, and attributed results; allow worker implementations to
@@ -2579,18 +2610,61 @@ The numbered inventory below records completed foundations and remaining capabil
 - Promote stable consequential mechanisms into deterministic runtime-owned boundaries when Freedom can observe them exactly; the generic intended-consequence classifier remains a conservative interruption layer rather than a substitute for those boundaries.
 - Add identity use, payments beyond the explicit wallet transaction primitive, and decentralized publication as separate explicit capability and approval packages. Website approval settings must never grant them implicitly.
 
-#### TODO — Subagents and parallel delegation
+#### Subagents and parallel delegation
 
-Added 2026-09-17. Future capability; implementation priority and first delivery
-scope remain to be selected.
+Added 2026-09-17; implemented on `experiment/agent-subagents` from 2026-09-25.
+Integrated into `feature/freedom-automation-kernel` on 2026-09-28 at the user's request.
 
-- Let the main Agent delegate bounded subtasks to specialized child agents, run independent work in parallel, and incorporate their results into the parent conversation. Initial use cases include parallel research, code review, and independent project tasks.
-- First support workers using existing model connections. Keep the delegation contract independent of the worker's internal decision loop so the [deferred Jev proposal](#2026-09-18--jev-browser-acceleration-research-deferred) can later become an optional specialized browser worker using the same permissions, budgets, progress, cancellation, and result handling. A Pi delegation tool may invoke it; no second provider is required for core Agent or initial subagent functionality. This records the intended fit, not authorization to start either implementation now.
-- Give each child an explicit task, selected context and accountable result. Define parent/child messaging, follow-up work, result attribution and history persistence; avoid copying the entire conversation or unrelated private data by default.
-- Keep every child behind Freedom's existing automation and approval boundaries. Delegation may narrow the parent's permissions, never expand them. Define exclusive tab-control leases and coordinated workspace writes so agents cannot race on the same page or overwrite each other's work. Sensitive actions retain their existing approval requirements.
-- Show delegated tasks, status, results and failures in the parent conversation, with details available on demand. Support stopping an individual child; stopping the parent must cancel its descendants, pending model/tool requests and approvals, and reconcile any effects already performed.
-- Bound concurrent children, nesting, runtime and aggregate token/cost usage. Decide model/provider selection and disclose any additional provider receiving delegated context; do not silently move data to a different provider or weaken the parent's privacy requirements.
-- Qualify delegation, concurrent resource access, child failure, cancellation, parent/session closure, permission revocation and restart recovery. Treat child output as task evidence rather than new authority, and preserve the actual platform limits on managed-process cleanup.
+**Delivered core:** isolated in-process Pi sessions using the parent's connected
+model; foreground/background work and same-turn follow-ups; up to six concurrent
+helpers; read-only project/attachment inspection; explicit disjoint file ownership
+with revision checks and parent/helper concurrent writes; new/existing browser-tab
+ownership with queued approvals and fresh observations; individual and whole-task
+Stop; progress cards and sanitized Markdown; complete saved reports with paginated,
+conversation-scoped retrieval after compaction and reopening history. No separate
+helper token/time/tool-call quota remains. Commands/builds/history wait for active
+writers and unsettled writes. Delegation never expands permissions.
+
+**Orchestration and acceptance:** hosted models delegate independent workstreams
+autonomously; Ollama prefers direct/sequential execution unless the user requests
+parallel helpers. Three-topic research now uses three helpers and synthesizes
+routine reports without duplicate parent reads. Code review inspects implemented
+files rather than supplying only upfront advice. The latest Next.js/Three.js smoke
+passed its build and preview, with concrete review findings fixed by the parent.
+Review overlapped installation, but implementation used one helper; this is not a
+parallel speed benchmark. The user accepted leaving that model behavior as-is.
+Native local/Mac mini fixtures cover concurrent disjoint editing. The preview
+WebMCP document.domain rejection now returns an unavailable capability with normal
+browser-tool guidance; unrelated discovery errors remain visible.
+
+**Remaining validation:** individual Stop during editing, sibling continuation,
+partial-edit inspection and reopening the saved receipt still need a confirmed
+manual smoke. Broader model performance/provider qualification and Windows/Linux
+coverage remain separate, with cross-platform work on the user's backburner.
+These are recorded limitations, not newly imposed merge gates.
+
+**Deferred, not implemented:**
+
+- **Per-helper model selection and reusable roles:** use already-connected models
+  with explicit capability ceilings and usage attribution. Decide defaults and
+  consent/disclosure for cross-provider context; preserve local/privacy preferences.
+- **Nested delegation:** define tree-wide admission, descendant cancellation,
+  resource/approval ownership and attributable results before allowing helper spawns.
+- **Remote Herdr execution:** separate logical ownership from placement; define
+  authenticated transport, approved source/context transfer, remote capabilities,
+  lost-connection recovery and cancellation. No ambient remote host authority.
+- **Durable child sessions:** support continuation beyond the current parent turn
+  or across restart, with transcript retention/cleanup, fresh grants and ownership,
+  and side-effect reconciliation. Today's durable reports do not resume child work.
+- **Optional Jev browser workers:** preserve the [research and proposed integration](#2026-09-18--jev-browser-acceleration-research-deferred).
+  Build a separate typed-decision worker with controller-backed actions, normal
+  approvals, cancellation, evidence and fallback. It is not a drop-in Pi model;
+  core Agent must remain usable with one ordinary connection and no Jev account.
+
+These are future candidates, not authorization to start them. Full child transcripts
+and whole-task cost controls remain design questions; do not reintroduce arbitrary
+helper-only execution budgets. The [subagent contract](../docs/agent-subagents.md)
+records extension scope, constraints, implementation history and validation evidence.
 
 #### TODO — Agent-created home/start-page widgets
 

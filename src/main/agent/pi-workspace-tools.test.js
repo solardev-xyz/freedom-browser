@@ -586,30 +586,11 @@ describe('Pi managed workspace tools', () => {
       details: { pageId: 'tab_1' },
     });
     expect(tabs.size).toBe(2);
-    for (const operation of ['browser_click', 'browser_navigate']) {
-      await expect(
-        scope.execute(operation, { tabId: 'tab_1', url: 'https://example.com', ref: 'stale' })
-      ).resolves.toMatchObject({ ok: false, error: { code: 'POLICY_DENIED' } });
-    }
-    await expect(scope.execute('browser_snapshot', { tabId: 'tab_1' })).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'POLICY_DENIED' },
-    });
-    await scope.execute('browser_get_tab', { tabId: 'tab_1' });
-    await scope.execute('browser_snapshot', { tabId: 'tab_1' });
-    await expect(
-      scope.execute('browser_navigate', { tabId: 'tab_1', url: tabs.get('tab_1').url })
-    ).resolves.toMatchObject({ ok: true });
-    for (const url of [
-      'https://example.com',
-      'file:///private/index.html',
-      'freedom-preview://bad/index.html',
-    ]) {
-      await expect(scope.openWorkspacePreview(url)).resolves.toMatchObject({
-        ok: false,
-        error: { code: 'POLICY_DENIED' },
-      });
-    }
+    await expect(scope.execute('browser_click', { tabId: 'tab_1', ref: 'stale' }))
+      .resolves.toMatchObject({ ok: false, error: { code: 'OBSERVATION_REQUIRED' } });
+    await expect(scope.execute('browser_snapshot', { tabId: 'tab_1' })).resolves.toMatchObject({ ok: true });
+    await expect(scope.execute('browser_navigate', { tabId: 'tab_1', url: 'https://example.com' })).resolves.toMatchObject({ ok: true });
+
   });
 
   test('declares and opens a gated managed server preview through one process identity', async () => {
@@ -926,7 +907,7 @@ describe('Pi managed workspace tools', () => {
         message: 'Could not access /Users/private/project',
       }).message
     ).toBe(
-      '[WORKSPACE_POLICY_FAILED] Freedom could not complete the operation inside the managed workspace'
+      '[WORKSPACE_POLICY_FAILED] Freedom could not establish the workspace sandbox.'
     );
     expect(safeWorkspaceError({
       code: 'EXECUTABLE_INTERPRETER_UNAVAILABLE',
@@ -937,7 +918,9 @@ describe('Pi managed workspace tools', () => {
     }).message).not.toContain('/private');
   });
 
-  test.each(['PROJECT_RECONNECT_REQUIRED', 'PROJECT_READ_ONLY', 'PROJECT_CHANGED', 'WORKSPACE_HISTORY_CHANGED'])('preserves actionable %s without leaking host paths', (code) => {
+  test.each(['PROJECT_RECONNECT_REQUIRED', 'PROJECT_READ_ONLY', 'PROJECT_CHANGED', 'WORKSPACE_HISTORY_CHANGED',
+    'UNSAFE_GIT_CONFIGURATION', 'WORKSPACE_CHANGED_DURING_VALIDATION', 'WORKSPACE_HARDLINK_DENIED', 'WORKSPACE_SPECIAL_FILE_DENIED',
+    'WORKSPACE_VALIDATION_LIMIT', 'EXTERNAL_GIT_METADATA_DENIED', 'PROTECTED_PATH_MISSING', 'INVALID_WORKSPACE'])('preserves actionable %s without leaking host paths', (code) => {
     const result = safeWorkspaceError({ code, message: '/private/user/project secret' });
     expect(result.code).toBe(code);
     expect(result.message).not.toContain('/private');

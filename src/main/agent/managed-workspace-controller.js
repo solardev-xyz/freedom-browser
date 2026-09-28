@@ -12,6 +12,7 @@ const { WORKSPACE_INSPECTION_HELPER } = require('./workspace-inspection-helper')
 const path = require('path');
 const {
   createWorkspaceExecutionPolicy,
+  createWorkspaceFileReadPolicy,
   EXECUTION_STATES,
   insidePath,
   MAX_TIMEOUT_MS,
@@ -63,7 +64,7 @@ const MAX_WORKSPACE_SCAN_ENTRIES = 50_000;
 const MAX_WORKSPACE_SCAN_BYTES = 16 * 1024 * 1024;
 const MAX_WORKSPACE_SEARCH_PATTERN_LENGTH = 1_000;
 const WORKSPACE_FILE_HELPER = String.raw`
-const fs = require('fs');
+const fs = process.versions.electron ? require('original-fs') : require('fs');
 const path = require('path');
 const READ_LIMIT = 524288;
 const WRITE_LIMIT = 65536;
@@ -112,6 +113,21 @@ function regularFile(target) {
   if (!stats.isFile()) fail('WORKSPACE_PATH_TYPE_MISMATCH');
   if (stats.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
   return stats;
+}
+
+// Recheck the opened inode: active projects can replace entries after listing.
+// NONBLOCK prevents a regular-file-to-FIFO race from hanging a read.
+function readRegularFile(target, stats) {
+  const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > READ_LIMIT) fail('WORKSPACE_FILE_UNSAFE');
+    const bytes = Buffer.alloc(opened.size + 1);
+    const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    const after = fs.fstatSync(fd);
+    if (after.nlink !== 1 || count !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) fail('WORKSPACE_HISTORY_CHANGED');
+    return { content: bytes.subarray(0, count), stats: after };
+  } finally { fs.closeSync(fd); }
 }
 
 function directory(target) {
@@ -200,7 +216,7 @@ function walkFiles(relativeRoot, visit) {
     }
     const shouldContinue = visit(filePath, relativePath, stats, () => {
       bytesRead += stats.size;
-      return fs.readFileSync(filePath);
+      return readRegularFile(filePath, stats).content;
     });
     return shouldContinue !== false;
   };
@@ -267,7 +283,12 @@ function ensureDirectory(relativeDirectory) {
       if (stats.isSymbolicLink() || !stats.isDirectory()) fail('WORKSPACE_FILE_UNSAFE');
     } catch (error) {
       if (!error || error.code !== 'ENOENT') throw error;
-      fs.mkdirSync(current, { mode: 0o700 });
+      try { fs.mkdirSync(current, { mode: 0o700 }); }
+      catch (created) {
+        if (created.code !== 'EEXIST') throw created;
+        const stats = fs.lstatSync(current);
+        if (stats.isSymbolicLink() || !stats.isDirectory()) fail('WORKSPACE_FILE_UNSAFE');
+      }
     }
   }
   return current;
@@ -304,18 +325,9 @@ try {
     const stats = regularFile(target);
     if (stats.size > READ_LIMIT) fail('WORKSPACE_FILE_TOO_LARGE');
     if (operation !== 'access') {
-      const fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-      try {
-        const opened = fs.fstatSync(fd);
-        if (!opened.isFile() || opened.nlink !== 1 || opened.ino !== stats.ino || opened.dev !== stats.dev || opened.size > READ_LIMIT) fail('WORKSPACE_FILE_UNSAFE');
-        const bytes = Buffer.alloc(opened.size + 1);
-        const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
-        const after = fs.fstatSync(fd);
-        if (count !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) fail('WORKSPACE_HISTORY_CHANGED');
-        const content = bytes.subarray(0, count);
-        if (operation === 'read_version') process.stdout.write(JSON.stringify({ content: content.toString('base64'), version: fileVersion(after, content) }));
-        else process.stdout.write(content);
-      } finally { fs.closeSync(fd); }
+      const { content, stats: after } = readRegularFile(target, stats);
+      if (operation === 'read_version') process.stdout.write(JSON.stringify({ content: content.toString('base64'), version: fileVersion(after, content) }));
+      else process.stdout.write(content);
     }
   } else if (operation === 'list') {
     const requested = optionsPayload();
@@ -622,6 +634,14 @@ function assertWritableWorkspacePath(value) {
   return relative;
 }
 
+// Reserve conservatively across case-insensitive and Unicode-normalizing filesystems.
+// Directories may be shared, but a reserved file cannot also become a directory.
+function workspacePathsConflict(first, second, operation = 'write') {
+  const a = first.normalize('NFD').toLowerCase().toUpperCase().toLowerCase().normalize('NFD');
+  const b = second.normalize('NFD').toLowerCase().toUpperCase().toLowerCase().normalize('NFD');
+  return a === b || a.startsWith(b + '/') || (operation !== 'mkdir' && b.startsWith(a + '/'));
+}
+
 function validateWorkspaceContent(content) {
   if (typeof content !== 'string') {
     throw new ManagedWorkspaceError(
@@ -732,6 +752,7 @@ class ManagedWorkspaceController {
     this.executor = options.executor || createWorkspaceExecutor();
     this.detectRuntime = options.detectRuntime || detectElectronJavaScriptRuntime;
     this.createPolicy = options.createPolicy || createWorkspaceExecutionPolicy;
+    this.createReadPolicy = options.createReadPolicy || createWorkspaceFileReadPolicy;
     this.restrictPolicy = options.restrictPolicy || restrictWorkspaceExecutionPolicy;
     this.resolveExecutableAccess = options.resolveExecutableAccess || resolveExecutableAccess;
     this.captureHostCommandEnvironment =
@@ -747,6 +768,9 @@ class ManagedWorkspaceController {
     this.leasePromises = new Map();
     this.activeCommands = new Map();
     this.pendingOperations = new Set();
+    this.pendingMutations = new Map();
+    this.delegatedWriters = new Set();
+    this.collaborativeConversations = new Set();
     this.shutdownController = new AbortController();
     this.disposePromise = null;
     this.shutdownFinished = false;
@@ -957,17 +981,17 @@ class ManagedWorkspaceController {
     return awaitWorkspaceStep(pending, request.signal);
   }
 
-  async #createLease(workspace) {
+  async #createLease(workspace, fileReadOnly = false) {
     const workspaceRoot = await this.store.resolvePath(workspace.workspaceId);
     const runtime = await this.#attestedRuntime();
     const capabilities = await this.getCapabilities();
     const network =
-      this.networkPermissionsEnabled && capabilities.fullNetworkAvailable
+      !fileReadOnly && this.networkPermissionsEnabled && capabilities.fullNetworkAvailable
         ? NETWORK_POSTURES.FULL
         : NETWORK_POSTURES.NONE;
     let policy;
     try {
-      const basePolicy = await this.createPolicy({
+      const basePolicy = await (fileReadOnly ? this.createReadPolicy : this.createPolicy)({
         workspaceRoot,
         ...(workspace.project && { allowMissingGitMetadata: true }),
         electronRuntime: runtime,
@@ -1006,7 +1030,7 @@ class ManagedWorkspaceController {
       );
     }
     const lease = Object.freeze({ workspaceRoot, runtime, ...policy });
-    if (!workspace.project) this.leases.set(workspace.workspaceId, lease);
+    if (!workspace.project && !fileReadOnly) this.leases.set(workspace.workspaceId, lease);
     return lease;
   }
 
@@ -1046,7 +1070,7 @@ class ManagedWorkspaceController {
     };
   }
 
-  async #enabledLease(conversationId, request = {}) {
+  async #enabledLease(conversationId, request = {}, fileReadOnly = false) {
     throwIfWorkspaceAborted(request.signal);
     const workspace = this.store.getForConversation(conversationId);
     if (!workspace?.enabled) {
@@ -1056,7 +1080,9 @@ class ManagedWorkspaceController {
       );
     }
     const grant = workspace.project ? await this.store.projectAccess.resolve(workspace.workspaceId) : null;
-    const lease = await this.#lease(workspace, request);
+    const lease = fileReadOnly && workspace.project
+      ? await awaitWorkspaceStep(this.#createLease(workspace, true), request.signal)
+      : await this.#lease(workspace, request);
     if (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant) {
       throw new ManagedWorkspaceError('PROJECT_RECONNECT_REQUIRED', 'Project access changed. Try again.');
     }
@@ -1335,24 +1361,106 @@ class ManagedWorkspaceController {
     });
   }
 
-  async #runOperation(request, operation) {
+  #assertWriter(token, relativePath = null, operation = 'write', conversationId = token?.conversationId) {
+    const invalid = token && (!this.delegatedWriters.has(token) || token.closed);
+    const conflict = [...this.delegatedWriters].some(writer => writer !== token &&
+      (relativePath === null ? !token : writer.conversationId !== conversationId || [...writer.allowed].some(file => workspacePathsConflict(relativePath, file, operation))));
+    const pendingFiles = !token && relativePath === null && [...this.pendingMutations.values()].some(mutation => mutation !== true);
+    if (invalid || conflict || pendingFiles) {
+      throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'An editing helper owns a conflicting file or has pending writes. Edit a different unassigned file, or wait for its report and writes to settle. Commands and history operations must wait for all editing helpers.');
+    }
+  }
+
+  #pendingWriteConflict(relativePath, operation = 'write', conversationId, includeCommands = true) {
+    return [...this.pendingMutations.values()].some(mutation => mutation === true ? includeCommands :
+      mutation.conversationId !== conversationId || (operation !== 'mkdir' || mutation.operation !== 'mkdir') && workspacePathsConflict(relativePath, mutation.path, operation) &&
+      workspacePathsConflict(mutation.path, relativePath, mutation.operation));
+  }
+
+  async createDelegatedWriter(conversationId, paths, { signal } = {}) {
+    throwIfWorkspaceAborted(signal);
+    if (!Array.isArray(paths) || !paths.length || paths.length > 20) throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'Choose 1–20 exact project-relative files for the helper.');
+    const allowed = new Set(paths.map(value => assertWritableWorkspacePath(value)));
+    for (const file of allowed) this.#assertWriter(null, file, 'write', conversationId);
+    if ([...allowed].some(file => this.#pendingWriteConflict(file, 'write', conversationId)) || this.historyLocks.size || [...(this.processManager.entries?.values() || [])].some(entry => entry.state === 'running')) throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'Wait for active project commands, edits or history operations to finish before delegating editing.');
+    const token = { conversationId, allowed, closed: false, reads: new Map(), pending: new Set(), pendingWrites: 0, changed: new Set(), attempted: new Set() };
+    this.delegatedWriters.add(token);
+    this.collaborativeConversations.add(conversationId);
+    const release = () => {
+      token.closed = true;
+      // Stop can detach a provider immediately, but ownership lasts until its
+      // already-started file operations settle. No new writer can race them.
+      void Promise.allSettled([...token.pending]).then(() => {
+        this.delegatedWriters.delete(token);
+      });
+    };
+    try {
+      const workspace = this.store.getForConversation(conversationId);
+      if (!workspace?.enabled) throw new ManagedWorkspaceError('WORKSPACE_EXECUTION_NOT_ENABLED', 'The parent must create or attach a workspace before delegating editing.');
+      const grant = workspace.project ? await this.store.projectAccess.resolve(workspace.workspaceId, { write: true }) : null;
+      await this.#enabledLease(conversationId, { signal });
+      throwIfWorkspaceAborted(signal);
+      const invoke = async (method, args, mutation = false) => {
+        this.#assertWriter(token);
+        throwIfWorkspaceAborted(signal);
+        if (this.store.getForConversation(conversationId)?.workspaceId !== workspace.workspaceId ||
+            (grant && this.store.projectAccess.grants.get(workspace.workspaceId) !== grant)) throw new ManagedWorkspaceError('PROJECT_RECONNECT_REQUIRED', 'Project access changed. Ask the parent to review access before delegating again.');
+        if (args[0] !== conversationId) throw new ManagedWorkspaceError('DELEGATED_PATH_DENIED', 'The helper may only use its assigned conversation.');
+        const relative = validateWorkspacePath(args[1], { allowRoot: method === 'createDirectory' });
+        if (mutation && !(method === 'createDirectory'
+          ? relative === '.' || [...allowed].some(file => file.startsWith(relative + '/'))
+          : allowed.has(relative))) throw new ManagedWorkspaceError('DELEGATED_PATH_DENIED', 'This file is outside the helper assignment. Return to the parent to revise the explicit file list; do not work around it.');
+        if (method === 'writeFile') token.attempted.add(relative);
+        const requestIndex = method === 'writeFile' ? 3 : 2;
+        args[requestIndex] = { ...args[requestIndex], delegatedWriter: token, projectReadVersions: token.reads,
+          signal: AbortSignal.any([signal, args[requestIndex]?.signal].filter(Boolean)) };
+        const pending = this[method](...args);
+        token.pending.add(pending);
+        if (mutation) token.pendingWrites++;
+        try {
+          const result = await pending;
+          if (method === 'writeFile') token.changed.add(relative);
+          return result;
+        } finally { token.pending.delete(pending); if (mutation) token.pendingWrites--; }
+      };
+      const controller = new Proxy(this, { get: (target, property) => {
+        if (['readFile', 'accessFile', 'writeFile', 'createDirectory'].includes(property)) {
+          return (...args) => invoke(property, args, ['writeFile', 'createDirectory'].includes(property));
+        }
+        const value = target[property];
+        return typeof value === 'function' ? value.bind(target) : value;
+      } });
+      return { controller, release, evidence: () => ({ changedFiles: [...token.changed], attemptedFiles: [...token.attempted], writesPending: token.pendingWrites > 0 }) };
+    } catch (error) { release(); throw error; }
+  }
+
+  async #runOperation(request, operation, mutation = false) {
     throwIfWorkspaceAborted(this.shutdownController.signal);
     const signal = request.signal
       ? AbortSignal.any([request.signal, this.shutdownController.signal])
       : this.shutdownController.signal;
-    const pending = operation({ ...request, signal });
+    const pending = Promise.resolve().then(() => operation({ ...request, signal }));
     this.pendingOperations.add(pending);
+    if (mutation) this.pendingMutations.set(pending, mutation);
     try {
       return await pending;
     } finally {
       this.pendingOperations.delete(pending);
+      this.pendingMutations.delete(pending);
     }
   }
 
   #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
-    return this.#runOperation(request, (executionRequest) =>
-      this.#executeFileOperation(conversationId, operation, relativePath, content, executionRequest)
-    );
+    const mutation = ['write', 'mkdir', 'history_restore'].includes(operation);
+    if (mutation) {
+      validateWorkspacePath(relativePath, { allowRoot: operation === 'mkdir' });
+      this.#assertWriter(request.delegatedWriter, relativePath, operation, conversationId);
+      if (this.#pendingWriteConflict(relativePath, operation, conversationId, false)) throw new ManagedWorkspaceError('WORKSPACE_WRITER_BUSY', 'A conflicting file operation or command is still running. Wait for it to settle, then re-read the file before editing.');
+    }
+    return this.#runOperation(request, (executionRequest) => {
+      if (mutation) this.#assertWriter(executionRequest.delegatedWriter, relativePath, operation, conversationId);
+      return this.#executeFileOperation(conversationId, operation, relativePath, content, executionRequest);
+    }, mutation && { path: relativePath, operation, conversationId });
   }
 
   async #executeFileOperation(conversationId, operation, relativePath, content, request) {
@@ -1374,7 +1482,13 @@ class ManagedWorkspaceController {
     if (!capabilities.available) {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
-    const { lease, workspace, grant } = await this.#enabledLease(conversationId, request);
+    // Select by the fixed operation, never by model-supplied request flags.
+    const fileReadOnly = ['access', 'read', 'read_version', 'list', 'find', 'grep'].includes(operation);
+    const attached = this.store.getForConversation(conversationId);
+    if (attached?.project && !readOnlyOperations.has(operation)) {
+      await this.store.projectAccess.resolve(attached.workspaceId, { write: true });
+    }
+    const { lease, workspace, grant } = await this.#enabledLease(conversationId, request, fileReadOnly);
     if (workspace.project && !readOnlyOperations.has(operation)) {
       await this.store.projectAccess.resolve(workspace.workspaceId, { write: true });
     }
@@ -1405,7 +1519,7 @@ class ManagedWorkspaceController {
           operation,
           relative,
           content ? content.toString('base64') : '',
-          workspace.project && operation === 'write' ? this.projectReads.get(conversationId)?.get(relative) || 'missing' : '',
+          (workspace.project || request.delegatedWriter || this.collaborativeConversations.has(conversationId)) && operation === 'write' ? (request.projectReadVersions || this.projectReads.get(conversationId))?.get(relative) || 'missing' : '',
           grant ? `${grant.dev}:${grant.ino}` : '',
         ],
         signal: controller.signal,
@@ -1487,6 +1601,7 @@ class ManagedWorkspaceController {
   }
 
   async #withHistory(conversationId, action, { signal } = {}) {
+    this.#assertWriter();
     if (this.historyLocks.has(conversationId)) throw new WorkspaceHistoryError('Workspace history is busy');
     this.historyLocks.add(conversationId);
     const cancellation = new AbortController();
@@ -1770,13 +1885,13 @@ class ManagedWorkspaceController {
   }
 
   async readFile(conversationId, relativePath, request = {}) {
-    const project = this.store.getForConversation(conversationId)?.project;
+    const project = this.store.getForConversation(conversationId)?.project || request.delegatedWriter || this.collaborativeConversations.has(conversationId);
     const bytes = await this.#fileOperation(conversationId, project ? 'read_version' : 'read', relativePath, null, request);
     if (project) {
       const result = JSON.parse(bytes.toString('utf8'));
       if (!/^[a-f0-9]{64}$/.test(result.version) || typeof result.content !== 'string') throw new ManagedWorkspaceError('WORKSPACE_FILE_UNAVAILABLE', 'Invalid project read');
       if (!this.projectReads.has(conversationId)) this.projectReads.set(conversationId, new Map());
-      const reads = this.projectReads.get(conversationId);
+      const reads = request.projectReadVersions || this.projectReads.get(conversationId);
       if (reads.size >= 500) reads.delete(reads.keys().next().value);
       reads.set(relativePath, result.version);
       return Buffer.from(result.content, 'base64');
@@ -1791,7 +1906,7 @@ class ManagedWorkspaceController {
   async writeFile(conversationId, relativePath, content, request = {}) {
     const buffer = validateWorkspaceContent(content);
     await this.#fileOperation(conversationId, 'write', relativePath, buffer, request);
-    this.projectReads.get(conversationId)?.delete(relativePath);
+    (request.projectReadVersions || this.projectReads.get(conversationId))?.delete(relativePath);
     const workspace = this.store.getForConversation(conversationId);
     if (workspace?.project) this.store.recordProjectEdit(workspace.workspaceId, relativePath);
   }
@@ -1901,10 +2016,12 @@ class ManagedWorkspaceController {
     });
   }
 
-  execute(conversationId, request = {}) {
-    return this.#runOperation(request, (executionRequest) =>
-      this.#executeCommand(conversationId, executionRequest)
-    );
+  async execute(conversationId, request = {}) {
+    this.#assertWriter();
+    return this.#runOperation(request, (executionRequest) => {
+      this.#assertWriter();
+      return this.#executeCommand(conversationId, executionRequest);
+    }, true);
   }
 
   async #executeCommand(conversationId, request) {
@@ -2103,6 +2220,7 @@ class ManagedWorkspaceController {
   }
 
   async startProcess(conversationId, request = {}) {
+    this.#assertWriter();
     if (request.restartServerId) {
       const { restartServerId, ...launch } = request;
       return this.servers.restart(conversationId, restartServerId, launch);
@@ -2210,6 +2328,7 @@ class ManagedWorkspaceController {
   async deleteConversation(conversationId) {
     this.cancelConversation(conversationId);
     await this.historySettlements.get(conversationId);
+    this.collaborativeConversations.delete(conversationId);
     this.servers.deleteConversation(conversationId);
     this.processManager.deleteConversation(conversationId);
     const workspace = this.store.getForConversation(conversationId);
@@ -2276,5 +2395,6 @@ module.exports = {
   validatePermissionCommand,
   validateWorkspaceSearchPattern,
   validateWorkspacePath,
+  workspacePathsConflict,
   validateWorkingDirectory,
 };

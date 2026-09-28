@@ -14,6 +14,36 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('helper edits remain visible alongside parent reads and after stopping', () => {
+    const subagent = { taskId: `delegate_${'a'.repeat(24)}`, title: 'Implement', state: 'cancelled', mode: 'edit', changedFiles: ['README.md'], attemptedFiles: ['README.md'] };
+    const helper = { operation: 'delegate_task', status: 'failed', subagent };
+    const read = { operation: 'read', status: 'succeeded', workspace: { kind: 'file_read', command: 'Read README.md', state: 'completed', backend: 'freedom-workspace-files', workingDirectory: '.' } };
+    expect(buildAgentOutcome([helper, read], 'completed')).toMatchObject({ headline: 'Project file updated', detail: expect.stringContaining('Editing helpers recorded 1 changed file') });
+    expect(buildAgentOutcome([helper, read], 'completed').notice.headline).toBe('Helper stopped during editing');
+    expect(buildAgentOutcome([{ ...helper, subagent: { ...subagent, state: 'completed' } }, read], 'completed').notice).toBeUndefined();
+    expect(buildAgentOutcome([helper], 'cancelled').detail).toContain('partial edits');
+  });
+  test('helper receipts remain model reports, not browser verification', () => {
+    const subagent = { taskId: `delegate_${'a'.repeat(24)}`, title: 'Review', state: 'completed', report: 'Looks good' };
+    const item = { operation: 'delegate_task', status: 'succeeded', ...activityProgress('delegate_task', { subagent }) };
+    expect(item.label).toBe('Received helper report — Review');
+    expect(buildAgentOutcome([item], 'completed')).toMatchObject({ verification: 'delegated_report', tone: 'neutral' });
+    expect(buildAgentOutcome([item], 'completed').detail).not.toContain('browser');
+    expect(activityProgress('delegate_task', { subagent: { ...subagent, state: 'cancelled' } }).label).toBe('Helper stopped — Review');
+  });
+  test.each([
+    [['completed', 'cancelled'], 'neutral', '1 report received · 1 task stopped'],
+    [['completed', 'completed'], 'neutral', '2 reports received'],
+    [['cancelled', 'cancelled'], 'neutral', '2 tasks stopped'],
+    [['completed', 'failed'], 'caution', '1 report received · 1 task incomplete'],
+    [['timed_out', 'limited'], 'caution', '2 tasks incomplete'],
+  ])('summarizes helper states %s without treating intentional stops as failures', (states, tone, detail) => {
+    const subagents = states.map((state, i) => ({ taskId: `delegate_${String(i).repeat(24)}`, state, title: `Task ${i}` }));
+    const item = { operation: 'delegate_task', status: 'succeeded', ...activityProgress('delegate_task', { subagents }) };
+    expect(buildAgentOutcome([item], 'completed')).toMatchObject({ tone, detail: `${detail}. Read-only, model-generated findings.` });
+    const separate = subagents.map(subagent => ({ operation: 'delegate_task', subagent }));
+    expect(buildAgentOutcome(separate, 'completed').detail).toBe(`${detail}. Read-only, model-generated findings.`);
+  });
   test('reports real repository commits without checkpoint terminology', () => {
     const workspace = { kind: 'history', command: 'Project history: commit', workingDirectory: '.',
       backend: 'freedom-workspace-files', state: 'completed',
@@ -1416,4 +1446,63 @@ test('mixed successful inspections and a failed command do not claim command com
 
 test('listing saved servers reports project work, not browser use', () => {
   expect(activityProgress('workspace_server', { workspace: { kind: 'process', command: 'List saved development servers', workingDirectory: '.', backend: 'freedom-workspace-servers', state: 'completed', sideEffects: 'none' } })).toMatchObject({ label: 'Checked saved project servers' });
+});
+
+test('browser helper summaries use host action receipts without labelling their work read-only', () => {
+  const receipt = { taskId: 'delegate_' + 'a'.repeat(24), title: 'Browse', state: 'cancelled', mode: 'browser', tabIds: ['tab_child'], browserPending: true,
+    browserActions: [{ operation: 'browser_click', status: 'succeeded', origin: 'https://example.com', pageTitle: 'Example' }] };
+  const item = { operation: 'delegate_task', status: 'failed', subagent: receipt };
+  const stopped = buildAgentOutcome([item], 'cancelled');
+  expect(stopped.detail).toContain('Browser helpers recorded 1 page operation');
+  expect(stopped.detail).toContain('still settling');
+  expect(stopped.detail).not.toContain('Read-only');
+  expect(stopped.counts.changed).toBeGreaterThan(0);
+  const empty = buildAgentOutcome([{ ...item, subagent: { ...receipt, state: 'completed', browserActions: [], browserPending: false } }], 'completed');
+  expect(empty.verification).toBe('delegated_report');
+  expect(empty.detail).not.toContain('Read-only');
+});
+
+test('browser helper receipt persistence bounds metadata and does not retain raw page output', () => {
+  const { normalizeSubagentReceipt } = require('./subagent-receipt');
+  const value = normalizeSubagentReceipt({ taskId: 'delegate_' + 'b'.repeat(24), title: 'Browse', state: 'completed', mode: 'browser',
+    tabIds: ['tab_child', '../other', 'tab_child'], browserActions: [
+      { operation: 'browser_snapshot', status: 'succeeded', origin: 'https://example.com/path?secret=not-retained', pageTitle: 'A\nB', raw: 'not-retained' },
+      { operation: 'node_request', status: 'succeeded' },
+    ] });
+  expect(value.tabIds).toEqual(['tab_child']);
+  expect(value.browserActions).toEqual([{ operation: 'browser_snapshot', status: 'succeeded', origin: 'https://example.com', pageTitle: 'A B' }]);
+  expect(JSON.stringify(value)).not.toContain('not-retained');
+});
+
+
+test('saved report retrieval is historical evidence, not a browser observation', () => {
+  const item = { operation: 'helper_reports', status: 'succeeded', ...activityProgress('helper_reports') };
+  expect(item.label).toBe('Read saved helper reports');
+  expect(buildAgentOutcome([item], 'completed')).toMatchObject({ verification: 'historical_report', tone: 'neutral' });
+});
+
+test('does not claim recovery when opening a page succeeds but its final read fails', () => {
+  const result = buildAgentOutcome([
+    { operation: OPERATIONS.CREATE_TAB, status: 'succeeded', effect: 'changed', pageId: 'new_tab', origin: 'https://en.wikipedia.org' },
+    { operation: OPERATIONS.SNAPSHOT, status: 'failed', effect: 'observed', pageId: 'new_tab', errorCode: 'OBSERVATION_REQUIRED' },
+  ], 'completed');
+  expect(result.detail).not.toContain('recovered');
+  expect(result.detail).toContain('1 browser action did not complete successfully');
+});
+
+
+test('only unresolved browser effects receive an attention notice; verification remains intact', () => {
+  const opened = { operation: OPERATIONS.CREATE_TAB, status: 'succeeded', pageId: 'page' };
+  expect(buildAgentOutcome([opened], 'completed')).toMatchObject({ verification: 'actions_recorded', counts: { successful: 1 } });
+  expect(buildAgentOutcome([opened], 'completed').notice).toBeUndefined();
+  const failed = { operation: OPERATIONS.CLICK, status: 'failed', pageId: 'page', errorCode: 'INTERNAL_ERROR' };
+  expect(buildAgentOutcome([opened, failed], 'completed').notice.headline).toBe('Browser action outcome uncertain');
+  const read = { operation: OPERATIONS.SNAPSHOT, status: 'succeeded', pageId: 'other' };
+  expect(buildAgentOutcome([opened, failed, read], 'completed').notice).toBeDefined();
+  expect(buildAgentOutcome([opened, failed, { ...read, pageId: 'page' }], 'completed').notice).toBeUndefined();
+  expect(buildAgentOutcome([opened, { ...failed, errorCode: 'OBSERVATION_REQUIRED' }], 'completed').notice).toBeUndefined();
+  const helper = { operation: 'delegate_task', status: 'succeeded', subagent: {
+    taskId: `delegate_${'b'.repeat(24)}`, title: 'Browse', state: 'completed', mode: 'browser', browserActions: [failed],
+  } };
+  expect(buildAgentOutcome([helper, { ...read, pageId: 'page' }], 'completed').notice).toBeUndefined();
 });

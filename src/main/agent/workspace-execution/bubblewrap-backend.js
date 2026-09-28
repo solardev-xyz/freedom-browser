@@ -530,11 +530,11 @@ async function buildBubblewrapArguments(policy, request) {
       '--dir',
       '/tmp/data'
     );
-    const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
+    const workspace = policy.filesystem.readableRoots.find((root) => root.id === 'workspace');
     if (!workspace) {
-      throw new ExecutionPolicyError('INVALID_POLICY', 'Policy has no writable workspace root');
+      throw new ExecutionPolicyError('INVALID_POLICY', 'Policy has no readable workspace root');
     }
-    args.push('--bind', workspace.sourcePath, workspace.mountPath);
+    args.push(policy.filesystem.writableRoots.some((root) => root.id === 'workspace') ? '--bind' : '--ro-bind', workspace.sourcePath, workspace.mountPath);
     await addProtectedMounts(args, policy, stagingDirectory);
     // fd8 is the pinned running native owner's inode, inherited only by bwrap.
     // --file copies from that descriptor without reopening a host pathname or

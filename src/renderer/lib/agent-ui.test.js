@@ -377,6 +377,7 @@ async function loadAgentUi(options = {}) {
     copyText: jest.fn().mockResolvedValue({ success: true }),
     pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
     resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
+    stopAgentHelper: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
     decideAgentApproval: jest.fn().mockResolvedValue({ ok: true, decided: true }),
     onAgentEvent: jest.fn((handler) => {
@@ -483,6 +484,140 @@ async function loadAgentUi(options = {}) {
 }
 
 describe('Agent UI', () => {
+  test('renders separate parallel reports and neutral completion/stopping without a recovery warning', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', intent: 'Delegating two read-only tasks' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', status: 'failed',
+      label: '1 report received · 1 task stopped', subagents: [
+        { title: 'Structure', state: 'completed', report: '<script>untrusted()</script>', toolCalls: 2 },
+        { title: 'Accessibility', state: 'cancelled', report: '', toolCalls: 1 },
+      ] });
+    const reports = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
+    expect(reports.length).toBe(2);
+    expect(reports[0].querySelector('.agent-helper-title').textContent).toBe('Structure');
+    expect(reports[0].querySelector('.agent-helper-status').textContent).toContain('Completed');
+    expect(reports[1].querySelector('.agent-helper-status').textContent).toContain('Stopped');
+    expect(reports[0].children[2].textContent).toBe('<script>untrusted()</script>');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('1 report received · 1 task stopped');
+  });
+  test.each([2, 6])('%i helper cards remain outside the action log and Stop targets only one helper with stable focus and expansion', async count => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'batch', operation: 'delegate_task', status: 'succeeded',
+      subagents: ['a', 'b', 'c', 'd', 'e', 'f'].slice(0, count).map(id => ({ taskId: 'delegate_' + id.repeat(24), title: id, state: 'running', activity: 'Reading a page' })) };
+    ctx.emit(event);
+    const cards = ctx.elements['agent-transcript'].querySelectorAll('.agent-subagent-report');
+    expect(cards).toHaveLength(count);
+    const button = cards[0].querySelector('.agent-helper-stop');
+    expect(cards[0].parentNode.className).toBe('agent-helper-list');
+    expect(button.hidden).toBe(false);
+    cards[0].open = true;
+    ctx.emit(event);
+    expect(cards[0].querySelector('.agent-helper-stop')).toBe(button);
+    expect(cards[0].open).toBe(true);
+    await button.dispatch('click', { preventDefault() {}, stopPropagation() {} }); await flush();
+    expect(ctx.electronAPI.stopAgentHelper).toHaveBeenCalledWith('run_test', event.subagents[0].taskId);
+    expect(ctx.electronAPI.stopAgent).not.toHaveBeenCalled();
+    ctx.emit({ ...event, subagents: event.subagents.map((receipt, i) => i === 0 ? { ...receipt, state: 'cancelled' } : receipt) });
+    expect(button.hidden).toBe(true);
+    expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(false);
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+    expect(cards[1].querySelector('.agent-helper-stop').hidden).toBe(true);
+  });
+  test('saved helper cards load only when expanded, page on demand, and preserve loaded text across updates', async () => {
+    const read = jest.fn().mockResolvedValueOnce({ ok: true, result: { text: 'First page ', nextOffset: 11 } })
+      .mockResolvedValueOnce({ ok: true, result: { text: 'last finding', nextOffset: null } });
+    const ctx = await loadAgentUi({ electronAPI: { readAgentHelperReport: read } });
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Preview', reportId: 'report_' + 'a'.repeat(64), reportChars: 23 } };
+    ctx.emit(event);
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(read).not.toHaveBeenCalled();
+    card.open = true; await card.dispatch('toggle'); await flush();
+    expect(read).toHaveBeenCalledWith('conversation_test', event.subagent.reportId, 0);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page ');
+    ctx.emit(event);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page ');
+    const more = [...card.children].find(child => child.tagName === 'BUTTON');
+    expect(more.textContent).toBe('Show more');
+    await more.dispatch('click'); await flush();
+    expect(read).toHaveBeenLastCalledWith('conversation_test', event.subagent.reportId, 11);
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('First page last finding');
+    expect(more.hidden).toBe(true);
+  });
+
+  test('report loading can retry and ignores a late page for an older helper follow-up', async () => {
+    let resolveOld;
+    const read = jest.fn().mockRejectedValueOnce(new Error('Unavailable'))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }))
+      .mockResolvedValue({ ok: true, result: { text: 'New report', nextOffset: null } });
+    const ctx = await loadAgentUi({ electronAPI: { readAgentHelperReport: read } });
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    const event = { type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: 'Preview', reportId: 'report_' + 'a'.repeat(64) } };
+    ctx.emit(event);
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    card.open = true; await card.dispatch('toggle'); await flush();
+    const retry = [...card.children].find(child => child.tagName === 'BUTTON');
+    expect(retry.textContent).toBe('Retry loading report');
+    retry.dispatch('click'); await flush();
+    ctx.emit({ ...event, subagent: { ...event.subagent, reportId: 'report_' + 'b'.repeat(64) } }); await flush();
+    resolveOld({ ok: true, result: { text: 'Old report', nextOffset: null } }); await flush();
+    expect(card.querySelector('.agent-helper-report-body').textContent).toBe('New report');
+  });
+
+  test('helper reports use the same restricted Markdown renderer as the main response', async () => {
+    const sanitize = jest.fn(() => '<p><strong>Finding</strong></p>');
+    const ctx = await loadAgentUi({ windowGlobals: {
+      marked: { parse: jest.fn(() => '<p><strong>Finding</strong><img src=x onerror=alert(1)></p>') },
+      DOMPurify: { sanitize },
+    } });
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', status: 'succeeded',
+      subagent: { taskId: 'delegate_' + 'a'.repeat(24), title: 'Review', state: 'completed', report: '**Finding**' } });
+    const body = ctx.elements['agent-transcript'].querySelector('.agent-helper-report-body');
+    expect(body.innerHTML).toBe('<p><strong>Finding</strong></p>');
+    expect(body.classList.contains('rendered-markdown')).toBe(true);
+    expect(sanitize.mock.calls[0][1].ALLOWED_ATTR).toEqual([]);
+    expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('img');
+    expect(sanitize.mock.calls[0][1].ALLOWED_TAGS).not.toContain('script');
+  });
+  test('shows recorded helper edits and unsettled writes as inert text', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', userText: 'Edit project' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'edit', operation: 'delegate_task' });
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'edit', operation: 'delegate_task', status: 'failed',
+      subagent: { mode: 'edit', state: 'cancelled', report: '', changedFiles: ['README.md'], attemptedFiles: ['README.md', '<script>'], writesPending: true } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(report.querySelector('.agent-helper-status').textContent).toContain('Editing helper');
+    expect(report.children[3].textContent).toContain('Files changed: README.md');
+    expect(report.children[3].textContent).toContain('still settling');
+    expect(report.querySelector('script')).toBeNull();
+  });
+  test('renders helper reports as expandable inert text and labels interruptions without browser errors', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test', conversationId: 'conversation_test', userText: 'Review the project' });
+    ctx.emit({ type: 'tool_started', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task', intent: 'Delegating: Review' });
+    ctx.emit({ type: 'run_progress', runId: 'run_test', source: 'subagent', message: 'Helper is inspecting: Review' });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-live-status').children[1].textContent).toBe('Helper is inspecting: Review');
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task',
+      status: 'succeeded', label: 'Received helper report — Review',
+      subagent: { state: 'completed', toolCalls: 2, report: '<img src="https://invalid.test/track">README.md needs an example.' } });
+    const report = ctx.elements['agent-transcript'].querySelector('.agent-subagent-report');
+    expect(report.querySelector('.agent-helper-status').textContent).toContain('Completed');
+    expect(report.children[2].textContent).toContain('<img');
+    expect(report.querySelector('img')).toBeNull();
+    ctx.emit({ type: 'tool_finished', runId: 'run_test', toolCallId: 'child', operation: 'delegate_task',
+      status: 'failed', label: 'Helper stopped — Review', subagent: { state: 'cancelled', report: '' } });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-subagent-report').children[2].textContent).toBe('No complete report was returned.');
+    expect(ctx.elements['agent-run-message'].textContent).not.toContain('Browser');
+  });
   afterEach(() => {
     delete global.document;
     delete global.window;
@@ -1628,7 +1763,7 @@ describe('Agent UI', () => {
     expect(toolRow.children[1].textContent).toContain('Download cancelled by you');
     expect(toolRow.children[2].textContent).toBe('Cancelled by you');
     expect(turn.querySelector('.agent-artifact-list').hidden).toBe(true);
-    expect(turn.querySelector('.agent-turn-outcome').classList.contains('neutral')).toBe(true);
+    expect(turn.querySelector('.agent-turn-outcome').hidden).toBe(true);
     expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toContain(
       'Download cancelled'
     );
@@ -1695,12 +1830,7 @@ describe('Agent UI', () => {
     });
 
     const outcome = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
-    expect(outcome.hidden).toBe(false);
-    expect(outcome.classList.contains('success')).toBe(true);
-    expect(outcome.children[1].children[0].textContent).toBe('Browser state inspected');
-    expect(outcome.children[1].children[1].textContent).toContain(
-      'Freedom recorded 1 successful browser action'
-    );
+    expect(outcome.hidden).toBe(true);
     expect(liveActivity.children[0].textContent).toBe(
       'Worked for 4s · 1 action · Browser inspected'
     );
@@ -1927,8 +2057,7 @@ describe('Agent UI', () => {
     expect(toolList.children).toHaveLength(1);
     expect(toolList.children[0].children[1].textContent).toBe('Read report.json');
     const outcome = turn.querySelector('.agent-turn-outcome');
-    expect(outcome.children[1].children[0].textContent).toBe('Attached sources inspected');
-    expect(outcome.children[1].children[1].textContent).not.toContain('browser evidence');
+    expect(outcome.hidden).toBe(true);
     expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
       'Worked for 2s · 2 actions · Sources inspected'
     );
@@ -2072,9 +2201,7 @@ describe('Agent UI', () => {
 
     const turn = ctx.elements['agent-transcript'].children[0];
     const outcome = turn.querySelector('.agent-turn-outcome');
-    expect(outcome.hidden).toBe(false);
-    expect(outcome.classList.contains('caution')).toBe(true);
-    expect(outcome.children[1].children[0].textContent).toBe('Node status checked');
+    expect(outcome.hidden).toBe(true);
     expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
       'Worked for 2s · 1 action · Node status checked'
     );
@@ -4229,4 +4356,46 @@ test('consolidates process polls by owned process ID, preserving separate execut
   expect(list.children).toHaveLength(2);
   expect(list.children[0].children[1].textContent).toBe('a: completed');
   expect(list.children[1].children[1].textContent).toBe('b: running');
+});
+
+
+describe('selective result notices', () => {
+  test.each([
+    ['actions_recorded', {}], ['result_observed', {}], ['model_only', {}],
+    ['delegated_report', {}], ['historical_report', {}], ['workspace_preview_opened', {}],
+    ['workspace_execution_recorded', { workspace: { state: 'completed' } }],
+    ['artifact_available', {}], ['swarm_publication_verified', {}],
+    ['node_lifecycle_verified', {}], ['wallet_declined', {}],
+  ])('hides routine %s summaries while keeping activity', async (verification, extra) => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'quiet', userText: 'Do the task' });
+    ctx.emit({ type: 'tool_started', runId: 'quiet', toolCallId: 'read', operation: 'browser_snapshot' });
+    ctx.emit({ type: 'tool_finished', runId: 'quiet', toolCallId: 'read', operation: 'browser_snapshot', status: 'succeeded' });
+    ctx.emit({ type: 'run_finished', runId: 'quiet', status: 'completed', actionCount: 1,
+      outcome: { kind: 'completed', verification, tone: 'caution', headline: 'Routine evidence', ...extra } });
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome').hidden).toBe(true);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-turn-activity').hidden).toBe(false);
+  });
+  test.each(['wallet_broadcast', 'page_tool_unresolved', 'swarm_publication_failed',
+    'swarm_publication_outcome_unknown', 'node_delivery_uncertain', 'node_request_in_flight'])(
+    'keeps useful receipts and unresolved %s outcomes', async verification => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'notice', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'notice', status: 'completed',
+      outcome: { kind: 'completed', verification, tone: 'caution', headline: 'Check this result', detail: 'Receipt details' } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.children[1].children[1].textContent).toBe('Receipt details');
+  });
+  test('shows a concise uncertainty notice instead of routine verification counts', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'uncertain', userText: 'Do the task' });
+    ctx.emit({ type: 'run_finished', runId: 'uncertain', status: 'completed', outcome: {
+      verification: 'actions_recorded', detail: '42 actions recorded',
+      notice: { tone: 'caution', headline: 'Browser action outcome uncertain', detail: 'Check the page before repeating it.' },
+    } });
+    const card = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(card.hidden).toBe(false);
+    expect(card.children[1].children[1].textContent).toBe('Check the page before repeating it.');
+  });
 });

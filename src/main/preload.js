@@ -177,6 +177,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pauseAgent: (runId) => ipcRenderer.invoke('agent:pause', { runId }),
   resumeAgent: (runId, prompt) => ipcRenderer.invoke('agent:resume', { runId, prompt }),
   stopAgent: (runId) => ipcRenderer.invoke('agent:stop', { runId }),
+  stopAgentHelper: (runId, taskId) => ipcRenderer.invoke('agent:stop', { runId, taskId }),
   decideAgentApproval: (runId, approvalId, approved, options = {}) =>
     ipcRenderer.invoke('agent:approval:decide', {
       runId,
@@ -195,6 +196,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
   getAgentPageActions: (rendererTabId) => ipcRenderer.invoke('agent:page-actions', { rendererTabId }),
   clearAgentConversation: () => ipcRenderer.invoke('agent:clear-conversation'),
+  readAgentHelperReport: (conversationId, reportId, offset = 0) =>
+    ipcRenderer.invoke('agent:helper-reports', { conversationId, reportId, offset }),
   listAgentSessions: () => ipcRenderer.invoke('agent:history:list'),
   openAgentSession: (conversationId) =>
     ipcRenderer.invoke('agent:history:open', { conversationId }),

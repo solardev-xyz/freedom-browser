@@ -2182,6 +2182,10 @@ function createTurnView(turn) {
   artifactList.className = 'agent-artifact-list';
   artifactList.hidden = true;
 
+  const helperList = document.createElement('div');
+  helperList.className = 'agent-helper-list';
+  helperList.hidden = true;
+
   const guidanceList = document.createElement('div');
   guidanceList.className = 'agent-guidance-list';
 
@@ -2217,6 +2221,7 @@ function createTurnView(turn) {
   section.appendChild(assistantRow);
   section.appendChild(outcome);
   section.appendChild(artifactList);
+  section.appendChild(helperList);
   section.appendChild(activity);
   section.appendChild(liveStatus);
   elements.transcript.appendChild(section);
@@ -2236,6 +2241,8 @@ function createTurnView(turn) {
     outcomeActions,
     outcomeRetry,
     artifactList,
+    helperList,
+    helperCards: new Map(),
     activity,
     activitySummary,
     toolList,
@@ -2338,12 +2345,12 @@ function formatDuration(durationMs) {
   return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
-function renderAssistantMarkdown(view) {
-  if (!view?.assistantText || !window.marked?.parse || !window.DOMPurify?.sanitize) return;
+function renderAgentMarkdown(output, text) {
+  if (!text || !window.marked?.parse || !window.DOMPurify?.sanitize) return;
   try {
-    const rendered = window.marked.parse(view.assistantText, { gfm: true, breaks: true });
+    const rendered = window.marked.parse(text, { gfm: true, breaks: true });
     if (typeof rendered !== 'string') return;
-    view.output.innerHTML = window.DOMPurify.sanitize(rendered, {
+    output.innerHTML = window.DOMPurify.sanitize(rendered, {
       ALLOWED_TAGS: [
         'p',
         'br',
@@ -2372,10 +2379,10 @@ function renderAssistantMarkdown(view) {
       ],
       ALLOWED_ATTR: [],
     });
-    view.output.classList.add('rendered-markdown');
+    output.classList.add('rendered-markdown');
   } catch {
-    view.output.textContent = view.assistantText;
-    view.output.classList.remove('rendered-markdown');
+    output.textContent = text;
+    output.classList.remove('rendered-markdown');
   }
 }
 
@@ -2394,7 +2401,7 @@ function restoreTranscript(transcript = []) {
     ) {
       finishTurnView(turn.runId, turn);
     }
-    if (view.assistantText && turn.status === 'completed') renderAssistantMarkdown(view);
+    if (view.assistantText && turn.status === 'completed') renderAgentMarkdown(view.output, view.assistantText);
   }
 }
 
@@ -2944,6 +2951,9 @@ function formatOperation(operation) {
 }
 
 function formatToolError(code, operation) {
+  if (operation === 'delegate_task') return 'The delegated task did not complete';
+  if (operation === 'helper_reports') return 'Could not read the saved report. Reopen this conversation and try again';
+  if (operation === 'helper_task') return 'The helper request could not be completed';
   const labels = {
     TAB_NOT_FOUND: 'Page is no longer open',
     NAVIGATION_FAILED: 'Page could not be opened',
@@ -2952,6 +2962,8 @@ function formatToolError(code, operation) {
     ELEMENT_NOT_FOUND: 'Page element is no longer available',
     ELEMENT_NOT_INTERACTABLE: 'Page element could not be used',
     APPROVAL_REQUIRED: 'Approval is still required',
+    OBSERVATION_REQUIRED: 'Agent needs to refresh its view of this page',
+    TAB_BUSY: 'A helper is currently using this tab',
     POLICY_DENIED: 'Blocked by Freedom policy',
     USER_CANCELLED: 'Not applied',
     FILE_UPLOAD_CANCELLED_BY_USER: 'File selection cancelled by you',
@@ -2985,6 +2997,16 @@ function formatToolError(code, operation) {
     WORKSPACE_COMMAND_TIMED_OUT: 'Workspace command timed out',
     WORKSPACE_DIRECTORY_UNAVAILABLE: 'Workspace directory does not exist',
     WORKSPACE_EXECUTION_FAILED: 'Workspace command could not be executed',
+    WORKSPACE_WRITER_BUSY: 'Project editing is owned by a helper or still in progress',
+    DELEGATED_PATH_DENIED: 'File is outside the helper assignment',
+    UNSAFE_GIT_CONFIGURATION: 'Project Git configuration is unsupported by the sandbox',
+    WORKSPACE_CHANGED_DURING_VALIDATION: 'Project changed during filesystem validation',
+    WORKSPACE_HARDLINK_DENIED: 'Project hardlinks could not be safely isolated',
+    WORKSPACE_SPECIAL_FILE_DENIED: 'Project contains an unsupported special file',
+    WORKSPACE_VALIDATION_LIMIT: 'Project exceeds the filesystem validation limit',
+    EXTERNAL_GIT_METADATA_DENIED: 'Git metadata outside the project is unsupported',
+    PROTECTED_PATH_MISSING: 'Required workspace metadata is unavailable',
+    INVALID_WORKSPACE: 'Project root or working directory is unavailable',
     WORKSPACE_FILE_TOO_LARGE: 'Workspace file exceeds the supported size limit',
     WORKSPACE_FILE_UNAVAILABLE: 'Workspace file could not be accessed',
     WORKSPACE_FILE_UNSAFE: 'Blocked unsafe workspace path',
@@ -3008,12 +3030,32 @@ function formatToolError(code, operation) {
   return labels[code] || 'Browser action failed';
 }
 
-function renderTurnOutcome(view, outcome, error) {
-  if (!view || !outcome || typeof outcome !== 'object') return;
-  if (outcome.verification === 'not_applicable') {
-    view.outcome.hidden = true;
-    return;
+// Verification stays in the receipts. Only unresolved outcomes and useful
+// receipts belong beside the answer; downloads/publications have their own cards.
+function visibleOutcome(outcome) {
+  if (!outcome || typeof outcome !== 'object') return null;
+  if (outcome.kind === 'recovery') return outcome;
+  if (outcome.notice) return outcome.notice;
+  if (outcome.kind === 'interrupted') return outcome.counts?.changed > 0
+    ? { ...outcome, detail: 'Changes made before stopping remain in place. Review the activity before continuing.' } : null;
+  if ([
+    'wallet_broadcast', 'page_tool_unresolved', 'swarm_publication_in_flight',
+    'swarm_publication_failed', 'swarm_publication_outcome_unknown',
+    'node_request_in_flight', 'node_delivery_uncertain',
+  ].includes(outcome.verification)) return outcome;
+  if (outcome.verification === 'workspace_execution_recorded' &&
+      ['failed', 'timed_out', 'sandbox_denied'].includes(outcome.workspace?.state)) {
+    return { ...outcome, headline: 'Project operation did not complete',
+      detail: `${outcome.workspace.command || 'The last project operation'} did not complete. Check the activity for details.` };
   }
+  return null;
+}
+
+function renderTurnOutcome(view, outcome, error) {
+  if (!view) return;
+  outcome = visibleOutcome(outcome);
+  view.outcome.hidden = !outcome;
+  if (!outcome) return;
   const icons = { success: '✓', caution: '!', danger: '×', neutral: '•' };
   const tone = Object.hasOwn(icons, outcome.tone) ? outcome.tone : 'neutral';
   view.outcome.className = `agent-turn-outcome ${tone}`;
@@ -3230,7 +3272,7 @@ function addToolRow(event) {
   const state = document.createElement('span');
   state.className = 'agent-tool-state';
   state.textContent = '•';
-  const label = document.createElement('span');
+  const label = document.createElement(event.operation === 'delegate_task' ? 'div' : 'span');
   label.textContent = event.intent || event.label || formatOperation(event.operation);
   const approval = document.createElement('span');
   approval.className = 'agent-tool-approval';
@@ -3307,11 +3349,126 @@ function finishToolRow(event) {
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
   record.row.title = '';
-  if (event.status === 'failed') {
+  if (event.status === 'failed' && event.operation !== 'delegate_task') {
     record.row.title = formatToolError(event.errorCode, event.operation);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
   }
   renderToolPage(record, event, true);
+  if (event.operation === 'delegate_task' && (event.subagent || event.subagents)) {
+    const receipts = Array.isArray(event.subagents) ? event.subagents : [event.subagent];
+    const view = turnView(event.runId);
+    record.row.hidden = true;
+    view.activity.hidden = [...view.toolList.children].every(row => row.hidden);
+    view.helperList.hidden = false;
+    for (const receipt of receipts) {
+      const key = receipt.taskId || `${event.toolCallId}:${receipts.indexOf(receipt)}`;
+      let card = view.helperCards.get(key);
+      if (!card) {
+        const details = document.createElement('details');
+        details.className = 'agent-subagent-report';
+        details.dataset.taskId = key;
+        const summary = document.createElement('summary');
+        const copy = document.createElement('span');
+        copy.className = 'agent-helper-copy';
+        const title = document.createElement('strong');
+        title.className = 'agent-helper-title';
+        const status = document.createElement('span');
+        status.className = 'agent-helper-status';
+        const preview = document.createElement('span');
+        preview.className = 'agent-helper-preview';
+        copy.appendChild(title); copy.appendChild(status); copy.appendChild(preview);
+        const stop = document.createElement('button');
+        stop.type = 'button'; stop.className = 'agent-button agent-helper-stop';
+        stop.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>';
+        stop.title = 'Stop helper';
+        card = { details, summary, title, status, preview, stop, stopping: false };
+        details.addEventListener('toggle', () => {
+          if (details.open && card.reportId && !card.reportLoaded) card.loadReport?.();
+        });
+        stop.addEventListener('click', async click => {
+          click.preventDefault(); click.stopPropagation();
+          if (card.stopping || currentRunId !== event.runId || card.state !== 'running') return;
+          card.stopping = true; stop.disabled = true; stop.title = 'Stopping…';
+          try {
+            const response = await window.electronAPI.stopAgentHelper(event.runId, receipt.taskId);
+            if (!response?.ok || !response.stopped) {
+              setMessage(elements.runMessage, response?.error?.message || 'This helper is no longer running. Its latest status will appear here.', true);
+            }
+          } catch { setMessage(elements.runMessage, 'Could not stop this helper. Try again, or use Stop task to stop all work.', true); }
+          finally { card.stopping = false; stop.disabled = card.state !== 'running'; stop.title = 'Stop helper'; }
+        });
+        const chevron = document.createElement('span');
+        chevron.className = 'agent-helper-chevron'; chevron.setAttribute('aria-hidden', 'true');
+        // Lucide chevron-right, matching the workspace/composer icon style.
+        chevron.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+        summary.appendChild(copy); summary.appendChild(stop); summary.appendChild(chevron);
+        details.appendChild(summary);
+        view.helperCards.set(key, card);
+        view.helperList.appendChild(details);
+      }
+      const { details, summary } = card;
+      card.state = receipt.state;
+      details.dataset.state = receipt.state;
+      card.title.textContent = receipt.title || 'Delegated task';
+      const state = { running: 'Working', completed: 'Completed', cancelled: 'Stopped', failed: 'Failed',
+        timed_out: 'Timed out', limited: 'Could not start' }[receipt.state] || 'Incomplete';
+      const kind = receipt.mode === 'browser' ? 'Browser helper' : receipt.mode === 'edit' ? 'Editing helper' : 'Read-only helper';
+      card.status.textContent = `${kind} · ${state}${receipt.state === 'running' && receipt.activity ? ` · ${receipt.activity}` : ''}`;
+      card.preview.textContent = receipt.state === 'completed' ? (receipt.report || '').slice(0, 180) :
+        receipt.state === 'cancelled' && ['edit', 'browser'].includes(receipt.mode) ? 'Stopped work may have made changes. Expand to review.' : '';
+      card.preview.hidden = !card.preview.textContent;
+      card.stop.hidden = receipt.state !== 'running' || currentRunId !== event.runId;
+      card.stop.disabled = card.stopping || card.stop.hidden;
+      card.stop.setAttribute('aria-label', `Stop helper: ${receipt.title || 'Delegated task'}`);
+      // Keep the summary and its focused Stop button stable during progress updates.
+      for (const child of [...details.children]) if (child !== summary) child.remove();
+      const note = document.createElement('p');
+      const calls = Number.isSafeInteger(receipt.toolCalls) ? receipt.toolCalls : 0;
+      note.textContent = `${calls} tool calls · Model-generated findings${receipt.reportTruncated ? ' · Report shortened' : ''}`;
+      const report = document.createElement('div');
+      report.className = 'agent-helper-report-body';
+      report.textContent = typeof receipt.report === 'string' && receipt.report
+        ? receipt.report : receipt.state === 'running' ? 'The helper is working. Its report will appear here.' : 'No complete report was returned.';
+      renderAgentMarkdown(report, report.textContent);
+      if (receipt.state === 'completed' && receipt.report && report.classList.contains('rendered-markdown')) {
+        card.preview.textContent = report.textContent.replace(/\s+/g, ' ').trim().slice(0, 180);
+      }
+      details.appendChild(note);
+      details.appendChild(report);
+      configureHelperReport(card, receipt, report);
+      if (receipt.mode === 'browser') {
+        const actions = document.createElement('ul');
+        for (const action of (receipt.browserActions || []).slice(0, 48)) {
+          const item = document.createElement('li');
+          item.textContent = `${action.status === 'succeeded' ? '✓' : '×'} ${action.label || action.operation.replace(/^browser_/, '').replaceAll('_', ' ')}${action.pageTitle || action.origin ? ` — ${action.pageTitle || action.origin}` : ''}`;
+          actions.appendChild(item);
+        }
+        details.appendChild(actions);
+        if (receipt.browserPending) {
+          const pending = document.createElement('p');
+          pending.textContent = 'A browser operation was still settling. Review the returned tabs before continuing; stopping does not undo page actions.';
+          details.appendChild(pending);
+        }
+      }
+      if (receipt.mode === 'edit') {
+        const changes = document.createElement('p');
+        const paths = Array.isArray(receipt.changedFiles) ? receipt.changedFiles.slice(0, 20) : [];
+        changes.textContent = paths.length ? `Files changed: ${paths.join(', ')}` : 'No completed file writes recorded.';
+        if (receipt.writesPending || (receipt.attemptedFiles || []).some(file => !paths.includes(file))) changes.textContent += ' Some writes were attempted or still settling; review the current files.';
+        details.appendChild(changes);
+      }
+    }
+    if (receipts.some(receipt => receipt.state === 'running')) {
+      record.state.textContent = '•';
+      record.row.classList.remove('failed');
+    }
+    if (receipts.every(receipt => ['completed', 'cancelled'].includes(receipt.state)) &&
+        receipts.some(receipt => receipt.state === 'cancelled')) {
+      record.state.textContent = '•';
+      record.row.classList.remove('failed');
+      record.row.classList.add('cancelled');
+    }
+  }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
   if (userCancelled) {
     record.approval.textContent = 'Cancelled by you';
@@ -3319,6 +3476,60 @@ function finishToolRow(event) {
   }
   if (event.artifact) renderArtifact(event.runId, event.artifact);
   if (event.publication) renderPublication(event.runId, event.publication);
+}
+
+// Load only expanded reports. Each click fetches another bounded page; conversation
+// changes and newer follow-up reports invalidate in-flight responses.
+function configureHelperReport(card, receipt, body) {
+  if (!receipt.reportId) return;
+  const conversationId = currentConversationId;
+  const reportId = receipt.reportId;
+  if (card.reportId !== reportId) {
+    card.reportId = reportId;
+    card.reportText = '';
+    card.reportLoaded = false;
+    card.reportLoading = false;
+    card.reportOffset = 0;
+    card.reportError = '';
+  }
+  const more = document.createElement('button');
+  more.type = 'button'; more.className = 'agent-button';
+  card.details.appendChild(more);
+  const paint = () => {
+    const text = card.reportLoaded ? card.reportText : receipt.report || '';
+    body.textContent = text;
+    renderAgentMarkdown(body, text);
+    more.hidden = card.reportLoaded && card.reportOffset === null;
+    more.disabled = card.reportLoading;
+    more.textContent = card.reportLoading ? 'Loading report…' : card.reportError
+      ? 'Retry loading report' : card.reportLoaded ? 'Show more' : 'Load report';
+    more.title = card.reportError || '';
+  };
+  card.paintReport = paint;
+  card.loadReport = async () => {
+    if (card.reportLoading || card.reportOffset === null || currentConversationId !== conversationId) return;
+    card.reportLoading = true; card.paintReport();
+    try {
+      const response = await window.electronAPI.readAgentHelperReport(conversationId, reportId, card.reportOffset);
+      if (currentConversationId !== conversationId || card.reportId !== reportId) return;
+      if (!response?.ok || response.result?.error || typeof response.result?.text !== 'string') {
+        throw new Error(response?.result?.error || response?.error?.message || 'Could not load this report. Try again.');
+      }
+      card.reportText += response.result.text;
+      card.reportOffset = response.result.nextOffset;
+      card.reportLoaded = true;
+      card.reportError = '';
+    } catch (error) {
+      if (currentConversationId === conversationId && card.reportId === reportId) card.reportError = error.message;
+    } finally {
+      if (currentConversationId === conversationId && card.reportId === reportId) {
+        card.reportLoading = false; card.paintReport();
+      }
+    }
+  };
+  more.addEventListener('click', () => card.loadReport());
+  paint();
+  if (card.details.open && !card.reportLoaded && !card.reportError) card.loadReport();
 }
 
 function updateToolProgress(event) {
@@ -3355,7 +3566,7 @@ function finishTurnView(runId, event = {}) {
     ? event.actionCount
     : view.actionCount;
   if (actionCount > 0) {
-    view.activity.hidden = false;
+    view.activity.hidden = [...view.toolList.children].every(row => row.hidden);
     view.activity.open = false;
     const outcomeLabel = outcomeSummaryLabel(event.outcome);
     view.activitySummary.textContent = `Worked for ${formatDuration(event.durationMs)} · ${actionCount} ${actionCount === 1 ? 'action' : 'actions'}${outcomeLabel ? ` · ${outcomeLabel}` : ''}`;
@@ -3363,7 +3574,7 @@ function finishTurnView(runId, event = {}) {
     view.activity.hidden = true;
   }
   renderTurnOutcome(view, event.outcome, event.error);
-  if (event.status === 'completed') renderAssistantMarkdown(view);
+  if (event.status === 'completed') renderAgentMarkdown(view.output, view.assistantText);
 }
 
 function applyReadyConversationState(state) {
@@ -3623,7 +3834,7 @@ function handleAgentEvent(event) {
     setLiveStatus(event.runId, 'Responding…');
   } else if (
     event.type === 'run_progress' &&
-    event.source === 'reasoning_heading' &&
+    ['reasoning_heading', 'subagent'].includes(event.source) &&
     typeof event.message === 'string'
   ) {
     setLiveStatus(event.runId, event.message);
@@ -3672,7 +3883,13 @@ function handleAgentEvent(event) {
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_finished') {
     finishToolRow(event);
-    if (event.status === 'failed') {
+    if (event.operation === 'delegate_task' && (event.subagents || [event.subagent]).some(item => item?.state === 'running')) {
+      setMessage(elements.runMessage, event.label || 'Helpers are working.');
+      setLiveStatus(event.runId, 'Helpers are working…');
+    } else if (event.operation === 'delegate_task' && (event.subagents || [event.subagent]).every(item => item && ['completed', 'cancelled'].includes(item.state))) {
+      setMessage(elements.runMessage, event.label || 'Helper work finished.');
+      setLiveStatus(event.runId, 'Reviewing helper results…');
+    } else if (event.status === 'failed') {
       setMessage(
         elements.runMessage,
         event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER'
@@ -3768,6 +3985,7 @@ function handleAgentEvent(event) {
     setMessage(elements.runMessage, 'Agent is re-reading the current page before acting.');
     setLiveStatus(event.runId, 'Reading the page again…');
   } else if (event.type === 'run_finished') {
+    for (const card of turnView(event.runId)?.helperCards.values() || []) { card.stop.hidden = true; card.stop.disabled = true; }
     const status = event.status || 'finished';
     const wasStopped = status === 'cancelled' && stopRequestedRunId === event.runId;
     clearApproval();
@@ -4073,6 +4291,9 @@ async function restoreRunState() {
 
     if (state.runId && state.status !== 'ready') {
       currentRunId = state.runId;
+      for (const card of turnView(state.runId)?.helperCards.values() || []) {
+        card.stop.hidden = card.state !== 'running'; card.stop.disabled = card.stop.hidden || card.stopping;
+      }
       if (conversationRendererTabId) setAgentControlledTab(conversationRendererTabId);
       const restoredStatus = ['paused', 'pausing', 'resuming'].includes(state.status)
         ? state.status

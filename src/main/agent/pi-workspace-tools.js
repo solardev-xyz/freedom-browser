@@ -38,6 +38,16 @@ const MAX_MODEL_READ_BYTES = 50 * 1024;
 const MAX_MODEL_READ_LINES = 2_000;
 const MAX_MODEL_DISCOVERY_OUTPUT_BYTES = 50 * 1024;
 const WORKSPACE_POLICY_ERROR_CODES = new Set([
+  'UNSAFE_GIT_CONFIGURATION',
+  'WORKSPACE_CHANGED_DURING_VALIDATION',
+  'WORKSPACE_HARDLINK_DENIED',
+  'WORKSPACE_SPECIAL_FILE_DENIED',
+  'WORKSPACE_VALIDATION_LIMIT',
+  'EXTERNAL_GIT_METADATA_DENIED',
+  'PROTECTED_PATH_MISSING',
+  'INVALID_WORKSPACE',
+  'WORKSPACE_WRITER_BUSY',
+  'DELEGATED_PATH_DENIED',
   'INVALID_WORKSPACE_REQUEST',
   'WORKSPACE_EXECUTION_NOT_ENABLED',
   'WORKSPACE_EXECUTION_PLATFORM_UNAVAILABLE',
@@ -49,6 +59,17 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
   'WORKSPACE_SANDBOX_DENIED',
 ]);
 const WORKSPACE_ERROR_MESSAGES = Object.freeze({
+  WORKSPACE_WRITER_BUSY: 'A helper owns a conflicting file or a file operation is still running. Edit a different unassigned file, or wait and re-read before editing. Commands and history operations must wait for all editing helpers and pending writes.',
+  DELEGATED_PATH_DENIED: 'This file is outside the delegated file list. Return to the parent to revise the assignment; do not work around it.',
+  UNSAFE_GIT_CONFIGURATION: 'Project Git configuration is incompatible with the workspace sandbox. Additional editing permission does not resolve this.',
+  WORKSPACE_CHANGED_DURING_VALIDATION: 'The project changed while Freedom was checking its filesystem. Wait for changes to settle before retrying; editing permission is not required.',
+  WORKSPACE_HARDLINK_DENIED: 'Project hardlinks could not be safely contained within the workspace.',
+  WORKSPACE_SPECIAL_FILE_DENIED: 'The project contains a socket, device or another unsupported special file.',
+  WORKSPACE_VALIDATION_LIMIT: 'The project exceeds the filesystem validation limit.',
+  EXTERNAL_GIT_METADATA_DENIED: 'This project uses Git metadata outside its granted folder, which this workspace integration does not support.',
+  PROTECTED_PATH_MISSING: 'Required protected workspace metadata is unavailable.',
+  INVALID_WORKSPACE: 'The project root or working directory is unavailable or unsupported.',
+  WORKSPACE_POLICY_FAILED: 'Freedom could not establish the workspace sandbox.',
   PROJECT_RECONNECT_REQUIRED: 'Reconnect the project from its menu before using project tools.',
   PROJECT_READ_ONLY: 'The project is read-only. Request editing access through request_permissions before retrying.',
   PROJECT_WRITE_DECLINED: 'The user declined project editing access. Leave the project read-only.',
@@ -110,6 +131,7 @@ function decisionApproved(value) {
 
 function safeWorkspaceError(error, options = {}) {
   const safeCodes = new Set([
+    ...WORKSPACE_POLICY_ERROR_CODES,
     'INVALID_WORKSPACE_REQUEST',
     'EXECUTABLE_ACCESS_DECLINED',
     'EXECUTABLE_ACCESS_PLATFORM_UNAVAILABLE',
