@@ -1,11 +1,18 @@
 /** Narrow single-asset 1x1 withdrawal wire policy, pinned to SDK fe0244e3. Main
  * supplies witness-derived signals; payload acceptance is not proof verification. */
-const { AbiCoder, keccak256 } = require('ethers');
+const { AbiCoder, keccak256, verifyTypedData } = require('ethers');
 const { createHash } = require('crypto');
 const { FIELD, NATIVE, validProof } = require('./ppv2-deposit-policy');
 const { privacyError } = require('../networks/privacy-context');
 const coder = AbiCoder.defaultAbiCoder();
 const ROUTING = 'tuple(address recipient,address feeRecipient,uint256 feeAmount,uint256 nativeGas)';
+// Pinned relayer EVMChainService domain/types. The quote signer is configured
+// by main, separately from the fee recipient; neither is learned from a quote.
+const QUOTE_TYPES = { RelayWithdrawalCommitment: [
+  { name: 'data', type: 'bytes' }, { name: 'asset', type: 'address' },
+  { name: 'expiration', type: 'uint256' }, { name: 'amountSent', type: 'uint256' },
+  { name: 'amountReceived', type: 'uint256' },
+] };
 const hash = (v) => `0x${createHash('sha256').update(v).digest('hex')}`;
 const keys = (v, names) => v && typeof v === 'object' && !Array.isArray(v) &&
   Object.keys(v).length === names.length && names.every((k) => Object.hasOwn(v, k));
@@ -18,9 +25,9 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
   try {
     const token = intent?.kind === 'ppv2-token-withdrawal' ? intent.token : NATIVE;
     if (!address(token) || (intent?.kind === 'ppv2-token-withdrawal' && token === NATIVE)) throw fail();
-    if (!keys(intent, [...(intent?.kind === 'ppv2-token-withdrawal' ? ['token'] : []), 'kind', 'chainId', 'pool', 'processor', 'relayer', 'recipient', 'amount', 'maxFee', 'commitment', 'publicSignals']) ||
+    if (!keys(intent, [...(intent?.kind === 'ppv2-token-withdrawal' ? ['token'] : []), 'kind', 'chainId', 'pool', 'processor', 'relayer', 'quoteSigner', 'recipient', 'amount', 'maxFee', 'commitment', 'publicSignals']) ||
         !['ppv2-native-withdrawal', 'ppv2-token-withdrawal'].includes(intent.kind) || intent.chainId !== 11155111 ||
-        !['pool', 'processor', 'relayer', 'recipient'].every((k) => address(intent[k])) ||
+        !['pool', 'processor', 'relayer', 'quoteSigner', 'recipient'].every((k) => address(intent[k])) ||
         !amount(intent.amount) || BigInt(intent.amount) <= 0n || !amount(intent.maxFee) || !word(intent.commitment) ||
         !Array.isArray(intent.publicSignals) || intent.publicSignals.length !== 8 || !intent.publicSignals.every(word)) throw fail();
     if (!Number.isSafeInteger(fromBlock) || fromBlock < 0) throw fail();
@@ -48,6 +55,10 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
     const context = BigInt(keccak256(coder.encode(['tuple(address processor,bytes data)', 'tuple(bytes32 hint,bytes data)[]'],
       [[intent.processor, routing], payload.noteData]))) % FIELD;
     if (BigInt(publicSignals[5]) !== BigInt(fee.amountSent) || BigInt(publicSignals[6]) !== BigInt(token) || BigInt(publicSignals[7]) !== context) throw fail();
+    const signer = verifyTypedData({ name: 'Privacy Pools Relayer', version: '1', chainId: intent.chainId,
+      verifyingContract: intent.processor }, QUOTE_TYPES, { data: fee.data, asset: fee.asset, expiration: fee.expiration,
+      amountSent: fee.amountSent, amountReceived: fee.amountReceived }, fee.signedRelayerCommitment);
+    if (signer.toLowerCase() !== intent.quoteSigner) throw fail();
     const intentDigest = hash(JSON.stringify(intent)), endpointDigest = hash(endpoint), payloadDigest = hash(body);
     return { proof: result, expiresAt: Math.min(Date.now() + 120000, fee.expiration),
       attempt: { id: hash(JSON.stringify([intentDigest, endpointDigest, payloadDigest])), intentDigest, endpointDigest, payloadDigest,
@@ -55,7 +66,7 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
       settlement: { ...(token === NATIVE ? {} : { token }), pool: intent.pool, processor: intent.processor, outputCommitment: intent.publicSignals[1],
         amountOut: fee.amountSent, noteDigest: hash(JSON.stringify(payload.noteData)), fromBlock },
       summary: { ...intent, publicSignals: Object.freeze([...intent.publicSignals]), fee: fee.feeAmount,
-        endpoint, payloadDigest, proofVerified: true, chainStateVerified: false, quoteSignatureVerified: false } };
+        endpoint, payloadDigest, proofVerified: true, chainStateVerified: false, quoteSignatureVerified: true } };
   } catch { throw fail(); }
 }
 module.exports = { validateRelay, hash, ROUTING };

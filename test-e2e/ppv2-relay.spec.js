@@ -20,11 +20,12 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
         return { records: records.length, acknowledgedHash: records[0]?.acknowledgedHash,
           blocked: await journal.assertCanSubmit().then(() => null, (e) => e.code), packaged: app.isPackaged };
       }
-      const { AbiCoder, keccak256 } = req('ethers'), coder = AbiCoder.defaultAbiCoder();
+      const { AbiCoder, keccak256, Wallet } = req('ethers'), coder = AbiCoder.defaultAbiCoder();
       const { FIELD, NATIVE } = req('./src/main/wallet/ppv2-deposit-policy');
       const { ROUTING } = req('./src/main/wallet/ppv2-relay-policy');
       const word = (v) => `0x${BigInt(v).toString(16).padStart(64, '0')}`;
       const recipient = `0x${'11'.repeat(20)}`, relayer = `0x${'22'.repeat(20)}`, processor = `0x${'33'.repeat(20)}`;
+      const signer = req('viem/accounts').privateKeyToAccount(Wallet.createRandom().privateKey);
       const routing = coder.encode([ROUTING], [[recipient, relayer, 100n, 0n]]);
       const noteData = [{ hint: word(3), data: '0xabcd' }];
       const relayContext = word(BigInt(keccak256(coder.encode(['tuple(address processor,bytes data)', 'tuple(bytes32 hint,bytes data)[]'],
@@ -45,6 +46,13 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
       const params = { proof, noteData, signedFeeCommitment: { data: routing, asset: NATIVE, expiration: Date.now() + 300000,
         feeAmount: '100', signedRelayerCommitment: `0x${'ab'.repeat(65)}`, recipient, amountSent: '6000', amountReceived: '5900', extraGas: false },
       inputNullifierNumber: 1, outputCommitmentNumber: 1 };
+      params.signedFeeCommitment.signedRelayerCommitment = await signer.signTypedData({
+        domain: { name: 'Privacy Pools Relayer', version: '1', chainId: 11155111, verifyingContract: processor },
+        primaryType: 'RelayWithdrawalCommitment', types: { RelayWithdrawalCommitment: [
+          { name: 'data', type: 'bytes' }, { name: 'asset', type: 'address' }, { name: 'expiration', type: 'uint256' },
+          { name: 'amountSent', type: 'uint256' }, { name: 'amountReceived', type: 'uint256' },
+        ] }, message: params.signedFeeCommitment,
+      });
       const invoke = (network) => new sdk.RelayerInteractor({ relayers: [info], httpClient: new KohakuHttpClient(network) }).relayWithdrawal(info, params);
       // Capture the SDK's FINAL serialization with no transport authority. This
       // does not use the candidate broadcaster's quote-only preparation.
@@ -63,18 +71,20 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
         network: { fetch: async () => { sent++; durableBeforeSend = (await journal.list()).length === 1; throw new Error('Controlled lost response'); } },
       });
       const request = { ...captured, intent: { kind: 'ppv2-native-withdrawal', chainId: 11155111, pool: `0x${'44'.repeat(20)}`,
-        processor, relayer, recipient, amount: '5900', maxFee: '100', commitment: word(commitment), publicSignals: proof.publicSignals.map(word) } };
+        processor, relayer, quoteSigner: signer.address.toLowerCase(), recipient, amount: '5900', maxFee: '100', commitment: word(commitment), publicSignals: proof.publicSignals.map(word) } };
       // A changed curve point with identical intended public signals must fail
       // real verification, not merely the amount/context shape checks.
       const altered = JSON.parse(request.body); altered.proof.pi_a[0] = '0x0';
       const tamperRejected = await gate.prepare({ ...request, body: JSON.stringify(altered) }).then(() => false, () => true);
+      const badQuote = JSON.parse(request.body); badQuote.signedFeeCommitment.expiration++;
+      const quoteTamperRejected = await gate.prepare({ ...request, body: JSON.stringify(badQuote) }).then(() => false, () => true);
       const prepared = await gate.prepare(request);
       const outcome = await gate.submit(prepared, { invoke, review: async (summary) => {
         if (summary.amount !== '5900' || summary.fee !== '100' || summary.recipient !== recipient) throw new Error('Wrong review');
         reviewed++; return true;
       } }).then(() => null, (e) => e.code);
       const records = await journal.list();
-      return { sent, reviewed, durableBeforeSend, outcome, tamperRejected, realProofVerified: prepared.proofVerified,
+      return { sent, reviewed, durableBeforeSend, outcome, tamperRejected, quoteTamperRejected, realProofVerified: prepared.proofVerified,
         chainStateVerified: prepared.chainStateVerified, quoteSignatureVerified: prepared.quoteSignatureVerified,
         nullifierBound: records[0]?.nullifier === word(proof.publicSignals[0]), commitmentBound: records[0]?.commitment === word(commitment),
         recordedWithoutPayload: !JSON.stringify(records).includes('pi_a'), acknowledgedHash: records[0]?.acknowledgedHash,
@@ -86,8 +96,8 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
   await electronApp.close(); const restarted = await relaunchApp();
   report.restart = await restarted.evaluate(exercise, { artifact, restart: true });
   await testInfo.attach('ppv2-relay-report', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
-  expect(report).toMatchObject({ sent: 1, reviewed: 1, durableBeforeSend: true, tamperRejected: true, realProofVerified: true,
-    chainStateVerified: false, quoteSignatureVerified: false, nullifierBound: true, commitmentBound: true,
+  expect(report).toMatchObject({ sent: 1, reviewed: 1, durableBeforeSend: true, tamperRejected: true, quoteTamperRejected: true, realProofVerified: true,
+    chainStateVerified: false, quoteSignatureVerified: true, nullifierBound: true, commitmentBound: true,
     recordedWithoutPayload: true, acknowledgedHash: null, outcome: 'PRIVATE_PPV2_RELAY_UNCERTAIN', productionGate: false,
     liveTransactionSubmitted: false });
   expect(report.restart).toMatchObject({ records: 1, acknowledgedHash: null, blocked: 'PRIVATE_PPV2_RELAY_UNRESOLVED' });

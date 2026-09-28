@@ -5,7 +5,7 @@ const { createPrivacyScope } = require('../networks/privacy-context');
 const { createPPv2RelayJournal } = require('./ppv2-relay-journal');
 const { createPPv2RelayReconciliation, ABI } = require('./ppv2-relay-reconciliation');
 const { validateRelay } = require('./ppv2-relay-policy');
-const { relayFixture, word } = require('../../../test/helpers/ppv2-relay-fixture');
+const { relayFixture, word, signQuote } = require('../../../test/helpers/ppv2-relay-fixture');
 let scope, journal, reconcile, record, receipt, logs, mockRequest, canonical, spent, final;
 const iface = new Interface(ABI), txHash = word(71), blockHash = word(72);
 beforeEach(async () => {
@@ -162,6 +162,7 @@ test('token settlement requires the journaled asset rather than the native senti
   request.intent={...request.intent,kind:'ppv2-token-withdrawal',token,commitment:word(85)};
   request.intent.publicSignals[0]=word(84);request.intent.publicSignals[6]=word(BigInt(token));
   payload.proof.publicSignals=request.intent.publicSignals;payload.signedFeeCommitment.asset=token;
+  payload.signedFeeCommitment.signedRelayerCommitment=signQuote(payload.signedFeeCommitment,request.intent.processor);
   const plan=validateRelay({...request,body:JSON.stringify(payload)});
   await journal.begin(plan.attempt,plan.settlement);const id=plan.attempt.id;
   const event=iface.encodeEventLog(iface.getEvent('Transacted'),[[2n],[84n],token,6000n,record.settlement.processor]);

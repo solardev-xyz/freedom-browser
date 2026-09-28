@@ -11,7 +11,9 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
     const { Interface, Wallet, Transaction } = req('ethers');
     const vault = req('./src/main/identity/vault'), settings = req('./src/main/settings-store');
     const rpc = req('./src/main/networks/private-rpc'), tor = req('./src/main/tor-manager');
-    const { getPrivacyContext } = req('./src/main/networks/privacy-context');
+    const privacyContext = req('./src/main/networks/privacy-context'), { getPrivacyContext } = privacyContext;
+    const originalPrivacyError = privacyContext.privacyError, errorCodes = [];
+    privacyContext.privacyError = (code, message) => { errorCodes.push(code); if(errorCodes.length>12)errorCodes.shift(); return originalPrivacyError(code,message); };
     const { ARTIFACTS, DEPOSIT_ABI } = req('./src/main/wallet/ppv2-deposit-policy');
     const { ARTIFACTS: TRANSACT_ARTIFACTS } = req('./src/main/wallet/ppv2-transact-policy');
     const { ARTIFACTS: EXIT_ARTIFACTS, RAGEQUIT_ABI } = req('./src/main/wallet/ppv2-ragequit-policy');
@@ -28,6 +30,8 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
     let tokenAllowance=10100n, tokenBalance=20000n;
     if(tokenMode){config.erc20Tokens=[token];config.contracts.push({address:token,selectors:[],eventTopics:[]});}
     const sdk = req(`${artifact}/sdk.cjs`), abis = req(`${artifact}/abis.cjs`);
+    const quoteSigner = req('viem/accounts').privateKeyToAccount(Wallet.createRandom().privateKey);
+    config.relayers[0].quoteSigner = quoteSigner.address.toLowerCase();
     const wallet = Wallet.fromPhrase('test test test test test test test test test test test junk');
     config.ownerAddress = wallet.address.toLowerCase(); config.artifacts.manifest = sdk.DEFAULT_CIRCUIT_MANIFEST;
     const readAbis = [[...abis.POOL_VAULT_ABI, ...abis.POOL_VAULT_ALL_EVENTS_ABI, ...abis.POOL_VAULT_NOTE_EVENT_ABI, ...abis.POOL_VAULT_DEPOSITED_EVENT_ABI], abis.ENTRYPOINT_ABI,
@@ -40,7 +44,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
     const register = new Interface(REGISTRATION_ABI), depositABI = new Interface([DEPOSIT_ABI]), exitABI = new Interface([RAGEQUIT_ABI]);
     const hashService = await sdk.PoseidonHashService.create();
     const merkle = new sdk.MerkleService({ hashService });
-    const stateLeaves = [], spent = new Set(); let aspLeaves = [], badRoot = false, reorg = false, relayLost = false, relaySends = 0, fixturePlugin;
+    const stateLeaves = [], spent = new Set(); let aspLeaves = [], badRoot = false, reorg = false, relayLost = false, relaySends = 0, invalidQuote = false, fixturePlugin;
     const tag = (s) => hashService.hash([`0x${Buffer.from(s).toString('hex')}`]);
     const leaf = (tagName, v) => hashService.hash([tag(tagName), `0x${BigInt(v).toString(16)}`, '0x6553f100']);
     const receipts = new Map(), logs = [], sends = [], methods = new Set(), contexts = new Map();
@@ -137,9 +141,18 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
         const amount = BigInt(requested.amount), fee = 100n;
         const data = coder.encode(['tuple(address recipient,address feeRecipient,uint256 feeAmount,uint256 nativeGas)'],
           [[requested.recipient, config.relayers[0].address, fee, 0n]]);
-        return new Response(JSON.stringify({ txCost: '1', gasPrice: '1', feeAmount: '100', amountSent: (amount+fee).toString(), amountReceived: amount.toString(),
-          feeCommitment: { data, asset: requested.asset, expiration: Date.now()+300000, feeAmount: '100', signedRelayerCommitment: `0x${'ab'.repeat(65)}`,
-            recipient: requested.recipient, amountSent: (amount+fee).toString(), amountReceived: amount.toString(), extraGas: false } }));
+        const feeCommitment = { data, asset: requested.asset, expiration: Date.now()+300000, feeAmount: '100',
+          recipient: requested.recipient, amountSent: (amount+fee).toString(), amountReceived: amount.toString(), extraGas: false };
+        feeCommitment.signedRelayerCommitment = await quoteSigner.signTypedData({
+          domain: { name: 'Privacy Pools Relayer', version: '1', chainId: 11155111, verifyingContract: config.relayers[0].processorAddress },
+          primaryType: 'RelayWithdrawalCommitment', types: { RelayWithdrawalCommitment: [
+            { name: 'data', type: 'bytes' }, { name: 'asset', type: 'address' }, { name: 'expiration', type: 'uint256' },
+            { name: 'amountSent', type: 'uint256' }, { name: 'amountReceived', type: 'uint256' },
+          ] }, message: feeCommitment,
+        });
+        if (invalidQuote) feeCommitment.expiration++;
+        return new Response(JSON.stringify({ txCost: '1', gasPrice: '1', feeAmount: '100', amountSent: (amount+fee).toString(),
+          amountReceived: amount.toString(), feeCommitment }));
       }
       if (u.pathname.endsWith('/v1/relay/evm/11155111/withdrawal')) {
         const p = JSON.parse(init.body), signals = p.proof.publicSignals.map(BigInt);
@@ -203,15 +216,18 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
             recipient:`0x${'77'.repeat(20)}`}).then(()=>false,()=>true);
           aspLeaves=['0x123']; head+=3; session.close(); session=await open(); const revoked=await session.notes();
           aspLeaves=approvedLeaves; head+=3; session.close(); session=await open(); await session.notes();
-          stage='withdrawal preparation';
+          stage='withdrawal quote authentication'; invalidQuote=true;
+          const invalidQuoteBlocked=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`}).then(()=>false,()=>true);
+          if(relaySends!==0)throw new Error('Invalid quote reached relay');
+          invalidQuote=false; stage='withdrawal preparation';
           const prepared=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`});
           stage='withdrawal lost response'; relayLost=true;
           const outcome=await session[tokenMode?'submitTokenWithdrawal':'submitNativeWithdrawal'](prepared,async()=>true).then(()=>null,e=>e.code);
           const blocked=await session.submitPublicOperation({},{}).then(()=>null,e=>e.code);
           save(saved.commitment,saved.depositHash);
           return {pending:pending[0].status,mismatched:mismatched[0].status,approved:approved[0].status,revoked:revoked[0].status,
-            emptySetStatus:emptySet[0].status,emptySetSpendBlocked,
-            outcome,blocked,relaySends,proofVerified:prepared.proofVerified};
+            emptySetStatus:emptySet[0].status,emptySetSpendBlocked,invalidQuoteBlocked,
+            outcome,blocked,relaySends,proofVerified:prepared.proofVerified,quoteSignatureVerified:prepared.quoteSignatureVerified};
         }
         stage='withdrawal recovery';
         const attempts=await session.listRelayAttempts();
@@ -309,7 +325,8 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
         balances: balances.map((balance) => ({ amount: balance.amount.toString(), tag: balance.tag })),
         isolatedRoles: contexts.get('protocol-rpc').isolationToken !== contexts.get('transaction-rpc').isolationToken,
         methods: [...methods].sort(), liveTransactionSubmitted: false };
-    } catch (error) { throw new Error(`Controlled lifecycle stage: ${stage}, ${error.code || 'fixture-failed'}`, { cause: error }); } finally {
+    } catch (error) { throw new Error(`Controlled lifecycle stage: ${stage}, ${error.code || 'fixture-failed'}, codes=${errorCodes.join(',')}`, { cause: error }); } finally {
+      privacyContext.privacyError = originalPrivacyError;
       router.createKohakuNetworkRouter = originalRouter; session?.close(); vault.lockVault(); settings.isWalletTorExperimentAvailable = original.gate;
       rpc.createPrivateRpc = original.rpc; tor.getWalletSocksEndpoint = original.tor;
     }
@@ -327,7 +344,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} deposit, ASP state, lost withdrawal
   expect(report.assetBound).toBe(true);
   expect(report.productionGate).toBe(false);
   expect(report.withdrawal).toMatchObject({pending:'pending',mismatched:'pending',approved:'active',revoked:'rejected',
-    emptySetStatus:'rejected',emptySetSpendBlocked:true,outcome:'PRIVATE_PPV2_RELAY_UNCERTAIN',blocked:'PRIVATE_PPV2_RELAY_UNRESOLVED',relaySends:1,proofVerified:true});
+    emptySetStatus:'rejected',emptySetSpendBlocked:true,invalidQuoteBlocked:true,outcome:'PRIVATE_PPV2_RELAY_UNCERTAIN',blocked:'PRIVATE_PPV2_RELAY_UNRESOLVED',relaySends:1,proofVerified:true,quoteSignatureVerified:true});
   expect(report.secondSpend).toMatchObject({checkpointPersisted:true,observation:'included',trust:'unverified-rpc',recoveredChange:'4000',reorgBlocked:true,
     secondHash:true,remaining:['2900'],resolved:2,relaySends:1});
 });

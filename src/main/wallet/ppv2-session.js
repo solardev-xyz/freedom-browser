@@ -134,7 +134,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       await client.assertCanSubmit(); getPrivacyContext(sessionHandle);
     }
     async function prepareWithdrawal(args) {
-      if (!transactProver || !address(args.recipient)) throw unavailable();
+      if (!transactProver || !address(args.recipient) || !config.relayers.every((r) => address(r.quoteSigner))) throw unavailable();
       const request = { ...args, recipient: args.recipient.toLowerCase() };
       const token = request.token ?? NATIVE;
       if (token !== NATIVE) tokenPolicy.assertToken(token);
@@ -150,10 +150,11 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
         amount: request.amount, maxFee: request.maxFee, token }, async () => {
         const op = await plugin.prepareUnshield({ asset, amount: request.amount }, request.recipient);
         const selected = op?.relayParams?.selectedQuote?.relayerInfo;
-        if (op?.kind !== 'withdrawal' || !selected || !config.relayers.some((r) => r.url === selected.url &&
-            r.address.toLowerCase() === selected.address.toLowerCase() && r.processorAddress.toLowerCase() === selected.processorAddress.toLowerCase()) ||
+        const trusted = selected && config.relayers.find((r) => r.url === selected.url &&
+          r.address.toLowerCase() === selected.address.toLowerCase() && r.processorAddress.toLowerCase() === selected.processorAddress.toLowerCase());
+        if (op?.kind !== 'withdrawal' || !trusted || !address(trusted.quoteSigner) ||
             op.relayParams.inputCommitments.length !== 1 || BigInt(op.relayParams.inputCommitments[0]) !== BigInt(note.commitment)) throw unavailable();
-        captured.relayer = structuredClone(selected);
+        captured.relayer = structuredClone(trusted);
         capture = captured;
         try { await candidate.createBroadcaster(plugin).broadcast(op); } catch { /* Expected capture-only refusal; require the exact request below. */ }
         finally { capture = null; }
@@ -173,7 +174,8 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       const summary = await gate.prepare({ ...prepared.value, fromBlock, intent: { ...(token === NATIVE ? {} : { token: token.toLowerCase() }),
         kind: token === NATIVE ? 'ppv2-native-withdrawal' : 'ppv2-token-withdrawal', chainId: 11155111,
         pool: config.deployment.poolAddress.toLowerCase(), processor: captured.relayer.processorAddress.toLowerCase(),
-        relayer: captured.relayer.address.toLowerCase(), recipient: request.recipient, amount: request.amount.toString(), maxFee: request.maxFee.toString(),
+        relayer: captured.relayer.address.toLowerCase(), quoteSigner: captured.relayer.quoteSigner.toLowerCase(),
+        recipient: request.recipient, amount: request.amount.toString(), maxFee: request.maxFee.toString(),
         commitment: note.commitment, publicSignals: proof.publicSignals.map(word) } });
       withdrawals.set(summary, { gate, request: prepared.value }); return summary;
     }

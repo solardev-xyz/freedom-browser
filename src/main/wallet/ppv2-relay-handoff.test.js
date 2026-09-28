@@ -4,7 +4,7 @@ const { createPrivacyScope } = require('../networks/privacy-context');
 const { createPPv2RelayJournal } = require('./ppv2-relay-journal');
 const { createPPv2RelayHandoff } = require('./ppv2-relay-handoff');
 const { validateRelay } = require('./ppv2-relay-policy');
-const { relayFixture, word } = require('../../../test/helpers/ppv2-relay-fixture');
+const { relayFixture, word, signQuote } = require('../../../test/helpers/ppv2-relay-fixture');
 let scope, directory, journal, gate, network, request, verifyProof;
 const subject = { kind: 'private-account', principal: 'ppv2:0', protocol: 'privacy-pools-v2', deployment: 'sepolia', chainId: 11155111 };
 const key = Buffer.alloc(32, 5);
@@ -28,7 +28,7 @@ test('requires final proof verification and review, journals before HTTP, and ne
   expect(verifyProof).toHaveBeenCalledTimes(1);
   const review = jest.fn(async (summary) => {
     expect(summary).toMatchObject({ recipient: request.intent.recipient, fee: '100', amount: '5900', proofVerified: true,
-      chainStateVerified: false, quoteSignatureVerified: false });
+      chainStateVerified: false, quoteSignatureVerified: true });
     expect(Object.isFrozen(summary)).toBe(true); expect(await journal.list()).toEqual([]); return true;
   });
   network.fetch.mockImplementationOnce(async () => {
@@ -82,6 +82,7 @@ test('uses the upstream millisecond quote deadline and refuses seconds or expire
     await expect(gate.prepare({ ...request, body: JSON.stringify(payload) })).rejects.toThrow();
   }
   const payload = JSON.parse(request.body); payload.signedFeeCommitment.expiration = Date.now() + 50;
+  payload.signedFeeCommitment.signedRelayerCommitment = signQuote(payload.signedFeeCommitment, request.intent.processor);
   const prepared = await gate.prepare({ ...request, body: JSON.stringify(payload) });
   jest.useFakeTimers(); jest.setSystemTime(Date.now() + 51);
   await expect(gate.submit(prepared, { review: async () => true, invoke })).rejects.toThrow();
@@ -193,6 +194,7 @@ test('binds token withdrawal review and settlement to the same asset and rejects
   request.intent.publicSignals[6]=word(BigInt(token));
   payload.proof.publicSignals[6]=request.intent.publicSignals[6];
   payload.signedFeeCommitment.asset=token;
+  payload.signedFeeCommitment.signedRelayerCommitment=signQuote(payload.signedFeeCommitment,request.intent.processor);
   request.body=JSON.stringify(payload);
   const prepared=await gate.prepare(request);
   expect(prepared.token).toBe(token);
@@ -200,4 +202,27 @@ test('binds token withdrawal review and settlement to the same asset and rejects
   expect((await journal.list())[0].settlement.token).toBe(token);
   payload.signedFeeCommitment.asset='0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
   expect(()=>validateRelay({...request,body:JSON.stringify(payload)})).toThrow();
+});
+
+test.each(['signer', 'missing-signer', 'signature', 'name', 'version', 'chain', 'contract', 'expiration'])(
+  'refuses a quote with altered %s before proof verification, review or transport', async (change) => {
+    const payload = JSON.parse(request.body), fee = payload.signedFeeCommitment;
+    if (change === 'signer') request.intent.quoteSigner = request.intent.relayer;
+    if (change === 'missing-signer') delete request.intent.quoteSigner;
+    if (change === 'signature') fee.signedRelayerCommitment = `0x${'00'.repeat(65)}`;
+    if (change === 'expiration') fee.expiration++;
+    const domain = { name: { name: 'Other relayer' }, version: { version: '2' }, chain: { chainId: 1 },
+      contract: { verifyingContract: request.intent.pool } }[change];
+    if (domain) fee.signedRelayerCommitment = signQuote(fee, request.intent.processor, domain);
+    request.body = JSON.stringify(payload);
+    await expect(gate.prepare(request)).rejects.toMatchObject({ code: 'PRIVATE_PPV2_RELAY_REFUSED' });
+    expect(verifyProof).not.toHaveBeenCalled(); expect(network.fetch).not.toHaveBeenCalled();
+    expect(await journal.list()).toEqual([]);
+  });
+
+test('authenticates the configured signer independently of the fee recipient', async () => {
+  const prepared = await gate.prepare(request);
+  expect(prepared.quoteSigner).not.toBe(prepared.relayer);
+  expect(prepared.quoteSignatureVerified).toBe(true);
+  expect(prepared.chainStateVerified).toBe(false);
 });
