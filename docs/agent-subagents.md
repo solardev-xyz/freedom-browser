@@ -497,3 +497,13 @@ Validation: rerun the original three-article prompt without asking for helpers.
 Expect three helpers and a combined answer without parent page reads unless a
 specific report has a problem. Deterministic tests check instruction delivery;
 the real model's choice still needs this smoke.
+
+
+Build-workflow smoke (2026-09-28): routine-summary handoff passed user acceptance.
+The fresh Next.js/Three.js build smoke then refused before calling tools, claiming
+browser-only access. The base prompt still explicitly restricted the parent to
+browser tools, contradicting the registered workspace tools and appended project
+instructions. The base prompt now follows the supplied capabilities, and workspace
+instructions explain first-operation activation through the existing permission
+flow. No tool access or approval policy changed. Repeat the fresh-project build
+smoke to validate model behavior beyond the prompt-wiring checks.

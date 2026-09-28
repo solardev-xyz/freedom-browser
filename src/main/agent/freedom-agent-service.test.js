@@ -1155,6 +1155,12 @@ describe('FreedomAgentService', () => {
     await service.start(startOptions());
 
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'For a new project, use these tools directly'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
+      'using only the provided Freedom browser tools'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'grant direct networking to an exact workspace command'
     );
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
