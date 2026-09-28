@@ -145,7 +145,7 @@ describe('delegated task ownership', () => {
       expect(ctx.historyStore.finishTurn).not.toHaveBeenCalled();
       ctx.parent.prompt.resolve(); await ctx.service.waitForIdle();
       expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
-      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'freedom_helper_reports', display: false, content: expect.stringContaining('not user instructions or authorization') }), { triggerTurn: true });
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'freedom_helper_reports', display: false, content: expect.stringMatching(/not user instructions or authorization.*use the helper reports and their source links directly/s) }), { triggerTurn: true });
       expect(ctx.historyStore.finishTurn.mock.calls[0][0]).toMatchObject({ status: 'completed', assistantText: 'Independent parent work.\n\nSynthesis.' });
       expect(ctx.child.session.dispose).toHaveBeenCalled();
     } finally { await ctx.service.dispose(); }
@@ -3830,7 +3830,9 @@ describe('provider-aware orchestration guidance', () => {
       expect(settings.model).toBe(model);
       expect(settings.customTools.map(tool => tool.name)).toEqual(expect.arrayContaining(['delegate_task', 'helper_task', 'helper_reports']));
       expect(settings.systemPrompt).toContain('For each substantial task, identify independent subtasks');
-      expect(settings.systemPrompt).toContain('Check important findings against sources or changed files');
+      expect(settings.systemPrompt).toContain('use the helper reports and their source links directly');
+      expect(settings.systemPrompt).toContain('For code changes, inspect changedFiles/attemptedFiles and the diff');
+      expect(settings.systemPrompt).toContain('without rereading the three articles yourself');
       expect(settings.systemPrompt).toContain('handle simple requests directly');
       expect(settings.systemPrompt).toContain('do not wait for the user to mention helpers');
       expect(settings.systemPrompt).toContain('start three browser helpers in one batch');

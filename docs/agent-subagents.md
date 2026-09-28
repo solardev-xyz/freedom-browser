@@ -462,7 +462,7 @@ one article while the parent read two. The previous runtime ceiling, batch schem
 receipt normalization and UI truncation all assumed two helpers. Batches now
 support 2–6 assignments, with up to six active helpers plus the parent. Three
 independent articles can each have their own browser helper in one call. Hosted
-model guidance makes this decomposition explicit and keeps source review and
+model guidance makes this decomposition explicit and keeps task-specific review and
 synthesis with the parent; larger tasks use later batches as capacity frees.
 Simple/tightly coupled tasks still stay direct and Ollama scheduling remains
 preferentially direct/sequential. No quota on total helpers, turns or tokens is
@@ -478,3 +478,22 @@ provider. Electron checks three real browser helpers, six-receipt SQLite crash
 recovery, and all six cards in both themes/layouts. The next real-model smoke is
 simply “Open three random Wikipedia articles and summarize them for me,” without
 any instruction to delegate.
+
+
+Task-specific review (2026-09-28): the user confirmed that the three-article
+smoke now starts three helpers. It also exposed duplicate work: the parent read
+all three returned tabs because both prompts and result messages asked for source
+verification. Completed summaries, extraction and routine research now feed the
+final answer directly, including source links. Further checking targets concrete
+gaps, contradictions, missing evidence or consequential claims. Code changes still
+require diff/integration review and appropriate tests; consequential browser actions
+require outcome verification. Fresh observations apply before further interaction,
+not merely to summarize a completed report. Untrusted reports remain data rather
+than instructions or permission. Foreground, helper wait/status and automatic
+background delivery share this guidance. Saved-report descriptions also distinguish
+summarizing historical findings from acting on current state.
+
+Validation: rerun the original three-article prompt without asking for helpers.
+Expect three helpers and a combined answer without parent page reads unless a
+specific report has a problem. Deterministic tests check instruction delivery;
+the real model's choice still needs this smoke.
