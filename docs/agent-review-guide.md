@@ -54,6 +54,14 @@ reported separately; a partial rerun is not a fresh full-platform qualification.
 Do not use a live user profile for automated failure injection. Risky Git fixtures
 belong on the designated disposable testing machine.
 
+[CI run 36561402138](https://github.com/solardev-xyz/freedom-browser/actions/runs/36561402138)
+passed on code commit `bd67be70`: 48 jobs succeeded; opt-in live Myotis was skipped.
+The automation job passed all 84 tests. The Agent job passed 81 tests and one
+wallet approval test on retry; retain that test-reliability caveat. The final
+local unit run passed 7,898 tests (129 skipped). Mac mini qualification passed
+91 focused tests plus seven recovery probes with Node 24 and locked dependencies.
+Subsequent review-status edits are documentation only.
+
 The following manual checks remain explicitly unconfirmed and were not selected
 for this preparation pass:
 

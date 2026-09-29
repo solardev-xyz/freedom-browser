@@ -172,3 +172,6 @@ confirmed both causes. The footer restores pointer events; the navigation guard
 exempts only manager-owned pages with no preload, Node integration or webview
 support, preserving sandboxing and isolation. Unknown/privileged windows remain
 locked. CI/test setup corrections and dated qualification are in the roadmap.
+Claude's final integration review found no blocker in the exemption. The fresh
+[CI run](https://github.com/solardev-xyz/freedom-browser/actions/runs/36561402138)
+passed on `bd67be70`; one Agent wallet approval test passed only after retry.

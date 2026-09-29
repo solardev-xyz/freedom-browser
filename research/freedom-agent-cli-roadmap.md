@@ -36,8 +36,8 @@ locked Jest/Babel dependencies. Missing-blob/promisor refusal, normal credential
 diff configuration compatibility, and partial-journal write cleanup passed.
 This replaces the earlier Node 22 qualification gap for these scoped tests;
 it is not full packaged-app or native sandbox qualification. The isolated remote
-dependency install skipped lifecycle scripts. CI on the pushed feature branch
-is the remaining automated preparation gate.
+dependency install skipped lifecycle scripts. The feature work is pushed; final
+CI qualification is recorded below.
 
 The first dispatched CI run exposed integration issues that local selected smokes
 had not covered: the merged download history footer inherited disabled pointer
@@ -50,8 +50,19 @@ toolbar baseline includes Agent. The serialized WebMCP bridge follows the existi
 cross-process coverage convention. Full local coverage passed 7,897 tests before
 the window-lock regression test; the subsequent full unit run passed **7,898**
 with 129 skipped. Downloads, CLI, runtime-popup and node-status focused Electron
-smokes passed. A fresh CI run must qualify these corrections before a green CI
-claim is made.
+smokes passed.
+
+**Final CI:** [run 36561402138](https://github.com/solardev-xyz/freedom-browser/actions/runs/36561402138)
+passed on **`bd67be70`**: **48 successful jobs**, with the opt-in live Myotis job
+skipped. This includes full lint/coverage, **84 automation Electron tests**, and
+the Agent job (**81 passed; one wallet-connect/signature approval test passed on
+retry**). Renderer screenshots and both-theme checks passed. Claude's focused
+review accepted the managed-page navigation exemption with no blocker. The retry
+is a test-reliability follow-up, not evidence of a failure-free first attempt.
+Later changes recording this result are documentation only. Live Swarm and
+editing-helper Stop/reopened-receipt manual smokes remain unconfirmed. Restricting
+hidden-page natural navigation to an explicit scheme allowlist is recorded as
+optional further hardening, separate from the repaired chrome-lock regression.
 
 ### Main integration and current validation — 2026-09-29
 
