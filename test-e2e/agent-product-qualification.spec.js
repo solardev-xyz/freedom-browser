@@ -2082,9 +2082,12 @@ test('node intelligence: reports redacted integrated-service status without a br
     ]),
   });
   expect(result.nodeStatus.nodes).toHaveLength(6);
-  expect(JSON.stringify(result.nodeStatus)).not.toMatch(
-    /endpoint|port|path|pid|config|raw|log|errorMessage|stack/i
-  );
+  // Inspect fields, not prose: safe recovery text can contain "supported".
+  const publicNodeFields = new Set(['id', 'name', 'implementation', 'protocols', 'chainId',
+    'state', 'mode', 'running', 'ready', 'recovery']);
+  for (const node of result.nodeStatus.nodes) {
+    expect(Object.keys(node).filter(key => !publicNodeFields.has(key))).toEqual([]);
+  }
   expect(result.assistantOutput).toContain('Checked 6 Freedom services');
   await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
   expect(operations).toEqual(['node_status']);

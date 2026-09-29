@@ -982,6 +982,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
+      - name: Build macOS workspace supervisor
+        run: npm run build:workspace-supervisor
       - name: Run agent E2E
         run: |
           npm run test:e2e -- \
@@ -1018,6 +1020,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         uses: ./.github/actions/install-node-deps
+      - name: Build macOS workspace supervisor
+        run: npm run build:workspace-supervisor
       - name: Run automation E2E
         run: |
           npm run test:e2e -- \

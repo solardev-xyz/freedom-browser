@@ -158,8 +158,18 @@ function hardenWebviewPreferences(webPreferences) {
 // load that content with `window.electronAPI` et al. attached. It never
 // navigates itself (tabs navigate inside their webviews) and never opens
 // windows of its own.
-function lockChromeWindow(contents, tag) {
+function lockChromeWindow(contents, tag, isManagedPage) {
   const block = (event, url) => {
+    // Hidden automation BrowserWindows are page hosts, not chrome. Only the
+    // main-owned manager can identify them, and they must carry no preload.
+    // Check at navigation time: adoption happens after web-contents-created.
+    try {
+      const preferences = contents.getLastWebPreferences?.();
+      if (isManagedPage?.(contents) === true && preferences?.sandbox === true &&
+          preferences.contextIsolation === true && preferences.nodeIntegration === false &&
+          !preferences.nodeIntegrationInSubFrames && !preferences.nodeIntegrationInWorker && !preferences.webviewTag &&
+          !preferences.preload && !preferences.preloadURL && preferences.webSecurity !== false) return;
+    } catch { /* Unknown ownership/preferences keep the chrome lock. */ }
     log.warn(`${tag} blocked chrome-window navigation: ${navUrlForLog(contents, url)}`);
     event.preventDefault();
   };
@@ -171,7 +181,7 @@ function lockChromeWindow(contents, tag) {
   });
 }
 
-function registerWebContentsHandlers() {
+function registerWebContentsHandlers({ isManagedPage } = {}) {
   app.on('web-contents-created', (_event, contents) => {
     contents.once('destroyed', () => {
       activeBzzBases.delete(contents.id);
@@ -203,7 +213,7 @@ function registerWebContentsHandlers() {
     });
 
     if (type === 'window') {
-      lockChromeWindow(contents, tag);
+      lockChromeWindow(contents, tag, isManagedPage);
     }
 
     // For webview contents, fix dark defaults and intercept navigation

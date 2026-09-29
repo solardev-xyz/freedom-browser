@@ -639,7 +639,7 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => clearPrivatePermissionDecisions(partition));
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
 
-  registerWebContentsHandlers();
+  registerWebContentsHandlers({ isManagedPage: contents => hiddenPageManager?.ownsWebContents(contents) === true });
   registerClientCertificateHandler();
   if (!RUNTIME_MODE) setupApplicationMenu();
 

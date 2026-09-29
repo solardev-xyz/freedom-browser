@@ -164,3 +164,11 @@ the locked dependencies. These are scoped checks, not packaged/native containmen
 qualification. The [review guide](../agent-review-guide.md) gives the colleague a reading
 order, smoke checklist and explicit limits. The active roadmap records final test
 counts and CI status; the September 28 validation above remains historical.
+
+CI subsequently exposed two main-merge integration regressions: the download
+history footer inherited the shelf's disabled pointer events, and the global
+chrome navigation lock applied to hidden automation windows as well. Claude
+confirmed both causes. The footer restores pointer events; the navigation guard
+exempts only manager-owned pages with no preload, Node integration or webview
+support, preserving sandboxing and isolation. Unknown/privileged windows remain
+locked. CI/test setup corrections and dated qualification are in the roadmap.

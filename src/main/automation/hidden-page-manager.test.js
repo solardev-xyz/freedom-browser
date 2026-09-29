@@ -75,12 +75,15 @@ describe('hidden automation page manager', () => {
     });
     expect(window.loadURL).toHaveBeenCalledWith('https://example.test/');
     expect(manager.size()).toBe(1);
+    expect(manager.ownsWebContents(window.webContents)).toBe(true);
+    expect(manager.ownsWebContents(new FakeWebContents())).toBe(false);
     await expect(manager.focusPage('tab_1')).resolves.toBe(true);
     expect(window.webContents.focus).toHaveBeenCalledTimes(1);
 
     await expect(manager.closePage('tab_other')).resolves.toBe(false);
     await expect(manager.closePage('tab_1')).resolves.toBe(true);
     expect(window.destroyed).toBe(true);
+    expect(manager.ownsWebContents(window.webContents)).toBe(false);
     expect(manager.size()).toBe(0);
   });
 

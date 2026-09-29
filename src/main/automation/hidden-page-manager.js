@@ -128,6 +128,8 @@ function createHiddenPageManager(options = {}) {
     closePage,
     focusPage,
     closeAll,
+    ownsWebContents: contents => [...windowsByTabId.values()].some(window =>
+      !window.isDestroyed?.() && window.webContents === contents),
     size: () => windowsByTabId.size,
   };
 }

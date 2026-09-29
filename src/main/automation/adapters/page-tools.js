@@ -9,6 +9,9 @@ const {
 
 // This function runs only in our isolated world. Never fall back to a website's
 // polyfill or inject model-provided JavaScript into the page's main world.
+// Serialized across realms: coverage counters would reference unavailable host
+// closures. The VM protocol tests and Electron tests exercise the actual body.
+/* istanbul ignore next */
 async function pageToolsBridge(action, input = {}) {
   const context = document.modelContext;
   if (!context?.getTools || !context?.executeTool || !isSecureContext)

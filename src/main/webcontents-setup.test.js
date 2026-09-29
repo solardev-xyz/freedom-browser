@@ -238,6 +238,35 @@ describe('webcontents-setup', () => {
     expect(nav.preventDefault).not.toHaveBeenCalled();
   });
 
+  test('only explicitly adopted sandboxed pages without a preload may navigate as windows', () => {
+    const ctx = loadWebContentsSetupModule();
+    const page = createContentsMock({ type: 'window' });
+    const safe = { sandbox: true, contextIsolation: true, nodeIntegration: false };
+    page.getLastWebPreferences = jest.fn(() => safe);
+    let owned = false;
+    ctx.mod.registerWebContentsHandlers({ isManagedPage: contents => contents === page && owned });
+    ctx.app.emit('web-contents-created', {}, page);
+    const navigate = event => {
+      const nav = { preventDefault: jest.fn() };
+      page.emit(event, nav, 'https://example.org/next');
+      return nav.preventDefault;
+    };
+    expect(navigate('will-navigate')).toHaveBeenCalled();
+    owned = true;
+    expect(navigate('will-navigate')).not.toHaveBeenCalled();
+    expect(navigate('will-redirect')).not.toHaveBeenCalled();
+    // Popup authority still belongs to the manager's separate explicit handler.
+    expect(page.windowOpenHandler({ url: 'https://example.org/' })).toEqual({ action: 'deny' });
+    for (const unsafe of [{ preload: '/app/preload.js' }, { preloadURL: 'file:///app/preload.js' },
+      { sandbox: false }, { contextIsolation: false }, { nodeIntegration: true },
+      { nodeIntegrationInSubFrames: true }, { nodeIntegrationInWorker: true }, { webviewTag: true }, { webSecurity: false }]) {
+      page.getLastWebPreferences.mockReturnValue({ ...safe, ...unsafe });
+      expect(navigate('will-navigate')).toHaveBeenCalled();
+    }
+    page.getLastWebPreferences.mockImplementation(() => { throw new Error('destroyed'); });
+    expect(navigate('will-redirect')).toHaveBeenCalled();
+  });
+
   test('skips css injection for internal file pages and intercepts external window opens', () => {
     const parentWindow = {
       webContents: {

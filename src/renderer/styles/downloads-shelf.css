@@ -122,7 +122,8 @@
 .download-shelf-footer {
   display: flex;
   justify-content: center;
-  width: 320px;
+  width: min(320px, 100%);
+  pointer-events: auto;
   padding: 6px 12px;
   background: var(--menu-bg);
   border: 1px solid var(--border);

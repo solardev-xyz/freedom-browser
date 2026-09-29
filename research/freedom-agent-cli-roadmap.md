@@ -39,6 +39,20 @@ it is not full packaged-app or native sandbox qualification. The isolated remote
 dependency install skipped lifecycle scripts. CI on the pushed feature branch
 is the remaining automated preparation gate.
 
+The first dispatched CI run exposed integration issues that local selected smokes
+had not covered: the merged download history footer inherited disabled pointer
+events, and the privileged-window navigation lock also blocked owned hidden
+runtime pages. Both are corrected while retaining chrome locks. CI now builds
+the native workspace supervisor before Agent/automation tests. CLI assertions
+enforce the existing approval requirement, status-redaction assertions inspect
+fields rather than matching ordinary recovery prose, and the reviewed light
+toolbar baseline includes Agent. The serialized WebMCP bridge follows the existing
+cross-process coverage convention. Full local coverage passed 7,897 tests before
+the window-lock regression test; the subsequent full unit run passed **7,898**
+with 129 skipped. Downloads, CLI, runtime-popup and node-status focused Electron
+smokes passed. A fresh CI run must qualify these corrections before a green CI
+claim is made.
+
 ### Main integration and current validation — 2026-09-29
 
 Merged `origin/main` at `65025453` into the feature branch in `0a483307`,

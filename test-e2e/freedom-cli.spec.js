@@ -9,7 +9,7 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..');
 const cliPath = path.join(repoRoot, 'src', 'cli', 'freedom.js');
 
-async function runCli(args, env) {
+async function runCli(args, env, { errorCode } = {}) {
   const result = await new Promise((resolve) => {
     const child = spawn(process.execPath, [cliPath, '--json', ...args], {
       cwd: repoRoot,
@@ -37,8 +37,10 @@ async function runCli(args, env) {
   expect(
     { status: result.status, signal: result.signal, stdout: result.stdout, stderr: result.stderr },
     `freedom ${args.join(' ')} failed`
-  ).toMatchObject({ status: 0, signal: null, stderr: '' });
-  expect(output).toMatchObject({ ok: true });
+  ).toMatchObject(errorCode
+    ? { status: 20, signal: null, stdout: '' }
+    : { status: 0, signal: null, stderr: '' });
+  expect(output).toMatchObject(errorCode ? { ok: false, error: { code: errorCode } } : { ok: true });
   return output;
 }
 
@@ -115,7 +117,7 @@ test('Freedom CLI starts, controls, and stops a persistent headless runtime', as
   }
 });
 
-test('Freedom CLI fulfills a page interaction chain through the runtime', async () => {
+test('Freedom CLI observes and navigates pages but refuses interactions without Agent approval', async () => {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-cli-page-e2e-'));
   const screenshotPath = path.join(userDataDir, 'page.png');
   const firstUrl = `bzz://${'c'.repeat(64)}/cli-first`;
@@ -181,8 +183,14 @@ test('Freedom CLI fulfills a page interaction chain through the runtime', async 
     const submitRef = elements.find((element) => element.name === 'Submit')?.ref;
     expect(inputRef).toBeTruthy();
     expect(submitRef).toBeTruthy();
-    await runCli(['page', 'type', '--tab', tabId, '--ref', inputRef, '--text', 'Freedom CLI'], env);
-    await runCli(['page', 'click', '--tab', tabId, '--ref', submitRef], env);
+    const approvalRequired = { errorCode: 'APPROVAL_REQUIRED' };
+    const refused = await runCli(['page', 'type', '--tab', tabId, '--ref', inputRef, '--text', 'Freedom CLI'], env, approvalRequired);
+    expect(refused.error.message).toContain('Use the Agent sidebar');
+    await runCli(['page', 'click', '--tab', tabId, '--ref', submitRef], env, approvalRequired);
+    expect(await app.windows()[0].evaluate(() => ({
+      value: document.querySelector('input').value,
+      status: document.querySelector('#status').textContent,
+    }))).toEqual({ value: '', status: 'Waiting' });
     expect(
       await runCli([
         'page',
@@ -192,7 +200,7 @@ test('Freedom CLI fulfills a page interaction chain through the runtime', async 
         '--until',
         'text',
         '--text',
-        'Freedom CLI',
+        'Waiting',
         '--timeout-ms',
         '2000',
       ], env)
