@@ -53,12 +53,36 @@ recovery and external Git behavior were repaired. The reviewer found no remainin
 blocking defect in the final reviewed protocols. See the
 [review record, validation limits and explicit follow-ups](../docs/audits/freedom-agent-feature-review-2026-09.md).
 
-Before release, add a deliberate acknowledgment/discard flow for a manually
-reconciled external-Git recovery journal: changing the repository in another Git
-client alone cannot clear Freedom's pending record. Scripted downloads, recovery
-evidence retention/pack consolidation, classifier-request cancellation, additional
+The external-Git reconciliation follow-up is implemented below. Scripted downloads,
+recovery evidence retention/pack consolidation, classifier-request cancellation, additional
 approval/IPC hardening and native containment qualification remain recorded in
 the audit. No optional subagent extension was added or removed by this review.
+
+### Agent-driven external Git recovery — 2026-09-29
+
+The agent can inspect an interrupted commit with `workspace_history recovery`
+and resolve it with `recover`, using the existing project editing grant. Exact
+known states can finalize automatically. If the candidate is already in history,
+or the selected changes were committed independently, matching selected-path
+staging permits automatic archival of Freedom's old record without modifying
+repository files, staging or history.
+
+Ambiguous intent is clarified in ordinary chat. `keep_current` with a fresh
+inspection token and a reason archives only Freedom's record; it does not reset
+Git or replay a commit. New permissions still use the existing access flow.
+Recovery refuses active Git operations, foreign locks, changed metadata and
+stale tokens, rechecks cancellation/access, and invalidates old commit reviews.
+See the [recovery contract](../docs/agent-project-viewer.md#interrupted-commits-in-external-repositories).
+
+Validation: the full local suite passed 7,870 tests (119 skipped); three subsequent
+controller regressions passed in the 52-test controller suite. Lint passed.
+Mac mini qualification passed 69 tests across two suites plus seven real-Git
+probes, including deletion-only and initial commits, human reconciliation,
+subsequent reverts, staging changes and foreign locks. The Git implementation
+and both test files matched the supplied source hashes. The remote reused Node
+22.22.0 and its installed Jest/Babel versions, rather than required Node 24 and
+the current lockfile; this qualifies bounded Node/Git behavior, not the complete
+app or release runtime. Same-user races and crash durability remain limitations.
 
 ### Project viewer and recovery implementation — 2026-09-25
 
@@ -168,7 +192,8 @@ unit-tested; the live sandbox regression was run on macOS.
 - Richer document formats beyond the implemented Markdown/raster previews,
   advanced history comparisons,
   branch/remotes/push workflows and general external Git rollback. The current
-  external recovery UI only finalizes an exactly matching interrupted commit.
+  History viewer retains exact-state finalization; the Agent also supports the
+  conversational reconciliation flow described above. Neither rewrites history.
 - Provider qualification using authorized test accounts: authentication,
   streaming, long tool conversations, rate limits and Stop. Independent hardware
   attestation and full Agent-payload encryption remain unfinished protections.
@@ -183,10 +208,6 @@ unit-tested; the live sandbox regression was run on macOS.
 - Smoke-test the new Swarm readiness/retry/continuation path against the real
   node: one approved deployment must retain its batch and report completion,
   failure or an honest unknown outcome without a duplicate purchase/upload.
-- Before release, add explicit acknowledgment/discard of a manually reconciled
-  external-Git recovery journal. The bounded commit/finalization protocol already
-  passed Mac mini fault qualification on September 28; that evidence does not
-  implement this missing user flow or qualify every later combined revision.
 - Confirm the individual editing-helper Stop and reopened editing-receipt smokes
   still listed in the subagent contract; automated coverage is already present.
 - Retain the whole-feature audit's open follow-ups for recovery-evidence retention,

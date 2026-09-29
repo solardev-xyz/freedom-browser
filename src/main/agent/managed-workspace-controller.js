@@ -1686,6 +1686,7 @@ class ManagedWorkspaceController {
           comparison: 'Current working files versus HEAD; untracked files appear as additions. Staged-only differences are not shown separately.' };
       }
       if (history instanceof ExternalProjectGit) return this.#reviewProjectGit(conversationId, history, request);
+      if (['recovery', 'recover'].includes(request.action)) throw new WorkspaceHistoryError('These recovery actions apply to external repository commits. Use History to review managed-workspace restore recovery.');
       const exclusions = await history.exclusions();
       if (request.action === 'status') {
         return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })), exclusions, workspaceKind: 'managed',
@@ -1733,13 +1734,20 @@ class ManagedWorkspaceController {
       for (const id of request.reviewIds) this.historyReviews.delete(id);
       this.historyNotices.delete(conversationId);
       return { ...result, source: 'repository', reviewedPaths: reviews.map((review) => review.path), message: 'Committed only selected revisions. Other changes remain uncommitted. This does not certify testing.' };
-    }, { ...options, readOnly: ['status', 'diff'].includes(request.action) });
+    }, { ...options, readOnly: ['status', 'diff', 'recovery'].includes(request.action) });
   }
 
   async #reviewProjectGit(conversationId, history, request) {
     if (request.action === 'status') return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })),
-      ...(await history.list()), workspaceKind: 'external', message: 'This is the project repository. Commit only when requested or authorized by the task and repository instructions. No separate checkpoint history is written.' };
+      ...(await history.list()), recovery: await history.recovery(), workspaceKind: 'external', message: 'This is the project repository. Commit only when requested or authorized by the task and repository instructions. No separate checkpoint history is written.' };
     if (!await history.validate()) throw new WorkspaceHistoryError('This folder has no Git repository. Files can be edited, but no history is created. Initialize Git explicitly with your Git client if wanted.');
+    if (request.action === 'recovery') return history.recovery();
+    if (request.action === 'recover') {
+      if (this.listProcesses(conversationId).length || [...this.activeCommands.values()].some(command => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Wait for or stop project commands before recovering a commit.');
+      const result = await history.recoverCommit(request);
+      for (const [id, review] of this.historyReviews) if (review.conversationId === conversationId) this.historyReviews.delete(id);
+      return result;
+    }
     if (['include', 'exclude'].includes(request.action)) throw new WorkspaceHistoryError('Use repository ignore rules and select the intended files for each commit. Freedom has no separate exclusion history for this project.');
     if (request.action === 'review') {
       if (historyPathReason(request.path)) throw new WorkspaceHistoryError('This file is excluded from commit review.');

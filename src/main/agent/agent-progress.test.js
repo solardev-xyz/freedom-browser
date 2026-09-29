@@ -64,6 +64,15 @@ describe('Agent progress projection', () => {
       ...activityProgress('workspace_history', { workspace }) };
   };
 
+  test.each(['finalized', 'not_applied', 'already_completed', 'kept_current'])('reports %s recovery without claiming a new commit', recoveryOutcome => {
+    const item = historyItem('recover', { source: 'repository', recoveryOutcome });
+    expect(item.label).toBe('Resolved interrupted commit');
+    const result = buildAgentOutcome([item], 'completed');
+    expect(result.headline).toBe('Resolved interrupted commit');
+    expect(result.detail).not.toContain('created commit');
+    if (recoveryOutcome === 'kept_current') expect(result.detail).toContain('No repository files, staging or history were changed');
+  });
+
   test('describes repository status without private checkpoint exclusions', () => {
     const result = buildAgentOutcome([historyItem('status', { source: 'repository' })], 'completed');
     expect(result).toMatchObject({ headline: 'Checked commits', detail: 'Freedom checked project changes and Git history.' });

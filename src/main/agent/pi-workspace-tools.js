@@ -379,14 +379,16 @@ function assertBrowserEnvelope(envelope) {
 function createWorkspaceHistoryTool(sdk, options) {
   return sdk.defineTool({
     name: 'workspace_history', label: 'Review project history',
-    description: 'Inspect project Git history and read bounded diffs with action diff and a path. Status reports workspaceKind: managed or external. Proactively checkpoint reviewed meaningful milestones in managed workspaces; commit external repository changes only when authorized. Review exact file revisions and save only selected review tokens. Status, diff and review work with read-only project access; use these instead of shell Git for inspection. Load the workspace-history skill first. No unreviewed snapshots or remote operations.',
+    description: 'Inspect project Git history and read bounded diffs with action diff and a path. Status reports workspaceKind: managed or external. Proactively checkpoint reviewed meaningful milestones in managed workspaces; commit external repository changes only when authorized. Review exact file revisions and save only selected review tokens. Status, diff and review work with read-only project access; use these instead of shell Git for inspection. For interrupted external commits, inspect recovery then call recover with its fresh token and resolution automatic. If intent is ambiguous, ask in chat; keep_current with a reason only archives the old record and preserves all repository state. Load the workspace-history skill first. No unreviewed snapshots or remote operations.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint'] },
+        action: { type: 'string', enum: ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint', 'recovery', 'recover'] },
         path: { type: 'string', minLength: 1, maxLength: 1024 },
         reason: { type: 'string', minLength: 1, maxLength: 160 },
         label: { type: 'string', minLength: 1, maxLength: 80 },
+        token: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        resolution: { type: 'string', enum: ['automatic', 'keep_current'] },
         reviewIds: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'string', pattern: '^review_[a-f0-9]{32}$' } },
       }, required: ['action'],
     },
@@ -404,6 +406,7 @@ function createWorkspaceHistoryTool(sdk, options) {
         receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, params, 'completed', {
           kind: 'history', command: `Project history: ${params.action}`,
           history: { action: params.action, source: 'repository',
+            ...(params.action === 'recover' && { recoveryOutcome: result.recoveryOutcome }),
             ...(['commit', 'checkpoint'].includes(params.action) && { saved: result.saved, checkpointId: result.id }) },
         });
         notify(options.onToolOutcome, { toolCallId, operation, status: 'succeeded', workspace: receipt });
@@ -579,7 +582,7 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
     stderrTruncated: false,
     terminationGuarantee: 'not_applicable',
     sideEffects: workspaceOperationIsReadOnly(operation) ||
-      (operation === 'workspace_history' && ['status', 'diff', 'review'].includes(params.action)) ? 'none' : 'unknown',
+      (operation === 'workspace_history' && ['status', 'diff', 'review', 'recovery'].includes(params.action)) ? 'none' : 'unknown',
     survivorsPossible: false,
     completeDescendantTermination: true,
     ...(result.history && { history: result.history }),

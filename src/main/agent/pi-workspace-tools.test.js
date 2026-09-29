@@ -1198,6 +1198,20 @@ describe('reviewed workspace history tool', () => {
     expect(JSON.stringify(outcome.mock.calls)).not.toContain('Private label');
   });
 
+  test('recovery uses existing project permission without a redundant approval sheet', async () => {
+    const controller = createController();
+    controller.getWorkspace.mockReturnValue({ enabled: true, workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' });
+    controller.reviewWorkspaceHistory = jest.fn(async () => ({ resolved: true, recoveryOutcome: 'already_completed' }));
+    const requestApproval = jest.fn(); const onToolOutcome = jest.fn();
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval, onToolOutcome });
+    const tool = tools.find(entry => entry.name === 'workspace_history');
+    expect(tool.parameters.properties.action.enum).toEqual(expect.arrayContaining(['recovery', 'recover']));
+    await tool.execute('recover_one', { action: 'recover', token: 'a'.repeat(64), resolution: 'automatic' });
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(controller.reviewWorkspaceHistory).toHaveBeenCalledWith('conversation_one', expect.objectContaining({ action: 'recover', token: 'a'.repeat(64) }), expect.anything());
+    expect(onToolOutcome).toHaveBeenCalledWith(expect.objectContaining({ workspace: expect.objectContaining({ history: { action: 'recover', source: 'repository', recoveryOutcome: 'already_completed' } }) }));
+  });
+
   test('binds history to its conversation and never exposes restore or arbitrary Git commands', async () => {
     const controller = createController();
     controller.getWorkspace.mockReturnValue({ enabled: true, workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' });

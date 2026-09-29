@@ -129,6 +129,42 @@ describe('ManagedWorkspaceController', () => {
     expect(controller.historyReviews.size).toBe(0);
   });
 
+  test.each(['read', 'write', 'command'])('external recovery respects %s access and invalidates only resolved reviews', async mode => {
+    const { ExternalProjectGit } = require('./external-project-git');
+    const { controller, dependencies, workspace } = createController();
+    workspace.project = { connected: true, mode: mode === 'read' ? 'read' : 'write' };
+    const grant = { mode: workspace.project.mode };
+    dependencies.store.projectAccess = {
+      grants: new Map([[workspace.workspaceId, grant]]),
+      resolve: jest.fn(async (id, request) => {
+        if (request?.write && grant.mode === 'read') throw Object.assign(new Error('Read only'), { code: 'PROJECT_READ_ONLY' });
+        return grant;
+      }),
+    };
+    dependencies.store.resolveHistoryPath = jest.fn(async () => '/private-fixture');
+    jest.spyOn(ExternalProjectGit.prototype, 'validate').mockResolvedValue(true);
+    jest.spyOn(ExternalProjectGit.prototype, 'checkMetadataIdentity').mockResolvedValue();
+    jest.spyOn(ExternalProjectGit.prototype, 'recovery').mockResolvedValue({ pending: true, token: 'a'.repeat(64), automatic: 'archive', canKeepCurrent: true, candidate: 'b'.repeat(40) });
+    const rename = jest.spyOn(fs.promises, 'rename').mockResolvedValue();
+    controller.historyReviews.set('old', { conversationId: 'conversation_one' });
+    controller.historyReviews.set('other', { conversationId: 'conversation_two' });
+    if (mode === 'command') controller.activeCommands.set('running', { conversationId: 'conversation_one' });
+    await expect(controller.reviewWorkspaceHistory('conversation_one', { action: 'recovery' })).resolves.toMatchObject({ automatic: 'archive' });
+    expect(rename).not.toHaveBeenCalled();
+    const result = controller.reviewWorkspaceHistory('conversation_one', { action: 'recover', token: 'a'.repeat(64) });
+    if (mode === 'write') {
+      await expect(result).resolves.toMatchObject({ resolved: true, recoveryOutcome: 'already_completed' });
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(controller.historyReviews.has('old')).toBe(false);
+    } else {
+      await expect(result).rejects.toMatchObject({ code: mode === 'read' ? 'PROJECT_READ_ONLY' : 'WORKSPACE_HISTORY_UNAVAILABLE' });
+      expect(rename).not.toHaveBeenCalled();
+      expect(controller.historyReviews.has('old')).toBe(true);
+    }
+    expect(controller.historyReviews.has('other')).toBe(true);
+    expect(controller.historyLocks.size).toBe(0);
+  });
+
   test.each(['.env', '.git/config', '../outside', 'notes.md', 'README.md'])(
     'model diffs enforce mandatory/custom exclusions and removed-secret checks: %s', async (file) => {
       const { ManagedWorkspaceHistory } = require('./managed-workspace-history');

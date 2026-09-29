@@ -82,27 +82,45 @@ current branch and index state. It reports a landed candidate, a branch still
 at the starting revision, or an uncertain/diverged state. Inspection is read-only
 and exposes no host paths, index bytes or credentials to the renderer.
 
-**Review finalization** appears only when the original branch points to the
+**Review finalization** supports exact known states: the original branch points to the
 candidate and either (a) the unchanged original index and exact owned lock still
 match the prepared index, or (b) the prepared index is already installed and no
-lock remains. After explicit confirmation, editing access, idle state, metadata
+lock remains; or the original branch/index still match the unapplied baseline.
+After explicit confirmation, editing access, idle state, metadata
 identity, cancellation and a digest-bound state token are rechecked. Finalization
 installs only the prepared index where needed and archives the journal in private
 storage. It never edits working files or changes branch refs. Unrelated staging
 prepared by the original commit operation is preserved.
 
-Changed/foreign locks, changed staging, moved branches, missing authority and
-ambiguous outcomes require deliberate Git-client reconciliation. No automatic
-lock deletion, commit retry, reset, rebase or external-project rollback is added.
-The existing same-user filesystem race limitation still applies; this is not
-isolation against a malicious host process.
+Agent recovery is also available through `workspace_history recovery` / `recover`.
+Routine finalization needs existing editing authority, no separate confirmation
+sheet. A not-applied operation at its exact original branch/index can release only
+its proven owned lock and archive its record. An applied candidate in current
+history, or equivalent selected revisions committed by the user, can close the
+record automatically when selected-path staging matches current HEAD and the
+original branch is still selected. Unrelated staged and working changes remain.
+If a later commit reverted the candidate, recovery recognizes that the original
+commit occurred and preserves the revert. It never reapplies the old content.
+
+A diverged or ambiguous state is explained in ordinary chat. `keep_current`, with
+a fresh inspection token and a short reason, archives only the private journal;
+it cannot alter refs, index or working files. It does not declare the original
+commit successful. Current editing authority, no active project commands, no Git
+operation/foreign lock, unchanged metadata and a fresh state comparison are still
+required. Existing review tokens are invalidated after recovery. No automatic
+commit retry, reset, rebase or external-project rollback is added. A cancelled
+operation cannot proceed to archival. The existing same-user filesystem race
+limitation still applies; this is not isolation against a malicious host process.
 
 ## Validation
 
-Local validation passed: lint, 302 tests across 12 focused Jest suites, and all
-four disposable-Electron viewer cases. Native external-Git fault qualification
-on the Mac mini remains pending approval to transfer the candidate source and
-fixtures; the mocked protocol and renderer checks do not replace that step.
+Initial local validation passed: lint, 302 tests across 12 focused Jest suites,
+and all four disposable-Electron viewer cases. The subsequent September 28
+whole-feature review qualified the bounded external-Git recovery protocol with
+43 real-Git tests and additional interruption/foreign-lock fixtures on the Mac mini;
+see [the audit and its version limits](audits/freedom-agent-feature-review-2026-09.md).
+The September 29 agent-driven recovery extension has separate qualification
+recorded in the active roadmap.
 
 The subsequent file-tree refinement passed 84 tests across six focused suites
 and the four expanded Electron cases: lazy expansion, keyboard navigation,

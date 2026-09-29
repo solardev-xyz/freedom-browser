@@ -308,4 +308,49 @@ qualified('external project Git integration', () => {
     expect(fs.existsSync(path.join(root, '.git/index.lock'))).toBe(true);
     await expect(commit([review('README.md', 'changed')])).rejects.toThrow('previous commit needs inspection');
   });
+  const interruptCommit = async () => {
+    write('README.md', 'changed\n');
+    const instance = service(); const real = instance.git.bind(instance);
+    const baseline = await instance.baseline();
+    instance.git = async (args, options) => {
+      const result = await real(args, options);
+      if (args[0] === 'update-ref') throw new Error('Lost acknowledgment');
+      return result;
+    };
+    await expect(instance.commit([review('README.md', 'changed\n')], baseline, 'Interrupted', async () => {})).rejects.toThrow('uncertain');
+    return baseline;
+  };
+
+  test.each(['descendant', 'equivalent'])('automatically reconciles a human %s commit, preserving later files and staging', async kind => {
+    const baseline = await interruptCommit();
+    // Simulate the human's Git client resolving the interrupted index.
+    fs.renameSync(path.join(root, '.git/index.lock'), path.join(root, '.git/index'));
+    if (kind === 'equivalent') git('reset', '--mixed', baseline.id);
+    write('other.txt', 'human committed'); git('add', 'README.md', 'other.txt'); git('commit', '-qm', 'Human resolution');
+    write('other.txt', 'later staged'); git('add', 'other.txt');
+    write('README.md', 'later unstaged');
+    const head = git('rev-parse', 'HEAD'); const index = fs.readFileSync(path.join(root, '.git/index'));
+    const instance = service(); const state = await instance.recovery();
+    expect(state).toMatchObject({ automatic: 'archive', evidence: { completed: true, candidateInHistory: kind === 'descendant' } });
+    expect(await instance.recoverCommit({ token: state.token })).toMatchObject({ resolved: true, recoveryOutcome: 'already_completed' });
+    expect(git('rev-parse', 'HEAD')).toBe(head);
+    expect(fs.readFileSync(path.join(root, '.git/index'))).toEqual(index);
+    expect(fs.readFileSync(path.join(root, 'README.md'), 'utf8')).toBe('later unstaged');
+    expect(await service().recovery()).toEqual({ pending: false });
+    expect(fs.readdirSync(storage).some(name => name.startsWith('git-commit-reconciled-'))).toBe(true);
+  });
+
+  test('changed selected staging needs a decision; keep_current preserves it byte for byte', async () => {
+    await interruptCommit();
+    fs.renameSync(path.join(root, '.git/index.lock'), path.join(root, '.git/index'));
+    write('README.md', 'later staged'); git('add', 'README.md');
+    const index = fs.readFileSync(path.join(root, '.git/index')); const head = git('rev-parse', 'HEAD');
+    const instance = service(); const state = await instance.recovery();
+    expect(state).toMatchObject({ automatic: null, nextAction: 'ask_user', evidence: { stagingMatchesCurrent: false } });
+    await expect(instance.recoverCommit({ token: state.token })).rejects.toThrow('Automatic recovery is unavailable');
+    expect(await instance.recoverCommit({ token: state.token, resolution: 'keep_current', reason: 'User kept their staging' })).toMatchObject({ recoveryOutcome: 'kept_current' });
+    expect(fs.readFileSync(path.join(root, '.git/index'))).toEqual(index);
+    expect(git('rev-parse', 'HEAD')).toBe(head);
+  });
+
 });

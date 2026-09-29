@@ -90,14 +90,18 @@ and automation adapters; no package boundary or dependency changed.
 
 These are retained product/qualification decisions, not silently completed work:
 
-1. **External Git reconciliation:** automatic repair is deliberately limited to
-   the exact baseline/finalization states. A changed branch/index, a ref lock, a
-   foreign lock, or changed lock timestamps requires manual investigation. Old
-   unreleased journals lacking ownership timestamps also fail closed. Git changes
-   alone do not remove Freedom's pending journal. Before release, provide an
-   explicit user acknowledgment/discard flow for a manually reconciled journal,
-   with a reviewable record and no implicit index/ref/file mutation. Until then,
-   Agent commits can remain blocked in those cases; the error now says so.
+1. **External Git reconciliation — implemented in a September 29 follow-up:**
+   The original review left manually reconciled journals blocked. The Agent now
+   inspects recovery evidence and automatically finalizes exact known states or
+   archives a record whose selected changes are already committed with reconciled
+   staging. Ambiguous intent is discussed in chat; `keep_current` archives only
+   the private record, leaving repository files, index and refs untouched. Fresh
+   tokens, existing editing access, cancellation and lock checks remain required.
+   Active Git operations, foreign/changed locks and replaced metadata still
+   require investigation; old journals without ownership proof cannot authorize
+   deleting a lock. See the [current contract](../agent-project-viewer.md#interrupted-commits-in-external-repositories)
+   and [dated roadmap](../../research/freedom-agent-cli-roadmap.md).
+   This follow-up was not part of Claude's September 28 review verdict.
 2. **Retained recovery evidence:** interrupted writes can leave an owned temporary
    file, excluded from checkpoints/publication. Do not sweep files merely by name.
    Git recovery retains its private journal and prepared evidence; the final

@@ -200,16 +200,90 @@ class ExternalProjectGit {
     const lock = await this.read(lockPath, true);
     const lockStat = lock ? await fs.promises.lstat(lockPath) : null;
     const ownedLock = Boolean(lockStat && lockStat.dev === record.indexLock?.dev && lockStat.ino === record.indexLock?.ino && lockStat.birthtimeMs === record.indexLock?.birthtimeMs && lockStat.ctimeMs === record.indexLock?.ctimeMs && digest(lock) === record.preparedIndex);
-    const branchLock = path.resolve(this.directory, `${record.baseline.head.replace(/^ref: /, '').trim()}.lock`);
-    const blockedRef = !branchLock.startsWith(this.directory + path.sep) || fs.existsSync(branchLock) || fs.existsSync(path.join(this.directory, 'packed-refs.lock'));
-    const repairable = !blockedRef && current.head === record.baseline.head && (
+    const lockNames = ['HEAD.lock', 'packed-refs.lock'];
+    for (const head of [record.baseline.head, current.head]) {
+      if (head.startsWith('ref: ')) lockNames.push(`${head.slice(5).trim()}.lock`);
+    }
+    const blockedRef = lockNames.some(name => {
+      const target = path.resolve(this.directory, name);
+      return !target.startsWith(this.directory + path.sep) || fs.existsSync(target);
+    });
+    const activeOperation = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer']
+      .some(name => fs.existsSync(path.join(this.directory, name)));
+    const metadataChanged = record.baseline.metadata && record.baseline.metadata !== current.metadata;
+    const blocked = Boolean(blockedRef || activeOperation || metadataChanged || (lock && !ownedLock));
+    const repairable = !blocked && current.head === record.baseline.head && (
       (current.id === record.candidate && ((ownedLock && current.index === record.baseline.index) || (!lock && current.index === record.preparedIndex))) ||
       (current.id === record.baseline.id && (ownedLock || !lock) && current.index === record.baseline.index));
-    const token = digest(JSON.stringify({ journal: digest(bytes), current, lock: lock ? digest(lock) : null, inode: lockStat?.ino }));
+    const token = digest(JSON.stringify({ journal: digest(bytes), current, lock: lock ? digest(lock) : null, inode: lockStat?.ino, blocked }));
     const state = current.id === record.candidate ? 'committed' : current.id === record.baseline.id && current.head === record.baseline.head ? 'not_applied' : 'uncertain';
+    // Evidence contains object identities and bounded paths, never source text.
+    // Failure to compare is uncertainty, not permission to discard staging.
+    const evidence = !blocked && !lock && !repairable ? await this.recoveryEvidence(record, current) : null;
+    const canKeepCurrent = !blocked && !lock;
+    const automatic = repairable ? 'finalize' : canKeepCurrent && evidence?.completed ? 'archive' : null;
     return { pending: true, state, repairable, token, candidate: record.candidate, currentId: current.id,
-      message: state === 'committed' ? 'The commit exists. Staging finalization still needs inspection.' : state === 'not_applied' ? 'The branch still matches its starting revision. Inspect staging before retrying.' : 'The repository changed after the interrupted operation. Reconcile it in your Git client.',
-      steps: ['Inspect Git log, status and staged changes in your Git client.', 'Preserve unrelated edits and staging. Do not delete index.lock or retry the commit blindly.', 'Reconcile the retained commit recovery record before making another Agent commit.'] };
+      canKeepCurrent, automatic, evidence,
+      nextAction: automatic ? 'recover' : blocked || lock ? 'wait_or_inspect' : 'ask_user',
+      message: automatic === 'finalize' ? 'Freedom can safely finish its interrupted operation without changing working files.'
+        : automatic === 'archive' ? 'The selected changes are already committed and staging is reconciled. Freedom can archive its old record.'
+          : blocked || lock ? 'Git has an active operation, changed metadata or a remaining lock. Do not remove locks. Inspect or wait for that operation.'
+            : 'The repository has changed. Compare this evidence with the task; ask the user in chat if keeping the current state is unclear.',
+      steps: ['Use workspace_history recovery to inspect fresh evidence, then recover with its token and resolution automatic when offered.',
+        'For ambiguity, explain the current state and ask the user in chat whether to keep it. recover with resolution keep_current only archives Freedom’s record; it never changes repository files, staging or history.',
+        'Never reset, rewrite history, delete foreign locks or repeat a commit blindly. After recovery, inspect status and obtain fresh review tokens before any separately authorized commit.'] };
+  }
+
+  async recoveryEvidence(record, current) {
+    try {
+      if (!current.id) return { completed: false, comparisonAvailable: false };
+      const changed = await this.git(['diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', '-z',
+        ...(record.baseline.id ? [record.baseline.id, record.candidate] : ['--root', record.candidate]), '--']);
+      const paths = changed.toString().split('\0').filter(Boolean);
+      if (!paths.length || paths.length > 200 || paths.some(name => historyPathReason(name))) return { completed: false, comparisonAvailable: false };
+      const parse = (bytes, index = false) => {
+        const entries = new Map();
+        for (const line of bytes.toString().split('\0').filter(Boolean)) {
+          const match = (index ? /^(\d+) ([a-f0-9]{40}) 0\t(.+)$/ : /^(\d+) blob ([a-f0-9]{40})\t(.+)$/).exec(line);
+          if (!match || !['100644', '100755'].includes(match[1])) throw new Error('Unsupported recovery entry');
+          entries.set(match[3], `${match[1]}:${match[2]}`);
+        }
+        return entries;
+      };
+      const candidate = parse(await this.git(['ls-tree', '-r', '-z', record.candidate, '--', ...paths]));
+      const committed = parse(await this.git(['ls-tree', '-r', '-z', current.id, '--', ...paths]));
+      const staged = parse(await this.git(['ls-files', '--stage', '-z', '--', ...paths]), true);
+      const ancestor = (await this.git(['merge-base', record.candidate, current.id], { codes: [0, 1] })).toString().trim() === record.candidate;
+      const selectedChangesMatch = paths.every(name => candidate.get(name) === committed.get(name));
+      const stagingMatchesCurrent = paths.every(name => committed.get(name) === staged.get(name));
+      return { comparisonAvailable: true, paths, candidateInHistory: ancestor, selectedChangesMatch, stagingMatchesCurrent,
+        completed: current.head === record.baseline.head && stagingMatchesCurrent && (ancestor || selectedChangesMatch) };
+    } catch {
+      return { completed: false, comparisonAvailable: false };
+    }
+  }
+
+  async recoverCommit({ token, resolution = 'automatic', reason } = {}) {
+    if (!['automatic', 'keep_current'].includes(resolution)) fail('Choose automatic recovery or keep_current after resolving intent in chat.');
+    if (resolution === 'keep_current' && (typeof reason !== 'string' || !reason.trim() || reason.length > 160 || historyContainsSecret(reason))) fail('Provide a short non-sensitive reason for keeping the current repository state.');
+    await this.authorize(true);
+    const state = await this.recovery();
+    if (!state.pending || state.token !== token) fail('Recovery state changed. Call workspace_history recovery again; no resolution was applied.');
+    if (resolution === 'automatic' && state.automatic === 'finalize') {
+      const result = await this.repairCommit(token);
+      return { ...result, resolved: true, recoveryOutcome: state.state === 'not_applied' ? 'not_applied' : 'finalized' };
+    }
+    if (!state.canKeepCurrent || (resolution === 'automatic' && state.automatic !== 'archive')) fail('Automatic recovery is unavailable. Inspect recovery evidence; ask the user in chat when intent is unclear. Do not remove locks or change Git state to bypass this check.');
+    await this.authorize(true);
+    const rechecked = await this.recovery();
+    if (rechecked.token !== token || !rechecked.canKeepCurrent || (resolution === 'automatic' && rechecked.automatic !== 'archive')) fail('Recovery state changed. Inspect it again; no resolution was applied.');
+    await this.checkMetadataIdentity();
+    if (this.signal?.aborted || Date.now() >= this.deadline) fail('Recovery stopped before resolution. Inspect recovery again.');
+    const outcome = resolution === 'automatic' ? 'already_completed' : 'kept_current';
+    await fs.promises.rename(path.join(this.temporaryRoot, 'git-commit-pending.json'),
+      path.join(this.temporaryRoot, `git-commit-reconciled-${outcome}-${state.candidate}-${crypto.randomBytes(8).toString('hex')}.json`));
+    return { resolved: true, recoveryOutcome: outcome, id: state.currentId, candidate: state.candidate,
+      message: 'Archived the interrupted operation. Repository files, staging and history were not changed. Review current changes before any new commit.' };
   }
 
   async repairCommit(token) {
@@ -299,7 +373,7 @@ class ExternalProjectGit {
     }
     const lockPath = path.join(this.directory, 'index.lock');
     const journalPath = path.join(this.temporaryRoot, 'git-commit-pending.json');
-    if (fs.existsSync(journalPath)) fail('A previous commit needs inspection. Open project History and inspect commit recovery before retrying. If repair is unavailable, preserve the recovery record and reconcile the repository in your Git client. Agent commits remain blocked until the recovery record is resolved; Git changes alone do not clear it.');
+    if (fs.existsSync(journalPath)) fail('A previous commit needs inspection. Call workspace_history with action recovery, then recover with the returned token when automatic resolution is available. If intent is ambiguous, ask the user in chat before keeping the current state. Do not retry the commit blindly.');
     let lock; let lockIdentity; let temporary; let candidate = null; let committed = null; let refAttempted = false; let journalWritten = false;
     const ownsLock = async () => {
       try {

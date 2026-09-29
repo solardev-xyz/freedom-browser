@@ -640,9 +640,10 @@ function normalizeWorkspaceReceipt(value) {
     ].includes(kind)
       ? kind
       : 'command',
-    ...(kind === 'history' && ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint'].includes(value.history?.action) && {
+    ...(kind === 'history' && ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint', 'recovery', 'recover'].includes(value.history?.action) && {
       history: Object.freeze({
         action: value.history.action,
+        ...(state === 'completed' && ['finalized', 'not_applied', 'already_completed', 'kept_current'].includes(value.history.recoveryOutcome) && { recoveryOutcome: value.history.recoveryOutcome }),
         ...(value.history.source === 'repository' && { source: 'repository' }),
         ...(state === 'completed' && ['commit', 'checkpoint'].includes(value.history.action) &&
           typeof value.history.saved === 'boolean' && /^[a-f0-9]{40}$/.test(value.history.checkpointId) && {
@@ -677,6 +678,8 @@ function normalizeWorkspaceReceipt(value) {
 function checkpointProgress(workspace) {
   const repository = workspace?.history?.source === 'repository' || workspace?.history?.action === 'commit';
   const copy = {
+    recovery: ['Inspecting interrupted commit', 'Inspected interrupted commit', 'Freedom compared its recovery record with current Git state. No repository changes were made.'],
+    recover: ['Resolving interrupted commit', 'Resolved interrupted commit', 'Freedom resolved its pending commit recovery record.'],
     status: ['Checking checkpoints', 'Checked checkpoints', 'Freedom checked project changes and checkpoint exclusions.'],
     diff: ['Reading file changes', 'Read file changes', 'Freedom returned a bounded diff against HEAD. This does not change files or create a commit.'],
     review: ['Reviewing file changes', 'Reviewed file changes', 'Freedom returned a file revision for review. This does not save a checkpoint.'],
@@ -693,6 +696,10 @@ function checkpointProgress(workspace) {
       intent, label: workspace.state === 'failed' ? 'Git operation failed' : 'Git operation stopped',
       detail: 'The Git operation did not return a confirmed result. Inspect repository state before retrying.',
     };
+    if (workspace.history.action === 'recover') {
+      const outcomes = { finalized: 'Freedom finished the interrupted commit. Working files were not changed.', not_applied: 'The commit was not applied. Freedom cleared its own interrupted operation; no new commit was made.', already_completed: 'The changes were already committed. Freedom archived its old record without changing repository files, staging or history.', kept_current: 'Freedom kept the current repository state and archived its old recovery record. No repository files, staging or history were changed.' };
+      return { intent, label: outcomes[workspace.history.recoveryOutcome] ? 'Resolved interrupted commit' : 'Checked commit recovery', detail: outcomes[workspace.history.recoveryOutcome] || 'No confirmed recovery result was recorded.' };
+    }
     if (workspace?.history?.saved !== undefined) return {
       intent, label: workspace.history.saved ? 'Created commit' : 'No new commit needed',
       detail: workspace.history.saved

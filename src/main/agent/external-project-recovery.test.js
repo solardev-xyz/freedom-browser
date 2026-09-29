@@ -13,6 +13,7 @@ describe('external commit recovery protocol', () => {
     current = { ...record.baseline, id: record.candidate };
     service = new ExternalProjectGit('/fixture', { temporaryRoot: '/private-fixture', authorize: jest.fn(async () => {}), signal: controller.signal, globalConfigFiles: [] });
     service.validate = jest.fn(async () => true); service.checkMetadataIdentity = jest.fn(async () => {});
+    service.recoveryEvidence = jest.fn(async () => ({ completed: false, comparisonAvailable: false }));
     service.baseline = jest.fn(async () => ({ ...current }));
     service.read = jest.fn(async name => name.endsWith('git-commit-pending.json') ? Buffer.from(JSON.stringify(record)) : name.endsWith('index.lock') ? lock : null);
     jest.spyOn(fs.promises, 'lstat').mockResolvedValue({ dev: 1, birthtimeMs: 1, ctimeMs: 2, get ino() { return inode; } });
@@ -81,4 +82,49 @@ describe('external commit recovery protocol', () => {
     current.id = record.baseline.id; expect(await service.recovery()).toMatchObject({ state: 'not_applied', repairable: true });
     current.id = 'c'.repeat(40); expect(await service.recovery()).toMatchObject({ state: 'uncertain', repairable: false });
   });
+  test('automatic recovery completes the known commit without new approval machinery', async () => {
+    const state = await service.recovery();
+    expect(state.automatic).toBe('finalize');
+    await expect(service.recoverCommit({ token: state.token })).resolves.toMatchObject({ resolved: true, recoveryOutcome: 'finalized' });
+    expect(rename).toHaveBeenCalledWith('/fixture/.git/index.lock', '/fixture/.git/index');
+  });
+
+  test('already completed work archives only the private journal and requires fresh state', async () => {
+    lock = null; current.id = 'c'.repeat(40); current.index = digest('human index');
+    service.recoveryEvidence.mockResolvedValue({ completed: true, candidateInHistory: true });
+    const state = await service.recovery();
+    expect(state).toMatchObject({ automatic: 'archive', canKeepCurrent: true });
+    await expect(service.recoverCommit({ token: state.token })).resolves.toMatchObject({ recoveryOutcome: 'already_completed' });
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(rename.mock.calls[0][0]).toBe('/private-fixture/git-commit-pending.json');
+  });
+
+  test('ambiguous state asks in chat, while keep_current never mutates repository state', async () => {
+    lock = null; current.id = 'c'.repeat(40); current.index = digest('human index');
+    const state = await service.recovery();
+    expect(state).toMatchObject({ automatic: null, nextAction: 'ask_user', canKeepCurrent: true });
+    await expect(service.recoverCommit({ token: state.token })).rejects.toThrow('ask the user in chat');
+    expect(rename).not.toHaveBeenCalled();
+    await expect(service.recoverCommit({ token: state.token, resolution: 'keep_current', reason: 'User chose to keep the current branch and staging' })).resolves.toMatchObject({ recoveryOutcome: 'kept_current' });
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(rename.mock.calls[0][0]).toBe('/private-fixture/git-commit-pending.json');
+  });
+
+  test.each(['index', 'branch', 'foreign_lock', 'active_operation', 'permission', 'stop', 'deadline'])('archive refuses a late %s change', async change => {
+    lock = null; current.id = 'c'.repeat(40);
+    const state = await service.recovery();
+    service.authorize.mockImplementation(async write => {
+      if (!write) return;
+      if (change === 'index') current.index = digest('late staging');
+      if (change === 'branch') current.head = 'ref: refs/heads/other\n';
+      if (change === 'foreign_lock') { lock = Buffer.from('foreign'); inode = 43; }
+      if (change === 'active_operation') fs.existsSync.mockImplementation(name => name.endsWith('MERGE_HEAD'));
+      if (change === 'permission') throw new Error('Read only');
+      if (change === 'stop') controller.abort();
+      if (change === 'deadline') service.deadline = 0;
+    });
+    await expect(service.recoverCommit({ token: state.token, resolution: 'keep_current', reason: 'Keep current state' })).rejects.toThrow();
+    expect(rename).not.toHaveBeenCalled();
+  });
+
 });
