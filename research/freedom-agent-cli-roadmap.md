@@ -12,6 +12,10 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ### Pre-PR stabilization — 2026-09-29
 
+Draft review is open as [PR #457](https://github.com/solardev-xyz/freedom-browser/pull/457)
+against `main`. It remains draft pending colleague review, the manual checks
+below, and the PR's visual evidence checklist.
+
 Implemented classifier cancellation through session startup, prompt and late
 cleanup, and corrected cancellation reporting for actions with uncertain effects.
 The focused Claude follow-up closed parsed host Git-config screening, helper

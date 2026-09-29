@@ -14,4 +14,3 @@ contextBridge.exposeInMainWorld('freedomPdfProcessor', {
     ipcRenderer.send(RESULT_CHANNEL, result);
   },
 });
-
