@@ -1,14 +1,36 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-28
+Last updated: 2026-09-29
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-28
+## Current working status — 2026-09-29
+
+### Main integration and current validation — 2026-09-29
+
+Merged `origin/main` at `65025453` into the feature branch in `0a483307`,
+preserving Agent/runtime behavior alongside main's IPC, renderer, navigation
+and shutdown hardening. The isolated PDF processor has a narrow result-channel
+exception to the central sender policy; its live-window/job checks remain.
+Agent and automation E2E specs are now wired into macOS CI jobs; live Ollama
+qualification remains explicitly opt-in. Those new jobs have not yet run remotely.
+
+Installed dependencies match the merged lockfile: Electron 44.4.5, Colibri 3.0.0
+and Pi 0.86.0. Local bundled Ant is 0.5.45 and Myotis is 0.1.12. Validation of
+the combined tree passed **7,855 unit tests**, with **116 skipped**, plus lint
+and **12 disposable Electron smoke tests** covering PDF processing, WebMCP,
+external-project reads, helper handoff/Stop, Agent wallet approvals, publication
+cards and viewers in both themes/layouts. Previously recorded full-suite failures
+no longer reproduce in this tree. Historical counts below remain tied to their
+dated revisions; this is not fresh destructive or packaged-platform qualification.
+
+The feature remains unreleased and the local merge has not been pushed. The
+Swarm continuation implementation is committed as `0fbb5294`; its real-network
+postage-readiness/upload-completion smoke remains unconfirmed.
 
 ### Swarm deployment continuation — 2026-09-28
 
@@ -74,7 +96,7 @@ checks. The review added exact-baseline not-applied cleanup; no repository rollb
 or history rewrite was introduced. Remote dependency versions and remaining
 manual-reconciliation limits are recorded in the whole-feature audit above.
 
-### Current backlog and next decision — 2026-09-28
+### Current backlog and next decision — 2026-09-29
 
 This is the active backlog. The dated implementation records below preserve
 historical scope and test evidence; older statements of “next” or “remaining”
@@ -114,8 +136,10 @@ coverage does not turn them into manual passes. See the
 | Browser/WebMCP coverage | Choose a real blocked website/tool schema, then add the missing schema constraints or frame-scoped tools with origin/approval checks. Embedded or ambiguous-source dialogs remain a separate gap. | Broader compatibility, driven by real tasks rather than speculative API breadth. |
 
 **Selected direction:** the subagent experiment is integrated; continue on the
-main feature branch. No deferred extension is selected for implementation. Saved-server
-management and broader existing-project support remain independent candidates.
+main feature branch, now current with `main`. The Swarm continuation fixes are
+implemented and await a real-network smoke. No deferred extension is selected
+for implementation. Saved-server management and broader existing-project support
+remain independent candidates.
 
 **External-project read qualification — 2026-09-26:** fixed ordinary SSH usernames
 being misclassified as embedded credentials and Electron's ASAR virtual filesystem
@@ -141,7 +165,8 @@ unit-tested; the live sandbox regression was run on macOS.
 
 - Preview transport for SSE and separate HMR ports; automatic crash restart is a
   separate policy/lifecycle decision, not part of existing explicit restart.
-- Richer document formats and Markdown rendering, advanced history comparisons,
+- Richer document formats beyond the implemented Markdown/raster previews,
+  advanced history comparisons,
   branch/remotes/push workflows and general external Git rollback. The current
   external recovery UI only finalizes an exactly matching interrupted commit.
 - Provider qualification using authorized test accounts: authentication,
@@ -155,18 +180,25 @@ unit-tested; the live sandbox regression was run on macOS.
 
 **Pending validation and maintenance:**
 
-- Run the new real-Git interrupted-commit/finalization fixtures on the designated
-  Mac mini after explicit source-transfer approval. Current local protocol and
-  renderer tests do not replace this qualification; do not claim recovery is
-  fully qualified from viewer smoke tests.
-- Recheck the four full-suite failures recorded at the September 21 integration
-  before release; they were reproduced on the pre-merge revision and have not
-  been resolved by this viewer work. No fresh full-suite result is claimed here.
+- Smoke-test the new Swarm readiness/retry/continuation path against the real
+  node: one approved deployment must retain its batch and report completion,
+  failure or an honest unknown outcome without a duplicate purchase/upload.
+- Before release, add explicit acknowledgment/discard of a manually reconciled
+  external-Git recovery journal. The bounded commit/finalization protocol already
+  passed Mac mini fault qualification on September 28; that evidence does not
+  implement this missing user flow or qualify every later combined revision.
+- Confirm the individual editing-helper Stop and reopened editing-receipt smokes
+  still listed in the subagent contract; automated coverage is already present.
+- Retain the whole-feature audit's open follow-ups for recovery-evidence retention,
+  scripted downloads, classifier-request cancellation and targeted defense in depth.
+  Main's central IPC sender policy is now integrated; do not treat that as closing
+  the audit's unrelated Git-config, approval-text or page-tool concerns.
 - Retain macOS detached-descendant/resource limits, exact-candidate native
   lifecycle and packaged-release checks, provider/vision coverage and Windows
   containment as explicit release limitations. Windows/Linux qualification
   remains on the user's backburner; this update does not restart it.
-- The accepted viewer commits remain local; pushing is a separate pending action.
+- Push the current feature branch and inspect its CI results, including the newly
+  wired Agent/automation jobs. Local checks are green; remote CI is not yet claimed.
 
 **Explicitly deferred:** Full access, Jev acceleration, bundled developer tools,
 embedded `llama.cpp`, packaged CLI/external MCP, and runtime architecture expansion
@@ -2133,9 +2165,9 @@ Mitigation: exact decoded intent, always-ask defaults, explicit budgets, time/va
 
 ## Immediate next iteration
 
-Current priority (2026-09-21): observed UI refinements after integrating existing
-project access and approval improvements. See the
-[current backlog and next decision](#current-backlog-and-next-decision--2026-09-21).
+Current priority (2026-09-29): validate the implemented Swarm deployment
+continuation against the real node, then select the next product slice from the
+[current backlog and next decision](#current-backlog-and-next-decision--2026-09-29).
 The numbered capability record below retains dated implementation evidence;
 provider implementation is complete, with its remaining qualification tracked
 separately.
