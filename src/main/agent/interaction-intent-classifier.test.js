@@ -7,6 +7,7 @@ const {
   InteractionIntentClassifier,
   parseInteractionClassification,
 } = require('./interaction-intent-classifier');
+const { EffectClassifier } = require('./effect-classifier');
 
 function createFakeSession(output, options = {}) {
   const listeners = new Set();
@@ -33,6 +34,45 @@ function createFakeSession(output, options = {}) {
 }
 
 describe('InteractionIntentClassifier', () => {
+  describe.each([InteractionIntentClassifier, EffectClassifier])('%p cancellation', Classifier => {
+    test('already stopped requests never create a session', async () => {
+      const abort = new AbortController(); abort.abort();
+      const createSession = jest.fn();
+      const classifier = new Classifier({ createSession });
+      await expect(classifier.classify({}, { model: {}, modelRuntime: {}, signal: abort.signal })).resolves.toMatchObject({ uncertainties: ['classifier_cancelled'] });
+      expect(createSession).not.toHaveBeenCalled();
+    });
+
+    test('Stop returns even when prompt, abort and disposal never settle', async () => {
+      const abort = new AbortController();
+      const session = createFakeSession('', { hang: true });
+      session.abort.mockImplementation(() => new Promise(() => {}));
+      session.dispose.mockImplementation(() => new Promise(() => {}));
+      const classifier = new Classifier({ createSession: async () => ({ session }), timeoutMs: 60000 });
+      const pending = classifier.classify({}, { model: {}, modelRuntime: {}, signal: abort.signal });
+      await Promise.resolve();
+      expect(session.prompt).toHaveBeenCalled();
+      abort.abort();
+      await expect(pending).resolves.toMatchObject({ uncertainties: ['classifier_cancelled'] });
+      expect(session.abort).toHaveBeenCalledTimes(1);
+      expect(session.dispose).toHaveBeenCalledTimes(1);
+    });
+
+    test.each(['stop', 'timeout'])('a %s during session creation disposes a late session without prompting it', async kind => {
+      const abort = new AbortController();
+      let created;
+      const session = createFakeSession('');
+      const classifier = new Classifier({ createSession: () => new Promise(resolve => { created = resolve; }), timeoutMs: kind === 'timeout' ? 1 : 60000 });
+      const pending = classifier.classify({}, { model: {}, modelRuntime: {}, signal: abort.signal });
+      if (kind === 'stop') abort.abort();
+      await expect(pending).resolves.toMatchObject({ uncertainties: [kind === 'stop' ? 'classifier_cancelled' : 'classifier_timeout'] });
+      created({ session });
+      await Promise.resolve(); await Promise.resolve();
+      expect(session.prompt).not.toHaveBeenCalled();
+      expect(session.dispose).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test('uses an isolated tool-free session and parses a bounded result', async () => {
     const session = createFakeSession('', {
       chunks: [

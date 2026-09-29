@@ -55,6 +55,9 @@ async function pageToolsBridge(action, input = {}) {
   }
   if (revision !== state.revision) return { stale: true };
   const describe = (tool) => {
+    // Names remain website data, never model tool identifiers. Refuse invisible
+    // controls and malformed names rather than silently renaming an action.
+    if (typeof tool.name !== 'string' || !tool.name.trim() || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(tool.name) || typeof tool.description !== 'string') return null;
     const schemaText =
       typeof tool.inputSchema === 'string'
         ? tool.inputSchema

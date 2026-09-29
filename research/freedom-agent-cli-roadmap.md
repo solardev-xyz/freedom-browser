@@ -10,6 +10,35 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-09-29
 
+### Pre-PR stabilization — 2026-09-29
+
+Implemented classifier cancellation through session startup, prompt and late
+cleanup, and corrected cancellation reporting for actions with uncertain effects.
+The focused Claude follow-up closed parsed host Git-config screening, helper
+configuration indirection/lazy-fetch restrictions, Unicode approval display and
+WebMCP name validation. Artifact open/show authorization was already covered by
+main's central chrome-only IPC policy. Partial journal creation is cleaned before
+ref dispatch; incomplete crash records can be archived without touching Git once
+no lock remains.
+
+The [colleague review guide](../docs/agent-review-guide.md) describes capabilities,
+architecture, reading order, validation and deferred work. The live Swarm and
+editing-helper Stop/reopened-receipt smoke checks below remain unconfirmed; the
+user selected the other preparation tasks, not those manual tests.
+
+Final local validation passed **7,897 tests across 377 suites** (129 tests / 10
+suites skipped), lint, **21 Electron cancellation/WebMCP tests**, and the approval
+sheet test in both layouts/themes, including visible Unicode-control rendering.
+The final focused Claude re-review reported no concrete remaining finding.
+Mac mini qualification passed **91 tests across three suites plus seven real-Git
+recovery probes**, using Node **24.18.1**, Apple Git **2.39.5**, and the current
+locked Jest/Babel dependencies. Missing-blob/promisor refusal, normal credential/
+diff configuration compatibility, and partial-journal write cleanup passed.
+This replaces the earlier Node 22 qualification gap for these scoped tests;
+it is not full packaged-app or native sandbox qualification. The isolated remote
+dependency install skipped lifecycle scripts. CI on the pushed feature branch
+is the remaining automated preparation gate.
+
 ### Main integration and current validation — 2026-09-29
 
 Merged `origin/main` at `65025453` into the feature branch in `0a483307`,
@@ -17,7 +46,8 @@ preserving Agent/runtime behavior alongside main's IPC, renderer, navigation
 and shutdown hardening. The isolated PDF processor has a narrow result-channel
 exception to the central sender policy; its live-window/job checks remain.
 Agent and automation E2E specs are now wired into macOS CI jobs; live Ollama
-qualification remains explicitly opt-in. Those new jobs have not yet run remotely.
+qualification remains explicitly opt-in. Remote CI status belongs to the pre-PR
+validation above rather than this earlier local integration run.
 
 Installed dependencies match the merged lockfile: Electron 44.4.5, Colibri 3.0.0
 and Pi 0.86.0. Local bundled Ant is 0.5.45 and Myotis is 0.1.12. Validation of
@@ -28,7 +58,8 @@ cards and viewers in both themes/layouts. Previously recorded full-suite failure
 no longer reproduce in this tree. Historical counts below remain tied to their
 dated revisions; this is not fresh destructive or packaged-platform qualification.
 
-The feature remains unreleased and the local merge has not been pushed. The
+The feature remains unreleased. At this integration check the merge was local;
+the pre-PR pass includes pushing the accumulated feature work. The
 Swarm continuation implementation is committed as `0fbb5294`; its real-network
 postage-readiness/upload-completion smoke remains unconfirmed.
 
@@ -53,9 +84,9 @@ recovery and external Git behavior were repaired. The reviewer found no remainin
 blocking defect in the final reviewed protocols. See the
 [review record, validation limits and explicit follow-ups](../docs/audits/freedom-agent-feature-review-2026-09.md).
 
-The external-Git reconciliation follow-up is implemented below. Scripted downloads,
-recovery evidence retention/pack consolidation, classifier-request cancellation, additional
-approval/IPC hardening and native containment qualification remain recorded in
+The external-Git reconciliation and pre-PR hardening follow-ups are implemented
+in the dated entries here. Scripted downloads, recovery evidence retention/pack
+consolidation and native containment qualification remain recorded in
 the audit. No optional subagent extension was added or removed by this review.
 
 ### Agent-driven external Git recovery — 2026-09-29
@@ -105,7 +136,7 @@ closing remains the normal tab action, with no duplicate Close button.
 The user smoke-tested the viewers and accepted the UI refinements. Delivery
 commits are `01edf4c2` (viewers/recovery), `256a8a6d` (file-tree refinements) and
 `3435fa45` (header controls). They are committed locally on the feature branch
-and have not been pushed. This UI acceptance does not qualify interrupted
+as part of the accumulated feature work. This UI acceptance does not qualify interrupted
 filesystem/Git recovery.
 
 See [the viewer contract, limits and tests](../docs/agent-project-viewer.md).
@@ -211,9 +242,9 @@ unit-tested; the live sandbox regression was run on macOS.
 - Confirm the individual editing-helper Stop and reopened editing-receipt smokes
   still listed in the subagent contract; automated coverage is already present.
 - Retain the whole-feature audit's open follow-ups for recovery-evidence retention,
-  scripted downloads, classifier-request cancellation and targeted defense in depth.
-  Main's central IPC sender policy is now integrated; do not treat that as closing
-  the audit's unrelated Git-config, approval-text or page-tool concerns.
+  scripted downloads and historical stopped-turn representation. Classifier
+  cancellation and the listed Git-config, approval-text, page-tool and artifact
+  IPC follow-ups are covered by the pre-PR pass above.
 - Retain macOS detached-descendant/resource limits, exact-candidate native
   lifecycle and packaged-release checks, provider/vision coverage and Windows
   containment as explicit release limitations. Windows/Linux qualification

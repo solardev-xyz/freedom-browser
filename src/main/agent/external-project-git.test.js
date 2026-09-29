@@ -220,6 +220,44 @@ qualified('external project Git integration', () => {
     await expect(commit([review('README.md', 'changed')])).rejects.toThrow('content conversion');
   });
 
+  test.each(['[Include] path = /not-read', '[include] path = /not-read', '[core] splitIndex = true', '[remote "o"] promisor = true', '[core][filter "custom"] clean = false'])('screens parsed config keys: %s', async config => {
+    fs.appendFileSync(path.join(root, '.git/config'), `\n${config}\n`);
+    const head = fs.readFileSync(path.join(root, '.git/refs/heads/main'));
+    await expect(service().list()).rejects.toThrow(/includes|split/);
+    expect(fs.readFileSync(path.join(root, '.git/refs/heads/main'))).toEqual(head);
+  });
+
+  test('normal history permits irrelevant credential and diff helper settings without executing them', async () => {
+    fs.appendFileSync(path.join(root, '.git/config'), '\n[credential]\n helper = !false\n[diff "custom"]\n command = false\n');
+    expect((await service().list()).versions[0].label).toBe('Initial');
+  });
+
+  test('screens mixed-case global includes before committing', async () => {
+    const config = path.join(storage, 'global-config'); fs.writeFileSync(config, '[Include] path = /not-read\n');
+    const instance = new ExternalProjectGit(root, { temporaryRoot: storage, authorize, globalConfigFiles: [config] });
+    await expect(instance.commit([review('README.md', 'changed')], await instance.baseline(), 'Change', async () => {})).rejects.toThrow('includes');
+    expect(fs.existsSync(path.join(root, '.git/index.lock'))).toBe(false);
+  });
+
+  test('cleans an owned incomplete journal when writing fails before ref dispatch', async () => {
+    const before = await service().baseline();
+    write('README.md', 'changed');
+    const open = fs.promises.open;
+    const spy = jest.spyOn(fs.promises, 'open').mockImplementation(async (filename, ...args) => {
+      const handle = await open(filename, ...args);
+      if (filename === path.join(storage, 'git-commit-pending.json') && args[0] === 'wx') {
+        handle.writeFile = async () => { await handle.write('{'); throw new Error('Injected journal write failure'); };
+      }
+      return handle;
+    });
+    try { await expect(commit([review('README.md', 'changed')])).rejects.toThrow('Injected journal write failure'); }
+    finally { spy.mockRestore(); }
+    expect(await service().baseline()).toEqual(before);
+    expect(fs.existsSync(path.join(root, '.git/index.lock'))).toBe(false);
+    expect(await service().recovery()).toEqual({ pending: false });
+    expect(fs.readFileSync(path.join(root, 'README.md'), 'utf8')).toBe('changed');
+  });
+
   test('refuses ignored additions, metadata links, unsupported includes and special index flags', async () => {
     write('.gitignore', 'private.txt\n'); write('private.txt', 'private');
     await expect(commit([review('private.txt', 'private')])).rejects.toThrow('ignored');

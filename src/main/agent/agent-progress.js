@@ -301,7 +301,7 @@ const ERROR_LABELS = Object.freeze({
   [ERROR_CODES.OBSERVATION_REQUIRED]: 'A fresh page observation is needed before this action.',
   [ERROR_CODES.TAB_BUSY]: 'A helper is currently using this tab.',
   [ERROR_CODES.POLICY_DENIED]: 'Freedom blocked this browser action.',
-  [ERROR_CODES.USER_CANCELLED]: 'The browser action was not applied.',
+  [ERROR_CODES.USER_CANCELLED]: 'The browser action was cancelled. Effects from an action already started may remain.',
   [ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER]: 'The user cancelled file selection.',
   [ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER]: 'The user cancelled the download.',
   [ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER]: 'The user declined the wallet request.',
@@ -327,7 +327,6 @@ const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
   ERROR_CODES.OBSERVATION_REQUIRED,
   ERROR_CODES.TAB_BUSY,
   ERROR_CODES.POLICY_DENIED,
-  ERROR_CODES.USER_CANCELLED,
   ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER,
   ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
   ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
@@ -1282,6 +1281,7 @@ function buildAgentOutcomeFromReceipts(activity, status, error) {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
       return false;
     }
+    if (item.errorCode === ERROR_CODES.USER_CANCELLED && ['declined', 'withdrawn'].includes(item.approval)) return false;
     return item.status === 'running' || !CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode);
   });
   const approvals = Object.freeze({

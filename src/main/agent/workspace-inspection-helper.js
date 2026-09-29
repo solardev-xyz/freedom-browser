@@ -19,13 +19,20 @@ function gitRead(args, acceptedCodes = [0]) {
   Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0',
-    GIT_LITERAL_PATHSPECS: '1', LC_ALL: 'C',
+    GIT_LITERAL_PATHSPECS: '1', GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '', LC_ALL: 'C',
   });
   const gitDirectory = fs.lstatSync(path.join(root, '.git'));
   if (!gitDirectory.isDirectory() || gitDirectory.isSymbolicLink()) throw new Error('Git unavailable');
+  // A redirected common directory would make Git read a different config from
+  // the one screened below. Linked/alternate layouts need their own grant path.
+  for (const name of ['commondir', 'config.worktree', 'objects/info/alternates', 'objects/info/http-alternates']) {
+    try { fs.lstatSync(path.join(root, '.git', name)); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    throw new Error('Git unavailable');
+  }
   const executable = workspaceGitCommand();
   if (!executable) throw new Error('Git unavailable');
-  for (const name of ['config', 'config.worktree']) {
+  for (const name of ['config']) {
     const filename = path.join(root, '.git', name);
     if (!fs.existsSync(filename)) continue;
     const stats = regularFile(filename);
@@ -33,7 +40,7 @@ function gitRead(args, acceptedCodes = [0]) {
     const parsed = spawnSync(executable, ['config', '--file', filename, '--no-includes', '--null', '--list'],
       { cwd: root, env, encoding: 'utf8', timeout: 5000, maxBuffer: 262144, windowsHide: true });
     if (parsed.error || parsed.status !== 0 || parsed.stdout.split('\0').some(entry =>
-      /^(?:include|includeif|filter|diff|credential|extensions)\./i.test(entry.split('\n')[0]))) throw new Error('Git unavailable');
+      /^(?:include|includeif|filter|diff|credential|extensions)\.|\.(?:promisor|partialclonefilter)$/i.test(entry.split('\n')[0]))) throw new Error('Git unavailable');
   }
 
   const result = spawnSync(executable, [

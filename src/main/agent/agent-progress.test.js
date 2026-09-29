@@ -14,6 +14,13 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('cancellation does not certify that a dispatched action had no effects', () => {
+    const item = { operation: OPERATIONS.CLICK, status: 'failed', effect: 'changed', errorCode: ERROR_CODES.USER_CANCELLED, approval: 'approved' };
+    expect(buildAgentOutcome([item], 'cancelled').detail).toContain('cannot confirm whether');
+    expect(buildAgentOutcome([{ ...item, approval: 'declined' }], 'cancelled').detail).not.toContain('cannot confirm whether');
+    const completed = { operation: OPERATIONS.CLICK, status: 'succeeded', effect: 'changed' };
+    expect(buildAgentOutcome([completed, { ...item, approval: 'declined' }], 'cancelled').detail).toContain('earlier browser change remains');
+  });
   test('helper edits remain visible alongside parent reads and after stopping', () => {
     const subagent = { taskId: `delegate_${'a'.repeat(24)}`, title: 'Implement', state: 'cancelled', mode: 'edit', changedFiles: ['README.md'], attemptedFiles: ['README.md'] };
     const helper = { operation: 'delegate_task', status: 'failed', subagent };

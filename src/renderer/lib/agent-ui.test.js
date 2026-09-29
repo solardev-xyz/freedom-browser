@@ -1240,6 +1240,21 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-page-tool-arguments'].textContent).toBe(argumentsJSON);
   });
 
+  test('makes invisible approval controls visible without changing request bytes or international text', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const pageTool = { name: '検索\u202Epay', argumentsJSON: '{"value":"a\u200Bb\u{E0061}👩‍💻"}' };
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'approval_controls',
+      action: 'browser_interaction', operation: 'browser_call_page_tool', origin: 'https://example.test',
+      pageTool, pageMessage: 'مرحبا\u2066pay\u2069' });
+    expect(ctx.elements['agent-approval-action'].textContent).toContain('検索\\u{202E}pay');
+    expect(ctx.elements['agent-page-tool-arguments'].textContent).toContain('a\\u{200B}b');
+    expect(ctx.elements['agent-page-tool-arguments'].textContent).toContain('\\u{E0061}👩‍💻');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('مرحبا\\u{2066}pay\\u{2069}');
+    expect(pageTool.name).toBe('検索\u202Epay');
+    expect(pageTool.argumentsJSON).toContain('a\u200Bb');
+  });
+
   test('disconnects a provider through the management view and returns to setup', async () => {
     const ctx = await loadAgentUi({
       electronAPI: {

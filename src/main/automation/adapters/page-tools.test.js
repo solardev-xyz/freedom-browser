@@ -72,6 +72,18 @@ test('native discovery excludes frames and exposes bounded untrusted schemas', a
   expect(await page.list()).toMatchObject({ tools: [], truncated: true });
 });
 
+test.each(['', '  ', 'pay\u202eement', 'pay\u200bment', 'pay\nment', 'pay\u{E0061}', 'pay\u180e', 'pay\ufff9', 'pay\u2028', null, 42])('refuses malformed or invisible-control tool names: %p', async name => {
+  const { page, tool } = fixture(); tool.name = name;
+  expect(await page.list()).toMatchObject({ tools: [], truncated: true });
+});
+
+test('retains international names behind opaque references', async () => {
+  const { page, tool } = fixture(); tool.name = '検索';
+  const result = await page.list();
+  expect(result.tools[0].name).toBe('検索');
+  expect(result.tools[0].toolRef).not.toContain('検索');
+});
+
 test('unsupported contexts have no executable fallback', async () => {
   const { page, isolate } = fixture();
   vm.runInContext('document.modelContext = undefined', isolate);

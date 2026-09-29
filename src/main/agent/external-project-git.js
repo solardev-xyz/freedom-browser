@@ -32,6 +32,7 @@ class ExternalProjectGit {
     ]), path.join(this.directory, 'config')];
     this.globalIgnorePath = globalConfigFiles ? null : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'git/ignore');
     this.deadline = Date.now() + 30000;
+    this.configEntriesCache = new Map();
   }
 
   async read(filename, optional = false, limit = 8 * 1024 * 1024) {
@@ -78,10 +79,34 @@ class ExternalProjectGit {
     for (const name of ['commondir', 'config.worktree', 'objects/info/alternates', 'objects/info/http-alternates', 'shallow', 'info/grafts']) {
       if (await this.read(path.join(this.directory, name), true)) fail('This Git layout requires your Git client.');
     }
-    const config = (await this.read(path.join(this.directory, 'config'), false, 65536)).toString();
-    if (/^\s*\[\s*(?:include|includeif|filter|extensions)\b/im.test(config)) fail('Git includes, filters and repository extensions are not supported yet.');
-    if (/^\s*(?:promisor|partialclonefilter|sparsecheckout|splitindex)\s*(?:=|$)/im.test(config)) fail('Partial, sparse and split Git repositories require your Git client.');
+    const config = await this.configEntries(await this.read(path.join(this.directory, 'config'), false, 65536));
+    if (config.some(key => /^(?:include|includeif|filter|extensions)\./i.test(key))) fail('Git includes, filters and repository extensions are not supported yet. Use your Git client.');
+    if (config.some(key => /\.(?:promisor|partialclonefilter|sparsecheckout|splitindex)$/i.test(key))) fail('Partial, sparse and split Git repositories require your Git client.');
     return true;
+  }
+
+  async configEntries(bytes) {
+    const remaining = this.deadline - Date.now();
+    if (this.signal?.aborted || remaining <= 0) fail('Git configuration inspection stopped. Inspect repository state before retrying.');
+    const key = digest(bytes);
+    if (this.configEntriesCache.has(key)) return this.configEntriesCache.get(key);
+    const executable = workspaceGitCommand();
+    if (!executable) fail('Git is unavailable. Project editing remains available.');
+    // Parse captured bytes with Git itself: inline sections and case variants
+    // must not bypass screening. No include expansion or repository discovery.
+    const output = await new Promise((resolve, reject) => {
+      const child = execFile(executable, ['config', '--file', '-', '--no-includes', '--null', '--list'], {
+        cwd: this.temporaryRoot, signal: this.signal, timeout: Math.min(5000, remaining),
+        killSignal: 'SIGKILL', maxBuffer: 262144, encoding: 'utf8',
+        env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1',
+          GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
+      }, (error, stdout) => error ? reject(new WorkspaceHistoryError('Git configuration could not be inspected. Use your Git client to check it.')) : resolve(stdout));
+      child.stdin.on('error', () => {});
+      child.stdin.end(bytes);
+    });
+    const entries = output.split('\0').filter(Boolean).map(entry => entry.split('\n')[0]);
+    this.configEntriesCache.set(key, entries);
+    return entries;
   }
 
   async git(args, { input = '', index, identity, codes = [0], expected, onDispatch } = {}) {
@@ -102,7 +127,7 @@ class ExternalProjectGit {
         killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, encoding: 'buffer',
         env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: '/dev/null',
           GIT_CONFIG_GLOBAL: '/dev/null', GIT_ATTR_NOSYSTEM: '1', GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1',
-          GIT_TERMINAL_PROMPT: '0', ...(args[0] !== 'check-ignore' && { GIT_LITERAL_PATHSPECS: '1' }), GIT_OPTIONAL_LOCKS: '0',
+          GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: '', ...(args[0] !== 'check-ignore' && { GIT_LITERAL_PATHSPECS: '1' }), GIT_OPTIONAL_LOCKS: '0',
           ...(index && { GIT_INDEX_FILE: index }), ...(identity && {
             GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email,
             GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email,
@@ -193,8 +218,12 @@ class ExternalProjectGit {
     if (!await this.validate()) return { pending: false };
     const bytes = await this.read(path.join(this.temporaryRoot, 'git-commit-pending.json'), true, 65536);
     if (!bytes) return { pending: false };
-    const record = JSON.parse(bytes);
-    if (record.root !== this.root || !OID.test(record.candidate || '') || !record.baseline) fail('Recovery record is invalid. Inspect it with your Git client.');
+    let record;
+    try { record = JSON.parse(bytes); } catch { /* Interrupted journal creation is recoverable without touching Git. */ }
+    const readable = record?.root === this.root && OID.test(record?.candidate || '') &&
+      typeof record?.baseline?.head === 'string' && /^(?:[a-f0-9]{40})?$/.test(record?.baseline?.id ?? '!') &&
+      /^[a-f0-9]{64}$/.test(record?.baseline?.index || '');
+    if (!readable) record = { baseline: {}, candidate: null };
     const current = await this.baseline();
     const lockPath = path.join(this.directory, 'index.lock');
     const lock = await this.read(lockPath, true);
@@ -202,7 +231,7 @@ class ExternalProjectGit {
     const ownedLock = Boolean(lockStat && lockStat.dev === record.indexLock?.dev && lockStat.ino === record.indexLock?.ino && lockStat.birthtimeMs === record.indexLock?.birthtimeMs && lockStat.ctimeMs === record.indexLock?.ctimeMs && digest(lock) === record.preparedIndex);
     const lockNames = ['HEAD.lock', 'packed-refs.lock'];
     for (const head of [record.baseline.head, current.head]) {
-      if (head.startsWith('ref: ')) lockNames.push(`${head.slice(5).trim()}.lock`);
+      if (head?.startsWith('ref: ')) lockNames.push(`${head.slice(5).trim()}.lock`);
     }
     const blockedRef = lockNames.some(name => {
       const target = path.resolve(this.directory, name);
@@ -212,14 +241,14 @@ class ExternalProjectGit {
       .some(name => fs.existsSync(path.join(this.directory, name)));
     const metadataChanged = record.baseline.metadata && record.baseline.metadata !== current.metadata;
     const blocked = Boolean(blockedRef || activeOperation || metadataChanged || (lock && !ownedLock));
-    const repairable = !blocked && current.head === record.baseline.head && (
+    const repairable = readable && !blocked && current.head === record.baseline.head && (
       (current.id === record.candidate && ((ownedLock && current.index === record.baseline.index) || (!lock && current.index === record.preparedIndex))) ||
       (current.id === record.baseline.id && (ownedLock || !lock) && current.index === record.baseline.index));
     const token = digest(JSON.stringify({ journal: digest(bytes), current, lock: lock ? digest(lock) : null, inode: lockStat?.ino, blocked }));
-    const state = current.id === record.candidate ? 'committed' : current.id === record.baseline.id && current.head === record.baseline.head ? 'not_applied' : 'uncertain';
+    const state = !readable ? 'unreadable' : current.id === record.candidate ? 'committed' : current.id === record.baseline.id && current.head === record.baseline.head ? 'not_applied' : 'uncertain';
     // Evidence contains object identities and bounded paths, never source text.
     // Failure to compare is uncertainty, not permission to discard staging.
-    const evidence = !blocked && !lock && !repairable ? await this.recoveryEvidence(record, current) : null;
+    const evidence = readable && !blocked && !lock && !repairable ? await this.recoveryEvidence(record, current) : null;
     const canKeepCurrent = !blocked && !lock;
     const automatic = repairable ? 'finalize' : canKeepCurrent && evidence?.completed ? 'archive' : null;
     return { pending: true, state, repairable, token, candidate: record.candidate, currentId: current.id,
@@ -228,7 +257,8 @@ class ExternalProjectGit {
       message: automatic === 'finalize' ? 'Freedom can safely finish its interrupted operation without changing working files.'
         : automatic === 'archive' ? 'The selected changes are already committed and staging is reconciled. Freedom can archive its old record.'
           : blocked || lock ? 'Git has an active operation, changed metadata or a remaining lock. Do not remove locks. Inspect or wait for that operation.'
-            : 'The repository has changed. Compare this evidence with the task; ask the user in chat if keeping the current state is unclear.',
+            : !readable ? 'The interrupted record is incomplete or invalid. Inspect current Git state and ask in chat if keeping it is unclear. keep_current can archive only this private record; no commit outcome is established.'
+              : 'The repository has changed. Compare this evidence with the task; ask the user in chat if keeping the current state is unclear.',
       steps: ['Use workspace_history recovery to inspect fresh evidence, then recover with its token and resolution automatic when offered.',
         'For ambiguity, explain the current state and ask the user in chat whether to keep it. recover with resolution keep_current only archives Freedom’s record; it never changes repository files, staging or history.',
         'Never reset, rewrite history, delete foreign locks or repeat a commit blindly. After recovery, inspect status and obtain fresh review tokens before any separately authorized commit.'] };
@@ -281,7 +311,7 @@ class ExternalProjectGit {
     if (this.signal?.aborted || Date.now() >= this.deadline) fail('Recovery stopped before resolution. Inspect recovery again.');
     const outcome = resolution === 'automatic' ? 'already_completed' : 'kept_current';
     await fs.promises.rename(path.join(this.temporaryRoot, 'git-commit-pending.json'),
-      path.join(this.temporaryRoot, `git-commit-reconciled-${outcome}-${state.candidate}-${crypto.randomBytes(8).toString('hex')}.json`));
+      path.join(this.temporaryRoot, `git-commit-reconciled-${outcome}-${state.candidate || 'unreadable'}-${crypto.randomBytes(8).toString('hex')}.json`));
     return { resolved: true, recoveryOutcome: outcome, id: state.currentId, candidate: state.candidate,
       message: 'Archived the interrupted operation. Repository files, staging and history were not changed. Review current changes before any new commit.' };
   }
@@ -327,7 +357,7 @@ class ExternalProjectGit {
       const bytes = await this.read(filename, true, 65536);
       configuration.push([filename, digest(bytes)]);
       if (!bytes) continue;
-      if (/^\s*\[\s*include(?:if)?\b/im.test(bytes.toString())) fail('Git configuration includes require your Git client for commits.');
+      if ((await this.configEntries(bytes)).some(key => /^(?:include|includeif)\./i.test(key))) fail('Git configuration includes require your Git client for commits.');
       for (const key of ['user.name', 'user.email', 'core.hooksPath', 'commit.gpgSign', 'core.autocrlf', 'core.fileMode', 'core.attributesFile', 'core.excludesFile']) {
         const value = (await this.git(['config', '--no-includes', '--file', filename,
           ...(['commit.gpgSign', 'core.autocrlf', 'core.fileMode'].includes(key) ? ['--type=bool'] : []), '--get', key], { codes: [0, 1] })).toString().trim();
@@ -374,7 +404,7 @@ class ExternalProjectGit {
     const lockPath = path.join(this.directory, 'index.lock');
     const journalPath = path.join(this.temporaryRoot, 'git-commit-pending.json');
     if (fs.existsSync(journalPath)) fail('A previous commit needs inspection. Call workspace_history with action recovery, then recover with the returned token when automatic resolution is available. If intent is ambiguous, ask the user in chat before keeping the current state. Do not retry the commit blindly.');
-    let lock; let lockIdentity; let temporary; let candidate = null; let committed = null; let refAttempted = false; let journalWritten = false;
+    let lock; let lockIdentity; let temporary; let candidate = null; let committed = null; let refAttempted = false; let journalCreated = false;
     const ownsLock = async () => {
       try {
         await this.checkMetadataIdentity();
@@ -439,12 +469,12 @@ class ExternalProjectGit {
       if (JSON.stringify(await this.baseline()) !== JSON.stringify(baseline)) fail('Git changed during commit preparation. Review again.');
       if (!await ownsLock()) fail('The Git index lock changed. Inspect repository state before retrying.');
       const journal = await fs.promises.open(journalPath, 'wx', 0o600);
+      journalCreated = true;
       try {
         const preparedLock = await lock.stat();
         await journal.writeFile(JSON.stringify({ root: this.root, baseline, candidate: id, temporary,
           preparedIndex: digest(await this.read(nextIndex)), indexLock: { dev: preparedLock.dev, ino: preparedLock.ino, birthtimeMs: preparedLock.birthtimeMs, ctimeMs: preparedLock.ctimeMs }, phase: 'ref_update_pending' }));
         await journal.sync();
-        journalWritten = true;
       } finally { await journal.close(); }
       const journalDirectory = await fs.promises.open(this.temporaryRoot, 'r');
       try { await journalDirectory.sync(); } finally { await journalDirectory.close(); }
@@ -469,7 +499,7 @@ class ExternalProjectGit {
       if (lock) { await lock.close(); if (!refAttempted && await ownsLock()) await fs.promises.unlink(lockPath).catch(() => {}); }
       // Only our own temporary files are removed; never project files.
       if (temporary && (!refAttempted || !fs.existsSync(journalPath))) await fs.promises.rm(temporary, { recursive: true, force: true });
-      if (journalWritten && !refAttempted) await fs.promises.unlink(journalPath);
+      if (journalCreated && !refAttempted) await fs.promises.unlink(journalPath);
     }
   }
 }

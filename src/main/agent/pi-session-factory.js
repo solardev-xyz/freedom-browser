@@ -342,6 +342,56 @@ When asked which model or provider you are using, report these configured identi
   };
 }
 
+// A short, tool-free classification request must not hold up Stop, even while
+// session creation or provider shutdown is pending. Dispose late sessions too.
+async function runIsolatedPiTextRequest({ createSession = createIsolatedPiSession, sessionOptions, prompt, signal, timeoutMs, maxOutputBytes }) {
+  if (signal?.aborted) return { reason: 'classifier_cancelled' };
+  let session, unsubscribe, timer, interrupt;
+  let closed = false;
+  const interrupted = new Promise(resolve => { interrupt = reason => resolve({ reason }); });
+  const onAbort = () => interrupt('classifier_cancelled');
+  const dispose = value => {
+    Promise.resolve().then(() => value?.abort?.()).catch(() => {});
+    Promise.resolve().then(() => value?.dispose?.()).catch(() => {});
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  timer = setTimeout(() => interrupt('classifier_timeout'), timeoutMs);
+  const work = (async () => {
+    const created = await createSession(sessionOptions);
+    session = created?.session;
+    if (closed || signal?.aborted) {
+      if (closed) dispose(session);
+      return { reason: 'classifier_cancelled' };
+    }
+    if (!session?.subscribe || !session.prompt || !session.dispose) return { reason: 'classifier_session_unavailable' };
+    let output = '';
+    let invalid = false;
+    unsubscribe = session.subscribe(event => {
+      if (closed || invalid) return;
+      if (event?.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
+        const delta = event.assistantMessageEvent.delta;
+        if (typeof delta !== 'string' || Buffer.byteLength(output) + Buffer.byteLength(delta) > maxOutputBytes) {
+          invalid = true; interrupt('invalid_classifier_output'); return;
+        }
+        output += delta;
+      }
+      if (event?.type === 'tool_execution_start') { invalid = true; interrupt('invalid_classifier_output'); }
+    });
+    if (signal?.aborted) return { reason: 'classifier_cancelled' };
+    await session.prompt(prompt, { expandPromptTemplates: false, source: 'interactive' });
+    return signal?.aborted ? { reason: 'classifier_cancelled' }
+      : invalid ? { reason: 'invalid_classifier_output' } : { output };
+  })().catch(() => ({ reason: 'classifier_provider_error' }));
+  try { return await Promise.race([interrupted, work]); }
+  finally {
+    closed = true;
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    if (typeof unsubscribe === 'function') unsubscribe();
+    dispose(session);
+  }
+}
+
 module.exports = {
   BUILTIN_PI_TOOL_NAMES,
   DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT,
@@ -349,6 +399,7 @@ module.exports = {
   createDiagnosticModelRuntime,
   currentTimeContext,
   createIsolatedPiSession,
+  runIsolatedPiTextRequest,
   createNoDiscoveryResourceLoader,
   createProviderDiagnosticFetch,
   enrichProviderFetchError,

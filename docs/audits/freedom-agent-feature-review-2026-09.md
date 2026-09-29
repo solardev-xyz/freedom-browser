@@ -114,15 +114,24 @@ These are retained product/qualification decisions, not silently completed work:
    limits of 100 files, 1,000 scanned entries and 50 MiB. Raising them needs an
    explicit storage/approval design. Atomic replacement preserves mode bits, not
    arbitrary extended attributes/ACLs.
-5. **Cancellation/reporting:** an interaction classifier request may run for up to
-   its 15-second timeout after Stop, although late dispatch is blocked. Aborting
-   that provider request and refining already-dispatched cancellation wording are
-   follow-ups. Restored stopped turns are omitted rather than annotated as possibly
-   partially completed.
-6. **Additional defense in depth:** parsed Git-config screening in the separately
-   hardened host Git path; bidi/zero-width treatment in approval copy; page-tool
-   name constraints; artifact open/show IPC sender checks. No demonstrated exploit
-   remained for these items in the reviewed call paths.
+5. **Cancellation/reporting — September 29 follow-up implemented:** interaction
+   and node-effect classifiers now receive cancellation, stop waiting promptly,
+   abort/dispose their sessions and dispose sessions created after cancellation.
+   Timeout also bounds session creation. Cancellation copy no longer certifies
+   that a started action had no effects. Explicitly declined/withdrawn approvals
+   remain distinguishable from uncertain action outcomes. Restored stopped turns
+   are still omitted rather than annotated as possibly partially completed.
+6. **Additional defense in depth — September 29 follow-up implemented:** host Git
+   configuration is screened using Git's parser without include expansion;
+   ordinary credential/diff settings remain supported by the fixed plumbing path.
+   Inspection refuses common-directory/alternate indirection and promisor config;
+   protocol lockdown also prevents lazy-fetch helper execution. Approval copy
+   exposes invisible Unicode controls without changing execution bytes; page text
+   cannot use embedded newlines to impersonate separate browser-owned lines.
+   Website tool names reject control/format characters and remain opaque model
+   references. Artifact open/show already inherits main's chrome-only IPC policy.
+   These were checked against the merged implementation, not assumed resolved by
+   the earlier verdict. See the pre-PR validation record below.
 7. **Platform qualification:** Windows/Linux command containment remains deferred.
    Linux full-network mode shares the host network namespace, including abstract
    Unix sockets/possible X11 or host IPC; future qualification and approval copy
@@ -137,3 +146,21 @@ These are retained product/qualification decisions, not silently completed work:
 The existing [subagent backlog](../agent-subagents.md#delivery-status-and-remaining-roadmap--2026-09-28)
 and [active roadmap](../../research/freedom-agent-cli-roadmap.md) remain the source
 for optional product extensions. This review does not mark those extensions done.
+
+## September 29 pre-PR follow-up
+
+Claude independently revisited the remaining hardening items and the new Git
+recovery implementation. Its focused findings led to parsed Git-config screening,
+inspection-layout/lazy-fetch restrictions, Unicode display refinements and cleanup
+of a journal whose write failed before ref dispatch. Incomplete journals left by
+a crash can be inspected and explicitly archived when no lock remains, without
+claiming a commit outcome or changing repository state. Unknown locks are retained.
+
+The final focused re-review closed all five findings and reported no concrete
+remaining finding. Its qualification conditions passed: 7,897 local unit tests,
+lint, 21 Electron cancellation/WebMCP tests, the approval display smoke, and
+91 Mac mini tests plus seven real-Git recovery probes using Node 24.18.1 and
+the locked dependencies. These are scoped checks, not packaged/native containment
+qualification. The [review guide](../agent-review-guide.md) gives the colleague a reading
+order, smoke checklist and explicit limits. The active roadmap records final test
+counts and CI status; the September 28 validation above remains historical.

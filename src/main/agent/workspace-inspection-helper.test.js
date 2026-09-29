@@ -59,6 +59,31 @@ describe('sandboxed workspace inspection', () => {
     expect(fs.existsSync(path.join(workspace, 'marker'))).toBe(false);
   });
 
+  (process.env.FREEDOM_PROJECT_GIT_TESTS === '1' ? test : test.skip)('refuses common-directory redirection without blocking file inspection', () => {
+    const common = path.join(fixture, 'common.git');
+    fs.cpSync(path.join(workspace, '.git'), common, { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.git/commondir'), '../common.git\n');
+    fs.writeFileSync(path.join(workspace, 'README.md'), 'still readable');
+    expect(inspect('changes').available).toBe(false);
+    expect(inspect('file', 'README.md').text).toBe('still readable');
+  });
+
+  (process.env.FREEDOM_PROJECT_GIT_TESTS === '1' ? test : test.skip)('does not lazy-fetch a missing blob through a repository upload helper', () => {
+    fs.writeFileSync(path.join(workspace, 'README.md'), 'original');
+    git('add', 'README.md');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'Fixture');
+    const blob = git('rev-parse', 'HEAD:README.md').trim();
+    git('config', 'remote.fixture.url', workspace);
+    git('config', 'remote.fixture.promisor', 'true');
+    git('config', 'remote.fixture.uploadpack', 'touch lazy-fetch-marker; false');
+    git('config', 'protocol.file.allow', 'always');
+    fs.unlinkSync(path.join(workspace, '.git/objects', blob.slice(0, 2), blob.slice(2)));
+    fs.writeFileSync(path.join(workspace, 'README.md'), 'changed');
+    expect(inspect('diff', 'README.md').available).toBe(false);
+    expect(fs.existsSync(path.join(workspace, 'lazy-fetch-marker'))).toBe(false);
+    expect(inspect('file', 'README.md').text).toBe('changed');
+  });
+
   test('lists folders first, hides Git metadata and toggles generated files', () => {
     fs.mkdirSync(path.join(workspace, 'src'));
     fs.mkdirSync(path.join(workspace, 'node_modules'));

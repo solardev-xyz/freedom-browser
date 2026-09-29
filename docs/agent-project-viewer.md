@@ -112,6 +112,12 @@ commit retry, reset, rebase or external-project rollback is added. A cancelled
 operation cannot proceed to archival. The existing same-user filesystem race
 limitation still applies; this is not isolation against a malicious host process.
 
+An incomplete or malformed private journal reports an unreadable pending record,
+not a successful commit. With no remaining lock, `keep_current` can archive it
+after clarifying intent. Unknown locks are never removed using incomplete evidence.
+An ordinary journal-write failure before ref dispatch cleans up only the record
+created by that operation; a crash still requires inspecting actual state.
+
 ## Validation
 
 Initial local validation passed: lint, 302 tests across 12 focused Jest suites,

@@ -174,7 +174,7 @@ describe('OriginScopedAutomationController', () => {
     const requestApproval = jest.fn(async () => 'approved');
     const scoped = await createOriginScopedAutomationController({
       controller, tabId: 'tab_assigned', approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
-      requestApproval, classifyInteraction: () => { started(); return classified; },
+      requestApproval, classifyInteraction: (_input, execution) => { expect(execution.signal).toBe(abort.signal); started(); return classified; },
     });
     const abort = new AbortController();
     const pending = scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_link' }, { signal: abort.signal });
@@ -1077,7 +1077,7 @@ describe('OriginScopedAutomationController', () => {
         destinationOrigin: '',
       },
       untrustedContext: { label: 'Ordinary action' },
-    });
+    }, { signal: undefined });
     expect(requestApproval).not.toHaveBeenCalled();
     expect(controller.inspectAction).toHaveBeenCalledTimes(2);
   });

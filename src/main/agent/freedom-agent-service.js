@@ -1620,8 +1620,9 @@ class FreedomAgentService {
               this.effectClassifier.classify(input, {
                 model: options.model,
                 modelRuntime: options.modelRuntime,
+                signal: this.activeRun?.workspaceAbortController.signal,
               }),
-            classifyInteraction: (input) => {
+            classifyInteraction: (input, execution = {}) => {
               const activeRun = this.activeRun;
               return this.interactionClassifier.classify(
                 {
@@ -1632,6 +1633,7 @@ class FreedomAgentService {
                 {
                   model: options.model,
                   modelRuntime: options.modelRuntime,
+                  signal: execution.signal || activeRun?.workspaceAbortController.signal,
                 }
               );
             },

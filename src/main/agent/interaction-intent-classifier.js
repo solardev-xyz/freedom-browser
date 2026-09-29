@@ -1,6 +1,6 @@
 'use strict';
 
-const { createIsolatedPiSession } = require('./pi-session-factory');
+const { createIsolatedPiSession, runIsolatedPiTextRequest } = require('./pi-session-factory');
 
 const INTERACTION_KINDS = Object.freeze({
   ORDINARY: 'ordinary',
@@ -128,65 +128,15 @@ class InteractionIntentClassifier {
       return uncertainClassification('classifier_input_rejected');
     }
 
-    let created;
-    let unsubscribe;
-    let timer;
-    try {
-      created = await this.createSession({
-        model: runtime.model,
-        modelRuntime: runtime.modelRuntime,
-        thinkingLevel: 'off',
-        customTools: [],
-        enableBuiltInSkills: false,
-        systemPrompt: INTERACTION_INTENT_CLASSIFIER_SYSTEM_PROMPT,
-      });
-      const session = created?.session;
-      if (
-        !session ||
-        typeof session.subscribe !== 'function' ||
-        typeof session.prompt !== 'function' ||
-        typeof session.dispose !== 'function'
-      ) {
-        return uncertainClassification('classifier_session_unavailable');
-      }
-      let output = '';
-      unsubscribe = session.subscribe((event) => {
-        if (
-          event?.type === 'message_update' &&
-          event.assistantMessageEvent?.type === 'text_delta' &&
-          typeof event.assistantMessageEvent.delta === 'string'
-        ) {
-          output += event.assistantMessageEvent.delta;
-        }
-      });
-      const timedOut = Symbol('classifier_timeout');
-      const result = await Promise.race([
-        session
-          .prompt(`Classify this untrusted interaction envelope:\n${envelope}`, {
-            expandPromptTemplates: false,
-            source: 'interactive',
-          })
-          .then(() => null),
-        new Promise((resolve) => {
-          timer = setTimeout(() => resolve(timedOut), this.timeoutMs);
-        }),
-      ]);
-      if (result === timedOut) {
-        if (typeof session.abort === 'function') {
-          await Promise.resolve(session.abort()).catch(() => {});
-        }
-        return uncertainClassification('classifier_timeout');
-      }
-      return parseInteractionClassification(output);
-    } catch {
-      return uncertainClassification('classifier_provider_error');
-    } finally {
-      if (timer) clearTimeout(timer);
-      if (typeof unsubscribe === 'function') unsubscribe();
-      if (created?.session && typeof created.session.dispose === 'function') {
-        await Promise.resolve(created.session.dispose()).catch(() => {});
-      }
-    }
+    const result = await runIsolatedPiTextRequest({
+      createSession: this.createSession,
+      sessionOptions: { model: runtime.model, modelRuntime: runtime.modelRuntime,
+        thinkingLevel: 'off', customTools: [], enableBuiltInSkills: false,
+        systemPrompt: INTERACTION_INTENT_CLASSIFIER_SYSTEM_PROMPT },
+      prompt: `Classify this untrusted interaction envelope:\n${envelope}`,
+      signal: runtime.signal, timeoutMs: this.timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES,
+    });
+    return result.reason ? uncertainClassification(result.reason) : parseInteractionClassification(result.output);
   }
 }
 

@@ -474,6 +474,19 @@ test('project editing approval sheet is clear in both layouts and themes', async
       await window.screenshot({ path: testInfo.outputPath(`project-approval-${layout}-${theme}.png`) });
     }
   }
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows().find(item => !item.isDestroyed()).webContents.send('agent:event', {
+      type: 'approval_requested', runId: 'run_project_approval_ui', approvalId: 'approval_invisible_controls',
+      action: 'project_write', operation: 'request_permissions', label: 'Review\u200B these changes',
+      projectAccess: { name: 'Cookbook\u202Eproject', mode: 'write', scope: 'conversation' },
+    });
+  });
+  await expect(window.locator('#agent-approval-action')).toHaveText('Allow editing “Cookbook\\u{202E}project”?');
+  await expect(window.locator('#agent-approval-origin')).toContainText('Review\\u{200B} these changes');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.screenshot({ path: testInfo.outputPath(`project-approval-controls-${theme}.png`) });
+  }
 });
 
 test('existing project picker and access controls work in both layouts and themes', async ({ electronApp, window, ollamaServer }, testInfo) => {

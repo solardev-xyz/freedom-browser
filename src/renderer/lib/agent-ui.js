@@ -2438,12 +2438,20 @@ function clearApproval() {
   setMessage(elements.approvalMessage);
 }
 
+function approvalDisplayText(value) {
+  // Show invisible formatting controls literally; preserve the request's exact
+  // bytes for execution/signing and ordinary international text for display.
+  return String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+    character => ['\t', '\n', '\u200c', '\u200d'].includes(character) ? character
+      : `\\u{${character.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}}`);
+}
+
 function appendWalletSummary(label, value) {
   if (!value) return;
   const term = document.createElement('dt');
-  term.textContent = label;
+  term.textContent = approvalDisplayText(label);
   const description = document.createElement('dd');
-  description.textContent = value;
+  description.textContent = approvalDisplayText(value);
   elements.walletApprovalSummary.appendChild(term);
   elements.walletApprovalSummary.appendChild(description);
 }
@@ -2451,9 +2459,9 @@ function appendWalletSummary(label, value) {
 function appendNodeRequestSummary(label, value) {
   if (!value) return;
   const term = document.createElement('dt');
-  term.textContent = label;
+  term.textContent = approvalDisplayText(label);
   const description = document.createElement('dd');
-  description.textContent = value;
+  description.textContent = approvalDisplayText(value);
   elements.nodeRequestSummary.appendChild(term);
   elements.nodeRequestSummary.appendChild(description);
 }
@@ -2461,9 +2469,9 @@ function appendNodeRequestSummary(label, value) {
 function appendPublicationSummary(label, value) {
   if (!value) return;
   const term = document.createElement('dt');
-  term.textContent = label;
+  term.textContent = approvalDisplayText(label);
   const description = document.createElement('dd');
-  description.textContent = value;
+  description.textContent = approvalDisplayText(value);
   elements.publicationSummary.appendChild(term);
   elements.publicationSummary.appendChild(description);
 }
@@ -2567,7 +2575,7 @@ function renderWalletApproval(request) {
     for (const account of wallet.wallets || []) {
       const option = document.createElement('option');
       option.value = String(account.index);
-      option.textContent = `${account.name || 'Wallet'} · ${shortAddress(account.address)}`;
+      option.textContent = approvalDisplayText(`${account.name || 'Wallet'} · ${shortAddress(account.address)}`);
       option.selected = account.index === wallet.defaultWalletIndex;
       elements.walletAccount.appendChild(option);
     }
@@ -2800,8 +2808,8 @@ function renderApproval(request) {
                       ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
                       : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
                     : approvalOriginSummary(request);
-  if (request.pageMessage) elements.approvalOrigin.textContent += `\n\nPage says: “${request.pageMessage}”`;
-  if (request.inputPreview) elements.approvalOrigin.textContent += `\n\n${request.inputPreview}`;
+  if (request.pageMessage) elements.approvalOrigin.textContent += `\n\nPage says: ${JSON.stringify(request.pageMessage)}`;
+  if (request.inputPreview) elements.approvalOrigin.textContent += `\n\n${request.inputPreview.replace(/\r\n?|\n/g, ' ⏎ ')}`;
   if (interaction?.uncertainties?.length) elements.approvalOrigin.textContent += `\n\n${interaction.uncertainties.join('\n')}`;
   elements.pageToolDetails.hidden = !pageTool;
   elements.pageToolDetails.open = Boolean(pageTool);
@@ -2855,6 +2863,9 @@ function renderApproval(request) {
   if (nodeRequest) renderNodeRequestApproval(request);
   if (nodeLifecycle) renderNodeLifecycleApproval(request);
   if (publication) renderPublicationApproval(request);
+  for (const element of [elements.approvalAction, elements.approvalOrigin, elements.pageToolArguments, elements.workspacePermissionSummary]) {
+    element.textContent = approvalDisplayText(element.textContent);
+  }
   setApprovalControlsDisabled(false);
   if (Date.now() < approvalReadyAt) {
     elements.approvalApprove.disabled = true;
@@ -2999,7 +3010,7 @@ function formatToolError(code, operation) {
     OBSERVATION_REQUIRED: 'Agent needs to refresh its view of this page',
     TAB_BUSY: 'A helper is currently using this tab',
     POLICY_DENIED: 'Blocked by Freedom policy',
-    USER_CANCELLED: 'Not applied',
+    USER_CANCELLED: 'Cancelled; earlier effects may remain',
     FILE_UPLOAD_CANCELLED_BY_USER: 'File selection cancelled by you',
     DOWNLOAD_CANCELLED_BY_USER: 'Download cancelled by you',
     WALLET_REQUEST_CANCELLED_BY_USER: 'Wallet request declined by you',

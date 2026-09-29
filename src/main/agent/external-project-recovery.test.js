@@ -110,6 +110,21 @@ describe('external commit recovery protocol', () => {
     expect(rename.mock.calls[0][0]).toBe('/private-fixture/git-commit-pending.json');
   });
 
+  test.each([false, true])('an incomplete private journal preserves a remaining lock: %s', async locked => {
+    lock = locked ? Buffer.from('unknown ownership') : null;
+    service.read.mockImplementation(async name => name.endsWith('git-commit-pending.json') ? Buffer.from('{') : name.endsWith('index.lock') ? lock : null);
+    const state = await service.recovery();
+    expect(state).toMatchObject({ pending: true, state: 'unreadable', automatic: null, canKeepCurrent: !locked });
+    if (locked) {
+      await expect(service.recoverCommit({ token: state.token, resolution: 'keep_current', reason: 'Keep repository state' })).rejects.toThrow();
+      expect(rename).not.toHaveBeenCalled();
+    } else {
+      await expect(service.recoverCommit({ token: state.token, resolution: 'keep_current', reason: 'Keep repository state' })).resolves.toMatchObject({ recoveryOutcome: 'kept_current' });
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(rename.mock.calls[0][0]).toBe('/private-fixture/git-commit-pending.json');
+    }
+  });
+
   test.each(['index', 'branch', 'foreign_lock', 'active_operation', 'permission', 'stop', 'deadline'])('archive refuses a late %s change', async change => {
     lock = null; current.id = 'c'.repeat(40);
     const state = await service.recovery();

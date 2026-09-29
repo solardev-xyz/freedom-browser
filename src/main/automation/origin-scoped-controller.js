@@ -1072,7 +1072,7 @@ class OriginScopedAutomationController {
                     destinationOrigin: originScopeForUrl(element.navigationTarget) || '',
                   },
                   untrustedContext: { label: element.label },
-                })
+                }, { signal: execution.signal })
               : null
           );
         } catch {

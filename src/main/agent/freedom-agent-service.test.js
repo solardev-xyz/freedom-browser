@@ -749,7 +749,7 @@ describe('FreedomAgentService', () => {
         userRequest: 'Publish my response',
         guidance: [],
       },
-      { model: options.model, modelRuntime: options.modelRuntime }
+      { model: options.model, modelRuntime: options.modelRuntime, signal: expect.any(AbortSignal) }
     );
 
     const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
@@ -2279,6 +2279,7 @@ describe('FreedomAgentService', () => {
     expect(effectClassifier.classify).toHaveBeenCalledWith(proposed, {
       model: options.model,
       modelRuntime: options.modelRuntime,
+      signal: expect.any(AbortSignal),
     });
 
     const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
