@@ -1,7 +1,10 @@
 /**
  * Renderer E2E test harness (Playwright integration)
  *
- * Activated only when `process.env.FREEDOM_TEST_MODE === '1'`. The harness
+ * Activated only when `process.env.FREEDOM_TEST_MODE === '1'` — and, in a
+ * packaged build, only when the launch also kept a `--remote-debugging-port`
+ * on a scratch profile, which is how the packaged E2E launcher starts the app
+ * (see test-mode.js and test-e2e/packaged-launch.js). The harness
  * is fully inert otherwise — `installTestHarness` is a no-op when test
  * mode is off, and nothing in this file runs at require time.
  *
@@ -51,7 +54,9 @@ const {
   automationTabIdForRenderer,
 } = require('./automation/runtime');
 
-const TEST_MODE_ENABLED = process.env.FREEDOM_TEST_MODE === '1';
+// Same rule as index.js's TEST_MODE: the env var, and in a packaged build an
+// honoured CDP debug port as well (docs/security-audit-electron.md, O-4/O-12).
+const TEST_MODE_ENABLED = require('./test-mode').isTestModeRequested();
 const APP_EXIT_FIXTURE_PREFIX = 'freedom-agent-app-exit-';
 const APP_EXIT_MODES = new Set(['idle', 'running', 'detached']);
 const APP_EXIT_TOKEN_PATTERN = /^freedom-agent-app-exit-[a-f0-9]{24}$/;
@@ -447,6 +452,22 @@ function resetProfileDeleteSims() {
   profileDeleteSims.clear();
 }
 
+// External-protocol launches (#406): recorded instead of handed to the OS, and
+// the OS handler lookup answered from here — a CI runner has no magnet:/mailto:
+// handler registered. See src/main/external-protocol.js.
+const externalOpens = [];
+const externalHandlers = new Map();
+
+function installExternalProtocolRecorder() {
+  globalThis.__FREEDOM_TEST_EXTERNAL_PROTOCOL__ = {
+    open: (url) => {
+      externalOpens.push(url);
+      log.info(`[test-harness] recorded external open (${String(url).split(':')[0]}:)`);
+    },
+    appNameFor: (scheme) => externalHandlers.get(scheme) || '',
+  };
+}
+
 function resetFixtures() {
   contentFixtures.clear();
   contentFixtureActivity.clear();
@@ -712,6 +733,17 @@ function replaceHandler(channel, handler) {
   ipcMain.handle(channel, handler);
 }
 
+// A name fixture may carry `delayMs`, exactly as a content fixture does, so a
+// spec can act while a resolution is genuinely still in flight — pressing Back
+// again, entering another URL — which is the only way to observe what the
+// renderer does with a verdict that settles after the user moved on. The key
+// is stripped from the answer so it can never read as part of a result.
+const answerEnsFixture = async (fixture) => {
+  const { delayMs, ...result } = fixture || {};
+  await holdOpen(delayMs);
+  return result;
+};
+
 function overrideEnsIpc() {
   replaceHandler(IPC.ENS_RESOLVE, async (_event, payload = {}) => {
     const name = (payload?.name || '').trim().toLowerCase();
@@ -719,7 +751,7 @@ function overrideEnsIpc() {
       return { type: 'not_found', name: '', reason: 'EMPTY' };
     }
     if (ensFixtures.has(name)) {
-      return ensFixtures.get(name);
+      return answerEnsFixture(ensFixtures.get(name));
     }
     return { type: 'not_found', name, reason: 'NO_FIXTURE' };
   });
@@ -746,7 +778,7 @@ function overrideEnsIpc() {
       return { type: 'not_found', reason: 'EMPTY', system: 'tezos' };
     }
     if (ensFixtures.has(name)) {
-      return ensFixtures.get(name);
+      return answerEnsFixture(ensFixtures.get(name));
     }
     return { type: 'not_found', reason: 'NO_FIXTURE', system: 'tezos' };
   });
@@ -941,6 +973,34 @@ function registerTestOps() {
     probes: [...probeFixtures.keys()],
     agentWalletTransaction,
   }));
+
+  replaceHandler('test:app-facts', () => appFacts(require('electron')));
+}
+
+// Fixed, read-only facts about the running build that the packaged smoke tests
+// assert on. Those tests reach the app over CDP (test-e2e/packaged-launch.js),
+// because the EnableNodeCliInspectArguments fuse is off in packaged builds and
+// Playwright's `electronApp.evaluate()` needs the Node inspector. This op is
+// deliberately a fixed answer rather than an evaluate-anything hook: a generic
+// "run this in main" channel would give back, to anyone who can launch with
+// FREEDOM_TEST_MODE and a debug port, the Node-in-main access the fuse takes
+// away — and test-mode.js's argument that the harness adds nothing beyond the
+// debug port rests on there being no such channel.
+function appFacts({ app, BrowserWindow }) {
+  return {
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    packaged: app.isPackaged,
+    execPath: process.execPath,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    version: app.getVersion(),
+    name: app.getName(),
+    windows: BrowserWindow.getAllWindows().map((win) => ({
+      title: win.getTitle(),
+      destroyed: win.isDestroyed(),
+    })),
+  };
 }
 
 // Neutralize profile "open"/switch in test mode: opening a profile normally
@@ -1048,6 +1108,12 @@ function exposeGlobalShim(agentRuntime) {
       return true;
     },
     prepareAgentExitScenario: (request) => prepareAgentExitScenario(agentRuntime, request),
+    // External-protocol launches (see installExternalProtocolRecorder).
+    externalOpens: () => [...externalOpens],
+    setExternalHandler: (scheme, appName) => {
+      if (appName) externalHandlers.set(scheme, appName);
+      else externalHandlers.delete(scheme);
+    },
     state: () => ({
       content: [...contentFixtures.keys()],
       contentActivity: Object.fromEntries(contentFixtureActivity),
@@ -1075,6 +1141,7 @@ function installTestHarness({ defaultSession, agentRuntime }) {
   installProfileLaunchRecorder();
   installProfileFocusSimulator();
   installProfileDeleteSimulator();
+  installExternalProtocolRecorder();
   exposeGlobalShim(agentRuntime);
   return true;
 }
@@ -1092,4 +1159,5 @@ module.exports = {
   // that's needed. No-op guard lives in the caller (only invoked when
   // isTestMode()).
   registerStubProtocols,
+  appFacts,
 };

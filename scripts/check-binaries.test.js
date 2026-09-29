@@ -11,6 +11,25 @@ const packageJson = require('../package.json');
 const { checkBinaries, ensureOptionalArti } = require('./check-binaries');
 const { platformKey } = require('./fetch-radicle-addon');
 
+describe('ad-blocking build inputs', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // #410: a lists dir fetched by the old script has a manifest but no
+  // scriptlet resources or GPL-3.0 text — packaging it would silently ship
+  // without YouTube ad blocking.
+  test.each(['resources.json', 'COPYING.GPL-3.0.txt'])('flags a stale lists dir missing %s', (file) => {
+    fs.existsSync.mockImplementation((target) => !target.endsWith(path.join('adblock', file)));
+    expect(checkBinaries([])).toEqual([expect.stringContaining(`adblock ${file}`)]);
+  });
+
+  test('a missing lists dir is reported once, as before', () => {
+    fs.existsSync.mockImplementation((target) => !target.includes(path.join('assets', 'adblock')));
+    expect(checkBinaries([])).toEqual([expect.stringContaining('adblock filter lists')]);
+  });
+});
+
 describe('Radicle build inputs', () => {
   beforeEach(() => {
     jest.clearAllMocks();

@@ -1,0 +1,3 @@
+- Pop-up blocker ([#442](https://github.com/solardev-xyz/freedom-browser/issues/442)):
+  - A blocked pop-up shows an icon in the address bar, to open it anyway
+  - "Always allow pop-ups on this site", listed and removed in Settings > Site Permissions

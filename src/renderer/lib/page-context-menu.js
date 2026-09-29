@@ -11,6 +11,7 @@ import {
   formatSearchMenuSelection,
   getSearchProviderLabel,
 } from './search-utils.js';
+import { goBackInHistory, goForwardInHistory } from './history-traversal.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
 import { onWindowDeactivated } from './window-deactivation.js';
 
@@ -32,6 +33,15 @@ let menuWebview = null;
 // selection, even Back/Forward's enabled state) was read off that page, so the
 // moment the page changes underneath, the whole menu is stale. #308.
 let menuPageUrl = null;
+
+// Fired just before the menu is shown, so the chrome's other transient
+// surfaces can be put away first — the same `onAnyMenuOpening` chain every
+// other menu-raising module already takes (`setOnMenuOpening`, the tab and
+// bookmark context menus, `initChromeInputContextMenu`). This menu is the one
+// that is raised from inside the guest, so the address bar's three
+// no-backdrop surfaces (trust popover, permission popover, GitHub-bridge
+// panel) could otherwise sit over the page next to it. #67
+let onOpening = null;
 
 const currentUrlOf = (webview) => {
   try {
@@ -90,6 +100,8 @@ const updateSearchSelectionItem = (context) => {
 // Show context menu for the given context
 export const showPageContextMenu = (x, y, context) => {
   if (!pageContextMenu) return;
+
+  onOpening?.();
 
   currentContext = context;
 
@@ -277,16 +289,15 @@ const handleAction = async (action, { background = false } = {}) => {
   const activeWebview = getActiveWebview();
 
   switch (action) {
+    // Same shared traversal helpers the toolbar buttons use, so the mark
+    // that drives the post-traversal ENS trust refresh (#86) is recorded
+    // here too rather than only on the one call site the issue named.
     case 'back':
-      if (activeWebview?.canGoBack()) {
-        activeWebview.goBack();
-      }
+      goBackInHistory(activeWebview);
       break;
 
     case 'forward':
-      if (activeWebview?.canGoForward()) {
-        activeWebview.goForward();
-      }
+      goForwardInHistory(activeWebview);
       break;
 
     case 'reload':
@@ -439,9 +450,14 @@ const handleAction = async (action, { background = false } = {}) => {
   hidePageContextMenu();
 };
 
-// Initialize the page context menu
-export const initPageContextMenu = async () => {
+/**
+ * Initialize the page context menu.
+ *
+ * @param {{ onOpening?: () => void }} [options]
+ */
+export const initPageContextMenu = async (options = {}) => {
   pageContextMenu = document.getElementById('page-context-menu');
+  onOpening = options.onOpening ?? null;
 
   // Handle menu item clicks
   if (pageContextMenu) {

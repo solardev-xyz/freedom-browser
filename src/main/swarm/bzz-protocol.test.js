@@ -295,13 +295,13 @@ describe('buildGatewayUrl', () => {
       expect(mockResolveEnsContent).toHaveBeenCalledWith(name);
     });
 
-    test.each([
-      ['bzz://.eth/'],
-      ['bzz://foo..eth/'],
-    ])('returns null for hosts with empty labels (%s)', async (url) => {
-      await expect(buildGatewayUrl(url)).resolves.toBeNull();
-      expect(mockResolveEnsContent).not.toHaveBeenCalled();
-    });
+    test.each([['bzz://.eth/'], ['bzz://foo..eth/']])(
+      'returns null for hosts with empty labels (%s)',
+      async (url) => {
+        await expect(buildGatewayUrl(url)).resolves.toBeNull();
+        expect(mockResolveEnsContent).not.toHaveBeenCalled();
+      }
+    );
   });
 });
 
@@ -436,18 +436,152 @@ describe('handleBzzRequest', () => {
     }
   });
 
-  test('does not retry non-idempotent methods', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue(new Response('', { status: 404 }));
-    const req = {
-      url: `bzz://${HASH}/x`,
-      method: 'POST',
-      headers: new Headers(),
-      body: null,
-      signal: new AbortController().signal,
-    };
-    const res = await handleBzzRequest(req, { fetchImpl });
-    expect(res.status).toBe(404);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  // Security audit O-2 (#429): `bzz:` is read-only, like `rad:`. Chromium
+  // enforces no CORS on a custom scheme, so any page could otherwise POST /
+  // PUT / DELETE through this handler with the node's authority.
+  test.each(['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'post'])(
+    'refuses %s with 405 without contacting the node',
+    async (method) => {
+      const fetchImpl = jest.fn();
+      const req = {
+        url: `bzz://${HASH}/x`,
+        method,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
+        body: new Response('{"x":1}').body,
+        signal: new AbortController().signal,
+      };
+      const res = await handleBzzRequest(req, { fetchImpl });
+      expect(res.status).toBe(405);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  );
+
+  test('forwards HEAD (and GET) to the node', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const res = await handleBzzRequest(makeRequest(`bzz://${HASH}/x`, { method: 'HEAD' }), {
+      fetchImpl,
+    });
+    expect(res.status).toBe(200);
+    expect(fetchImpl.mock.calls[0][1].method).toBe('HEAD');
+    expect(fetchImpl.mock.calls[0][1].body).toBeUndefined();
+  });
+
+  // O-2: an encoded separator could steer the node's router out of
+  // `/bzz/<ref>/` after we already picked the ref.
+  test.each([
+    `bzz://${HASH}/..%2F..%2Fstamps`,
+    `bzz://${HASH}/a%2fb`,
+    `bzz://${HASH}/a%5Cb`,
+    `bzz://${HASH}/a%5cb`,
+    'bzz://meinhard.eth/..%2Fwallet',
+  ])('refuses encoded path separators: %s', async (url) => {
+    const fetchImpl = jest.fn();
+    const res = await handleBzzRequest(makeRequest(url), { fetchImpl });
+    expect(res.status).toBe(400);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test('still serves ordinary percent-encoded paths', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    const res = await handleBzzRequest(makeRequest(`bzz://${HASH}/my%20file%2Etxt?q=%2F`), {
+      fetchImpl,
+    });
+    expect(res.status).toBe(200);
+    expect(fetchImpl.mock.calls[0][0]).toBe(
+      `http://127.0.0.1:1633/bzz/${HASH}/my%20file%2Etxt?q=%2F`
+    );
+  });
+
+  test('forwards only allowlisted request headers to the node', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 206 }));
+    await handleBzzRequest(
+      makeRequest(`bzz://${HASH}/video.mp4`, {
+        headers: {
+          Range: 'bytes=0-99',
+          'If-None-Match': '"abc"',
+          'If-Modified-Since': 'Tue, 01 Sep 2026 00:00:00 GMT',
+          Accept: 'video/*',
+          'Accept-Language': 'de',
+          'Swarm-Act': 'true',
+          'Swarm-Act-Publisher': '02ab',
+          'Swarm-Act-History-Address': 'ff',
+          'Swarm-Postage-Batch-Id': 'deadbeef',
+          'Swarm-Pin': 'true',
+          'X-Custom': '1',
+          'Content-Type': 'text/plain',
+        },
+      }),
+      { fetchImpl }
+    );
+    const sent = fetchImpl.mock.calls[0][1].headers;
+    expect(sent.get('range')).toBe('bytes=0-99');
+    expect(sent.get('if-none-match')).toBe('"abc"');
+    expect(sent.get('if-modified-since')).toBe('Tue, 01 Sep 2026 00:00:00 GMT');
+    expect(sent.get('accept')).toBe('video/*');
+    expect(sent.get('accept-language')).toBe('de');
+    const names = [...sent.keys()];
+    expect(names.filter((n) => n.startsWith('swarm-')).sort()).toEqual([
+      'swarm-chunk-retrieval-timeout',
+      'swarm-redundancy-fallback-mode',
+      'swarm-redundancy-strategy',
+    ]);
+    expect(sent.has('x-custom')).toBe(false);
+    expect(sent.has('content-type')).toBe(false);
+  });
+
+  test('a page cannot override the retrieval hints we set', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    await handleBzzRequest(
+      makeRequest(`bzz://${HASH}/x`, {
+        headers: { 'Swarm-Chunk-Retrieval-Timeout': '999h', 'Swarm-Redundancy-Strategy': '0' },
+      }),
+      { fetchImpl }
+    );
+    const sent = fetchImpl.mock.calls[0][1].headers;
+    expect(sent.get('swarm-chunk-retrieval-timeout')).toBe('30s');
+    expect(sent.get('swarm-redundancy-strategy')).toBe('3');
+  });
+
+  // O-12 (#439): a user-configured external Ant gateway's cookies and
+  // service-worker scope never reach the bzz:// page.
+  test('strips Set-Cookie and Service-Worker-Allowed from the upstream response', async () => {
+    const upstreamHeaders = new Headers({
+      'Content-Type': 'text/html',
+      'Service-Worker-Allowed': '/',
+      ETag: '"v1"',
+    });
+    upstreamHeaders.append('Set-Cookie', 'track=1; Path=/');
+    upstreamHeaders.append('Set-Cookie', 'other=2');
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(new Response('<p>hi</p>', { status: 200, headers: upstreamHeaders }));
+    const res = await handleBzzRequest(makeRequest(`bzz://${HASH}/index.html`), { fetchImpl });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(res.headers.get('service-worker-allowed')).toBeNull();
+    expect(res.headers.get('content-type')).toBe('text/html');
+    expect(res.headers.get('etag')).toBe('"v1"');
+    await expect(res.text()).resolves.toBe('<p>hi</p>');
+  });
+
+  test('strips page-state headers from a 304 and a rewritten redirect too', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 304, headers: { 'Set-Cookie': 'a=1' } }))
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 308,
+          headers: { location: `/bzz/${HASH}/blog/`, 'Set-Cookie': 'a=1' },
+        })
+      );
+    const notModified = await handleBzzRequest(makeRequest(`bzz://${HASH}/x`), { fetchImpl });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers.get('set-cookie')).toBeNull();
+    const redirect = await handleBzzRequest(makeRequest(`bzz://${HASH}/blog`), { fetchImpl });
+    expect(redirect.status).toBe(308);
+    expect(redirect.headers.get('location')).toBe('./blog/');
+    expect(redirect.headers.get('set-cookie')).toBeNull();
   });
 
   test('does not retry permanent non-retryable statuses (e.g. 403)', async () => {
@@ -552,7 +686,6 @@ describe('handleBzzRequest', () => {
     }
   });
 });
-
 
 // PRIVATE MODE GUARD (request logging). The handler is registered once per
 // session, so a private window's session gets its own registration — these
@@ -707,5 +840,287 @@ describe('registerBzzProtocol private sessions', () => {
     const text = loggedText();
     expect(text).not.toContain(hash);
     expect(text).toContain('fetch failed for http://127.0.0.1:1633/<private>');
+  });
+});
+
+// Bee canonicalises a directory URL with a redirect written in its own gateway
+// URL space (`/bzz/<ref>/blog/`). Chromium resolves that against the `bzz://`
+// request URL it issued, so passing it through verbatim commits
+// `bzz://meinhard.eth/bzz/<resolved-hash>/blog/` — a doubled path that 404s and
+// leaks the resolved manifest hash into the address bar, `window.location` and
+// the storage origin (#95). The handler re-expresses the target as a relative
+// reference, which resolves identically in gateway space and in `bzz://` space.
+describe('handleBzzRequest redirect canonicalisation', () => {
+  beforeEach(() => {
+    mockResolveEnsContent.mockReset();
+    getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
+  });
+
+  const ensResolvesTo = (decoded, extra = {}) =>
+    mockResolveEnsContent.mockResolvedValue({
+      type: 'ok',
+      protocol: 'bzz',
+      decoded,
+      uri: `bzz://${decoded}`,
+      ...extra,
+    });
+
+  // Drive the real handler and report what Chromium would commit: the
+  // `Location` it hands back, resolved against the `bzz://` URL that was
+  // requested — the exact resolution step the bug report reproduces.
+  const redirectCase = async (bzzUrl, { status = 301, location, headers = {} } = {}) => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(new Response(null, { status, headers: { location, ...headers } }));
+    const res = await handleBzzRequest(
+      {
+        url: bzzUrl,
+        method: 'GET',
+        headers: new Headers(),
+        body: null,
+        signal: new AbortController().signal,
+      },
+      { fetchImpl }
+    );
+    const out = res.headers.get('location');
+    return {
+      status: res.status,
+      location: out,
+      committed: out ? new URL(out, bzzUrl).toString() : null,
+      gatewayUrl: fetchImpl.mock.calls[0][0],
+    };
+  };
+
+  test("rewrites Bee's hash-rooted directory 301 back into ENS space", async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog', { location: `/bzz/${HASH}/blog/` })
+    ).resolves.toEqual({
+      status: 301,
+      location: './blog/',
+      committed: 'bzz://meinhard.eth/blog/',
+      gatewayUrl: `http://127.0.0.1:1633/bzz/${HASH}/blog`,
+    });
+  });
+
+  // Bee's own directory canonicalisation is a 308, not a 301 (`pkg/api/bzz.go`
+  // calls `http.Redirect(..., StatusPermanentRedirect)`), so the status Bee
+  // actually sends is covered explicitly rather than only the 301 shape the
+  // issue's report named.
+  test("rewrites Bee's 308 directory canonicalisation", async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog', { status: 308, location: `/bzz/${HASH}/blog/` })
+    ).resolves.toMatchObject({
+      status: 308,
+      location: './blog/',
+      committed: 'bzz://meinhard.eth/blog/',
+    });
+  });
+
+  test('rewrites a nested directory redirect', async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog/2026/posts', {
+        location: `/bzz/${HASH}/blog/2026/posts/`,
+      })
+    ).resolves.toMatchObject({
+      location: './posts/',
+      committed: 'bzz://meinhard.eth/blog/2026/posts/',
+    });
+  });
+
+  // Go escapes `!'()*[]|^` in a path where Chromium leaves them literal, and
+  // Bee's canonicalisation re-escapes through `EscapedPath()` because appending
+  // the slash invalidates the request's `RawPath`. So the `Location` for a
+  // directory under such a parent is spelled differently from the gateway path
+  // the handler asked for (verified against go1.26.5's own `net/url` +
+  // `net/http.Redirect`), and a raw-bytes prefix test reads it as leaving the
+  // request's directory and passes it through — back to the doubled path and
+  // leaked hash for exactly these names.
+  test('rewrites a redirect whose parent segment Bee re-escaped', async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/photos(2024)/blog', {
+        status: 308,
+        location: `/bzz/${HASH}/photos%282024%29/blog/`,
+      })
+    ).resolves.toEqual({
+      status: 308,
+      location: './blog/',
+      committed: 'bzz://meinhard.eth/photos(2024)/blog/',
+      gatewayUrl: `http://127.0.0.1:1633/bzz/${HASH}/photos(2024)/blog`,
+    });
+  });
+
+  test('keeps the query string on the rewritten Location', async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog?page=2', { location: `/bzz/${HASH}/blog/?page=2` })
+    ).resolves.toMatchObject({
+      location: './blog/?page=2',
+      committed: 'bzz://meinhard.eth/blog/?page=2',
+    });
+  });
+
+  test('rewrites a same-origin absolute Location too', async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog', {
+        status: 302,
+        location: `http://127.0.0.1:1633/bzz/${HASH}/blog/`,
+      })
+    ).resolves.toMatchObject({
+      status: 302,
+      location: './blog/',
+      committed: 'bzz://meinhard.eth/blog/',
+    });
+  });
+
+  test('accounts for a contenthash base path, which never belongs in the URL', async () => {
+    ensResolvesTo(HASH, { basePath: '/site' });
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog', { location: `/bzz/${HASH}/site/blog/` })
+    ).resolves.toEqual({
+      status: 301,
+      location: './blog/',
+      committed: 'bzz://meinhard.eth/blog/',
+      gatewayUrl: `http://127.0.0.1:1633/bzz/${HASH}/site/blog`,
+    });
+  });
+
+  // A hash host is its own canonical form: there is no name to restore, and the
+  // rewrite must not invent one or drop the trailing slash Bee is asking for.
+  test('leaves a hash-host redirect pointing at the same hash host', async () => {
+    await expect(
+      redirectCase(`bzz://${HASH}/blog`, { location: `/bzz/${HASH}/blog/` })
+    ).resolves.toEqual({
+      status: 301,
+      location: './blog/',
+      committed: `bzz://${HASH}/blog/`,
+      gatewayUrl: `http://127.0.0.1:1633/bzz/${HASH}/blog`,
+    });
+  });
+
+  // Already expressed relative to the request: the rewrite is a no-op, and
+  // re-running it must not double up the `./` prefix.
+  test('is idempotent on an already-canonical relative Location', async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog', { location: './blog/' })
+    ).resolves.toMatchObject({
+      location: './blog/',
+      committed: 'bzz://meinhard.eth/blog/',
+    });
+  });
+
+  // `:` is a legal Swarm manifest path segment, and a *bare* relative reference
+  // starting with one parses as an absolute URL with that segment as its scheme
+  // (RFC 3986 §4.2), so the `./` prefix is load-bearing, not cosmetic.
+  test('keeps a colon-bearing first segment from parsing as a scheme', async () => {
+    ensResolvesTo(HASH);
+
+    const { location, committed } = await redirectCase('bzz://meinhard.eth/re:port', {
+      location: `/bzz/${HASH}/re:port/`,
+    });
+    expect(location).toBe('./re:port/');
+    expect(committed).toBe('bzz://meinhard.eth/re:port/');
+  });
+
+  // Can't be expressed relative to the request's directory without knowing how
+  // deep the `/bzz/<ref>` prefix goes, so it is passed through exactly as Bee
+  // wrote it rather than guessed at.
+  test('leaves a Location that climbs out of the requested path untouched', async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog', { location: `/bzz/${'b'.repeat(64)}/blog/` })
+    ).resolves.toMatchObject({ location: `/bzz/${'b'.repeat(64)}/blog/` });
+  });
+
+  // A hostile or MITM'd gateway must not get its cross-origin target rewritten
+  // into the bzz:// origin — Chromium applies the normal cross-origin rules.
+  test('leaves a cross-origin Location untouched', async () => {
+    ensResolvesTo(HASH);
+
+    await expect(
+      redirectCase('bzz://meinhard.eth/blog', { location: 'http://127.0.0.1:5000/secret' })
+    ).resolves.toMatchObject({ location: 'http://127.0.0.1:5000/secret' });
+  });
+
+  test('drops upstream body framing headers on the rewritten redirect', async () => {
+    ensResolvesTo(HASH);
+    const fetchImpl = jest.fn().mockResolvedValue(
+      new Response('moved', {
+        status: 301,
+        headers: {
+          location: `/bzz/${HASH}/blog/`,
+          'content-length': '5',
+          'content-type': 'text/plain',
+        },
+      })
+    );
+    const res = await handleBzzRequest(
+      {
+        url: 'bzz://meinhard.eth/blog',
+        method: 'GET',
+        headers: new Headers(),
+        body: null,
+        signal: new AbortController().signal,
+      },
+      { fetchImpl }
+    );
+    expect(res.headers.get('location')).toBe('./blog/');
+    expect(res.headers.get('content-length')).toBeNull();
+    expect(res.headers.get('content-type')).toBe('text/plain');
+    await expect(res.text()).resolves.toBe('');
+  });
+
+  test('leaves a non-3xx response with a Location header alone', async () => {
+    ensResolvesTo(HASH);
+    const body = 'created';
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(
+        new Response(body, { status: 201, headers: { location: `/bzz/${HASH}/blog/` } })
+      );
+    const res = await handleBzzRequest(
+      {
+        url: 'bzz://meinhard.eth/blog',
+        method: 'GET',
+        headers: new Headers(),
+        body: null,
+        signal: new AbortController().signal,
+      },
+      { fetchImpl }
+    );
+    expect(res.status).toBe(201);
+    expect(res.headers.get('location')).toBe(`/bzz/${HASH}/blog/`);
+    await expect(res.text()).resolves.toBe(body);
+  });
+
+  test('passes a 3xx without a Location through untouched', async () => {
+    ensResolvesTo(HASH);
+    const fetchImpl = jest.fn().mockResolvedValue(new Response(null, { status: 304 }));
+    const res = await handleBzzRequest(
+      {
+        url: 'bzz://meinhard.eth/blog',
+        method: 'GET',
+        headers: new Headers(),
+        body: null,
+        signal: new AbortController().signal,
+      },
+      { fetchImpl }
+    );
+    expect(res.status).toBe(304);
+    expect(res.headers.get('location')).toBeNull();
   });
 });

@@ -12,6 +12,7 @@
 
 import { getPermissionKey } from './dapp-provider.js';
 import { getDisplayUrlForWebview, getNavigationKeyForWebview } from './tabs.js';
+import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
 import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock, showPermissionManifest } from './wallet-ui.js';
 
 const ERRORS = {
@@ -24,6 +25,16 @@ const ERRORS = {
 // Feature flag state (same pattern as dapp-provider.js)
 let identityWalletEnabled = false;
 const manifestChecks = new WeakMap();
+
+// Per-webview navigation generation, bumped on every committed navigation
+// and on webview destruction (same as dapp-provider.js / radicle-provider.js).
+// Requests capture it on arrival and their response or error is only
+// delivered while it still matches: request ids restart per document, so a
+// reply that settles after a navigation could otherwise satisfy a reused id
+// in the replacement document.
+const navigationGenerations = new WeakMap();
+
+const getNavigationGeneration = (webview) => navigationGenerations.get(webview) ?? 0;
 const PUBLIC_METHODS = new Set([
   'swarm_getCapabilities',
   'swarm_readFeedEntry',
@@ -47,12 +58,21 @@ window.addEventListener('settings:updated', (event) => {
 export function setupSwarmProvider(webview) {
   if (!webview) return;
 
+  trackGuestMainFrame(webview);
   webview.addEventListener('ipc-message', (event) => {
     if (event.channel === 'swarm:provider-request') {
+      // Top frame only — see guest-main-frame.js (audit O-6).
+      if (!isFromGuestMainFrame(webview, event)) return;
       const request = event.args[0];
       handleSwarmRequest(webview, request);
     }
   });
+
+  const invalidateDocument = () => {
+    navigationGenerations.set(webview, getNavigationGeneration(webview) + 1);
+  };
+  webview.addEventListener('did-navigate', invalidateDocument);
+  webview.addEventListener('destroyed', invalidateDocument);
 }
 
 /**
@@ -60,6 +80,8 @@ export function setupSwarmProvider(webview) {
  */
 async function handleSwarmRequest(webview, request) {
   const { id, method, params } = request;
+  // Captured at arrival; see navigationGenerations above.
+  const generation = getNavigationGeneration(webview);
 
   // Gate: reject if feature disabled
   if (!identityWalletEnabled) {
@@ -126,8 +148,13 @@ async function handleSwarmRequest(webview, request) {
       result = await executeWithPermission(method, params, permissionKey);
     }
 
+    // Send success response — unless the requesting document is gone
+    if (getNavigationGeneration(webview) !== generation) return;
     sendSwarmResponse(webview, id, result, null);
   } catch (error) {
+    // Never deliver a stale response (success or error) into a replacement
+    // document — request ids can be reused across navigations.
+    if (getNavigationGeneration(webview) !== generation) return;
     sendSwarmResponse(webview, id, null, {
       code: error.code || ERRORS.INTERNAL_ERROR.code,
       message: error.message || ERRORS.INTERNAL_ERROR.message,

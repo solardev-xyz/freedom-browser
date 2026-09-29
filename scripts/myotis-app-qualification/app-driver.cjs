@@ -45,7 +45,7 @@ function safeStatus(status) {
   for (const key of ['running', 'elReaderAvailable', 'elHunting']) {
     if (typeof status[key] === 'boolean') result[key] = status[key];
   }
-  for (const key of ['currentPeriod', 'targetPeriod', 'snapPeers', 'peerCount', 'optimisticBlockNumber', 'finalizedBlockNumber']) {
+  for (const key of ['currentPeriod', 'targetPeriod', 'snapPeers', 'snapServingPeers', 'peerCount', 'optimisticBlockNumber', 'finalizedBlockNumber']) {
     if (Number.isFinite(status[key])) result[key] = status[key];
   }
   if (/^[A-Z_]{1,32}$/.test(status.beaconState || '')) result.beaconState = status.beaconState;
@@ -136,7 +136,7 @@ async function run(options) {
   const result = { runId: ctx.runId, enteredAtMs, deadlineAtMs,
     timingScope: Number.isFinite(supplied) ? 'outer-launch-deadline' : 'driver-entry-only',
     startAttempted: false, readAttempted: false, actualOsExitObserved: false,
-    readQualification: 'ABI 26 requires fresh anchors and EL readiness; this bounded Quit driver does not qualify cold sync',
+    readQualification: 'ABI 32 requires fresh anchors and serving EL peers; this bounded Quit driver does not qualify cold sync',
     addonAbi: 'not-directly-observed-by-driver' };
   let progressFd;
   let manager;

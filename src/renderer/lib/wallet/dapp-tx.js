@@ -22,6 +22,7 @@ import {
   truncateAddress,
 } from './wallet-utils.js';
 import { openSafeSigningBoard, isSafeSigningBoardOpen } from './safe-signing.js';
+import { confirmSigning } from './signing-confirmation.js';
 import { parseOnchainAppUrl } from '../url-utils.js';
 
 // DOM references
@@ -359,11 +360,6 @@ async function handleDappTxTouchIdUnlock() {
       throw new Error(result.error || 'Touch ID failed');
     }
 
-    const unlockResult = await window.identity.unlock(result.password);
-    if (!unlockResult.success) {
-      throw new Error(unlockResult.error || 'Failed to unlock vault');
-    }
-
     dappTxUnlock?.classList.add('hidden');
     if (dappTxApproveBtn) dappTxApproveBtn.disabled = false;
     hideDappTxError();
@@ -441,10 +437,18 @@ async function approveDappTx() {
       }
     }
 
+    // The user pressed Confirm on exactly this transaction: main signs it
+    // once against this token. "Always allow" rides along and is recorded
+    // by main from the confirmed transaction itself (security audit O-7).
+    const authorization = await confirmSigning('dapp-send', walletIndex, tx);
+    if (autoApprove && permissionKey && selector && txParams.to) {
+      authorization.rememberAutoApprove = permissionKey;
+    }
     const result = await window.wallet.dappSendTransaction(
       tx,
       walletIndex,
-      buildDappTxContext(permissionKey, txParams)
+      buildDappTxContext(permissionKey, txParams),
+      authorization
     );
 
     if (!result.success) {
@@ -454,8 +458,7 @@ async function approveDappTx() {
       console.warn('[WalletUI] dApp transaction broadcast but payment history did not record:', result.recordError);
     }
 
-    if (autoApprove && permissionKey && selector && txParams.to) {
-      await window.dappPermissions.addTransactionAutoApprove(permissionKey, txParams.to, selector, chainId);
+    if (result.autoApproveAdded) {
       console.log('[WalletUI] Transaction auto-approve added:', txParams.to, selector, 'chain', chainId);
     }
 
@@ -510,13 +513,15 @@ function setDappTxCancelEnabled(enabled) {
  */
 async function sendViaSafeAccount(walletIndex, txParams, site, chainId) {
   const value = txParams.value ? BigInt(txParams.value).toString() : '0';
+  const safeTx = { to: txParams.to, value, data: txParams.data || '0x' };
   const started = await window.wallet.safeSend(
     walletIndex,
-    { to: txParams.to, value, data: txParams.data || '0x' },
+    safeTx,
     buildSafeDappDisplay(txParams, value, site),
     // The app's chain, resolved by the provider — main refuses a chain the
     // Safe does not live on rather than executing the calldata elsewhere.
-    chainId
+    chainId,
+    await confirmSigning('safe-send', walletIndex, { tx: safeTx, chainId })
   );
   if (!started.success) {
     throw new Error(started.error || 'Transaction failed');

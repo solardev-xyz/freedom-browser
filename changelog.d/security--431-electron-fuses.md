@@ -1,0 +1,2 @@
+- Packaged builds ignore `--inspect` and only load their own `app.asar`, which macOS and Windows check against the hash recorded at build time ([#431](https://github.com/solardev-xyz/freedom-browser/issues/431))
+  - Remote debugging (`--remote-debugging-port`) is ignored too, except for automated test runs on a scratch profile

@@ -782,6 +782,29 @@ async function exportMnemonic() {
   return identity.exportMnemonic();
 }
 
+/**
+ * Throw unless `accountIndex` holds a vault-derived key that can be
+ * exported. Same two-part guard as withVaultPrivateKey: the index range
+ * alone is decisive, so a deleted device account (no record) cannot
+ * export a phantom mnemonic key derived at its index.
+ */
+function assertPrivateKeyExportable(accountIndex) {
+  const record = getWalletRecord(accountIndex);
+  if (isHardwareWalletIndex(accountIndex) || (record && record.type !== WALLET_TYPES.MNEMONIC)) {
+    throw new Error('This account has no exportable private key — the key never leaves its device');
+  }
+}
+
+/**
+ * Export one account's private key from the unlocked vault. Callers must
+ * have re-authenticated the user first (password or Touch ID).
+ */
+async function exportPrivateKeyForAccount(accountIndex) {
+  assertPrivateKeyExportable(accountIndex);
+  const identity = await loadIdentityModule();
+  return identity.exportPrivateKey(accountIndex);
+}
+
 // ============================================
 // Multi-Wallet Support
 // ============================================
@@ -1529,20 +1552,11 @@ function registerIdentityIpc() {
       if (!password) {
         return { success: false, error: 'Password is required to export private key' };
       }
-      // Same two-part guard as withVaultPrivateKey: the index range alone
-      // is decisive, so a deleted device account (no record) cannot export
-      // a phantom mnemonic key derived at its index.
-      const record = getWalletRecord(accountIndex);
-      if (isHardwareWalletIndex(accountIndex) || (record && record.type !== WALLET_TYPES.MNEMONIC)) {
-        return {
-          success: false,
-          error: 'This account has no exportable private key — the key never leaves its device',
-        };
-      }
+      assertPrivateKeyExportable(accountIndex);
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
       await identity.verifyPassword(dataDir, password);
-      const privateKey = identity.exportPrivateKey(accountIndex);
+      const privateKey = await exportPrivateKeyForAccount(accountIndex);
       return { success: true, privateKey };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1689,6 +1703,8 @@ module.exports = {
   unlockVault,
   lockVault,
   exportMnemonic,
+  assertPrivateKeyExportable,
+  exportPrivateKeyForAccount,
   changeVaultPassword,
   deleteVaultData,
 

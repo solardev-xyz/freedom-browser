@@ -1855,6 +1855,52 @@ describe('ipfs-manager', () => {
     });
   });
 
+  // Security audit O-12 (#439): a user-configured external gateway may not
+  // plant cookies or widen a service worker's scope on the ipfs:// origin.
+  test.each([200, 301])(
+    'drops Set-Cookie and Service-Worker-Allowed from a proxied %s',
+    async (status) => {
+      const realFetch = global.fetch;
+      global.fetch = mockGatewayFetch(async () => {
+        const headers = new Headers({
+          'content-type': 'text/html',
+          'service-worker-allowed': '/',
+          'x-ipfs-path': '/ipfs/bafy',
+        });
+        headers.append('set-cookie', 'track=1; Path=/');
+        headers.append('set-cookie', 'other=2');
+        if (status === 301) headers.set('location', '/ipfs/bafy/');
+        return new Response(status === 200 ? 'external-body' : null, { status, headers });
+      });
+      try {
+        const ctx = loadIpfsManagerModule({
+          nativeAvailable: false,
+          activeProfile: {
+            metadata: {
+              nodes: {
+                ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+              },
+            },
+          },
+        });
+        await ctx.mod.startIpfs();
+
+        const response = await ctx.mod.serveNativeGatewayRequest({
+          path: '/ipfs/bafy',
+          method: 'GET',
+          headers: new Headers(),
+        });
+
+        expect(response.status).toBe(status);
+        expect(response.headers.get('set-cookie')).toBeNull();
+        expect(response.headers.get('service-worker-allowed')).toBeNull();
+        expect(response.headers.get('x-ipfs-path')).toBe('/ipfs/bafy');
+      } finally {
+        global.fetch = realFetch;
+      }
+    }
+  );
+
   test('drops content-encoding, content-length and hop-by-hop headers from the proxied response', async () => {
     const realFetch = global.fetch;
     global.fetch = mockGatewayFetch(

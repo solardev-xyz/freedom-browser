@@ -131,6 +131,35 @@ test('starts with one tab, can open more, can close them', async ({ window }) =>
   await expect(tabs).toHaveCount(2);
 });
 
+// #408: the 76px traffic-light reserve left of the tabs is macOS-only; Windows
+// and Linux start the strip 12px in. platform-init.js tags <html> before first
+// paint, so the value must already be right when the window is first readable.
+test('the title-bar spacer reserves traffic-light room on macOS only', async ({
+  window,
+  electronApp,
+}) => {
+  const platform = await electronApp.evaluate(() => process.platform);
+  const read = () =>
+    window.evaluate(() => ({
+      platform: document.documentElement.dataset.platform,
+      spacer: document.querySelector('.title-bar-spacer').getBoundingClientRect().width,
+    }));
+
+  expect(await read()).toEqual({ platform, spacer: platform === 'darwin' ? 76 : 12 });
+
+  // Every platform's rule, whichever host this runs on.
+  for (const [simulated, width] of [
+    ['darwin', 76],
+    ['win32', 12],
+    ['linux', 12],
+  ]) {
+    await window.evaluate((p) => {
+      document.documentElement.dataset.platform = p;
+    }, simulated);
+    expect(await read()).toEqual({ platform: simulated, spacer: width });
+  }
+});
+
 test('clicking a tab activates it', async ({ window }) => {
   const tabs = window.locator('[data-test="tab"]');
   await expect(tabs).toHaveCount(1);

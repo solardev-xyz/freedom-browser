@@ -18,8 +18,9 @@ const {
 // darwin legs below against chords the real menu never registers there (and
 // miss the ones it does).
 //
-// Provenance, both legs cross-checked on 2026-09-16 against the Electron this
-// repo ships (44.3.0):
+// Provenance, both legs cross-checked on 2026-09-16 against the Electron the
+// repo shipped at the time (44.3.0; 44.4.1 since #346, a patch bump that
+// touches none of the role defaults below):
 //   - linux: read empirically, by building a menu of every role used in this
 //     file under the real Electron binary and printing each
 //     MenuItem#accelerator (Electron resolves the role default into that

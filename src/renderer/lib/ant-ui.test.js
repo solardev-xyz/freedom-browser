@@ -5,8 +5,7 @@ const originalDocument = global.document;
 const originalFetch = global.fetch;
 
 const flushMicrotasks = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 6; i += 1) await Promise.resolve();
 };
 
 const loadBeeModule = async (options = {}) => {
@@ -29,7 +28,6 @@ const loadBeeModule = async (options = {}) => {
       },
     },
   };
-  const buildAntUrl = jest.fn((endpoint) => `http://bee.test${endpoint}`);
   const getDisplayMessage = jest.fn(() => {
     return state.registry.ant.tempMessage || state.registry.ant.statusMessage;
   });
@@ -87,31 +85,31 @@ const loadBeeModule = async (options = {}) => {
   const setIntervalMock = jest.spyOn(global, 'setInterval').mockImplementation(() => intervalId++);
   const clearIntervalMock = jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
 
-  global.fetch =
-    options.fetchImpl ||
-    jest.fn(async (url) => {
-      if (url.endsWith('/peers')) {
-        return {
-          ok: true,
-          json: async () => ({ peers: [{ id: 'a' }, { id: 'b' }] }),
-        };
+  // The chrome reads the node over IPC (`window.ant.apiGet`), never by
+  // fetching the node's port itself (security audit O-1, #428).
+  global.fetch = jest.fn(async () => {
+    throw new Error('the chrome must not fetch the Ant API directly');
+  });
+  const apiGet =
+    options.apiGetImpl ||
+    jest.fn(async (endpoint) => {
+      if (endpoint === '/peers') {
+        return { ok: true, status: 200, data: { peers: [{ id: 'a' }, { id: 'b' }] } };
       }
-      if (url.endsWith('/topology')) {
+      if (endpoint === '/topology') {
         return {
           ok: true,
-          json: async () => ({
+          status: 200,
+          data: {
             bins: {
               '0': { population: 3 },
               '1': { population: 4 },
             },
-          }),
+          },
         };
       }
 
-      return {
-        ok: true,
-        json: async () => ({ version: 'antd/0.5.8-abcdef' }),
-      };
+      return { ok: true, status: 200, data: { version: 'antd/0.5.8-abcdef' } };
     });
   global.window = {
     ant: beeApi,
@@ -120,17 +118,19 @@ const loadBeeModule = async (options = {}) => {
 
   jest.doMock('./state.js', () => ({
     state,
-    buildAntUrl,
     getDisplayMessage,
   }));
   jest.doMock('./debug.js', () => debugMocks);
+  jest.doMock('./wallet/ant-api.js', () => ({
+    fetchAntJson: (endpoint) => apiGet(endpoint),
+  }));
 
   const mod = await import('./ant-ui.js');
 
   return {
     mod,
     state,
-    buildAntUrl,
+    apiGet,
     getDisplayMessage,
     debugMocks,
     setIntervalMock,
@@ -170,9 +170,10 @@ describe('bee-ui', () => {
     ctx.mod.startAntInfoPolling();
     await flushMicrotasks();
 
-    expect(ctx.buildAntUrl).toHaveBeenCalledWith('/peers');
-    expect(ctx.buildAntUrl).toHaveBeenCalledWith('/topology');
-    expect(ctx.buildAntUrl).toHaveBeenCalledWith('/health');
+    expect(ctx.apiGet).toHaveBeenCalledWith('/peers');
+    expect(ctx.apiGet).toHaveBeenCalledWith('/topology');
+    expect(ctx.apiGet).toHaveBeenCalledWith('/health');
+    expect(global.fetch).not.toHaveBeenCalled();
     expect(ctx.elements.beeInfoPanel.classList.contains('visible')).toBe(true);
     expect(ctx.elements.beePeersCount.textContent).toBe('2');
     expect(ctx.elements.beeNetworkPeers.textContent).toBe('7');

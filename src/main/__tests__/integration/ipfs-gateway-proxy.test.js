@@ -11,8 +11,12 @@
  * `ipfs/gateway-transport.js` against the real PAC from `tor-proxy.js` with a
  * local SOCKS5 proxy standing in for Arti, and asserts the probe's report.
  *
- * Skipped when the Electron binary is not installed — the `test` CI job
- * installs with `npm ci --ignore-scripts`, so it never downloads one. The
+ * Skipped when the Electron binary cannot be resolved — e.g. a checkout whose
+ * `require('electron')` download failed or was blocked. Note that
+ * `--ignore-scripts` does not keep the binary away: the `electron` package has
+ * no postinstall, so the `requireActual` below is itself what downloads it on
+ * a machine that has none (observed in the `test` CI job, which installs with
+ * `--ignore-scripts` and still runs this suite after a ~100 MB fetch). The
  * `ipfs-gateway-proxy` CI job sets `FREEDOM_ELECTRON_NET_TEST=1`, which turns
  * a missing binary into a failure instead, so the coverage cannot silently
  * disappear there.
@@ -38,7 +42,8 @@ function electronBinaryPath() {
 const ELECTRON_PATH = electronBinaryPath();
 if (REQUIRED && !ELECTRON_PATH) {
   throw new Error(
-    'FREEDOM_ELECTRON_NET_TEST=1 but no Electron binary is installed — run `npm ci` without --ignore-scripts'
+    'FREEDOM_ELECTRON_NET_TEST=1 but no Electron binary is installed — fetch it with ' +
+      '`node -e "require(\'electron\')"` (npm ci does not, at any --ignore-scripts setting)'
   );
 }
 const describeWithElectron = ELECTRON_PATH ? describe : describe.skip;

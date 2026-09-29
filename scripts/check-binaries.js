@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { validateInstalledAddon } = require('./fetch-myotis');
+const { checkInstalledElectronVersion } = require('./check-electron-version');
 
 const ANT_BIN_DIR = path.join(__dirname, '..', 'ant-bin');
 const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
@@ -88,9 +89,18 @@ function checkBinaries(platforms) {
 
   // Platform-independent: bundled adblock filter lists (assets/adblock is
   // gitignored; populated by npm run adblock:download).
-  const adblockManifest = path.join(__dirname, '..', 'assets', 'adblock', 'manifest.json');
+  const adblockDir = path.join(__dirname, '..', 'assets', 'adblock');
+  const adblockManifest = path.join(adblockDir, 'manifest.json');
   if (!fs.existsSync(adblockManifest)) {
     missing.push(`adblock filter lists: ${adblockManifest}`);
+  } else {
+    // A lists dir fetched before scriptlet support (#410) has a manifest but
+    // no scriptlet resources — it would ship with YouTube ads unblocked — and
+    // no GPL-3.0 text for the uBlock files the current script adds.
+    for (const file of ['resources.json', 'COPYING.GPL-3.0.txt']) {
+      const target = path.join(adblockDir, file);
+      if (!fs.existsSync(target)) missing.push(`adblock ${file} (stale lists dir): ${target}`);
+    }
   }
 
   for (const { os, arch } of platforms) {
@@ -168,6 +178,19 @@ function ensureOptionalArti(platforms) {
 function main() {
   const platforms = getPlatformArch();
   console.log(`Checking binaries for: ${platforms.map((p) => `${p.os}-${p.arch}`).join(', ')}`);
+
+  // electron-builder packages whatever Electron is in node_modules
+  // (app-builder-lib's computeElectronVersion() reads
+  // node_modules/electron/package.json), not what the lockfile pins. A stale
+  // install ships — and gets smoke-tested as — a different Electron from the
+  // one CI tested (issue #346).
+  const electronProblems = checkInstalledElectronVersion();
+  if (electronProblems.length > 0) {
+    console.error('\n❌ Build cannot proceed. Electron version mismatch:\n');
+    electronProblems.forEach((p) => console.error(`  - ${p}`));
+    console.error('');
+    process.exit(1);
+  }
 
   const missing = checkBinaries(platforms);
 

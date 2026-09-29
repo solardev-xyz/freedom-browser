@@ -44,6 +44,7 @@ function fixture(chainId = 1) {
   let storage;
   let clientConfig;
   const runtime = {
+    clientVersion: 196608,
     Strategy: { VerifiedOnly: 0 },
     Colibri: class {
       static async register_storage(value) {
@@ -67,7 +68,10 @@ function fixture(chainId = 1) {
   const fetch = jest.fn(async (url) => {
     if (url === config.prover) return new Response(Buffer.from('bounded test proof'));
     if (url.endsWith('finality_checkpoints')) return new Response(JSON.stringify(finality));
-    return new Response(JSON.stringify({ data: { root: headerRoot(header) } }));
+    return new Response(JSON.stringify({ data: { root: headerRoot(header) },
+      ...(config.beaconSources?.some(source => url.startsWith(source))
+        ? { finalized: true, execution_optimistic: false } : {}),
+    }));
   });
   return {
     config,
@@ -97,6 +101,14 @@ function fixture(chainId = 1) {
 }
 
 describe('checkpoint proof/finality policy', () => {
+  test('a runtime without an encoded client version fails before requesting evidence', async () => {
+    const f = fixture();
+    f.runtime.clientVersion = undefined;
+    await expect(verifyCheckpoint(1, f.dependencies)).rejects.toMatchObject({
+      code: 'CHECKPOINT_INCOMPATIBLE',
+    });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
   test.each([1, 100])(
     'requires exact checkpoint and explicit finality for chain %i',
     async (chainId) => {
@@ -113,6 +125,13 @@ describe('checkpoint proof/finality policy', () => {
         finalizedEpoch: f.slot / f.config.slotsPerEpoch,
       });
       expect(f.runtime.decode_proof).toHaveBeenCalledWith(f.verifyBytes);
+      const proofRequest = f.fetch.mock.calls.find(([url]) => url === f.config.prover);
+      expect(JSON.parse(proofRequest[1].body)).toEqual({
+        method: 'eth_getBlockByNumber',
+        params: ['latest', false],
+        version: 196608, // 3.0.0; requesting v2 proofs breaks the v3 verifier.
+        zk_proof: true,
+      });
       expect(f.clientConfig).toMatchObject({
         checkpointz: [f.config.source],
         beacon_apis: [],
@@ -305,6 +324,87 @@ describe('checkpoint proof/finality policy', () => {
     expect(result.sources).toEqual(f.config.sources.slice(0, 3).filter((_, i) => i !== index));
   });
 
+  test.each([0, 1, 2])('Gnosis verifies with authority %i offline, including historical Beacon votes', async (index) => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    const diagnostics = [];
+    f.dependencies.onDiagnostic = value => diagnostics.push(value);
+    f.fetch.mockImplementation(url => {
+      if (url.startsWith(f.config.sources[index])) return Promise.resolve(new Response('down', { status: 503 }));
+      if (url.startsWith(f.config.sources[2]) && url.endsWith('finality_checkpoints')) {
+        return Promise.resolve(new Response(JSON.stringify({ finalized: false, execution_optimistic: false,
+          data: { finalized: { epoch: String(f.slot / 16 + 1), root: '0x' + '99'.repeat(32) } },
+        })));
+      }
+      return original(url);
+    });
+    const result = await verifyCheckpoint(100, f.dependencies);
+    expect(result.sources).toEqual(f.config.sources.filter((_, i) => i !== index));
+    expect(f.fetch.mock.calls.some(([url]) => url.endsWith('/slots'))).toBe(false);
+    expect(diagnostics).toContainEqual(expect.objectContaining({ source: f.config.sources[index],
+      outcome: 'CHECKPOINT_UNAVAILABLE', stage: 'block-root', failure: 'http', httpStatus: 503 }));
+    expect(diagnostics.filter(value => value.outcome === 'vote')).toHaveLength(2);
+  });
+
+  test.each([
+    [{}, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+    [{ finalized: true }, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+    [{ finalized: false, execution_optimistic: false }, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+    [{ finalized: 'true', execution_optimistic: false }, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+    [{ finalized: true, execution_optimistic: true }, 'CHECKPOINT_QUORUM_CONFLICT'],
+    [{ finalized: true, execution_optimistic: 'false' }, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+  ])('Beacon root flags %j cannot vote without explicit finality and execution verification', async (flags, code) => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(url => {
+      if (url.startsWith(f.config.sources[1])) return Promise.reject(new Error('offline'));
+      if (url.startsWith(f.config.sources[2]) && url.endsWith('/root')) {
+        return Promise.resolve(new Response(JSON.stringify({ ...flags, data: { root: headerRoot(f.header) } })));
+      }
+      return original(url);
+    });
+    await expect(verifyCheckpoint(100, f.dependencies)).rejects.toMatchObject({ code });
+  });
+
+  test.each(['same-epoch-conflict', 'behind', 'future'])('Beacon finalized flag cannot bypass %s', async variant => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(url => {
+      if (url.startsWith(f.config.sources[1])) return Promise.reject(new Error('offline'));
+      if (url.startsWith(f.config.sources[2]) && url.endsWith('finality_checkpoints')) {
+        return Promise.resolve(new Response(JSON.stringify({ data: { finalized: {
+          epoch: String(f.slot / 16 + (variant === 'behind' ? -1 : variant === 'future' ? 100 : 0)),
+          root: '0x' + '99'.repeat(32),
+        } } })));
+      }
+      return original(url);
+    });
+    await expect(verifyCheckpoint(100, f.dependencies)).rejects.toMatchObject({
+      code: variant === 'same-epoch-conflict' ? 'CHECKPOINT_QUORUM_CONFLICT' : 'CHECKPOINT_QUORUM_UNAVAILABLE',
+    });
+  });
+
+  test('a Gnosis quorum containing PublicNode cannot bypass an invalid Colibri proof', async () => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(url => url.startsWith(f.config.sources[0])
+      ? Promise.reject(new Error('offline')) : original(url));
+    f.failVerification(new Error('invalid proof'));
+    await expect(verifyCheckpoint(100, f.dependencies)).rejects.toMatchObject({ code: 'CHECKPOINT_MISMATCH' });
+  });
+
+  test('malformed source JSON has bounded diagnostics; diagnostic failure cannot veto other votes', async () => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    const diagnostics = [];
+    f.dependencies.onDiagnostic = value => { diagnostics.push(value); throw new Error('logging failed'); };
+    f.fetch.mockImplementation(url => url.startsWith(f.config.sources[0])
+      ? Promise.resolve(new Response('<html>secret upstream response</html>')) : original(url));
+    await expect(verifyCheckpoint(100, f.dependencies)).resolves.toMatchObject({ sources: f.config.sources.slice(1) });
+    expect(diagnostics).toContainEqual(expect.objectContaining({ failure: 'invalid-json', stage: 'block-root' }));
+    expect(JSON.stringify(diagnostics)).not.toContain('secret');
+  });
+
   test.each([1, 100])('chain %i never accepts one vote', async (chainId) => {
     const f = fixture(chainId);
     const original = f.fetch.getMockImplementation();
@@ -427,6 +527,7 @@ describe('checkpoint proof/finality policy', () => {
     const original = f.fetch.getMockImplementation();
     const entry = { slot: f.slot, block_root: headerRoot(f.header) };
     f.fetch.mockImplementation((url) => {
+      if (url.startsWith(f.config.sources[2])) return Promise.reject(new Error('offline'));
       if (!url.startsWith(f.config.sources[1])) return original(url);
       if (url.endsWith('finality_checkpoints')) return Promise.resolve(new Response(JSON.stringify({
         data: { finalized: { epoch: String(f.slot / 16 + 1), root: '0x' + '99'.repeat(32) } },
@@ -449,7 +550,7 @@ describe('checkpoint proof/finality policy', () => {
       return originalVerify.apply(this, args);
     };
     await verifyCheckpoint(100, f.dependencies);
-    expect(f.fetch).toHaveBeenCalledTimes(5);
+    expect(f.fetch).toHaveBeenCalledTimes(7);
   });
 
   test('all authorities agreeing cannot override invalid Colibri proof', async () => {
@@ -486,6 +587,19 @@ describe('checkpoint proof/finality policy', () => {
 });
 
 describe('bounded HTTP bodies', () => {
+  test('a silent source times out with a bounded diagnostic', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetch = (_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+      const result = fetchBytes(fetch, 'https://test.invalid', {}, MAX_METADATA_BYTES);
+      const assertion = expect(result).rejects.toMatchObject({ code: 'CHECKPOINT_UNAVAILABLE', failure: 'timeout' });
+      await jest.advanceTimersByTimeAsync(20000);
+      await assertion;
+      expect(jest.getTimerCount()).toBe(0);
+    } finally { jest.useRealTimers(); }
+  });
   test('rejects oversized Content-Length before reading it', async () => {
     const response = new Response('x', {
       headers: { 'content-length': String(MAX_PROOF_BYTES + 1) },
@@ -535,21 +649,63 @@ describe('bounded HTTP bodies', () => {
 // Use the actual pinned WASM in a fresh process; do not confuse mocked policy
 // checks above with cryptographic verification. Responses are public captures,
 // and the clock is restored to capture time so this test is deterministic/offline.
-// Metadata is replayed for each voter: this tests cryptographic integration, not
-// independent real-world quorum observations (covered by the live campaign).
+// Each authority's actual response is replayed separately. These tests make no
+// network requests; the capture script records the live quorum observations.
 describe('captured proofs with the real Colibri WASM', () => {
   beforeAll(() => {
     // These captures qualify this exact verifier/API, not a semver-compatible build.
-    expect(require('@corpus-core/colibri-stateless/package.json').version).toBe('2.0.6');
+    expect(require('@corpus-core/colibri-stateless/package.json').version).toBe('3.0.0');
   });
+  test('real Gnosis proof requires PublicNode historical finality when Gnosis Checkpointz is offline', () => {
+    const dir = path.resolve(__dirname, '../../../docs/audits/evidence/gnosis-recovery-2026-09/capture');
+    const script = `
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const { verifyCheckpoint } = require(${JSON.stringify(path.join(__dirname, 'checkpoint-verifier-worker.js'))});
+      const dir = ${JSON.stringify(dir)};
+      const original = JSON.parse(fs.readFileSync(path.join(dir, 'verified-checkpoint.json')));
+      const responses = JSON.parse(fs.readFileSync(path.join(dir, 'responses.json')));
+      const proof = fs.readFileSync(path.join(dir, 'proof.ssz'));
+      Date.now = () => original.verifiedAt;
+      const fetch = (stripFinality, corrupt) => async (url, options) => {
+        if (options.method === 'POST') {
+          const bytes = Buffer.from(proof);
+          if (corrupt) bytes[bytes.length - 1] ^= 1;
+          return new Response(bytes);
+        }
+        if (!responses[url]) throw new Error('Provider offline in capture');
+        const response = responses[url];
+        const body = JSON.parse(response.body);
+        if (stripFinality && url.startsWith('https://gnosis-beacon-api.publicnode.com/') && url.endsWith('/root'))
+          delete body.finalized;
+        return new Response(JSON.stringify(body), { status: response.status });
+      };
+      (async () => {
+        const good = await verifyCheckpoint(100, { fetch: fetch(false, false) });
+        let missingFinality, corrupt;
+        try { await verifyCheckpoint(100, { fetch: fetch(true, false) }); } catch (e) { missingFinality = e.code; }
+        try { await verifyCheckpoint(100, { fetch: fetch(false, true) }); } catch (e) { corrupt = e.code; }
+        console.log(JSON.stringify({ good, missingFinality, corrupt }));
+      })().catch(e => { console.error(e); process.exitCode = 1; });
+    `;
+    const result = JSON.parse(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 30000 })
+      .trim().split('\n').at(-1));
+    expect(result.good).toEqual(JSON.parse(fs.readFileSync(path.join(dir, 'verified-checkpoint.json'))));
+    expect(result.good.sources).toContain('https://gnosis-beacon-api.publicnode.com');
+    expect(result.missingFinality).toBe('CHECKPOINT_QUORUM_UNAVAILABLE');
+    expect(result.corrupt).toBe('CHECKPOINT_MISMATCH');
+  }, 40000);
   test.each(['mainnet', 'gnosis'])(
-    '%s proof verifies; corruption and wrong chain reject',
+    '%s proof verifies; corruption, wrong chain, stale and legacy proofs reject',
     (network) => {
       const dir = path.resolve(
         __dirname,
+        '../../../docs/audits/evidence/colibri-v3-2026-09/captures/' + network
+      );
+      const legacyProofPath = path.resolve(
+        __dirname,
         '../../../docs/audits/evidence/myotis-recovery-spike-2026-09/captures/' +
-          network +
-          '-finalized'
+          network + '-finalized/proof.ssz'
       );
       const workerPath = path.join(__dirname, 'checkpoint-verifier-worker.js');
       expect(fs.existsSync(path.join(dir, 'proof.ssz'))).toBe(true);
@@ -559,25 +715,41 @@ describe('captured proofs with the real Colibri WASM', () => {
       const {verifyCheckpoint} = require(${JSON.stringify(workerPath)});
       const dir = ${JSON.stringify(dir)};
       const original = JSON.parse(fs.readFileSync(path.join(dir, 'verified-checkpoint.json')));
-      Date.now = () => Date.parse(original.verifiedAt);
+      Date.now = () => original.verifiedAt;
       const proof = fs.readFileSync(path.join(dir, 'proof.ssz'));
+      const responses = JSON.parse(fs.readFileSync(path.join(dir, 'responses.json')));
+      const prover = require('./src/main/myotis/checkpoint-verifier').CHECKPOINT_NETWORKS[original.chainId].prover;
       const fetch = async (url) => {
-        if (!url.includes('/eth/v1/')) return new Response(proof);
-        return new Response(fs.readFileSync(path.join(dir, url.endsWith('finality_checkpoints') ? 'finality.json' : 'checkpoint-1.json')));
+        if (url === prover) return new Response(proof);
+        const response = responses[url];
+        if (!response) throw new Error('Uncaptured request: ' + url);
+        return new Response(response.body, {status: response.status});
       };
       (async () => {
         const good = await verifyCheckpoint(original.chainId, {fetch});
-        let corrupt, wrongChain;
+        let corrupt, wrongChain, stale, legacy;
         const malformed = [];
         for (const body of ['{"error":"busy"}', '<html>Maintenance</html>', 'malformed proof']) {
           try { await verifyCheckpoint(original.chainId, {fetch: async () => new Response(body)}); }
           catch(e) { malformed.push(e.code); }
         }
         const badProof = Buffer.from(proof); badProof[badProof.length - 1] ^= 1;
-        const badFetch = async (url) => !url.includes('/eth/v1/') ? new Response(badProof) : fetch(url);
+        const badFetch = async (url) => url === prover ? new Response(badProof) : fetch(url);
         try { await verifyCheckpoint(original.chainId, {fetch: badFetch}); } catch(e) { corrupt=e.code; }
-        try { await verifyCheckpoint(original.chainId === 1 ? 100 : 1, {fetch}); } catch(e) { wrongChain=e.code; }
-        console.log(JSON.stringify({good, corrupt, wrongChain, malformed}));
+        // Supply the same wrong-network proof AND metadata to the other chain's
+        // endpoints: rejection must not be caused merely by a missing fixture.
+        const proofForAnyProver = async (url, options) => {
+          if (options.method === 'POST') return new Response(proof);
+          const entry = Object.entries(responses).find(([recorded]) => new URL(recorded).pathname === new URL(url).pathname);
+          if (!entry) throw new Error('Uncaptured wrong-chain request: ' + url);
+          return new Response(entry[1].body, {status: entry[1].status});
+        };
+        try { await verifyCheckpoint(original.chainId === 1 ? 100 : 1, {fetch: proofForAnyProver}); } catch(e) { wrongChain=e.code; }
+        const legacyProof = fs.readFileSync(${JSON.stringify(legacyProofPath)});
+        try { await verifyCheckpoint(original.chainId, {fetch: async () => new Response(legacyProof)}); } catch(e) { legacy=e.code; }
+        Date.now = () => original.verifiedAt + 120000;
+        try { await verifyCheckpoint(original.chainId, {fetch}); } catch(e) { stale=e.code; }
+        console.log(JSON.stringify({good, corrupt, wrongChain, stale, legacy, malformed}));
       })().catch(e => { console.error(e); process.exitCode=1; });
     `;
       const result = JSON.parse(
@@ -587,7 +759,11 @@ describe('captured proofs with the real Colibri WASM', () => {
           .at(-1)
       );
       expect(result.good.network).toBe(network);
+      const original = JSON.parse(fs.readFileSync(path.join(dir, 'verified-checkpoint.json')));
+      expect(result.good).toMatchObject({ root: original.root, slot: original.slot, sources: original.sources });
       expect(result.corrupt).toBe('CHECKPOINT_MISMATCH');
+      expect(result.stale).toBe('CHECKPOINT_STALE');
+      expect(result.legacy).toBe('CHECKPOINT_UNAVAILABLE');
       expect(result.malformed).toEqual(Array(3).fill('CHECKPOINT_UNAVAILABLE'));
       // Wrong-network metadata may fail the quorum clock check before the proof check.
       expect(['CHECKPOINT_MISMATCH', 'CHECKPOINT_CLOCK']).toContain(result.wrongChain);

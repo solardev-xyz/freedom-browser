@@ -1,0 +1,149 @@
+{
+  "network": "gnosis",
+  "date": "2026-09-24",
+  "sourceLogSha256": "31c288e190690ec54db8bceb1306f662913c8e09b222b0765de425a091dc864b",
+  "seedPinReceipts": ["[myotis] gnosis seed pins (18) applied"],
+  "events": [
+    {
+      "type": "profile",
+      "elapsedMs": 37
+    },
+    {
+      "type": "status",
+      "elapsedMs": 203,
+      "state": "syncing"
+    },
+    {
+      "type": "status",
+      "elapsedMs": 1206,
+      "state": "syncing",
+      "beaconState": "SYNCING",
+      "snapPeers": 0,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 2208,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 3210,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 4213,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 5216,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 6217,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 7218,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 8218,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 9219,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 10221,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 11223,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 12224,
+      "state": "ready",
+      "beaconState": "SYNCED",
+      "snapPeers": 4,
+      "snapServingPeers": 2
+    },
+    {
+      "type": "account",
+      "elapsedMs": 12252,
+      "firstReadyMs": 12224,
+      "ms": 28,
+      "result": {
+        "accountHashHex": "0x1468288056310c82aa4c01a7e12a10f8111a0560e72b700555479031b86c357d",
+        "address": "0x0000000000000000000000000000000000000001",
+        "anchor": "head",
+        "balanceWei": "469841162495078009658",
+        "beaconChainVerified": true,
+        "beaconSynced": true,
+        "blockNumber": 48419890,
+        "blsVerified": true,
+        "codeHashHex": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+        "exists": true,
+        "failReason": null,
+        "finalizedBlockNumber": 48419858,
+        "finalizedPeriod": 3693,
+        "matchedBeaconSlot": 30257472,
+        "nonce": 0,
+        "optimisticBlockNumber": 48419890,
+        "peerProofValid": true,
+        "peerStateRootHex": "0x018ccb35237515fcb72ab84a82213f6b3534fea87fdf7f00f272cae2b204f17f",
+        "proofNodesHex": [],
+        "storageRootHex": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "verifyMethod": "stateRootMatch",
+        "wallClockPeriod": 3693
+      }
+    },
+    {
+      "type": "complete",
+      "elapsedMs": 12283,
+      "success": true,
+      "stopped": [true, true]
+    }
+  ]
+}

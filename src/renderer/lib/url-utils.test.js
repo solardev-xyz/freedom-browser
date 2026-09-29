@@ -189,6 +189,24 @@ describe('url-utils', () => {
       const suffix = 'path/file.html';
       expect(composeTargetUrl(base, suffix)).toBe('not-a-valid-urlpath/file.html');
     });
+
+    test('keeps a colon-bearing first segment inside the base', () => {
+      // A bare `re:port` reference parses as scheme `re:`, not as a path
+      // relative to the base — the same RFC 3986 §4.2 trap
+      // `lib/gateway-location.js` guards against on the main-process side.
+      const base = 'http://127.0.0.1:1633/bzz/hash/';
+      expect(composeTargetUrl(base, '/re:port')).toBe('http://127.0.0.1:1633/bzz/hash/re:port');
+      expect(composeTargetUrl(base, 're:port/index.html')).toBe(
+        'http://127.0.0.1:1633/bzz/hash/re:port/index.html'
+      );
+    });
+
+    test('keeps a doubled leading slash inside the base', () => {
+      const base = 'http://127.0.0.1:1633/bzz/hash/';
+      expect(composeTargetUrl(base, '//evil.test/x')).toBe(
+        'http://127.0.0.1:1633/bzz/hash//evil.test/x'
+      );
+    });
   });
 
   describe('deriveBzzBaseFromUrl', () => {
@@ -271,6 +289,18 @@ describe('url-utils', () => {
       expect(result).toEqual({
         targetUrl: 'http://127.0.0.1:1633/bzz/1234567890abcdef/index.html',
         displayValue: 'bzz://1234567890abcdef/index.html',
+        baseUrl: 'http://127.0.0.1:1633/bzz/1234567890abcdef/',
+      });
+    });
+
+    test('formats a colon-bearing directory segment into the gateway path', () => {
+      // `:` is a legal Swarm manifest directory name; the composed gateway URL
+      // must stay under the base instead of becoming the bare `re:port` URL.
+      const input = 'bzz://1234567890abcdef/re:port/index.html';
+      const result = formatBzzUrl(input, BZZ_ROUTE_PREFIX);
+      expect(result).toEqual({
+        targetUrl: 'http://127.0.0.1:1633/bzz/1234567890abcdef/re:port/index.html',
+        displayValue: 'bzz://1234567890abcdef/re:port/index.html',
         baseUrl: 'http://127.0.0.1:1633/bzz/1234567890abcdef/',
       });
     });
@@ -1066,6 +1096,21 @@ describe('url-utils', () => {
         expect(result).toBe('ipfs://modern.eth/app');
       });
 
+      // The counterpart to the Swarm case-insensitivity test above: base58
+      // case is load-bearing, so a case-folded CIDv0 is a different,
+      // unresolvable reference (`buildGatewayUrl` answers it with a 400) and
+      // must not be painted with this name. See the note in
+      // `extractEnsResolutionMetadata`.
+      test('does not name-preserve a case-folded CIDv0 root', () => {
+        const cid = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+        const folded = cid.toLowerCase();
+        const ensNames = new Map([[cid, 'ipfsdapp.eth']]);
+
+        expect(applyEnsNamePreservation(`ipfs://${folded}/docs`, ensNames)).toBe(
+          `ipfs://${folded}/docs`
+        );
+      });
+
       test('returns original URL for unknown IPFS CID', () => {
         const cid = 'QmUnknownCidThatDoesNotExistInOurMap12345678901';
         const ensNames = new Map([['QmDifferentCid', 'other.eth']]);
@@ -1082,6 +1127,17 @@ describe('url-utils', () => {
 
         const result = applyEnsNamePreservation(`ipns://${ipnsId}`, ensNames);
         expect(result).toBe('ipns://dynamic.eth');
+      });
+
+      // Same rule as the CIDv0 case above, for a base58 peer-ID root.
+      test('does not name-preserve a case-folded base58 IPNS root', () => {
+        const ipnsId = '12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp';
+        const folded = ipnsId.toLowerCase();
+        const ensNames = new Map([[ipnsId, 'dynamic.eth']]);
+
+        expect(applyEnsNamePreservation(`ipns://${folded}/other`, ensNames)).toBe(
+          `ipns://${folded}/other`
+        );
       });
 
       test('preserves transport scheme + path for IPNS', () => {

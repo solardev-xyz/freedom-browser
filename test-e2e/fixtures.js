@@ -12,12 +12,16 @@
 // `packaged` project (`npm run test:e2e:packaged`) smoke-tests a release
 // artifact. Unset, everything below behaves exactly as it did before.
 
-const { test: base, expect, _electron: electron } = require('@playwright/test');
+const { test: base, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { isPackagedRun, packagedLaunchTarget } = require('./packaged-launch');
+const {
+  isPackagedRun,
+  packagedLaunchTarget,
+  launchApp: launchTarget,
+} = require('./packaged-launch');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -45,9 +49,10 @@ function launchOptions(userDataDir) {
 
 // Launch one Freedom instance against `userDataDir`. Exported through the
 // `relaunchApp` fixture rather than directly so every app a spec opens is
-// closed at teardown.
+// closed at teardown. A packaged run is driven over CDP rather than through
+// Playwright's Electron launcher; see packaged-launch.js.
 function launchApp(userDataDir) {
-  return electron.launch(launchOptions(userDataDir));
+  return launchTarget(launchOptions(userDataDir));
 }
 
 // First BrowserWindow, waited until the browser chrome has mounted. The
@@ -215,6 +220,24 @@ const waitForPopoverFrame = (window) =>
       })
   );
 
+// Click a chrome element that sits over the tab's `<webview>` and has only just
+// appeared (or moved) there, until the click's effect shows. The frame wait
+// above closes most of the window, but not all of it: in a just-launched app on
+// a loaded machine the guest has been seen (2026-09-29, `tab-mute`, `downloads`,
+// `publisher-identity-selector`, `chrome-input-focus`, 1 run in 5–10) to take
+// the click after two frames — no pointer event reached the chrome, and
+// `document.activeElement` was the `<webview>`. `click` is re-issued only while
+// `landed()` is false, so a toggle is never clicked twice by the retry itself.
+const clickOverGuest = async (window, click, landed, { timeout = 15_000 } = {}) => {
+  await expect(async () => {
+    if (!(await landed())) {
+      await waitForPopoverFrame(window);
+      await click();
+    }
+    await expect.poll(landed, { timeout: 1000 }).toBe(true);
+  }).toPass({ timeout });
+};
+
 // Convenience: an arbitrary 64-char Swarm hex hash for fixture-driven
 // `bzz://` navigation. Specs should treat this as opaque.
 const SAMPLE_BZZ_HASH = 'a'.repeat(64);
@@ -225,6 +248,7 @@ module.exports = {
   expect,
   browserWindow,
   waitForPopoverFrame,
+  clickOverGuest,
   SAMPLE_BZZ_HASH,
   SAMPLE_IPFS_CID,
 };

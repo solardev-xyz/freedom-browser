@@ -327,7 +327,7 @@ describeTree('npm-ci-hardening process bound', () => {
 
     try {
       // Stand-in for `npm ci`: a process whose *child* is the one that stalls,
-      // the shape the Electron postinstall download has. Signalling only the
+      // the shape a `postinstall` lifecycle script has. Signalling only the
       // command we started would leave that child running.
       const child = `
         const fs = require('fs');

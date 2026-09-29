@@ -569,7 +569,9 @@ function guardOnchainAppRequest(details) {
 }
 
 function installOnchainProvenanceCapture() {
-  registerWebRequestHandler('onBeforeRequest', 'onchain-app-guard', guardOnchainAppRequest);
+  registerWebRequestHandler('onBeforeRequest', 'onchain-app-guard', guardOnchainAppRequest, {
+    failClosed: true,
+  });
   registerWebRequestHandler(
     'onHeadersReceived',
     'onchain-provenance',

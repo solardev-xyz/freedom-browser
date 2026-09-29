@@ -48,6 +48,18 @@
 //
 // which copies every `*-actual.png` back over its baseline.
 //
+// The baselines also assume a checkout *without* the bundled ad-block filter
+// lists (`assets/adblock/`, git-ignored, fetched by `npm run adblock:download`).
+// CI's screenshots job never downloads them, so `40-settings-adblock` and
+// `44-settings-search` (whose `block` query lists Ad Blocking rows) depict the
+// no-lists state: the section's single "cannot run" notice with its controls
+// inactive (#274). With the lists present — e.g. after running
+// `settings-adblock.spec.js`, which needs them — those two surfaces render
+// live toggles, rule counts and a lists-present status line and fail with a
+// large diff unrelated to your change. Move `assets/adblock/` aside before
+// running or updating this spec locally, and never adopt those two baselines
+// from a run that had it.
+//
 // Both npm scripts set `FREEDOM_E2E_STABLE_TEXT=1`, which launches Electron
 // with `--disable-lcd-text --disable-font-subpixel-positioning`. Without it
 // Chromium flips a surface between subpixel and greyscale text antialiasing as
@@ -194,6 +206,16 @@ async function guestScrollbarMask(win) {
   );
   return [win.locator(`#${GUEST_SCROLLBAR_MASK}`)];
 }
+
+// Types into the settings page's own "Search settings" field (#281) the way
+// the page hears a keystroke, so the result list is rendered by the page
+// rather than assembled by the spec.
+const setSearchQuery = (page, query) =>
+  page.evaluate((value) => {
+    const field = document.getElementById('settings-search');
+    field.value = value;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  }, query);
 
 const BASELINE_FILES = baselineFiles();
 
@@ -427,6 +449,17 @@ test.describe('renderer screenshots', () => {
           await page.waitForTimeout(600);
           await shot(`${30 + i}-settings-${section}`);
         }
+        // The page-wide search (#281): the sidebar field with a query, and
+        // the result list that stands in for whichever section was open. The
+        // query is deliberately one only static rows answer — the `[data-tor]`
+        // rows depend on whether the build bundles Arti, which would make
+        // this baseline depend on the checkout it was rendered from.
+        await setSearchQuery(page, 'block');
+        await page.waitForTimeout(600);
+        await shot('44-settings-search');
+        await setSearchQuery(page, '');
+        await page.waitForTimeout(300);
+
         await recipes.shortcutConflict(ctx);
         await shot('45-settings-shortcut-conflict');
         surfaces.tookEverySurface();

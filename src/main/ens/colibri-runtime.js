@@ -35,5 +35,25 @@ process.env.C4_DISABLE_NATIVE = '1';
 
 const Colibri = require('@corpus-core/colibri-stateless').default;
 const { Strategy, decode_proof } = require('@corpus-core/colibri-stateless');
+// Provers route legacy and v3 proof formats using the encoded client version.
+// Manual proof requests must advertise the installed verifier's version, too.
+// Upstream packs that number as three single-byte fields
+// (major << 16 | minor << 8 | patch): the installed build's own
+// `_c4w_get_current_version_number()` returns 196608 for 3.0.0 (verified
+// 2026-09-19 by calling that export on the shipped `c4w.wasm`), which is what
+// the encoding below produces. A version outside that shape — a pre-release
+// tag, a part >= 256, a 2- or 4-part version — has no representation here, and
+// guessing one would hand the prover a wrong but plausible integer that passes
+// the worker's `Number.isSafeInteger` guard. Refuse instead: `null` fails that
+// guard closed (`CHECKPOINT_INCOMPATIBLE`), so such a bump has to re-derive the
+// encoding from the WASM export above rather than silently misroute proofs.
+const versionParts = /^(\d+)\.(\d+)\.(\d+)$/
+  .exec(require('@corpus-core/colibri-stateless/package.json').version)
+  ?.slice(1)
+  .map(Number);
+const clientVersion =
+  versionParts && versionParts.every((part) => part <= 255)
+    ? versionParts.reduce((version, part) => version * 256 + part, 0)
+    : null;
 
-module.exports = { Colibri, Strategy, decode_proof };
+module.exports = { Colibri, Strategy, decode_proof, clientVersion };

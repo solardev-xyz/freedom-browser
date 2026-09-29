@@ -17,14 +17,10 @@ test('the packaged app launches with its browser chrome', async ({ window, elect
   expect(await window.title()).toContain('Freedom');
 
   // Exactly one BrowserWindow: the main window, with no crash/error dialog
-  // window alongside it. (`electronApp.windows()` also counts the home page's
-  // webview, so count real windows in the main process instead.)
-  const windows = await electronApp.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows().map((win) => ({
-      title: win.getTitle(),
-      destroyed: win.isDestroyed(),
-    }))
-  );
+  // window alongside it. Counted in the main process (BrowserWindow.
+  // getAllWindows(), via the harness's app-facts op), not from the CDP page
+  // list, which also holds the home page's webview.
+  const { windows } = await electronApp.appFacts();
   expect(windows).toHaveLength(1);
   expect(windows[0].destroyed).toBe(false);
   expect(windows[0].title).toContain('Freedom');
@@ -34,13 +30,16 @@ test('the binary under test really is a packaged Electron build', async ({
   window,
   electronApp,
 }) => {
-  const build = await electronApp.evaluate(({ app }) => ({
-    electron: process.versions.electron,
-    chrome: process.versions.chrome,
-    packaged: app.isPackaged,
+  // Read in the main process (the harness's app-facts op; packaged builds have
+  // no main-process inspector to evaluate in, see packaged-launch.js).
+  const facts = await electronApp.appFacts();
+  const build = {
+    electron: facts.electron,
+    chrome: facts.chrome,
+    packaged: facts.packaged,
     // Trips if the suite were pointed at a source checkout by mistake.
-    executable: process.execPath,
-  }));
+    executable: facts.execPath,
+  };
 
   expect(build.electron).toMatch(/^\d+\.\d+/);
   expect(build.chrome).toMatch(/^\d+\./);

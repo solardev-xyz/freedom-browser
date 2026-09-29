@@ -23,10 +23,7 @@ const { test, expect } = require('../fixtures');
 const isMac = process.platform === 'darwin';
 
 async function layout(electronApp) {
-  const { resourcesPath, execPath } = await electronApp.evaluate(() => ({
-    resourcesPath: process.resourcesPath,
-    execPath: process.execPath,
-  }));
+  const { resourcesPath, execPath } = await electronApp.appFacts();
   return {
     resourcesPath,
     // Where Electron's own dist files land: beside the executable everywhere

@@ -384,9 +384,9 @@ function registerDappPermissionsIpc() {
     return isTransactionAutoApproved(origin, to, selector, chainId);
   });
 
-  ipcMain.handle(IPC.DAPP_ADD_TX_AUTO_APPROVE, (_event, origin, to, selector, chainId) => {
-    return addTransactionAutoApprove(origin, to, selector, chainId);
-  });
+  // No IPC adds a transaction auto-approve rule: the only way in is
+  // `wallet:dapp-send-transaction`'s `rememberAutoApprove`, from a send the
+  // user just confirmed (security audit O-7).
 
   ipcMain.handle(IPC.DAPP_REMOVE_TX_AUTO_APPROVE, (_event, origin, to, selector, chainId) => {
     return removeTransactionAutoApprove(origin, to, selector, chainId);

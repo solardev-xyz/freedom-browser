@@ -210,7 +210,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 ## Ad Blocking
 
 - **Request Blocking**: Blocks ads and trackers with Ghostery's blocking engine.
-- **List Categories**: Configure EasyList, EasyPrivacy, cookie-notice, and annoyance lists independently.
+- **List Categories**: Configure EasyList, EasyPrivacy, cookie-notice, and annoyance lists independently. "Block ads" also covers uBlock Origin's own filters, which are bundled with each release and not yet part of the Swarm updates.
+- **Scriptlets**: List rules that have to patch a page's scripts — for example removing YouTube's video-ad entries from the player's data — run before the page's own code, in the page and in its frames.
 - **Authenticated Updates**: Optional Swarm-delivered updates require a pinned signer, valid manifest shape, increasing version, and matching content hashes before activation.
 - **Per-Site Allowlist**: Exempt individual hosts from filtering in Settings.
 
@@ -220,7 +221,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 - **Ledger Support**: Connect Ledger Ethereum accounts over USB and confirm signatures and transactions on the device.
 - **Phone Signing**: Pair your phone by QR code and approve signatures and transactions there — wallet requests are relayed to the phone over an end-to-end encrypted OpenLV channel via the hosted bridge, and every returned signature is verified before use.
 - **Ethereum Provider**: Sites can request wallet access, signatures, and transactions through the permissioned `window.ethereum` provider.
-- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging.
+- **Swarm Provider**: Permissioned `window.swarm` APIs cover publishing, chunks, feeds, signing identities, and messaging. It is the only way a page reaches your Swarm node: requests from web content to the node's local HTTP API (`localhost:1633` and the port Freedom runs it on) are blocked, except a node URL you open in the address bar, and `bzz://` pages are read-only (GET/HEAD).
 - **Radicle Provider**: Permissioned `window.radicle` APIs cover repository data, node operations, signing, and seeding; see the [provider reference](radicle-provider-api.md).
 - **x402 Payments**: Approve pay-as-you-browse requests, configure per-origin auto-pay allowances, and inspect payment history.
 
@@ -270,11 +271,14 @@ Access built-in browser pages using the `freedom://` protocol:
 
 ## Settings & UI
 
+- **Search settings**: A search field in the Settings sidebar covers the whole page. Typing filters every section by control label, description and helper line (case-insensitive substring, no fuzzy matching) and lists each match with the section it lives in — so a setting is findable without knowing which of the 14 sections holds it (Tor's startup toggle is under Experimental, a chain's API keys under RPC Providers). Enter, or clicking a result, opens that section and marks the row it found; Esc clears the field and puts the section you were on back. The Shortcuts section keeps its own search field, which filters only that list. The index is read from what each section has on the page at that moment, so a chain is findable by its own name from the Chains list — but not while that list is replaced by a single chain's own page or by the add-chain form; leaving Chains puts the list, and those rows, back.
 - **Theme**: Light, Dark, or System (follows OS preference).
 - **Tabs in Title Bar** (Linux only): Use the tab strip as the window title bar. Takes effect after restart.
 - **Search**: Choose the address-bar search engine, or add a custom one from an HTTPS URL template containing `{searchTerms}`.
 - **Node Auto-start**: Toggle whether Swarm, IPFS, Radicle, and (experimental) Myotis Ethereum/Gnosis nodes start automatically at launch (Swarm and IPFS enabled by default; Radicle and Myotis are opt-in).
 - **Site Permissions**: When a site asks to use your camera, microphone, notifications, clipboard, location, or MIDI devices, a prompt appears under the address bar (Allow / Block, with "Remember for this site"). Dismissing the prompt (Esc or clicking away) denies that one request without recording anything, so the site can ask again — but after three dismissals in a row Freedom blocks that permission for the rest of the session instead of letting the page keep re-asking. Remembered decisions are listed under Settings → Site Permissions with per-permission, per-site, and remove-all revocation; sites with granted permissions — and sites blocked that way after repeated dismissals — show an indicator icon in the address bar with quick revoke, which lets the site ask again. That indicator lists — and its Remove lifts — what applies in the window you are looking at: a decision made in a private window is lifted there only, and a Remove in a normal window leaves an open private window's own decisions alone. Settings → Site Permissions stays profile-wide, open private windows included.
+- **Pop-up blocker**: A site can open a new tab (`window.open`, a `target="_blank"` link) only right after you click or press a key on the page, and each click opens at most one; Freedom's own pages are exempt. A blocked pop-up shows an icon in the address bar listing what was blocked, with **Open** for each and **Always allow pop-ups on this site**. That allow is a site permission: it shows in the site permissions indicator and in Settings → Site Permissions, where it is removed, and in a private window it lasts only as long as the window.
+- **Links to other apps**: A link a page offers to another application — `magnet:`, `mailto:`, `tel:`, `zoommtg:` and the like — raises the same prompt ("… wants to open magnet: links in <app>"), decided per site and per link type, so allowing `magnet:` never allows anything else. Only a click on the page can raise it, and not from an embedded frame of another site; schemes the browser handles itself, local ones (`file:`), and system handlers with a history of abuse (such as `ms-msdt:`) are never handed to the operating system. Typing such a link into the address bar opens it directly when the system has an app for it.
 - **Ad Blocking**: Choose filter categories, automatic list updates, and per-host exemptions.
 - **Shortcuts**: Search and remap browser commands with conflict detection and per-command reset.
 - **Chains and RPC Providers**: Configure chain endpoints, keyed providers, and ENS verification behavior.

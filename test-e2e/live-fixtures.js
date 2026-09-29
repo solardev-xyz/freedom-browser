@@ -16,12 +16,12 @@
 // for the `live` project; a packaged spec has to ask the app under test
 // where its bundled binaries are (e.g. `window.tor.checkBinary()`).
 
-const { test: base, expect, _electron: electron } = require('@playwright/test');
+const { test: base, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { isPackagedRun, packagedLaunchTarget } = require('./packaged-launch');
+const { isPackagedRun, packagedLaunchTarget, launchApp } = require('./packaged-launch');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -126,7 +126,7 @@ const test = base.extend({
       );
     }
 
-    const app = await electron.launch({
+    const app = await launchApp({
       // Source tree or FREEDOM_E2E_EXECUTABLE — see packaged-launch.js.
       ...packagedLaunchTarget(),
       cwd: repoRoot,
@@ -171,9 +171,52 @@ const test = base.extend({
   },
 });
 
+// Watch the app's own process for a clean quit. Issue #345 took the main
+// process out with SIGABRT on quit (node-addon-api's fatal
+// `Error::ThrowAsJavaScriptException napi_throw` path, reached by destroying
+// the native IPFS dispatcher worker's env mid-call), and a spec that only
+// quits through app.close() never sees that: the app is gone either way, and
+// an aborted exit looks exactly like a clean one from the CDP side.
+//
+// Call this *before* quitting — it starts buffering stderr immediately, so the
+// fatal line is captured wherever in the shutdown it is printed — then await
+// the returned assert function after `electronApp.close()`. The timeout only
+// bounds how long we wait for the exit itself; it resolves as soon as the
+// process is gone.
+function watchProcessExit(electronApp, { timeout = 60_000 } = {}) {
+  const child = electronApp.process();
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  const exited = new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+
+  return async function expectCleanExit() {
+    let timer = null;
+    const timedOut = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ code: 'timed out' }), timeout);
+    });
+    let result;
+    try {
+      result = await Promise.race([exited, timedOut]);
+    } finally {
+      // The exit normally wins in milliseconds; don't leave the loser running
+      // in the Playwright worker every live/packaged-live spec imports this in.
+      clearTimeout(timer);
+    }
+
+    expect(stderr, 'the app printed a fatal error while quitting').not.toContain('FATAL ERROR');
+    expect(result).toEqual({ code: 0, signal: null });
+  };
+}
+
 module.exports = {
   test,
   expect,
+  watchProcessExit,
   HAS_ANT_BINARY,
   ANT_BINARY_PATH,
   HAS_IPFS_NATIVE_ADDON,

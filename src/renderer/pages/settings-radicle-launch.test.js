@@ -1,7 +1,7 @@
 /**
  * `refreshRadicleLaunchStatus` (src/renderer/pages/settings.html).
  *
- * The settings page is an inline classic script, so — like the rad-browser
+ * The settings page is one classic script, so — like the rad-browser
  * page tests — the helper under test is extracted from the source and
  * evaluated with its collaborators injected. That keeps the assertion on the
  * shipped code rather than on a copy.
@@ -10,10 +10,15 @@
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The page's markup plus the classic script it loads (`scripts/settings.js`,
+// moved out of an inline <script> by #432 so the CSP can drop 'unsafe-inline').
+const SOURCE = [
+  fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), 'utf8'),
+].join('\n');
 
 const START = 'const refreshRadicleLaunchStatus = async () => {';
-const END = '\n      };\n';
+const END = '\n};\n';
 
 function loadRefresh({ fields, radicleLaunchHelp, radicleLaunchRow, defaultHelp, freedomAPI }) {
   const start = SOURCE.indexOf(START);

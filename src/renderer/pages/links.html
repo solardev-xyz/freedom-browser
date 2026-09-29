@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none';"
     />
     <title>Link Test Page</title>
     <link rel="stylesheet" href="styles/theme.css" />
@@ -226,7 +226,7 @@
     <div class="test-section">
       <h2>JavaScript window.open()</h2>
       <div class="link-grid">
-        <button onclick="window.open('https://example.com', '_blank')">
+        <button data-open-url="https://example.com" data-open-target="_blank">
           <svg
             class="link-icon"
             viewBox="0 0 24 24"
@@ -242,7 +242,7 @@
           <span class="link-text">window.open('example.com', '_blank')</span>
           <span class="badge js">JS</span>
         </button>
-        <button onclick="window.open('https://httpbin.org/html')">
+        <button data-open-url="https://httpbin.org/html">
           <svg
             class="link-icon"
             viewBox="0 0 24 24"
@@ -259,9 +259,9 @@
           <span class="badge js">JS</span>
         </button>
         <button
-          onclick="
-            window.open('https://jsonplaceholder.typicode.com', 'popup', 'width=600,height=400')
-          "
+          data-open-url="https://jsonplaceholder.typicode.com"
+          data-open-target="popup"
+          data-open-features="width=600,height=400"
         >
           <svg
             class="link-icon"
@@ -548,5 +548,6 @@
         </a>
       </div>
     </div>
+    <script src="scripts/links.js"></script>
   </body>
 </html>

@@ -28,6 +28,10 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+// [processId, routingId] of the guest's main frame and of a sub-frame.
+const MAIN_FRAME = [7, 4];
+const SUB_FRAME = [8, 5];
+
 const loadProvider = async (options = {}) => {
   jest.resetModules();
 
@@ -86,10 +90,17 @@ const loadProvider = async (options = {}) => {
   const webview = createElement('webview');
   webview.send = jest.fn();
   mod.setupRadicleProvider(webview);
+  // The guest's main frame commits, as Electron reports it before any
+  // message from the new document (see guest-main-frame.js).
+  const commitMainFrame = ([frameProcessId, frameRoutingId], isMainFrame = true) => {
+    webview.dispatch('did-frame-navigate', { isMainFrame, frameProcessId, frameRoutingId });
+  };
+  if (options.mainFrameCommitted !== false) commitMainFrame(MAIN_FRAME);
 
-  const sendRequest = (request) => {
+  const sendRequest = (request, frameId = MAIN_FRAME) => {
     webview.dispatch('ipc-message', {
       channel: 'radicle:provider-request',
+      frameId,
       args: [request],
     });
   };
@@ -98,6 +109,7 @@ const loadProvider = async (options = {}) => {
     mod,
     webview,
     sendRequest,
+    commitMainFrame,
     state,
     consentMocks,
     permissions,
@@ -435,6 +447,68 @@ describe('radicle-provider', () => {
         { rid: 'rad:zExample' },
         'https://app.example'
       );
+    });
+  });
+
+  // Audit O-6 (#433): a compromised iframe renderer can still call
+  // ipcRenderer.sendToHost; its requests must not use the top page's grants.
+  describe('only the guest main frame is served', () => {
+    test('a seed request from a sub-frame is dropped before any grant is read', async () => {
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        autoApprove: true,
+      });
+
+      sendRequest({ id: 30, method: 'radicle_seed', params: { rid: 'rad:zExample' } }, SUB_FRAME);
+      await flushMicrotasks();
+
+      expect(permissions.getPermission).not.toHaveBeenCalled();
+      expect(consentMocks.showRadicleSeedApproval).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(responsesSentTo(webview)).toHaveLength(0);
+    });
+
+    test('a connect request from a sub-frame never opens the connect prompt', async () => {
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider();
+
+      sendRequest({ id: 31, method: 'radicle_requestAccess', params: {} }, SUB_FRAME);
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleConnect).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(responsesSentTo(webview)).toHaveLength(0);
+    });
+
+    test('nothing is served before the main frame has committed', async () => {
+      const { webview, sendRequest, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        mainFrameCommitted: false,
+      });
+
+      sendRequest({ id: 32, method: 'radicle_getNodeStatus', params: {} });
+      await flushMicrotasks();
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(responsesSentTo(webview)).toHaveLength(0);
+    });
+
+    test('follows the main frame across a commit; sub-frame commits are ignored', async () => {
+      const { webview, sendRequest, commitMainFrame, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+      });
+      const NEXT_MAIN_FRAME = [9, 4];
+
+      commitMainFrame(SUB_FRAME, false);
+      commitMainFrame(NEXT_MAIN_FRAME);
+      sendRequest({ id: 33, method: 'radicle_getNodeStatus', params: {} }, SUB_FRAME);
+      sendRequest({ id: 34, method: 'radicle_getNodeStatus', params: {} }, MAIN_FRAME);
+      sendRequest({ id: 35, method: 'radicle_getNodeStatus', params: {} }, NEXT_MAIN_FRAME);
+      await flushMicrotasks();
+
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(responsesSentTo(webview)).toEqual([
+        ['radicle:provider-response', { id: 35, result: 'ok', error: null }],
+      ]);
     });
   });
 });

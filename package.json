@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.6-dev",
+  "version": "0.8.7-dev",
   "license": "MPL-2.0",
   "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
@@ -60,6 +60,7 @@
     "test:agent-sandbox:workspace:process-controls": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js process-controls",
     "test:agent-sandbox:workspace:self-test-fault": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js self-test-fault",
     "lint": "eslint .",
+    "changelog:assemble": "node scripts/assemble-changelog.js",
     "styles:inventory": "node scripts/update-renderer-color-literals.js",
     "test:e2e:theme-parity": "playwright test --project=harness test-e2e/theme-parity.spec.js",
     "test:e2e:theme-parity:update": "THEME_CONTRAST_UPDATE=1 playwright test --project=harness test-e2e/theme-parity.spec.js",
@@ -118,6 +119,16 @@
     "appId": "baby.freedom.browser",
     "productName": "Freedom",
     "afterPack": "./scripts/remove-locales.js",
+    "electronFuses": {
+      "runAsNode": true,
+      "enableCookieEncryption": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": true,
+      "resetAdHocDarwinSignature": true
+    },
     "directories": {
       "output": "dist"
     },
@@ -350,7 +361,7 @@
     "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^44.2.0",
+    "electron": "^44.4.5",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
     "eslint": "^10.4.0",
@@ -361,7 +372,7 @@
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
-    "@corpus-core/colibri-stateless": "2.0.6",
+    "@corpus-core/colibri-stateless": "3.0.0",
     "@earendil-works/pi-coding-agent": "0.86.0",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",

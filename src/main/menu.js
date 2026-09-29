@@ -202,7 +202,8 @@ function buildAppMenuSubmenu(updateMenuItems) {
 // so Ctrl+W closed the whole window instead of the active tab (#97); macOS's
 // NSMenu picks the first matching row (Close Tab) and hid the bug.
 //
-// Probed against the Electron this repo ships (44.3.0, Linux, 2026-09-16) with
+// Probed against the Electron the repo shipped at the time (44.3.0, Linux,
+// 2026-09-16; 44.4.1 since #346) with
 // a real Ctrl+W keypress, because neither alternative holds up:
 //   { role: 'close' }                            → window closes (the bug)
 //   { role: 'close', accelerator: null }         → window closes; a null

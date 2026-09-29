@@ -38,6 +38,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUrlInNewWindow: (url) => ipcRenderer.send('window:new-with-url', url),
   showAbout: () => ipcRenderer.send('app:show-about'),
   getPlatform: () => ipcRenderer.invoke('window:get-platform'),
+  // Synchronous copy of process.platform for renderer/platform-init.js, which
+  // must tag <html> before first paint (getPlatform() resolves too late for
+  // layout that differs per OS, e.g. the macOS traffic-light spacer).
+  platform: process.platform,
   getWindowButtonLayout: () => ipcRenderer.invoke('window:get-button-layout'),
   getActiveProfile: () => ipcRenderer.invoke('profile:get-active'),
   listProfiles: () => ipcRenderer.invoke('profile:list'),
@@ -390,6 +394,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tab:new-with-url', handler);
     return () => ipcRenderer.removeListener('tab:new-with-url', handler);
   },
+  // Main's popup blocker refused a tab's popup (#442):
+  // {guestId, url, targetName, reuseOnly, origin}. `guestId` is the tab's
+  // webview webContents id; the address-bar icon shows while it is active.
+  onPopupBlocked: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('popups:blocked', handler);
+    return () => ipcRenderer.removeListener('popups:blocked', handler);
+  },
   onOpenPublishSetup: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('sidebar:open-publish-setup', handler);
@@ -524,6 +536,9 @@ contextBridge.exposeInMainWorld('ant', {
   stop: () => ipcRenderer.invoke('ant:stop'),
   getStatus: () => ipcRenderer.invoke('ant:getStatus'),
   checkBinary: () => ipcRenderer.invoke('ant:checkBinary'),
+  // Read-only node API (GET, allowlisted endpoints) — the node no longer
+  // accepts the chrome's `file:` origin over CORS.
+  apiGet: (endpoint) => ipcRenderer.invoke('ant:api-get', endpoint),
   onStatusUpdate: (callback) => {
     const handler = (_event, value) => callback(value);
     ipcRenderer.on('ant:statusUpdate', handler);
@@ -653,7 +668,12 @@ contextBridge.exposeInMainWorld('quickUnlock', {
   canUseTouchId: () => ipcRenderer.invoke('quick-unlock:can-use-touch-id'),
   isEnabled: () => ipcRenderer.invoke('quick-unlock:is-enabled'),
   enable: (password) => ipcRenderer.invoke('quick-unlock:enable', password),
+  // Touch ID → main unlocks the vault itself; resolves {success, error?}
+  // only. The stored password never reaches the renderer (audit O-8).
   unlock: () => ipcRenderer.invoke('quick-unlock:unlock'),
+  exportMnemonic: () => ipcRenderer.invoke('quick-unlock:export-mnemonic'),
+  exportPrivateKey: (accountIndex) =>
+    ipcRenderer.invoke('quick-unlock:export-private-key', accountIndex),
   disable: () => ipcRenderer.invoke('quick-unlock:disable'),
 });
 
@@ -685,20 +705,30 @@ contextBridge.exposeInMainWorld('wallet', {
   getGasPrice: (chainId) => ipcRenderer.invoke('wallet:get-gas-price', chainId),
   buildErc20Data: (to, amount) => ipcRenderer.invoke('wallet:build-erc20-data', to, amount),
   parseAmount: (amount, decimals) => ipcRenderer.invoke('wallet:parse-amount', amount, decimals),
-  sendTransaction: (params, context) =>
-    ipcRenderer.invoke('wallet:send-transaction', params, context),
+  // Signing confirmation (security audit O-7): an approval screen asks main
+  // for a single-use token bound to exactly the request the user confirmed,
+  // and hands it to the signing call as `{ confirmation: token }`.
+  // kind: 'wallet-send' | 'dapp-send' | 'sign-message' | 'sign-typed-data'
+  //       | 'safe-send' | 'safe-message'.
+  confirmSigning: (kind, accountIndex, payload) =>
+    ipcRenderer.invoke('wallet:confirm-signing', kind, accountIndex, payload),
+  sendTransaction: (params, context, authorization) =>
+    ipcRenderer.invoke('wallet:send-transaction', params, context, authorization),
   getTransactionStatus: (txHash, chainId) =>
     ipcRenderer.invoke('wallet:get-transaction-status', txHash, chainId),
   waitForTransaction: (txHash, chainId, confirmations) =>
     ipcRenderer.invoke('wallet:wait-for-transaction', txHash, chainId, confirmations),
 
   // dApp-specific operations (use specific wallet index)
-  dappSendTransaction: (params, walletIndex, context) =>
-    ipcRenderer.invoke('wallet:dapp-send-transaction', params, walletIndex, context),
-  signMessage: (message, walletIndex) =>
-    ipcRenderer.invoke('wallet:sign-message', message, walletIndex),
-  signTypedData: (typedData, walletIndex) =>
-    ipcRenderer.invoke('wallet:sign-typed-data', typedData, walletIndex),
+  // `authorization` is `{ confirmation }` (see confirmSigning) or
+  // `{ autoApprove: permissionKey }`, which main checks against the site's
+  // stored auto-approve policy itself.
+  dappSendTransaction: (params, walletIndex, context, authorization) =>
+    ipcRenderer.invoke('wallet:dapp-send-transaction', params, walletIndex, context, authorization),
+  signMessage: (message, walletIndex, authorization) =>
+    ipcRenderer.invoke('wallet:sign-message', message, walletIndex, authorization),
+  signTypedData: (typedData, walletIndex, authorization) =>
+    ipcRenderer.invoke('wallet:sign-typed-data', typedData, walletIndex, authorization),
 
   // RPC proxy (renderer CSP blocks direct fetch to external endpoints)
   proxyRpc: (rpcUrl, method, params) =>
@@ -713,8 +743,8 @@ contextBridge.exposeInMainWorld('wallet', {
   activateSafe: (index) => ipcRenderer.invoke('wallet:activate-safe', index),
   // Safe sends (the signing board): every call returns {success, state}
   // where state is the board's render model (null when nothing pending).
-  safeSend: (safeIndex, tx, display, chainId) =>
-    ipcRenderer.invoke('wallet:safe-send', safeIndex, tx, display, chainId),
+  safeSend: (safeIndex, tx, display, chainId, authorization) =>
+    ipcRenderer.invoke('wallet:safe-send', safeIndex, tx, display, chainId, authorization),
   safeSign: (safeIndex, ownerIndex) => ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex),
   safeExecute: (safeIndex) => ipcRenderer.invoke('wallet:safe-execute', safeIndex),
   safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),
@@ -723,8 +753,8 @@ contextBridge.exposeInMainWorld('wallet', {
   // SafeMessage sessions (dApp message signing via EIP-1271). start
   // binds the session to the requesting page ({origin, webContentsId})
   // and returns state.token — required by every other call.
-  safeMessageStart: (safeIndex, request, display, requester) =>
-    ipcRenderer.invoke('wallet:safe-message-start', safeIndex, request, display, requester),
+  safeMessageStart: (safeIndex, request, display, requester, authorization) =>
+    ipcRenderer.invoke('wallet:safe-message-start', safeIndex, request, display, requester, authorization),
   safeMessageSign: (safeIndex, ownerIndex, token) =>
     ipcRenderer.invoke('wallet:safe-message-sign', safeIndex, ownerIndex, token),
   safeMessageState: (safeIndex, token) =>
@@ -860,6 +890,19 @@ contextBridge.exposeInMainWorld('sitePermissions', {
     ipcRenderer.invoke('permissions:revoke', origin, permission, { scope: 'window' }),
   revokeOrigin: (origin) =>
     ipcRenderer.invoke('permissions:revoke-origin', origin, { scope: 'window' }),
+  // The pop-up-blocked icon's "Always allow pop-ups on this site" (#442).
+  // Recorded as the site's `popups` permission in this window's scope
+  // (persisted from a normal window, partition-only from a private one);
+  // main resolves which window from the IPC sender.
+  allowPopups: (origin) => ipcRenderer.invoke('popups:allow-site', origin),
+});
+
+// External-protocol URLs typed into the address bar (magnet:, mailto:, …).
+// Resolves {opened, reason?}; `opened: false` means "not ours — search it"
+// (no OS handler for the scheme) or a blocked scheme. See #406.
+contextBridge.exposeInMainWorld('externalProtocol', {
+  openFromAddressBar: (url) =>
+    ipcRenderer.invoke('external-protocol:open-from-address-bar', url),
 });
 
 contextBridge.exposeInMainWorld('dappPermissions', {
@@ -874,8 +917,6 @@ contextBridge.exposeInMainWorld('dappPermissions', {
     ipcRenderer.invoke('dapp:set-signing-auto-approve', origin, enabled),
   isTransactionAutoApproved: (origin, to, selector, chainId) =>
     ipcRenderer.invoke('dapp:is-tx-auto-approved', origin, to, selector, chainId),
-  addTransactionAutoApprove: (origin, to, selector, chainId) =>
-    ipcRenderer.invoke('dapp:add-tx-auto-approve', origin, to, selector, chainId),
   removeTransactionAutoApprove: (origin, to, selector, chainId) =>
     ipcRenderer.invoke('dapp:remove-tx-auto-approve', origin, to, selector, chainId),
 });
@@ -956,3 +997,24 @@ contextBridge.exposeInMainWorld('swarmFeedStore', {
     ipcRenderer.invoke('swarm:set-feed-identity', origin, identityMode),
   revokeFeedAccess: (origin) => ipcRenderer.invoke('swarm:revoke-feed-access', origin),
 });
+
+// E2E harness bridge, present only when the main process switched the harness
+// on (src/main/test-mode.js) and said so with TEST_HARNESS_RENDERER_ARG on this
+// window's command line (windows/mainWindow.js); the main-process `test:*`
+// handlers in test-harness.js exist only then too. Not read from
+// FREEDOM_TEST_MODE here: a packaged build ignores that variable on its own. The packaged smoke
+// tests drive the app over CDP, since the EnableNodeCliInspectArguments fuse
+// takes Playwright's main-process evaluate away (test-e2e/packaged-launch.js),
+// and reach the harness through this. A fixed list of named operations, never
+// a generic channel: see appFacts() in test-harness.js for why.
+const TEST_HARNESS_OPS = new Set(['app-facts', 'set-content-fixture']);
+// Keep in sync with TEST_HARNESS_RENDERER_ARG in test-mode.js (a sandboxed
+// preload cannot require it; preload.test.js pins the two together).
+if (process.argv.includes('--freedom-test-harness')) {
+  contextBridge.exposeInMainWorld('freedomTest', {
+    invoke: (op, payload) =>
+      TEST_HARNESS_OPS.has(op)
+        ? ipcRenderer.invoke(`test:${op}`, payload)
+        : Promise.reject(new Error(`Unknown test harness operation: ${op}`)),
+  });
+}

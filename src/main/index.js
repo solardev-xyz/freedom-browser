@@ -1,5 +1,19 @@
 // Set app name early, before electron-log initializes (it uses app name for log path)
-const { app, dialog } = require('electron');
+const { app, dialog, ipcMain } = require('electron');
+
+// Sender checks for every IPC handler (docs/security-audit-electron.md, E-1).
+// Installed before anything below can register a handler, so none escapes it.
+// The logger is resolved lazily: electron-log must not initialise before the
+// app name is set just below.
+require('./ipc-sender-policy').installIpcSenderPolicy(ipcMain, {
+  logger: { warn: (...args) => require('./logger').warn(...args) },
+});
+
+// Packaged builds drop --remote-debugging-port/-pipe unless the launch was
+// pointed at a scratch E2E profile (docs/security-audit-electron.md, O-4).
+// Must run before Chromium starts its DevTools handler; logged further down,
+// once the logger may initialise.
+const removedDebugSwitches = require('./remote-debugging-gate').applyRemoteDebuggingGate({ app });
 const RUNTIME_MODE = process.argv.includes('--runtime');
 const { RUNTIME_PROCESS_EXIT_CODES } = require('../shared/automation-runtime-contract');
 const { createRuntimeServer, inspectRuntimeDiscovery } = require('./automation/runtime-server');
@@ -42,7 +56,10 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
   // polluting the real ~/Downloads folder.
   app.setPath('downloads', require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads'));
 }
-const TEST_MODE = process.env.FREEDOM_TEST_MODE === '1';
+// Honoured in a packaged build only when the launch also kept a CDP debug port
+// on a scratch profile, i.e. the packaged E2E launcher
+// (docs/security-audit-electron.md, O-4/O-12); see test-mode.js.
+const TEST_MODE = require('./test-mode').isTestModeRequested();
 const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
 if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
@@ -150,6 +167,13 @@ app.setAboutPanelOptions({
 
 const log = require('./logger');
 
+if (removedDebugSwitches.length) {
+  log.warn(
+    `[security] Ignored ${removedDebugSwitches.map((name) => `--${name}`).join(', ')}: ` +
+      'remote debugging is only available to E2E runs on a scratch profile'
+  );
+}
+
 // Global error handlers - must be set up early
 process.on('uncaughtException', (error) => {
   log.error('Uncaught exception:', error);
@@ -166,13 +190,14 @@ const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({
   logger: log,
   onSignal: shutdownDiagnostics.signal,
 });
-const { BrowserWindow, ipcMain, protocol, safeStorage, session, shell } = require('electron');
+const { BrowserWindow, protocol, safeStorage, session, shell } = require('electron');
 const { registerBaseIpcHandlers, broadcastProfileUpdated } = require('./ipc-handlers');
 const { watchProfileRegistry } = require('./profile-registry-watcher');
 const { installRequestRewriter } = require('./request-rewriter');
 const { installAdblockInterception, registerAdblockIpc } = require('./adblock/service');
 const { installAdblockUpdater } = require('./adblock/update-scheduler');
 const { attachWebRequestDispatcher } = require('./webrequest-dispatcher');
+const { installAntApiGuard } = require('./swarm/ant-api-guard');
 const { installX402Interception } = require('./x402/intercept');
 const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
@@ -311,6 +336,8 @@ const {
   registerPermissionsIpc,
   clearPrivateDecisions: clearPrivatePermissionDecisions,
 } = require('./permissions/permissions-manager');
+const { registerExternalProtocolIpc } = require('./external-protocol');
+const { registerPopupBlockerIpc } = require('./popup-blocker');
 const { registerSwarmIpc } = require('./swarm/stamp-service');
 const { registerPublishIpc } = require('./swarm/publish-service');
 const {
@@ -344,6 +371,7 @@ const {
 const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
+const { registerClientCertificateHandler } = require('./client-certificate');
 const {
   createAgentNodeLifecycleTestOptions,
   createAgentNodeRequestTestOptions,
@@ -383,7 +411,6 @@ function hasRuntimeNodeTransition() {
   );
 }
 
-app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 // Native WebMCP is experimental in the pinned Electron runtime.
 app.commandLine.appendSwitch('enable-blink-features', 'WebMCP,WebMCPTesting');
 log.info('[profile] Active profile:', {
@@ -467,6 +494,8 @@ async function bootstrap() {
   registerNetworkConfigIpc();
   registerDappPermissionsIpc();
   registerPermissionsIpc();
+  registerExternalProtocolIpc();
+  registerPopupBlockerIpc();
   registerX402Ipc();
   registerOnchainProvenanceIpc();
   paymentHistory.registerPaymentHistoryIpc();
@@ -539,6 +568,10 @@ async function bootstrap() {
   }
   // All consumers register their handlers first, then the dispatcher
   // attaches exactly one Electron listener per event to the session.
+  // First in the chain, so no rewrite or later handler can wave a request
+  // to the local Ant API past it (docs/security-audit-electron.md, O-1).
+  // Runs in test mode too — it is browser policy, like onchain-app-guard.
+  installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
   // x402, so blocked requests never reach the payment flow.
@@ -607,6 +640,7 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
 
   registerWebContentsHandlers();
+  registerClientCertificateHandler();
   if (!RUNTIME_MODE) setupApplicationMenu();
 
   // Profiles are shared across processes (one process per profile). When any
@@ -786,12 +820,27 @@ app.on('window-all-closed', () => {
 });
 
 let isQuitting = false;
+// Flipped once windDown() has finished (or its watchdog gave up), so the
+// app.quit() that follows is let straight through instead of being held again.
+let shutdownSettled = false;
 
-app.on('before-quit', async (event) => {
-  if (isQuitting) return;
+// Bound on how long a re-entrant quit is held back. Holding it unconditionally
+// would let one wedged manager keep the app alive forever. Measured wind-downs
+// on a dev box are ~30-120ms, but this has to stay above the *longest* stop
+// budget underneath it, or the watchdog fires while a manager is still inside
+// its own budget and the quit proceeds with the wind-down unfinished. Longest
+// first, as of this commit: Tor SIGKILLs arti 10s after the SIGTERM
+// (tor-manager.js), Ant SIGKILLs antd after 5s (ant-manager.js), Myotis waits
+// 5s for its child to exit (myotis-process.js EXIT_WAIT_MS), and the IPFS
+// dispatcher falls back to terminate() after 2s
+// (freedom-ipfs-native-node.js DISPATCHER_STOP_TIMEOUT_MS). Re-derive against
+// those four before trimming this number.
+const SHUTDOWN_WATCHDOG_MS = 20_000;
 
-  event.preventDefault();
-  isQuitting = true;
+// Everything that has to happen before the process may go away. Split out of
+// the before-quit handler so the handler can bound it and still be the only
+// place that decides when quitting is allowed.
+async function windDown() {
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
 
   runtimeIdleController?.stop();
@@ -863,13 +912,73 @@ app.on('before-quit', async (event) => {
 
   log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, and Tor to stop...');
   shutdownDiagnostics.phase('nodes_stop_started');
-  const [myotisExits] = await Promise.all([myotisStopped, stopAnt(), stopIpfs(), stopRadicle(), stopTor()]);
-  if (myotisExits.some((exited) => !exited)) {
+  // allSettled, not all: Promise.all settles on the *first* rejection, so one
+  // manager throwing would release the quit while the other legs are still in
+  // flight — notably stopIpfs(), whose dispatcher ack is the very window this
+  // wind-down exists to hold open (issue #345). Every leg has to finish, and
+  // a rejecting one is logged rather than abandoning the others. The
+  // SHUTDOWN_WATCHDOG_MS timer above still bounds the total wait, so waiting
+  // for more legs can't wedge the quit.
+  const LEGS = [
+    ['Myotis', () => myotisStopped],
+    ['Ant', stopAnt],
+    ['IPFS', stopIpfs],
+    ['Radicle', stopRadicle],
+    ['Tor', stopTor],
+  ];
+  // The async wrapper keeps a *synchronous* throw from a stop function inside
+  // the join too: thrown straight into Promise.allSettled's argument array it
+  // would escape past every sibling leg, the same short-circuit one step
+  // earlier. Each leg still starts in this tick, as before.
+  const settled = await Promise.allSettled(LEGS.map(async ([, start]) => start()));
+  settled.forEach((result, i) => {
+    if (result.status === 'rejected') log.error(`[App] ${LEGS[i][0]} stop failed:`, result.reason);
+  });
+  // A rejected Myotis leg proves nothing about its children, so treat it the
+  // same as an unconfirmed exit rather than as a clean stop.
+  const myotisExits = settled[0].status === 'fulfilled' ? settled[0].value : null;
+  if (!myotisExits || myotisExits.some((exited) => !exited)) {
     log.warn('[App] Myotis child exit unconfirmed; data-directory reuse remains blocked');
   }
-  log.info(myotisExits.every(Boolean)
+  log.info(myotisExits && myotisExits.every(Boolean)
     ? '[App] All processes stopped, quitting...'
     : '[App] Quitting with Myotis exit unconfirmed');
+}
+
+app.on('before-quit', async (event) => {
+  if (isQuitting) {
+    // Re-entrant quit. Destroying the last window inside windDown() makes
+    // Electron fire 'window-all-closed', whose handler calls app.quit() again
+    // — and a before-quit that returns without preventDefault() lets Electron
+    // shut the process down right there, while the wind-down is still in
+    // flight. That is what took the main process out with
+    // `Error::ThrowAsJavaScriptException napi_throw` on most quits (issue
+    // #345): the IPFS dispatcher worker's env was destroyed while it sat
+    // inside a native gatewayWaitNextEvent call. It also meant no node was
+    // reliably stopped on quit — the wind-down was racing the process exit
+    // every time, and usually losing.
+    if (!shutdownSettled) event.preventDefault();
+    return;
+  }
+
+  event.preventDefault();
+  isQuitting = true;
+
+  const watchdog = setTimeout(() => {
+    log.warn('[App] Shutdown watchdog fired; quitting with the wind-down unfinished');
+    shutdownSettled = true;
+    app.quit();
+  }, SHUTDOWN_WATCHDOG_MS);
+
+  try {
+    await windDown();
+  } catch (err) {
+    // A manager that rejects must not strand the app in a half-quit state.
+    log.error('[App] Wind-down failed:', err);
+  } finally {
+    clearTimeout(watchdog);
+    shutdownSettled = true;
+  }
 
   shutdownDiagnostics.phase('final_quit_requested');
   app.quit();

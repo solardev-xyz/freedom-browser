@@ -1,7 +1,8 @@
 const log = require('./logger');
 const { sanitizeUrlForLog } = require('./request-rewriter');
 const { getAntApiUrl, getIpfsGatewayUrl } = require('./service-registry');
-const { gatewayFetch } = require('./ipfs/gateway-transport');
+const { gatewayFetch, isLoopbackGatewayUrl } = require('./ipfs/gateway-transport');
+const { announceMainProcessAntDial } = require('./swarm/ant-api-main-dials');
 
 // Hygiene timeout — not trust-critical. A misbehaving gateway shouldn't
 // hold a socket open forever for speculative content the user may never
@@ -69,7 +70,9 @@ function prefetchGatewayUrl(uri) {
     // the session's proxy policy, no HTTP cache and no `.onion` dial before
     // a proxy is actually routing it.
     let url;
+    let isAntDial = false;
     if (uri.startsWith('bzz://')) {
+      isAntDial = true;
       const antApiUrl = getAntApiUrl();
       if (!antApiUrl) return NOOP_HANDLE;
 
@@ -128,6 +131,14 @@ function prefetchGatewayUrl(uri) {
     // `redirect: 'manual'`, like every other dial of a configured gateway:
     // a hop is reported and dropped, never followed to wherever the gateway
     // points. Speculative traffic has no business chasing it.
+    // A remote Ant node is dialled through Chromium (`net.request`), which
+    // passes `session.webRequest` with no frame — where `ant-api-guard.js`
+    // cancels anything frameless on the node's origin. Announce this exact
+    // URL to the guard for the lifetime of the dial. (A loopback node goes
+    // over Node's `fetch` and never reaches webRequest.)
+    const releaseDial =
+      isAntDial && !isLoopbackGatewayUrl(url) ? announceMainProcessAntDial(url) : () => {};
+
     gatewayFetch(url, { method: 'GET', redirect: 'manual', signal: controller.signal })
       .then(drainResponseBody)
       .catch((err) => {
@@ -135,7 +146,10 @@ function prefetchGatewayUrl(uri) {
         // routing through a proxy — silent degradation, as everywhere here.
         log.debug(`[ens-prefetch] ${sanitizeUrlForLog(url)} — ${err?.message || err}`);
       })
-      .finally(markFinished);
+      .finally(() => {
+        releaseDial();
+        markFinished();
+      });
 
     timer = setTimeout(() => {
       if (!aborted) {

@@ -239,18 +239,14 @@ function showExportPkView(view) {
 
 async function handleExportPkTouchIdUnlock() {
   try {
-    const result = await window.quickUnlock.unlock();
+    // Main runs Touch ID, unlocks the vault and exports the key itself —
+    // the stored vault password never reaches this renderer (audit O-8).
+    const result = await window.quickUnlock.exportPrivateKey(walletState.activeWalletIndex);
     if (!result.success) {
       throw new Error(result.error || 'Touch ID cancelled');
     }
 
-    const password = result.password;
-    const unlockResult = await window.identity.unlock(password);
-    if (!unlockResult.success) {
-      throw new Error(unlockResult.error || 'Failed to unlock vault');
-    }
-
-    await showPrivateKey(password);
+    showPrivateKeyResult(result);
   } catch (err) {
     console.error('[WalletUI] Touch ID unlock failed:', err);
     if (err.message !== 'Touch ID cancelled') {
@@ -287,8 +283,13 @@ function showExportPkError(message) {
 }
 
 async function showPrivateKey(password) {
+  showPrivateKeyResult(
+    await window.identity.exportPrivateKey(walletState.activeWalletIndex, password)
+  );
+}
+
+function showPrivateKeyResult(result) {
   try {
-    const result = await window.identity.exportPrivateKey(walletState.activeWalletIndex, password);
     if (!result.success) {
       throw new Error(result.error || 'Failed to export private key');
     }

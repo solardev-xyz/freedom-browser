@@ -37,8 +37,12 @@ function loadQuickUnlock({
   activeProfile,
   userDataDir,
   verifyPasswordImpl = jest.fn().mockResolvedValue(undefined),
+  identityManager = makeIdentityManager(),
 } = {}) {
   const profileResolverPath = require.resolve('./profile-resolver');
+  const identityManagerPath = require.resolve('./identity-manager');
+  const ipcHandlers = new Map();
+  const ipcMain = { handle: jest.fn((channel, fn) => ipcHandlers.set(channel, fn)) };
   const vaultModulePath = require.resolve('./identity/vault');
   const systemPreferences = {
     canPromptTouchID: jest.fn(() => true),
@@ -53,6 +57,7 @@ function loadQuickUnlock({
   const { mod } = loadMainModule(require.resolve('./quick-unlock'), {
     userDataDir,
     electronOverrides: {
+      ipcMain,
       systemPreferences,
       safeStorage,
     },
@@ -60,6 +65,7 @@ function loadQuickUnlock({
       [profileResolverPath]: () => ({
         getActiveProfile: () => activeProfile,
       }),
+      [identityManagerPath]: () => identityManager,
       [vaultModulePath]: () => ({
         getVaultPath: (dataDir) => path.join(dataDir, 'identity-vault.json'),
         verifyPassword: verifyPasswordImpl,
@@ -69,9 +75,20 @@ function loadQuickUnlock({
 
   return {
     mod,
+    ipcHandlers,
+    identityManager,
     systemPreferences,
     safeStorage,
     verifyPassword: verifyPasswordImpl,
+  };
+}
+
+function makeIdentityManager() {
+  return {
+    unlockVault: jest.fn().mockResolvedValue(undefined),
+    exportMnemonic: jest.fn().mockResolvedValue('word '.repeat(23) + 'word'),
+    assertPrivateKeyExportable: jest.fn(),
+    exportPrivateKeyForAccount: jest.fn().mockResolvedValue('0x' + '11'.repeat(32)),
   };
 }
 
@@ -131,10 +148,7 @@ describe('quick-unlock', () => {
       })
     );
 
-    await expect(mod.unlockWithTouchId()).resolves.toEqual({
-      success: true,
-      password: 'password-a',
-    });
+    await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
     expect(verifyPassword).toHaveBeenCalledWith(identityDir, 'password-a');
   });
 
@@ -170,15 +184,13 @@ describe('quick-unlock', () => {
     writeVault(identityDir);
     fs.writeFileSync(path.join(identityDir, 'quick-unlock.dat'), Buffer.from('encrypted:legacy'));
 
-    const { mod } = loadQuickUnlock({
+    const { mod, identityManager } = loadQuickUnlock({
       activeProfile: makeProfile('default', userDataDir),
       userDataDir,
     });
 
-    await expect(mod.unlockWithTouchId()).resolves.toEqual({
-      success: true,
-      password: 'legacy',
-    });
+    await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+    expect(identityManager.unlockVault).toHaveBeenCalledWith('legacy');
 
     const payload = JSON.parse(fs.readFileSync(path.join(identityDir, 'quick-unlock.dat'), 'utf-8'));
     expect(payload.version).toBe(mod.CREDENTIAL_VERSION);
@@ -201,6 +213,104 @@ describe('quick-unlock', () => {
     await expect(mod.unlockWithTouchId()).resolves.toEqual({
       success: false,
       error: 'Incorrect password',
+    });
+  });
+
+  // Security audit O-8: after Touch ID, main finishes the job itself and
+  // the stored vault password never crosses IPC to any renderer.
+  describe('never returns the vault password', () => {
+    async function enabled(options = {}) {
+      const userDataDir = tempUserData();
+      writeVault(path.join(userDataDir, 'identity'));
+      const loaded = loadQuickUnlock({
+        activeProfile: makeProfile('default', userDataDir),
+        userDataDir,
+        ...options,
+      });
+      await loaded.mod.enableQuickUnlock('s3cret-vault-pw');
+      loaded.systemPreferences.promptTouchID.mockClear();
+      loaded.mod.registerQuickUnlockIpc();
+      return loaded;
+    }
+
+    function leaks(result) {
+      return JSON.stringify(result).includes('s3cret-vault-pw');
+    }
+
+    test('quick-unlock:unlock unlocks the vault in main and returns success only', async () => {
+      const { ipcHandlers, identityManager, systemPreferences } = await enabled();
+
+      const result = await ipcHandlers.get('quick-unlock:unlock')({});
+
+      expect(result).toEqual({ success: true });
+      expect(leaks(result)).toBe(false);
+      expect(systemPreferences.promptTouchID).toHaveBeenCalledTimes(1);
+      expect(identityManager.unlockVault).toHaveBeenCalledWith('s3cret-vault-pw');
+    });
+
+    test('a vault that fails to unlock reports failure, still without the password', async () => {
+      const identityManager = makeIdentityManager();
+      identityManager.unlockVault.mockRejectedValue(new Error('Vault is corrupted'));
+      const { ipcHandlers } = await enabled({ identityManager });
+
+      const result = await ipcHandlers.get('quick-unlock:unlock')({});
+
+      expect(result).toEqual({ success: false, error: 'Vault is corrupted' });
+      expect(leaks(result)).toBe(false);
+    });
+
+    test('quick-unlock:export-mnemonic returns the phrase, not the password', async () => {
+      const { ipcHandlers, identityManager } = await enabled();
+
+      const result = await ipcHandlers.get('quick-unlock:export-mnemonic')({});
+
+      expect(result).toEqual({ success: true, mnemonic: 'word '.repeat(23) + 'word' });
+      expect(leaks(result)).toBe(false);
+      expect(identityManager.unlockVault).toHaveBeenCalledWith('s3cret-vault-pw');
+    });
+
+    test('quick-unlock:export-private-key returns the key, not the password', async () => {
+      const { ipcHandlers, identityManager } = await enabled();
+
+      const result = await ipcHandlers.get('quick-unlock:export-private-key')({}, 3);
+
+      expect(result).toEqual({ success: true, privateKey: '0x' + '11'.repeat(32) });
+      expect(leaks(result)).toBe(false);
+      expect(identityManager.exportPrivateKeyForAccount).toHaveBeenCalledWith(3);
+    });
+
+    test('export-private-key refuses a device account before prompting Touch ID', async () => {
+      const identityManager = makeIdentityManager();
+      identityManager.assertPrivateKeyExportable.mockImplementation(() => {
+        throw new Error('This account has no exportable private key');
+      });
+      const { ipcHandlers, systemPreferences } = await enabled({ identityManager });
+
+      const result = await ipcHandlers.get('quick-unlock:export-private-key')({}, 1000000);
+
+      expect(result).toEqual({ success: false, error: 'This account has no exportable private key' });
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+      expect(identityManager.exportPrivateKeyForAccount).not.toHaveBeenCalled();
+    });
+
+    test('no quick-unlock IPC handler returns the password', async () => {
+      const { ipcHandlers, identityManager } = await enabled();
+      // enable takes the password as its input (the user just typed it);
+      // disable would delete the credential the others need.
+      const channels = [...ipcHandlers.keys()].filter(
+        (c) => c !== 'quick-unlock:enable' && c !== 'quick-unlock:disable'
+      );
+      expect(channels).toEqual(expect.arrayContaining([
+        'quick-unlock:unlock',
+        'quick-unlock:export-mnemonic',
+        'quick-unlock:export-private-key',
+      ]));
+      for (const channel of channels) {
+        const result = await ipcHandlers.get(channel)({}, 0);
+        expect({ channel, leaks: leaks(result) }).toEqual({ channel, leaks: false });
+      }
+      // The Touch ID paths really ran (and really had the password in main).
+      expect(identityManager.unlockVault).toHaveBeenCalledWith('s3cret-vault-pw');
     });
   });
 });

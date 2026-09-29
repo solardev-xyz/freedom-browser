@@ -12,8 +12,11 @@
  * `Terminate orphan process: pid (…) (npm ci)`; a rerun always passes, so it
  * is a network stall rather than a dependency problem. `npm ci` has no
  * wall-clock bound of its own: `fetch-timeout` is per-request, and the
- * lifecycle scripts it runs (Electron's postinstall pulls a ~100 MB zip from
- * GitHub releases through `@electron/get`) have no timeout at all.
+ * lifecycle scripts it runs (this repo's `postinstall`, which ends in
+ * `electron-builder install-app-deps`) have no timeout at all. Note that the
+ * `electron` package itself has no postinstall: it fetches its ~100 MB binary
+ * lazily on the first `require('electron')`, in whichever later step of the
+ * job launches Electron — not here.
  *
  * A timeout-minutes cancellation is the worst possible shape for this: the job
  * burns its whole budget, the conclusion reads "cancelled" rather than
@@ -34,8 +37,9 @@
  *     back to a cancellation; the total budget is what guarantees the step
  *     fails as a real failure, with a message, inside the job's cap.
  *   * Kills the whole process tree on a timeout, not just `npm` itself — the
- *     stall is usually inside a grandchild (the Electron postinstall's
- *     download), which would otherwise survive and keep holding the runner.
+ *     stall can sit inside a grandchild (a registry fetch, or a `postinstall`
+ *     lifecycle script), which would otherwise survive and keep holding the
+ *     runner.
  *
  * Sizing (measured, not round numbers)
  * ------------------------------------
@@ -46,11 +50,11 @@
  *   Linux    7-44s      macOS   10-77s      Windows   30-337s
  *
  * The Windows tail is real rather than a one-off — 251s before this change and
- * 337s after it, on a run where the Electron download was a *cache hit* and
- * three sibling Windows jobs finished the same install in 106-122s. So a bound
- * generous enough for Windows would be ~7x the whole healthy range everywhere
- * else, and one tight enough elsewhere would false-kill a healthy Windows
- * install. Hence:
+ * 337s after it, on a run where three sibling Windows jobs finished the same
+ * install in 106-122s (and where no leg fetches Electron: see above). So a
+ * bound generous enough for Windows would be ~7x the whole healthy range
+ * everywhere else, and one tight enough elsewhere would false-kill a healthy
+ * Windows install. Hence:
  *
  *                 per attempt   step budget   headroom over the slowest
  *   Windows       540s          660s          1.6x (337s)
@@ -165,16 +169,17 @@ function resolveBudget(env = process.env, platform = process.platform) {
 /**
  * Kill a child and everything it started.
  *
- * `npm ci` is a process tree — the stall we are bounding lives in a grandchild
- * (Electron's postinstall download), so signalling `npm` alone leaves the
- * stalled fetch running and holding the runner. On POSIX the child is spawned
- * detached, which puts it in its own process group we can signal as a unit; on
- * Windows `taskkill /T` walks the tree instead.
+ * `npm ci` is a process tree — the stall we are bounding can live in a
+ * grandchild (a registry fetch, or a `postinstall` lifecycle script), so
+ * signalling `npm` alone leaves the stalled fetch running and holding the
+ * runner. On POSIX the child is spawned detached, which puts it in its own
+ * process group we can signal as a unit; on Windows `taskkill /T` walks the
+ * tree instead.
  *
  * Windows always gets `/F`, on the soft stage too. `taskkill` without it asks
  * politely by posting `WM_CLOSE` to the tree's *windows*, which a console
- * process (cmd, npm, node, the Electron postinstall download) has none of, so
- * it refuses with "could not be terminated" and nothing dies — the soft stage
+ * process (cmd, npm, node, a lifecycle script) has none of, so it refuses
+ * with "could not be terminated" and nothing dies — the soft stage
  * would be pure decoration that spends the whole `KILL_GRACE_MS` before the
  * forceful stage did the actual work, while the warning claiming we killed it
  * printed 30s earlier. There is no Windows equivalent of SIGTERM here to wait
@@ -296,12 +301,16 @@ function removeNodeModules(cwd) {
 }
 
 /**
- * Where `@electron/get` keeps the Electron zip it downloads in `postinstall`.
+ * Where `@electron/get` keeps the Electron zip it downloads.
  *
- * This is the single largest thing `npm ci` pulls (~100 MB from GitHub
- * releases, no timeout of its own), so it is the stall source worth caching
- * away entirely. The path is not configurable in this repo — `@electron/get`
- * v5 defaults its cache root to `env-paths('electron', { suffix: '' }).cache`
+ * This is the single largest thing a job pulls (~100 MB from GitHub releases,
+ * no timeout of its own), so it is the stall source worth caching away
+ * entirely. It is not pulled by `npm ci`: the `electron` package has no
+ * postinstall script, and `node_modules/electron/index.js` downloads the
+ * binary on the first `require('electron')` — a Playwright launch, a build —
+ * so a warm cache spares that later step rather than the install itself. The
+ * path is not configurable in this repo — `@electron/get` v5 defaults its
+ * cache root to `env-paths('electron', { suffix: '' }).cache`
  * (`node_modules/@electron/get/dist/Cache.js`) — so this mirrors `env-paths`'
  * own rule rather than guessing, and is what the composite action hands to
  * `actions/cache`.
@@ -389,7 +398,7 @@ async function installWithRetries({
     if (timedOut) {
       warn(
         `${label}: no completion within ${Math.round(boundMs / 1000)}s on attempt ${attempt} — ` +
-          `the registry or the Electron postinstall download is stalled; killed it and retrying`
+          `the registry or a lifecycle script is stalled; killed it and retrying`
       );
     } else {
       warn(`${label}: exited ${code} after ${elapsedSeconds}s on attempt ${attempt}`);
@@ -404,8 +413,8 @@ async function installWithRetries({
   fail(
     `${reason}. This is a real failure, not a cancelled job: each attempt was bounded at ` +
       `${Math.round(attemptTimeoutMs / 1000)}s and the step at ${Math.round(totalBudgetMs / 1000)}s. ` +
-      `A run of timeouts points at the npm registry or the Electron download; a run of non-zero ` +
-      `exits points at the lockfile or a lifecycle script.`
+      `A run of timeouts points at the npm registry or a stalled lifecycle script; a run of ` +
+      `non-zero exits points at the lockfile or a lifecycle script's own failure.`
   );
   return { ok: false, attemptsUsed: attempts, reason };
 }

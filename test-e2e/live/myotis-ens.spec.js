@@ -51,6 +51,7 @@ function readinessSummary(state) {
     peerCount: status.peerCount ?? 0,
     readyPeers: status.readyPeers ?? 0,
     snapPeers: status.snapPeers ?? 0,
+    snapServingPeers: status.snapServingPeers ?? 0,
     probeStatus: state?.probe?.status || null,
     probeError: state?.probe?.error || null,
   };

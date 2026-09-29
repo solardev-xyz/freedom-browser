@@ -142,11 +142,6 @@ async function handleTouchIdUnlock() {
       throw new Error(result.error || 'Touch ID failed');
     }
 
-    const unlockResult = await window.identity.unlock(result.password);
-    if (!unlockResult.success) {
-      throw new Error(unlockResult.error || 'Failed to unlock vault');
-    }
-
     onUnlockSuccess();
   } catch (err) {
     console.error('[VaultUnlock] Touch ID unlock failed:', err);

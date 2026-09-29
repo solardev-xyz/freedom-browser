@@ -35,7 +35,11 @@
  *
  * Handlers that throw are logged and skipped; subsequent handlers still
  * run and the request is not cancelled. A buggy consumer must not be
- * able to break the browser's request chain.
+ * able to break the browser's request chain. The exception is an
+ * `onBeforeRequest` handler registered with `{ failClosed: true }` — a
+ * security gate (radapi-guard, onchain-app-guard) whose throw would
+ * otherwise wave through exactly the request it exists to stop; its throw
+ * cancels the request instead (docs/security-audit-electron.md, E-6).
  */
 
 const log = require('./logger');
@@ -63,25 +67,34 @@ const handlers = {
  * @param {string} name - Identifier used for error logging; must be unique
  *   per event so re-registration is loud, not silent.
  * @param {(details: object) => null | undefined | object | Promise<null | undefined | object>} handler
+ * @param {{ failClosed?: boolean }} [options] - `failClosed` (onBeforeRequest
+ *   only): a throw cancels the request instead of skipping the handler.
  */
-function registerWebRequestHandler(event, name, handler) {
+function registerWebRequestHandler(event, name, handler, { failClosed = false } = {}) {
   if (!handlers[event]) {
     throw new Error(`Unsupported webRequest event: ${event}`);
   }
   if (handlers[event].some((entry) => entry.name === name)) {
     throw new Error(`webRequest handler '${name}' already registered for ${event}`);
   }
-  handlers[event].push({ name, handler });
+  if (failClosed && event !== 'onBeforeRequest') {
+    throw new Error(`failClosed is only supported for onBeforeRequest (got ${event})`);
+  }
+  handlers[event].push({ name, handler, failClosed });
 }
 
 function makeOnBeforeRequestListener(eventHandlers) {
   return async (details, callback) => {
-    for (const { name, handler } of eventHandlers) {
+    for (const { name, handler, failClosed } of eventHandlers) {
       let result;
       try {
         result = await handler(details);
       } catch (err) {
         log.error(`[dispatcher:${name}] onBeforeRequest threw: ${err.message}`);
+        if (failClosed) {
+          callback({ cancel: true });
+          return;
+        }
         continue;
       }
       if (result && (result.cancel || result.redirectURL)) {

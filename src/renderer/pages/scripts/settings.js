@@ -1,0 +1,3674 @@
+// freedomAPI is exposed globally by webview-preload.js via contextBridge.
+const $ = (id) => document.getElementById(id);
+
+const fields = {
+  themeMode: $('theme-mode'),
+  searchProvider: $('search-provider'),
+  tabsInTitlebar: $('tabs-in-titlebar'),
+  startAnt: $('start-ant-at-launch'),
+  startIpfs: $('start-ipfs-at-launch'),
+  startMyotis: $('start-myotis-at-launch'),
+  startMyotisGnosis: $('start-myotis-gnosis-at-launch'),
+  unverifiedEnsAction: $('unverified-ens-action'),
+  askWhereToSave: $('ask-where-to-save'),
+  startRadicle: $('start-radicle-at-launch'),
+  enableTor: $('enable-tor-integration'),
+  startTorRow: $('start-tor-row'),
+  startTor: $('start-tor-at-launch'),
+  enableIdentity: $('enable-identity-wallet'),
+  showIpfsProgressStatus: $('show-ipfs-progress-status'),
+  autoUpdate: $('auto-update'),
+  adblockEnabled: $('adblock-enabled'),
+  adblockAds: $('adblock-ads'),
+  adblockPrivacy: $('adblock-privacy'),
+  adblockCookies: $('adblock-cookies'),
+  adblockAnnoyances: $('adblock-annoyances'),
+  adblockAutoUpdate: $('adblock-autoupdate'),
+};
+const radicleLaunchRow = $('radicle-launch-row');
+const radicleLaunchHelp = $('radicle-launch-help');
+const defaultRadicleLaunchHelp = radicleLaunchHelp?.textContent || '';
+const refreshRadicleLaunchStatus = async () => {
+  try {
+    const [profile, binary] = await Promise.all([
+      freedomAPI.getActiveProfile?.(),
+      freedomAPI.checkRadicleBinary?.(),
+    ]);
+    const disabled = profile?.nodes?.radicle?.mode === 'disabled';
+    const available = binary?.available !== false;
+    fields.startRadicle.disabled = disabled || !available;
+    if (radicleLaunchHelp) {
+      radicleLaunchHelp.textContent = disabled
+        ? 'Disabled for this profile under Settings → Nodes.'
+        : !available
+          ? 'libradicle addon not installed for this platform.'
+          : defaultRadicleLaunchHelp;
+    }
+    if (radicleLaunchRow) radicleLaunchRow.classList.toggle('disabled', disabled || !available);
+  } catch {
+    // Every piece of row state a previous successful run may have set
+    // has to come back with the checkbox — otherwise a transient status
+    // failure leaves the row greyed out around a live control.
+    fields.startRadicle.disabled = false;
+    if (radicleLaunchHelp) {
+      radicleLaunchHelp.textContent =
+        'Radicle status could not be read. The startup preference can still be saved.';
+    }
+    if (radicleLaunchRow) radicleLaunchRow.classList.remove('disabled');
+  }
+};
+
+// id ties together the manifest category, the #adblock-<id>-row
+// element, and the status field; field is the checkbox input. `lists`
+// names the manifest categories the toggle covers when there's more
+// than one: "Block ads" also switches the uBlock filters (#410).
+const ADBLOCK_CATEGORIES = [
+  { id: 'ads', field: fields.adblockAds, lists: ['ads', 'ublock'] },
+  { id: 'privacy', field: fields.adblockPrivacy },
+  { id: 'cookies', field: fields.adblockCookies },
+  { id: 'annoyances', field: fields.adblockAnnoyances },
+];
+const searchFields = {
+  customOptions: $('custom-search-provider-options'),
+  customList: $('custom-search-provider-list'),
+  addButton: $('add-search-provider'),
+  form: $('search-provider-form'),
+  name: $('custom-search-provider-name'),
+  template: $('custom-search-provider-template'),
+  saveButton: $('save-search-provider'),
+  cancelButton: $('cancel-search-provider'),
+  status: $('search-provider-status'),
+};
+
+const swarmModeHelp = $('swarm-mode-help');
+const swarmModeBtn = $('swarm-mode-action-btn');
+const profileFields = {
+  nameInput: $('profile-name-input'),
+  saveStatus: $('profile-save-status'),
+  nodesCard: $('profile-nodes-card'),
+  nodesStatus: $('profile-nodes-status'),
+};
+// Open the profile manager in its own tab, reusing an existing
+// freedom://profiles tab if one is already open (same as the hamburger
+// and system menus). window.open routes through the main process'
+// setWindowOpenHandler → tab:new-with-url → openInNewTabWithTarget,
+// which focuses an existing singleton internal-page tab instead of
+// duplicating it. A plain location.href would instead navigate the
+// Settings tab in place — never reusing, and orphaning any profiles
+// tab already open.
+$('manage-profiles-link')?.addEventListener('click', () => {
+  window.open('freedom://profiles', '_blank');
+});
+let activeProfileId = null;
+// The committed profile name — the baseline an in-progress edit reverts
+// to (Esc, an empty/unchanged value, or a failed save).
+let savedProfileName = '';
+
+// Whether this build ships an Arti (Tor) binary. Assumed present until
+// the check answers, so the markup's own state is what a normal build
+// shows and only a build without one repaints.
+let torBundled = true;
+let profileRefreshTimer = null;
+let setProfileRefreshActive = () => {};
+
+const esc = (s) =>
+  String(s == null ? '' : s).replace(
+    /[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]
+  );
+
+const DEFAULT_SEARCH_PROVIDER = 'duckduckgo';
+const SEARCH_TERMS_PLACEHOLDER = '{searchTerms}';
+const LOOPBACK_SEARCH_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+let customSearchProviders = [];
+let editingSearchProviderId = null;
+let searchProviderFormDirty = false;
+// Keep in sync with CUSTOM_SEARCH_PROVIDER_LIMIT in src/main/settings-store.js —
+// main silently drops anything past it, so the form must refuse first.
+const CUSTOM_SEARCH_PROVIDER_LIMIT = 50;
+
+// Latest cross-window provider list. cachedSettings is refreshed by every
+// settings broadcast even while this form is dirty (applySearchSettings
+// skips only the re-render), so writes rebase on it rather than on this
+// window's render snapshot — otherwise a save here would resurrect
+// entries another settings window removed meanwhile.
+const latestCustomSearchProviders = () =>
+  (Array.isArray(cachedSettings?.customSearchProviders)
+    ? cachedSettings.customSearchProviders
+    : customSearchProviders
+  ).map((provider) => ({ ...provider }));
+
+const setSearchProviderStatus = (message, kind) => {
+  searchFields.status.textContent = message || '';
+  searchFields.status.className = 'rpc-status' + (kind ? ' ' + kind : '');
+};
+
+const normalizeSearchTemplateInput = (value) => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed || trimmed.length > 2048) return null;
+  const openSearchCount = trimmed.split(SEARCH_TERMS_PLACEHOLDER).length - 1;
+  const percentCount = trimmed.split('%s').length - 1;
+  if (openSearchCount + percentCount !== 1) return null;
+  const normalized = percentCount === 1 ? trimmed.replace('%s', SEARCH_TERMS_PLACEHOLDER) : trimmed;
+
+  try {
+    const parsed = new URL(normalized.replace(SEARCH_TERMS_PLACEHOLDER, 'test'));
+    const secure = parsed.protocol === 'https:';
+    const loopbackHttp = parsed.protocol === 'http:' && LOOPBACK_SEARCH_HOSTS.has(parsed.hostname);
+    if ((!secure && !loopbackHttp) || parsed.username || parsed.password) return null;
+  } catch {
+    return null;
+  }
+
+  return normalized;
+};
+
+const renderSearchProviderOptions = (selectedId) => {
+  searchFields.customOptions.innerHTML = customSearchProviders
+    .map((provider) => `<option value="custom:${esc(provider.id)}">${esc(provider.name)}</option>`)
+    .join('');
+  searchFields.customOptions.hidden = customSearchProviders.length === 0;
+
+  const available = [...fields.searchProvider.options].some(
+    (option) => option.value === selectedId
+  );
+  fields.searchProvider.value = available ? selectedId : DEFAULT_SEARCH_PROVIDER;
+};
+
+const renderCustomSearchProviders = () => {
+  searchFields.customList.innerHTML = customSearchProviders.length
+    ? customSearchProviders
+        .map(
+          (provider) => `
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">${esc(provider.name)}</p>
+                <p class="row-help" style="overflow-wrap: anywhere">
+                  ${esc(provider.searchUrlTemplate)}
+                </p>
+              </div>
+              <div class="search-provider-actions">
+                <button type="button" class="btn" data-search-action="edit" data-id="${esc(provider.id)}">Edit</button>
+                <button type="button" class="btn danger" data-search-action="remove" data-id="${esc(provider.id)}">Remove</button>
+              </div>
+            </div>`
+        )
+        .join('')
+    : '<div class="profile-node-empty">No custom search engines yet</div>';
+};
+
+const applySearchSettings = (settings) => {
+  if (!settings || searchProviderFormDirty) return;
+  customSearchProviders = Array.isArray(settings.customSearchProviders)
+    ? settings.customSearchProviders.map((provider) => ({ ...provider }))
+    : [];
+  renderSearchProviderOptions(settings.searchProvider || DEFAULT_SEARCH_PROVIDER);
+  renderCustomSearchProviders();
+};
+
+const closeSearchProviderForm = () => {
+  editingSearchProviderId = null;
+  searchProviderFormDirty = false;
+  searchFields.name.value = '';
+  searchFields.template.value = '';
+  searchFields.form.hidden = true;
+};
+
+const openSearchProviderForm = (provider = null) => {
+  editingSearchProviderId = provider?.id || null;
+  searchProviderFormDirty = false;
+  searchFields.name.value = provider?.name || '';
+  searchFields.template.value = provider?.searchUrlTemplate || '';
+  searchFields.form.hidden = false;
+  searchFields.name.focus();
+};
+
+searchFields.addButton.addEventListener('click', () => {
+  setSearchProviderStatus('', null);
+  openSearchProviderForm();
+});
+
+searchFields.cancelButton.addEventListener('click', closeSearchProviderForm);
+for (const input of [searchFields.name, searchFields.template]) {
+  input.addEventListener('input', () => {
+    searchProviderFormDirty = true;
+  });
+}
+
+searchFields.saveButton.addEventListener('click', async () => {
+  const name = searchFields.name.value.trim();
+  const searchUrlTemplate = normalizeSearchTemplateInput(searchFields.template.value);
+  if (!name) {
+    setSearchProviderStatus('Enter a search engine name.', 'error');
+    return;
+  }
+  if (!searchUrlTemplate) {
+    setSearchProviderStatus(
+      'Enter a valid HTTPS search URL with one {searchTerms} placeholder.',
+      'error'
+    );
+    return;
+  }
+
+  const baseProviders = latestCustomSearchProviders();
+  if (!editingSearchProviderId && baseProviders.length >= CUSTOM_SEARCH_PROVIDER_LIMIT) {
+    setSearchProviderStatus(
+      `Limit of ${CUSTOM_SEARCH_PROVIDER_LIMIT} custom search engines reached. Remove one first.`,
+      'error'
+    );
+    return;
+  }
+  const id = editingSearchProviderId || crypto.randomUUID();
+  const nextProvider = { id, name, searchUrlTemplate };
+  const nextProviders = editingSearchProviderId
+    ? baseProviders.some((provider) => provider.id === editingSearchProviderId)
+      ? baseProviders.map((provider) =>
+          provider.id === editingSearchProviderId ? nextProvider : provider
+        )
+      : [...baseProviders, nextProvider]
+    : [...baseProviders, nextProvider];
+  const selectedProvider = editingSearchProviderId ? fields.searchProvider.value : `custom:${id}`;
+
+  searchFields.saveButton.disabled = true;
+  const ok = await freedomAPI.saveSettings({
+    searchProvider: selectedProvider,
+    customSearchProviders: nextProviders,
+  });
+  searchFields.saveButton.disabled = false;
+  if (!ok) {
+    setSearchProviderStatus('The search engine could not be saved.', 'error');
+    return;
+  }
+
+  customSearchProviders = nextProviders;
+  renderSearchProviderOptions(selectedProvider);
+  renderCustomSearchProviders();
+  closeSearchProviderForm();
+  setSearchProviderStatus('Search engine saved.', 'success');
+});
+
+searchFields.customList.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-search-action]');
+  if (!button) return;
+  const provider = customSearchProviders.find((candidate) => candidate.id === button.dataset.id);
+  if (!provider) return;
+
+  if (button.dataset.searchAction === 'edit') {
+    setSearchProviderStatus('', null);
+    openSearchProviderForm(provider);
+    return;
+  }
+
+  if (button.dataset.searchAction !== 'remove') return;
+  if (!confirm(`Remove ${provider.name}?`)) return;
+
+  const nextProviders = latestCustomSearchProviders().filter(
+    (candidate) => candidate.id !== provider.id
+  );
+  const removedProviderId = `custom:${provider.id}`;
+  const selectedProvider =
+    fields.searchProvider.value === removedProviderId
+      ? DEFAULT_SEARCH_PROVIDER
+      : fields.searchProvider.value;
+  const ok = await freedomAPI.saveSettings({
+    searchProvider: selectedProvider,
+    customSearchProviders: nextProviders,
+  });
+  if (!ok) {
+    setSearchProviderStatus('The search engine could not be removed.', 'error');
+    return;
+  }
+
+  customSearchProviders = nextProviders;
+  renderSearchProviderOptions(selectedProvider);
+  renderCustomSearchProviders();
+  if (editingSearchProviderId === provider.id) closeSearchProviderForm();
+  setSearchProviderStatus('Search engine removed.', 'success');
+});
+
+fields.searchProvider.addEventListener('change', async () => {
+  const selectedProvider = fields.searchProvider.value || DEFAULT_SEARCH_PROVIDER;
+  const ok = await freedomAPI.saveSettings({ searchProvider: selectedProvider });
+  if (!ok) {
+    renderSearchProviderOptions(cachedSettings?.searchProvider || DEFAULT_SEARCH_PROVIDER);
+    setSearchProviderStatus('The default search engine could not be changed.', 'error');
+    return;
+  }
+  setSearchProviderStatus('Default search engine updated.', 'success');
+});
+
+// Each sidebar entry maps to one section; the active section is driven
+// by location.hash so the URL is the source of truth and the outer
+// chrome can render freedom://settings/<section> in the address bar.
+const navItems = [...document.querySelectorAll('.nav-item')];
+const SECTIONS = navItems.map((i) => i.dataset.target).filter(Boolean);
+const DEFAULT_SECTION = SECTIONS[0] || 'appearance';
+
+const showSection = (section) => {
+  for (const id of SECTIONS) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', id !== section);
+  }
+  navItems.forEach((item) => item.classList.toggle('active', item.dataset.target === section));
+  setProfileRefreshActive(section === 'profile' || section === 'nodes');
+  // Always scroll the content area to the top when switching — avoids a
+  // stale scroll offset from a taller prior section.
+  window.scrollTo({ top: 0 });
+};
+
+navItems.forEach((item) => {
+  item.addEventListener('click', () => {
+    const target = item.dataset.target;
+    if (!target) return;
+    // Clicking a section's nav item resets any sub-route (e.g. a
+    // chain detail) back to the section root.
+    if (location.hash.replace(/^#/, '').toLowerCase() === target) return;
+    location.hash = target;
+  });
+});
+
+/* settings-hash routing: start */
+// The section is the part before any `/` sub-route, so a deep link
+// like #chains/1 (a chain detail) still resolves to `chains`.
+const resolveSection = (hash) => {
+  const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
+  return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
+};
+
+// Normalize the URL onto the section that is actually on screen, so
+// freedom://settings becomes freedom://settings/appearance and a hash
+// naming no section at all — a stale bookmark, a typo, a link from an
+// older build — stops promising one. history.replaceState keeps the
+// rewrite out of the back/forward stack.
+const canonicalizeHash = (section) => {
+  const rawHash = location.hash.replace(/^#/, '').toLowerCase();
+  // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
+  if (rawHash === section || rawHash.startsWith(section + '/')) return;
+  history.replaceState(null, '', `#${section}`);
+};
+
+// One path for every arrival at a hash — first load, a nav click, a
+// back/forward, an outer-chrome deep link opened in an existing
+// Settings tab (#280) — so no navigation can leave a hash the page
+// resolved somewhere else standing in the address bar.
+const applyHashSection = () => {
+  const section = resolveSection(location.hash);
+  canonicalizeHash(section);
+  showSection(section);
+};
+/* settings-hash routing: end */
+
+window.addEventListener('hashchange', applyHashSection);
+applyHashSection();
+
+// ── Search settings (#281) ──────────────────────────────────────────
+// Chrome has kept a persistent "Search settings" field in its header
+// since 2016, and on a 14-section page that is how most people
+// navigate. Freedom's page is the harder case, not the easier one:
+// several settings are not under the heading their subject suggests
+// (Tor's startup toggle is under Experimental, a chain's API keys under
+// RPC Providers), so "I know the word, I don't know the section" is the
+// normal state. Until #281 the page's only search box was the
+// Shortcuts one, which searches that list and nothing else.
+//
+// The two helpers below are pure — an element and a query in, ranked
+// entries out — so `settings-search.test.js` can lift them out of this
+// file (it slices between the markers) and drive them over the shipped
+// markup. They walk the tree with `children`, `classList.contains` and
+// `textContent` only: no selector engine and nothing from this page's
+// scope, which is what keeps that test reading the real code.
+/* settings-search helpers: start */
+const settingsSearchText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+
+// Markup that wears a setting's clothes without being one, marked by
+// whoever renders it: a status message written as a row ("No saved
+// permissions"), and the transient add-a-chain flow, whose own `<h2>`
+// would otherwise answer for the Chains section it renders inside. The
+// marker covers the whole subtree under it, so one on a wrapper takes
+// a view out of the index entirely.
+const SETTINGS_SEARCH_SKIP = 'settings-search-skip';
+
+// Every element under `el` carrying one of `names` (a class, or a list
+// of them), not descending into a match: rows never nest, and a
+// `.row-help` belongs to the row it is under.
+const settingsSearchCollect = (el, names, out = []) => {
+  const wanted = Array.isArray(names) ? names : [names];
+  for (const child of Array.from(el?.children || [])) {
+    if (child.classList?.contains(SETTINGS_SEARCH_SKIP)) continue;
+    if (wanted.some((name) => child.classList?.contains(name))) out.push(child);
+    else settingsSearchCollect(child, names, out);
+  }
+  return out;
+};
+
+const settingsSearchFirst = (el, names) => settingsSearchCollect(el, names)[0] || null;
+
+// What counts as one setting: a card row, the drag-to-reorder rows of
+// Name Resolution's method list and a chain's read/broadcast order, and
+// the `.resolver-config` panel a method opens under itself (Colibri's
+// prover endpoint, the quorum agreement threshold) — all of which carry
+// the same `.row-label` / `.row-help` pair without the `.row` class.
+// Those are where "Colibri", "RPC quorum", "Myotis" and the two
+// resolver settings are named, so leaving them out would make the whole
+// resolution policy unsearchable.
+// The chain master list is the fourth: its `.net-row` buttons are the
+// only place a chain — a custom one above all, which exists nowhere
+// else on the page — is named, so leaving them out makes a chain
+// unfindable by the name the user gave it.
+const SETTINGS_SEARCH_ROWS = ['row', 'resolver-method', 'resolver-config', 'net-row'];
+
+// What names a row, and what describes it under that name. A `.net-row`
+// carries the same pair under its own class names (`Gnosis` / `chain
+// 100`) rather than the `.row-label` / `.row-help` every other row on
+// the page uses.
+const SETTINGS_SEARCH_LABELS = ['row-label', 'net-row-name'];
+const SETTINGS_SEARCH_HELP = ['row-help', 'net-row-sub'];
+
+// A row this build has switched off is not a setting the user has, and
+// offering it would jump to nothing: the `[data-tor]` rows on a build
+// that bundles no Arti binary and the `[data-linux-only]` row off Linux
+// are hidden by writing `style.display`, while the Myotis startup rows
+// on a build with no Myotis support are hidden through the `hidden`
+// attribute (`launchRow.hidden = !supported`). Both shapes read here.
+const settingsSearchHidden = (row) => Boolean(row?.hidden) || row?.style?.display === 'none';
+
+// The rows a section contributes to the index, in document order, each
+// with the label it is found by. Shared with the page's `locateRow` so
+// the two walk the same rows: a result is "the nth row in this section
+// labelled X", which is the only thing that tells two same-labelled
+// rows apart (a chain lists "Direct RPC" in both its read order and its
+// broadcast order) once the view they came from has repainted.
+const settingsSearchRows = (section) =>
+  settingsSearchCollect(section, SETTINGS_SEARCH_ROWS)
+    .filter((row) => !settingsSearchHidden(row))
+    .map((row) => ({
+      row,
+      label: settingsSearchText(settingsSearchFirst(row, SETTINGS_SEARCH_LABELS)),
+    }))
+    .filter((entry) => entry.label);
+
+// One entry per section plus one per labelled row, in document order.
+// `sectionLabels` maps a section id to its nav label, the fallback for
+// the sections whose `<h2>` comes from a view template that has not
+// rendered yet (Chains, RPC Providers, Site Permissions).
+//
+// The heading is read from the section's *live* DOM, which is only the
+// right answer if a hidden section's markup still describes where its
+// rows are. That is the controllers' side of the contract: a view
+// rendered per sub-route has to render itself back when the sub-route
+// is left, or its heading and its rows both go on answering for the
+// section after the user has gone (see Chains' `hashchange` below).
+const buildSettingsSearchIndex = (content, { sectionLabels = {}, skip = [] } = {}) => {
+  const index = [];
+  for (const section of Array.from(content?.children || [])) {
+    if (section.tagName !== 'SECTION' || !section.classList?.contains('section')) continue;
+    if (!section.id || skip.includes(section.id)) continue;
+    const sectionLabel =
+      settingsSearchText(settingsSearchFirst(section, 'section-title')) ||
+      sectionLabels[section.id] ||
+      section.id;
+    // A section's own intro paragraph is a direct child, outside every
+    // card, so it describes the section rather than any one row.
+    const intro = Array.from(section.children)
+      .filter((child) => child.classList?.contains('row-help'))
+      .map(settingsSearchText)
+      .join(' ');
+    index.push({
+      sectionId: section.id,
+      section: sectionLabel,
+      label: sectionLabel,
+      help: intro,
+      element: section,
+    });
+    const seen = new Map();
+    for (const { row, label } of settingsSearchRows(section)) {
+      const labelIndex = seen.get(label) || 0;
+      seen.set(label, labelIndex + 1);
+      index.push({
+        sectionId: section.id,
+        section: sectionLabel,
+        label,
+        labelIndex,
+        help: settingsSearchCollect(row, SETTINGS_SEARCH_HELP).map(settingsSearchText).join(' '),
+        element: row,
+      });
+    }
+  }
+  return index;
+};
+
+// Case-insensitive substring, no fuzzy matching. A label the query
+// starts ranks above a label that merely contains it, which ranks above
+// a hit in the help line under it; ties keep document order, so the
+// list reads in the order the page does. Every match is listed — a
+// silent top-N would read as "that setting does not exist".
+const matchSettingsSearch = (index, rawQuery) => {
+  const query = (rawQuery || '').trim().toLowerCase();
+  if (!query) return [];
+  const hits = [];
+  index.forEach((entry, order) => {
+    const label = (entry.label || '').toLowerCase();
+    const rank = label.startsWith(query)
+      ? 0
+      : label.includes(query)
+        ? 1
+        : (entry.help || '').toLowerCase().includes(query)
+          ? 2
+          : -1;
+    if (rank >= 0) hits.push({ entry, rank, order });
+  });
+  hits.sort((a, b) => a.rank - b.rank || a.order - b.order);
+  return hits.map(({ entry, rank }) => ({ ...entry, rank }));
+};
+
+// Where a revealed element should sit in the view. `center` is right for
+// a row — the answer lands in the middle with its neighbours around it.
+// It is wrong for anything taller than the window: `center` lines the
+// element's own middle up with the viewport's, so the top goes above the
+// fold. A section entry reveals the whole `<section>`, and Name
+// Resolution is already taller than a default window — centring it put
+// the `<h2>` that names it off screen, leaving the user who asked where
+// that section is looking at a view with no title on it. Those are
+// aligned to their top instead, which is where clicking the nav item
+// puts them.
+const settingsSearchScrollBlock = (element, viewportHeight) => {
+  if (element?.tagName === 'SECTION') return 'start';
+  const height = element?.getBoundingClientRect?.().height;
+  return height > viewportHeight ? 'start' : 'center';
+};
+/* settings-search helpers: end */
+
+// A section that filters rows out of its own DOM has to put them back
+// before the index is read, and not only on the way out (`hashchange`):
+// the page-wide field can be used without leaving the section at all —
+// the results panel hides the sections without touching the hash — and
+// a row the index cannot see is a setting this page reports as missing.
+// Shortcuts' "Search shortcuts…" is the one view like that; it registers
+// its reset here and the search calls it before every index build. Only
+// a filter belongs in this list: it is a query the page-wide field is
+// superseding, so dropping it loses nothing, which is not true of the
+// half-filled forms Chains and RPC Providers park in the same way.
+const settingsSearchResets = [];
+
+(() => {
+  const input = $('settings-search');
+  const panel = $('settings-search-results');
+  const list = $('settings-search-list');
+  const summary = $('settings-search-summary');
+  const content = document.querySelector('main.content');
+  if (!input || !panel || !list || !summary || !content) return;
+
+  const NAV_LABELS = Object.fromEntries(
+    navItems.map((item) => [item.dataset.target, settingsSearchText(item)])
+  );
+
+  let results = [];
+  let showing = false;
+  let highlighted = null;
+  let pending = null; // reveal waiting on the hash change it asked for
+  let revealToken = 0; // invalidates the retries of an earlier reveal
+
+  // The highlight stays up while it is still the answer to the query on
+  // screen — the way Chrome keeps its own — and is dropped on the next
+  // search, on Escape, and when the user navigates somewhere else.
+  const clearHighlight = () => {
+    highlighted?.classList.remove('settings-search-hit');
+    highlighted = null;
+  };
+
+  const resultRow = (result, position) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'row settings-search-result';
+    row.dataset.result = String(position);
+    const body = document.createElement('div');
+    body.className = 'row-body';
+    const label = document.createElement('p');
+    label.className = 'row-label';
+    label.textContent = result.label;
+    body.appendChild(label);
+    if (result.help) {
+      const help = document.createElement('p');
+      help.className = 'row-help';
+      help.textContent = result.help;
+      body.appendChild(help);
+    }
+    const section = document.createElement('span');
+    section.className = 'settings-search-section';
+    section.textContent = result.section;
+    row.append(body, section);
+    return row;
+  };
+
+  // The index is rebuilt from the live DOM on every keystroke, so a
+  // section that paints later from IPC state is searchable as soon as
+  // it is there. It is a few hundred elements — cheaper than keeping a
+  // cache honest against four views that repaint on their own.
+  const render = () => {
+    for (const reset of settingsSearchResets) reset();
+    const query = input.value.trim();
+    results = matchSettingsSearch(
+      buildSettingsSearchIndex(content, { sectionLabels: NAV_LABELS, skip: [panel.id] }),
+      query
+    );
+    list.replaceChildren(...results.map(resultRow));
+    list.hidden = results.length === 0;
+    summary.textContent = results.length
+      ? `${results.length} ${results.length === 1 ? 'setting matches' : 'settings match'} “${query}”.`
+      : `No settings match “${query}”.`;
+  };
+
+  // While the field has a query the results replace whichever section
+  // is open; clearing it hands that section back.
+  const openResults = () => {
+    revealToken += 1;
+    clearHighlight();
+    render();
+    for (const id of SECTIONS) document.getElementById(id)?.classList.add('hidden');
+    panel.classList.remove('hidden');
+    showing = true;
+    window.scrollTo({ top: 0 });
+  };
+
+  const closeResults = ({ restoreSection = true } = {}) => {
+    results = [];
+    list.replaceChildren();
+    panel.classList.add('hidden');
+    if (showing && restoreSection) showSection(resolveSection(location.hash));
+    showing = false;
+  };
+
+  // Re-found rather than kept as a node: Chains, RPC Providers and Site
+  // Permissions rebuild their view from IPC state on `hashchange`, so
+  // the node the result was built from can be gone. A label alone does
+  // not identify it — a chain names "Direct RPC" once in its read order
+  // and again in its broadcast order — so the result's position among
+  // its section's same-labelled rows picks which one it was, walking
+  // the same rows the index was built from. If the repaint left fewer
+  // of them than there were, the first is still better than nothing.
+  const locateRow = (result) => {
+    const section = document.getElementById(result.sectionId);
+    if (!section) return null;
+    if (result.element === section) return section;
+    const matches = settingsSearchRows(section).filter((entry) => entry.label === result.label);
+    return (matches[result.labelIndex || 0] || matches[0])?.row || null;
+  };
+
+  // A row is centred, a section entry (what `locateRow` returns when the
+  // result *is* the section) and anything else too tall to fit is
+  // aligned to its top — see `settingsSearchScrollBlock` above.
+  const applyHighlight = (row) => {
+    clearHighlight();
+    row.scrollIntoView({ block: settingsSearchScrollBlock(row, window.innerHeight) });
+    row.classList.add('settings-search-hit');
+    highlighted = row;
+  };
+
+  // Those same views repaint *after* this runs — the nav's own
+  // `hashchange` handler is registered first, and a repaint can be one
+  // await away — which would rebuild the highlight away. So a highlight
+  // that stops being connected is re-applied, bounded to four tries
+  // over ~0.5s, after which the open section is the answer.
+  const revealResult = (result, token, attempt = 0) => {
+    if (token !== revealToken) return;
+    const row = locateRow(result);
+    if (row) applyHighlight(row);
+    if (attempt >= 3) return;
+    setTimeout(() => {
+      if (token === revealToken && !highlighted?.isConnected) {
+        revealResult(result, token, attempt + 1);
+      }
+    }, 150);
+  };
+
+  // Jumping to a result leaves the result list behind and opens the
+  // section the control is in, the way clicking its nav item would.
+  const reveal = (result) => {
+    if (!result?.sectionId) return;
+    closeResults({ restoreSection: false });
+    revealToken += 1;
+    const current = location.hash.replace(/^#/, '').toLowerCase();
+    if (current === result.sectionId || current.startsWith(result.sectionId + '/')) {
+      showSection(result.sectionId);
+      revealResult(result, revealToken);
+      return;
+    }
+    // The hash change repaints and scrolls the content to the top, so
+    // the scroll-and-flash waits for it (see the handler below).
+    pending = { result, token: revealToken };
+    location.hash = result.sectionId;
+  };
+
+  const clearSearch = () => {
+    input.value = '';
+    revealToken += 1;
+    closeResults();
+    clearHighlight();
+  };
+
+  window.addEventListener('hashchange', () => {
+    const queued = pending;
+    pending = null;
+    if (queued) {
+      revealResult(queued.result, queued.token);
+      return;
+    }
+    // The user went somewhere else (a nav item, back/forward, a deep
+    // link from the outer chrome): the search is about a query they
+    // have moved on from, so the field, the results and the highlight
+    // all go. Closing the results is this handler's job and not
+    // `showSection`'s — the panel is deliberately not one of
+    // `SECTIONS`, so nothing else on the page can hide it, and left up
+    // it would stack a stale result list above the section the nav's
+    // own handler just opened.
+    clearSearch();
+  });
+
+  // A nav item whose section the hash already names changes no hash at
+  // all — its own click handler returns early — so no `hashchange`
+  // reaches the handler above and the click has to close the results
+  // itself: clicking "Appearance" while the results cover an open
+  // `#appearance` is a user asking for that section back. Registered
+  // after the nav's own listener, so by the time this runs
+  // `location.hash` already reads the section being opened.
+  navItems.forEach((item) => {
+    if (!item.dataset.target) return;
+    item.addEventListener('click', () => {
+      if (showing || input.value) clearSearch();
+    });
+  });
+
+  // An emptied field is a cleared search however it was emptied — the
+  // `<input type="search">` clear button and a selection deleted by
+  // hand both land here rather than on the Escape handler below.
+  input.addEventListener('input', () => {
+    if (input.value.trim()) openResults();
+    else {
+      revealToken += 1;
+      closeResults();
+      clearHighlight();
+    }
+  });
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      clearSearch();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (results.length) reveal(results[0]);
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      list.firstElementChild?.focus();
+    }
+  });
+
+  list.addEventListener('click', (event) => {
+    const row = event.target.closest?.('.settings-search-result');
+    if (!row) return;
+    reveal(results[Number(row.dataset.result)]);
+  });
+
+  list.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    clearSearch();
+    input.focus();
+  });
+})();
+
+// The Tor rows follow the bundled Arti binary, not the platform: every
+// platform the release workflow builds compiles Arti (Windows x64
+// included since #337), and a source build that skipped
+// `npm run tor:download` bundles none. A profile that already has the
+// integration enabled keeps the rows either way — an external Tor SOCKS
+// proxy needs no bundled binary, and a setting nothing can switch off
+// again would be worse than a row that explains nothing.
+const applyTorRowVisibility = (settings = cachedSettings) => {
+  const visible = torBundled || settings?.enableTorIntegration === true;
+  document
+    .querySelectorAll('[data-tor]')
+    .forEach((el) => (el.style.display = visible ? '' : 'none'));
+};
+
+const setFieldEnabled = (checkbox, container, ...inputs) => {
+  const enabled = checkbox?.checked === true;
+  container?.classList.toggle('disabled', !enabled);
+  for (const input of inputs) {
+    if (input) input.disabled = !enabled;
+  }
+};
+
+const NODE_MODE_LABELS = {
+  managed: 'Managed by Freedom',
+  external: 'Use external node',
+  disabled: 'Disabled',
+};
+
+const PROFILE_NODE_SERVICES = [
+  {
+    protocol: 'bee',
+    label: 'Swarm',
+    modes: ['managed', 'external', 'disabled'],
+    externalFields: [{ key: 'externalApi', label: 'API', placeholder: 'http://127.0.0.1:1633' }],
+    endpointLines: (config, service) =>
+      [
+        config?.externalApi ||
+          service?.api ||
+          (config?.apiPort ? `http://127.0.0.1:${config.apiPort}` : null),
+      ].filter(Boolean),
+  },
+  {
+    protocol: 'ipfs',
+    label: 'IPFS',
+    modes: ['managed', 'external', 'disabled'],
+    externalFields: [
+      { key: 'externalGateway', label: 'Gateway', placeholder: 'http://127.0.0.1:8080' },
+    ],
+    // Shown under the gateway field whenever "Use external node" is
+    // selected: the embedded node verifies what it retrieves, an external
+    // gateway is trusted for the bytes it serves.
+    externalNote:
+      'Freedom does not verify content integrity in this mode — the gateway is trusted for every ipfs:// page it serves.',
+    endpointLines: (config) =>
+      config?.externalGateway ? [config.externalGateway] : ['Embedded freedom-ipfs native node'],
+  },
+  {
+    protocol: 'myotis',
+    label: 'Myotis',
+    modes: ['managed', 'disabled'],
+    endpointLines: () => ['Embedded Myotis clients for Ethereum and Gnosis'],
+  },
+  {
+    protocol: 'radicle',
+    label: 'Radicle',
+    modes: ['managed', 'disabled'],
+    endpointLines: () => ['Embedded libradicle native node'],
+  },
+  {
+    protocol: 'tor',
+    label: 'Tor',
+    modes: ['managed', 'external', 'disabled'],
+    settingKey: 'enableTorIntegration',
+    externalFields: [{ key: 'externalSocks', label: 'SOCKS5', placeholder: '127.0.0.1:9150' }],
+    endpointLines: (config, service) =>
+      [
+        config?.externalSocks
+          ? `SOCKS5 ${config.externalSocks}`
+          : service?.socks
+            ? `SOCKS5 ${service.socks}`
+            : config?.socksPort
+              ? `SOCKS5 127.0.0.1:${config.socksPort}`
+              : null,
+      ].filter(Boolean),
+  },
+];
+
+const SERVICE_DEFINITIONS = Object.fromEntries(
+  PROFILE_NODE_SERVICES.map((definition) => [definition.protocol, definition])
+);
+const SERVICE_LABELS = Object.fromEntries(
+  PROFILE_NODE_SERVICES.map((definition) => [definition.protocol, definition.label])
+);
+const isProfileServiceVisible = (definition, settings) => {
+  if (definition.settingKey && settings?.[definition.settingKey] !== true) return false;
+  return true;
+};
+const visibleProfileServices = (settings) =>
+  PROFILE_NODE_SERVICES.filter((definition) => isProfileServiceVisible(definition, settings));
+
+const statusLabel = (service) => {
+  const mode = service?.mode || 'none';
+  const message = service?.tempMessage || service?.statusMessage;
+  if (message) return message;
+  if (mode === 'none') return 'Not running';
+  if (mode === 'disabled') return 'Disabled';
+  return mode.charAt(0).toUpperCase() + mode.slice(1);
+};
+
+// A node config keeps its external endpoint across a switch back to
+// managed (the catalog merges node config updates rather than clamping
+// them), so the stored value is only the endpoint in use while the mode
+// actually is 'external'. Hide it otherwise, for every row, or a managed
+// node advertises an address it is not serving from.
+const withoutStoredExternalFields = (definition, config) => {
+  const stripped = { ...(config || {}) };
+  for (const field of definition.externalFields || []) delete stripped[field.key];
+  return stripped;
+};
+
+const endpointLines = (definition, config, service) => {
+  if (config?.mode === 'disabled') return [];
+  const effective =
+    config?.mode === 'external' ? config : withoutStoredExternalFields(definition, config);
+  return definition.endpointLines?.(effective, service) || [];
+};
+
+const externalFields = (definition, config) =>
+  (definition.externalFields || []).map((field) => ({
+    ...field,
+    value: config?.[field.key],
+  }));
+
+const renderModeOptions = (protocol, mode) =>
+  (SERVICE_DEFINITIONS[protocol]?.modes || ['managed', 'disabled'])
+    .map(
+      (value) =>
+        `<option value="${value}"${mode === value ? ' selected' : ''}>${NODE_MODE_LABELS[value]}</option>`
+    )
+    .join('');
+
+const renderExternalEditor = (protocol, config, mode) => {
+  const definition = SERVICE_DEFINITIONS[protocol];
+  const fields = externalFields(definition, config).map(
+    (field) => `
+      <div class="profile-node-field">
+        <label for="profile-${protocol}-${field.key}">${esc(field.label)}</label>
+        <input
+          id="profile-${protocol}-${field.key}"
+          class="rpc-input"
+          data-endpoint-field="${field.key}"
+          type="text"
+          value="${esc(field.value || '')}"
+          placeholder="${esc(field.placeholder || '')}"
+          spellcheck="false"
+        />
+      </div>`
+  );
+
+  const note = definition?.externalNote
+    ? `<p class="profile-node-note">${esc(definition.externalNote)}</p>`
+    : '';
+
+  return `
+    <div class="profile-node-editor" data-external-editor ${mode === 'external' ? '' : 'hidden'}>
+      ${fields.join('')}
+      ${note}
+    </div>`;
+};
+
+const setProfileStatus = (message, kind) => {
+  if (!profileFields.saveStatus) return;
+  profileFields.saveStatus.textContent = message || '';
+  profileFields.saveStatus.className = 'rpc-status' + (kind ? ' ' + kind : '');
+};
+
+const setNodesStatus = (message, kind) => {
+  if (!profileFields.nodesStatus) return;
+  profileFields.nodesStatus.textContent = message || '';
+  profileFields.nodesStatus.className = 'rpc-status' + (kind ? ' ' + kind : '');
+};
+
+const setExternalEditorVisible = (row, mode) => {
+  row?.querySelector('[data-external-editor]')?.toggleAttribute('hidden', mode !== 'external');
+};
+
+const renderProfileNodes = (profile, registry, settings) => {
+  const nodes = profile?.nodes || {};
+  const rows = visibleProfileServices(settings).map((definition) => {
+    const protocol = definition.protocol;
+    const config = nodes[protocol] || {};
+    const service = registry?.[protocol] || {};
+    const mode = config.mode || 'managed';
+    const lines = endpointLines(definition, config, service);
+    const details = lines.length
+      ? lines.map((line) => `<div class="profile-node-detail">${esc(line)}</div>`).join('')
+      : '<div class="profile-node-detail">No endpoint</div>';
+
+    return `
+      <div class="profile-node" data-protocol="${protocol}">
+        <div class="profile-node-main">
+          <p class="profile-node-name">${SERVICE_LABELS[protocol]}</p>
+          <select data-node-mode>
+            ${renderModeOptions(protocol, mode)}
+          </select>
+        </div>
+        <div class="profile-node-status">
+          <div class="profile-node-status-line">${esc(statusLabel(service))}</div>
+          ${details}
+          ${renderExternalEditor(protocol, config, mode)}
+          <div class="profile-node-actions">
+            <button type="button" class="btn" data-save-node="${protocol}">Save</button>
+          </div>
+        </div>
+      </div>`;
+  });
+
+  profileFields.nodesCard.innerHTML = rows.join('');
+};
+
+const refreshProfileSection = async (force = false) => {
+  if (!profileFields.nodesCard) return;
+  if (
+    !force &&
+    document.activeElement &&
+    (profileFields.nodesCard.contains(document.activeElement) ||
+      profileFields.nameInput === document.activeElement)
+  ) {
+    return;
+  }
+
+  try {
+    const [profile, registry, settings] = await Promise.all([
+      freedomAPI.getActiveProfile?.(),
+      freedomAPI.getServiceRegistry().catch(() => null),
+      freedomAPI.getSettings?.().catch(() => null),
+    ]);
+    activeProfileId = profile?.id || null;
+    const label = profile?.displayName || profile?.id || '';
+    if (profileFields.nameInput && profileFields.nameInput !== document.activeElement) {
+      profileFields.nameInput.value = label;
+      savedProfileName = label;
+    }
+    renderProfileNodes(profile, registry, settings);
+  } catch {
+    profileFields.nodesCard.innerHTML =
+      '<div class="profile-node-empty">Profile data unavailable</div>';
+  }
+};
+
+setProfileRefreshActive = (active) => {
+  if (!active && profileRefreshTimer) {
+    clearInterval(profileRefreshTimer);
+    profileRefreshTimer = null;
+    return;
+  }
+  if (active && !profileRefreshTimer) {
+    refreshProfileSection(true);
+    profileRefreshTimer = setInterval(refreshProfileSection, 5000);
+  }
+};
+const isProfileOrNodesSection = () => {
+  const section = resolveSection(location.hash);
+  return section === 'profile' || section === 'nodes';
+};
+setProfileRefreshActive(isProfileOrNodesSection());
+freedomAPI.onProfileUpdated?.(() => {
+  refreshRadicleLaunchStatus();
+  if (isProfileOrNodesSection()) {
+    refreshProfileSection(true);
+  }
+});
+
+// Renaming auto-saves when the field is left (blur) or Enter is hit.
+// There is no success message — only failures surface. Empty, unchanged,
+// or non-editable values silently revert to the committed name.
+const commitProfileName = async () => {
+  const input = profileFields.nameInput;
+  if (!input) return;
+  setProfileStatus('', null);
+  const displayName = input.value.trim();
+  if (!activeProfileId || !displayName || displayName === savedProfileName) {
+    input.value = savedProfileName;
+    return;
+  }
+  try {
+    const result = await freedomAPI.renameProfile?.(activeProfileId, displayName);
+    if (!result?.success) {
+      throw new Error(result?.error?.message || 'Profile could not be renamed');
+    }
+    savedProfileName = displayName;
+    input.value = displayName;
+  } catch (err) {
+    setProfileStatus(err?.message || 'Profile could not be renamed', 'error');
+    input.value = savedProfileName;
+  }
+};
+
+profileFields.nameInput?.addEventListener('blur', () => {
+  commitProfileName();
+});
+
+profileFields.nameInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    // Blur commits via the blur handler.
+    profileFields.nameInput.blur();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    // Restore the committed name first so the blur commit is a no-op.
+    profileFields.nameInput.value = savedProfileName;
+    profileFields.nameInput.blur();
+  }
+});
+
+profileFields.nodesCard?.addEventListener('change', (event) => {
+  const modeSelect = event.target?.closest?.('[data-node-mode]');
+  if (!modeSelect) return;
+  setExternalEditorVisible(modeSelect.closest('.profile-node'), modeSelect.value);
+});
+
+profileFields.nodesCard?.addEventListener('click', async (event) => {
+  const saveButton = event.target?.closest?.('[data-save-node]');
+  if (!saveButton) return;
+
+  const row = saveButton.closest('.profile-node');
+  const protocol = saveButton.dataset.saveNode;
+  const mode = row?.querySelector('[data-node-mode]')?.value;
+  if (!protocol || !mode) return;
+
+  const config = { mode };
+  for (const input of row.querySelectorAll('[data-endpoint-field]')) {
+    config[input.dataset.endpointField] = input.value.trim();
+  }
+
+  if (mode === 'external') {
+    const missing = [...row.querySelectorAll('[data-endpoint-field]')]
+      .filter((input) => !input.value.trim())
+      .map((input) => input.previousElementSibling?.textContent || 'Endpoint');
+    if (missing.length) {
+      setNodesStatus(
+        `External ${SERVICE_LABELS[protocol]} requires: ${missing.join(', ')}`,
+        'error'
+      );
+      return;
+    }
+  }
+
+  saveButton.disabled = true;
+  setNodesStatus(`Saving ${SERVICE_LABELS[protocol]} node settings…`, 'testing');
+  try {
+    const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
+    if (!result?.success) {
+      throw new Error(result?.error?.message || 'Profile node settings were not saved');
+    }
+    setNodesStatus('Saved. Restart the node to apply mode or endpoint changes.', 'success');
+    await refreshProfileSection(true);
+    await refreshRadicleLaunchStatus();
+  } catch (err) {
+    setNodesStatus(err?.message || 'Profile node settings were not saved', 'error');
+  } finally {
+    saveButton.disabled = false;
+  }
+});
+
+const currentFormState = () => ({
+  theme: fields.themeMode.value || 'system',
+  tabsInTitlebar: fields.tabsInTitlebar.checked,
+  startAntAtLaunch: fields.startAnt.checked,
+  startIpfsAtLaunch: fields.startIpfs.checked,
+  startMyotisAtLaunch: fields.startMyotis.checked,
+  startMyotisGnosisAtLaunch: fields.startMyotisGnosis.checked,
+  askWhereToSave: fields.askWhereToSave.checked,
+  startRadicleAtLaunch: fields.startRadicle.checked,
+  enableTorIntegration: fields.enableTor.checked,
+  startTorAtLaunch: fields.startTor.checked,
+  enableIdentityWallet: fields.enableIdentity.checked,
+  showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
+  autoUpdate: fields.autoUpdate.checked,
+  blockUnverifiedEns: fields.unverifiedEnsAction.value !== 'open',
+  adblockEnabled: fields.adblockEnabled.checked,
+  adblockAds: fields.adblockAds.checked,
+  adblockPrivacy: fields.adblockPrivacy.checked,
+  adblockCookies: fields.adblockCookies.checked,
+  adblockAnnoyances: fields.adblockAnnoyances.checked,
+  adblockAutoUpdate: fields.adblockAutoUpdate.checked,
+});
+
+const applyFormState = (settings) => {
+  if (!settings) return;
+  fields.themeMode.value = settings.theme || 'system';
+  fields.tabsInTitlebar.checked = settings.tabsInTitlebar === true;
+  fields.startAnt.checked = settings.startAntAtLaunch !== false;
+  fields.startIpfs.checked = settings.startIpfsAtLaunch !== false;
+  fields.startMyotis.checked = settings.startMyotisAtLaunch === true;
+  fields.startMyotisGnosis.checked = settings.startMyotisGnosisAtLaunch === true;
+  fields.askWhereToSave.checked = settings.askWhereToSave === true;
+  fields.startRadicle.checked = settings.startRadicleAtLaunch === true;
+  fields.enableTor.checked = settings.enableTorIntegration === true;
+  fields.startTor.checked = settings.startTorAtLaunch === true;
+  fields.enableIdentity.checked = settings.enableIdentityWallet === true;
+  fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
+  fields.autoUpdate.checked = settings.autoUpdate !== false;
+  fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';
+  fields.adblockEnabled.checked = settings.adblockEnabled !== false;
+  fields.adblockAds.checked = settings.adblockAds !== false;
+  fields.adblockPrivacy.checked = settings.adblockPrivacy !== false;
+  fields.adblockCookies.checked = settings.adblockCookies === true;
+  fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
+  fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
+  setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+  // Re-evaluated whenever the form is repainted from a payload — first
+  // load, and a broadcast that differs from what's on screen. Enabling
+  // the integration is what keeps the rows on a build that bundles no
+  // Arti binary. Note the broadcast that follows this page's *own* save
+  // matches the form, so `onSettingsUpdated` skips applyFormState and
+  // this call with it: switching the integration back off on such a
+  // build leaves the rows up until the page is reloaded, which is the
+  // intended escape hatch rather than an oversight — the user can still
+  // see and re-enable what they just turned off.
+  applyTorRowVisibility(settings);
+  applyAdblockGating();
+};
+
+// With no filter lists the engine cannot run, so the section's controls
+// do nothing — say so once (in the status line) and disable them, rather
+// than leaving six live toggles above a line that says blocking is
+// inactive (#274). Lists can still arrive later through the Swarm list
+// updater, which only runs with the master and auto-update switches on
+// and only fetches the categories switched on (update-scheduler.js,
+// update-manager.js). So a control stays usable while switching it on
+// is the way out: the master switch when it is off, and the category
+// switches when none of them is on. The auto-update switch is never
+// frozen: switching it on is a way out, and switching it off is the
+// only way to stop the updater's background Swarm fetches while the
+// master is held on. Anything else is frozen in place until lists exist.
+let adblockUnavailable = false;
+
+const applyAdblockGating = () => {
+  const freeze = (row, field, keepUsable) => {
+    if (!adblockUnavailable || keepUsable) return;
+    row?.classList.add('disabled');
+    if (field) field.disabled = true;
+  };
+  fields.adblockEnabled.disabled = false;
+  $('adblock-enabled-row')?.classList.remove('disabled');
+  freeze($('adblock-enabled-row'), fields.adblockEnabled, !fields.adblockEnabled.checked);
+
+  const noCategoryOn = ADBLOCK_CATEGORIES.every(({ field }) => !field.checked);
+  for (const { id, field } of ADBLOCK_CATEGORIES) {
+    const row = $(`adblock-${id}-row`);
+    setFieldEnabled(fields.adblockEnabled, row, field);
+    freeze(row, field, noCategoryOn);
+  }
+  const autoUpdateRow = $('adblock-autoupdate-row');
+  setFieldEnabled(fields.adblockEnabled, autoUpdateRow, fields.adblockAutoUpdate);
+};
+
+// Rule counts / list version come from the main-process engine, not
+// settings. The engine rebuilds asynchronously after a toggle, so
+// refresh once more shortly after a save.
+const renderAdblockStatus = async () => {
+  try {
+    const status = await freedomAPI.adblockGetStatus();
+    // Before the first engine build has looked for lists, "no version"
+    // means "not checked yet", not "no lists" — keep the section live.
+    const listsPending = status.listsResolved === false;
+    adblockUnavailable = !listsPending && !status.engineReady && !status.listsVersion;
+    $('adblock-status').textContent = status.engineReady
+      ? `Filter lists ${status.listsVersion} · engine active`
+      : status.listsVersion
+        ? `Filter lists ${status.listsVersion} · engine preparing…`
+        : listsPending
+          ? 'Checking filter lists…'
+          : 'No filter lists available. Ad blocking cannot run.';
+    // A row can cover more than one list ("Block ads" is EasyList plus
+    // the uBlock filters that carry the YouTube scriptlets, #410); its
+    // helper is their combined rule count, no list names (#274).
+    for (const { id, lists = [id] } of ADBLOCK_CATEGORIES) {
+      const ruleCount = lists.reduce(
+        (sum, list) => sum + (status.categories?.[list]?.ruleCount || 0),
+        0
+      );
+      if (ruleCount) {
+        $(`adblock-${id}-help`).textContent = `${ruleCount.toLocaleString()} rules`;
+      }
+    }
+    applyAdblockGating();
+    // Keep watching while there is nothing to run: the list updater (or
+    // a first engine build still resolving at startup) can supply lists
+    // at any time, and the section should come alive when it does.
+    if (listsPending) refreshAdblockStatusSoon(1500);
+    else if (adblockUnavailable) refreshAdblockStatusSoon(5000);
+  } catch {
+    $('adblock-status').textContent = 'Status unavailable.';
+  }
+};
+let adblockStatusTimer = null;
+const refreshAdblockStatusSoon = (delay = 1500) => {
+  clearTimeout(adblockStatusTimer);
+  adblockStatusTimer = setTimeout(renderAdblockStatus, delay);
+};
+
+const renderAdblockAllowlist = async () => {
+  const list = $('adblock-allowlist-list');
+  let hosts;
+  try {
+    hosts = await freedomAPI.adblockGetAllowlist();
+  } catch {
+    return;
+  }
+  list.textContent = '';
+  for (const host of hosts) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const body = document.createElement('div');
+    body.className = 'row-body';
+    const label = document.createElement('p');
+    label.className = 'row-label';
+    label.textContent = host;
+    body.appendChild(label);
+    const control = document.createElement('div');
+    control.className = 'row-control';
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'btn';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', async () => {
+      await freedomAPI.adblockRemoveAllowlistHost(host).catch(() => {});
+      renderAdblockAllowlist();
+    });
+    control.appendChild(removeBtn);
+    row.appendChild(body);
+    row.appendChild(control);
+    list.appendChild(row);
+  }
+};
+
+const addAllowlistHostFromInput = async () => {
+  const input = $('adblock-allowlist-input');
+  const host = input.value.trim();
+  if (!host) return;
+  const ok = await freedomAPI.adblockAddAllowlistHost(host).catch(() => false);
+  if (ok) {
+    input.value = '';
+    renderAdblockAllowlist();
+  }
+};
+
+let cachedSettings = null;
+let cachedRegistry = null;
+
+// Render the Swarm-mode row based on (antNodeMode, registry.ant.mode).
+// The toggle metaphor doesn't fit here: turning light mode ON requires a
+// multi-step funding/chequebook/stamp flow (handled by the wallet
+// sidebar's publish-setup checklist), while turning it OFF is a one-click
+// revert. So we render an asymmetric row: setup-link vs revert-button.
+const renderSwarmModeRow = (settings, registry) => {
+  const beeMode = settings?.antNodeMode === 'light' ? 'light' : 'ultraLight';
+  const registryMode = registry?.ant?.mode || 'none';
+
+  // Use onclick (not addEventListener) so each render atomically replaces
+  // the prior handler — handler closes over the current state, and we
+  // re-render across state transitions.
+  const showAction = (label, handler) => {
+    swarmModeBtn.hidden = false;
+    swarmModeBtn.disabled = false;
+    swarmModeBtn.textContent = label;
+    swarmModeBtn.onclick = handler;
+  };
+
+  const hideAction = () => {
+    swarmModeBtn.hidden = true;
+    swarmModeBtn.onclick = null;
+  };
+
+  if (registryMode === 'reused' || registryMode === 'external') {
+    swarmModeHelp.textContent = 'Connected to an external Swarm node — mode is managed there.';
+    hideAction();
+    return;
+  }
+
+  if (registryMode === 'starting' || registryMode === 'stopping') {
+    swarmModeHelp.textContent = 'Switching…';
+    swarmModeBtn.hidden = false;
+    swarmModeBtn.disabled = true;
+    swarmModeBtn.textContent = 'Please wait';
+    swarmModeBtn.onclick = null;
+    return;
+  }
+
+  if (registryMode === 'none' || registryMode === 'error') {
+    swarmModeHelp.textContent = 'Start the Swarm node to configure its mode.';
+    hideAction();
+    return;
+  }
+
+  if (beeMode === 'light') {
+    swarmModeHelp.textContent = 'Light — node can publish to Swarm.';
+    showAction('Switch back to ultra-light', async () => {
+      swarmModeBtn.disabled = true;
+      const ok = await freedomAPI.saveSettings({ antNodeMode: 'ultraLight' });
+      if (!ok) swarmModeBtn.disabled = false;
+    });
+    return;
+  }
+
+  // The publish-setup flow lives inside the wallet sidebar, which is gated
+  // by the Identity & Wallet feature flag. If that's off, offering a button
+  // would deep-link into a sidebar the user can't open.
+  if (settings?.enableIdentityWallet !== true) {
+    swarmModeHelp.textContent =
+      'Ultra-light — read-only. Enable Identity & Wallet (in Experimental, above) to set up publishing.';
+    hideAction();
+    return;
+  }
+
+  swarmModeHelp.textContent = 'Ultra-light — read-only. Set up publishing to switch to light mode.';
+  showAction('Set up publishing', () => {
+    freedomAPI.openPublishSetup().catch(() => {});
+  });
+};
+
+const refreshSwarmModeRow = async () => {
+  try {
+    cachedRegistry = await freedomAPI.getServiceRegistry();
+  } catch {
+    cachedRegistry = null;
+  }
+  renderSwarmModeRow(cachedSettings, cachedRegistry);
+};
+
+const save = async () => {
+  const ok = await freedomAPI.saveSettings(currentFormState());
+  if (!ok) console.error('[settings] failed to save settings');
+};
+
+fields.themeMode.addEventListener('change', save);
+fields.tabsInTitlebar.addEventListener('change', () => {
+  save();
+  $('tabs-titlebar-restart').hidden = false;
+});
+$('tabs-titlebar-restart').addEventListener('click', () => freedomAPI.relaunchApp());
+fields.startAnt.addEventListener('change', save);
+fields.startIpfs.addEventListener('change', save);
+fields.startMyotis.addEventListener('change', save);
+fields.startMyotisGnosis.addEventListener('change', save);
+fields.askWhereToSave.addEventListener('change', save);
+fields.startRadicle.addEventListener('change', save);
+fields.enableTor.addEventListener('change', () => {
+  setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+  // Enabling the integration only reveals the controls — it does not
+  // start Tor. Starting is via the node-status menu toggle or
+  // "Start Tor when Freedom opens". Disabling stops it (settings-ui.js).
+  save();
+});
+fields.startTor.addEventListener('change', save);
+fields.enableIdentity.addEventListener('change', save);
+fields.showIpfsProgressStatus.addEventListener('change', save);
+fields.autoUpdate.addEventListener('change', save);
+fields.unverifiedEnsAction.addEventListener('change', save);
+fields.adblockEnabled.addEventListener('change', () => {
+  applyAdblockGating();
+  save();
+  refreshAdblockStatusSoon();
+});
+for (const { field } of ADBLOCK_CATEGORIES) {
+  field.addEventListener('change', () => {
+    applyAdblockGating();
+    save();
+    refreshAdblockStatusSoon();
+  });
+}
+fields.adblockAutoUpdate.addEventListener('change', () => {
+  applyAdblockGating();
+  save();
+});
+$('adblock-allowlist-add').addEventListener('click', addAllowlistHostFromInput);
+$('adblock-allowlist-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') addAllowlistHostFromInput();
+});
+
+const formStateMatches = (settings) => {
+  const form = currentFormState();
+  return Object.keys(form).every((key) => form[key] === settings[key]);
+};
+
+// Broadcasts from main keep a second open settings tab in sync; skip the
+// form re-render when the payload matches what's already on screen so we
+// don't clobber an in-flight edit (e.g. the ENS RPC input mid-type).
+// Always refresh the Swarm-mode row — antNodeMode lives outside the form
+// and a flip changes the registry too.
+freedomAPI.onSettingsUpdated?.((settings) => {
+  if (!settings) return;
+  cachedSettings = settings;
+  applySearchSettings(settings);
+  if (!formStateMatches(settings)) {
+    applyFormState(settings);
+  }
+  refreshSwarmModeRow();
+});
+
+(async () => {
+  try {
+    const platform = await freedomAPI.getPlatform();
+    if (platform !== 'linux') {
+      // Frameless titlebar is a Linux-only option.
+      document.querySelectorAll('[data-linux-only]').forEach((el) => (el.style.display = 'none'));
+    }
+  } catch {
+    // Non-fatal — assume Linux and leave the row visible.
+  }
+
+  try {
+    const binary = await freedomAPI.checkTorBinary?.();
+    torBundled = binary?.available !== false;
+  } catch {
+    // Non-fatal — assume the build bundles Arti and leave the rows up,
+    // the same way the Radicle launch row stays live when its status
+    // read fails.
+  }
+  applyTorRowVisibility();
+
+  try {
+    const [settings, registry] = await Promise.all([
+      freedomAPI.getSettings(),
+      freedomAPI.getServiceRegistry().catch(() => null),
+    ]);
+    cachedSettings = settings;
+    cachedRegistry = registry;
+    applySearchSettings(settings);
+    applyFormState(settings);
+    renderSwarmModeRow(settings, registry);
+    refreshRadicleLaunchStatus();
+  } catch {
+    console.error('[settings] failed to load settings');
+  }
+
+  renderAdblockStatus();
+  renderAdblockAllowlist();
+})();
+
+// ── Shortcuts settings page ─────────────────────────────────────
+// Render-only controller: the registry state, validation, conflict
+// detection, and persistence all live in the main process behind
+// freedomAPI.getShortcuts / previewShortcutBinding /
+// setShortcutOverride / resetShortcut(s). This page captures
+// keydowns in recording mode and paints whatever main answers.
+(() => {
+  const view = $('shortcuts-view');
+  const searchInput = $('shortcut-search');
+  const restoreBtn = $('shortcuts-restore-defaults');
+  const statusEl = $('shortcuts-status');
+  if (!view) return;
+
+  let entries = [];
+  let query = '';
+  let recordingId = null; // shortcut currently capturing a new combo
+  let conflictState = null; // { id, accelerator, formatted, conflict }
+  let rowNotice = null; // { id, message } transient validation notice
+  let recordingHandler = null;
+  let recordingFocusHandler = null;
+
+  const REASON_MESSAGES = {
+    reserved: 'That combination is reserved and cannot be assigned.',
+    'needs-modifier':
+      'Combine that key with Ctrl, Alt or Cmd. Only function keys work on their own.',
+    invalid: 'That key cannot be used as a shortcut.',
+    'not-editable': 'This shortcut cannot be changed.',
+    conflict: 'That combination is already in use.',
+    'save-failed': 'Could not save the shortcut. Try again.',
+  };
+
+  const setStatus = (message, kind) => {
+    if (!statusEl) return;
+    statusEl.textContent = message || '';
+    statusEl.className = 'rpc-status' + (kind ? ' ' + kind : '');
+  };
+
+  const matchesQuery = (entry) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return [
+      entry.settingsLabel || entry.description,
+      entry.category,
+      entry.formatted,
+      entry.accelerator,
+    ]
+      .concat(entry.aliases)
+      .join(' ')
+      .toLowerCase()
+      .includes(q);
+  };
+
+  const kbd = (text) => `<kbd class="shortcut-kbd">${esc(text)}</kbd>`;
+
+  // The banner names the colliding shortcut the way its own row does
+  // (sentence case, #277) — the two sit inside one card.
+  const renderConflict = (state) => {
+    const { conflict } = state;
+    const message = conflict.fixed
+      ? `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
+      : `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
+    return `
+      <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
+        <div class="row-body"><p class="row-label">${message}</p></div>
+        <span class="shortcut-conflict-actions">
+          ${conflict.fixed ? '' : '<button type="button" class="btn" data-action="swap">Swap</button>'}
+          <button type="button" class="btn" data-action="cancel-conflict">Cancel</button>
+        </span>
+      </div>`;
+  };
+
+  const renderRow = (entry) => {
+    const isRecording = recordingId === entry.id;
+    const notice = rowNotice?.id === entry.id ? rowNotice.message : null;
+    const aliasLine = entry.aliases.length
+      ? `<p class="row-help">Also ${entry.aliases.map(kbd).join(' ')}</p>`
+      : '';
+    // A remap the store reverted — at load because a newer default or
+    // fixed alias took its combination, or on a save (a Reset restoring
+    // a default that claims this row's chord) — say so on the row
+    // instead of letting the binding silently snap back to the default.
+    const revertedLine = entry.reverted
+      ? `<p class="shortcut-note">Your ${kbd(entry.reverted.formatted)} remap was reset — that combination is now used by “${esc(entry.reverted.conflict)}”.</p>`
+      : '';
+    const warnLine =
+      isRecording && entry.warnOnEdit
+        ? '<p class="shortcut-note">Heads up: this is a common close gesture across apps — remapping it changes deep muscle memory.</p>'
+        : '';
+    const control = !entry.editable
+      ? `<span class="shortcut-locked">${kbd(entry.formatted)} Locked</span>`
+      : `<button type="button" class="btn shortcut-binding${isRecording ? ' recording' : ''}" data-action="record">
+           ${isRecording ? 'Press new shortcut… (Esc cancels)' : kbd(entry.formatted)}
+         </button>`;
+    const resetBtn =
+      entry.editable && entry.isOverridden && !isRecording
+        ? `<button type="button" class="btn" data-action="reset" title="Reset to ${esc(entry.defaultFormatted)}">Reset</button>`
+        : '';
+    const conflictRow =
+      conflictState && conflictState.id === entry.id ? renderConflict(conflictState) : '';
+    return `
+      <div class="row" data-shortcut-id="${esc(entry.id)}">
+        <div class="row-body">
+          <p class="row-label">${esc(entry.settingsLabel || entry.description)}</p>
+          ${aliasLine}
+          ${revertedLine}
+          ${warnLine}
+          ${notice ? `<p class="shortcut-note">${esc(notice)}</p>` : ''}
+        </div>
+        <div class="row-control shortcut-controls">${resetBtn}${control}</div>
+      </div>
+      ${conflictRow}`;
+  };
+
+  const render = () => {
+    const visible = entries.filter(matchesQuery);
+    if (!visible.length) {
+      view.innerHTML =
+        '<div class="card"><div class="profile-node-empty">No shortcuts match your search</div></div>';
+      return;
+    }
+    const categories = [];
+    for (const entry of visible) {
+      if (!categories.includes(entry.category)) categories.push(entry.category);
+    }
+    view.innerHTML = categories
+      .map(
+        (category) => `
+          <h3 class="shortcut-category">${esc(category)}</h3>
+          <div class="card">
+            ${visible
+              .filter((entry) => entry.category === category)
+              .map(renderRow)
+              .join('')}
+          </div>`
+      )
+      .join('');
+  };
+
+  const load = async () => {
+    try {
+      const state = await freedomAPI.getShortcuts();
+      entries = (state?.entries || []).filter((entry) => !entry.hidden);
+    } catch {
+      entries = [];
+      setStatus('Could not load shortcuts.', 'error');
+    }
+    render();
+  };
+
+  const stopRecording = () => {
+    if (recordingHandler) {
+      window.removeEventListener('keydown', recordingHandler, true);
+      recordingHandler = null;
+    }
+    if (recordingFocusHandler) {
+      document.removeEventListener('focusin', recordingFocusHandler, true);
+      recordingFocusHandler = null;
+    }
+    recordingId = null;
+  };
+
+  const applyBinding = async (id, accelerator, swapWithConflict = false) => {
+    let result;
+    try {
+      result = await freedomAPI.setShortcutOverride({ id, accelerator, swapWithConflict });
+    } catch {
+      result = { ok: false, reason: 'save-failed' };
+    }
+    if (!result?.ok) {
+      rowNotice = { id, message: REASON_MESSAGES[result?.reason] || REASON_MESSAGES.invalid };
+    } else {
+      setStatus('Shortcut updated.', 'success');
+    }
+    await load();
+  };
+
+  const startRecording = (id) => {
+    const entry = entries.find((item) => item.id === id);
+    if (!entry?.editable || recordingId === id) return;
+    stopRecording();
+    conflictState = null;
+    rowNotice = null;
+    setStatus('');
+    recordingId = id;
+    render();
+
+    // Chrome's own recorder gives up when the row it is recording loses
+    // focus, and here it has to: the `keydown` listener below is on
+    // `window` in the capture phase, so it sees every keystroke on the
+    // page and calls `preventDefault()` on each one. A recording still
+    // armed once the user has clicked into another field eats what they
+    // type there — the page-wide search field included, where the first
+    // swallowed key is the one that would have covered this section and
+    // told the recording it was over.
+    recordingFocusHandler = (event) => {
+      if (view.contains(event.target)) return;
+      stopRecording();
+      render();
+    };
+    document.addEventListener('focusin', recordingFocusHandler, true);
+
+    recordingHandler = async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        stopRecording();
+        render();
+        return;
+      }
+      const captured = {
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        metaKey: event.metaKey,
+      };
+      let preview;
+      try {
+        preview = await freedomAPI.previewShortcutBinding({ id, event: captured });
+      } catch {
+        preview = { ok: false, reason: 'invalid' };
+      }
+      // Only modifiers held so far — keep listening.
+      if (!preview.ok && preview.reason === 'incomplete') return;
+
+      stopRecording();
+      if (!preview.ok) {
+        rowNotice = {
+          id,
+          message: REASON_MESSAGES[preview.reason] || REASON_MESSAGES.invalid,
+        };
+        render();
+        return;
+      }
+      if (preview.conflict) {
+        conflictState = {
+          id,
+          accelerator: preview.accelerator,
+          formatted: preview.formatted,
+          conflict: preview.conflict,
+        };
+        render();
+        return;
+      }
+      await applyBinding(id, preview.accelerator);
+    };
+    window.addEventListener('keydown', recordingHandler, true);
+  };
+
+  view.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-action]');
+    if (!button) return;
+    const id = event.target.closest('[data-shortcut-id]')?.dataset.shortcutId;
+    if (!id) return;
+
+    switch (button.dataset.action) {
+      case 'record':
+        startRecording(id);
+        break;
+      case 'reset': {
+        stopRecording();
+        conflictState = null;
+        rowNotice = null;
+        const result = await freedomAPI.resetShortcut(id).catch(() => null);
+        setStatus(
+          result?.ok ? 'Shortcut reset to default.' : 'Could not reset.',
+          result?.ok ? 'success' : 'error'
+        );
+        await load();
+        break;
+      }
+      case 'swap': {
+        const pending = conflictState;
+        conflictState = null;
+        if (pending) await applyBinding(pending.id, pending.accelerator, true);
+        break;
+      }
+      case 'cancel-conflict':
+        conflictState = null;
+        render();
+        break;
+    }
+  });
+
+  searchInput?.addEventListener('input', () => {
+    query = searchInput.value || '';
+    render();
+  });
+
+  // This section stays in the DOM when it is hidden, and the page-wide
+  // search reads every section's live markup (`buildSettingsSearchIndex`
+  // above): a filter still applied here keeps every shortcut it excludes
+  // out of that index, so "zoom" answers "No settings match" from
+  // anywhere else on the page for the rest of the session — and a filter
+  // that matched nothing takes the whole section with it. So the view is
+  // put back whenever it is not the one on screen: on the way out of the
+  // section (the contract Chains and RPC Providers keep below) and
+  // before the page-wide field reads the page, which it can do without
+  // the hash ever changing. The transient row state goes the same way —
+  // a conflict banner is a `.row-label` the index would offer as a
+  // setting — and so does an armed recording, whose window-level
+  // `keydown` capture would otherwise go on swallowing every keystroke
+  // on the page.
+  const resetView = () => {
+    if (!query && !recordingId && !conflictState && !rowNotice) return;
+    stopRecording();
+    conflictState = null;
+    rowNotice = null;
+    query = '';
+    if (searchInput) searchInput.value = '';
+    render();
+  };
+  settingsSearchResets.push(resetView);
+  window.addEventListener('hashchange', () => {
+    if (resolveSection(location.hash) !== 'shortcuts') resetView();
+  });
+
+  restoreBtn?.addEventListener('click', async () => {
+    stopRecording();
+    conflictState = null;
+    rowNotice = null;
+    const result = await freedomAPI.resetAllShortcuts().catch(() => null);
+    setStatus(
+      result?.ok ? 'All shortcuts restored to defaults.' : 'Could not restore defaults.',
+      result?.ok ? 'success' : 'error'
+    );
+    await load();
+  });
+
+  // Keep a second open settings tab (or a remap made elsewhere) in
+  // sync — but never clobber an in-progress recording or conflict
+  // prompt.
+  freedomAPI.onSettingsUpdated?.(() => {
+    if (!recordingId && !conflictState) load();
+  });
+
+  load();
+})();
+
+// ── Chains settings page ────────────────────────────────────────
+// Master-detail controller for the #chains section: a list of
+// chains, each drilling into a per-chain detail view of that chain's
+// endpoint sources. Hash-routed — #chains is the list,
+// #chains/<chainId> a detail. Talks to the registry via
+// freedomAPI's networks:* bridge; every mutation re-fetches and
+// re-renders so the view mirrors the registry.
+(() => {
+  const section = $('chains');
+  const view = $('chains-view');
+  const statusEl = $('chains-status');
+  if (!section || !view) return;
+
+  const esc = (s) =>
+    String(s == null ? '' : s).replace(
+      /[&<>"]/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]
+    );
+
+  let config = { networks: {}, sources: [] };
+  let myotisStatuses = {};
+  let endpointForm = null; // null | { mode, id, url } — chain is the open detail; role is always rpc
+  let endpointSaveInFlight = false; // guards against a double-click adding two 'user-<Date.now()>' sources
+  let addState = null; // null | { mode: 'search'|'manual', results, picked } — the add-chain flow
+
+  // Shown when a chain-detail deep link names a chain the registry does
+  // not have (#280). Named so the notice can be recognized again and
+  // cleared when the user navigates on.
+  const CHAIN_GONE_STATUS = 'That chain is no longer configured.';
+
+  const setStatus = (msg, kind) => {
+    if (!statusEl) return;
+    statusEl.textContent = msg || '';
+    statusEl.className = 'rpc-status' + (kind ? ' ' + kind : '');
+  };
+
+  const chainIdsSorted = () => Object.keys(config.networks).sort((a, b) => Number(a) - Number(b));
+  const chainName = (cid) => config.networks[cid]?.name || 'Chain ' + cid;
+
+  // The chain whose detail is open, parsed from the hash; null = list.
+  const openChainId = () => {
+    const parts = location.hash.replace(/^#/, '').toLowerCase().split('/');
+    return parts[0] === 'chains' && parts[1] ? parts[1] : null;
+  };
+
+  // A master-list button row: name + sub-line, trailing chevron.
+  // `name`/`sub` must already be escaped; `attr` is a data-attribute
+  // string the click handler reads.
+  const navRow = ({ name, sub, action, attr, disabled }) => `
+    <button type="button" class="net-row" data-action="${action}" ${attr}${disabled ? ' disabled' : ''}>
+      <span class="net-row-text">
+        <span class="net-row-name">${name}</span>
+        <span class="net-row-sub">${sub}</span>
+      </span>
+      <span class="net-chevron" aria-hidden="true">›</span>
+    </button>`;
+
+  // A standalone action button in its own card (12px top margin).
+  const cardButton = (label, action, variant = '') => `
+    <div class="card" style="margin-top: 12px">
+      <div class="rpc-block" style="border-top: none">
+        <button type="button" class="btn${variant ? ' ' + variant : ''}" data-action="${action}">${label}</button>
+      </div>
+    </div>`;
+
+  // --- master: chain list --------------------------------------
+  const renderList = () => {
+    const rows = chainIdsSorted()
+      .map((cid) =>
+        navRow({
+          name: esc(chainName(cid)),
+          sub: 'chain ' + esc(cid),
+          action: 'open-chain',
+          attr: `data-chain="${esc(cid)}"`,
+        })
+      )
+      .join('');
+    view.innerHTML = `
+      <h2 class="section-title">Chains</h2>
+      <p class="row-help" style="margin-bottom: 16px">
+        The chains Freedom resolves names and balances on. Select a
+        chain to manage its RPC and prover endpoints.
+      </p>
+      <div class="card">${rows}</div>
+      ${cardButton('Add chain', 'add-chain')}`;
+  };
+
+  // --- add-chain flow ------------------------------------------
+  // In-controller state (like endpointForm): mode 'search' queries
+  // the public chain catalogue, 'manual' takes a hand-entered chain;
+  // `picked` holds a catalogue chain awaiting confirmation.
+  const searchResultsHtml = () => {
+    if (addState.results === null) {
+      return '<div class="rpc-block" style="border-top: none"><p class="rpc-hint">Loading…</p></div>';
+    }
+    if (!addState.results.length) {
+      return '<div class="rpc-block" style="border-top: none"><p class="rpc-hint">No chains found</p></div>';
+    }
+    return addState.results
+      .map((c) => {
+        const exists = !!config.networks[String(c.chainId)];
+        const bits = ['chain ' + c.chainId, c.rpcCount + ' RPC' + (c.rpcCount === 1 ? '' : 's')];
+        if (c.isTestnet) bits.push('testnet');
+        return navRow({
+          name: esc(c.name) + (exists ? ' — added' : ''),
+          sub: esc(bits.join(' · ')),
+          action: 'pick-chain',
+          attr: `data-chain-id="${esc(c.chainId)}"`,
+          disabled: exists,
+        });
+      })
+      .join('');
+  };
+
+  const searchHtml = () => `
+    <div class="card">
+      <div class="rpc-block" style="border-top: none">
+        <div class="rpc-row">
+          <input type="text" class="rpc-input" id="chain-search-input"
+            placeholder="Search chains by name or ID…" spellcheck="false" />
+        </div>
+      </div>
+    </div>
+    <div class="card" id="chain-search-results" style="margin-top: 12px">${searchResultsHtml()}</div>
+    ${cardButton('Enter a chain manually', 'add-manual')}`;
+
+  const manualHtml = () => {
+    const f = addState.manual || {};
+    const decimals = f.decimalsRaw ?? '18';
+    return `
+      <div class="card">
+        <div class="rpc-block" style="border-top: none">
+          <p class="row-help" style="margin: 0 0 8px">
+            For a chain not in the catalogue — your own devnet or a private network.
+          </p>
+          <div class="rpc-row" style="margin-bottom: 8px">
+            <input type="text" class="rpc-input" id="man-chainid" placeholder="Chain ID (e.g. 8453)" spellcheck="false" value="${esc(f.chainId || '')}" />
+          </div>
+          <div class="rpc-row" style="margin-bottom: 8px">
+            <input type="text" class="rpc-input" id="man-name" placeholder="Chain name" spellcheck="false" value="${esc(f.name || '')}" />
+          </div>
+          <div class="rpc-row" style="margin-bottom: 8px">
+            <input type="text" class="rpc-input" id="man-symbol" placeholder="Currency symbol (e.g. ETH)" spellcheck="false" value="${esc(f.symbol || '')}" />
+          </div>
+          <div class="rpc-row" style="margin-bottom: 8px">
+            <input type="number" class="rpc-input" id="man-decimals" placeholder="Currency decimals (e.g. 18)" value="${esc(decimals)}" min="0" step="1" />
+          </div>
+          <div class="rpc-row" style="margin-bottom: 8px">
+            <input type="text" class="rpc-input" id="man-rpc" placeholder="RPC URL (https://… or http://localhost:8545)" spellcheck="false" value="${esc(f.rpc || '')}" />
+          </div>
+          ${addState.error ? `<p class="rpc-status error" style="margin-bottom: 8px">${esc(addState.error)}</p>` : ''}
+          <button type="button" class="btn" data-action="submit-manual">Add chain</button>
+          <button type="button" class="btn" data-action="add-search" style="margin-left: 8px">Back to search</button>
+        </div>
+      </div>`;
+  };
+
+  const renderAddConfirm = () => {
+    const c = addState.picked;
+    const rows = [
+      ['Chain ID', String(c.chainId)],
+      ['Currency', (c.nativeCurrency && c.nativeCurrency.symbol) || '—'],
+      ['RPC endpoints', c.rpcUrls.length + ' will be imported'],
+    ];
+    if (c.explorerUrl) rows.push(['Explorer', c.explorerUrl]);
+    const rowsHtml = rows
+      .map(
+        ([k, v]) => `
+      <div class="row">
+        <div class="row-body"><p class="row-label">${esc(k)}</p></div>
+        <div class="row-control"><p class="row-help">${esc(v)}</p></div>
+      </div>`
+      )
+      .join('');
+    view.innerHTML = `
+      <div class="settings-search-skip">
+        <button type="button" class="back-link" data-action="add-back">‹ Search</button>
+        <h2 class="section-title">${esc(c.name)}</h2>
+        <p class="row-help" style="margin-bottom: 16px">Review and confirm.</p>
+        <div class="card">${rowsHtml}</div>
+        ${addState.error ? `<p class="rpc-status error" style="margin: 8px 0 0">${esc(addState.error)}</p>` : ''}
+        ${cardButton('Add chain', 'confirm-add')}
+      </div>`;
+  };
+
+  // The flow is a form the user opened, not settings this page has, and
+  // it is rendered *into* the Chains section without a hash of its own:
+  // its `<h2>` would become that section's index label (so "chains"
+  // stops finding Chains and "add a chain" offers the form as a
+  // section) and its confirmation rows would be offered as settings.
+  // Hence the skip marker on the wrapper — a plain block box, so the
+  // view lays out as it did — rather than on each piece, which the next
+  // line added to either render would silently miss.
+  const renderAdd = () => {
+    if (addState.picked) {
+      renderAddConfirm();
+      return;
+    }
+    view.innerHTML = `
+      <div class="settings-search-skip">
+        <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
+        <h2 class="section-title">Add a chain</h2>
+        <p class="row-help" style="margin-bottom: 16px">
+          Search the public chain catalogue, or enter a chain manually.
+        </p>
+        ${addState.mode === 'manual' ? manualHtml() : searchHtml()}
+      </div>`;
+    $(addState.mode === 'manual' ? 'man-chainid' : 'chain-search-input')?.focus();
+  };
+
+  // --- an RPC endpoint row (detail view) -----------------------
+  // The kind (your RPC / commercial / public) is conveyed by the
+  // section the row sits in; the row itself only flags noteworthy
+  // state — primary, a missing API key, a disabled builtin. Keyed
+  // providers are managed on the RPC Providers page; here they
+  // only show key status and a link there.
+  const endpointRow = (src, cid, primary) => {
+    const url = (src.coverage && src.coverage[cid]) || '';
+    const meta = [];
+    if (primary) meta.push('primary');
+    if (src.keyed && !src.hasKey) meta.push('no API key');
+    else if (src.removed) meta.push('disabled');
+
+    let controls = '';
+    if (src.keyed) {
+      if (!src.hasKey) {
+        controls =
+          '<button type="button" class="btn" data-action="open-rpc-page">Manage keys</button>';
+      }
+    } else if (src.builtin) {
+      controls = `<label class="toggle">
+          <input type="checkbox" data-action="toggle-source" data-id="${esc(src.id)}"${src.removed ? '' : ' checked'} />
+          <span class="slider"></span></label>`;
+    } else {
+      controls = `<button type="button" class="btn" data-action="edit-source" data-id="${esc(src.id)}">Edit</button>
+         <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}">Remove</button>`;
+    }
+
+    return `
+      <div class="row">
+        <div class="row-body">
+          <p class="row-label" style="font-family: ui-monospace, Menlo, monospace; font-size: 13px">${src.keyed ? esc(src.name || src.id) : esc(url)}</p>
+          ${meta.length ? `<p class="row-help">${esc(meta.join(' · '))}</p>` : ''}
+        </div>
+        <div class="row-control">${controls}</div>
+      </div>`;
+  };
+
+  // The add/edit form for an RPC endpoint. The chain is fixed (the
+  // open detail) and the role is always rpc, so it only asks for a URL.
+  const endpointFormHtml = () => {
+    const f = endpointForm;
+    return `
+      <div class="card" style="margin-top: 16px">
+        <div class="rpc-block" style="border-top: none">
+          <p class="row-label" style="margin-bottom: 8px">${f.mode === 'edit' ? 'Edit endpoint' : 'Add endpoint'}</p>
+          <div class="rpc-row" style="margin-bottom: 8px">
+            <input type="text" class="rpc-input" id="ep-url" placeholder="https://… or http://localhost:8545" spellcheck="false" value="${esc(f.url)}" />
+          </div>
+          ${f.error ? `<p class="rpc-status error" style="margin-bottom: 8px">${esc(f.error)}</p>` : ''}
+          <button type="button" class="btn" data-action="save-endpoint">Save</button>
+          <button type="button" class="btn" data-action="cancel-endpoint" style="margin-left: 8px">Cancel</button>
+        </div>
+      </div>`;
+  };
+
+  const accessMeta = {
+    myotis: {
+      label: 'Myotis P2P light client',
+      help: 'Verified locally against the chain; no RPC endpoint involved.',
+    },
+    colibri: {
+      label: 'Colibri cryptographic verification',
+      help: 'Verifies prover responses against the chain consensus.',
+    },
+    quorum: {
+      label: 'RPC quorum',
+      help: 'Requires matching responses from independently configured RPC endpoints.',
+    },
+    direct: {
+      label: 'Direct RPC',
+      help: 'Compatibility fallback using the first working configured endpoint.',
+    },
+  };
+
+  const sourceStatus = (source, cid) => {
+    if (source === 'myotis') {
+      if (cid !== '1' && cid !== '100') return 'Unsupported';
+      const status = myotisStatuses[cid];
+      if (!status) return 'Status unknown';
+      if (status.recovery?.reason === 'installation' || status.recovery?.reason === 'unsupported')
+        return 'Update or reinstall — open Nodes';
+      if (status.state === 'ready') return 'Ready';
+      if (status.state === 'syncing') return 'Syncing';
+      if (status.state === 'recovering') return 'Updating checkpoint';
+      if (status.state === 'recovery-blocked') {
+        return status.recovery?.reason === 'stalled'
+          ? 'Syncing slowly — open Nodes'
+          : 'Sync paused — open Nodes';
+      }
+      if (status.state === 'off') return 'Off';
+      if (status.state === 'disabled') return 'Profile disabled';
+      return 'Unavailable';
+    }
+    if (source === 'colibri') {
+      return config.sources.some(
+        (entry) => entry.role === 'prover' && entry.coverage?.[cid] && !entry.removed
+      )
+        ? 'Available'
+        : 'No prover';
+    }
+    const count = config.sources.filter(
+      (entry) =>
+        entry.role === 'rpc' &&
+        entry.coverage?.[cid] &&
+        !entry.removed &&
+        (!entry.keyed || entry.hasKey)
+    ).length;
+    if (source === 'quorum') {
+      const quorum = config.networks[cid]?.quorum || { k: 3, m: 2 };
+      return `${quorum.m || 2} of ${quorum.k || 3} · ${count} available`;
+    }
+    return count ? `${count} available` : 'No endpoint';
+  };
+
+  const accessRows = (cid, kind, order) =>
+    order
+      .map((source, index) => {
+        const meta = accessMeta[source];
+        if (!meta) return '';
+        return `<div class="resolver-method" draggable="true" tabindex="0"
+              data-access-kind="${kind}" data-access-source="${source}">
+            <span class="resolver-drag-handle" title="Drag to reorder" aria-hidden="true">⠿</span>
+            <span class="resolver-rank">${index + 1}</span>
+            <div class="row-body">
+              <div class="resolver-title-line">
+                <p class="row-label">${meta.label}</p>
+                <span class="resolver-badge">${esc(sourceStatus(source, cid))}</span>
+              </div>
+              <p class="row-help">${meta.help}</p>
+            </div>
+          </div>`;
+      })
+      .join('');
+
+  // --- detail: one chain's access policy + endpoints ------------
+  // Verified/local sources are ordered first; RPC inventory remains
+  // grouped into the same custom/commercial/public priority tiers that
+  // network-registry resolves for quorum and direct fallbacks.
+  const renderDetail = (cid) => {
+    const isCustom = config.networks[cid]?.builtin === false;
+    const rpcs = config.sources.filter((s) => s.role === 'rpc' && s.coverage && s.coverage[cid]);
+    const mine = rpcs.filter((s) => !s.builtin);
+    const commercial = rpcs.filter((s) => s.builtin && s.keyed);
+    const publicRpcs = rpcs.filter((s) => s.builtin && !s.keyed);
+
+    // primary = the first usable endpoint walking the tier order.
+    const usable = (s) => !s.removed && (s.keyed ? !!s.hasKey : true);
+    const primary = [...mine, ...commercial, ...publicRpcs].find(usable);
+    const supportsVerifiedSources = cid === '1' || cid === '100';
+    const defaultReadOrder = supportsVerifiedSources
+      ? ['myotis', 'colibri', 'quorum', 'direct']
+      : ['colibri', 'quorum', 'direct'];
+    const defaultBroadcastOrder = supportsVerifiedSources ? ['myotis', 'direct'] : ['direct'];
+    const readOrder = config.networks[cid]?.access?.readOrder || defaultReadOrder;
+    const broadcastOrder = config.networks[cid]?.access?.broadcastOrder || defaultBroadcastOrder;
+    const proverSource = config.sources.find(
+      (entry) => entry.role === 'prover' && entry.coverage?.[cid] && !entry.removed
+    );
+    const proverConfig = supportsVerifiedSources
+      ? `<div class="card" style="margin-top: 12px">
+          <div class="rpc-block" style="border-top: none">
+            <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
+            <div class="rpc-row">
+              <input class="rpc-input" data-chain-prover="${esc(cid)}"
+                data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
+                value="${esc(proverSource?.coverage?.[cid] || '')}"
+                placeholder="https://…" spellcheck="false" />
+            </div>
+          </div>
+        </div>`
+      : '';
+
+    const section = (title, help, list, emptyHint) => `
+      <h3 class="subsection-title">${title}</h3>
+      <p class="row-help" style="margin-bottom: 12px">${help}</p>
+      <div class="card">${
+        list.length
+          ? list.map((s) => endpointRow(s, cid, s === primary)).join('')
+          : `<div class="rpc-block" style="border-top: none"><p class="rpc-hint">${emptyHint}</p></div>`
+      }</div>`;
+
+    view.innerHTML = `
+      <button type="button" class="back-link" data-action="back">‹ Chains</button>
+      <h2 class="section-title">${esc(chainName(cid))}</h2>
+      <p class="row-help" style="margin-bottom: 16px">chain ${esc(cid)}${isCustom ? ' · custom chain' : ''}</p>
+
+      <p class="row-help" style="margin-bottom: 4px">
+        Freedom routes wallet, transaction, and compatible dapp requests
+        through the sources below. Unsupported methods automatically continue
+        to the next source.
+      </p>
+
+      <h3 class="subsection-title">Read and verification order</h3>
+      <p class="row-help" style="margin-bottom: 12px">Drag sources into priority order.</p>
+      <div class="card">${accessRows(cid, 'read', readOrder)}</div>
+      ${proverConfig}
+
+      <h3 class="subsection-title">Transaction broadcast</h3>
+      <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
+      <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
+
+      ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
+      ${cardButton('Add RPC', 'add-endpoint')}
+      ${endpointForm ? endpointFormHtml() : ''}
+
+      ${
+        commercial.length
+          ? section(
+              'Commercial providers',
+              'Keyed providers — used before public RPCs once you add an API key on the RPC Providers page.',
+              commercial,
+              ''
+            )
+          : ''
+      }
+
+      ${
+        publicRpcs.length
+          ? section(
+              'Public RPCs',
+              'Free builtin endpoints — the always-on fallback.',
+              publicRpcs,
+              ''
+            )
+          : ''
+      }
+
+      ${isCustom ? cardButton('Remove this chain', 'remove-chain', 'danger') : ''}`;
+  };
+
+  // The notice answers one hash and one view: the chain list standing
+  // in for a chain the registry does not have. Every re-render is a
+  // chance for that view to be replaced, so clearing it belongs here
+  // rather than only on `hashchange` — the add-chain form opens on the
+  // same hash, so no `hashchange` fires for it.
+  const clearChainGoneStatus = () => {
+    if (statusEl && statusEl.textContent === CHAIN_GONE_STATUS) setStatus('');
+  };
+
+  // `fresh` marks a render driven by a config just read from the
+  // registry. Only such a render may conclude that a chain named in the
+  // hash is gone: a hash change re-renders off the cached config first,
+  // and that copy can simply predate a chain added in another window.
+  const render = ({ fresh = false } = {}) => {
+    clearChainGoneStatus(); // the branch below re-raises it if it still holds
+    if (addState) {
+      renderAdd();
+      return;
+    }
+    const cid = openChainId();
+    if (cid && config.networks[cid]) {
+      renderDetail(cid);
+      return;
+    }
+    if (cid && fresh) {
+      // The chain is not configured — removed here or in another
+      // window, or a typo. Rendering the list under the detail hash
+      // leaves the URL promising a chain nothing on screen names, so
+      // put the URL back on the list and say what happened.
+      // replaceState keeps the dead link out of the back/forward stack.
+      history.replaceState(null, '', '#chains');
+      setStatus(CHAIN_GONE_STATUS, 'error');
+    }
+    renderList();
+  };
+
+  const reload = async () => {
+    try {
+      const [res, ethereumMyotis, gnosisMyotis] = await Promise.all([
+        freedomAPI.getNetworkConfig(),
+        freedomAPI.getMyotisStatus(1).catch(() => null),
+        freedomAPI.getMyotisStatus(100).catch(() => null),
+      ]);
+      if (!res || !res.success) {
+        setStatus('Failed to load network configuration', 'error');
+        return;
+      }
+      config = { networks: res.networks || {}, sources: res.sources || [] };
+      myotisStatuses = { 1: ethereumMyotis, 100: gnosisMyotis };
+      render({ fresh: true });
+    } catch {
+      setStatus('Failed to load network configuration', 'error');
+    }
+  };
+
+  // Run a mutation, then re-fetch + re-render so the view is authoritative.
+  const mutate = async (fn) => {
+    try {
+      const res = await fn();
+      if (res && res.success === false) {
+        setStatus(res.error || 'Change failed', 'error');
+        return;
+      }
+      setStatus('', '');
+    } catch (err) {
+      setStatus(err?.message || 'Change failed', 'error');
+    }
+    await reload();
+  };
+
+  // Query the chain catalogue and refresh only the results list, so
+  // the search input keeps focus while the user types.
+  let searchTimer = null;
+  let searchSeq = 0;
+  let draggedAccess = null;
+
+  const reorderAccess = async (kind, source, target, direction = 0) => {
+    const cid = openChainId();
+    if (!cid) return;
+    const network = config.networks[cid] || {};
+    const key = kind === 'broadcast' ? 'broadcastOrder' : 'readOrder';
+    const supportsVerifiedSources = cid === '1' || cid === '100';
+    const fallback =
+      kind === 'broadcast'
+        ? supportsVerifiedSources
+          ? ['myotis', 'direct']
+          : ['direct']
+        : supportsVerifiedSources
+          ? ['myotis', 'colibri', 'quorum', 'direct']
+          : ['colibri', 'quorum', 'direct'];
+    const order = [...(network.access?.[key] || fallback)];
+    const from = order.indexOf(source);
+    let to = target ? order.indexOf(target) : from + direction;
+    if (from < 0 || to < 0 || to >= order.length || from === to) return;
+    order.splice(from, 1);
+    order.splice(to, 0, source);
+    // Send only the changed key: main merges `access` one level deep,
+    // and `network.access` here is the builtin+override merged view —
+    // spreading it would freeze builtin defaults (e.g. broadcastOrder)
+    // into the user config, so a future app update to a builtin order
+    // would be silently ignored for this user.
+    await mutate(() =>
+      freedomAPI.updateNetwork(cid, {
+        access: { [key]: order },
+      })
+    );
+  };
+  const runChainSearch = async (query) => {
+    const seq = ++searchSeq;
+    try {
+      const res = await freedomAPI.searchChains(query);
+      if (seq !== searchSeq) return; // a newer search has superseded this one
+      if (!addState || addState.mode !== 'search' || addState.picked) return;
+      addState.results = res && res.success ? res.chains : [];
+    } catch {
+      if (seq !== searchSeq || !addState) return;
+      addState.results = [];
+    }
+    const el = $('chain-search-results');
+    if (el) el.innerHTML = searchResultsHtml();
+  };
+
+  // Persist a new chain (+ its RPC endpoints), then open its detail.
+  const submitAddChain = async (def, rpcUrls, onError) => {
+    try {
+      const res = await freedomAPI.addChain(def, rpcUrls);
+      if (res && res.success === false) {
+        const message = res.error || 'Could not add chain';
+        if (onError) onError(message);
+        else setStatus(message, 'error');
+        return;
+      }
+      setStatus('', '');
+      addState = null;
+      await reload();
+      location.hash = 'chains/' + def.chainId;
+    } catch (err) {
+      const message = err?.message || 'Could not add chain';
+      if (onError) onError(message);
+      else setStatus(message, 'error');
+    }
+  };
+
+  section.addEventListener('input', (e) => {
+    if (e.target.id !== 'chain-search-input') return;
+    const q = e.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => runChainSearch(q), 250);
+  });
+
+  section.addEventListener('change', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el || el.dataset.action !== 'toggle-source') return;
+    const id = el.dataset.id;
+    mutate(() =>
+      el.checked ? freedomAPI.restoreEndpointSource(id) : freedomAPI.removeEndpointSource(id)
+    );
+  });
+
+  section.addEventListener('focusout', async (e) => {
+    const input = e.target.closest('[data-chain-prover]');
+    if (!input) return;
+    const cid = input.dataset.chainProver;
+    const url = input.value.trim();
+    const id = input.dataset.sourceId || 'colibri-corpus';
+    const current = config.sources.find((source) => source.id === id);
+    if (current?.coverage?.[cid] === url) return;
+    if (!url) {
+      await mutate(() => freedomAPI.resetEndpointSourceCoverage(id, cid));
+      return;
+    }
+    await mutate(() =>
+      freedomAPI.upsertEndpointSource(id, {
+        role: 'prover',
+        keyed: false,
+        name: current?.name || 'Colibri (corpus.core)',
+        coverage: { ...(current?.coverage || {}), [cid]: url },
+      })
+    );
+  });
+
+  section.addEventListener('dragstart', (e) => {
+    const row = e.target.closest('[data-access-source]');
+    if (!row) return;
+    draggedAccess = { kind: row.dataset.accessKind, source: row.dataset.accessSource };
+    row.classList.add('dragging');
+    e.dataTransfer?.setData('text/plain', row.dataset.accessSource);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  });
+
+  section.addEventListener('dragover', (e) => {
+    const row = e.target.closest('[data-access-source]');
+    if (!row || !draggedAccess || row.dataset.accessKind !== draggedAccess.kind) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  });
+
+  section.addEventListener('drop', async (e) => {
+    const row = e.target.closest('[data-access-source]');
+    if (!row || !draggedAccess || row.dataset.accessKind !== draggedAccess.kind) return;
+    e.preventDefault();
+    const { kind, source } = draggedAccess;
+    draggedAccess = null;
+    await reorderAccess(kind, source, row.dataset.accessSource);
+  });
+
+  section.addEventListener('dragend', () => {
+    draggedAccess = null;
+    section.querySelectorAll('.dragging').forEach((row) => row.classList.remove('dragging'));
+  });
+
+  section.addEventListener('keydown', async (e) => {
+    const row = e.target.closest('[data-access-source]');
+    if (!row || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    e.preventDefault();
+    await reorderAccess(
+      row.dataset.accessKind,
+      row.dataset.accessSource,
+      null,
+      e.key === 'ArrowUp' ? -1 : 1
+    );
+  });
+
+  section.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+
+    if (action === 'open-chain') {
+      location.hash = 'chains/' + btn.dataset.chain;
+    } else if (action === 'back') {
+      location.hash = 'chains';
+    } else if (action === 'add-endpoint') {
+      endpointForm = { mode: 'add', id: null, url: '' };
+      render();
+      $('ep-url')?.focus();
+    } else if (action === 'edit-source') {
+      const src = config.sources.find((s) => s.id === id);
+      const cid = openChainId();
+      if (src) {
+        endpointForm = {
+          mode: 'edit',
+          id,
+          url: (src.coverage && cid && src.coverage[cid]) || '',
+        };
+        render();
+        $('ep-url')?.focus();
+      }
+    } else if (action === 'cancel-endpoint') {
+      endpointForm = null;
+      render();
+    } else if (action === 'save-endpoint') {
+      const url = ($('ep-url')?.value || '').trim();
+      const cid = openChainId();
+      // Keep the form open on failure and show the error next to the input
+      // (a global status bar at the page bottom is easy to miss).
+      const failForm = (error) => {
+        endpointForm = { ...endpointForm, url, error };
+        setStatus('', '');
+        render();
+        $('ep-url')?.focus();
+      };
+      if (!url) {
+        failForm('Enter an endpoint URL');
+        return;
+      }
+      if (!cid) {
+        endpointForm = null;
+        render();
+        return;
+      }
+      // Ignore a second Save while the first upsert is still in flight:
+      // in add mode each click mints a distinct 'user-<Date.now()>' id,
+      // so a double-click would persist two duplicate sources (which also
+      // lets one server satisfy the quorum tier twice).
+      if (endpointSaveInFlight) return;
+      const sourceId =
+        endpointForm?.mode === 'edit' && endpointForm.id ? endpointForm.id : 'user-' + Date.now();
+      endpointSaveInFlight = true;
+      try {
+        const res = await freedomAPI.upsertEndpointSource(sourceId, {
+          role: 'rpc',
+          keyed: false,
+          coverage: { [cid]: url },
+        });
+        if (res && res.success === false) {
+          failForm(res.error || 'Could not save endpoint');
+          return;
+        }
+      } catch (err) {
+        failForm(err?.message || 'Could not save endpoint');
+        return;
+      } finally {
+        endpointSaveInFlight = false;
+      }
+      endpointForm = null;
+      setStatus('', '');
+      await reload();
+    } else if (action === 'delete-source') {
+      await mutate(() => freedomAPI.removeEndpointSource(id));
+    } else if (action === 'open-rpc-page') {
+      location.hash = 'rpc';
+    } else if (action === 'remove-chain') {
+      const cid = openChainId();
+      if (!cid) return;
+      if (
+        !window.confirm('Remove ' + chainName(cid) + '? Its custom RPC endpoints are removed too.')
+      )
+        return;
+      try {
+        const res = await freedomAPI.removeChain(cid);
+        if (res && res.success === false) {
+          setStatus(res.error || 'Could not remove chain', 'error');
+          return;
+        }
+        setStatus('', '');
+        location.hash = 'chains';
+      } catch (err) {
+        setStatus(err?.message || 'Could not remove chain', 'error');
+      }
+    } else if (action === 'add-chain') {
+      addState = { mode: 'search', results: null, picked: null };
+      render();
+      runChainSearch('');
+    } else if (action === 'add-manual') {
+      if (addState) {
+        addState.mode = 'manual';
+        addState.error = null;
+        addState.manual = addState.manual || { decimalsRaw: '18' };
+        render();
+      }
+    } else if (action === 'add-search') {
+      if (addState) {
+        addState.mode = 'search';
+        addState.results = null;
+        addState.error = null;
+        render();
+        runChainSearch('');
+      }
+    } else if (action === 'cancel-add') {
+      clearTimeout(searchTimer);
+      addState = null;
+      render();
+    } else if (action === 'add-back') {
+      if (addState) {
+        addState.picked = null;
+        addState.error = null;
+        render();
+        runChainSearch($('chain-search-input')?.value || '');
+      }
+    } else if (action === 'pick-chain') {
+      setStatus('Loading chain…', 'testing');
+      try {
+        const res = await freedomAPI.getCatalogChain(btn.dataset.chainId);
+        if (!res || !res.success) {
+          setStatus(res?.error || 'Could not load chain', 'error');
+          return;
+        }
+        setStatus('', '');
+        if (addState) {
+          addState.picked = res.chain;
+          render();
+        }
+      } catch (err) {
+        setStatus(err?.message || 'Could not load chain', 'error');
+      }
+    } else if (action === 'confirm-add') {
+      const c = addState?.picked;
+      if (!c) return;
+      const failConfirm = (error) => {
+        if (!addState) {
+          setStatus(error, 'error');
+          return;
+        }
+        addState.error = error;
+        render();
+      };
+      await submitAddChain(
+        {
+          chainId: c.chainId,
+          name: c.name,
+          nativeSymbol: (c.nativeCurrency && c.nativeCurrency.symbol) || '',
+          nativeCurrency: c.nativeCurrency || null,
+          blockExplorer: c.explorerUrl || '',
+        },
+        c.rpcUrls || [],
+        failConfirm
+      );
+    } else if (action === 'submit-manual') {
+      const chainId = ($('man-chainid')?.value || '').trim();
+      const name = ($('man-name')?.value || '').trim();
+      const symbol = ($('man-symbol')?.value || '').trim();
+      const decimalsRaw = ($('man-decimals')?.value || '').trim();
+      const rpc = ($('man-rpc')?.value || '').trim();
+      const decimals = decimalsRaw === '' ? 18 : Number(decimalsRaw);
+      const manual = { chainId, name, symbol, decimalsRaw, rpc };
+      const failManual = (error, focusId = 'man-rpc') => {
+        if (!addState) {
+          setStatus(error, 'error');
+          return;
+        }
+        addState.manual = manual;
+        addState.error = error;
+        render();
+        $(focusId)?.focus();
+      };
+      if (!chainId) {
+        failManual('Chain ID is required', 'man-chainid');
+        return;
+      }
+      if (!name) {
+        failManual('Chain name is required', 'man-name');
+        return;
+      }
+      if (!symbol) {
+        failManual('Currency symbol is required', 'man-symbol');
+        return;
+      }
+      if (!rpc) {
+        failManual('RPC URL is required');
+        return;
+      }
+      if (!Number.isInteger(decimals) || decimals < 0) {
+        failManual('Currency decimals must be a non-negative whole number', 'man-decimals');
+        return;
+      }
+      await submitAddChain(
+        {
+          chainId: Number(chainId),
+          name,
+          nativeSymbol: symbol,
+          nativeCurrency: { name: symbol, symbol, decimals },
+          blockExplorer: '',
+        },
+        [rpc],
+        failManual
+      );
+    }
+  });
+
+  // The hash drives list↔detail, so every hash change re-renders —
+  // leaving the section included, not only entering it. The section
+  // stays in the DOM when it is hidden and `render()` reads the
+  // sub-route off the hash, which by now names somewhere else, so this
+  // is what puts the view back to the chain list. Returning early
+  // instead parks the visited chain's detail in the hidden section for
+  // the rest of the session, and the page-wide search indexes every
+  // section's live markup: it would go on offering that chain's
+  // endpoint rows as results that jump to a list holding no such row,
+  // under an `<h2>` reading the chain's name where the section's own
+  // "Chains" heading belongs. Only the re-sync is gated on entering —
+  // leaving is not a visit. The transient add/edit form is cleared on
+  // any navigation either way.
+  window.addEventListener('hashchange', () => {
+    const entering = resolveSection(location.hash) === 'chains';
+    clearTimeout(searchTimer);
+    endpointForm = null;
+    addState = null;
+    // The "no longer configured" notice is cleared by `render()` below:
+    // the user has navigated past the hash it explains.
+    render(); // instant list<->detail swap from cached config
+    if (entering) reload(); // then re-sync in case it changed elsewhere
+  });
+
+  reload();
+})();
+
+// ── Ordered Ethereum name-resolution policy ─────────────────────
+// The policy belongs to Ethereum's existing network configuration.
+// This controller only renders/mutates that policy; resolver execution
+// remains in the main process and node lifecycle remains under Nodes.
+(() => {
+  const list = $('ens-method-list');
+  const preferVerified = $('ens-prefer-verified');
+  const policyStatus = $('ens-policy-status');
+  if (!list || !preferVerified) return;
+
+  const METHODS = [
+    {
+      id: 'myotis',
+      label: 'Myotis light client',
+      help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
+      link: '#nodes',
+      linkLabel: 'Node settings',
+    },
+    {
+      id: 'colibri',
+      label: 'Colibri',
+      help: 'A remote prover produces the witness; Freedom verifies the cryptographic proof locally.',
+    },
+    {
+      id: 'quorum',
+      label: 'RPC quorum',
+      help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
+      link: '#chains/1',
+      linkLabel: 'Manage endpoints',
+    },
+    {
+      id: 'direct',
+      label: 'Direct RPC',
+      help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
+      link: '#chains/1',
+      linkLabel: 'Configure',
+    },
+  ];
+  const METHOD_IDS = new Set(METHODS.map((method) => method.id));
+
+  let config = { networks: {}, sources: [] };
+  let enabledOrder = ['myotis', 'colibri', 'quorum'];
+  let currentQuorum = { k: 3, m: 2 };
+  let currentProverUrl = '';
+  let proverId = 'colibri-corpus';
+  let myotisStatus = null;
+  let myotisGnosisStatus = null;
+  let policySave = Promise.resolve();
+  let quorumSave = Promise.resolve();
+  let draggedMethod = null;
+  let dropPlacement = null;
+  let policyLoaded = false;
+
+  preferVerified.disabled = true;
+
+  const setPolicyStatus = (message, kind = '') => {
+    policyStatus.textContent = message || '';
+    policyStatus.className = `rpc-status resolver-status${kind ? ` ${kind}` : ''}`;
+  };
+
+  const legacyOrder = (primary) => [
+    'myotis',
+    ...(primary === 'direct' ? ['direct', 'quorum'] : []),
+    ...(primary === 'quorum' ? ['quorum'] : []),
+    ...(!primary || primary === 'colibri' ? ['colibri', 'quorum'] : []),
+  ];
+
+  const activeSources = (role) =>
+    (config.sources || []).filter(
+      (source) =>
+        source.role === role &&
+        source.coverage?.['1'] &&
+        !source.removed &&
+        (!source.keyed || source.hasKey)
+    );
+
+  const setBadge = (method, text, kind = '') => {
+    const badge = list.querySelector(`[data-method-status="${method}"]`);
+    if (!badge) return;
+    badge.textContent = text;
+    badge.className = `resolver-badge${kind ? ` ${kind}` : ''}`;
+  };
+
+  const updateMethodStatuses = () => {
+    const rpcSources = activeSources('rpc');
+    const customRpc = rpcSources.find(
+      (source) => source.builtin === false && source.keyed === false
+    );
+
+    if (!myotisStatus) {
+      setBadge('myotis', 'Status unknown', 'warning');
+    } else if (['installation', 'unsupported'].includes(myotisStatus.recovery?.reason)) {
+      setBadge('myotis', 'Update or reinstall — open Nodes', 'warning');
+    } else if (myotisStatus.state === 'unavailable') {
+      setBadge('myotis', 'Unavailable');
+    } else if (myotisStatus.state === 'disabled') {
+      setBadge('myotis', 'Profile disabled', 'warning');
+    } else if (myotisStatus.state === 'off') {
+      setBadge('myotis', 'Off');
+    } else if (myotisStatus.state === 'error') {
+      setBadge('myotis', 'Error', 'warning');
+    } else if (myotisStatus.state === 'recovering') {
+      setBadge('myotis', 'Updating checkpoint', 'warning');
+    } else if (myotisStatus.state === 'recovery-blocked') {
+      setBadge(
+        'myotis',
+        myotisStatus.recovery?.reason === 'stalled'
+          ? 'Syncing slowly — open Nodes'
+          : 'Sync paused — open Nodes',
+        'warning'
+      );
+    } else if (myotisStatus.state === 'ready') {
+      setBadge('myotis', 'Ready', 'ready');
+    } else {
+      setBadge('myotis', 'Syncing…', 'warning');
+    }
+
+    const hasProver = activeSources('prover').length > 0;
+    setBadge('colibri', hasProver ? 'Verified' : 'No prover', hasProver ? 'verified' : 'warning');
+    setBadge(
+      'quorum',
+      `${currentQuorum.m} of ${currentQuorum.k}`,
+      rpcSources.length >= currentQuorum.k ? 'verified' : 'warning'
+    );
+    setBadge(
+      'direct',
+      customRpc ? 'User endpoint' : rpcSources.length ? 'Public endpoint' : 'No endpoint',
+      'warning'
+    );
+  };
+
+  const numberOptions = (min, max, selected) =>
+    Array.from({ length: max - min + 1 }, (_, offset) => min + offset)
+      .map(
+        (value) =>
+          `<option value="${value}"${value === selected ? ' selected' : ''}>${value}</option>`
+      )
+      .join('');
+
+  const render = () => {
+    const visibleOrder = [
+      ...enabledOrder,
+      ...METHODS.map((method) => method.id).filter((id) => !enabledOrder.includes(id)),
+    ];
+    list.innerHTML = visibleOrder
+      .map((id) => {
+        const method = METHODS.find((entry) => entry.id === id);
+        const enabled = enabledOrder.includes(id);
+        const index = enabledOrder.indexOf(id);
+        const link = method.link
+          ? `<a class="row-help" href="${method.link}">${method.linkLabel}</a>`
+          : '';
+        let configRow = '';
+        if (id === 'colibri' && enabled) {
+          configRow = `<div class="resolver-config" data-method-config="colibri">
+                <div class="resolver-config-line">
+                  <div class="row-body">
+                    <p class="row-label">Prover endpoint</p>
+                    <p class="row-help">Leave empty to use the corpus.core default.</p>
+                  </div>
+                  <input type="text" id="ens-prover-url" class="rpc-input"
+                    placeholder="https://mainnet1.colibri-proof.tech" spellcheck="false" />
+                </div>
+              </div>`;
+        } else if (id === 'quorum' && enabled) {
+          configRow = `<div class="resolver-config" data-method-config="quorum">
+                <div class="resolver-config-line">
+                  <div class="row-body">
+                    <p class="row-label">Agreement threshold</p>
+                    <p class="row-help">Require matching responses from independently configured RPC providers. ${activeSources('rpc').length} currently available.</p>
+                  </div>
+                  <div class="resolver-quorum-fields">
+                    Require
+                    <select data-quorum-field="m" aria-label="Required matching RPC answers">
+                      ${numberOptions(2, currentQuorum.k, currentQuorum.m)}
+                    </select>
+                    out of
+                    <select data-quorum-field="k" aria-label="RPC providers queried">
+                      ${numberOptions(3, 9, currentQuorum.k)}
+                    </select>
+                  </div>
+                </div>
+              </div>`;
+        }
+        return `
+          <div class="resolver-method${enabled ? '' : ' disabled'}" data-method="${id}">
+            <button class="resolver-drag-handle" type="button"
+              data-drag-handle="${id}" draggable="${enabled}"
+              aria-label="Reorder ${method.label}. Drag, or use the up and down arrow keys."
+              title="Drag to reorder" ${enabled ? '' : 'disabled'}>
+              <span aria-hidden="true">⠿</span>
+            </button>
+            <span class="resolver-rank">${enabled ? index + 1 : '–'}</span>
+            <div class="row-body">
+              <div class="resolver-title-line">
+                <p class="row-label">${method.label}</p>
+                <span class="resolver-badge" data-method-status="${id}">Loading…</span>
+              </div>
+              <p class="row-help">${method.help}</p>
+              ${link}
+            </div>
+            <div class="resolver-controls">
+              <label class="toggle" aria-label="Enable ${method.label}">
+                <input type="checkbox" data-method-enabled="${id}" ${enabled ? 'checked' : ''} />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+          ${configRow}`;
+      })
+      .join('');
+
+    const proverInput = $('ens-prover-url');
+    if (proverInput) proverInput.value = currentProverUrl;
+    updateMethodStatuses();
+  };
+
+  const persistPolicy = () => {
+    if (!policyLoaded || !config.networks?.['1']) {
+      return Promise.reject(new Error('Resolution policy is not loaded yet'));
+    }
+    const primary = enabledOrder.find((method) => method !== 'myotis') || 'quorum';
+    const verification = {
+      primary,
+      order: [...enabledOrder],
+      preferVerified: preferVerified.checked,
+    };
+    // Preserve interaction order when several controls are changed in
+    // quick succession. IPC responses are not guaranteed to complete in
+    // the same order the renderer dispatched them.
+    policySave = policySave
+      .catch(() => {})
+      .then(async () => {
+        const result = await freedomAPI.updateNetwork('1', { verification });
+        if (result?.success === false) throw new Error(result.error || 'Policy was not saved');
+        config.networks['1'].verification = verification;
+        setPolicyStatus('Resolution policy saved.', 'success');
+      });
+    return policySave;
+  };
+
+  const persistQuorum = () => {
+    if (!policyLoaded || !config.networks?.['1']) {
+      return Promise.reject(new Error('Resolution policy is not loaded yet'));
+    }
+    const quorum = { ...currentQuorum };
+    quorumSave = quorumSave
+      .catch(() => {})
+      .then(async () => {
+        const result = await freedomAPI.updateNetwork('1', { quorum });
+        if (result?.success === false) throw new Error(result.error || 'Quorum was not saved');
+        config.networks['1'].quorum = {
+          ...(config.networks['1'].quorum || {}),
+          ...quorum,
+        };
+        setPolicyStatus('RPC quorum saved.', 'success');
+      });
+    return quorumSave;
+  };
+
+  const clearDragState = () => {
+    list
+      .querySelectorAll('.dragging, .drop-before, .drop-after')
+      .forEach((row) => row.classList.remove('dragging', 'drop-before', 'drop-after'));
+    draggedMethod = null;
+    dropPlacement = null;
+  };
+
+  const reorderMethod = async (id, targetIndex) => {
+    const currentIndex = enabledOrder.indexOf(id);
+    if (
+      currentIndex < 0 ||
+      targetIndex < 0 ||
+      targetIndex >= enabledOrder.length ||
+      currentIndex === targetIndex
+    ) {
+      clearDragState();
+      return;
+    }
+    enabledOrder.splice(currentIndex, 1);
+    enabledOrder.splice(targetIndex, 0, id);
+    const restoreHandleFocus = document.activeElement?.dataset?.dragHandle === id;
+    clearDragState();
+    render();
+    if (restoreHandleFocus) {
+      list.querySelector(`[data-drag-handle="${id}"]`)?.focus();
+    }
+    try {
+      await persistPolicy();
+    } catch (err) {
+      setPolicyStatus(err?.message || 'Failed to reorder methods.', 'error');
+      refresh();
+    }
+  };
+
+  const refresh = async () => {
+    try {
+      const res = await freedomAPI.getNetworkConfig();
+      if (!res || !res.success) throw new Error('Network configuration unavailable');
+      config = { networks: res.networks || {}, sources: res.sources || [] };
+      if (!config.networks['1']) throw new Error('Ethereum network configuration unavailable');
+      const verification = config.networks?.['1']?.verification || {};
+      const configured = Array.isArray(verification.order)
+        ? verification.order.filter(
+            (method, index, all) => METHOD_IDS.has(method) && all.indexOf(method) === index
+          )
+        : [];
+      enabledOrder = configured.length
+        ? configured
+        : legacyOrder(verification.primary || 'colibri');
+      preferVerified.checked = verification.preferVerified !== false;
+      const quorum = config.networks?.['1']?.quorum || {};
+      const k = Math.max(3, Math.min(Number(quorum.k) || 3, 9));
+      const m = Math.max(2, Math.min(Number(quorum.m) || 2, k));
+      currentQuorum = { k, m };
+
+      const prover = (config.sources || []).find(
+        (source) => source.role === 'prover' && source.coverage?.['1'] && !source.removed
+      );
+      proverId = prover?.id || 'colibri-corpus';
+      currentProverUrl = prover && prover.builtin === false ? prover.coverage['1'] : '';
+      policyLoaded = true;
+      preferVerified.disabled = false;
+      setPolicyStatus('');
+      render();
+    } catch (err) {
+      policyLoaded = false;
+      preferVerified.disabled = true;
+      setPolicyStatus(err?.message || 'Could not load resolution policy.', 'error');
+    }
+  };
+
+  list.addEventListener('keydown', (event) => {
+    const handle = event.target.closest?.('[data-drag-handle]');
+    if (!handle || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+    event.preventDefault();
+    const id = handle.dataset.dragHandle;
+    const currentIndex = enabledOrder.indexOf(id);
+    const targetIndex = currentIndex + (event.key === 'ArrowUp' ? -1 : 1);
+    reorderMethod(id, targetIndex);
+  });
+
+  list.addEventListener('dragstart', (event) => {
+    const handle = event.target.closest?.('[data-drag-handle]');
+    const id = handle?.dataset.dragHandle;
+    if (!id || !enabledOrder.includes(id)) {
+      event.preventDefault();
+      return;
+    }
+    draggedMethod = id;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', id);
+    handle.closest('[data-method]')?.classList.add('dragging');
+  });
+
+  list.addEventListener('dragover', (event) => {
+    if (!draggedMethod) return;
+    const row = event.target.closest?.('[data-method]');
+    const targetId = row?.dataset.method;
+    if (!row || targetId === draggedMethod || !enabledOrder.includes(targetId)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    list
+      .querySelectorAll('.drop-before, .drop-after')
+      .forEach((candidate) => candidate.classList.remove('drop-before', 'drop-after'));
+    const bounds = row.getBoundingClientRect();
+    const after = event.clientY >= bounds.top + bounds.height / 2;
+    row.classList.add(after ? 'drop-after' : 'drop-before');
+    dropPlacement = { targetId, after };
+  });
+
+  list.addEventListener('drop', (event) => {
+    if (!draggedMethod || !dropPlacement) {
+      clearDragState();
+      return;
+    }
+    event.preventDefault();
+    const id = draggedMethod;
+    const currentIndex = enabledOrder.indexOf(id);
+    const targetIndex = enabledOrder.indexOf(dropPlacement.targetId);
+    let insertionIndex = targetIndex + (dropPlacement.after ? 1 : 0);
+    if (currentIndex < insertionIndex) insertionIndex -= 1;
+    reorderMethod(id, insertionIndex);
+  });
+
+  list.addEventListener('dragend', clearDragState);
+
+  list.addEventListener('change', async (event) => {
+    const quorumField = event.target.closest?.('[data-quorum-field]');
+    if (quorumField) {
+      const kInput = list.querySelector('[data-quorum-field="k"]');
+      const mInput = list.querySelector('[data-quorum-field="m"]');
+      const k = Math.max(3, Math.min(Number(kInput?.value) || 3, 9));
+      const m = Math.max(2, Math.min(Number(mInput?.value) || 2, k));
+      currentQuorum = { k, m };
+      render();
+      try {
+        await persistQuorum();
+      } catch (err) {
+        setPolicyStatus(err?.message || 'Failed to update the RPC quorum.', 'error');
+        refresh();
+      }
+      return;
+    }
+
+    const toggle = event.target.closest?.('[data-method-enabled]');
+    if (!toggle) return;
+    const id = toggle.dataset.methodEnabled;
+    if (toggle.checked) {
+      if (!enabledOrder.includes(id)) enabledOrder.push(id);
+    } else if (enabledOrder.length === 1) {
+      toggle.checked = true;
+      setPolicyStatus('At least one resolution method must remain enabled.', 'error');
+      return;
+    } else {
+      enabledOrder = enabledOrder.filter((method) => method !== id);
+    }
+    render();
+    try {
+      await persistPolicy();
+    } catch (err) {
+      setPolicyStatus(err?.message || 'Failed to update methods.', 'error');
+      refresh();
+    }
+  });
+
+  list.addEventListener('focusout', async (event) => {
+    if (event.target.id !== 'ens-prover-url') return;
+    const url = event.target.value.trim();
+    if (url === currentProverUrl) return;
+    try {
+      const proverSource = config.sources.find((source) => source.id === proverId);
+      const result = url
+        ? await freedomAPI.upsertEndpointSource(proverId, {
+            role: 'prover',
+            keyed: false,
+            // Include `name` so an override built here collapses back to
+            // the builtin (via resetEndpointSourceCoverage's structural
+            // equality) when the URL is cleared — the builtin
+            // colibri-corpus carries a name, so omitting it here pins the
+            // override in the user layer forever. Matches the Chains-page
+            // upsert.
+            name: proverSource?.name || 'Colibri (corpus.core)',
+            coverage: {
+              ...(proverSource?.coverage || {}),
+              1: url,
+            },
+          })
+        : await freedomAPI.resetEndpointSourceCoverage(proverId, 1);
+      if (result?.success === false) throw new Error(result.error || 'Prover was not saved');
+      await refresh();
+    } catch (err) {
+      setPolicyStatus(err?.message || 'Failed to update the Colibri prover.', 'error');
+    }
+  });
+
+  preferVerified.addEventListener('change', async () => {
+    try {
+      await persistPolicy();
+    } catch (err) {
+      setPolicyStatus(err?.message || 'Failed to update verification preference.', 'error');
+      refresh();
+    }
+  });
+
+  const launchRow = $('myotis-launch-row');
+  const launchToggle = $('start-myotis-at-launch');
+  const launchHelp = $('myotis-launch-help');
+  const defaultLaunchHelp = launchHelp?.textContent || '';
+  const gnosisLaunchRow = $('myotis-gnosis-launch-row');
+  const gnosisLaunchToggle = $('start-myotis-gnosis-at-launch');
+  const gnosisLaunchHelp = $('myotis-gnosis-launch-help');
+  const defaultGnosisLaunchHelp = gnosisLaunchHelp?.textContent || '';
+
+  const updateMyotis = async () => {
+    try {
+      [myotisStatus, myotisGnosisStatus] = await Promise.all([
+        freedomAPI.getMyotisStatus(1),
+        freedomAPI.getMyotisStatus(100),
+      ]);
+    } catch {
+      myotisStatus = null;
+      myotisGnosisStatus = null;
+    }
+    if (launchRow && launchToggle) {
+      const supported = myotisStatus?.supported !== false;
+      const available = myotisStatus ? Boolean(myotisStatus.available) : true;
+      const disabled = myotisStatus?.state === 'disabled';
+      launchRow.hidden = !supported;
+      launchToggle.disabled = Boolean(myotisStatus) && supported && (!available || disabled);
+      if (launchHelp) {
+        launchHelp.textContent = !myotisStatus
+          ? 'Myotis status could not be read. The startup preference can still be saved.'
+          : disabled
+            ? 'Disabled for this profile under Settings → Nodes.'
+            : supported && !available
+              ? 'Sync component missing. Update or reinstall Freedom; open Nodes for help.'
+              : myotisStatus.state === 'recovery-blocked'
+                ? 'Sync recovery needs attention. Open Nodes in the toolbar for recovery actions and help.'
+                : myotisStatus.state === 'recovering'
+                  ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
+                  : defaultLaunchHelp;
+      }
+    }
+    if (gnosisLaunchRow && gnosisLaunchToggle) {
+      const supported = myotisGnosisStatus?.supported !== false;
+      const available = myotisGnosisStatus ? Boolean(myotisGnosisStatus.available) : true;
+      const disabled = myotisGnosisStatus?.state === 'disabled';
+      gnosisLaunchRow.hidden = !supported;
+      gnosisLaunchToggle.disabled =
+        Boolean(myotisGnosisStatus) && supported && (!available || disabled);
+      if (gnosisLaunchHelp) {
+        gnosisLaunchHelp.textContent = !myotisGnosisStatus
+          ? 'Myotis status could not be read. The startup preference can still be saved.'
+          : disabled
+            ? 'Disabled for this profile under Settings → Nodes.'
+            : supported && !available
+              ? 'Sync component missing. Update or reinstall Freedom; open Nodes for help.'
+              : myotisGnosisStatus.state === 'recovery-blocked'
+                ? 'Sync recovery needs attention. Open Nodes in the toolbar for recovery actions and help.'
+                : myotisGnosisStatus.state === 'recovering'
+                  ? 'Updating the sync checkpoint automatically. You can turn the node off in Nodes.'
+                  : defaultGnosisLaunchHelp;
+      }
+    }
+    updateMethodStatuses();
+  };
+
+  window.addEventListener('hashchange', () => {
+    if (location.hash.replace(/^#/, '').toLowerCase() === 'ens') refresh();
+  });
+  freedomAPI.onSettingsUpdated?.((settings) => {
+    if (settings?.networkConfigUpdated) refresh();
+  });
+
+  refresh();
+  updateMyotis();
+  const myotisTimer = setInterval(updateMyotis, 5000);
+  window.addEventListener('beforeunload', () => clearInterval(myotisTimer));
+})();
+
+// ── RPC Providers page ──────────────────────────────────────────
+// Commercial RPC providers (Alchemy / Infura / DRPC) and their API
+// keys, for the #rpc section. A keyed provider's API key is
+// one credential across every chain that provider serves, so it
+// belongs here rather than per-chain.
+(() => {
+  const section = $('rpc');
+  const view = $('rpc-view');
+  const statusEl = $('rpc-status');
+  if (!section || !view) return;
+
+  const esc = (s) =>
+    String(s == null ? '' : s).replace(
+      /[&<>"]/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]
+    );
+
+  let config = { networks: {}, sources: [] };
+  let keyFor = null; // null | provider id whose key is being edited
+
+  const setStatus = (msg, kind) => {
+    if (!statusEl) return;
+    statusEl.textContent = msg || '';
+    statusEl.className = 'rpc-status' + (kind ? ' ' + kind : '');
+  };
+
+  // Of the user's configured chains, the ones this provider serves.
+  const supportedChains = (provider) => {
+    const names = Object.keys(provider.coverage || {})
+      .filter((cid) => config.networks[cid])
+      .map((cid) => config.networks[cid].name || 'Chain ' + cid);
+    return names.length ? names.join(', ') : 'none of your chains';
+  };
+
+  const providerRow = (p) => {
+    if (keyFor === p.id) {
+      return `
+        <div class="row">
+          <div class="row-body" style="flex: 1">
+            <p class="row-label">${esc(p.name || p.id)}</p>
+            <div class="rpc-row" style="margin-top: 8px">
+              <input type="password" class="rpc-input" id="pkey-${esc(p.id)}" placeholder="API key" spellcheck="false" />
+              <button type="button" class="btn" data-action="test-key" data-id="${esc(p.id)}">Test</button>
+              <button type="button" class="btn" data-action="save-key" data-id="${esc(p.id)}">Save</button>
+              <button type="button" class="btn" data-action="cancel-key">Cancel</button>
+            </div>
+            <p class="rpc-status" id="pstatus-${esc(p.id)}"></p>
+          </div>
+        </div>`;
+    }
+    const controls = p.hasKey
+      ? `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Replace key</button>
+         <button type="button" class="btn danger" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`
+      : `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Add key</button>`;
+    return `
+      <div class="row">
+        <div class="row-body">
+          <p class="row-label">${esc(p.name || p.id)}</p>
+          <p class="row-help">${p.hasKey ? 'API key set' : 'No API key'} · supports ${esc(supportedChains(p))}</p>
+        </div>
+        <div class="row-control">${controls}</div>
+      </div>`;
+  };
+
+  const render = () => {
+    const providers = config.sources.filter((s) => s.keyed);
+    const body = providers.length
+      ? `<div class="card">${providers.map(providerRow).join('')}</div>`
+      : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available</p></div></div>';
+    view.innerHTML = `
+      <h2 class="section-title">RPC Providers</h2>
+      <p class="row-help" style="margin-bottom: 16px">
+        Commercial RPC providers. Add an API key to use one — a single
+        key covers every chain that provider serves. Keyless public
+        RPCs are managed per chain under Chains settings.
+      </p>
+      ${body}`;
+  };
+
+  const reload = async () => {
+    try {
+      const res = await freedomAPI.getNetworkConfig();
+      if (!res || !res.success) {
+        setStatus('Failed to load provider configuration', 'error');
+        return;
+      }
+      config = { networks: res.networks || {}, sources: res.sources || [] };
+      render();
+    } catch {
+      setStatus('Failed to load provider configuration', 'error');
+    }
+  };
+
+  const mutate = async (fn) => {
+    try {
+      const res = await fn();
+      if (res && res.success === false) {
+        setStatus(res.error || 'Change failed', 'error');
+        return;
+      }
+      setStatus('', '');
+    } catch (err) {
+      setStatus(err?.message || 'Change failed', 'error');
+    }
+    await reload();
+  };
+
+  section.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+
+    if (action === 'edit-key') {
+      keyFor = id;
+      render();
+      $('pkey-' + id)?.focus();
+    } else if (action === 'cancel-key') {
+      keyFor = null;
+      render();
+    } else if (action === 'remove-key') {
+      await mutate(() => freedomAPI.removeNetworkApiKey(id));
+    } else if (action === 'test-key') {
+      const key = ($('pkey-' + id)?.value || '').trim();
+      const line = $('pstatus-' + id);
+      if (!key) {
+        if (line) {
+          line.textContent = 'Enter a key to test';
+          line.className = 'rpc-status error';
+        }
+        return;
+      }
+      if (line) {
+        line.textContent = 'testing…';
+        line.className = 'rpc-status testing';
+      }
+      try {
+        const r = await freedomAPI.testNetworkApiKey(id, key);
+        if (line) {
+          line.textContent = r?.success ? 'Key works' : r?.error || 'Key test failed';
+          line.className = 'rpc-status ' + (r?.success ? 'success' : 'error');
+        }
+      } catch (err) {
+        if (line) {
+          line.textContent = err?.message || 'Key test failed';
+          line.className = 'rpc-status error';
+        }
+      }
+    } else if (action === 'save-key') {
+      const key = ($('pkey-' + id)?.value || '').trim();
+      if (!key) {
+        const line = $('pstatus-' + id);
+        if (line) {
+          line.textContent = 'Enter a key';
+          line.className = 'rpc-status error';
+        }
+        return;
+      }
+      keyFor = null;
+      await mutate(() => freedomAPI.setNetworkApiKey(id, key));
+    }
+  });
+
+  // Re-sync on navigation into this section. Navigating *away* drops
+  // the open key field too — the same shape as Chains above: this
+  // section stays in the DOM when hidden, so an abandoned edit would
+  // otherwise sit there with a typed API key in it until the user came
+  // back.
+  window.addEventListener('hashchange', () => {
+    if (resolveSection(location.hash) !== 'rpc') {
+      if (keyFor !== null) {
+        keyFor = null;
+        render();
+      }
+      return;
+    }
+    keyFor = null;
+    reload();
+  });
+
+  reload();
+})();
+
+// Controller for the #permissions section: stored per-site
+// permission decisions (permissions.json) grouped by origin, with
+// per-permission revoke, per-site revoke, and revoke-all. Session-only
+// (unremembered) decisions live in main-process memory and are not
+// listed here — they expire with the app anyway.
+(() => {
+  const view = $('permissions-view');
+  const revokeAll = $('permissions-revoke-all');
+  if (!view) return;
+
+  const PERMISSION_LABELS = {
+    camera: 'Camera',
+    microphone: 'Microphone',
+    notifications: 'Notifications',
+    'clipboard-read': 'Clipboard reading',
+    geolocation: 'Location',
+    midi: 'MIDI devices',
+    // The pop-up-blocked icon's "Always allow pop-ups on this site" (#442).
+    popups: 'Pop-ups',
+  };
+  // `external:<scheme>` — one decision per external-protocol scheme
+  // (#406); mirrors permissionLabel in lib/site-permissions-ui.js.
+  const label = (key) =>
+    key.startsWith('external:')
+      ? `Open ${key.slice('external:'.length)}: links`
+      : PERMISSION_LABELS[key] || key;
+
+  const render = (all) => {
+    const origins = Object.keys(all || {}).sort();
+
+    if (revokeAll) revokeAll.disabled = origins.length === 0;
+
+    // The empty state and the error state below are status messages in
+    // a row's clothing, so both carry the page-wide search's skip
+    // marker: indexed, "No saved permissions" is offered as a setting
+    // to jump to and marked with the accent edge that means "here is
+    // your control" (#281).
+    if (origins.length === 0) {
+      view.innerHTML = `<div class="card"><div class="row settings-search-skip"><div class="row-body">
+           <p class="row-label">No saved permissions</p>
+           <p class="row-help">Sites you allow or block with
+           “Remember for this site” appear here.</p>
+         </div></div></div>`;
+      return;
+    }
+
+    const cards = origins
+      .map((origin) => {
+        const rows = Object.entries(all[origin] || {})
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(
+            ([permission, decision]) => `
+              <div class="row sub">
+                <div class="row-body">
+                  <p class="row-label">${esc(label(permission))}</p>
+                  <p class="row-help" ${
+                    decision === 'deny' ? 'style="color: var(--danger)"' : ''
+                  }>${decision === 'allow' ? 'Allowed' : 'Blocked'}</p>
+                </div>
+                <div class="row-control">
+                  <button class="btn" data-action="revoke"
+                    data-origin="${esc(origin)}"
+                    data-permission="${esc(permission)}">Remove</button>
+                </div>
+              </div>`
+          )
+          .join('');
+        return `
+          <div class="card" style="margin-bottom: 12px">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label" style="word-break: break-all">${esc(origin)}</p>
+              </div>
+              <div class="row-control">
+                <button class="btn danger" data-action="revoke-origin"
+                  data-origin="${esc(origin)}">Remove site</button>
+              </div>
+            </div>
+            ${rows}
+          </div>`;
+      })
+      .join('');
+
+    view.innerHTML = cards;
+  };
+
+  const reload = async () => {
+    try {
+      render(await freedomAPI.getSitePermissions());
+    } catch (err) {
+      // The button lives in the section header now, outside the view
+      // this replaces, so the error render has to disable it itself —
+      // offering to wipe state the page just said it cannot read.
+      if (revokeAll) revokeAll.disabled = true;
+      view.innerHTML = `<div class="card"><div class="row settings-search-skip"><div class="row-body">
+        <p class="row-label">Could not load site permissions</p>
+        <p class="row-help">${esc(err?.message || String(err))}</p>
+      </div></div></div>`;
+    }
+  };
+
+  revokeAll?.addEventListener('click', async () => {
+    try {
+      await freedomAPI.revokeAllSitePermissions();
+    } catch (err) {
+      console.error('[settings] site-permission revoke failed:', err);
+    }
+    reload();
+  });
+
+  view.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const { action, origin, permission } = btn.dataset;
+    try {
+      if (action === 'revoke') {
+        await freedomAPI.revokeSitePermission(origin, permission);
+      } else if (action === 'revoke-origin') {
+        await freedomAPI.revokeSitePermissionOrigin(origin);
+      }
+    } catch (err) {
+      console.error('[settings] site-permission revoke failed:', err);
+    }
+    reload();
+  });
+
+  // Live refresh when decisions change elsewhere (prompt answers,
+  // the address-bar indicator's quick revoke).
+  freedomAPI.onSitePermissionsChanged?.(() => {
+    reload();
+  });
+
+  // Re-sync on navigation into this section.
+  window.addEventListener('hashchange', () => {
+    if (resolveSection(location.hash) !== 'permissions') return;
+    reload();
+  });
+
+  reload();
+})();

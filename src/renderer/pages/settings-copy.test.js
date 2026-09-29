@@ -26,7 +26,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The page's markup plus the classic script it loads (`scripts/settings.js`,
+// moved out of an inline <script> by #432 so the CSP can drop 'unsafe-inline').
+const SOURCE = [
+  fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), 'utf8'),
+].join('\n');
 
 /** Tag-stripped, whitespace-collapsed text of a markup fragment. */
 const textOf = (html) =>
@@ -128,7 +133,9 @@ describe('settings.html button labels carry no glyphs (#278)', () => {
   });
 
   test('no button or link label is suffixed with a literal `→`', () => {
-    const anchors = [...SOURCE.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/g)].map(([, body]) => textOf(body));
+    // `</a\n>` is how Prettier wraps a long anchor; without `\s*` the match
+    // runs on to the next anchor's `</a>` and sweeps the page in between.
+    const anchors = [...SOURCE.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/g)].map(([, body]) => textOf(body));
     // The ENS method rows render their link text from a `linkLabel` field
     // rather than as markup, so it is swept from the registry too.
     const linkLabels = [...SOURCE.matchAll(/linkLabel:\s*'([^']*)'/g)].map(([, label]) => label);

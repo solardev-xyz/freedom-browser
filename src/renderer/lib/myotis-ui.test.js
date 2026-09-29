@@ -417,7 +417,7 @@ describe('myotis-ui', () => {
     expect(ctx.elements.gnosisRecoveryMessage.textContent).toBe(
       'Checkpoint is still out of date. Retrying in 15s…'
     );
-    expect(ctx.elements.gnosisRetryCheckpoint.hidden).toBe(true);
+    expect(ctx.elements.gnosisRetryCheckpoint.hidden).toBe(false);
     expect(ctx.elements.notice.hidden).toBe(true);
   });
 
@@ -495,17 +495,21 @@ describe('myotis-ui', () => {
     expect(ctx.elements.recoveryMessage.hidden).toBe(true);
   });
 
-  test('a failed retry remains actionable and explains failure', async () => {
+  test.each(['blocked', 'waiting'])('a failed retry remains actionable during %s and explains failure', async phase => {
     const ctx = await loadMyotisUi();
     ctx.mod.initMyotisUi();
     await flushMicrotasks();
-    ctx.getStatusHandler()(recoveryStatus(1));
+    const status = recoveryStatus(1, {
+      state: phase === 'waiting' ? 'recovering' : 'recovery-blocked',
+      recovery: { phase, reason: 'quorum-unavailable', canRetry: true, nextRetryAt: Date.now() + 300000 },
+    });
+    ctx.getStatusHandler()(status);
     ctx.api.retryCheckpoint.mockRejectedValue(new Error('IPC gone'));
     ctx.elements.retryCheckpoint.dispatch('click');
     await flushMicrotasks();
     expect(ctx.elements.retryCheckpoint.disabled).toBe(false);
     expect(ctx.elements.recoveryMessage.textContent).toBe('The recovery action could not start. Try again.');
-    ctx.getStatusHandler()(recoveryStatus(1));
+    ctx.getStatusHandler()(status);
     expect(ctx.elements.recoveryMessage.textContent).toBe('The recovery action could not start. Try again.');
   });
 

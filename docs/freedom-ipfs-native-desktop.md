@@ -41,7 +41,8 @@ was produced against — it is not an ABI gate, and it does not mean the addon
 only loads on Electron 41. The addon is Node-API (`napi_register_module_v1`,
 `napi` level 10), so it is ABI-stable across Node and Electron majors: the same
 file loads on plain Node and on the Electron the app ships (verified on
-Electron 44.3.0 / `NODE_MODULE_VERSION` 149 during the Electron 43 → 44 bump).
+Electron 44.3.0 / `NODE_MODULE_VERSION` 149 during the Electron 43 → 44 bump,
+and again on 44.4.1 — same `NODE_MODULE_VERSION` — during the #346 bump).
 Do not read the version in the filename as a compatibility claim.
 
 The output is staged in both places the app needs:

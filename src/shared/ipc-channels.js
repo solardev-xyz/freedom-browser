@@ -15,6 +15,7 @@ module.exports = {
   ANT_GET_STATUS: 'ant:getStatus',
   ANT_STATUS_UPDATE: 'ant:statusUpdate',
   ANT_CHECK_BINARY: 'ant:checkBinary',
+  ANT_API_GET: 'ant:api-get',
 
   // IPFS node management
   IPFS_START: 'ipfs:start',
@@ -77,6 +78,7 @@ module.exports = {
   ADBLOCK_ADD_ALLOWLIST_HOST: 'adblock:add-allowlist-host',
   ADBLOCK_REMOVE_ALLOWLIST_HOST: 'adblock:remove-allowlist-host',
   ADBLOCK_COSMETIC: 'adblock:cosmetic',
+  ADBLOCK_SCRIPTLETS: 'adblock:scriptlets',
   // Keyboard shortcuts (Settings > Shortcuts page ↔ main). State/preview
   // are reads; set/reset persist overrides into the settings store, whose
   // SETTINGS_UPDATED broadcast then rebuilds the menu and refreshes the
@@ -359,6 +361,20 @@ module.exports = {
   // Main→renderer broadcast after any decision is recorded or revoked, so
   // the address-bar indicator and the settings page can re-query.
   PERMISSIONS_CHANGED: 'permissions:changed',
+  // Popup blocker for tab webviews (#442), src/main/popup-blocker.js.
+  // Webview preload → main: may this guest open a new tab for the dweb link
+  // it intercepted (gesture consumed if so)? Answers a boolean.
+  POPUPS_CLAIM: 'popups:claim',
+  // Main → the owning window: a popup was blocked
+  // ({guestId, url, targetName, reuseOnly, origin}).
+  POPUPS_BLOCKED: 'popups:blocked',
+  // Chrome → main: "Always allow pop-ups on this site" (origin). Recorded as
+  // the `popups` site permission in the asking window's scope.
+  POPUPS_ALLOW_SITE: 'popups:allow-site',
+  // Address bar → main: open a typed external-protocol URL (magnet:, mailto:,
+  // …) in its OS handler. Answers {opened, reason?}; see
+  // src/main/external-protocol.js (#406).
+  EXTERNAL_PROTOCOL_OPEN_FROM_ADDRESS_BAR: 'external-protocol:open-from-address-bar',
 
   // dApp Permissions
   DAPP_GET_PERMISSION: 'dapp:get-permission',
@@ -369,7 +385,6 @@ module.exports = {
   DAPP_GET_SIGNING_AUTO_APPROVE: 'dapp:get-signing-auto-approve',
   DAPP_SET_SIGNING_AUTO_APPROVE: 'dapp:set-signing-auto-approve',
   DAPP_IS_TX_AUTO_APPROVED: 'dapp:is-tx-auto-approved',
-  DAPP_ADD_TX_AUTO_APPROVE: 'dapp:add-tx-auto-approve',
   DAPP_REMOVE_TX_AUTO_APPROVE: 'dapp:remove-tx-auto-approve',
 
   // dApp Provider (webview ↔ renderer ↔ main)

@@ -9,9 +9,13 @@ inputs:
   ignore-scripts:
     description: >
       Install with `--ignore-scripts`. Jobs that only need the JavaScript on
-      disk (jest, lint, an addon download) skip the lifecycle scripts, which
-      also means they never download Electron — so the Electron cache below is
-      skipped for them too.
+      disk (jest, lint, an addon download) skip the lifecycle scripts. Those
+      jobs also never launch Electron, so the Electron cache below is skipped
+      for them — not because `--ignore-scripts` suppresses a download (it does
+      not: the `electron` package ships no postinstall script, and fetches the
+      binary lazily on the first `require('electron')`), but because there is
+      nothing for them to cache. A job that passes `'true'` here and then does
+      require Electron would download it uncached.
     required: false
     default: 'false'
 
@@ -36,11 +40,14 @@ runs:
         echo "[install-node-deps] npm fetch bounds:"
         npm config get fetch-retries fetch-retry-mintimeout fetch-retry-maxtimeout fetch-timeout
 
-    # The single biggest thing `npm ci` pulls is Electron's own postinstall
-    # download: a ~100 MB zip from GitHub releases through `@electron/get`,
-    # with no timeout of its own. Keyed on the exact `electron` version in the
-    # lockfile plus the runner's OS/arch, because that tuple is what decides
-    # which zip gets fetched.
+    # The biggest download any job makes is Electron's own binary: a ~100 MB
+    # zip from GitHub releases through `@electron/get`, with no timeout of its
+    # own. The `electron` package has no postinstall script — `npm ci` does not
+    # pull it; `node_modules/electron/index.js` fetches it on the first
+    # `require('electron')` (a Playwright launch, a build), so the download
+    # lands in a *later* step of the job and this cache is what spares it.
+    # Keyed on the exact `electron` version in the lockfile plus the runner's
+    # OS/arch, because that tuple is what decides which zip gets fetched.
     - name: Resolve the Electron download cache
       id: electron-cache-meta
       if: inputs.ignore-scripts != 'true'
@@ -73,9 +80,9 @@ runs:
       run: |
         set -euo pipefail
         if [ "$CACHE_HIT" = 'true' ]; then
-          echo "[install-node-deps] Electron download cache HIT for ${CACHE_VERSION} (${CACHE_DIR}) — postinstall will not download Electron"
+          echo "[install-node-deps] Electron download cache HIT for ${CACHE_VERSION} (${CACHE_DIR}) — the binary will not be downloaded again"
         else
-          echo "[install-node-deps] Electron download cache MISS for ${CACHE_VERSION} (${CACHE_DIR}) — postinstall will download it and this job will populate the cache"
+          echo "[install-node-deps] Electron download cache MISS for ${CACHE_VERSION} (${CACHE_DIR}) — it will be downloaded on first use and this job will populate the cache"
         fi
 
     # `scripts/better-sqlite3-prebuilds.js`, the other half of `postinstall`,

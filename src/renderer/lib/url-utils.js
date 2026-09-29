@@ -203,7 +203,19 @@ export const composeTargetUrl = (baseUrl, suffix = '') => {
   // Ensure suffix doesn't start with / if we want to append it relative to base
   const cleanSuffix = suffix.startsWith('/') ? suffix.slice(1) : suffix;
   try {
-    return new URL(cleanSuffix, baseUrl).toString();
+    // Always `./`-prefixed, never bare — the same reason
+    // `lib/gateway-location.js` prefixes the reference it hands Chromium. A
+    // bare relative reference whose first segment contains a `:` is parsed as
+    // an absolute URL with that segment as its *scheme* (RFC 3986 §4.2 / the
+    // WHATWG URL parser), and `:` is a legal Swarm manifest directory name:
+    // `bzz://<hash>/re:port` typed into the address bar composed the gateway
+    // URL `re:port` instead of `<bee-api>/bzz/<hash>/re:port`, so the content
+    // probe had nothing to fetch and the navigation was dropped. The prefix is
+    // a no-op for every other shape (`docs/x`, `?q=1`, the empty
+    // suffix-is-the-base case all resolve identically), and it also keeps a
+    // suffix that still starts with `/` after the strip above — a doubled
+    // slash — from resolving against the origin root.
+    return new URL(`./${cleanSuffix}`, baseUrl).toString();
   } catch {
     return `${baseUrl}${cleanSuffix}`;
   }

@@ -1,4 +1,16 @@
+const path = require('path');
+const { pathToFileURL } = require('url');
 const { loadMainModule } = require('../../test/helpers/main-process-test-utils');
+
+// A real internal page of this checkout (ipc-sender-policy compares paths
+// exactly), for the popup blocker's internal-page exemption.
+const INTERNAL_HOME_URL = pathToFileURL(
+  path.resolve(__dirname, '..', 'renderer', 'pages', 'home.html')
+).href;
+
+// Trusted input on the guest: what the popup blocker's gesture check reads.
+const gesture = (contents, input = { type: 'mouseDown' }) =>
+  contents.emit('input-event', {}, input);
 
 function createContentsMock(options = {}) {
   const listeners = new Map();
@@ -38,6 +50,8 @@ function createContentsMock(options = {}) {
       contents.windowOpenHandler = handler;
     }),
     windowOpenHandler: null,
+    // The chrome renderer hosting this guest (popup-blocked reports go here).
+    hostWebContents: options.hostWebContents || null,
   };
 
   return contents;
@@ -55,12 +69,28 @@ function loadWebContentsSetupModule(options = {}) {
     // for ownerWindowOf's teardown fallback.
     fromWebContents: jest.fn(options.fromWebContents || (() => null)),
   };
+  const requestOpenExternal = jest.fn(() => true);
+  const getEffectiveDecision = jest.fn(options.getEffectiveDecision || (() => null));
+  const siteOriginForWebContents = jest.fn((contents) => {
+    try {
+      return new URL(contents.getURL()).origin;
+    } catch {
+      return null;
+    }
+  });
   const { app, mod } = loadMainModule(require.resolve('./webcontents-setup'), {
     BrowserWindow,
     extraMocks: {
       [require.resolve('./logger')]: () => log,
       [require.resolve('./private/private-windows')]: () => ({
         isPrivateWebContents: options.isPrivateWebContents || (() => false),
+        getPartitionForWebContents: options.getPartitionForWebContents || (() => null),
+      }),
+      [require.resolve('./permissions/permissions-manager')]: () => ({
+        requestOpenExternal,
+        getEffectiveDecision,
+        siteOriginForWebContents,
+        allowSitePermission: jest.fn(() => true),
       }),
     },
   });
@@ -73,6 +103,8 @@ function loadWebContentsSetupModule(options = {}) {
     BrowserWindow,
     log,
     mod,
+    requestOpenExternal,
+    getEffectiveDecision,
     state,
   };
 }
@@ -107,6 +139,105 @@ describe('webcontents-setup', () => {
     expect(ctx.state.activeBzzBases.has(contents.id)).toBe(false);
   });
 
+  // #410: iframes need the webview preload for their adblock scriptlets; the
+  // <webview> attribute can't turn this on, only the embedder's event can.
+  test('attaches tab webviews with the preload running in sub-frames', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    const webPreferences = { preload: '/app/webview-preload.js', sandbox: true };
+    host.emit('will-attach-webview', {}, webPreferences, {});
+    expect(webPreferences).toEqual({
+      preload: ctx.mod.WEBVIEW_PRELOAD_PATH,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
+      nodeIntegrationInSubFrames: true,
+    });
+  });
+
+  // Security audit (docs/security-audit-electron.md, E-3): the guest's
+  // preferences come from a renderer-written attribute, so main overrides
+  // anything weaker and pins the preload to the one tab preload.
+  test('forces hardened guest preferences whatever the embedder asked for', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    const webPreferences = {
+      preload: '/tmp/evil-preload.js',
+      preloadURL: 'file:///tmp/evil-preload.js',
+      nodeIntegration: true,
+      nodeIntegrationInWorker: true,
+      contextIsolation: false,
+      sandbox: false,
+      webSecurity: false,
+      allowRunningInsecureContent: true,
+      experimentalFeatures: true,
+      enableBlinkFeatures: 'SomethingRisky',
+    };
+    host.emit('will-attach-webview', {}, webPreferences, { src: 'https://example.com' });
+    expect(webPreferences).toEqual({
+      preload: ctx.mod.WEBVIEW_PRELOAD_PATH,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
+      nodeIntegrationInSubFrames: true,
+    });
+    expect(ctx.mod.WEBVIEW_PRELOAD_PATH).toMatch(/[\\/]src[\\/]main[\\/]webview-preload\.js$/);
+  });
+
+  test('a webview that asked for no preload is not given one', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    const webPreferences = {};
+    host.emit('will-attach-webview', {}, webPreferences, {});
+    expect(webPreferences).not.toHaveProperty('preload');
+    expect(webPreferences.sandbox).toBe(true);
+  });
+
+  // E-2: the chrome renderer carries the privileged preload; a dropped link
+  // or scripted navigation must never replace index.html in its top frame.
+  test('locks the chrome window to index.html: no navigation, redirect or popup', () => {
+    const ctx = loadWebContentsSetupModule();
+    const host = createContentsMock({ id: 3, type: 'window', url: 'file:///app/index.html' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, host);
+
+    for (const event of ['will-navigate', 'will-redirect']) {
+      const nav = { preventDefault: jest.fn() };
+      host.emit(event, nav, 'https://evil.example/phish.html');
+      expect(nav.preventDefault).toHaveBeenCalled();
+    }
+    expect(host.windowOpenHandler({ url: 'https://evil.example/' })).toEqual({ action: 'deny' });
+  });
+
+  test('the chrome-window lock does not apply to tab webviews', () => {
+    const ctx = loadWebContentsSetupModule();
+    const guest = createContentsMock({ id: 9, type: 'webview', url: 'https://example.com' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, guest);
+
+    const nav = { preventDefault: jest.fn() };
+    guest.emit('will-navigate', nav, 'https://example.org/next');
+    guest.emit('will-redirect', nav, 'https://example.org/next');
+    expect(nav.preventDefault).not.toHaveBeenCalled();
+  });
+
   test('skips css injection for internal file pages and intercepts external window opens', () => {
     const parentWindow = {
       webContents: {
@@ -120,7 +251,7 @@ describe('webcontents-setup', () => {
     const contents = createContentsMock({
       id: 22,
       type: 'webview',
-      url: 'file:///app/pages/home.html',
+      url: INTERNAL_HOME_URL,
     });
 
     ctx.mod.registerWebContentsHandlers();
@@ -138,7 +269,7 @@ describe('webcontents-setup', () => {
       'tab:new-with-url',
       'https://github.com/openai/project',
       'named-tab',
-      { background: false, newWindow: false }
+      { background: false, newWindow: false, openerGuestId: contents.id }
     );
 
     const blankResult = contents.windowOpenHandler({
@@ -150,11 +281,71 @@ describe('webcontents-setup', () => {
       'tab:new-with-url',
       'https://example.com',
       null,
-      { background: false, newWindow: false }
+      { background: false, newWindow: false, openerGuestId: contents.id }
     );
     expect(ctx.log.info).toHaveBeenCalledWith(
       expect.stringContaining('intercepted new window request')
     );
+  });
+
+  // #406: `target="_blank"` / `window.open` to an external scheme must not
+  // become a tab — the renderer's typed-URL path would launch it without the
+  // per-site prompt. It goes through the same gate as a same-tab link.
+  test('routes an external-protocol window open through the permission gate, not a tab', () => {
+    const parentWindow = { webContents: { id: 1, send: jest.fn() } };
+    const ctx = loadWebContentsSetupModule({
+      windows: [parentWindow],
+      getPartitionForWebContents: () => 'private-1',
+    });
+    const contents = createContentsMock({ id: 31, url: 'https://example.com/page' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+
+    const result = contents.windowOpenHandler({
+      url: 'magnet:?xt=urn:btih:abc',
+      frameName: '',
+      disposition: 'foreground-tab',
+      referrer: { url: 'https://ads.example.net/', policy: 'strict-origin-when-cross-origin' },
+    });
+    expect(result).toEqual({ action: 'deny' });
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+    expect(ctx.requestOpenExternal).toHaveBeenCalledWith({
+      webContents: contents,
+      url: 'magnet:?xt=urn:btih:abc',
+      isMainFrame: false,
+      requestingUrl: 'https://ads.example.net/',
+      privatePartition: 'private-1',
+    });
+
+    // No referrer (rel="noreferrer"): the top document is the requester.
+    contents.windowOpenHandler({ url: 'mailto:a@b.c', frameName: '_blank', referrer: { url: '' } });
+    expect(ctx.requestOpenExternal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ url: 'mailto:a@b.c', requestingUrl: 'https://example.com/page' })
+    );
+    // A dangerous OS scheme is still handed to the gate (which refuses and
+    // logs it) rather than falling through to a tab.
+    contents.windowOpenHandler({ url: 'ms-msdt:/id x', frameName: '' });
+    expect(ctx.requestOpenExternal).toHaveBeenCalledTimes(3);
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+
+    // Ordinary links are unaffected (given the gesture any popup needs).
+    gesture(contents);
+    contents.windowOpenHandler({ url: 'https://example.org/', frameName: '' });
+    expect(ctx.requestOpenExternal).toHaveBeenCalledTimes(3);
+    expect(parentWindow.webContents.send).toHaveBeenCalledWith(
+      'tab:new-with-url',
+      'https://example.org/',
+      null,
+      { background: false, newWindow: false, openerGuestId: contents.id }
+    );
+  });
+
+  test('webview guests record user input for the external-protocol gesture check', () => {
+    const ctx = loadWebContentsSetupModule();
+    const contents = createContentsMock({ id: 32 });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+    expect(contents.on).toHaveBeenCalledWith('input-event', expect.any(Function));
   });
 
   // #303: Chromium resolves the activation's modifiers into a disposition
@@ -169,6 +360,7 @@ describe('webcontents-setup', () => {
     ctx.mod.registerWebContentsHandlers();
     ctx.app.emit('web-contents-created', {}, contents);
 
+    gesture(contents);
     expect(
       contents.windowOpenHandler({
         url: 'https://example.com/bg',
@@ -180,9 +372,10 @@ describe('webcontents-setup', () => {
       'tab:new-with-url',
       'https://example.com/bg',
       null,
-      { background: true, newWindow: false }
+      { background: true, newWindow: false, openerGuestId: contents.id }
     );
 
+    gesture(contents);
     contents.windowOpenHandler({
       url: 'https://example.com/win',
       frameName: '',
@@ -192,9 +385,10 @@ describe('webcontents-setup', () => {
       'tab:new-with-url',
       'https://example.com/win',
       null,
-      { background: false, newWindow: true }
+      { background: false, newWindow: true, openerGuestId: contents.id }
     );
 
+    gesture(contents);
     contents.windowOpenHandler({
       url: 'https://example.com/fg',
       frameName: '',
@@ -204,7 +398,7 @@ describe('webcontents-setup', () => {
       'tab:new-with-url',
       'https://example.com/fg',
       null,
-      { background: false, newWindow: false }
+      { background: false, newWindow: false, openerGuestId: contents.id }
     );
   });
 
@@ -385,6 +579,196 @@ describe('webcontents-setup', () => {
   // been destroyed" synchronously inside the setWindowOpenHandler /
   // will-navigate callback and escapes as an unhandled main-process
   // exception. Both dereference shapes are exercised below.
+  // #442: the popup blocker. Driven through the real window-open handler, the
+  // real per-guest input tracking (external-protocol.js) and the real gate
+  // (popup-blocker.js); only the permissions store is stubbed.
+  describe('popup blocker', () => {
+    const setup = (options = {}) => {
+      const parentWindow = { webContents: { id: 1, send: jest.fn() } };
+      const host = { send: jest.fn(), isDestroyed: () => false };
+      const ctx = loadWebContentsSetupModule({ windows: [parentWindow], ...options });
+      const contents = createContentsMock({
+        id: 61,
+        type: 'webview',
+        url: options.url || 'https://site.example/page',
+        hostWebContents: host,
+      });
+      ctx.mod.registerWebContentsHandlers();
+      ctx.app.emit('web-contents-created', {}, contents);
+      const opened = () =>
+        parentWindow.webContents.send.mock.calls.filter(([ch]) => ch === 'tab:new-with-url');
+      const blocked = () => host.send.mock.calls.filter(([ch]) => ch === 'popups:blocked');
+      const open = (url, extra = {}) =>
+        contents.windowOpenHandler({ url, frameName: '', disposition: 'foreground-tab', ...extra });
+      return { ctx, contents, host, opened, blocked, open };
+    };
+
+    test('a gesture opens one popup; a second popup from the same gesture is blocked', () => {
+      const { contents, opened, blocked, open } = setup();
+      gesture(contents);
+      expect(open('https://site.example/first')).toEqual({ action: 'deny' });
+      expect(opened()).toHaveLength(1);
+      expect(opened()[0][1]).toBe('https://site.example/first');
+
+      expect(open('https://site.example/second')).toEqual({ action: 'deny' });
+      expect(opened()).toHaveLength(1);
+      expect(blocked()).toEqual([
+        [
+          'popups:blocked',
+          {
+            guestId: 61,
+            url: 'https://site.example/second',
+            targetName: null,
+            reuseOnly: false,
+            origin: 'https://site.example',
+          },
+        ],
+      ]);
+
+      // A new gesture buys exactly one more.
+      gesture(contents);
+      open('https://site.example/third');
+      expect(opened()).toHaveLength(2);
+    });
+
+    test('no gesture: nothing opens and the blocked popup is reported to the tab window', () => {
+      const { ctx, contents, opened, blocked, open } = setup();
+      open('https://ads.example/pop');
+      expect(opened()).toHaveLength(0);
+      expect(blocked()).toHaveLength(1);
+      expect(blocked()[0][1]).toMatchObject({
+        guestId: contents.id,
+        url: 'https://ads.example/pop',
+      });
+      expect(ctx.log.info).toHaveBeenCalledWith(
+        expect.stringContaining('blocked popup without a user gesture')
+      );
+    });
+
+    test('a gesture older than the 5 s activation window does not count', () => {
+      const { contents, opened, blocked, open } = setup();
+      const t0 = Date.now();
+      const now = jest.spyOn(Date, 'now').mockReturnValue(t0);
+      gesture(contents);
+      now.mockReturnValue(t0 + 5001);
+      open('https://site.example/late');
+      expect(opened()).toHaveLength(0);
+      expect(blocked()).toHaveLength(1);
+    });
+
+    test('only activating input counts, once per press', () => {
+      const { contents, opened, open } = setup();
+      // Mouse moves, a lone mouseUp, keyUp, char, Escape and bare modifiers are
+      // not user activation in Chromium.
+      for (const input of [
+        { type: 'mouseMove' },
+        { type: 'mouseUp' },
+        { type: 'keyUp', key: 'a' },
+        { type: 'char', key: 'a' },
+        { type: 'rawKeyDown', key: 'Escape' },
+        { type: 'keyDown', key: 'Escape' },
+        { type: 'rawKeyDown', key: 'Shift' },
+        { type: 'rawKeyDown', key: 'Control' },
+        { type: 'touchStart' },
+      ]) {
+        gesture(contents, input);
+        open('https://site.example/x');
+      }
+      expect(opened()).toHaveLength(0);
+
+      // One click is mouseDown + mouseUp: the mouseUp must not re-arm the
+      // gesture the first popup spent.
+      gesture(contents, { type: 'mouseDown' });
+      open('https://site.example/one');
+      gesture(contents, { type: 'mouseUp' });
+      open('https://site.example/two');
+      expect(opened()).toHaveLength(1);
+
+      for (const input of [
+        { type: 'rawKeyDown', key: 'a' },
+        { type: 'keyDown', key: 'Enter' },
+        { type: 'touchEnd' },
+      ]) {
+        gesture(contents, input);
+        open('https://site.example/y');
+      }
+      expect(opened()).toHaveLength(4);
+    });
+
+    test('a site holding the popups allow bypasses the gate, without spending the gesture', () => {
+      let decision = 'allow';
+      const { ctx, contents, opened, blocked, open } = setup({
+        getEffectiveDecision: () => decision,
+      });
+      open('https://site.example/a');
+      open('https://site.example/b');
+      expect(opened()).toHaveLength(2);
+      expect(blocked()).toHaveLength(0);
+      expect(ctx.getEffectiveDecision).toHaveBeenCalledWith('https://site.example', 'popups', null);
+
+      // A gesture taken while allowed was not spent by those popups.
+      gesture(contents);
+      open('https://site.example/c');
+      decision = null;
+      open('https://site.example/d');
+      expect(opened()).toHaveLength(4);
+      open('https://site.example/e');
+      expect(opened()).toHaveLength(4);
+    });
+
+    test("a private window's allow is read from the guest's own partition", () => {
+      const { ctx, open, opened } = setup({
+        getPartitionForWebContents: () => 'private-7',
+        getEffectiveDecision: (_origin, _key, partition) =>
+          partition === 'private-7' ? 'allow' : null,
+      });
+      open('https://site.example/p');
+      expect(opened()).toHaveLength(1);
+      expect(ctx.getEffectiveDecision).toHaveBeenCalledWith(
+        'https://site.example',
+        'popups',
+        'private-7'
+      );
+    });
+
+    test('internal pages open tabs without a gesture and report nothing', () => {
+      const { contents, opened, blocked, open } = setup({ url: INTERNAL_HOME_URL });
+      open('https://example.com/a');
+      open('https://example.com/b', { frameName: 'docs' });
+      expect(opened()).toHaveLength(2);
+      expect(blocked()).toHaveLength(0);
+      // Nor does an internal page spend a gesture it might have.
+      gesture(contents);
+      contents.setURL('https://site.example/');
+      open('https://site.example/after');
+      expect(opened()).toHaveLength(3);
+    });
+
+    test('a blocked plain named target is reported reuse-only; a modified or sized one is not', () => {
+      const { blocked, open } = setup();
+      open('https://site.example/v', { frameName: 'viewer' });
+      open('https://site.example/w', { frameName: 'viewer', disposition: 'background-tab' });
+      open('https://site.example/x', { frameName: 'viewer', disposition: 'new-window' });
+      open('https://site.example/y', { frameName: '_blank' });
+      expect(blocked().map(([, p]) => [p.targetName, p.reuseOnly])).toEqual([
+        ['viewer', true],
+        ['viewer', false],
+        ['viewer', false],
+        [null, false],
+      ]);
+    });
+
+    test('an onchain app is still denied outright, with no blocked-popup report', () => {
+      const { contents, opened, blocked, open } = setup({
+        url: 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/',
+      });
+      gesture(contents);
+      open('https://evil.example/');
+      expect(opened()).toHaveLength(0);
+      expect(blocked()).toHaveLength(0);
+    });
+  });
+
   describe('ownerWindowOf fallback: windows mid-teardown', () => {
     const destroyedWindow = () => ({
       isDestroyed: () => false,
@@ -427,6 +811,7 @@ describe('webcontents-setup', () => {
       ctx.mod.registerWebContentsHandlers();
       ctx.app.emit('web-contents-created', {}, contents);
 
+      gesture(contents);
       expect(() =>
         contents.windowOpenHandler({ url: 'https://example.com/popup', frameName: '' })
       ).not.toThrow();
@@ -434,7 +819,7 @@ describe('webcontents-setup', () => {
         'tab:new-with-url',
         'https://example.com/popup',
         null,
-        { background: false, newWindow: false }
+        { background: false, newWindow: false, openerGuestId: contents.id }
       );
       expect(dying.webContents.send).not.toHaveBeenCalled();
     });
@@ -492,6 +877,9 @@ describe('webcontents-setup', () => {
       ctx.mod.registerWebContentsHandlers();
       ctx.app.emit('web-contents-created', {}, contents);
 
+      // With the gesture a popup needs, so the popup blocker is not what
+      // stops it.
+      gesture(contents);
       const result = contents.windowOpenHandler({
         url: 'https://secret.example/leak',
         frameName: '',

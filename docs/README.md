@@ -17,4 +17,5 @@ Freedom's README is the short project overview. Use these guides for detailed se
 - [Contributing](../CONTRIBUTING.md) — contribution policy and pull request workflow.
 - [Development](development.md) — local setup, scripts, tests, debugging, and builds.
 - [Native IPFS desktop integration](freedom-ipfs-native-desktop.md) — native addon architecture and packaging.
+- [Electron security audit](security-audit-electron.md) — threat model, the IPC sender policy and other hardening, and open security items.
 - [Agent playbooks](agent-playbooks/README.md) — detailed maintenance and release procedures.

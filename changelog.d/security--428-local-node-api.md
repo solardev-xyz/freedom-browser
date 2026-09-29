@@ -1,0 +1,5 @@
+- Web pages can no longer use your Swarm node's local API, which could spend its funds ([#428](https://github.com/solardev-xyz/freedom-browser/issues/428))
+  - dApps written for a local Bee at `localhost:1633` must switch to `window.swarm`
+  - Typing a node URL into the address bar still opens it
+- `bzz://` pages are read-only: no uploads, no node control headers, no encoded path separators ([#429](https://github.com/solardev-xyz/freedom-browser/issues/429))
+  - An external Swarm or IPFS node can't set cookies or service-worker scope on pages it serves

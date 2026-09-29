@@ -1,0 +1,2 @@
+- Sites can't open new tabs by script without a click or key press ([#442](https://github.com/solardev-xyz/freedom-browser/issues/442))
+  - One click opens one pop-up

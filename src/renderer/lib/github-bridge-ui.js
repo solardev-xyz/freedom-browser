@@ -189,6 +189,19 @@ function closePanel() {
   panel.classList.add('hidden');
 }
 
+// Public hook so the chrome's shared dismissal paths (index.js's
+// `closeAllOverlays` on the menu backdrop, and `onAnyMenuOpening`) can put this
+// panel away, the mirror of navigation.js' `closeTrustPopover` and
+// site-permissions-ui.js' `closePermissionPopover`. This is the third
+// address-bar surface that raises no backdrop of its own, so the backdrop
+// autocomplete raises could be pressed over it and leave it stranded (#67).
+// Hiding only: `closePanel` does not cancel an in-flight import, and the
+// click-away listener below already closes the panel mid-import, so this
+// changes nothing about a running one.
+export const closeGithubBridgePanel = () => {
+  if (panelOpen) closePanel();
+};
+
 /**
  * Start the import process.
  */

@@ -16,16 +16,14 @@ const expectedVersion =
   (process.env.FREEDOM_E2E_EXPECTED_VERSION || '').trim() || require('../../package.json').version;
 
 test('the packaged app reports the expected version', async ({ electronApp }) => {
-  const app = await electronApp.evaluate(({ app: electron }) => ({
-    version: electron.getVersion(),
-    // Where that version was read from: a packaged build serves its app out of
-    // the artifact's own resources directory, so this shows the number came
-    // from the package under test rather than from a source tree.
-    appPath: electron.getAppPath(),
-    // `src/main/index.js` renames the app for packaged Linux builds; the same
-    // branch decides the log and userData directories.
-    name: electron.getName(),
-  }));
+  // app.getVersion(), app.getAppPath() and app.getName(), read in the main
+  // process by the harness's app-facts op:
+  //   - appPath is where that version was read from: a packaged build serves
+  //     its app out of the artifact's own resources directory, so this shows
+  //     the number came from the package under test rather than a source tree;
+  //   - `src/main/index.js` renames the app for packaged Linux builds; the same
+  //     branch decides the log and userData directories.
+  const app = await electronApp.appFacts();
 
   expect(app.version).toBe(expectedVersion);
   // Case-insensitive: the directory is `resources` on Linux and Windows but

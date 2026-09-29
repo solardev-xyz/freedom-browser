@@ -23,6 +23,13 @@ const { getEffectiveRpcUrls } = require('./rpc-manager');
 const chainData = require('../networks/chain-data-router');
 const { getSigner } = require('./signers');
 const { isVaultLockedError } = require('./vault-errors');
+const {
+  KINDS: CONFIRM_KINDS,
+  NOT_CONFIRMED,
+  issueConfirmation,
+  consumeConfirmation,
+} = require('./signing-confirmation');
+const dappPermissions = require('./dapp-permissions');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -57,21 +64,118 @@ function buildTxRecordContext(kind, context = {}) {
   return { ...context, kind };
 }
 
-async function handleSendTransaction(walletIndex, params, kind, context = {}) {
+function notAuthorized(reason) {
+  const err = new Error(`Signing was not confirmed: ${reason}`);
+  err.code = NOT_CONFIRMED;
+  return err;
+}
+
+/** The 4-byte function selector of `data`, or null for a plain transfer. */
+function selectorOf(data) {
+  return typeof data === 'string' && /^0x[0-9a-fA-F]{8}/.test(data)
+    ? data.slice(0, 10).toLowerCase()
+    : null;
+}
+
+/**
+ * The dApp's stored grant, but only when it exposes exactly `walletIndex`
+ * — an auto-approve rule authorises the account the site is connected
+ * with, never another one.
+ */
+function permissionFor(permissionKey, walletIndex) {
+  if (typeof permissionKey !== 'string' || !permissionKey) return null;
+  const permission = dappPermissions.getPermission(permissionKey);
+  return permission && permission.walletIndex === walletIndex ? permission : null;
+}
+
+/** Main's own evaluation of a dApp's transaction auto-approve rules. */
+function isDappTxAutoApproved(permissionKey, walletIndex, tx) {
+  if (!permissionFor(permissionKey, walletIndex)) return false;
+  const selector = selectorOf(tx.data);
+  if (!selector || !tx.to) return false;
+  return dappPermissions.isTransactionAutoApproved(
+    permissionKey,
+    tx.to,
+    selector,
+    Number(tx.chainId)
+  );
+}
+
+/** Main's own evaluation of a dApp's signing auto-approve flag. */
+function isDappSigningAutoApproved(permissionKey, walletIndex) {
+  return Boolean(
+    permissionFor(permissionKey, walletIndex) &&
+      dappPermissions.getSigningAutoApprove(permissionKey)
+  );
+}
+
+/**
+ * Gate every signing handler (security audit O-7). A request is signed
+ * only when the caller presents
+ *   - `{ confirmation }`: a token main issued through
+ *     `wallet:confirm-signing` for exactly this request (single use,
+ *     short-lived — see signing-confirmation.js), or
+ *   - `{ autoApprove: permissionKey }`: and main's own reading of that
+ *     dApp's stored auto-approve policy covers this request
+ *     (`autoApproveCheck`, absent where auto-approve doesn't exist).
+ * Anything else throws SIGNING_NOT_CONFIRMED before a key is touched.
+ *
+ * @returns {'confirmed'|'auto-approved'}
+ */
+function authorizeSigning(authorization, kind, accountIndex, payload, autoApproveCheck) {
+  if (authorization?.confirmation) {
+    consumeConfirmation(authorization.confirmation, kind, accountIndex, payload);
+    return 'confirmed';
+  }
+  if (authorization?.autoApprove !== undefined && autoApproveCheck) {
+    if (autoApproveCheck(authorization.autoApprove)) {
+      return 'auto-approved';
+    }
+    throw notAuthorized('this request is not covered by the site\'s auto-approve rules');
+  }
+  throw notAuthorized('no confirmation token');
+}
+
+async function handleSendTransaction(walletIndex, params, kind, context = {}, authorization = null) {
   try {
-    const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params;
+    const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params || {};
     if (!to || chainId === undefined || !gasLimit) {
       return { success: false, error: 'Missing required parameters: to, chainId, gasLimit' };
     }
-    const result = await signAndRecord(
-      { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId },
-      getSigner(walletIndex),
-      buildTxRecordContext(kind, context),
+    const tx = { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId };
+    const confirmKind = kind === PAYMENT_KINDS.DAPP_SEND ? CONFIRM_KINDS.DAPP_SEND : CONFIRM_KINDS.WALLET_SEND;
+    const how = authorizeSigning(
+      authorization,
+      confirmKind,
+      walletIndex,
+      tx,
+      confirmKind === CONFIRM_KINDS.DAPP_SEND
+        ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx)
+        : null
     );
-    return { success: true, ...result };
+    const result = await signAndRecord(tx, getSigner(walletIndex), buildTxRecordContext(kind, context));
+
+    // "Always allow" is recorded here, from the transaction the user just
+    // confirmed — never from a free-standing renderer call — so a rule can
+    // only ever cover a (contract, selector, chain) the user saw.
+    let autoApproveAdded;
+    if (how === 'confirmed' && confirmKind === CONFIRM_KINDS.DAPP_SEND && authorization?.rememberAutoApprove) {
+      const permissionKey = authorization.rememberAutoApprove;
+      const selector = selectorOf(data);
+      autoApproveAdded = Boolean(
+        selector &&
+          permissionFor(permissionKey, walletIndex) &&
+          dappPermissions.addTransactionAutoApprove(permissionKey, to, selector, Number(chainId))
+      );
+    }
+    return {
+      success: true,
+      ...result,
+      ...(autoApproveAdded !== undefined ? { autoApproveAdded } : {}),
+    };
   } catch (err) {
     console.error(`[WalletIPC] ${kind} transaction failed:`, err);
-    return { success: false, error: err.message };
+    return { success: false, error: err.message, ...(err.code === NOT_CONFIRMED ? { code: err.code } : {}) };
   }
 }
 
@@ -233,8 +337,27 @@ function registerWalletIpc() {
     }
   });
 
-  ipcMain.handle('wallet:send-transaction', (_event, params, context) =>
-    handleSendTransaction(getActiveWalletIndex(), params, PAYMENT_KINDS.WALLET_SEND, context));
+  // Issue a confirmation token for a request the user just confirmed on an
+  // approval screen (O-7). The signing handler below it will sign exactly
+  // this request, once. A wallet send binds the account active right now.
+  ipcMain.handle('wallet:confirm-signing', (_event, kind, accountIndex, payload) => {
+    try {
+      const index = kind === CONFIRM_KINDS.WALLET_SEND ? getActiveWalletIndex() : accountIndex;
+      const { token, expiresAt } = issueConfirmation(kind, index, payload);
+      return { success: true, token, expiresAt };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('wallet:send-transaction', (_event, params, context, authorization) =>
+    handleSendTransaction(
+      getActiveWalletIndex(),
+      params,
+      PAYMENT_KINDS.WALLET_SEND,
+      context,
+      authorization
+    ));
 
   // Get transaction status
   ipcMain.handle('wallet:get-transaction-status', async (_event, txHash, chainId) => {
@@ -270,38 +393,42 @@ function registerWalletIpc() {
 
   // Renderer threads the dapp's permissionKey through as context.origin
   // so payment-history rows match the x402 permission store's keying.
-  ipcMain.handle('wallet:dapp-send-transaction', (_event, params, walletIndex, context) =>
-    handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context));
+  ipcMain.handle('wallet:dapp-send-transaction', (_event, params, walletIndex, context, authorization) =>
+    handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context, authorization));
 
   // Sign a personal message (EIP-191) for a dApp
-  ipcMain.handle('wallet:sign-message', async (_event, message, walletIndex) => {
+  ipcMain.handle('wallet:sign-message', async (_event, message, walletIndex, authorization) => {
     try {
       if (!message) {
         return { success: false, error: 'Message is required' };
       }
+      authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message, (key) =>
+        isDappSigningAutoApproved(key, walletIndex));
 
       const signature = await getSigner(walletIndex).signMessage(message);
 
       return { success: true, signature };
     } catch (err) {
       console.error('[WalletIPC] Message signing failed:', err);
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, ...(err.code === NOT_CONFIRMED ? { code: err.code } : {}) };
     }
   });
 
   // Sign typed data (EIP-712) for a dApp
-  ipcMain.handle('wallet:sign-typed-data', async (_event, typedData, walletIndex) => {
+  ipcMain.handle('wallet:sign-typed-data', async (_event, typedData, walletIndex, authorization) => {
     try {
       if (!typedData) {
         return { success: false, error: 'Typed data is required' };
       }
+      authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData, (key) =>
+        isDappSigningAutoApproved(key, walletIndex));
 
       const signature = await getSigner(walletIndex).signTypedData(typedData);
 
       return { success: true, signature };
     } catch (err) {
       console.error('[WalletIPC] Typed data signing failed:', err);
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, ...(err.code === NOT_CONFIRMED ? { code: err.code } : {}) };
     }
   });
 
@@ -356,7 +483,12 @@ function registerWalletIpc() {
 
   ipcMain.handle(
     'wallet:safe-send',
-    safeStateHandler((safeIndex, tx, display, chainId) => {
+    safeStateHandler((safeIndex, tx, display, chainId, authorization) => {
+      // Creating the SafeTx is the confirmation point: it silently collects
+      // the vault owners' signatures, and every later board step
+      // (safe-sign, safe-execute) only acts on this main-held, confirmed
+      // SafeTx. There is no auto-approve for Safe sends.
+      authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId }, null);
       const { startSafeSend } = require('./safe/safe-transactions');
       return startSafeSend({ safeIndex, tx, display, chainId });
     })
@@ -411,7 +543,12 @@ function registerWalletIpc() {
   // present.
   ipcMain.handle(
     'wallet:safe-message-start',
-    safeStateHandler((safeIndex, request, display, requester) => {
+    safeStateHandler((safeIndex, request, display, requester, authorization) => {
+      // Same confirmation point as safe-send; follow-up calls are bound to
+      // the session token this returns. A dApp's signing auto-approve is
+      // evaluated here, in main.
+      authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request, (key) =>
+        key === (requester?.origin ?? null) && isDappSigningAutoApproved(key, safeIndex));
       const { startSafeMessage } = require('./safe/safe-messages');
       return startSafeMessage({ safeIndex, request, display, requester });
     })
@@ -511,6 +648,7 @@ function registerWalletIpc() {
 }
 
 module.exports = {
+  authorizeSigning,
   buildTxRecordContext,
   registerWalletIpc,
 };

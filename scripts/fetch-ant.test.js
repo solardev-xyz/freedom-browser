@@ -68,7 +68,7 @@ const noWait = { sleep: () => Promise.resolve(), log: () => {} };
 
 // Mirrors the tag pinned in fetch-ant.js; the first test below asserts the two
 // still agree, so a pin bump that leaves these fixtures stale fails the suite.
-const PINNED_TAG = 'v0.5.44';
+const PINNED_TAG = 'v0.5.45';
 const RELEASE = { tag_name: PINNED_TAG, assets: [] };
 
 afterEach(() => {
@@ -96,25 +96,25 @@ describe('fetch-ant release lookup', () => {
       {
         statusCode: 301,
         headers: {
-          location: 'https://api.github.com/repositories/1220484552/releases/tags/v0.5.44',
+          location: 'https://api.github.com/repositories/1220484552/releases/tags/v0.5.45',
         },
       },
       { statusCode: 200, body: JSON.stringify(RELEASE) },
     ]);
 
     await expect(
-      fetchRelease('https://api.github.com/repos/solardev-xyz/ant/releases/tags/v0.5.44', noWait)
+      fetchRelease('https://api.github.com/repos/solardev-xyz/ant/releases/tags/v0.5.45', noWait)
     ).resolves.toEqual(RELEASE);
 
     expect(calls.map((c) => c.url)).toEqual([
-      'https://api.github.com/repos/solardev-xyz/ant/releases/tags/v0.5.44',
-      'https://api.github.com/repositories/1220484552/releases/tags/v0.5.44',
+      'https://api.github.com/repos/solardev-xyz/ant/releases/tags/v0.5.45',
+      'https://api.github.com/repositories/1220484552/releases/tags/v0.5.45',
     ]);
   });
 
   test.each([302, 303, 307, 308])('follows a %i redirect', async (statusCode) => {
     mockResponses([
-      { statusCode, headers: { location: '/repos/freedom-hq/ant/releases/tags/v0.5.44' } },
+      { statusCode, headers: { location: '/repos/freedom-hq/ant/releases/tags/v0.5.45' } },
       { statusCode: 200, body: JSON.stringify(RELEASE) },
     ]);
     await expect(fetchRelease(undefined, noWait)).resolves.toEqual(RELEASE);
@@ -206,7 +206,7 @@ describe('fetch-ant asset download', () => {
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-ant-'));
-    dest = path.join(dir, 'antd-v0.5.44-windows-amd64.zip');
+    dest = path.join(dir, 'antd-v0.5.45-windows-amd64.zip');
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'warn').mockImplementation(() => {});
   });

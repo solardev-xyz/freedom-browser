@@ -20,6 +20,13 @@
  * per-permission property to re-check, not a blanket one; see the check
  * handler for why (#361).
  *
+ * `openExternal` — a link to a scheme Chromium hands to the OS (magnet:,
+ * mailto:, …) — is promptable too, one decision per origin + scheme
+ * (`external:<scheme>`), behind extra gates (blocklist, top-level or
+ * same-origin frame, recent user input) described in
+ * src/main/external-protocol.js. It never answers Electron's callback with
+ * true: an allowed launch goes through `shell.openExternal` instead (#406).
+ *
  * `pointerLock` and `fullscreen` stay auto-allowed (status quo). `hid`
  * is deliberately NOT promptable: Ledger hardware-wallet support drives
  * HID through its own connect flow, so web-page HID requests keep the
@@ -54,6 +61,7 @@
  * navigation never dismisses a background tab's pending request.
  */
 
+const crypto = require('crypto');
 const { ipcMain, systemPreferences } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
@@ -61,6 +69,14 @@ const store = require('./permissions-store');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPartitionForWebContents } = require('../private/private-windows');
 const { broadcastToAllWebContents } = require('../lib/broadcast-to-all-webcontents');
+const {
+  permissionKeyForExternalUrl,
+  externalUrlForLog,
+  consumeUserGesture,
+  handlerNameForScheme,
+  launchExternal,
+  schemeOf,
+} = require('../external-protocol');
 
 // Auto-allowed without prompting. pointerLock/fullscreen were the status
 // quo before this manager. Sanitized clipboard WRITES (writeText/copy)
@@ -121,7 +137,19 @@ const hostGuests = new Map();
 // Pending prompt entries by prompt id (for the renderer's response).
 const pendingById = new Map();
 
-let nextPromptId = 1;
+// Prompt ids are random, not sequential (docs/security-audit-electron.md,
+// O-12): an id is the capability to answer a prompt, so it must not be
+// guessable from any other one a renderer has seen. A number rather than a
+// string so the renderer's `typeof id === 'number'` contract is unchanged;
+// 48 random bits is the most crypto.randomInt yields, and the map is checked
+// so a (vanishingly unlikely) repeat of a live id can't alias two prompts.
+function newPromptId() {
+  let id;
+  do {
+    id = crypto.randomInt(1, 2 ** 48);
+  } while (pendingById.has(id));
+  return id;
+}
 
 /**
  * Map an Electron permission request to the storage keys it covers.
@@ -151,6 +179,14 @@ function permissionKeysForRequest(permission, details) {
     case 'midi':
     case 'midiSysex':
       return ['midi'];
+    // External-protocol navigation (#406): one decision per scheme, so an
+    // allow for magnet: never covers ms-settings:. Blocked schemes (the
+    // browser's own, local/internal ones, exploit-prone OS handlers) map to
+    // nothing and therefore stay denied without a prompt.
+    case 'openExternal': {
+      const key = permissionKeyForExternalUrl(details?.externalURL);
+      return key ? [key] : null;
+    }
     default:
       return null;
   }
@@ -407,6 +443,49 @@ function getEffectiveDecision(origin, key, privatePartition = null) {
 }
 
 /**
+ * The site a guest's top-level document belongs to, as a permission-store
+ * origin, or null for a non-site surface (internal page, about:blank, data:).
+ * The popup blocker keys its per-site allow on this (#442): like Chrome's
+ * pop-up content setting, it follows the top-level site, not the frame that
+ * called window.open.
+ */
+function siteOriginForWebContents(webContents) {
+  return originForRequest(webContents, {});
+}
+
+/**
+ * Record an allow the user gave from chrome UI rather than from a prompt:
+ * the popup blocker's "Always allow pop-ups on this site" (#442). An
+ * explicit "always", so a normal window persists it (the remembered tier —
+ * Settings > Site Permissions lists it and removes it). A private window
+ * keeps it in its own partition tier only and drops it with the window,
+ * exactly like a remembered prompt answer given there.
+ *
+ * @param {string} origin
+ * @param {string} key - storage key (e.g. 'popups')
+ * @param {{ privatePartition?: string|null }} [options]
+ * @returns {boolean} true when recorded
+ */
+function allowSitePermission(origin, key, { privatePartition = null } = {}) {
+  if (typeof key !== 'string' || !key) return false;
+  const normalized = typeof origin === 'string' ? normalizeOrigin(origin) : null;
+  if (!normalized || !VALID_ORIGIN_KEY_SHAPE.test(normalized)) return false;
+  if (privatePartition) {
+    setPrivateDecision(privatePartition, normalized, key, 'allow');
+  } else {
+    store.setDecision(normalized, key, 'allow');
+    // A stale session answer must not shadow a later revoke.
+    clearSessionDecision(normalized, key);
+  }
+  broadcastChanged();
+  log.info(
+    `[permissions] allow ${key} for ${originForLog(normalized, privatePartition)}` +
+      (privatePartition ? ' (private window)' : ' (remembered)')
+  );
+  return true;
+}
+
+/**
  * PRIVATE MODE GUARD (permission logging): `log.info` is written to the
  * persistent <userData>/logs/main.log, which outlives the private window and
  * the app — so an origin a private tab prompted for must never appear there.
@@ -611,9 +690,16 @@ function getGuestState(guest, host) {
 function sendNextPrompt(state) {
   if (state.active || state.queue.length === 0) return;
   state.active = state.queue.shift();
-  const { id, origin, permission, keys, guestId } = state.active;
+  const { id, origin, permission, keys, guestId, appName } = state.active;
   try {
-    state.host.send(IPC.PERMISSIONS_PROMPT_REQUEST, { id, origin, permission, keys, guestId });
+    state.host.send(IPC.PERMISSIONS_PROMPT_REQUEST, {
+      id,
+      origin,
+      permission,
+      keys,
+      guestId,
+      ...(appName ? { appName } : {}),
+    });
   } catch {
     // Host went away between queueing and sending
     const entry = state.active;
@@ -625,12 +711,31 @@ function sendNextPrompt(state) {
 }
 
 /**
+ * Whether the guest already has an external-protocol prompt showing or
+ * queued. Following Chrome, a tab with an external-protocol dialog up
+ * gets no further external-protocol requests until it is answered.
+ */
+function hasPendingExternalPrompt(webContents) {
+  const state = typeof webContents?.id === 'number' ? guestQueues.get(webContents.id) : null;
+  if (!state) return false;
+  return [state.active, ...state.queue].some(
+    (entry) => entry && entry.permission === 'openExternal'
+  );
+}
+
+/**
  * Queue a prompt for the requesting guest. Coalesces with an existing
  * pending prompt from the SAME guest for the same origin + key set;
  * same-origin requests from different tabs stay separate prompts so
  * each answer binds to the tab the user is actually looking at. The
  * private partition is part of the coalescing signature so a private and
  * a normal request can never share one prompt (and therefore one answer).
+ *
+ * Exception: an `openExternal` request is never coalesced. Each one
+ * carries its own URL, and one Allow must launch exactly the one URL the
+ * user was shown, so a matching pending prompt denies the new request
+ * instead of merging into it (callers are expected to check
+ * hasPendingExternalPrompt first, as requestOpenExternal does).
  */
 function enqueuePrompt({
   host,
@@ -640,6 +745,7 @@ function enqueuePrompt({
   keys,
   callback,
   privatePartition = null,
+  appName = null,
 }) {
   const state = getGuestState(guest, host);
   const signature = `${privatePartition || ''} ${origin} ${[...keys].sort().join(',')}`;
@@ -648,19 +754,31 @@ function enqueuePrompt({
     (entry) => entry && entry.signature === signature
   );
   if (existing) {
+    // Never merge an external-protocol request into a pending prompt: each
+    // one carries its own URL, and one Allow must launch exactly the one
+    // URL the user was shown (R1-M1). requestOpenExternal already refuses
+    // a second request while one is pending for the tab; this keeps the
+    // queue itself from ever coalescing them should a caller skip that.
+    if (permission === 'openExternal') {
+      callback(false);
+      return;
+    }
     existing.callbacks.push(callback);
     return;
   }
 
   const entry = {
-    id: nextPromptId++,
+    id: newPromptId(),
     guestId: state.guestId,
+    // The chrome window the prompt is shown in; only it may answer.
+    hostId: state.hostId,
     generation: state.generation,
     origin,
     permission,
     keys,
     signature,
     privatePartition,
+    appName,
     callbacks: [callback],
   };
   pendingById.set(entry.id, entry);
@@ -679,9 +797,16 @@ function enqueuePrompt({
  *                                  same origin+key records a run-scoped
  *                                  deny (the embargo, #364)
  */
-function resolvePrompt({ id, decision, remember }) {
+function resolvePrompt({ id, decision, remember, senderId }) {
   const entry = pendingById.get(id);
   if (!entry) return false;
+  // Only the chrome window the prompt was sent to may answer it
+  // (docs/security-audit-electron.md, O-12). Any other window's answer is
+  // refused and leaves the prompt pending for its own window.
+  if (senderId !== entry.hostId) {
+    log.warn('[permissions] prompt answer from a window that does not own the prompt ignored');
+    return false;
+  }
   pendingById.delete(id);
 
   const state = guestQueues.get(entry.guestId);
@@ -779,6 +904,148 @@ function resolvePrompt({ id, decision, remember }) {
 }
 
 /**
+ * The shared tail of every promptable request: a recorded deny refuses, a
+ * recorded allow grants, anything undecided queues the anchored prompt for
+ * the requesting tab.
+ */
+function decideOrPrompt({
+  webContents,
+  permission,
+  keys,
+  origin,
+  callback,
+  privatePartition = null,
+  appName = null,
+}) {
+  const decisions = keys.map((key) => getEffectiveDecision(origin, key, privatePartition));
+
+  if (decisions.some((d) => d === 'deny')) {
+    callback(false);
+    return;
+  }
+
+  const host = hostForWebContents(webContents);
+
+  if (decisions.every((d) => d === 'allow')) {
+    grantWithOsGate({ permission, keys, origin, host, callbacks: [callback], privatePartition });
+    return;
+  }
+
+  if (!host || host.isDestroyed()) {
+    callback(false);
+    return;
+  }
+
+  // A prompt is only meaningful while the requesting webContents can be
+  // tracked (navigation/destroy invalidation, tab-scoped display).
+  if (
+    typeof webContents?.id !== 'number' ||
+    typeof webContents.on !== 'function' ||
+    webContents.isDestroyed?.()
+  ) {
+    callback(false);
+    return;
+  }
+
+  enqueuePrompt({
+    host,
+    guest: webContents,
+    origin,
+    permission,
+    keys,
+    callback,
+    privatePartition,
+    appName,
+  });
+}
+
+/**
+ * A page wants to hand `url` to an external application (#406). Reached
+ * from the session's `openExternal` permission request (a link or scripted
+ * navigation) and from webcontents-setup.js's window-open handler (a
+ * `target="_blank"` link or `window.open`, which never becomes a permission
+ * request because the new window is refused first).
+ *
+ * Gates before the ordinary per-site decision, each one logged with the URL
+ * reduced to its scheme (`externalUrlForLog`) and the origin hidden for a
+ * private window (`originForLog`):
+ *
+ *   blocked scheme                → refused (never prompts, never launches)
+ *   no usable requesting origin   → refused (internal pages, data:, …)
+ *   cross-origin subframe         → refused (a third-party frame cannot ask
+ *                                   in the top site's name)
+ *   prompt already pending (tab)  → refused (one prompt launches one URL)
+ *   no recent user input          → refused (no launch or prompt on load)
+ *
+ * Then the stored/session/private decision for origin + `external:<scheme>`
+ * applies, or the prompt is raised. An allow launches through
+ * `launchExternal` (shell.openExternal).
+ *
+ * @param {Object} request
+ * @param {Electron.WebContents} request.webContents - the requesting guest
+ * @param {string} request.url - the external URL
+ * @param {boolean} request.isMainFrame - whether the top-level document asked
+ * @param {string} [request.requestingUrl] - URL of the requesting frame
+ * @param {string|null} [request.privatePartition]
+ * @returns {boolean} true when the request reached the decision step
+ */
+function requestOpenExternal({
+  webContents,
+  url,
+  isMainFrame = true,
+  requestingUrl,
+  privatePartition = null,
+}) {
+  const target = externalUrlForLog(url);
+  const refuse = (why, origin = null) => {
+    const who = origin ? ` from ${originForLog(origin, privatePartition)}` : '';
+    log.info(`[permissions] openExternal ${target}${who} refused: ${why}`);
+    return false;
+  };
+
+  const key = permissionKeyForExternalUrl(url);
+  if (!key) return refuse('blocked scheme');
+
+  const origin = originForRequest(webContents, { requestingUrl });
+  if (!origin) return refuse('no site origin');
+
+  if (!isMainFrame) {
+    const topOrigin = originForRequest(webContents, {});
+    if (topOrigin !== origin) return refuse('cross-origin subframe', origin);
+  }
+
+  // One prompt, one URL: while this tab has an external-protocol prompt
+  // pending, further requests are refused rather than merged into it, so
+  // Allow launches only the URL the prompt was raised for (Chrome does the
+  // same). Checked before the gesture is consumed; the request is refused
+  // either way.
+  if (hasPendingExternalPrompt(webContents)) {
+    return refuse('an external-app prompt is already pending for this tab', origin);
+  }
+
+  if (!consumeUserGesture(webContents)) return refuse('no recent user input', origin);
+
+  const onDecision = (allowed) => {
+    log.info(
+      `[permissions] openExternal ${target} for ${originForLog(origin, privatePartition)}: ` +
+        (allowed ? 'allowed, opening' : 'denied')
+    );
+    if (allowed) launchExternal(url);
+  };
+
+  decideOrPrompt({
+    webContents,
+    permission: 'openExternal',
+    keys: [key],
+    origin,
+    callback: onDecision,
+    privatePartition,
+    appName: handlerNameForScheme(schemeOf(url)) || null,
+  });
+  return true;
+}
+
+/**
  * Install the request + check handlers on a session (the default
  * session — webviews carry no `partition` attribute, so they share it —
  * or a private window's ephemeral partition session, in which case
@@ -795,6 +1062,22 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
       return;
     }
 
+    if (permission === 'openExternal') {
+      // Never answered true: Electron would then launch the URL itself,
+      // bypassing launchExternal's escaping and logging. The navigation is
+      // dead either way (an external URL never commits), so release it now
+      // and decide on our own callback.
+      callback(false);
+      requestOpenExternal({
+        webContents,
+        url: details?.externalURL,
+        isMainFrame: details?.isMainFrame !== false,
+        requestingUrl: details?.requestingUrl,
+        privatePartition,
+      });
+      return;
+    }
+
     const keys = permissionKeysForRequest(permission, details);
     if (!keys) {
       callback(false);
@@ -807,45 +1090,7 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
       return;
     }
 
-    const decisions = keys.map((key) => getEffectiveDecision(origin, key, privatePartition));
-
-    if (decisions.some((d) => d === 'deny')) {
-      callback(false);
-      return;
-    }
-
-    const host = hostForWebContents(webContents);
-
-    if (decisions.every((d) => d === 'allow')) {
-      grantWithOsGate({ permission, keys, origin, host, callbacks: [callback], privatePartition });
-      return;
-    }
-
-    if (!host || host.isDestroyed()) {
-      callback(false);
-      return;
-    }
-
-    // A prompt is only meaningful while the requesting webContents can be
-    // tracked (navigation/destroy invalidation, tab-scoped display).
-    if (
-      typeof webContents?.id !== 'number' ||
-      typeof webContents.on !== 'function' ||
-      webContents.isDestroyed?.()
-    ) {
-      callback(false);
-      return;
-    }
-
-    enqueuePrompt({
-      host,
-      guest: webContents,
-      origin,
-      permission,
-      keys,
-      callback,
-      privatePartition,
-    });
+    decideOrPrompt({ webContents, permission, keys, origin, callback, privatePartition });
   });
 
   targetSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
@@ -1071,8 +1316,10 @@ function scopeFromSender(event, options) {
  * Register IPC handlers (prompt responses + settings/indicator queries).
  */
 function registerPermissionsIpc() {
-  ipcMain.handle(IPC.PERMISSIONS_PROMPT_RESPONSE, (_event, response) => {
+  ipcMain.handle(IPC.PERMISSIONS_PROMPT_RESPONSE, (event, response) => {
     if (!response || typeof response.id !== 'number') return false;
+    const senderId = event?.sender?.id;
+    if (typeof senderId !== 'number') return false;
     const decision = ['allow', 'deny', 'dismiss'].includes(response.decision)
       ? response.decision
       : 'dismiss';
@@ -1080,6 +1327,7 @@ function registerPermissionsIpc() {
       id: response.id,
       decision,
       remember: response.remember === true,
+      senderId,
     });
   });
 
@@ -1117,7 +1365,6 @@ function _resetState() {
   guestQueues.clear();
   hostGuests.clear();
   pendingById.clear();
-  nextPromptId = 1;
 }
 
 // Test-only: read the consecutive-dismissal count behind the embargo.
@@ -1133,6 +1380,10 @@ module.exports = {
   installPermissionHandlers,
   registerPermissionsIpc,
   permissionKeysForRequest,
+  requestOpenExternal,
+  getEffectiveDecision,
+  siteOriginForWebContents,
+  allowSitePermission,
   getDecisionsForOrigin,
   clearPrivateDecisions,
   revokeDecision,

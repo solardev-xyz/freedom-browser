@@ -1,0 +1,2 @@
+- The wallet signs only what you confirmed: each dApp transaction or message approval gets a one-time main-process confirmation bound to that exact transaction or message, and "always allow" rules are checked by the main process (x402 payment approvals are not yet covered by this confirmation) ([#434](https://github.com/solardev-xyz/freedom-browser/issues/434))
+  - Touch ID unlock and export no longer hand the vault password to the browser window ([#435](https://github.com/solardev-xyz/freedom-browser/issues/435))

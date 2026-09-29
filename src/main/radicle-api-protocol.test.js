@@ -288,6 +288,35 @@ describe('radapi protocol', () => {
     expect(embedded.repoStats).not.toHaveBeenCalled();
   });
 
+  // docs/security-audit-electron.md, O-12: `radapi:` serves private repos to
+  // the internal viewer only; its responses carry no wildcard ACAO. `rad:`
+  // (public repos, any dweb page) keeps it.
+  test.each([
+    ['repository metadata', `radapi://local/api/v1/repos/${RID}`, 200],
+    ['a repository section', `radapi://local/api/v1/repos/${RID}/issues`, 200],
+    ['an error from the repo core', `radapi://local/api/v1/repos/${RID}/nope`, 404],
+    ['an invalid repo path', `radapi://local/api/v1/repos/${RID}/tree`, 400],
+    ['an undecodable RID', 'radapi://local/api/v1/repos/%E0%A4%A', 400],
+    ['the repository listing', 'radapi://local/api/v1/repos', 200],
+    ['the node root', 'radapi://local/', 200],
+  ])('radapi: %s carries no Access-Control-Allow-Origin', async (_label, url, status) => {
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'private' } });
+    embedded.buildRepoMeta.mockResolvedValue({ rid: RID });
+    embedded.issues.mockResolvedValue([]);
+    embedded.listRepos.mockResolvedValue([{ rid: RID }]);
+    const response = await handleRadicleApiRequest(new Request(url));
+    expect(response.status).toBe(status);
+    expect(response.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  test('the public rad: path keeps its wildcard ACAO', async () => {
+    embedded.buildRepoMeta.mockResolvedValue({ rid: RID });
+    const ok = await serveRepoApi(RID, '');
+    expect(ok.headers.get('access-control-allow-origin')).toBe('*');
+    const bad = await serveRepoApi(RID, '/tree');
+    expect(bad.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
   test('does not expose private repositories through the public repo API', async () => {
     embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private' } });
     const response = await serveRepoApi(RID, '/issues');
@@ -391,7 +420,9 @@ describe('radapi protocol', () => {
       expect(dispatcher.registerWebRequestHandler).toHaveBeenCalledWith(
         'onBeforeRequest',
         'radapi-guard',
-        fresh.guardRadicleApiRequest
+        fresh.guardRadicleApiRequest,
+        // A throwing guard must cancel, not wave the request through.
+        { failClosed: true }
       );
     });
   });

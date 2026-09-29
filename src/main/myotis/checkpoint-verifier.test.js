@@ -70,6 +70,30 @@ describe('checkpoint worker lifecycle', () => {
     }
   );
 
+  test('source diagnostics are allowlisted, bounded, stripped of extras and never settle verification', async () => {
+    const onDiagnostic = jest.fn();
+    const promise = acquireCheckpoint(100, { onDiagnostic });
+    const diagnostic = { source: CHECKPOINT_NETWORKS[100].sources[2], slot: checkpoint(100).slot,
+      elapsedMs: 123, outcome: 'CHECKPOINT_UNAVAILABLE', stage: 'block-root', failure: 'http', httpStatus: 503,
+      body: 'secret', url: 'https://secret.invalid/?token=secret' };
+    const emit = value => worker.emit('message', { type: 'checkpoint-source', diagnostic: value });
+    emit({ ...diagnostic, source: 'https://secret.invalid' });
+    emit({ ...diagnostic, outcome: 'untrusted server text' });
+    emit({ ...diagnostic, elapsedMs: Infinity });
+    expect(onDiagnostic).not.toHaveBeenCalled();
+    emit(diagnostic);
+    expect(onDiagnostic).toHaveBeenCalledWith({ chainId: 100, source: diagnostic.source,
+      slot: diagnostic.slot, elapsedMs: 123, outcome: diagnostic.outcome, stage: 'block-root', failure: 'http', httpStatus: 503 });
+    expect(worker.terminate).not.toHaveBeenCalled();
+    onDiagnostic.mockImplementation(() => { throw new Error('logging failed'); });
+    for (let i = 0; i < 100; i++) emit(diagnostic);
+    expect(onDiagnostic.mock.calls.length).toBe(61);
+    worker.emit('message', { ok: true, checkpoint: checkpoint(100) });
+    await expect(promise).resolves.toEqual(checkpoint(100));
+    emit(diagnostic);
+    expect(onDiagnostic.mock.calls.length).toBe(61);
+  });
+
   test('pre-aborted requests never spawn', async () => {
     const controller = new AbortController();
     controller.abort();

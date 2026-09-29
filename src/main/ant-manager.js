@@ -9,6 +9,7 @@ const net = require('net');
 const IPC = require('../shared/ipc-channels');
 const { loadSettings } = require('./settings-store');
 const registry = require('./networks/network-registry');
+const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
 const {
   getActiveProfile,
@@ -24,6 +25,8 @@ const {
   clearErrorState,
   clearService,
 } = require('./service-registry');
+const { noteAntApiUrl } = require('./swarm/ant-api-guard');
+const { antApiGet } = require('./swarm/ant-api-chrome');
 
 // States
 const STATUS = {
@@ -40,6 +43,13 @@ let antProcess = null;
 let healthCheckInterval = null;
 let pendingStart = false;
 let forceKillTimeout = null;
+let chainBridge = null;
+let startGeneration = 0;
+
+function closeChainBridge(bridge = chainBridge) {
+  if (chainBridge === bridge) chainBridge = null;
+  return bridge ? bridge.close() : Promise.resolve();
+}
 
 const CONFIG_FILE = 'config.yaml';
 const ANT_NODE_MODE = {
@@ -200,6 +210,11 @@ function getPrimaryEthereumRpcUrl() {
   return getPrimaryKeylessRpcUrl(ETHEREUM_CHAIN_ID) || DEFAULT_ANT_RESOLVER_RPC_URL;
 }
 
+// No `cors-allowed-origins`: nothing in a browser origin may read the API.
+// The chrome reaches the node over IPC (`ant:api-get`) and the main process
+// over Node's fetch, neither of which is subject to CORS. The old `"null"`
+// entry, there for the chrome's `file:` origin, also let every `data:` frame
+// and sandboxed iframe read API responses (security audit O-1, #428).
 function buildAntConfigContent({
   dataDir, apiPort, p2pPort, password, nodeMode, blockchainRpcEndpoint, resolverRpcEndpoint,
 }) {
@@ -212,7 +227,6 @@ swap-enable: ${isLightNode ? 'true' : 'false'}
 mainnet: true
 full-node: false
 blockchain-rpc-endpoint: ${isLightNode ? `"${blockchainRpcEndpoint}"` : '""'}
-cors-allowed-origins: "null"
 skip-postage-snapshot: true
 resolver-options: "${resolverRpcEndpoint}"
 storage-incentives-enable: false
@@ -480,6 +494,7 @@ async function startExternalAnt(config) {
   }
 
   currentApiUrl = apiUrl;
+  noteAntApiUrl(currentApiUrl);
   currentApiPort = getPortFromUrl(apiUrl);
   currentMode = MODE.EXTERNAL;
 
@@ -522,6 +537,7 @@ async function startAnt() {
   }
 
   pendingStart = false;
+  const generation = ++startGeneration;
   updateState(STATUS.STARTING);
 
   const profileConfig = getProfileAntConfig();
@@ -546,10 +562,13 @@ async function startAnt() {
   // Step 1: Legacy/profile-dir launches may still opt into a system daemon.
   const existing = managedProfileNode ? { found: false } : await detectExistingDaemon();
 
+  if (generation !== startGeneration) return;
+
   if (existing.found) {
     // Reuse existing daemon
     currentApiPort = existing.port;
     currentApiUrl = `http://127.0.0.1:${currentApiPort}`;
+    noteAntApiUrl(currentApiUrl);
     currentMode = MODE.REUSED;
 
     updateService('ant', {
@@ -655,8 +674,11 @@ async function startAnt() {
     }
   }
 
+  if (generation !== startGeneration) return;
+
   currentApiPort = apiPort;
   currentApiUrl = `http://127.0.0.1:${currentApiPort}`;
+  noteAntApiUrl(currentApiUrl);
   currentMode = MODE.BUNDLED;
 
   const configuredNodeMode = getConfiguredAntNodeMode();
@@ -686,22 +708,36 @@ async function startAnt() {
    * not need a control socket at all. Keeping the socket disabled avoids adding
    * a second profile-owned short-home exception like Radicle's.
    */
+  let bridge;
+  try {
+    bridge = await startAntChainBridge({ allowBroadcast: configuredNodeMode === ANT_NODE_MODE.LIGHT });
+    if (generation !== startGeneration) {
+      await bridge.close();
+      return;
+    }
+    chainBridge = bridge;
+  } catch {
+    if (generation !== startGeneration) return;
+    updateState(STATUS.ERROR, 'Could not start the local Ant chain transport');
+    setStatusMessage('ant', 'Node failed to start');
+    return;
+  }
   const args = [`--config=${configPath}`, '--no-control-socket'];
 
-  log.info(`[Ant] Starting: ${binPath} ${args.join(' ')}`);
+  log.info(`[Ant] Starting: ${binPath} ${args.join(' ')} (private chain transport)`);
+  args.push(`--gnosis-logs-rpc-url=${bridge.url}`);
+  if (configuredNodeMode === ANT_NODE_MODE.LIGHT) args.push(`--gnosis-rpc-url=${bridge.url}`);
 
   try {
     antProcess = spawn(binPath, args);
+    const child = antProcess;
 
-    antProcess.stdout.on('data', (data) => {
-      log.info(`[Ant stdout]: ${data}`);
-    });
-
-    antProcess.stderr.on('data', (data) => {
-      log.error(`[Ant stderr]: ${data}`);
-    });
+    bridge.pipeLog(child.stdout, (line) => log.info(`[Ant stdout]: ${line}`));
+    bridge.pipeLog(child.stderr, (line) => log.error(`[Ant stderr]: ${line}`));
 
     antProcess.on('close', (code) => {
+      void closeChainBridge(bridge);
+      if (antProcess !== child) return;
       log.info(`[Ant] Process exited with code ${code}`);
       antProcess = null;
 
@@ -733,6 +769,8 @@ async function startAnt() {
     });
 
     antProcess.on('error', (err) => {
+      void closeChainBridge(bridge);
+      if (antProcess !== child) return;
       log.error('[Ant] Failed to start process:', err);
       updateState(STATUS.ERROR, err.message);
       setStatusMessage('ant', 'Node failed to start');
@@ -742,12 +780,17 @@ async function startAnt() {
     let attempts = 0;
     const maxAttempts = 60;
     const pollInterval = setInterval(async () => {
-      if (currentState === STATUS.STOPPED || currentState === STATUS.ERROR) {
+      if (generation !== startGeneration || antProcess !== child ||
+          currentState === STATUS.STOPPED || currentState === STATUS.ERROR) {
         clearInterval(pollInterval);
         return;
       }
 
       const isHealthy = await checkHealth();
+      if (generation !== startGeneration || antProcess !== child) {
+        clearInterval(pollInterval);
+        return;
+      }
       if (isHealthy) {
         clearInterval(pollInterval);
 
@@ -779,6 +822,7 @@ async function startAnt() {
       }
     }, 1000);
   } catch (err) {
+    await closeChainBridge(bridge);
     updateState(STATUS.ERROR, err.message);
     setStatusMessage('ant', 'Node failed to start');
   }
@@ -786,6 +830,8 @@ async function startAnt() {
 
 // Stop Ant and return a Promise that resolves when the process exits
 function stopAnt() {
+  ++startGeneration;
+  const bridgeClosed = closeChainBridge();
   return new Promise((resolve) => {
     pendingStart = false;
 
@@ -849,7 +895,7 @@ function stopAnt() {
 
     // Try graceful shutdown via SIGTERM
     antProcess.kill('SIGTERM');
-  });
+  }).then(() => bridgeClosed);
 }
 
 function checkBinary() {
@@ -901,6 +947,10 @@ function registerAntIpc() {
   ipcMain.handle(IPC.ANT_CHECK_BINARY, () => {
     return { available: checkBinary() };
   });
+
+  // Chrome-only (no webview tier in ipc-sender-policy.js): read-only node
+  // API access for the chrome's status/wallet screens. See ant-api-chrome.js.
+  ipcMain.handle(IPC.ANT_API_GET, (_event, endpoint) => antApiGet(endpoint));
 }
 
 function hasLiveProcess() {

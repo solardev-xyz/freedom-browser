@@ -93,6 +93,7 @@ const SURFACES = {
     '41-settings-permissions',
     '42-settings-experimental',
     '43-settings-updates',
+    '44-settings-search',
     '45-settings-shortcut-conflict',
   ],
   'private window': ['60-private-window', '61-private-sidebar'],

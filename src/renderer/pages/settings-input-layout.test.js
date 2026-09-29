@@ -21,7 +21,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The page's markup plus the classic script it loads (`scripts/settings.js`,
+// moved out of an inline <script> by #432 so the CSP can drop 'unsafe-inline').
+const SOURCE = [
+  fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, 'scripts', 'settings.js'), 'utf8'),
+].join('\n');
 
 // Containers a `.rpc-input` may sit in. Each establishes a flex or grid
 // formatting context, so the input's `flex: 1` (or the track it is placed in)
@@ -34,6 +39,10 @@ const SIZING_WRAPPERS = [
   'search-provider-fields',
   'shortcut-toolbar',
   'profile-node-field',
+  // The page-wide "Search settings" field in the sidebar header (#281),
+  // which sizes itself against the nav below it the same way the Shortcuts
+  // search sizes itself against its "Restore defaults" button.
+  'sidebar-search',
 ];
 const INTRINSIC_WRAPPERS = ['row-control'];
 
