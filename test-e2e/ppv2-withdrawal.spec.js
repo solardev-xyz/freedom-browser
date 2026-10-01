@@ -158,8 +158,8 @@ test(controller ? 'PPv2 bounded controller registration, deposit, withdrawal, re
         const amount = BigInt(requested.amount), fee = 100n;
         const data = coder.encode(['tuple(address recipient,address feeRecipient,uint256 feeAmount,uint256 nativeGas)'],
           [[requested.recipient, config.relayers[0].address, fee, 0n]]);
-        const feeCommitment = { data, asset: requested.asset, expiration: Date.now()+quoteLifetime, feeAmount: '100',
-          recipient: requested.recipient, amountSent: (amount+fee).toString(), amountReceived: amount.toString(), extraGas: false };
+        const feeCommitment = { data, asset: direct ? req('ethers').getAddress(requested.asset) : requested.asset, expiration: Date.now()+quoteLifetime, feeAmount: '100',
+          recipient: direct ? req('ethers').getAddress(requested.recipient) : requested.recipient, amountSent: (amount+fee).toString(), amountReceived: amount.toString(), ...(direct ? {} : { extraGas: false }) };
         if (quoteLifetime === 10000) shortQuoteExpiration = feeCommitment.expiration;
         feeCommitment.signedRelayerCommitment = await quoteSigner.signTypedData({
           domain: { name: 'Privacy Pools Relayer', version: '1', chainId: 11155111, verifyingContract: config.relayers[0].processorAddress },

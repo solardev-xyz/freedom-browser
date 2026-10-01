@@ -44,7 +44,8 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
     if (!validProof(result, 8) || !publicSignals.every((v, i) => BigInt(v) === BigInt(intent.publicSignals[i]))) throw fail();
     const fee = payload.signedFeeCommitment;
     if (!keys(fee, ['data', 'asset', 'expiration', 'feeAmount', 'signedRelayerCommitment', 'recipient', 'amountSent', 'amountReceived', 'extraGas']) ||
-        typeof fee.asset !== 'string' || fee.asset.toLowerCase() !== token || fee.recipient !== intent.recipient || fee.extraGas !== false ||
+        typeof fee.asset !== 'string' || fee.asset.toLowerCase() !== token || typeof fee.recipient !== 'string' ||
+        !/^0x[0-9a-f]{40}$/i.test(fee.recipient) || fee.recipient.toLowerCase() !== intent.recipient || fee.extraGas !== false ||
         !amount(fee.feeAmount) || BigInt(fee.feeAmount) > BigInt(intent.maxFee) || !amount(fee.amountSent) ||
         fee.amountReceived !== intent.amount || BigInt(fee.amountSent) !== BigInt(intent.amount) + BigInt(fee.feeAmount) ||
         BigInt(fee.amountSent) >= BigInt(intent.inputValue) ||

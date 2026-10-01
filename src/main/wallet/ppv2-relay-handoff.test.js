@@ -291,3 +291,23 @@ test.each(['tor', 'direct'])('keeps %s privacy labels on the prepared summary an
   await expect(gate.submit(prepared, { review: async () => true, invoke })).rejects.toThrow();
   expect(network.fetch).toHaveBeenCalledTimes(1);
 });
+
+test('accepts a checksummed quote recipient bound to the same signed routing address', async () => {
+  request = relayFixture({ recipient: `0x${'ab'.repeat(20)}` });
+  const payload = JSON.parse(request.body);
+  payload.signedFeeCommitment.recipient = require('ethers').getAddress(request.intent.recipient);
+  expect(payload.signedFeeCommitment.recipient).not.toBe(request.intent.recipient);
+  request.body = JSON.stringify(payload);
+  const prepared = await gate.prepare(request);
+  expect(prepared).toMatchObject({ recipient: request.intent.recipient, quoteSignatureVerified: true });
+  await gate.submit(prepared, { review: async () => true, invoke });
+  expect(network.fetch).toHaveBeenCalledTimes(1);
+  expect(network.fetch.mock.calls[0][1].body).toBe(request.body);
+});
+test.each([`0x${'cd'.repeat(20)}`, 'not-an-address', null, 123])('refuses a different or invalid quote recipient %j before proving', async recipient => {
+  request = relayFixture({ recipient: `0x${'ab'.repeat(20)}` });
+  const payload = JSON.parse(request.body);
+  payload.signedFeeCommitment.recipient = typeof recipient === 'string' && recipient.startsWith('0x') ? require('ethers').getAddress(recipient) : recipient;
+  await expect(gate.prepare({ ...request, body: JSON.stringify(payload) })).rejects.toThrow();
+  expect(verifyProof).not.toHaveBeenCalled(); expect(network.fetch).not.toHaveBeenCalled();
+});

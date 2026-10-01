@@ -14,8 +14,8 @@ function signQuote(fee, processor, overrides = {}, wallet = quoteWallet) {
   return wallet.signingKey.sign(TypedDataEncoder.hash({ name: 'Privacy Pools Relayer', version: '1', chainId: 11155111,
     verifyingContract: processor, ...overrides }, quoteTypes, fee)).serialized;
 }
-function relayFixture() {
-  const coder = AbiCoder.defaultAbiCoder(), recipient = `0x${'11'.repeat(20)}`, relayer = `0x${'22'.repeat(20)}`, processor = `0x${'33'.repeat(20)}`;
+function relayFixture({ recipient = `0x${'11'.repeat(20)}` } = {}) {
+  const coder = AbiCoder.defaultAbiCoder(), relayer = `0x${'22'.repeat(20)}`, processor = `0x${'33'.repeat(20)}`;
   const data = coder.encode([ROUTING], [[recipient, relayer, 100n, 0n]]);
   const noteData = [{ hint: word(3), data: '0xabcd' }];
   const context = BigInt(keccak256(coder.encode(['tuple(address processor,bytes data)', 'tuple(bytes32 hint,bytes data)[]'],
