@@ -1,3 +1,5 @@
+jest.mock('./ppv2-proof-verifier', () => ({ verifyPPv2Proof: (...args) => mockVerify(...args) }));
+const mockVerify = jest.fn(async () => {});
 jest.mock('./ppv2-runtime', () => ({
   assertPPv2Candidate: jest.fn(),
   assertPPv2RuntimeEntries: jest.fn(),
@@ -21,6 +23,7 @@ const context = keccak256(
   AbiCoder.defaultAbiCoder().encode(['tuple(bytes32 hint,bytes data)'], [note])
 );
 beforeEach(() => {
+  mockVerify.mockReset().mockResolvedValue(undefined);
   scope = createPrivacyScope({ profileId: 'fixture', signal: new AbortController().signal });
   const handle = (role) =>
     scope.getContext({
@@ -251,4 +254,23 @@ test('binds a token deposit proof to its asset and amount with zero native value
       })
     )
   ).rejects.toThrow();
+});
+
+test('rejects a prover-approved proof when the fresh verifier refuses or loses its lifetime', async () => {
+  mockVerify.mockRejectedValueOnce(new Error('Verifier refused'));
+  await expect(prover.prepare(intent, () => prepare())).rejects.toThrow();
+  expect(mockVerify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      circuit: 'deposit',
+      proof: expect.any(Object),
+      vkey: expect.any(Buffer),
+    })
+  );
+  expect(Object.keys(mockVerify.mock.calls[0][0])).not.toContain('witness');
+  mockVerify.mockImplementationOnce(async () => {
+    scope.close();
+  });
+  await expect(prover.prepare(intent, () => prepare())).rejects.toMatchObject({
+    code: 'PRIVACY_CONTEXT_REVOKED',
+  });
 });

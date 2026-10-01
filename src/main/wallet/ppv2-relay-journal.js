@@ -43,7 +43,7 @@ function validSettlement(v) {
         typeof v.inputValue === 'string' &&
         /^[1-9][0-9]{0,38}$/.test(v.inputValue) &&
         BigInt(v.inputValue) < 1n << 128n &&
-        BigInt(v.inputValue) > BigInt(v.amountOut))) &&
+        BigInt(v.inputValue) >= BigInt(v.amountOut))) &&
     (v.token === undefined ||
       (typeof v.token === 'string' &&
         /^0x[0-9a-f]{40}$/.test(v.token) &&

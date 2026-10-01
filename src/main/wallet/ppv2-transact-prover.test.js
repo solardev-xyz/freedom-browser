@@ -1,3 +1,5 @@
+jest.mock('./ppv2-proof-verifier', () => ({ verifyPPv2Proof: (...args) => mockVerify(...args) }));
+const mockVerify = jest.fn(async () => {});
 jest.mock('./ppv2-runtime', () => ({
   assertPPv2Candidate: jest.fn(),
   assertPPv2RuntimeEntries: jest.fn(),
@@ -12,10 +14,11 @@ const { NATIVE, FIELD } = require('./ppv2-deposit-policy');
 const { ARTIFACTS } = require('./ppv2-transact-policy');
 const owner = `0x${'11'.repeat(20)}`,
   commitment = `0x${'7'.padStart(64, '0')}`;
-const intent = { owner, commitment, amount: 50n, value: 100n, maxFee: 10n };
+const intent = { owner, commitment, nullifier: '0x1', amount: 50n, value: 100n, maxFee: 10n };
 const mockLoad = jest.fn(async () => Buffer.alloc(1));
 let mockRun, scope, prover, witness, proof, config;
 beforeEach(() => {
+  mockVerify.mockReset().mockResolvedValue(undefined);
   mockLoad.mockClear();
   scope = createPrivacyScope({ profileId: 'fixture', signal: new AbortController().signal });
   const handle = (role) =>
@@ -103,6 +106,25 @@ test('requires two owned proofs and binds the selected input without raising the
     [...ARTIFACTS, ...ARTIFACTS].map((e) => e.name)
   );
 });
+test.each([90n, 100n])(
+  'allows exact conservation with zero change for recipient amount %s',
+  async (amount) => {
+    witness.amountOut = proof.publicSignals[5] = '0x64';
+    witness.outputValue = ['0x0'];
+    await expect(prover.prepare({ ...intent, amount }, prepare)).resolves.toBeDefined();
+    expect(mockRun).toHaveBeenCalledTimes(2);
+  }
+);
+test('zero change cannot bypass conservation or inherit a different label', async () => {
+  witness.amountOut = proof.publicSignals[5] = '0x64';
+  witness.outputValue = ['0x0'];
+  witness.outputLabel = ['0xd'];
+  await expect(prover.prepare({ ...intent, amount: 90n }, prepare)).rejects.toThrow();
+  witness.outputLabel = ['0xc'];
+  witness.amountOut = '0x65';
+  await expect(prover.prepare({ ...intent, amount: 90n }, prepare)).rejects.toThrow();
+  expect(mockRun).not.toHaveBeenCalled();
+});
 test('rejects witness widening, wrong note value, token, owner, and unsafe tree bounds before proving', async () => {
   await expect(prover.service.proveTransact(witness, 1, 1)).rejects.toThrow();
   for (const change of [
@@ -123,8 +145,8 @@ test('rejects witness widening, wrong note value, token, owner, and unsafe tree 
   }
   expect(mockRun).not.toHaveBeenCalled();
 });
-test.each([2, 3, 4, 5, 6, 7])('rejects changed public signal %s', async (index) => {
-  proof.publicSignals[index] = '0x1';
+test.each([0, 2, 3, 4, 5, 6, 7])('rejects changed public signal %s', async (index) => {
+  proof.publicSignals[index] = index === 0 ? '0x2' : '0x1';
   await expect(prover.prepare(intent, prepare)).rejects.toMatchObject({
     code: 'PRIVATE_PPV2_WITHDRAWAL_REFUSED',
   });
@@ -181,4 +203,23 @@ test('binds the selected token across witness and both final public signals', as
   await expect(prover.prepare(intent, prepare)).rejects.toThrow();
   proof.publicSignals[6] = NATIVE;
   await expect(prover.prepare({ ...intent, token }, prepare)).rejects.toThrow();
+});
+
+test('rejects a prover-approved proof when the fresh verifier refuses or loses its lifetime', async () => {
+  mockVerify.mockRejectedValueOnce(new Error('Verifier refused'));
+  await expect(prover.prepare(intent, prepare)).rejects.toThrow();
+  expect(mockVerify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      circuit: 'transact_1x1',
+      proof: expect.any(Object),
+      vkey: expect.any(Buffer),
+    })
+  );
+  expect(Object.keys(mockVerify.mock.calls[0][0])).not.toContain('witness');
+  mockVerify.mockImplementationOnce(async () => {
+    scope.close();
+  });
+  await expect(prover.prepare(intent, prepare)).rejects.toMatchObject({
+    code: 'PRIVACY_CONTEXT_REVOKED',
+  });
 });

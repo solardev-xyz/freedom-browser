@@ -67,7 +67,6 @@ function validWitness(v) {
     BigInt(v.tokenId) > 0n &&
     BigInt(v.tokenIdOut) === BigInt(v.tokenId) &&
     BigInt(v.value[0]) === BigInt(v.amountOut) + BigInt(v.outputValue[0]) &&
-    BigInt(v.outputValue[0]) > 0n &&
     BigInt(v.outputLabel[0]) === BigInt(v.label[0])
   );
 }

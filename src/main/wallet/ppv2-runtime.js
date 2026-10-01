@@ -91,6 +91,10 @@ function assertPPv2RuntimeEntries({ sdkEntry, proverEntry }) {
   return archive;
 }
 
+function getPPv2VerifierEntry(entries) {
+  return path.join(assertPPv2RuntimeEntries(entries), 'serial-prover.cjs');
+}
+
 function loadPPv2Runtime(filename) {
   const archive = verifyPPv2Runtime(filename);
   const { PPV2_CANDIDATE } = require('./ppv2-session');
@@ -109,12 +113,17 @@ function loadPPv2Runtime(filename) {
     createPlugin: adapter.createPPv2Plugin,
     createBroadcaster: adapter.createPPv2Broadcaster,
     inspectRegistration: adapter.inspectRegistration,
+    inspectNullifier: adapter.inspectNullifier,
     inspectChange: adapter.inspectChange,
   });
   if (
-    ['createPlugin', 'createBroadcaster', 'inspectRegistration', 'inspectChange'].some(
-      (key) => typeof candidate[key] !== 'function'
-    )
+    [
+      'createPlugin',
+      'createBroadcaster',
+      'inspectRegistration',
+      'inspectNullifier',
+      'inspectChange',
+    ].some((key) => typeof candidate[key] !== 'function')
   )
     throw fail();
   candidates.set(candidate, archive);
@@ -153,4 +162,5 @@ module.exports = Object.freeze({
   loadPPv2Runtime,
   assertPPv2Candidate,
   assertPPv2RuntimeEntries,
+  getPPv2VerifierEntry,
 });

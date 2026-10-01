@@ -112,6 +112,7 @@ beforeEach(() => {
   candidate = {
     ...PPV2_CANDIDATE,
     inspectRegistration: async () => registrationKeys,
+    inspectNullifier: async () => '0x1',
     createPlugin: jest.fn(async (h, p) => {
       host = h;
       params = p;

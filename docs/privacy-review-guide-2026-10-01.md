@@ -1,5 +1,7 @@
 # Wallet privacy foundation: independent review guide
 
+**October 2 continuation:** [Full-value withdrawals, selected-note binding and fresh public-proof verification](ppv2-full-value-verification-2026-10-02.md) supersede the runtime pin below with `a7327fce6acde362b05e439c0db579c06fdc87272feaaa21046b0b34dd182f34` (47,806,767 bytes). Historical counts and archives are retained as dated evidence. The funded profile is unchanged.
+
 This guide indexes the research and implementation on `feat/wallet-privacy-foundation` as of October 1, 2026. It accompanies [research issue #475](https://github.com/solardev-xyz/freedom-browser/issues/475) and the companion draft PR linked there. This is a development milestone, not production activation or an external security audit.
 
 Implementation checkpoint: `9700540aa556aa226d4f8641d0c08ed0c44207b3`. Main was fetched and an explicit merge reported already up to date at `39ad0247eea30745758f02ccd61fe39955dbd83c`. The pre-publication diff contains 36 commits and 209 files, including extensive evidence, tests and scratch-build descriptions. Publication additions are this guide, visual evidence, the experimental-settings changelog fragment and corrections/annotations in the supporting documentation.

@@ -221,6 +221,14 @@ assert.equal(PPV2_CANDIDATE.sdk, previous.sdkRevision);
 assert.equal(PPV2_CANDIDATE.kohaku, previous.kohakuRevision);
 const candidate = {
   ...PPV2_CANDIDATE,
+  async inspectNullifier(keystore, accountIndex, commitment) {
+    const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });
+    const notes = new sdk.NoteComputationService({
+      hashService: await sdk.PoseidonHashService.create(),
+      cryptoService: new sdk.CryptoService(),
+    });
+    return notes.computeNullifier(keystoreManager.getPrivateNullifyingKey(), commitment);
+  },
   async inspectRegistration(keystore, accountIndex) {
     const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });
     const hashService = await sdk.PoseidonHashService.create();

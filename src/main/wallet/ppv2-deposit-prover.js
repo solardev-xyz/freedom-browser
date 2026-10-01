@@ -6,6 +6,7 @@ const { Interface, AbiCoder, keccak256 } = require('ethers');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const { createPrivacyArtifactLoader } = require('./privacy-artifacts');
 const { runPrivacyProcess } = require('./privacy-process');
+const { verifyPPv2Proof } = require('./ppv2-proof-verifier');
 const {
   FIELD,
   NATIVE,
@@ -88,6 +89,15 @@ function createPPv2DepositProver({
           BigInt(value.proof.publicSignals[1]) === BigInt(current.token) &&
           BigInt(value.proof.publicSignals[2]) === current.amount &&
           BigInt(value.proof.publicSignals[3]) === current.context,
+      });
+      getPrivacyContext(handle);
+      if (operation !== current) throw fail();
+      await verifyPPv2Proof({
+        handle,
+        sdkEntry,
+        circuit: 'deposit',
+        proof: result.proof,
+        vkey: input.artifacts.verificationKey,
       });
       getPrivacyContext(handle);
       if (operation !== current) throw fail();

@@ -1,3 +1,5 @@
+jest.mock('./ppv2-proof-verifier', () => ({ verifyPPv2Proof: (...args) => mockVerify(...args) }));
+const mockVerify = jest.fn(async () => {});
 jest.mock('./ppv2-runtime', () => ({
   assertPPv2Candidate: jest.fn(),
   assertPPv2RuntimeEntries: jest.fn(),
@@ -19,6 +21,7 @@ const abi = new Interface([RAGEQUIT_ABI]);
 const mockLoad = jest.fn(async () => Buffer.alloc(1));
 let mockRun, scope, prover, witness, proof, config;
 beforeEach(() => {
+  mockVerify.mockReset().mockResolvedValue(undefined);
   mockLoad.mockClear();
   scope = createPrivacyScope({ profileId: 'fixture', signal: new AbortController().signal });
   const handle = (role) =>
@@ -107,6 +110,12 @@ test('binds the recovered native note, owner and pool without raising the proces
   expect(mockRun.mock.calls[0][0].rssMb).toBeUndefined();
   expect(mockLoad.mock.calls.map(([name]) => name)).toEqual(ARTIFACTS.map((entry) => entry.name));
 });
+test('refuses zero-value emergency exits before invoking SDK or starting a prover', async () => {
+  const task = jest.fn();
+  await expect(prover.prepare({ ...intent, amount: 0n }, task)).rejects.toThrow();
+  expect(task).not.toHaveBeenCalled();
+  expect(mockRun).not.toHaveBeenCalled();
+});
 
 test('rejects witness widening, another owner/token/value and invalid tree bounds before starting a child', async () => {
   await expect(prover.service.proveRagequit(witness)).rejects.toThrow();
@@ -180,4 +189,23 @@ test('binds a token emergency exit to the recovered asset and rejects substituti
   await expect(prover.prepare(intent, prepare)).rejects.toThrow();
   proof.publicSignals[5] = NATIVE;
   await expect(prover.prepare({ ...intent, token }, prepare)).rejects.toThrow();
+});
+
+test('rejects a prover-approved proof when the fresh verifier refuses or loses its lifetime', async () => {
+  mockVerify.mockRejectedValueOnce(new Error('Verifier refused'));
+  await expect(prover.prepare(intent, () => prepare())).rejects.toThrow();
+  expect(mockVerify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      circuit: 'ragequit',
+      proof: expect.any(Object),
+      vkey: expect.any(Buffer),
+    })
+  );
+  expect(Object.keys(mockVerify.mock.calls[0][0])).not.toContain('witness');
+  mockVerify.mockImplementationOnce(async () => {
+    scope.close();
+  });
+  await expect(prover.prepare(intent, () => prepare())).rejects.toMatchObject({
+    code: 'PRIVACY_CONTEXT_REVOKED',
+  });
 });

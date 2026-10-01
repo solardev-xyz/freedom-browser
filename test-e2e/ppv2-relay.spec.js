@@ -166,21 +166,27 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
       let sent = 0,
         reviewed = 0,
         durableBeforeSend = false;
+      const verifierPeaks = [];
       const gate = req('./src/main/wallet/ppv2-relay-handoff').createPPv2RelayHandoff({
         handle: handle('relayer'),
         journal,
         verifyProof: async (value) => {
-          const { result } = await run({
-            handle: handle('prover'),
-            filename: path.join(app.getAppPath(), 'src/main/wallet/ppv2-relay-verify-job.js'),
-            input: {
-              sdkEntry: `${artifact}/sdk.cjs`,
-              vkey: artifacts.verificationKey,
-              proof: value,
-            },
-            validateResult: (v) => typeof v?.verified === 'boolean',
-          });
-          return result.verified;
+          try {
+            const verification = await req('./src/main/wallet/ppv2-proof-verifier').verifyPPv2Proof(
+              {
+                handle: handle('prover'),
+                sdkEntry: `${artifact}/sdk.cjs`,
+                proverEntry: `${artifact}/serial-prover.cjs`,
+                circuit: 'transact_1x1',
+                vkey: artifacts.verificationKey,
+                proof: value,
+              }
+            );
+            verifierPeaks.push(verification.peakRssBytes);
+            return true;
+          } catch {
+            return false;
+          }
         },
         network: {
           fetch: async () => {
@@ -224,6 +230,21 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
           () => false,
           () => true
         );
+      const wrongKey = Uint8Array.from(artifacts.verificationKey);
+      wrongKey[0] ^= 1;
+      const wrongKeyRefused = await req('./src/main/wallet/ppv2-proof-verifier')
+        .verifyPPv2Proof({
+          handle: handle('prover'),
+          sdkEntry: `${artifact}/sdk.cjs`,
+          proverEntry: `${artifact}/serial-prover.cjs`,
+          circuit: 'transact_1x1',
+          vkey: wrongKey,
+          proof,
+        })
+        .then(
+          () => false,
+          () => true
+        );
       const prepared = await gate.prepare(request);
       const outcome = await gate
         .submit(prepared, {
@@ -250,6 +271,8 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
         durableBeforeSend,
         outcome,
         tamperRejected,
+        wrongKeyRefused,
+        verifierPeaks,
         quoteTamperRejected,
         realProofVerified: prepared.proofVerified,
         chainStateVerified: prepared.chainStateVerified,
@@ -279,6 +302,8 @@ test('real PPv2 relay wire format is reviewed and journaled before an uncertain 
     reviewed: 1,
     durableBeforeSend: true,
     tamperRejected: true,
+    wrongKeyRefused: true,
+    verifierPeaks: [expect.any(Number)],
     quoteTamperRejected: true,
     realProofVerified: true,
     chainStateVerified: false,

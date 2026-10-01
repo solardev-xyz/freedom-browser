@@ -63,12 +63,32 @@ function normalized(bytes) {
   return source;
 }
 const bundles = ['sdk.cjs', 'plugin.cjs', 'serial-prover.cjs', 'abis.cjs', 'http.cjs'];
-for (const file of bundles)
-  assert.equal(
-    normalized(asar.extractFile(historical, file)),
-    asar.extractFile(candidate, file).toString(),
-    `Changed bundle: ${file}`
-  );
+// The sole reviewed semantic delta from the historical plugin is the new
+// selected-note helper. Strip exactly these generated additions, never a regex
+// that could hide unrelated implementation changes.
+const nullifierAdditions = [
+  '  inspectNullifier: () => inspectNullifier,\n',
+  `async function inspectNullifier(keystore, accountIndex, commitment) {
+  const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });
+  const notes = new import_privacy_pools_v2_sdk5.NoteComputationService({ hashService: await import_privacy_pools_v2_sdk5.PoseidonHashService.create(), cryptoService: new import_privacy_pools_v2_sdk5.CryptoService() });
+  return notes.computeNullifier(keystoreManager.getPrivateNullifyingKey(), commitment);
+}
+`,
+  '  inspectNullifier,\n',
+];
+for (const file of bundles) {
+  let source = asar.extractFile(candidate, file).toString();
+  if (file === 'plugin.cjs')
+    for (const addition of nullifierAdditions) {
+      assert.equal(
+        source.split(addition).length,
+        2,
+        'Missing or repeated reviewed nullifier addition'
+      );
+      source = source.replace(addition, '');
+    }
+  assert.equal(normalized(asar.extractFile(historical, file)), source, `Changed bundle: ${file}`);
+}
 let preservedFiles = 0;
 const files = (archive) =>
   asar
@@ -113,7 +133,7 @@ let tests = null;
 if (testReport) {
   const report = JSON.parse(fs.readFileSync(testReport));
   tests = report.stats;
-  assert.equal(tests.expected, 19, 'Run the complete seven-spec PPv2 SDK suite');
+  assert.equal(tests.expected, 21, 'Run the complete seven-spec PPv2 SDK suite');
   for (const kind of ['skipped', 'unexpected', 'flaky']) assert.equal(tests[kind], 0, kind);
   assert.equal(report.errors.length, 0, 'Runner errors');
   const expectedSpecs = {
@@ -123,7 +143,7 @@ if (testReport) {
     'ppv2-process.spec.js': 2,
     'ppv2-relay.spec.js': 1,
     'ppv2-token-deposit.spec.js': 1,
-    'ppv2-withdrawal.spec.js': 8,
+    'ppv2-withdrawal.spec.js': 10,
   };
   const actualSpecs = {},
     attachments = [];
@@ -157,7 +177,9 @@ console.log(
       archiveBytes: fs.statSync(candidate).size,
       recipeRevision: inventory.recipe.revision,
       independentArchivesIdentical: true,
-      normalizedHistoricalBundlesIdentical: bundles,
+      normalizedHistoricalBundlesIdentical: bundles.filter((file) => file !== 'plugin.cjs'),
+      pluginHistoricalDifference:
+        'Exactly the reviewed inspectNullifier helper and two export entries',
       historicalArtifactWorkerMetadataFilesIdentical: preservedFiles,
       inputs: inventory.inputs.length,
       packages: inventory.packages.length,

@@ -134,7 +134,7 @@ function validateRelay({ intent, endpoint, body, fromBlock = 0 }) {
       !amount(fee.amountSent) ||
       fee.amountReceived !== intent.amount ||
       BigInt(fee.amountSent) !== BigInt(intent.amount) + BigInt(fee.feeAmount) ||
-      BigInt(fee.amountSent) >= BigInt(intent.inputValue) ||
+      BigInt(fee.amountSent) > BigInt(intent.inputValue) ||
       !Number.isSafeInteger(fee.expiration) ||
       fee.expiration <= Date.now() ||
       !hex(fee.signedRelayerCommitment, 132) ||

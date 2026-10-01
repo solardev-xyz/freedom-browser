@@ -25,7 +25,7 @@ const { createPPv2TokenPolicy } = require('./ppv2-token-policy');
 const { createPPv2TaskBudget, MAX_TASK_MS } = require('./ppv2-task-budget');
 const { createPPv2ExitReservations } = require('./ppv2-exit-reservations');
 const { getPrivateSubmissionJournal } = require('./private-submission-journal');
-const { NATIVE } = require('./ppv2-deposit-policy');
+const { NATIVE, FIELD } = require('./ppv2-deposit-policy');
 const { getPPv2RelayJournal } = require('./ppv2-relay-journal');
 const PPV2_CANDIDATE = Object.freeze({
   kohaku: '6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e',
@@ -79,6 +79,7 @@ async function openPPv2Session({
     !candidate ||
     typeof candidate.createPlugin !== 'function' ||
     typeof candidate.inspectRegistration !== 'function' ||
+    typeof candidate.inspectNullifier !== 'function' ||
     Object.keys(PPV2_CANDIDATE).some((name) => candidate[name] !== PPV2_CANDIDATE[name])
   )
     throw unavailable();
@@ -413,6 +414,11 @@ async function openPPv2Session({
       if (
         !note ||
         note.status !== 'active' ||
+        typeof note.commitment !== 'string' ||
+        !/^0x[0-9a-f]{64}$/i.test(note.commitment) ||
+        BigInt(note.commitment) >= FIELD ||
+        typeof note.value !== 'bigint' ||
+        note.value <= 0n ||
         (token === NATIVE
           ? note.asset?.__type !== 'native'
           : note.asset?.__type !== 'erc20' ||
@@ -438,10 +444,13 @@ async function openPPv2Session({
         Number(earliest > 1000n ? earliest - 1000n : 0n)
       );
       proofKind = 'transact';
+      const nullifier = await candidate.inspectNullifier(keystore, accountIndex, note.commitment);
+      getPrivacyContext(sessionHandle);
       const captured = {};
       const prepared = await transactProver.prepare(
         {
           commitment: note.commitment,
+          nullifier,
           value: note.value,
           owner: config.ownerAddress,
           amount: request.amount,
@@ -642,9 +651,16 @@ async function openPPv2Session({
               const note = (await plugin.notes(undefined, true)).find(
                 (note) => note.commitment === commitment
               );
+              if (note?.value === 0n)
+                throw privacyError(
+                  'PRIVATE_PPV2_NOTE_UNAVAILABLE',
+                  'Selected note has no value to exit'
+                );
               if (
                 !note ||
                 ['spent', 'exited', 'exit_pending'].includes(note.status) ||
+                typeof note.value !== 'bigint' ||
+                note.value <= 0n ||
                 (token === NATIVE
                   ? note.asset?.__type !== 'native'
                   : note.asset?.contract?.toLowerCase() !== token.toLowerCase())

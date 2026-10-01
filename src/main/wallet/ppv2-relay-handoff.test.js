@@ -38,6 +38,29 @@ afterEach(() => {
   jest.restoreAllMocks();
   jest.useRealTimers();
 });
+test('allows a quote consuming exactly the input but refuses any overspend', () => {
+  request.intent.inputValue = '6000';
+  expect(() => validateRelay(request)).not.toThrow();
+  request.intent.inputValue = '5999';
+  expect(() => validateRelay(request)).toThrow();
+});
+test('persists a full-value attempt and restores its exact settlement after reopening', async () => {
+  request.intent.inputValue = '6000';
+  const plan = validateRelay(request);
+  await expect(
+    journal.begin(plan.attempt, { ...plan.settlement, inputValue: '5999' })
+  ).rejects.toThrow();
+  const prepared = await gate.prepare(request);
+  await gate.submit(prepared, { review: async () => true, invoke });
+  const reopened = createPPv2RelayJournal({ handle: handle('storage'), directory, key });
+  expect((await reopened.list())[0].settlement).toMatchObject({
+    inputValue: '6000',
+    amountOut: '6000',
+  });
+  await expect(reopened.assertCanSubmit()).rejects.toMatchObject({
+    code: 'PRIVATE_PPV2_RELAY_UNRESOLVED',
+  });
+});
 
 test('requires final proof verification and review, journals before HTTP, and never treats ack as settlement', async () => {
   const prepared = await gate.prepare(request);

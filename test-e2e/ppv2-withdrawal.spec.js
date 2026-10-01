@@ -8,13 +8,30 @@ const cases = [false, true].flatMap((direct) =>
 );
 cases.push({ direct: true, tokenMode: false, cancel: false, controller: true });
 cases.push({ direct: true, tokenMode: false, cancel: false, exitPrepared: true });
-for (const { direct, tokenMode, cancel, controller = false, exitPrepared = false } of cases) {
+cases.push(
+  ...[false, true].map((tokenMode) => ({
+    direct: false,
+    tokenMode,
+    cancel: false,
+    fullValue: true,
+  }))
+);
+for (const {
+  direct,
+  tokenMode,
+  cancel,
+  controller = false,
+  exitPrepared = false,
+  fullValue = false,
+} of cases) {
   test(
-    exitPrepared
-      ? 'PPv2 prepared withdrawal cannot submit after a resolved public exit'
-      : controller
-        ? 'PPv2 bounded controller registration, deposit, withdrawal, reconciliation and separate-note exit'
-        : `PPv2 ${direct ? 'direct test ' : ''}${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart and reviewed emergency exit' : 'deposit, ASP state, lost withdrawal, restart, reconciliation and second spend'}`,
+    fullValue
+      ? `PPv2 ${tokenMode ? 'token' : 'native'} full-value withdrawal and zero-change refusal`
+      : exitPrepared
+        ? 'PPv2 prepared withdrawal cannot submit after a resolved public exit'
+        : controller
+          ? 'PPv2 bounded controller registration, deposit, withdrawal, reconciliation and separate-note exit'
+          : `PPv2 ${direct ? 'direct test ' : ''}${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart and reviewed emergency exit' : 'deposit, ASP state, lost withdrawal, restart, reconciliation and second spend'}`,
     async ({ electronApp, relaunchApp }, testInfo) => {
       test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the qualified Kohaku/SDK fixture');
       test.setTimeout(240000);
@@ -31,6 +48,7 @@ for (const { direct, tokenMode, cancel, controller = false, exitPrepared = false
           direct,
           controller,
           exitPrepared,
+          fullValue,
         }
       ) => {
         const req = process.mainModule
@@ -1004,7 +1022,7 @@ for (const { direct, tokenMode, cancel, controller = false, exitPrepared = false
             ]({
               token,
               commitment: change.commitment,
-              amount: 1000n,
+              amount: fullValue ? 3900n : 1000n,
               maxFee: 100n,
               recipient: `0x${'77'.repeat(20)}`,
             });
@@ -1018,7 +1036,35 @@ for (const { direct, tokenMode, cancel, controller = false, exitPrepared = false
               acceptedEvidence: 'unverified-rpc',
             }));
             const after = await session.notes();
+            let zeroWithdrawRefused = false,
+              zeroExitRefused = false;
+            if (fullValue) {
+              const zero = after.find((n) => n.value === 0n && n.status === 'active');
+              if (!zero) throw new Error('Zero change note not recovered');
+              const sendsBefore = relaySends;
+              zeroWithdrawRefused = await session[
+                tokenMode ? 'prepareTokenWithdrawal' : 'prepareNativeWithdrawal'
+              ]({
+                token,
+                commitment: zero.commitment,
+                amount: 1n,
+                maxFee: 100n,
+                recipient: `0x${'77'.repeat(20)}`,
+              }).then(
+                () => false,
+                (e) => e.code === 'PRIVATE_PPV2_NOTE_UNAVAILABLE'
+              );
+              zeroExitRefused = await session[
+                tokenMode ? 'prepareTokenRagequit' : 'prepareNativeRagequit'
+              ](tokenMode ? { token, commitment: zero.commitment } : zero.commitment).then(
+                () => false,
+                  (e) => e.code === 'PRIVATE_PPV2_NOTE_UNAVAILABLE'
+              );
+              if (relaySends !== sendsBefore) throw new Error('Zero note submitted');
+            }
             return {
+              zeroWithdrawRefused,
+              zeroExitRefused,
               checkpointPersisted: !!resumed.scan && resumed.observation.status === 'unknown',
               observation: observation.observation.status,
               trust: observation.observation.trust,
@@ -1273,6 +1319,7 @@ for (const { direct, tokenMode, cancel, controller = false, exitPrepared = false
       const resumed = await relaunchApp();
       report.secondSpend = await resumed.evaluate(exercise, {
         artifact,
+        fullValue,
         tokenMode,
         cancel,
         direct,
@@ -1329,7 +1376,9 @@ for (const { direct, tokenMode, cancel, controller = false, exitPrepared = false
           recoveredChange: '4000',
           reorgBlocked: true,
           secondHash: true,
-          remaining: ['2900'],
+          remaining: fullValue ? ['0'] : ['2900'],
+          zeroWithdrawRefused: fullValue,
+          zeroExitRefused: fullValue,
           resolved: 2,
           relaySends: 1,
         });

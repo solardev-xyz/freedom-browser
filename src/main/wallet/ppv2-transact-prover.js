@@ -3,6 +3,7 @@ const path = require('path');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const { createPrivacyArtifactLoader } = require('./privacy-artifacts');
 const { runPrivacyProcess } = require('./privacy-process');
+const { verifyPPv2Proof } = require('./ppv2-proof-verifier');
 const { FIELD, NATIVE, validProof, formatProof } = require('./ppv2-deposit-policy');
 const { ARTIFACTS, validWitness } = require('./ppv2-transact-policy');
 const fail = () =>
@@ -85,7 +86,18 @@ function createPPv2TransactProver({
           validateResult: (v) =>
             v?.verified === true &&
             validProof(v.proof, 8) &&
+            BigInt(v.proof.publicSignals[0]) === BigInt(op.nullifier) &&
             expected.every((x, i) => BigInt(x) === BigInt(v.proof.publicSignals[i + 2])),
+        });
+        getPrivacyContext(handle);
+        if (op !== current) throw fail();
+        await verifyPPv2Proof({
+          handle,
+          sdkEntry,
+          proverEntry,
+          circuit: 'transact_1x1',
+          proof: result.proof,
+          vkey: artifacts.verificationKey,
         });
         getPrivacyContext(handle);
         if (op !== current) throw fail();
@@ -119,10 +131,13 @@ function createPPv2TransactProver({
         typeof intent.maxFee !== 'bigint' ||
         intent.maxFee < 0n ||
         typeof intent.value !== 'bigint' ||
-        intent.value <= intent.amount ||
+        intent.value < intent.amount ||
         intent.value >= 1n << 128n ||
         intent.maxFee >= 1n << 128n ||
         !/^0x[0-9a-f]{64}$/i.test(intent.commitment) ||
+        typeof intent.nullifier !== 'string' ||
+        !/^0x[0-9a-f]{1,64}$/i.test(intent.nullifier) ||
+        BigInt(intent.nullifier) >= FIELD ||
         !/^0x[0-9a-f]{40}$/i.test(intent.owner)
       )
         throw fail();

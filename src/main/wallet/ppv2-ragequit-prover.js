@@ -4,6 +4,7 @@ const { Interface } = require('ethers');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const { createPrivacyArtifactLoader } = require('./privacy-artifacts');
 const { runPrivacyProcess } = require('./privacy-process');
+const { verifyPPv2Proof } = require('./ppv2-proof-verifier');
 const { FIELD, NATIVE, validProof, formatProof } = require('./ppv2-deposit-policy');
 const { ARTIFACTS, RAGEQUIT_ABI, validWitness } = require('./ppv2-ragequit-policy');
 const abi = new Interface([RAGEQUIT_ABI]);
@@ -87,6 +88,16 @@ function createPPv2RagequitProver({
           expected.every(
             (v, index) => v === null || BigInt(value.proof.publicSignals[index]) === v
           ),
+      });
+      getPrivacyContext(handle);
+      if (operation !== current) throw fail();
+      await verifyPPv2Proof({
+        handle,
+        sdkEntry,
+        proverEntry,
+        circuit: 'ragequit',
+        proof: result.proof,
+        vkey: input.artifacts.verificationKey,
       });
       getPrivacyContext(handle);
       if (operation !== current) throw fail();

@@ -65,6 +65,7 @@ test('candidate identity cannot be copied or mixed with another prover closure',
       createPPv2Plugin() {},
       createPPv2Broadcaster() {},
       inspectRegistration() {},
+      inspectNullifier() {},
       inspectChange() {},
     }),
     { virtual: true }
