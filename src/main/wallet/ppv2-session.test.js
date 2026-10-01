@@ -125,6 +125,25 @@ afterEach(() => {
   resetPrivacySession();
 });
 
+test('first session enrollment refuses an active ordinary send and closes its partial session before retry', async () => {
+  const lease = require('./transaction-submission-coordinator').acquireSubmissionLease({
+    chainId: 11155111,
+    from: config.ownerAddress,
+    remote: true,
+  });
+  try {
+    await expect(openPPv2Session({ candidate, configuration: config })).rejects.toMatchObject({
+      code: 'PRIVATE_SEND_IN_PROGRESS',
+    });
+    expect(candidate.createPlugin).not.toHaveBeenCalled();
+  } finally {
+    lease.release();
+  }
+  const session = await openPPv2Session({ candidate, configuration: config });
+  expect(await session.notes()).toEqual([]);
+  session.close();
+});
+
 test.each([
   '/V1/relay/evm/11155111/withdrawal',
   '/v1/%72elay/evm/11155111/withdrawal',

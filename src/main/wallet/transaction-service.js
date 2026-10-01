@@ -327,23 +327,39 @@ async function signAndSendTransaction(params, signer, options = {}) {
     if (typeof options.review !== 'function') {
       throw privacyError('PRIVATE_REVIEW_REQUIRED', 'A main-owned transaction review is required');
     }
-    await network.assertCanSubmit();
-    network.assertSigner(await privateStep(() => signer.getAddress(), network));
   }
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } =
     params;
 
-  // Phone wallets populate fees and broadcast through their own RPC. All
-  // raw-signing backends need complete fee data before device approval.
-  const fees =
-    typeof signer.sendTransaction === 'function'
-      ? null
-      : await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId }, options);
-
+  let lease, ordinaryAttemptHash;
+  let resolvingFees = false;
   try {
     const from = options.privacyContext
       ? await privateStep(() => signer.getAddress(), network)
       : await signer.getAddress();
+    if (options.privacyContext) {
+      network.assertSigner(from);
+      await network.initialize();
+    }
+    lease = require('./transaction-submission-coordinator').acquireSubmissionLease({
+      chainId,
+      from,
+      privacyContext: options.privacyContext,
+      remote: typeof signer.sendTransaction === 'function',
+    });
+    await lease.prepare();
+    if (options.privacyContext) await network.assertCanSubmit();
+    // Enrolled accounts authenticate their history before fee RPCs or signing.
+    resolvingFees = true;
+    const fees =
+      typeof signer.sendTransaction === 'function'
+        ? null
+        : await resolveFeeParams(
+            { maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId },
+            options
+          );
+    resolvingFees = false;
+    lease.assertActive();
 
     // Backends that can only sign-and-broadcast through their own channel
     // (phone wallets) expose the optional sendTransaction capability: the
@@ -369,7 +385,10 @@ async function signAndSendTransaction(params, signer, options = {}) {
       from,
       'pending',
     ]);
-    const nonce = Number(BigInt(nonceResponse.result));
+    const pendingNonce = Number(BigInt(nonceResponse.result));
+    const nonce = options.privacyContext
+      ? await network.selectNonce(pendingNonce)
+      : await lease.selectNonce(pendingNonce);
 
     // Build transaction
     const tx = buildTransaction({
@@ -437,14 +456,42 @@ async function signAndSendTransaction(params, signer, options = {}) {
       } finally {
         clearTimeout(timer);
       }
+    } else if (lease.journaled) {
+      // Refuse common deterministic failures before creating a durable uncertain
+      // attempt. RPC observations cannot establish that a later send will succeed.
+      const fee = BigInt(tx.maxFeePerGas ?? tx.gasPrice);
+      const gas = BigInt(tx.gasLimit),
+        amount = BigInt(tx.value);
+      if (fee <= 0n || gas <= 0n || amount < 0n)
+        throw new Error('Invalid transaction fees or value');
+      const { result: balance } = await network.request(chainId, 'eth_getBalance', [
+        from,
+        'pending',
+      ]);
+      lease.assertActive();
+      if (BigInt(balance) < amount + gas * fee)
+        throw new Error('Insufficient funds for transaction');
+      Object.freeze(tx);
+      signedTransaction = await privateStep(() => signer.signTransaction(tx), lease);
+      require('./private-transaction-network').assertSignedIntent(signedTransaction, tx);
     } else signedTransaction = await signer.signTransaction(tx);
+    lease.assertActive();
     const parsedTransaction = Transaction.from(signedTransaction);
+    const submissionPermit = options.privacyContext
+      ? undefined
+      : await lease.begin(signedTransaction);
+    if (lease.journaled) ordinaryAttemptHash = parsedTransaction.hash;
     const broadcast = options.privacyContext
       ? await network.broadcastRawTransaction(chainId, signedTransaction, {
           expiresAt,
           intent: options.intent,
         })
-      : await network.broadcastRawTransaction(chainId, signedTransaction);
+      : lease.journaled
+        ? await network.broadcastRawTransaction(chainId, signedTransaction, {
+            signal: lease.signal,
+            submissionPermit,
+          })
+        : await network.broadcastRawTransaction(chainId, signedTransaction);
     if (
       parsedTransaction.hash &&
       String(broadcast.result).toLowerCase() !== parsedTransaction.hash.toLowerCase()
@@ -453,6 +500,20 @@ async function signAndSendTransaction(params, signer, options = {}) {
         `Transaction may have been broadcast as ${parsedTransaction.hash}, ` +
           `but the broadcaster returned ${broadcast.result}`
       );
+    }
+    let journalAcknowledged = false;
+    if (lease.journaled) {
+      try {
+        await lease.submitted(parsedTransaction.hash);
+        journalAcknowledged = true;
+      } catch {
+        // A matching RPC acknowledgment remains known even if its journal
+        // annotation fails. The durable attempted record still gates new sends.
+        lease.assertProfileCurrent();
+        console.warn(
+          '[TransactionService] Broadcast acknowledged; journal acknowledgment unavailable'
+        );
+      }
     }
 
     if (!options.privacyContext)
@@ -466,9 +527,25 @@ async function signAndSendTransaction(params, signer, options = {}) {
       value: parsedTransaction.value?.toString(),
       chainId,
       broadcastSource: broadcast.source,
+      ...(lease.journaled
+        ? {
+            submissionState: journalAcknowledged ? 'submitted' : 'attempted',
+            requiresReconciliation: true,
+          }
+        : {}),
       explorerUrl: getTxExplorerUrl(chainId, broadcast.result),
     };
   } catch (err) {
+    if (ordinaryAttemptHash)
+      throw Object.assign(
+        privacyError(
+          'PRIVATE_BROADCAST_UNCERTAIN',
+          'Transaction submission outcome is unknown; reconcile the recorded attempt'
+        ),
+        { transactionHash: ordinaryAttemptHash, submissionStatus: 'unknown' }
+      );
+    // Fee lookup used to run outside this catch. Preserve its actionable error.
+    if (resolvingFees) throw err;
     if (options.privacyContext) {
       if (typeof err?.code === 'string' && /^(PRIVATE_|PRIVACY_|TOR_)/.test(err.code)) throw err;
       throw privacyError(
@@ -481,7 +558,7 @@ async function signAndSendTransaction(params, signer, options = {}) {
     // Device-backend errors (LEDGER_*/REMOTE_*) carry a stable code and a
     // user-facing message; rewrapping them here would strip the code and
     // let the local-provider heuristics below mislabel them.
-    if (typeof err.code === 'string' && /^(LEDGER|REMOTE)_/.test(err.code)) {
+    if (typeof err.code === 'string' && /^(LEDGER_|REMOTE_|PRIVATE_|PRIVACY_)/.test(err.code)) {
       throw err;
     }
 
@@ -529,6 +606,8 @@ async function signAndSendTransaction(params, signer, options = {}) {
     }
 
     throw new Error(`Transaction failed: ${err.message}`, { cause: err });
+  } finally {
+    lease?.release();
   }
 }
 

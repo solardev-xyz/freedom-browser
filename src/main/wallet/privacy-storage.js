@@ -8,6 +8,12 @@ const { createHash, randomBytes, createCipheriv, createDecipheriv } = require('c
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 const MAX_BYTES = 4 * 1024 * 1024;
 
+function getPrivacyStoragePath(handle, directory) {
+  const context = getPrivacyContext(handle);
+  const aad = Buffer.from(JSON.stringify([1, context.profileId, context.subject]));
+  return path.join(directory, `${createHash('sha256').update(aad).digest('hex')}.json`);
+}
+
 function createPrivacyStorage({ handle, directory, key, profileGuard }) {
   const context = getPrivacyContext(handle);
   const permitted =
@@ -23,7 +29,7 @@ function createPrivacyStorage({ handle, directory, key, profileGuard }) {
   const secret = Buffer.alloc(key.length);
   key.copy(secret);
   const aad = Buffer.from(JSON.stringify([1, context.profileId, context.subject]));
-  const file = path.join(directory, `${createHash('sha256').update(aad).digest('hex')}.json`);
+  const file = getPrivacyStoragePath(handle, directory);
   context.signal.addEventListener('abort', () => secret.fill(0), { once: true });
   function assertActive() {
     getPrivacyContext(handle);
@@ -90,6 +96,7 @@ function createPrivacyStorage({ handle, directory, key, profileGuard }) {
       writable: true,
     });
     const plaintext = Buffer.from(JSON.stringify(values));
+    let replaced = false;
     try {
       if (Object.keys(values).length > 256 || plaintext.length > MAX_BYTES)
         throw privacyError('PRIVATE_STORAGE_LIMIT', 'Privacy state is too large');
@@ -117,6 +124,7 @@ function createPrivacyStorage({ handle, directory, key, profileGuard }) {
       // event-loop turn. Interrupted writes leave only encrypted temp files.
       assertActive();
       fs.renameSync(temporary, file);
+      replaced = true;
       if (process.platform !== 'win32') {
         const parent = fs.openSync(directory, 'r');
         try {
@@ -127,8 +135,12 @@ function createPrivacyStorage({ handle, directory, key, profileGuard }) {
       }
       profileGuard?.remember(file);
     } catch (error) {
-      if (error.code?.startsWith('PRIVATE_') || error.code?.startsWith('PRIVACY_')) throw error;
-      throw privacyError('PRIVATE_STORAGE_WRITE_FAILED', 'Privacy state could not be saved');
+      const failure =
+        error.code?.startsWith('PRIVATE_') || error.code?.startsWith('PRIVACY_')
+          ? error
+          : privacyError('PRIVATE_STORAGE_WRITE_FAILED', 'Privacy state could not be saved');
+      if (replaced) failure.storageCommitted = true;
+      throw failure;
     } finally {
       plaintext.fill(0);
     }
@@ -149,4 +161,4 @@ function createPrivacyStorage({ handle, directory, key, profileGuard }) {
     },
   });
 }
-module.exports = { createPrivacyStorage };
+module.exports = { createPrivacyStorage, getPrivacyStoragePath };

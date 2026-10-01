@@ -9,7 +9,20 @@ const fs = require('fs'),
   assert = require('assert/strict');
 const { randomBytes, createHash } = require('crypto');
 const { app, safeStorage } = require('electron');
-let cancelBackgroundFailure = () => app.exit(1);
+const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
+let qualificationLock = null;
+function exitQualification(code) {
+  if (qualificationLock) {
+    try {
+      releaseProfileLock(qualificationLock, { logger: { error() {} } });
+    } catch {
+      code = 1;
+    }
+    qualificationLock = null;
+  }
+  app.exit(code);
+}
+let cancelBackgroundFailure = () => exitQualification(1);
 // Never let a detached SDK rejection print URLs, note data or nested causes.
 process.on('unhandledRejection', () => {
   console.error('Qualification background task failed');
@@ -51,6 +64,13 @@ async function main() {
   process.env.FREEDOM_TEST_USER_DATA = profileDirectory;
   const { initializeProfile } = require('../src/main/profile-resolver');
   const profile = initializeProfile(app, { env: { FREEDOM_TEST_USER_DATA: profileDirectory } });
+  qualificationLock = acquireProfileLock(profile, {
+    onCompromised: () => {
+      console.error('Qualification profile lock lost');
+      cancelBackgroundFailure();
+      exitQualification(1);
+    },
+  });
   await app.whenReady();
   assert.ok(safeStorage.isEncryptionAvailable());
   if (process.platform === 'linux')
@@ -151,7 +171,7 @@ async function main() {
     report.failure = { stage, code: 'PRIVATE_PPV2_BACKGROUND_FAILURE' };
     session?.close();
     if (scope) scope.close();
-    else app.exit(1);
+    else exitQualification(1);
   };
   try {
     await tor.startTor();
@@ -460,9 +480,9 @@ async function main() {
   return report.passed ? 0 : 1;
 }
 main().then(
-  (code) => app.exit(code),
+  (code) => exitQualification(code),
   (error) => {
     console.error('Qualification session stopped', error.cause || error.code || error.name);
-    app.exit(1);
+    exitQualification(1);
   }
 );

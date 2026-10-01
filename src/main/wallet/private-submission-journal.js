@@ -147,6 +147,47 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
   return Object.freeze({
     list,
     assertCanSubmit,
+    // Explicit private initialization enrolls the account before its first
+    // submission. Ordinary sends must never create a new enrollment.
+    async initialize() {
+      const current = await storage.get(KEY);
+      decode(current);
+      if (current === null) {
+        const lease = require('./transaction-submission-coordinator').acquireSubmissionLease({
+          chainId: subject.chainId,
+          from: subject.principal,
+          privacyContext: handle,
+        });
+        try {
+          await storage.update(KEY, (value) => {
+            decode(value);
+            return value === null
+              ? JSON.stringify({ version: 3, records: [], archive: [] })
+              : value;
+          });
+        } finally {
+          lease.release();
+        }
+      }
+      getPrivacyContext(handle);
+    },
+    async selectNonce(pending) {
+      if (!Number.isSafeInteger(pending) || pending < 0) throw invalid();
+      const state = decode(await storage.get(KEY));
+      getPrivacyContext(handle);
+      if (unresolved(state.records))
+        throw privacyError(
+          'PRIVATE_SUBMISSION_UNRESOLVED',
+          'Reconcile the recorded submission before creating another transaction'
+        );
+      const highest = Math.max(
+        -1,
+        ...state.records.map((r) => r.nonce),
+        ...state.archive.map((r) => r.nonce)
+      );
+      if (!Number.isSafeInteger(highest + 1)) throw invalid();
+      return Math.max(pending, highest + 1);
+    },
     async listArchive() {
       const state = decode(await storage.get(KEY));
       getPrivacyContext(handle);
@@ -177,49 +218,61 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
       )
         throw invalid();
       const metadata = intent === undefined ? {} : { intent: { ...intent } };
-      await modify((records, archive) => {
-        if ([...records, ...archive].some((record) => record.hash === hash)) {
+      try {
+        await modify((records, archive) => {
+          if ([...records, ...archive].some((record) => record.hash === hash)) {
+            throw Object.assign(
+              privacyError(
+                'PRIVATE_BROADCAST_ALREADY_ATTEMPTED',
+                'Query the existing submission before any further action'
+              ),
+              { transactionHash: hash }
+            );
+          }
+          if (
+            isExitIntent(intent) &&
+            [...records, ...archive].some(
+              (record) =>
+                isExitIntent(record.intent) &&
+                record.intent.pool === intent.pool &&
+                record.intent.commitment === intent.commitment
+            )
+          ) {
+            throw privacyError(
+              'PRIVATE_PPV2_EXIT_RESERVED',
+              'Selected note has a recorded exit attempt'
+            );
+          }
+          // Conservatively serialize all sends for this account. Unverified RPC
+          // receipts alone cannot clear the gate; an explicit review must.
+          if (unresolved(records))
+            throw privacyError(
+              'PRIVATE_SUBMISSION_UNRESOLVED',
+              'Reconcile the recorded submission before creating another transaction'
+            );
+          if (records.length >= 64)
+            throw privacyError('PRIVATE_TRANSACTION_LIMIT', 'Submission history capacity reached');
+          if ([...records, ...archive].some((record) => record.nonce >= nonce))
+            throw privacyError(
+              'PRIVATE_NONCE_REUSE_REFUSED',
+              'Nonce must advance beyond recorded submissions'
+            );
+          return [
+            ...records,
+            { hash, nonce, state: 'attempted', attemptedAt: Date.now(), ...metadata },
+          ];
+        });
+      } catch (error) {
+        if (error.storageCommitted)
           throw Object.assign(
             privacyError(
-              'PRIVATE_BROADCAST_ALREADY_ATTEMPTED',
-              'Query the existing submission before any further action'
+              'PRIVATE_BROADCAST_UNCERTAIN',
+              'Submission record may have been saved; reconcile the recorded attempt'
             ),
-            { transactionHash: hash }
+            { transactionHash: hash, submissionStatus: 'unknown' }
           );
-        }
-        if (
-          isExitIntent(intent) &&
-          [...records, ...archive].some(
-            (record) =>
-              isExitIntent(record.intent) &&
-              record.intent.pool === intent.pool &&
-              record.intent.commitment === intent.commitment
-          )
-        ) {
-          throw privacyError(
-            'PRIVATE_PPV2_EXIT_RESERVED',
-            'Selected note has a recorded exit attempt'
-          );
-        }
-        // Conservatively serialize all sends for this account. Unverified RPC
-        // receipts alone cannot clear the gate; an explicit review must.
-        if (unresolved(records))
-          throw privacyError(
-            'PRIVATE_SUBMISSION_UNRESOLVED',
-            'Reconcile the recorded submission before creating another transaction'
-          );
-        if (records.length >= 64)
-          throw privacyError('PRIVATE_TRANSACTION_LIMIT', 'Submission history capacity reached');
-        if ([...records, ...archive].some((record) => record.nonce >= nonce))
-          throw privacyError(
-            'PRIVATE_NONCE_REUSE_REFUSED',
-            'Nonce must advance beyond recorded submissions'
-          );
-        return [
-          ...records,
-          { hash, nonce, state: 'attempted', attemptedAt: Date.now(), ...metadata },
-        ];
-      });
+        throw error;
+      }
     },
     async observe(hash, observation, revision) {
       if (!validObservation(observation)) throw invalid();

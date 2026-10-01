@@ -984,6 +984,7 @@ async function requestDirect(
     keeper = createErrorKeeper(null),
     signal,
     timeoutMs: requestedTimeoutMs = null,
+    singleAttempt = false,
   } = {}
 ) {
   const network = registry.getNetwork(chainId) || {};
@@ -1028,6 +1029,7 @@ async function requestDirect(
       return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
       signal?.throwIfAborted();
+      if (singleAttempt) throw err;
       lastError = err;
       keeper.note(err);
       if (keeper.final) throw keeper.error;
@@ -1276,9 +1278,14 @@ async function getFeeQuote(chainId) {
   throw new Error(`All chain sources failed for fee quote (${failures.join('; ')})`);
 }
 
-async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {}) {
+async function broadcastRawTransaction(chainId, rawTransaction, { signal, submissionPermit } = {}) {
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
+  const journaled = require('../wallet/transaction-submission-coordinator').consumeSubmissionPermit(
+    chainId,
+    rawTransaction,
+    submissionPermit
+  );
   const order =
     network.access?.broadcastOrder ||
     (myotis.NETWORKS?.has(Number(chainId)) === true ? DEFAULT_BROADCAST_ORDER : ['direct']);
@@ -1286,10 +1293,12 @@ async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {})
   let lastRpcError = null;
   for (const source of order) {
     signal?.throwIfAborted();
+    let handedOff = false;
     try {
       let result;
       if (source === 'myotis') {
         if (!myotis.isReady(chainId)) throw new SourceUnavailableError('Myotis is not ready');
+        handedOff = true;
         const payload = await myotis.sendRawTransaction(rawTransaction, chainId);
         try {
           result = nativeResult(payload, 'txHash', 'result');
@@ -1301,8 +1310,10 @@ async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {})
           throw error;
         }
       } else if (source === 'direct') {
+        handedOff = true;
         result = await requestDirect(chainId, 'eth_sendRawTransaction', [rawTransaction], {
           signal,
+          singleAttempt: journaled,
         });
       } else {
         throw new SourceUnavailableError(`${source} cannot broadcast transactions`);
@@ -1310,6 +1321,7 @@ async function broadcastRawTransaction(chainId, rawTransaction, { signal } = {})
       return { result, source };
     } catch (err) {
       signal?.throwIfAborted();
+      if (journaled && handedOff) throw err;
       if (err.code === 'MYOTIS_BROADCAST_UNCERTAIN') throw err;
       failures.push(`${source}: ${err.message}`);
       // A node rejection (`nonce too low`, `already known`, …) carries a

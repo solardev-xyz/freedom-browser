@@ -202,6 +202,7 @@ async function openPPv2Session({
       chainId: 11155111,
       role: 'transaction-rpc',
     });
+    await getPrivateSubmissionJournal(ownerHandle).initialize();
     const exits = createPPv2ExitReservations({
       journal: getPrivateSubmissionJournal(ownerHandle),
       pool: config.deployment.poolAddress,
@@ -834,6 +835,7 @@ async function openPPv2Session({
   } catch (error) {
     close();
     const safe = [
+      'PRIVATE_SEND_IN_PROGRESS',
       'PRIVATE_PPV2_TASK_TIMEOUT',
       'PRIVATE_PPV2_SCAN_LIMIT',
       'PRIVATE_PPV2_STATE_MISMATCH',

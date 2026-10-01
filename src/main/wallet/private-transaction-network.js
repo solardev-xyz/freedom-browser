@@ -30,6 +30,7 @@ function getPrivateTransactionNetwork(handle) {
     }));
   async function assertCanSubmit(signal) {
     assertActive();
+    await journal().initialize();
     await journal().assertCanSubmit();
     await reconciliation().refreshResolved(signal);
     await journal().assertCanSubmit();
@@ -183,6 +184,17 @@ function getPrivateTransactionNetwork(handle) {
     request,
     getFeeQuote,
     broadcastRawTransaction,
+    async initialize() {
+      assertActive();
+      await journal().initialize();
+      assertActive();
+    },
+    async selectNonce(pending) {
+      assertActive();
+      const nonce = await journal().selectNonce(pending);
+      assertActive();
+      return nonce;
+    },
     assertSigner,
     assertActive,
     signal: rpc.signal,

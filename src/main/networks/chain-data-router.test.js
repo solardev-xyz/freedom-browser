@@ -23,6 +23,10 @@ const mockMyotis = {
   sendRawTransaction: jest.fn(),
 };
 const mockRequestViaColibri = jest.fn();
+const mockConsumeSubmissionPermit = jest.fn(() => false);
+jest.mock('../wallet/transaction-submission-coordinator', () => ({
+  consumeSubmissionPermit: (...args) => mockConsumeSubmissionPermit(...args),
+}));
 
 function deferred() {
   let resolve;
@@ -58,6 +62,7 @@ const { createPrivacyScope } = require('./privacy-context');
 describe('chain-data-router', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockConsumeSubmissionPermit.mockReset().mockReturnValue(false);
     clearAdaptiveRoutingForTest();
     mockRegistry.getNetwork.mockReturnValue({
       access: {
@@ -71,6 +76,40 @@ describe('chain-data-router', () => {
     );
     mockMyotis.isReady.mockReturnValue(true);
     mockMyotis.getStatus.mockReturnValue({ optimisticBlockNumber: 25_684_159 });
+  });
+
+  test('an enrolled handoff never tries another endpoint after an uncertain response', async () => {
+    mockConsumeSubmissionPermit.mockReturnValue(true);
+    mockRegistry.getNetwork.mockReturnValue({ access: { broadcastOrder: ['direct'] } });
+    mockRegistry.getEndpoints.mockReturnValue(['https://first.example', 'https://second.example']);
+    global.fetch = jest.fn().mockRejectedValue(new Error('connection lost after submission'));
+    const permit = Object.freeze({});
+    await expect(
+      broadcastRawTransaction(11155111, '0xsigned', { submissionPermit: permit })
+    ).rejects.toThrow('connection lost');
+    expect(mockConsumeSubmissionPermit).toHaveBeenCalledWith(11155111, '0xsigned', permit);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('an enrolled native handoff never falls through to direct RPC after a thrown error', async () => {
+    mockConsumeSubmissionPermit.mockReturnValue(true);
+    mockMyotis.sendRawTransaction.mockRejectedValueOnce(new Error('native response lost'));
+    global.fetch = jest.fn();
+    await expect(
+      broadcastRawTransaction(11155111, '0xsigned', { submissionPermit: {} })
+    ).rejects.toThrow('native response lost');
+    expect(mockMyotis.sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('missing enrolled-account permit refuses before reaching a broadcaster', async () => {
+    mockConsumeSubmissionPermit.mockImplementation(() => {
+      throw new Error('permit required');
+    });
+    global.fetch = jest.fn();
+    await expect(broadcastRawTransaction(11155111, '0xsigned')).rejects.toThrow('permit required');
+    expect(mockMyotis.sendRawTransaction).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

@@ -80,6 +80,47 @@ test('multiple adapters cannot race past the durable reservation, even with diff
   expect(await other.list()).toHaveLength(1);
 });
 
+test('initialization cannot erase a concurrent attempt and does not reset its nonce floor', async () => {
+  const initial = journal.initialize();
+  await journal.begin(hash, 7);
+  await initial;
+  expect(await journal.list()).toHaveLength(1);
+  await expect(journal.selectNonce(0)).rejects.toMatchObject({
+    code: 'PRIVATE_SUBMISSION_UNRESOLVED',
+  });
+});
+
+test('nonce floor survives resolved-history archival and rejects unsafe quantities', async () => {
+  await journal.begin(hash, 7, { kind: 'ppv2-register-auth', digest: `0x${'b'.repeat(64)}` });
+  await journal.observe(
+    hash,
+    {
+      status: 'included',
+      trust: 'unverified',
+      observedAt: 1,
+      confirmations: 12,
+      blockNumber: 20,
+      blockHash: `0x${'c'.repeat(64)}`,
+    },
+    0
+  );
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() - 2 * 86400000);
+  await journal.resolve(hash, 1, 12);
+  clock.mockRestore();
+  expect(await journal.selectNonce(2)).toBe(8);
+  await journal.archiveResolved(
+    [{ hash, revision: 2 }],
+    [{ blockNumber: 30, blockHash: `0x${'d'.repeat(64)}` }]
+  );
+  expect(await journal.list()).toEqual([]);
+  expect(await journal.selectNonce(2)).toBe(8);
+  expect(await journal.selectNonce(12)).toBe(12);
+  for (const value of [-1, NaN, Number.MAX_SAFE_INTEGER + 1])
+    await expect(journal.selectNonce(value)).rejects.toMatchObject({
+      code: 'PRIVATE_JOURNAL_INVALID',
+    });
+});
+
 test('failed pre-handoff commit leaves no attempt; failed acknowledgment preserves the prior attempted state', async () => {
   const rename = jest.spyOn(fs, 'renameSync').mockImplementation(() => {
     throw new Error('disk unavailable');
@@ -97,6 +138,31 @@ test('failed pre-handoff commit leaves no attempt; failed acknowledgment preserv
     code: 'PRIVATE_STORAGE_WRITE_FAILED',
   });
   expect((await journal.list())[0].state).toBe('attempted');
+});
+
+test('failure after rename reports the possibly durable hash and cannot authorize a retry', async () => {
+  const guarded = createSubmissionJournal({
+    handle,
+    directory,
+    key,
+    profileGuard: {
+      assert() {},
+      remember() {
+        throw new Error('inventory write failed after journal rename');
+      },
+    },
+  });
+  await expect(guarded.begin(hash, 7)).rejects.toMatchObject({
+    code: 'PRIVATE_BROADCAST_UNCERTAIN',
+    transactionHash: hash,
+    submissionStatus: 'unknown',
+  });
+  expect(await journal.list()).toEqual([
+    expect.objectContaining({ hash, nonce: 7, state: 'attempted' }),
+  ]);
+  await expect(journal.assertCanSubmit()).rejects.toMatchObject({
+    code: 'PRIVATE_SUBMISSION_UNRESOLVED',
+  });
 });
 
 test('lock revokes the old journal; the same account can reopen and read an acknowledged send', async () => {
