@@ -64,7 +64,8 @@ async function main() {
   assert.ok(registry.addCustomChain({ chainId: 11155111, name: 'Sepolia disposable PPv2 test', nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 } }, [RPC]).success);
   registry.updateNetwork(11155111, { access: { readOrder: ['direct'], allowDirect: true }, quorum: { timeoutMs: 45000 } });
   const tor = require('../src/main/tor-manager');
-  const report = { observedAt: new Date().toISOString(), owner, chainId: 11155111, rpc: RPC, signingEnabled: false,
+  const report = { harnessSha256: createHash('sha256').update(fs.readFileSync(__filename)).digest('hex'),
+    controllerSha256: createHash('sha256').update(fs.readFileSync(require.resolve('../src/main/wallet/ppv2-sepolia-test-step'))).digest('hex'), observedAt: new Date().toISOString(), owner, chainId: 11155111, rpc: RPC, signingEnabled: false,
     broadcastEnabled: false, chainStateVerified: false, protocolLifecycleQualified: false, transportPrivacyQualified: false };
   let session, scope, stage = 'tor-start';
   try {
@@ -102,13 +103,39 @@ async function main() {
       const ownerRpc = createPrivateRpc(ownerHandle, 'transaction-rpc');
       const { Wallet } = require('ethers');
       const wallet = new Wallet(require('../src/main/identity/derivation').deriveUserWallet(vault.getMnemonic()).privateKey);
+      const signer = { getAddress: () => wallet.getAddress(), signTransaction: transaction => {
+        const gasLimit = BigInt(transaction.gasLimit), gasPrice = BigInt(transaction.gasPrice ?? transaction.maxFeePerGas);
+        report.reviewedSigningRequest = { gasLimit: gasLimit.toString(), gasPriceWei: gasPrice.toString(), maxGasCostWei: (gasLimit * gasPrice).toString() };
+        return wallet.signTransaction(transaction);
+      } };
       stage = 'explicit-' + action; console.log(stage);
       report.explicitAction = action; report.checkOnly = checkOnly;
       report.signingEnabled = report.broadcastEnabled = !checkOnly && !['status', 'resolve-public', 'resolve-public-failed', 'resolve-relay'].includes(action);
-      report.step = await runSepoliaTestStep({ handle: handle('relayer'), session, signer: wallet, owner, action, reference, checkOnly,
+      report.step = await runSepoliaTestStep({ handle: handle('relayer'), session, signer, owner, action, reference, checkOnly,
         readBalance: async () => BigInt((await ownerRpc.request('eth_getBalance', [owner, 'latest'], v => /^0x[0-9a-f]+$/i.test(v))).result),
-        estimateGas: async tx => BigInt((await ownerRpc.request('eth_estimateGas', [{ from: owner, to: tx.to, data: tx.data, value: `0x${tx.value.toString(16)}` }], v => /^0x[0-9a-f]+$/i.test(v))).result),
+        estimateGas: async tx => {
+          const estimate = BigInt((await ownerRpc.request('eth_estimateGas', [{ from: owner, to: tx.to, data: tx.data, value: `0x${tx.value.toString(16)}` }], v => /^0x[0-9a-f]+$/i.test(v))).result);
+          report.gasEstimate = { operation: tx.kind, gas: estimate.toString() }; return estimate;
+        },
         verifyDeployment: async () => (await inspect()).observationsConsistent === true });
+      if (action === 'status') {
+        // Public funding/gas evidence only; never serialize raw transactions or calldata.
+        const quantity = value => typeof value === 'string' && /^0x[0-9a-f]{1,64}$/i.test(value);
+        report.balanceWei = (await ownerRpc.request('eth_getBalance', [owner, 'latest'], quantity)).result;
+        report.registration = await session.registrationStatus();
+        assert.ok(report.step.publicSubmissions.length <= 6);
+        report.publicReceipts = [];
+        for (const record of report.step.publicSubmissions) {
+          const receipt = (await ownerRpc.request('eth_getTransactionReceipt', [record.hash], value => value === null ||
+            (value?.transactionHash?.toLowerCase() === record.hash && quantity(value.gasUsed) && quantity(value.effectiveGasPrice) &&
+             ['0x0', '0x1'].includes(value.status) && quantity(value.blockNumber)))).result;
+          report.publicReceipts.push(receipt === null ? { hash: record.hash, pending: true } : {
+            hash: record.hash, status: receipt.status, blockNumber: receipt.blockNumber,
+            gasUsed: BigInt(receipt.gasUsed).toString(), gasPriceWei: BigInt(receipt.effectiveGasPrice).toString(),
+            gasCostWei: (BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice)).toString(),
+          });
+        }
+      }
       if (report.step?.needsFunding) report.signingEnabled = report.broadcastEnabled = false;
       report.passed = true;
       console.log(JSON.stringify({ action, needsFunding: report.step?.needsFunding === true }));
