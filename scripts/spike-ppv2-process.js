@@ -238,6 +238,11 @@ async function main() {
           viewingKey: keystoreManager.getViewingKeyPair().publicKey,
         };
       }
+      export async function inspectNullifier(keystore, accountIndex, commitment) {
+        const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });
+        const notes = new NoteComputationService({ hashService: await PoseidonHashService.create(), cryptoService: new CryptoService() });
+        return notes.computeNullifier(keystoreManager.getPrivateNullifyingKey(), commitment);
+      }
       export async function inspectChange(keystore, accountIndex, owner, noteData) {
         if (noteData.length !== 1) throw new Error('Expected one change note');
         const { keystoreManager } = await deriveKeystoreManager({ keystore, accountIndex });
