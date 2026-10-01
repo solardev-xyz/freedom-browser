@@ -3,6 +3,7 @@
  */
 const { privacyError } = require('../networks/privacy-context');
 const { validIntent, isExitIntent } = require('./private-transaction-intent');
+const { validOrdinaryFacts, isClassifiedOrdinary } = require('./ordinary-submission-policy');
 const ARCHIVE_MAX = 1024;
 const MINIMUM_AGE_MS = 24 * 60 * 60 * 1000;
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -23,6 +24,13 @@ const exact = (v, keys) =>
 function validAnchor(v) {
   return exact(v, ['blockNumber', 'blockHash']) && integer(v.blockNumber) && HASH.test(v.blockHash);
 }
+// Classification facts survive compaction and are reevaluated against current
+// deployment pins. Unknown legacy records are never inferred to be ordinary.
+function canArchivePublic(record) {
+  return record.route === 'ordinary'
+    ? isClassifiedOrdinary(record)
+    : !!record.intent && !(isExitIntent(record.intent) && !record.intent.commitment);
+}
 function validArchive(archive, kind) {
   const identifiers = kind === 'public' ? ['hash', 'nonce'] : ['id', 'nullifier', 'commitment'];
   return (
@@ -38,8 +46,14 @@ function validArchive(archive, kind) {
           'archivedAt',
           'finalized',
           ...(kind === 'public' && Object.hasOwn(r, 'intent') ? ['intent'] : []),
+          ...(kind === 'public' && Object.hasOwn(r, 'route') ? ['route', 'ordinary'] : []),
         ]) &&
         (!Object.hasOwn(r, 'intent') || (kind === 'public' && validIntent(r.intent))) &&
+        (!Object.hasOwn(r, 'route') ||
+          (kind === 'public' &&
+            r.route === 'ordinary' &&
+            validOrdinaryFacts(r.ordinary) &&
+            !Object.hasOwn(r, 'intent'))) &&
         identifiers.every((k) =>
           k === 'nonce' ? integer(r[k]) : typeof r[k] === 'string' && HASH.test(r[k])
         ) &&
@@ -71,8 +85,7 @@ function archivePrefix(records, archive, expected, anchors, kind) {
   const moved = records.slice(0, expected.length).map((r, i) => {
     const e = expected[i],
       finalized = anchors[i];
-    if (kind === 'public' && (!r.intent || (isExitIntent(r.intent) && !r.intent.commitment)))
-      throw fail();
+    if (kind === 'public' && !canArchivePublic(r)) throw fail();
     if (
       !exact(e, [id, 'revision']) ||
       r[id] !== e[id] ||
@@ -86,7 +99,12 @@ function archivePrefix(records, archive, expected, anchors, kind) {
       throw fail();
     return {
       ...(kind === 'public'
-        ? { hash: r.hash, nonce: r.nonce, ...(r.intent ? { intent: { ...r.intent } } : {}) }
+        ? {
+            hash: r.hash,
+            nonce: r.nonce,
+            ...(r.intent ? { intent: { ...r.intent } } : {}),
+            ...(r.route ? { route: r.route, ordinary: { ...r.ordinary } } : {}),
+          }
         : { id: r.id, nullifier: r.nullifier, commitment: r.commitment }),
       status: r.observation.status,
       blockNumber: r.observation.blockNumber,
@@ -98,4 +116,11 @@ function archivePrefix(records, archive, expected, anchors, kind) {
   if (!validArchive([...archive, ...moved], kind)) throw fail();
   return { records: records.slice(expected.length), archive: [...archive, ...moved] };
 }
-module.exports = { ARCHIVE_MAX, MINIMUM_AGE_MS, validArchive, archivePrefix, fail };
+module.exports = {
+  ARCHIVE_MAX,
+  MINIMUM_AGE_MS,
+  validArchive,
+  canArchivePublic,
+  archivePrefix,
+  fail,
+};

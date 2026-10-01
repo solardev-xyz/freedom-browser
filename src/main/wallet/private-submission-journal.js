@@ -13,9 +13,11 @@ const journals = new WeakMap();
 const HASH = /^0x[0-9a-f]{64}$/;
 const KEY = 'submissions-v1';
 const retention = require('./privacy-journal-retention');
+const { validOrdinaryFacts } = require('./ordinary-submission-policy');
 const unresolved = (records) => records.some((record) => !record.resolution);
 function snapshot(record) {
   if (record.intent) Object.freeze(record.intent);
+  if (record.ordinary) Object.freeze(record.ordinary);
   if (record.observation) Object.freeze(record.observation);
   if (record.resolution) Object.freeze(record.resolution);
   return Object.freeze(record);
@@ -64,7 +66,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
     try {
       const data = JSON.parse(value);
       if (
-        ![1, 2, 3].includes(data.version) ||
+        ![1, 2, 3, 4].includes(data.version) ||
         !Array.isArray(data.records) ||
         data.records.length > 64
       )
@@ -73,6 +75,21 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
       for (const record of data.records) {
         if (
           !HASH.test(record.hash) ||
+          Object.keys(record).some(
+            (name) =>
+              ![
+                'hash',
+                'nonce',
+                'state',
+                'attemptedAt',
+                'revision',
+                'intent',
+                'observation',
+                'resolution',
+                'route',
+                'ordinary',
+              ].includes(name)
+          ) ||
           hashes.has(record.hash) ||
           !Number.isSafeInteger(record.nonce) ||
           record.nonce < 0 ||
@@ -87,6 +104,14 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
         )
           throw invalid();
         if (record.intent !== undefined && !validIntent(record.intent)) throw invalid();
+        if (
+          (record.route !== undefined || record.ordinary !== undefined) &&
+          (data.version < 4 ||
+            record.route !== 'ordinary' ||
+            record.intent !== undefined ||
+            !validOrdinaryFacts(record.ordinary))
+        )
+          throw invalid();
         if (record.observation !== undefined && !validObservation(record.observation))
           throw invalid();
         if (
@@ -110,6 +135,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
       const archive = data.version === 1 ? [] : data.archive;
       if (
         !retention.validArchive(archive, 'public') ||
+        (data.version < 4 && archive.some((r) => r.route !== undefined)) ||
         new Set([...data.records, ...archive].map((r) => r.hash)).size !==
           data.records.length + archive.length ||
         archive.some((r, i) => i > 0 && r.nonce <= archive[i - 1].nonce) ||
@@ -131,7 +157,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
     return storage.update(KEY, (value) => {
       const state = decode(value);
       return JSON.stringify({
-        version: 3,
+        version: 4,
         records: change(state.records, state.archive),
         archive: state.archive,
       });
@@ -162,7 +188,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
           await storage.update(KEY, (value) => {
             decode(value);
             return value === null
-              ? JSON.stringify({ version: 3, records: [], archive: [] })
+              ? JSON.stringify({ version: 4, records: [], archive: [] })
               : value;
           });
         } finally {
@@ -197,7 +223,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
       await storage.update(KEY, (value) => {
         const state = decode(value);
         return JSON.stringify({
-          version: 3,
+          version: 4,
           ...retention.archivePrefix(state.records, state.archive, expected, anchors, 'public'),
         });
       });
@@ -208,16 +234,22 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
       getPrivacyContext(handle);
       return [...state.records, ...state.archive].some((r) => r.hash === hash?.toLowerCase());
     },
-    async begin(hash, nonce, intent) {
+    async begin(hash, nonce, intent, ordinary) {
       if (
         !HASH.test(hash) ||
         !Number.isSafeInteger(nonce) ||
         nonce < 0 ||
+        (ordinary !== undefined && (!validOrdinaryFacts(ordinary) || intent !== undefined)) ||
         (intent !== undefined &&
           (!validIntent(intent) || (isExitIntent(intent) && !intent.commitment)))
       )
         throw invalid();
-      const metadata = intent === undefined ? {} : { intent: { ...intent } };
+      const metadata =
+        intent === undefined
+          ? ordinary
+            ? { route: 'ordinary', ordinary: { ...ordinary } }
+            : {}
+          : { intent: { ...intent } };
       try {
         await modify((records, archive) => {
           if ([...records, ...archive].some((record) => record.hash === hash)) {

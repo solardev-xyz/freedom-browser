@@ -5,6 +5,7 @@
 const { privacyError } = require('../networks/privacy-context');
 const { isExitIntent } = require('./private-transaction-intent');
 const { safeNotes } = require('./ppv2-note-recovery');
+const { isClassifiedOrdinary } = require('./ordinary-submission-policy');
 const recovery = () =>
   privacyError('PRIVATE_PPV2_EXIT_RECOVERY_REQUIRED', 'Public exit history requires recovery');
 const reserved = () =>
@@ -17,6 +18,7 @@ function createPPv2ExitReservations({ journal, pool }) {
     const records = [...(await journal.list()), ...(await journal.listArchive())];
     const result = new Set();
     for (const record of records) {
+      if (isClassifiedOrdinary(record)) continue;
       if (!record.intent || (isExitIntent(record.intent) && !record.intent.commitment))
         throw recovery();
       if (isExitIntent(record.intent) && record.intent.pool === pool.toLowerCase())

@@ -9,6 +9,13 @@ const { createPrivacyStorage } = require('./privacy-storage');
 const { MINIMUM_AGE_MS, ARCHIVE_MAX } = require('./privacy-journal-retention');
 const { validateRelay } = require('./ppv2-relay-policy');
 const { relayFixture, word } = require('../../../test/helpers/ppv2-relay-fixture');
+const ordinaryFacts = {
+  to: `0x${'33'.repeat(20)}`,
+  selector: null,
+  type: 2,
+  senderCode: '0x',
+  trust: 'unverified-rpc',
+};
 const accept = async () => ({
   archiveResolvedHistory: true,
   stopRevalidating: true,
@@ -21,9 +28,14 @@ describe.each(['public', 'relay'])('%s history retention', (kind) => {
     storageKey = kind === 'public' ? 'submissions-v1' : 'relay-attempts-v1';
   const identifier = (i) => word(100 + i);
   const factory = kind === 'public' ? createSubmissionJournal : createPPv2RelayJournal;
-  async function add(i, resolve = true) {
+  async function add(i, resolve = true, ordinary = false) {
     if (kind === 'public')
-      await journal.begin(identifier(i), i, { kind: 'ppv2-native-deposit', digest: word(i) });
+      await journal.begin(
+        identifier(i),
+        i,
+        ordinary ? undefined : { kind: 'ppv2-native-deposit', digest: word(i) },
+        ordinary ? { ...ordinaryFacts, selector: i % 4 === 0 ? null : '0xa9059cbb' } : undefined
+      );
     else {
       const { attempt, settlement } = validateRelay(relayFixture());
       await journal.begin(
@@ -349,7 +361,7 @@ describe.each(['public', 'relay'])('%s history retention', (kind) => {
     rename.mockRestore();
     await archive({ review: accept });
     await add(1, false);
-    expect(JSON.parse(await storage.get(storageKey)).version).toBe(kind === 'public' ? 3 : 2);
+    expect(JSON.parse(await storage.get(storageKey)).version).toBe(kind === 'public' ? 4 : 2);
   });
 
   test('permanent archive cap is distinct and maximum encoded history fits the storage bound', async () => {
@@ -414,6 +426,107 @@ describe.each(['public', 'relay'])('%s history retention', (kind) => {
     expect(await journal.list()).toHaveLength(1);
     expect(await journal.listArchive()).toEqual([]);
   });
+
+  if (kind === 'public') {
+    test.each(['included', 'reverted', 'nonce-consumed'])(
+      'ordinary %s records compact across restart without discarding nonce guards or blocking unrelated notes',
+      async (status) => {
+        for (let i = 0; i < 64; i++) await add(i, true, i % 2 === 0);
+        const first = (await journal.list())[0];
+        await journal.observe(
+          identifier(0),
+          {
+            ...first.observation,
+            status,
+            ...(status === 'nonce-consumed' ? { finalizedNonce: 1 } : {}),
+          },
+          first.revision
+        );
+        await journal.resolve(identifier(0), first.revision + 1, 1);
+        now += MINIMUM_AGE_MS + 1;
+        await expect(archive({ review: accept })).resolves.toMatchObject({ archived: 16 });
+        journal = factory(config);
+        expect(await journal.list()).toHaveLength(48);
+        expect((await journal.listArchive())[0]).toMatchObject({
+          route: 'ordinary',
+          status,
+          hash: identifier(0),
+          nonce: 0,
+        });
+        expect(await journal.selectNonce(0)).toBe(64);
+        await expect(journal.begin(word(9999), 0, undefined, ordinaryFacts)).rejects.toMatchObject({
+          code: 'PRIVATE_NONCE_REUSE_REFUSED',
+        });
+        await expect(
+          journal.begin(identifier(0), 64, undefined, ordinaryFacts)
+        ).rejects.toMatchObject({
+          code: 'PRIVATE_BROADCAST_ALREADY_ATTEMPTED',
+        });
+        const exits = require('./ppv2-exit-reservations').createPPv2ExitReservations({
+          journal,
+          pool: `0x${'22'.repeat(20)}`,
+        });
+        await expect(exits.assertAvailable(word(555))).resolves.toBeUndefined();
+        const note = {
+          commitment: word(555),
+          value: 100n,
+          asset: { __type: 'native' },
+          status: 'active',
+          labelState: 'approved',
+        };
+        await expect(exits.assertSelectable([note], note.asset)).resolves.toBeUndefined();
+        expect(await exits.notes([note])).toEqual([note]);
+        expect(await exits.balance([note])).toEqual(
+          expect.arrayContaining([expect.objectContaining({ tag: 'spendable', amount: 100n })])
+        );
+        await add(64, false, true);
+        expect(await journal.list()).toHaveLength(49);
+      }
+    );
+    test.each(['unresolved', 'young', 'declined'])(
+      'ordinary provenance does not bypass %s archival refusal',
+      async (reason) => {
+        await add(0, reason !== 'unresolved', true);
+        if (reason !== 'young') now += MINIMUM_AGE_MS + 1;
+        const before = await journal.list();
+        await expect(
+          archive({ review: reason === 'declined' ? async () => ({}) : accept })
+        ).rejects.toMatchObject({ code: 'PRIVATE_HISTORY_ARCHIVE_REFUSED' });
+        expect(await journal.list()).toEqual(before);
+        expect(await journal.listArchive()).toEqual([]);
+      }
+    );
+    test.each(['unknown-route', 'mixed-intent', 'legacy-live', 'legacy-archive', 'archive-route'])(
+      'refuses %s provenance without silently migrating history',
+      async (reason) => {
+        await add(0, true, true);
+        const storage = createPrivacyStorage(config);
+        if (reason.includes('archive')) {
+          now += MINIMUM_AGE_MS + 1;
+          await archive({ review: accept });
+        }
+        const state = JSON.parse(await storage.get(storageKey));
+        if (reason.startsWith('legacy')) state.version = 3;
+        if (reason === 'unknown-route') state.records[0].route = 'private';
+        if (reason === 'mixed-intent')
+          state.records[0].intent = { kind: 'ppv2-native-deposit', digest: word(2) };
+        if (reason === 'archive-route') state.archive[0].route = 'private';
+        const encoded = JSON.stringify(state);
+        await storage.set(storageKey, encoded);
+        await expect(journal.list()).rejects.toMatchObject({ code: 'PRIVATE_JOURNAL_INVALID' });
+        expect(await storage.get(storageKey)).toBe(encoded);
+      }
+    );
+    test('only explicit ordinary provenance without a PP intent can be recorded', async () => {
+      await expect(journal.begin(word(1), 0, undefined, 'private')).rejects.toMatchObject({
+        code: 'PRIVATE_JOURNAL_INVALID',
+      });
+      await expect(
+        journal.begin(word(1), 0, { kind: 'ppv2-native-deposit', digest: word(1) }, 'ordinary')
+      ).rejects.toMatchObject({ code: 'PRIVATE_JOURNAL_INVALID' });
+      expect(await journal.list()).toEqual([]);
+    });
+  }
 
   if (kind === 'public')
     test('stops an archive prefix before unclassified history without reviewing impossible work', async () => {

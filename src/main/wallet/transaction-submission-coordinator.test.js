@@ -38,11 +38,13 @@ beforeEach(() => {
   leases = [];
   mockOrdinaryNetwork.request.mockReset().mockImplementation(async (_chain, method) => ({
     result:
-      method === 'eth_getBalance'
-        ? '0x100000'
-        : method === 'eth_getTransactionByHash'
-          ? null
-          : '0x0',
+      method === 'eth_getCode'
+        ? '0x'
+        : method === 'eth_getBalance'
+          ? '0x100000'
+          : method === 'eth_getTransactionByHash'
+            ? null
+            : '0x0',
     source: 'fixture',
   }));
   mockOrdinaryNetwork.broadcastRawTransaction
@@ -58,7 +60,13 @@ afterEach(() => {
   resetPrivacySession();
 });
 const lease = (extra = {}) => {
-  const value = acquireSubmissionLease({ ...params, ...extra });
+  const value = acquireSubmissionLease({
+    ...params,
+    readCode: async (address, signal) =>
+      (await mockOrdinaryNetwork.request(11155111, 'eth_getCode', [address, 'pending'], { signal }))
+        .result,
+    ...extra,
+  });
   leases.push(value);
   return value;
 };
@@ -164,6 +172,7 @@ test('ordinary handoff persists before a one-use permit and gates both routes af
   expect((await journal().list()).at(-1)).toMatchObject({
     hash: Transaction.from(signed).hash,
     state: 'attempted',
+    route: 'ordinary',
   });
   expect(consumeSubmissionPermit(11155111, signed, permit)).toBe(true);
   expect(() => consumeSubmissionPermit(11155111, signed, permit)).toThrow(
@@ -370,3 +379,140 @@ test('a moved profile is refused instead of silently appearing unenrolled', asyn
     expect.objectContaining({ code: 'PRIVATE_PROFILE_MOVED' })
   );
 });
+
+test.each(['protocol-target', 'delegated-sender', 'type4', 'authorization-list'])(
+  'enrolled ordinary %s is refused before signing or journaling',
+  async (reason) => {
+    await journal().initialize();
+    const tx = {
+      chainId: 11155111,
+      to: other.address,
+      value: '1',
+      gasLimit: '21000',
+      gasPrice: '10',
+    };
+    if (reason === 'protocol-target')
+      tx.to = require('./ppv2-sepolia-pins.json').contracts.pool.address;
+    if (reason === 'type4') tx.type = 4;
+    if (reason === 'authorization-list') tx.authorizationList = [];
+    if (reason === 'delegated-sender') {
+      const original = mockOrdinaryNetwork.request.getMockImplementation();
+      mockOrdinaryNetwork.request.mockImplementation((chain, method, ...rest) =>
+        method === 'eth_getCode'
+          ? Promise.resolve({ result: '0xef0100' + '11'.repeat(20) })
+          : original(chain, method, ...rest)
+      );
+    }
+    const signer = { getAddress: async () => wallet.address, signTransaction: jest.fn() };
+    await expect(
+      require('./transaction-service').signAndSendTransaction(tx, signer)
+    ).rejects.toMatchObject({ code: 'PRIVATE_ORDINARY_TRANSACTION_REFUSED' });
+    expect(signer.signTransaction).not.toHaveBeenCalled();
+    expect(await journal().list()).toEqual([]);
+    expect(mockOrdinaryNetwork.broadcastRawTransaction).not.toHaveBeenCalled();
+  }
+);
+
+test.each(['protocol-target', 'type4', 'delegated-sender', 'malformed-code', 'code-read-failed'])(
+  'signed %s cannot bypass the final ordinary classification',
+  async (reason) => {
+    await journal().initialize();
+    const send = lease();
+    await send.prepare();
+    const tx = {
+      chainId: 11155111,
+      to: other.address,
+      value: 1n,
+      gasLimit: 21000n,
+      gasPrice: 10n,
+      nonce: 0,
+    };
+    if (reason === 'protocol-target')
+      tx.to = require('./ppv2-sepolia-pins.json').contracts.pool.address;
+    if (reason === 'type4') {
+      delete tx.gasPrice;
+      Object.assign(tx, {
+        type: 4,
+        maxFeePerGas: 10n,
+        maxPriorityFeePerGas: 1n,
+        authorizationList: [],
+      });
+    }
+    if (reason === 'delegated-sender')
+      mockOrdinaryNetwork.request.mockResolvedValue({ result: '0xef0100' + '11'.repeat(20) });
+    if (reason === 'malformed-code')
+      mockOrdinaryNetwork.request.mockResolvedValue({ result: '0x0' });
+    if (reason === 'code-read-failed')
+      mockOrdinaryNetwork.request.mockRejectedValue(new Error('RPC offline'));
+    await expect(send.begin(await wallet.signTransaction(tx))).rejects.toThrow();
+    expect(await journal().list()).toEqual([]);
+  }
+);
+
+test('ordinary sends preserve PPv2 note operations with signed facts across restart', async () => {
+  await journal().initialize();
+  const send = lease();
+  await send.prepare();
+  await send.begin(await raw(0));
+  resetPrivacySession();
+  const state = journal();
+  expect((await state.list())[0]).toMatchObject({
+    route: 'ordinary',
+    ordinary: {
+      to: other.address.toLowerCase(),
+      selector: null,
+      senderCode: '0x',
+      trust: 'unverified-rpc',
+    },
+  });
+  const reservations = require('./ppv2-exit-reservations').createPPv2ExitReservations({
+    journal: state,
+    pool: require('./ppv2-sepolia-pins.json').contracts.pool.address,
+  });
+  const note = {
+    commitment: `0x${'0'.repeat(63)}1`,
+    value: 100n,
+    asset: { __type: 'native' },
+    status: 'active',
+    labelState: 'approved',
+  };
+  await expect(reservations.assertAvailable(note.commitment)).resolves.toBeUndefined();
+  await expect(reservations.assertSelectable([note], note.asset)).resolves.toBeUndefined();
+  expect(await reservations.notes([note])).toEqual([note]);
+  expect(await reservations.balance([note])).toEqual(
+    expect.arrayContaining([expect.objectContaining({ tag: 'spendable', amount: 100n })])
+  );
+  await expect(state.assertCanSubmit()).rejects.toMatchObject({
+    code: 'PRIVATE_SUBMISSION_UNRESOLVED',
+  });
+});
+
+test.each(['0x0', '', 'garbage', '0xef0100' + '11'.repeat(20)])(
+  'code appearing during signing (%s) is refused before any journal attempt',
+  async (code) => {
+    await journal().initialize();
+    let signed = false;
+    const original = mockOrdinaryNetwork.request.getMockImplementation();
+    mockOrdinaryNetwork.request.mockImplementation((chain, method, ...rest) =>
+      method === 'eth_getCode' && signed
+        ? Promise.resolve({ result: code })
+        : original(chain, method, ...rest)
+    );
+    const signer = {
+      getAddress: async () => wallet.address,
+      signTransaction: jest.fn(async (tx) => {
+        signed = true;
+        return wallet.signTransaction(tx);
+      }),
+    };
+    await expect(
+      require('./transaction-service').signAndSendTransaction(
+        { chainId: 11155111, to: other.address, value: '1', gasLimit: '21000', gasPrice: '10' },
+        signer
+      )
+    ).rejects.toMatchObject({ code: 'PRIVATE_ORDINARY_TRANSACTION_REFUSED' });
+    expect(signer.signTransaction).toHaveBeenCalledTimes(1);
+    expect(await journal().list()).toEqual([]);
+    expect(mockOrdinaryNetwork.broadcastRawTransaction).not.toHaveBeenCalled();
+  }
+);

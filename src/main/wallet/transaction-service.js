@@ -346,8 +346,11 @@ async function signAndSendTransaction(params, signer, options = {}) {
       from,
       privacyContext: options.privacyContext,
       remote: typeof signer.sendTransaction === 'function',
+      readCode: async (address, signal) =>
+        (await network.request(chainId, 'eth_getCode', [address, 'pending'], { signal })).result,
     });
     await lease.prepare();
+    lease.assertOrdinaryRequest(params);
     if (options.privacyContext) await network.assertCanSubmit();
     // Enrolled accounts authenticate their history before fee RPCs or signing.
     resolvingFees = true;
@@ -471,6 +474,7 @@ async function signAndSendTransaction(params, signer, options = {}) {
       lease.assertActive();
       if (BigInt(balance) < amount + gas * fee)
         throw new Error('Insufficient funds for transaction');
+      await lease.validateOrdinary(tx);
       Object.freeze(tx);
       signedTransaction = await privateStep(() => signer.signTransaction(tx), lease);
       require('./private-transaction-network').assertSignedIntent(signedTransaction, tx);

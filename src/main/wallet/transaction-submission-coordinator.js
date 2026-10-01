@@ -12,6 +12,7 @@ const {
   privacyError,
 } = require('../networks/privacy-context');
 const { getPrivacyStoragePath } = require('./privacy-storage');
+const ordinaryPolicy = require('./ordinary-submission-policy');
 const active = new Set();
 const permits = new WeakMap();
 const profile = () => require('../profile-resolver').getActiveProfile();
@@ -78,7 +79,7 @@ function enrollment(chainId, from) {
   }
 }
 
-function acquireSubmissionLease({ chainId, from, privacyContext, remote = false }) {
+function acquireSubmissionLease({ chainId, from, privacyContext, remote = false, readCode }) {
   const coordinated = Number(chainId) === 11155111;
   const id = privacyContext ? getPrivacyContext(privacyContext).profileId : profileKey(profile());
   const key = JSON.stringify([id, Number(chainId), from.toLowerCase()]);
@@ -99,8 +100,24 @@ function acquireSubmissionLease({ chainId, from, privacyContext, remote = false 
       throw privacyError('PRIVATE_PROFILE_MOVED', 'Active profile changed');
     if (handle) getPrivacyContext(handle, chainId);
   }
+  async function validateOrdinary(tx) {
+    assertActive();
+    const facts = ordinaryPolicy.ordinaryFacts(tx);
+    if (typeof readCode !== 'function') throw ordinaryPolicy.fail();
+    const result = await readCode(from, getPrivacyContext(handle).signal);
+    assertActive();
+    if (result !== '0x') throw ordinaryPolicy.fail();
+    return facts;
+  }
   return {
     assertActive,
+    assertOrdinaryRequest(tx) {
+      assertActive();
+      if (journal) ordinaryPolicy.assertOrdinaryRequest(tx);
+    },
+    async validateOrdinary(tx) {
+      return journal ? validateOrdinary(tx) : undefined;
+    },
     assertProfileCurrent() {
       if (coordinated && profileKey(profile()) !== id)
         throw privacyError('PRIVATE_PROFILE_MOVED', 'Active profile changed');
@@ -145,7 +162,8 @@ function acquireSubmissionLease({ chainId, from, privacyContext, remote = false 
           'PRIVATE_SIGNED_TX_INVALID',
           'Signed transaction differs from its account'
         );
-      await journal.begin(tx.hash.toLowerCase(), tx.nonce);
+      const facts = await validateOrdinary(tx);
+      await journal.begin(tx.hash.toLowerCase(), tx.nonce, undefined, facts);
       // Once durable, return the permit even if the lifetime ended in this await.
       // Consumption still checks the lifetime; the caller reports uncertainty.
       const permit = Object.freeze({});

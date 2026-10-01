@@ -212,6 +212,28 @@ describe('chain-data-router', () => {
     ]);
   });
 
+  test('pending Sepolia code observation falls through Myotis to the ordinary direct RPC', async () => {
+    mockRegistry.getNetwork.mockReturnValue({ access: { readOrder: ['myotis', 'direct'] } });
+    mockMyotis.NETWORKS.set(11155111, {});
+    global.fetch = jest.fn(async (_url, options) => {
+      const request = JSON.parse(options.body);
+      expect(request.method).toBe('eth_getCode');
+      expect(request.params).toEqual([`0x${'11'.repeat(20)}`, 'pending']);
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: '0x' }), {
+        status: 200,
+      });
+    });
+    try {
+      await expect(
+        request(11155111, 'eth_getCode', [`0x${'11'.repeat(20)}`, 'pending'])
+      ).resolves.toMatchObject({ result: '0x', source: 'direct', verified: false });
+      expect(mockMyotis.getAccount).not.toHaveBeenCalled();
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      mockMyotis.NETWORKS.delete(11155111);
+    }
+  });
+
   test('sends historical balance reads to a source that honours the block tag', async () => {
     mockMyotis.getAccount.mockResolvedValue({ status: 'ok', balanceWei: '42' });
     mockRequestViaColibri.mockResolvedValue('0x1');
