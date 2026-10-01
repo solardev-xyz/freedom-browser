@@ -147,8 +147,11 @@ const test = base.extend({
   relaunchApp: async ({ userDataDir }, use) => {
     const started = [];
 
-    await use(async () => {
-      const app = await launchApp(userDataDir);
+    await use(async ({ freshProfile = false } = {}) => {
+      // Opt-in restoration tests get a genuinely empty, test-owned profile.
+      // Keep it under this fixture's temporary root for ordinary teardown.
+      const directory = freshProfile ? fs.mkdtempSync(path.join(userDataDir, 'cold-profile-')) : userDataDir;
+      const app = await launchApp(directory);
       started.push(app);
       return app;
     });

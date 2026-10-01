@@ -1,10 +1,11 @@
 const { test, expect } = require('./fixtures');
 const artifact = process.env.FREEDOM_PP_V2_PROCESS_ASAR;
 
-test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery', async ({ electronApp, relaunchApp }, testInfo) => {
+for (const outage of [false, true]) {
+test(outage ? 'PPv2 fresh-cache recovery and emergency exit with ASP unavailable' : 'PPv2 reviewed registration, uncertain deposit and encrypted note recovery', async ({ electronApp, relaunchApp, userDataDir }, testInfo) => {
   test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the qualified Kohaku/SDK fixture');
-  test.setTimeout(120000);
-  const exercise = async ({ app }, { artifact, restart, exit }) => {
+  test.setTimeout(outage ? 240000 : 120000);
+  const exercise = async ({ app }, { artifact, restart, exit, outage, cold, replay }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
     const runtimeLoader = req('./src/main/wallet/ppv2-runtime');
     artifact = runtimeLoader.verifyPPv2Runtime(artifact);
@@ -12,6 +13,16 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
     const { Interface, Wallet, Transaction } = req('ethers');
     const vault = req('./src/main/identity/vault'), settings = req('./src/main/settings-store');
     const rpc = req('./src/main/networks/private-rpc'), tor = req('./src/main/tor-manager');
+    const router = req('./src/main/networks/kohaku-network-router'), originalRouter = router.createKohakuNetworkRouter;
+    let aspAttempts = 0, nonAspAttempts = 0, scanFault = false, faultWindows = 0;
+    const scanWindows = [], progress = [];
+    if (outage) router.createKohakuNetworkRouter = groups => ({ fetch: async input => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      const group = groups.find(g => g.endpoints.some(e => new URL(typeof e === 'string' ? e : e.url).origin === url.origin));
+      if (group && getPrivacyContext(group.handle).subject.role === 'asp') aspAttempts++;
+      else nonAspAttempts++;
+      throw new Error('Controlled complete ASP outage');
+    } });
     const { getPrivacyContext } = req('./src/main/networks/privacy-context');
     const { ARTIFACTS, DEPOSIT_ABI } = req('./src/main/wallet/ppv2-deposit-policy');
     const { ARTIFACTS: EXIT_ARTIFACTS, RAGEQUIT_ABI } = req('./src/main/wallet/ppv2-ragequit-policy');
@@ -34,9 +45,9 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
     const register = new Interface(REGISTRATION_ABI), depositABI = new Interface([DEPOSIT_ABI]), exitABI = new Interface([RAGEQUIT_ABI]);
     const hashService = await sdk.PoseidonHashService.create();
     const receipts = new Map(), logs = [], sends = [], methods = new Set(), contexts = new Map();
-    let head = 256, nonce = 0, auth = 0n, viewing = `0x${'00'.repeat(32)}`, lost = false, timestampAvailable = true;
+    let head = outage ? 25000 : 256, nonce = 0, auth = 0n, viewing = `0x${'00'.repeat(32)}`, lost = false, timestampAvailable = true;
     const statePath = path.join(app.getPath('userData'), 'ppv2-public-chain-fixture.json');
-    const saved = restart ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : null;
+    const saved = cold ? replay : restart ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : null;
     if (saved) {
       head = saved.head; nonce = saved.nonce; auth = BigInt(saved.auth); viewing = saved.viewing;
       logs.push(...saved.logs); for (const [hash, receipt] of saved.receipts) receipts.set(hash, receipt);
@@ -55,6 +66,11 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
           else if (method === 'eth_getBlockByNumber') result = { number: params[0] === 'finalized' ? quantity(head - 2) : params[0], hash: blockHash };
           else if (method === 'eth_getLogs') {
             const filter = params[0]; const topics = filter.topics[0];
+            if (outage) {
+              scanWindows.push({ role: context.subject.role, blocks: Number(BigInt(filter.toBlock) - BigInt(filter.fromBlock) + 1n),
+                from: Number(BigInt(filter.fromBlock)), to: Number(BigInt(filter.toBlock)), address: filter.address, topics });
+              if (scanFault && ++faultWindows >= 3) throw new Error('Controlled history window unavailable');
+            }
             result = logs.filter((log) => log.address === filter.address && topics.includes(log.topics[0]) &&
               BigInt(log.blockNumber) >= BigInt(filter.fromBlock) && BigInt(log.blockNumber) <= BigInt(filter.toBlock));
           } else if (method === 'eth_call') {
@@ -115,6 +131,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
       const { openPPv2Session } = req('./src/main/wallet/ppv2-session');
       const { candidate } = runtimeLoader.loadPPv2Runtime(artifact);
       const open = () => openPPv2Session({ candidate, configuration: config,
+        onProgress: report => { if (outage) progress.push(report); },
         proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];
       const options = { signer: { getAddress: async () => wallet.address, signTransaction: (tx) => wallet.signTransaction(tx) },
@@ -123,7 +140,28 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
         } };
       const resolve = (hash) => session.resolvePublicSubmission(hash, { minimumConfirmations: 1,
         review: async () => ({ allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' }) });
+      const sdkCache = path.join(req('./src/main/profile-resolver').getActiveProfile().userDataDir, 'wallet-ppv2-experiment');
+      const emptyPersistentStore = !fs.existsSync(sdkCache);
       session = await open();
+      if (cold) {
+        const recovered = await session.notes();
+        const coldWindows = scanWindows.length;
+        session.close();
+        // Withhold encrypted note events only during reopen. A fresh rebuild
+        // would now find no note; persistence must supply the existing one.
+        const noteEvents = logs.filter(log => log.address === config.deployment.poolAddress && log.topics[0] === interfaces[0].getEvent('Note').topicHash);
+        for (const log of noteEvents) logs.splice(logs.indexOf(log), 1);
+        let restored;
+        try { session = await open(); restored = await session.notes(); }
+        finally { logs.push(...noteEvents); }
+        const cache = sdkCache;
+        return { emptyPersistentStore, coldWindows, reopenWindows: scanWindows.length - coldWindows, noteEventsWithheld: noteEvents.length,
+          recovered: recovered.length === 1 && recovered[0].commitment === saved.commitment,
+          persisted: restored.length === 1 && restored[0].commitment === saved.commitment,
+          encrypted: fs.readdirSync(cache).length > 0 && fs.readdirSync(cache).every(name => !fs.readFileSync(path.join(cache, name), 'utf8').includes(saved.commitment)),
+          publicSubmissions: (await session.listPublicSubmissions()).length, sends: sends.length, aspAttempts, nonAspAttempts,
+          historyProgress: progress.some(r => r.stage === 'history' && r.completedWindows > 0) };
+      }
       if (restart) {
         const notes = await session.notes();
         const journal = await session.listPublicSubmissions();
@@ -148,7 +186,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
           return { kind: preparedExit.kind, amount: preparedExit.amount.toString(), value: preparedExit.value.toString(),
             proofVerified: preparedExit.proofVerified, chainStateVerified: preparedExit.chainStateVerified,
             commitmentBound: preparedExit.commitment === saved.commitment, ownerBound: preparedExit.from === config.ownerAddress,
-            poolBound: preparedExit.to === config.deployment.poolAddress, sent: sends.length, journalKind: (await session.listPublicSubmissions())[3].intent.kind,
+            poolBound: preparedExit.to === config.deployment.poolAddress, sent: sends.length, aspAttempts, nonAspAttempts, journalKind: (await session.listPublicSubmissions())[3].intent.kind,
             pendingStatus: pendingExit[0]?.status, restartedStatus: restartedExit[0]?.status, retryExit,
             pendingSpendable: pendingBalance.find(b => b.tag === 'spendable')?.amount.toString(),
             observedStatus: afterExit[0]?.status, reviewed: reviews[0]?.operation, recordedHash: (await session.listPublicSubmissions())[3].hash === result.hash };
@@ -156,7 +194,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
         return { recovered: notes.length === 1 && notes[0].commitment === saved.commitment,
           rescanRecovered: rescan.notes.length === 1 && rescan.notes[0].commitment === saved.commitment,
           journalRestored: journal.length === 3 && journal[2].hash === saved.depositHash && journal[2].state === 'attempted',
-          blocked, sends: sends.length, productionGate, packaged: app.isPackaged };
+          blocked, sends: sends.length, productionGate, packaged: app.isPackaged, aspAttempts, nonAspAttempts };
       }
       stage = 'registration';
       const registration = await session.prepareRegisterKeystore();
@@ -189,6 +227,26 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
       const encryptedBefore = fs.readFileSync(path.join(req('./src/main/profile-resolver').getActiveProfile().userDataDir,
         'wallet-ppv2-experiment', fs.readdirSync(path.join(req('./src/main/profile-resolver').getActiveProfile().userDataDir,
           'wallet-ppv2-experiment'))[0]));
+      let outageReport;
+      if (outage) {
+        scanFault = true;
+        const failure = await session.inspectNoteRecovery().then(() => null, error => error.code);
+        scanFault = false;
+        const afterFailure = fs.readFileSync(path.join(req('./src/main/profile-resolver').getActiveProfile().userDataDir,
+          'wallet-ppv2-experiment', fs.readdirSync(path.join(req('./src/main/profile-resolver').getActiveProfile().userDataDir,
+            'wallet-ppv2-experiment'))[0]));
+        const start = scanWindows.length, progressStart = progress.length, startedAt = Date.now();
+        const fresh = await session.inspectNoteRecovery();
+        const windows = scanWindows.slice(start);
+        outageReport = { failure, faultWindows, cachePreservedAfterFailure: encryptedBefore.equals(afterFailure),
+          recoveredAfterFailure: fresh.notes.length === 1 && fresh.notes[0].commitment === notes[0].commitment,
+          freshRecoveryMs: Date.now() - startedAt, windows: windows.length, scannedBlocks: windows.reduce((n, w) => n + w.blocks, 0),
+          widestWindow: Math.max(...windows.map(w => w.blocks)), onlyProtocolLogs: windows.every(w => w.role === 'protocol-rpc'),
+          multiWindowHistory: windows.some(w => w.from >= 5000),
+          historyProgress: progress.slice(progressStart).some(r => r.stage === 'history' && r.completedWindows > 0),
+          noSpendAuthority: fresh.spendAuthority === false && fresh.chainStateVerified === false && fresh.cacheReplaced === false,
+          progressSanitized: progress.length > 0 && progress.every(r => Object.keys(r).every(k => ['task', 'stage', 'elapsedMs', 'completedWindows', 'scannedBlocks'].includes(k))) };
+      }
       // Model a provider omitting the deposit after a reorg. A full rescan must
       // report the discrepancy and preserve the existing encrypted cache.
       for (const log of originalNoteLogs) logs.splice(logs.indexOf(log), 1);
@@ -215,7 +273,7 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
       // saved for replay by a NEW Electron process in the second half.
       fs.writeFileSync(statePath, JSON.stringify({ head, nonce, auth: auth.toString(), viewing, logs,
         receipts: [...receipts], commitment: recovered[0]?.commitment, depositHash: uncertain.hash }));
-      return { productionGate, packaged: app.isPackaged, blockedSecond, partialSteps: partial.txs.length,
+      return { productionGate, packaged: app.isPackaged, blockedSecond, outageReport, aspAttempts, nonAspAttempts, partialSteps: partial.txs.length,
         partialKind: partial.txs[0].kind, sends: sends.length, reviews, uncertain: uncertain.code,
         journalKinds: journal.map((record) => record.intent.kind), attemptedRecovered: journal[2].hash === uncertain.hash && journal[2].state === 'attempted',
         missingTimestampCount: missingTimestamp.length, proofCommitmentRecovered: notes[0]?.commitment === `0x${depositABI.decodeFunctionData('deposit', prepared.data)._proof.pubSignals[0].toString(16).padStart(64, '0')}`,
@@ -232,18 +290,37 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
         methods: [...methods].sort(), liveTransactionSubmitted: false };
     } catch (error) { throw new Error(`Controlled lifecycle stage: ${stage}, ${error.code || 'fixture-failed'}`, { cause: error }); } finally {
       session?.close(); vault.lockVault(); settings.isWalletTorExperimentAvailable = original.gate;
-      rpc.createPrivateRpc = original.rpc; tor.getWalletSocksEndpoint = original.tor;
+      rpc.createPrivateRpc = original.rpc; tor.getWalletSocksEndpoint = original.tor; router.createKohakuNetworkRouter = originalRouter;
     }
   };
-  const report = await electronApp.evaluate(exercise, { artifact, restart: false });
+  const report = await electronApp.evaluate(exercise, { artifact, restart: false, outage });
+  const replay = outage ? JSON.parse(require('fs').readFileSync(require('path').join(userDataDir, 'ppv2-public-chain-fixture.json'), 'utf8')) : null;
   await electronApp.close();
+  if (outage) {
+    const coldApp = await relaunchApp({ freshProfile: true });
+    report.coldProfile = await coldApp.evaluate(exercise, { artifact, outage, cold: true, replay });
+    await coldApp.close();
+  }
   const restarted = await relaunchApp();
-  report.processRestart = await restarted.evaluate(exercise, { artifact, restart: true });
+  report.processRestart = await restarted.evaluate(exercise, { artifact, restart: true, outage });
   await restarted.close();
   const exiting = await relaunchApp();
-  report.nativeExit = await exiting.evaluate(exercise, { artifact, restart: true, exit: true });
+  report.nativeExit = await exiting.evaluate(exercise, { artifact, restart: true, exit: true, outage });
   await testInfo.attach('ppv2-lifecycle-report', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
   expect(report.productionGate).toBe(false);
+  if (outage) {
+    expect(report.outageReport).toMatchObject({ failure: 'PRIVATE_PPV2_OPERATION_FAILED', cachePreservedAfterFailure: true,
+      recoveredAfterFailure: true, onlyProtocolLogs: true, multiWindowHistory: true, noSpendAuthority: true, progressSanitized: true, historyProgress: true });
+    expect(report.outageReport.faultWindows).toBeGreaterThanOrEqual(3);
+    expect(report.outageReport.windows).toBeGreaterThan(5);
+    expect(report.outageReport.widestWindow).toBeLessThanOrEqual(5000);
+    expect(report.coldProfile.noteEventsWithheld).toBeGreaterThan(0);
+    expect(report.coldProfile).toMatchObject({ emptyPersistentStore: true, recovered: true, persisted: true, encrypted: true,
+      publicSubmissions: 0, sends: 0, historyProgress: true });
+    for (const phase of [report, report.coldProfile, report.processRestart, report.nativeExit]) {
+      expect(phase.aspAttempts).toBeGreaterThan(0); expect(phase.nonAspAttempts).toBe(0);
+    }
+  }
   expect(report.nativeExit).toMatchObject({ kind: 'ppv2-native-ragequit', amount: '10000', value: '0', proofVerified: true,
     chainStateVerified: false, commitmentBound: true, ownerBound: true, poolBound: true, sent: 1,
     journalKind: 'ppv2-native-ragequit', pendingStatus: 'exit_pending', restartedStatus: 'exit_pending',
@@ -263,3 +340,4 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
   expect(report.balances).toEqual([{ amount: '0', tag: 'spendable' }, { amount: '10000', tag: 'unspendable' }]);
   expect(report.reviews.every((review) => review.chainStateVerified === false)).toBe(true);
 });
+}

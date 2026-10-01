@@ -1,0 +1,99 @@
+{
+  "scope": "controlled synthetic services and disposable profiles; source Electron on macOS arm64",
+  "startedAt": "2026-10-01T19:22:45.028Z",
+  "runtimeAsarSha256": "ce18c67a40fa0c72593bb1e851a995951afe7371b0ddd88dfee16d1ffa8e2cb7",
+  "implementationCommit": "4e879f04",
+  "mainCommit": "39ad0247eea30745758f02ccd61fe39955dbd83c",
+  "lifecycleTests": {
+    "startTime": "2026-10-01T19:22:45.028Z",
+    "duration": 28032.886,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "freshInspection": {
+    "failure": "PRIVATE_PPV2_OPERATION_FAILED",
+    "faultWindows": 5,
+    "cachePreservedAfterFailure": true,
+    "recoveredAfterFailure": true,
+    "freshRecoveryMs": 106,
+    "windows": 33,
+    "scannedBlocks": 149430,
+    "widestWindow": 5000,
+    "onlyProtocolLogs": true,
+    "multiWindowHistory": true,
+    "historyProgress": true,
+    "noSpendAuthority": true,
+    "progressSanitized": true
+  },
+  "coldPersistentProfile": {
+    "emptyPersistentStore": true,
+    "coldWindows": 33,
+    "reopenWindows": 15,
+    "noteEventsWithheld": 1,
+    "recovered": true,
+    "persisted": true,
+    "encrypted": true,
+    "publicSubmissions": 0,
+    "sends": 0,
+    "aspAttempts": 3,
+    "nonAspAttempts": 0,
+    "historyProgress": true
+  },
+  "httpAttempts": {
+    "initial": {
+      "aspAttempts": 15,
+      "nonAspAttempts": 0
+    },
+    "coldProfile": {
+      "aspAttempts": 3,
+      "nonAspAttempts": 0
+    },
+    "processRestart": {
+      "aspAttempts": 3,
+      "nonAspAttempts": 0
+    },
+    "emergencyExit": {
+      "aspAttempts": 9,
+      "nonAspAttempts": 0
+    }
+  },
+  "emergencyExit": {
+    "kind": "ppv2-native-ragequit",
+    "amount": "10000",
+    "value": "0",
+    "proofVerified": true,
+    "chainStateVerified": false,
+    "commitmentBound": true,
+    "ownerBound": true,
+    "poolBound": true,
+    "sent": 1,
+    "aspAttempts": 9,
+    "nonAspAttempts": 0,
+    "journalKind": "ppv2-native-ragequit",
+    "pendingStatus": "exit_pending",
+    "restartedStatus": "exit_pending",
+    "retryExit": "PRIVATE_PPV2_EXIT_RESERVED",
+    "pendingSpendable": "0",
+    "observedStatus": "exited",
+    "reviewed": "ppv2-native-ragequit",
+    "recordedHash": true
+  },
+  "regression": {
+    "unitPassed": 6737,
+    "unitSkipped": 33,
+    "openlvRunSeparately": true,
+    "withdrawalElectronPassed": 8,
+    "lint": "passed"
+  },
+  "limits": {
+    "liveTransactionSubmitted": false,
+    "fundedProfileTouched": false,
+    "productionEnabled": false,
+    "liveTorLatencyMeasured": false,
+    "chainStateVerified": false,
+    "persistentIntermediateCheckpointsQualified": false,
+    "workLimitAndStallFailureCoverage": "unit tests only"
+  }
+}
