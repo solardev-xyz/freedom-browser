@@ -186,5 +186,10 @@
     "unexpected": 0,
     "flaky": 0
   },
-  "claudeReview": "No blockers after retained shutdown denial, per-hook canaries and bounded coverage wording. Non-full-value delegation explicitly preserves the original path; its controller regression passed."
+  "claudeReview": "No blockers after retained shutdown denial, per-hook canaries and bounded coverage wording. Non-full-value delegation explicitly preserves the original path.",
+  "runSourceSha256": {
+    "scripts/fixtures/ppv2-egress-tripwire.js": "3547e13c2e71a44c0c70e3a0e77d86e3388b2ffb6a36ccef36db169cc27c7730",
+    "scripts/fixtures/ppv2-egress-tripwire.test.js": "1e33acbec386d6286c47bc3979acab9beee1742b4a9864e837661385bb57d49d",
+    "test-e2e/ppv2-withdrawal.spec.js": "f6375437d37c56acb7e7edd8ab7adf5a0dc989d554db730e48e6385fe8fe2789"
+  }
 }
