@@ -1,5 +1,7 @@
 # PPv2 testnet route: continue without waiting for PP
 
+**Latest October 1 result:** [Funding readiness](ppv2-funding-readiness-2026-10-01.md) supersedes the earlier pending checks: complete history reconstruction, real unfunded SDK session/registration simulations and a fresh-process restart passed. The explicit direct-relayer development route is implemented. The next live step requires Sepolia ETH; no live transaction has been submitted.
+
 The PP questions were reasonable operational questions, but treating their reply or Tor relayer support as a prerequisite for every Sepolia test was too restrictive. We can independently select a history-capable RPC and explicitly test the disposable Sepolia lifecycle using a direct relayer connection. This does not qualify network privacy.
 
 ## Live checks on October 1

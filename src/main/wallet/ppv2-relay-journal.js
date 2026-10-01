@@ -83,6 +83,18 @@ function createPPv2RelayJournal({ handle, directory, key, profileGuard }) {
       if (current.profileId !== other.profileId || current.generation !== other.generation || JSON.stringify(a) !== JSON.stringify(b)) throw invalid();
     },
     list,
+    async recordDirectExposure() {
+      await storage.update('direct-test-exposure-v1', (value) => {
+        if (value !== null && value !== 'direct-ip') throw invalid();
+        return 'direct-ip';
+      });
+      getPrivacyContext(handle);
+    },
+    async hasDirectExposure() {
+      const value = await storage.get('direct-test-exposure-v1'); getPrivacyContext(handle);
+      if (value !== null && value !== 'direct-ip') throw invalid();
+      return value === 'direct-ip';
+    },
     async assertCanExit(commitment) {
       if (typeof commitment !== 'string' || !HASH.test(commitment.toLowerCase())) throw invalid();
       const state = decode(await storage.get(KEY)); getPrivacyContext(handle);

@@ -16,7 +16,8 @@ const { createWalletTorTransport } = require('../src/main/networks/wallet-tor-tr
 const { CANDIDATE, inspectSepoliaDeployment } = require('../src/main/wallet/ppv2-sepolia-preflight');
 const RPC = 'https://ethereum-sepolia-rpc.publicnode.com';
 const RPCS = Object.freeze({ publicnode: RPC, onfinality: 'https://eth-sepolia.api.onfinality.io/public',
-  ethpandaops: 'https://rpc.sepolia.ethpandaops.io' });
+  ethpandaops: 'https://rpc.sepolia.ethpandaops.io', tenderly: 'https://gateway.tenderly.co/public/sepolia',
+  sentio: 'https://sepolia.rpc.sentio.xyz' });
 const READ_METHODS = new Set(['eth_chainId', 'eth_getBlockByNumber', 'eth_getCode', 'eth_getStorageAt', 'eth_call', 'eth_gasPrice', 'eth_getLogs']);
 
 async function openLiveTransport(output, onProgress = () => {}, source = 'publicnode') {

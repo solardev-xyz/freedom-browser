@@ -1,8 +1,10 @@
 # PPv2 live qualification prerequisites
 
+**Latest October 1 result:** [Funding readiness](ppv2-funding-readiness-2026-10-01.md) supersedes the earlier pending checks: complete history reconstruction, real unfunded SDK session/registration simulations and a fresh-process restart passed. The explicit direct-relayer development route is implemented. The next live step requires Sepolia ETH; no live transaction has been submitted.
+
 This is the concrete handoff needed to move the controlled Kohaku/PPv2 experiment onto live Sepolia. It does not authorize a transaction, enable a product feature, or assume the final upstream release is available. No new outreach has been sent.
 
-**October 1 update:** [Independent RPC screening and test route](ppv2-testnet-route-2026-10-01.md) identifies Tenderly and Sentio as promising historical RPC candidates, including over Tor. Complete replay and unfunded SDK checks remain required. A direct relayer route for an explicit disposable Sepolia experiment can proceed independently of PP fixing Tor; that development-only route is not yet implemented.
+**Earlier October 1 update (historical):** [Independent RPC screening and test route](ppv2-testnet-route-2026-10-01.md) identifies Tenderly and Sentio as promising historical RPC candidates, including over Tor. Complete replay and unfunded SDK checks remain required. A direct relayer route for an explicit disposable Sepolia experiment can proceed independently of PP fixing Tor; that development-only route is not yet implemented.
 
 **September 29 result (historical):** [Read-only live qualification](ppv2-live-preflight-2026-09-29.md) confirms matching proof verifiers and ASP leaves. The concrete blockers are relayer HTTP 403 through Tor and incomplete historical logs from the tested public RPC. Staging quotes have approximately 60-second lifetime; that is not an upstream blocker. Complete the unfunded session/recovery checks before requesting Sepolia ETH. The generic checklist below remains the production handoff, not a request to ask PP again for every already published value.
 

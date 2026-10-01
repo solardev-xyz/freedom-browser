@@ -1,11 +1,13 @@
 const { test, expect } = require('./fixtures');
 const artifact = process.env.FREEDOM_PP_V2_PROCESS_ASAR;
 
-for (const tokenMode of [false, true]) for (const cancel of [false, true]) {
-test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart and reviewed emergency exit' : 'deposit, ASP state, lost withdrawal, restart, reconciliation and second spend'}`, async ({ electronApp, relaunchApp }, testInfo) => {
+const cases = [false, true].flatMap(direct => (direct ? [false] : [false, true]).flatMap(tokenMode => [false, true].map(cancel => ({ direct, tokenMode, cancel }))));
+cases.push({ direct: true, tokenMode: false, cancel: false, controller: true });
+for (const { direct, tokenMode, cancel, controller = false } of cases) {
+test(controller ? 'PPv2 bounded controller registration, deposit, withdrawal, reconciliation and separate-note exit' : `PPv2 ${direct ? 'direct test ' : ''}${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart and reviewed emergency exit' : 'deposit, ASP state, lost withdrawal, restart, reconciliation and second spend'}`, async ({ electronApp, relaunchApp }, testInfo) => {
   test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the qualified Kohaku/SDK fixture');
   test.setTimeout(240000);
-  const exercise = async ({ app }, { artifact, restart, exit, second, checkpoint, tokenMode, cancel }) => {
+  const exercise = async ({ app }, { artifact, restart, exit, second, checkpoint, tokenMode, cancel, direct, controller }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
     const runtimeLoader = req('./src/main/wallet/ppv2-runtime');
     artifact = runtimeLoader.verifyPPv2Runtime(artifact);
@@ -27,6 +29,12 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
     const endpoint = { signal: new AbortController().signal };
     settings.isWalletTorExperimentAvailable = () => true; tor.getWalletSocksEndpoint = () => endpoint;
     const config = req(`${artifact}/configuration.cjs`).configuration();
+    if (controller) {
+      const { CANDIDATE } = req('./src/main/wallet/ppv2-sepolia-preflight');
+      for (const [index, key, pin] of [[0, 'poolAddress', 'pool'], [1, 'entrypointAddress', 'entrypoint'], [2, 'keystoreAddress', 'keystore']]) {
+        config.deployment[key] = CANDIDATE[pin]; config.contracts[index].address = CANDIDATE[pin];
+      }
+    }
     const { TOKEN_ABI } = req('./src/main/wallet/ppv2-token-policy');
     const token = tokenMode ? `0x${'55'.repeat(20)}` : '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
     let tokenAllowance=10100n, tokenBalance=20000n;
@@ -117,7 +125,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
               const tree = interfaces[0].encodeEventLog(interfaces[0].getEvent('LeavesInserted'), [[BigInt(next)], BigInt(await merkle.computeRoot(stateLeaves)), BigInt(index)]);
               logs.push({ address: config.deployment.poolAddress, ...tree, blockNumber: quantity(head), blockHash, transactionHash: tx.hash, logIndex: '0x1', transactionIndex: '0x0', removed: false });
               const deposited = interfaces[0].encodeEventLog(interfaces[0].getEvent('Deposited'),
-                [decoded._proof.pubSignals[0], token, 10000n, config.deployment.entrypointAddress]);
+                [decoded._proof.pubSignals[0], token, controller ? 5000000000000000n : 10000n, config.deployment.entrypointAddress]);
               logs.push({ address: config.deployment.poolAddress, ...deposited, blockNumber: quantity(head), blockHash,
                 transactionHash: tx.hash, logIndex: '0x2', transactionIndex: '0x0', removed: false });
               const event = interfaces[0].encodeEventLog(interfaces[0].getEvent('Note'), [decoded._noteData.hint, decoded._noteData.data]);
@@ -139,7 +147,10 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
           return { result };
         } };
     };
-    router.createKohakuNetworkRouter = () => ({ fetch: async (url, init = {}) => {
+    router.createKohakuNetworkRouter = (groups) => {
+      if (groups.find(g => getPrivacyContext(g.handle).subject.role === 'relayer')?.route !== (direct ? 'direct-sepolia-test' : 'tor') ||
+          groups.find(g => getPrivacyContext(g.handle).subject.role === 'asp')?.route !== 'tor') throw new Error('Incorrect role transport selection');
+      return { fetch: async (url, init = {}) => {
       const u = new URL(url);
       if (u.pathname.endsWith('/association-set/leaves')) return new Response(JSON.stringify({ leaves: aspLeaves.map((v) => BigInt(v).toString()) }));
       if (u.pathname.includes('/v1/quote/')) {
@@ -165,7 +176,7 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
         const p = JSON.parse(init.body), signals = p.proof.publicSignals.map(BigInt);
         relaySends++;
         if (cancel) return new Response('{}', { status: 400 });
-        head+=6000;
+        head+=controller ? 3 : 6000;
         const txHash = `0x${(200+spent.size).toString(16).padStart(64,'0')}`;
         const start = stateLeaves.length, leaves = [leaf('privacy_pools_note', signals[1]), leaf('privacy_pools_nullifier', signals[0])];
         stateLeaves.push(...leaves); spent.add(signals[0].toString());
@@ -174,12 +185,12 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
           interfaces[0].encodeEventLog(interfaces[0].getEvent('Transacted'), [[signals[1]],[signals[0]],token,signals[5],config.relayers[0].processorAddress])]
           .map((e,i)=>({address:config.deployment.poolAddress,...e,blockNumber:quantity(head),blockHash,transactionHash:txHash,logIndex:quantity(i),transactionIndex:'0x0',removed:false}));
         logs.push(...events); receipts.set(txHash,{transactionHash:txHash,to:config.relayers[0].processorAddress,blockHash,blockNumber:quantity(head),status:'0x1',logs:events});
-        head+=6000;
+        head+=controller ? 3 : 6000;
         if (relayLost) throw new Error('Controlled lost relay response');
         return new Response(JSON.stringify({txHash}));
       }
       throw new Error('Controlled unavailable ASP snapshot');
-    } });
+    } }; };
     const directory = path.join(app.getPath('userData'), 'ppv2-lifecycle-vault');
     const artifactDir = fs.mkdtempSync(path.join(app.getPath('userData'), 'ppv2-lifecycle-artifacts-'));
     for (const entry of [...ARTIFACTS, ...EXIT_ARTIFACTS, ...TRANSACT_ARTIFACTS]) fs.writeFileSync(path.join(artifactDir, entry.name), fs.readFileSync(`${artifact}/artifacts/${entry.name}`));
@@ -196,7 +207,12 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
       // This evaluated fixture owns main and instruments exports solely for
       // synthetic ASP state; the loader itself and its digest check are real.
       const { candidate } = runtimeLoader.loadPPv2Runtime(artifact);
-      const open = () => openPPv2Session({ candidate, configuration: config,
+      if (direct) {
+      const profile = req('./src/main/profile-resolver').getActiveProfile();
+      fs.writeFileSync(path.join(profile.userDataDir, 'ppv2-direct-test.json'), JSON.stringify({ version: 1, chainId: 11155111,
+        profileId: profile.id, disposable: true, relayerExposure: 'direct-ip' }));
+    }
+    const open = () => openPPv2Session({ candidate, configuration: config, relayerRoute: direct ? 'direct-sepolia-test' : 'tor',
         proving: { sdkEntry: `${artifact}/sdk.cjs`, ragequitProverEntry: `${artifact}/serial-prover.cjs`, transactProverEntry: `${artifact}/serial-prover.cjs`, directory: artifactDir } });
       const reviews = [];
       const options = { signer: { getAddress: async () => wallet.address, signTransaction: (tx) => wallet.signTransaction(tx) },
@@ -206,7 +222,39 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
       const resolve = (hash) => session.resolvePublicSubmission(hash, { minimumConfirmations: 1,
         review: async () => ({ allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' }) });
       session = await open();
+      if (direct && (session.descriptor.relayerTransport !== 'direct' || session.descriptor.relayerTorProtected || !session.descriptor.identityMayBeIpLinked)) throw new Error('Missing direct exposure label');
       const save = (commitment, depositHash) => fs.writeFileSync(statePath, JSON.stringify({head,nonce,tokenAllowance:tokenAllowance.toString(),tokenBalance:tokenBalance.toString(),auth:auth.toString(),viewing,logs,receipts:[...receipts],stateLeaves,aspLeaves,spent:[...spent],commitment,depositHash}));
+      if (controller) {
+        const { runSepoliaTestStep } = req('./src/main/wallet/ppv2-sepolia-test-step');
+        const scope = req('./src/main/wallet/privacy-session').openPrivacySession();
+        try {
+          const handle = scope.getContext({ kind: 'private-account', principal: 'ppv2:0', protocol: 'privacy-pools-v2', deployment: 'sepolia', chainId: 11155111, role: 'relayer' });
+          const run = (action, reference) => runSepoliaTestStep({ handle, session, signer: wallet, owner: wallet.address.toLowerCase(), action, reference,
+            readBalance: async () => 50000000000000000n, estimateGas: async () => 100000n, verifyDeployment: async () => true });
+          const settle = async hash => { head += 12; return run('resolve-public', hash); };
+          stage = 'controller auth'; const authTx = await run('register-auth');
+          const blocked = await run('register-viewing').then(() => false, () => true);
+          await settle(authTx.hash);
+          stage = 'controller viewing'; await settle((await run('register-viewing')).hash);
+          stage = 'controller deposit'; await settle((await run('deposit')).hash);
+          const deposited = (await session.notes())[0];
+          const exported = JSON.parse(await fixturePlugin.exportAccount()); let label;
+          const walk = v => { if (!v || typeof v !== 'object') return; if (v.commitment === deposited.commitment && v.label) label = v.label; Object.values(v).forEach(walk); }; walk(exported);
+          if (!label) throw new Error('Missing controller fixture label');
+          const noteMath = new sdk.NoteComputationService({ hashService, cryptoService: new sdk.CryptoService() });
+          aspLeaves = [noteMath.computeLabelHash(label)]; head += 3; session.close(); session = await open();
+          stage = 'controller withdrawal'; await run('withdraw', deposited.commitment);
+          const relay = (await session.listRelayAttempts())[0];
+          stage = 'controller relay reconciliation'; await run('resolve-relay', relay.id);
+          stage = 'controller second deposit'; await settle((await run('deposit')).hash);
+          const exitNote = (await session.notes()).find(n => n.value === 5000000000000000n && n.commitment !== deposited.commitment);
+          if (!exitNote) throw new Error('Missing separate exit note');
+          stage = 'controller exit'; await settle((await run('ragequit', exitNote.commitment)).hash);
+          const status = await run('status');
+          return { controller: true, blocked, publicSends: sends.length, relaySends, resolvedPublic: status.publicSubmissions.every(r => !!r.resolution),
+            resolvedRelay: status.relayAttempts.every(r => !!r.resolution), liveTransactionSubmitted: false };
+        } finally { scope.close(); }
+      }
       if (restart) {
         if (!exit && !second) {
           const notes = await session.notes(); return { recovered: notes.length === 1, blocked: await session.submitPublicOperation({},{}).then(()=>null,e=>e.code) };
@@ -392,13 +440,18 @@ test(`PPv2 ${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart
       rpc.createPrivateRpc = original.rpc; tor.getWalletSocksEndpoint = original.tor;
     }
   };
-  const report = await electronApp.evaluate(exercise, { artifact, tokenMode, cancel, restart: false });
+  const report = await electronApp.evaluate(exercise, { artifact, tokenMode, cancel, direct, controller, restart: false });
+  if (controller) {
+    await testInfo.attach('ppv2-controller-report', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
+    expect(report).toMatchObject({ controller: true, blocked: true, publicSends: 5, relaySends: 1, resolvedPublic: true, resolvedRelay: true, liveTransactionSubmitted: false });
+    return;
+  }
   await electronApp.close(); const withdrawing = await relaunchApp();
-  report.withdrawal = await withdrawing.evaluate(exercise, { artifact, tokenMode, cancel, restart:true, exit:true });
+  report.withdrawal = await withdrawing.evaluate(exercise, { artifact, tokenMode, cancel, direct, restart:true, exit:true });
   await withdrawing.close(); const restored = await relaunchApp();
-  report.checkpoint = await restored.evaluate(exercise, { artifact, tokenMode, cancel, restart:true, second:true, checkpoint:true });
+  report.checkpoint = await restored.evaluate(exercise, { artifact, tokenMode, cancel, direct, restart:true, second:true, checkpoint:true });
   await restored.close(); const resumed = await relaunchApp();
-  report.secondSpend = await resumed.evaluate(exercise, { artifact, tokenMode, cancel, restart:true, second:true });
+  report.secondSpend = await resumed.evaluate(exercise, { artifact, tokenMode, cancel, direct, restart:true, second:true });
   await testInfo.attach('ppv2-withdrawal-report', {body:JSON.stringify(report,null,2),contentType:'application/json'});
   expect(report.checkpoint).toMatchObject({status:'unknown'});
   if (!cancel) expect(report.checkpoint.nextBlock).toBeGreaterThan(5000);

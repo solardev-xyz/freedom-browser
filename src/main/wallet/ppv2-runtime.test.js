@@ -64,6 +64,6 @@ test('rejects the archive before executing its plugin', () => {
 test('application references to external PPv2 runtime entries stay in the verified loader', () => {
   const root = path.resolve(__dirname, '..');
   const files = fs.readdirSync(root, { recursive: true }).filter((name) => name.endsWith('.js') && !name.endsWith('.test.js'));
-  const references = files.filter((name) => /['"`]([^'"`]*\/)?(?:plugin|sdk|serial-prover)\.cjs/.test(fs.readFileSync(path.join(root, name), 'utf8')));
+  const references = files.filter((name) => /['"`]([^'"`]*\/)?(?:plugin|sdk|serial-prover|abis)\.cjs/.test(fs.readFileSync(path.join(root, name), 'utf8')));
   expect(references.map((name) => name.split(path.sep).join('/'))).toEqual(['wallet/ppv2-runtime.js']);
 });

@@ -1,3 +1,4 @@
+jest.mock('../profile-resolver', () => ({ getActiveProfile: () => mockProfile }));
 jest.mock('../settings-store', () => ({ isWalletTorExperimentAvailable: () => mockAvailable }));
 jest.mock('../tor-manager', () => ({ getWalletSocksEndpoint: () => mockEndpoint }));
 jest.mock('./wallet-tor-transport', () => ({ createWalletTorTransport: () =>
@@ -9,7 +10,7 @@ const fixture = require('../../../test/helpers/tor-tls-fixture');
 const { createPrivacyScope } = require('./privacy-context');
 const { createKohakuNetwork } = require('./kohaku-network');
 const { createKohakuNetworkRouter } = require('./kohaku-network-router');
-let mockAvailable, mockEndpoint, mockCertificate;
+let mockAvailable, mockEndpoint, mockCertificate, mockProfile;
 let scope, server, socks, network;
 const seen = [];
 const origin = 'https://rpc.example.test';
@@ -149,4 +150,48 @@ const ppv2Http = process.env.FREEDOM_PP_V2_HTTP_FIXTURE;
     .rejects.toMatchObject({ code: 'PRIVATE_SDK_REQUEST_REFUSED' });
   expect(ambient).not.toHaveBeenCalled();
   expect(seen.map(({ url }) => url)).toEqual(['/tree', '/relay', '/artifact', '/stall']);
+});
+
+
+test('explicit direct relayer selection preserves Tor ASP routing and never falls back', async () => {
+  const fs = require('fs'), path = require('path'), os = require('os');
+  mockProfile = { id: 'direct', userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'mixed-route-')) };
+  const direct = require('./direct-testnet-transport');
+  fs.writeFileSync(path.join(mockProfile.userDataDir, direct.MARKER), JSON.stringify({ version: 1, chainId: 11155111,
+    profileId: 'direct', disposable: true, relayerExposure: 'direct-ip' }));
+  const mixedScope = createPrivacyScope({ profileId: require('crypto').createHash('sha256').update(JSON.stringify(['direct', mockProfile.userDataDir])).digest('hex'), signal: new AbortController().signal });
+  const h = role => mixedScope.getContext({ kind: 'private-account', principal: 'ppv2:0', protocol: 'privacy-pools-v2', deployment: 'sepolia', chainId: 11155111, role });
+  const request = jest.fn(async () => ({ status: 403, headers: {}, body: Buffer.from('{}') }));
+  const close = jest.fn();
+  jest.spyOn(direct, 'createDirectTestnetTransport').mockReturnValue({ request, close });
+  try {
+    const router = createKohakuNetworkRouter([
+      { handle: h('asp'), endpoints: [{ url: `${origin}/asp/`, methods: ['GET'] }] },
+      { handle: h('relayer'), endpoints: [{ url: `${origin}/relay/`, methods: ['GET', 'POST'] }], route: 'direct-sepolia-test' },
+    ]);
+    await router.fetch(`${origin}/asp/tree`);
+    for (const suffix of ['details', 'quote', 'withdrawal']) expect((await router.fetch(`${origin}/relay/${suffix}`, { method: 'POST', body: '{}' })).status).toBe(403);
+    expect(request).toHaveBeenCalledTimes(3); expect(seen.map(s => s.url)).toEqual(['/asp/tree']);
+    request.mockRejectedValue(new Error('direct failure'));
+    await expect(router.fetch(`${origin}/relay/quote`, { method: 'POST', body: '{}' })).rejects.toThrow('direct failure');
+    expect(seen.map(s => s.url)).toEqual(['/asp/tree']);
+    for (const role of ['asp', 'indexer', 'artifacts']) {
+      const group = { handle: h(role), endpoints: [{ url: origin, methods: ['GET'] }], route: 'direct-sepolia-test' };
+      expect(() => createKohakuNetwork(group)).toThrow(); expect(() => createKohakuNetworkRouter([group])).toThrow();
+    }
+    mockEndpoint = { ...mockEndpoint };
+    await expect(router.fetch(`${origin}/relay/details`)).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  } finally { mixedScope.close(); }
+  expect(close).toHaveBeenCalled();
+});
+
+test('a Tor relayer failure never constructs the direct transport', async () => {
+  const direct = require('./direct-testnet-transport');
+  const factory = jest.spyOn(direct, 'createDirectTestnetTransport');
+  const relayer = createKohakuNetwork({ handle: context('a', 'relayer'), endpoints: [{ url: `${origin}/stall`, methods: ['GET'] }] });
+  const controller = new AbortController();
+  const pending = relayer.fetch(`${origin}/stall`, { signal: controller.signal });
+  const rejection = expect(pending).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
+  await socks.greeting; controller.abort(); await rejection;
+  expect(factory).not.toHaveBeenCalled();
 });

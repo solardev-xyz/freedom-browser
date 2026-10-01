@@ -32,8 +32,8 @@ const proofUnavailable = () => { throw privacyError('PRIVATE_PPV2_PROOF_UNAVAILA
 const noProof = Object.freeze(Object.fromEntries(['proveDeposit', 'proveTransact', 'proveRagequit', 'verifyDeposit',
   'verifyTransact', 'verifyRagequit', 'loadCircuit', 'formatForEVM'].map((name) => [name, proofUnavailable])));
 
-async function openPPv2Session({ candidate, accountIndex = 0, configuration, proving }) {
-  if (!require('../settings-store').isWalletTorExperimentAvailable() ||
+async function openPPv2Session({ candidate, accountIndex = 0, configuration, proving, relayerRoute = 'tor' }) {
+  if (!['tor', 'direct-sepolia-test'].includes(relayerRoute) || !require('../settings-store').isWalletTorExperimentAvailable() ||
       !Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex > 65535 ||
       !candidate || typeof candidate.createPlugin !== 'function' || typeof candidate.inspectRegistration !== 'function' ||
       Object.keys(PPV2_CANDIDATE).some((name) => candidate[name] !== PPV2_CANDIDATE[name])) throw unavailable();
@@ -42,7 +42,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
   let config;
   try { config = structuredClone(configuration); } catch { throw unavailable(); }
   const deploymentKeys = ['poolAddress', 'entrypointAddress', 'keystoreAddress', 'aspRegistryAddress', 'relaySwapsAddress'];
-  if (!config || config.chainId !== 11155111 || !address(config.ownerAddress) ||
+  if (!config || Object.hasOwn(config, 'relayerRoute') || config.networks?.some((g) => Object.hasOwn(g, 'route')) || config.chainId !== 11155111 || !address(config.ownerAddress) ||
       !config.deployment || Object.keys(config.deployment).length !== deploymentKeys.length ||
       !deploymentKeys.slice(0, 4).every((name) => address(config.deployment[name])) ||
       !/^0x[0-9a-f]{40}$/i.test(config.deployment.relaySwapsAddress) ||
@@ -75,6 +75,13 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     isCurrent: () => { try { getPrivacyContext(parentHandle); return tor.getWalletSocksEndpoint() === endpoint; } catch { return false; } } });
   const handle = (role) => scope.getContext({ ...subject, role });
   const sessionHandle = handle('session');
+  const directTest = require('../networks/direct-testnet-transport');
+  let relayerPrivacy;
+  try {
+    if (relayerRoute !== 'tor') directTest.assertDirectTest(handle('relayer'));
+    relayerPrivacy = Object.freeze({ relayerTransport: relayerRoute === 'tor' ? 'tor' : 'direct',
+      relayerTorProtected: relayerRoute === 'tor', identityMayBeIpLinked: directTest.directTestExposure() });
+  } catch (error) { scope.close(); throw error; }
   let plugin = null, busy = false;
   const release = () => { plugin = null; if (active.get(lease) === scope) active.delete(lease); };
   scope.signal.addEventListener('abort', release, { once: true });
@@ -83,11 +90,13 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
   try {
     const relayJournal = getPPv2RelayJournal(handle('storage'), accountIndex);
     await relayJournal.list(); // Corrupt/foreign state must not look like no attempts.
+    if (relayerPrivacy.identityMayBeIpLinked) await relayJournal.recordDirectExposure();
+    relayerPrivacy = Object.freeze({ ...relayerPrivacy, identityMayBeIpLinked: await relayJournal.hasDirectExposure() });
     const ownerHandle = scope.getContext({ kind: 'public-address', principal: config.ownerAddress.toLowerCase(), chainId: 11155111, role: 'transaction-rpc' });
     const provider = createKohakuProvider({ handle: handle('protocol-rpc'), contracts: config.contracts, publicReadHandle: ownerHandle,
       publicContracts: [config.deployment.keystoreAddress, ...(config.erc20Tokens || [])],
       logFloors: deploymentKeys.slice(0, 4).map((name) => ({ address: config.deployment[name], fromBlock: config.deploymentBlock })) });
-    const transport = createKohakuNetworkRouter(config.networks.map(({ role, endpoints }) => ({ handle: handle(role), endpoints })));
+    const transport = createKohakuNetworkRouter(config.networks.map(({ role, endpoints }) => ({ handle: handle(role), endpoints, route: role === 'relayer' ? relayerRoute : 'tor' })));
     let capture = null;
     const network = Object.freeze({ fetch: async (input, init = {}) => {
       const url = new URL(input instanceof Request ? input.url : input);
@@ -198,7 +207,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
         await assertCurrentPPv2Roots({ handle: scope.getContext({ ...subject, role: 'protocol-rpc', operation: id }),
           deployment: config.deployment, publicSignals: proof.publicSignals, signal });
       },
-        verifyProof: async (p) => JSON.stringify(p) === JSON.stringify(proof) }); // Exact proof already verified by the owned process.
+        verifyProof: async (p) => JSON.stringify(p) === JSON.stringify(proof), privacy: relayerPrivacy }); // Exact proof already verified by the owned process.
       const summary = await gate.prepare({ ...prepared.value, fromBlock, intent: { ...(token === NATIVE ? {} : { token: token.toLowerCase() }),
         kind: token === NATIVE ? 'ppv2-native-withdrawal' : 'ppv2-token-withdrawal', chainId: 11155111,
         owner: config.ownerAddress.toLowerCase(), inputValue: note.value.toString(),
@@ -274,7 +283,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     }
     return Object.freeze({
       close,
-      descriptor: Object.freeze({ chainId: 11155111, accountIndex, experimental: true, verified: false,
+      descriptor: Object.freeze({ chainId: 11155111, accountIndex, experimental: true, verified: false, ...relayerPrivacy,
         candidate: PPV2_CANDIDATE, proving: !!depositProver, exitProving: !!ragequitProver, withdrawalProving: !!transactProver,
         broadcasting: transactProver ? 'reviewed-public-and-single-asset-withdrawal' : 'reviewed-public-only' }),
       instanceId: () => call('instanceId'),

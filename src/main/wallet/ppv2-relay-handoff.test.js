@@ -275,3 +275,19 @@ test('a recheck finishing just outside the delivery margin still submits once', 
   await gate.submit(prepared, { review: async () => true, invoke });
   expect(network.fetch).toHaveBeenCalledTimes(1); expect(await journal.list()).toHaveLength(1);
 });
+
+
+test.each(['tor', 'direct'])('keeps %s privacy labels on the prepared summary and reviewed handoff without changing write-ahead semantics', async (mode) => {
+  const privacy = { relayerTransport: mode, relayerTorProtected: mode === 'tor', identityMayBeIpLinked: true };
+  gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal, network, verifyProof, privacy });
+  const prepared = await gate.prepare(request);
+  expect(prepared.privacy).toEqual(privacy);
+  privacy.relayerTransport = 'mutated';
+  network.fetch.mockImplementationOnce(async () => { expect(await journal.list()).toHaveLength(1); throw new Error('lost response'); });
+  await expect(gate.submit(prepared, { review: async summary => {
+    expect(summary).toBe(prepared); expect(summary.privacy.relayerTransport).toBe(mode); return true;
+  }, invoke })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_RELAY_UNCERTAIN' });
+  expect(network.fetch).toHaveBeenCalledTimes(1);
+  await expect(gate.submit(prepared, { review: async () => true, invoke })).rejects.toThrow();
+  expect(network.fetch).toHaveBeenCalledTimes(1);
+});

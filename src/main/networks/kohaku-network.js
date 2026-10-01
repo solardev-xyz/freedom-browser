@@ -4,13 +4,16 @@
 const { getPrivacyContext, privacyError } = require('./privacy-context');
 const { createWalletTorTransport } = require('./wallet-tor-transport');
 
-function createKohakuNetwork({ handle, endpoints }) {
+function createKohakuNetwork({ handle, endpoints, route: transportRoute = 'tor' }) {
   const context = getPrivacyContext(handle);
   if (!require('../settings-store').isWalletTorExperimentAvailable() ||
       context.subject.kind !== 'private-account' || context.subject.chainId !== 11155111 ||
       !['asp', 'indexer', 'relayer', 'artifacts'].includes(context.subject.role)) {
     throw privacyError('PRIVATE_SDK_UNAVAILABLE', 'Experimental SDK transport is unavailable for this context');
   }
+  if (!['tor', 'direct-sepolia-test'].includes(transportRoute)) throw privacyError('PRIVATE_SDK_REQUEST_REFUSED', 'Unknown SDK route');
+  const direct = transportRoute === 'direct-sepolia-test';
+  if (direct) require('./direct-testnet-transport').assertDirectTest(handle);
   const invalid = () => privacyError('PRIVATE_SDK_REQUEST_REFUSED', 'SDK request is outside its network capability');
   if (!Array.isArray(endpoints) || !endpoints.length || endpoints.length > 16) throw invalid();
   const routes = endpoints.map(({ url, methods, poolScope }) => {
@@ -23,7 +26,7 @@ function createKohakuNetwork({ handle, endpoints }) {
   const tor = require('../tor-manager');
   const endpoint = tor.getWalletSocksEndpoint();
   if (!endpoint || endpoint.signal.aborted) throw privacyError('TOR_NOT_READY', 'Managed Tor is not ready');
-  const transport = createWalletTorTransport();
+  const transport = direct ? require('./direct-testnet-transport').createDirectTestnetTransport() : createWalletTorTransport();
   const close = () => transport.close();
   const lifetime = AbortSignal.any([context.signal, endpoint.signal]);
   lifetime.addEventListener('abort', close, { once: true });

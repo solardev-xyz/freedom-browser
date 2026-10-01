@@ -266,3 +266,21 @@ test('successful reviewed public archival closes its session and frees the accou
     const reopened = await openPPv2Session({ candidate, configuration: config }); reopened.close();
   } finally { network.mockRestore(); }
 });
+
+
+test('direct route requires its top-level choice and marker, and exposure remains visible after Tor reopening', async () => {
+  const { MARKER } = require('../networks/direct-testnet-transport');
+  await expect(openPPv2Session({ candidate, configuration: config, relayerRoute: 'direct-sepolia-test' })).rejects.toThrow();
+  fs.writeFileSync(path.join(mockProfile.userDataDir, MARKER), JSON.stringify({ version: 1, chainId: 11155111,
+    profileId: mockProfile.id, disposable: true, relayerExposure: 'direct-ip' }));
+  const direct = await openPPv2Session({ candidate, configuration: config, relayerRoute: 'direct-sepolia-test' });
+  expect(direct.descriptor).toMatchObject({ relayerTransport: 'direct', relayerTorProtected: false, identityMayBeIpLinked: true });
+  direct.close();
+  fs.renameSync(path.join(mockProfile.userDataDir, MARKER), path.join(mockProfile.userDataDir, MARKER + '.saved'));
+  const torSession = await openPPv2Session({ candidate, configuration: config });
+  expect(torSession.descriptor).toMatchObject({ relayerTransport: 'tor', identityMayBeIpLinked: true }); torSession.close();
+  await expect(openPPv2Session({ candidate, configuration: { ...config, relayerRoute: 'direct-sepolia-test' } })).rejects.toThrow();
+  fs.renameSync(path.join(mockProfile.userDataDir, MARKER + '.saved'), path.join(mockProfile.userDataDir, MARKER));
+  mockEndpoint = null;
+  await expect(openPPv2Session({ candidate, configuration: config, relayerRoute: 'direct-sepolia-test' })).rejects.toThrow();
+});

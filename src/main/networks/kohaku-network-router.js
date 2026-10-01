@@ -10,12 +10,13 @@ function createKohakuNetworkRouter(groups) {
   const routes = [], prepared = [];
   let account;
   const roles = new Set();
-  for (const { handle, endpoints } of groups) {
+  for (const { handle, endpoints, route: transportRoute = 'tor' } of groups) {
     const context = getPrivacyContext(handle);
     const { role, ...subject } = context.subject;
     const identity = JSON.stringify([context.profileId, context.generation, subject, context.requirements]);
     if ((account && account !== identity) || roles.has(role) || !['asp', 'relayer', 'indexer', 'artifacts'].includes(role) ||
         !Array.isArray(endpoints) || !endpoints.length || endpoints.length > 16) throw refused();
+    if (!['tor', 'direct-sepolia-test'].includes(transportRoute) || (transportRoute !== 'tor' && role !== 'relayer')) throw refused();
     account = identity; roles.add(role);
     const copied = endpoints.map((endpoint) => ({ ...endpoint, methods: [...endpoint.methods] }));
     const index = prepared.length;
@@ -27,7 +28,7 @@ function createKohakuNetworkRouter(groups) {
             (route.path.endsWith('/') && other.path.startsWith(route.path))))) throw refused();
       routes.push(route);
     }
-    prepared.push({ handle, endpoints: copied });
+    prepared.push({ handle, endpoints: copied, route: transportRoute });
   }
   const networks = prepared.map(createKohakuNetwork);
   return Object.freeze({

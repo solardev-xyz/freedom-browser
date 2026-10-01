@@ -7,7 +7,7 @@ const uncertain = () => privacyError('PRIVATE_PPV2_RELAY_UNCERTAIN', 'Relay outc
 // Leave time for Tor delivery; this reduces avoidable expired submissions but
 // cannot guarantee arrival or make a failed response safe to retry.
 const HANDOFF_MARGIN_MS = 15000;
-function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeBegin }) {
+function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeBegin, privacy }) {
   const context = getPrivacyContext(handle), s = context.subject;
   if (s.kind !== 'private-account' || s.role !== 'relayer' || s.protocol !== 'privacy-pools-v2' ||
       s.deployment !== 'sepolia' || s.chainId !== 11155111 || s.operation !== null || typeof verifyProof !== 'function' ||
@@ -93,8 +93,8 @@ function createPPv2RelayHandoff({ handle, journal, network, verifyProof, beforeB
       // Only a main-owned verifier belongs here, never an SDK-supplied boolean.
       if (await verifyProof(structuredClone(validated.proof)) !== true) throw refused();
       check(); if (Date.now() >= validated.expiresAt - HANDOFF_MARGIN_MS) throw refused();
-      const summary = Object.freeze(validated.summary);
-      issued.set(summary, { ...validated, endpoint: copy.endpoint, body: copy.body });
+      const summary = Object.freeze({ ...validated.summary, ...(privacy ? { privacy: Object.freeze({ ...privacy }) } : {}) });
+      issued.set(summary, { ...validated, summary, endpoint: copy.endpoint, body: copy.body });
       return summary;
     },
     async submit(prepared, { review, invoke }) {

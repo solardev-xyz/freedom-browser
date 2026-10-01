@@ -74,4 +74,10 @@ function assertPPv2Candidate(candidate, proving) {
         entry !== undefined && entry !== path.join(archive, 'serial-prover.cjs')))) throw fail();
 }
 
-module.exports = Object.freeze({ verifyPPv2Runtime, loadPPv2Runtime, assertPPv2Candidate, assertPPv2RuntimeEntries });
+function readPPv2RuntimeMetadata(filename) {
+  const archive = verifyPPv2Runtime(filename);
+  return { manifest: require(path.join(archive, 'sdk.cjs')).DEFAULT_CIRCUIT_MANIFEST,
+    abis: require(path.join(archive, 'abis.cjs')) };
+}
+
+module.exports = Object.freeze({ readPPv2RuntimeMetadata, verifyPPv2Runtime, loadPPv2Runtime, assertPPv2Candidate, assertPPv2RuntimeEntries });

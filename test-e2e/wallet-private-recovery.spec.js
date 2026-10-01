@@ -84,7 +84,7 @@ test('local artifact checks and CPU-bound worker cancellation run in Electron', 
       const state = new Int32Array(workerData); Atomics.store(state, 0, 1); while (true) Atomics.add(state, 1, 1);`);
     const shared = new SharedArrayBuffer(8), state = new Int32Array(shared);
     const task = req('./src/main/wallet/privacy-worker').runPrivacyWorker({ handle: scope.getContext({ ...subject, role: 'prover' }),
-      filename, workerData: shared, timeoutMs: 5000 }).then(() => null, (error) => error.code);
+      filename, workerData: shared, validateResult: () => false, timeoutMs: 5000 }).then(() => null, (error) => error.code);
     const start = Date.now();
     while (!Atomics.load(state, 0) && Date.now() - start < 3000) await new Promise((resolve) => setTimeout(resolve, 5));
     const started = Atomics.load(state, 0) === 1;
