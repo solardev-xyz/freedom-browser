@@ -1,6 +1,6 @@
 # Wallet privacy foundation: independent review guide
 
-This guide indexes the research and implementation on `feat/wallet-privacy-foundation` as of October 1, 2026. It accompanies the research issue and draft PR. This is a development milestone, not production activation or an external security audit.
+This guide indexes the research and implementation on `feat/wallet-privacy-foundation` as of October 1, 2026. It accompanies [research issue #475](https://github.com/solardev-xyz/freedom-browser/issues/475) and the companion draft PR linked there. This is a development milestone, not production activation or an external security audit.
 
 Implementation checkpoint: `9700540aa556aa226d4f8641d0c08ed0c44207b3`. Main was fetched and an explicit merge reported already up to date at `39ad0247eea30745758f02ccd61fe39955dbd83c`. The pre-publication diff contains 36 commits and 209 files, including extensive evidence, tests and scratch-build descriptions. Publication additions are this guide, visual evidence, the experimental-settings changelog fragment and corrections/annotations in the supporting documentation.
 
