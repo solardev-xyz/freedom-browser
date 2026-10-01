@@ -81,6 +81,8 @@ function prepareInputs({ checkout, fixtures, directory, repository }) {
   });
   const root = path.join(directory, 'inputs');
   fs.mkdirSync(root);
+  // Bound automatic config discovery even when the chosen build root has a parent config.
+  fs.writeFileSync(path.join(root, 'tsconfig.json'), '{}');
   const sdk = path.join(root, 'ppv2'),
     adapter = path.join(root, 'kohaku'),
     repo = path.join(root, 'freedom');

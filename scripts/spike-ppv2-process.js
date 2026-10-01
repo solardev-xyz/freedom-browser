@@ -302,7 +302,11 @@ async function main() {
     inventory.workers = [...workers.values()].flatMap((root) =>
       recipe.inventoryTree(staged.root, root)
     );
-    inventory.configs = ['ppv2/packages/sdk/tsconfig.json', 'kohaku/tsconfig.json'].map((file) => ({
+    inventory.configs = [
+      'ppv2/packages/sdk/tsconfig.json',
+      'kohaku/tsconfig.json',
+      'tsconfig.json',
+    ].map((file) => ({
       file,
       sha256: recipe.digest(fs.readFileSync(path.join(staged.root, file))),
     }));
