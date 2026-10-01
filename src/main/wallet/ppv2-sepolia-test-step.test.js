@@ -312,3 +312,38 @@ test('competing ragequit requires one matching unresolved relay and explicit can
   await expect(runSepoliaTestStep(args)).rejects.toThrow();
   expect(session.submitPublicOperation).toHaveBeenCalledTimes(1);
 });
+
+test('qualification status omits ordinary target and selector facts', async () => {
+  records.push({
+    hash: `0x${'11'.repeat(32)}`,
+    nonce: 1,
+    route: 'ordinary',
+    ordinary: { to: `0x${'22'.repeat(20)}`, selector: '0xa9059cbb' },
+  });
+  const result = await runSepoliaTestStep({ ...args, action: 'status' });
+  expect(result.publicSubmissions[0]).toEqual({
+    hash: records[0].hash,
+    nonce: 1,
+    route: 'ordinary',
+  });
+  expect(records[0].ordinary).toBeDefined();
+});
+
+test.each(['resolve-public', 'resolve-public-failed'])(
+  'qualification %s omits ordinary target facts',
+  async (action) => {
+    const record = {
+      hash: `0x${'11'.repeat(32)}`,
+      nonce: 1,
+      route: 'ordinary',
+      ordinary: { to: owner, selector: '0xa9059cbb' },
+    };
+    records.push(record);
+    session.resolvePublicSubmission.mockResolvedValue(record);
+    expect(await runSepoliaTestStep({ ...args, action, reference: record.hash })).toEqual({
+      hash: record.hash,
+      nonce: 1,
+      route: 'ordinary',
+    });
+  }
+);

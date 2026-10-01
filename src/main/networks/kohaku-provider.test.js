@@ -453,3 +453,61 @@ test('bounded scans require audited floors and check the work grant before log t
       .some(([, , options]) => JSON.parse(options.body).method === 'eth_getLogs')
   ).toBe(false);
 });
+
+test('checkpoint replay preserves provider grants, work accounting and protocol-only routing', async () => {
+  let encoded = null;
+  const scanCacheStorage = {
+    get: async () => encoded,
+    update: async (change) => {
+      encoded = change(encoded);
+    },
+  };
+  const beforeScan = jest.fn(),
+    onScan = jest.fn();
+  hook = (call) => {
+    if (call.method === 'eth_getBlockByNumber')
+      results.eth_getBlockByNumber = {
+        number: call.params[0] === 'finalized' ? '0x2' : call.params[0],
+        hash: blockHash,
+      };
+  };
+  provider = createKohakuProvider({
+    handle,
+    contracts,
+    scanCacheStorage,
+    beforeScan,
+    onScan,
+    logFloors: [{ address: target, fromBlock: 1 }],
+  });
+  const first = await provider.request({ method: 'eth_getLogs', params: [filter()] });
+  first[0].data = '0x11';
+  const restarted = createKohakuProvider({
+    handle,
+    contracts,
+    scanCacheStorage,
+    beforeScan,
+    onScan,
+    logFloors: [{ address: target, fromBlock: 1 }],
+  });
+  expect((await restarted.request({ method: 'eth_getLogs', params: [filter()] }))[0].data).toBe(
+    '0x'
+  );
+  expect(requests.filter((r) => r.method === 'eth_getLogs')).toHaveLength(1);
+  expect(beforeScan).toHaveBeenCalledTimes(2);
+  expect(onScan).toHaveBeenCalledTimes(2);
+  expect(onScan.mock.calls[1][0]).toEqual({ completedWindows: 1, scannedBlocks: 2 });
+  await expect(
+    restarted.request({
+      method: 'eth_getLogs',
+      params: [{ ...filter(), topics: [[event], txHash] }],
+    })
+  ).rejects.toMatchObject({ code: 'PRIVATE_SDK_RPC_REFUSED' });
+  const bypass = createKohakuProvider({
+    handle,
+    contracts,
+    scanCacheStorage,
+    bypassScanCache: true,
+  });
+  await bypass.request({ method: 'eth_getLogs', params: [filter()] });
+  expect(requests.filter((r) => r.method === 'eth_getLogs')).toHaveLength(2);
+});

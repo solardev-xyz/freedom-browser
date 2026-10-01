@@ -327,6 +327,12 @@ async function signAndSendTransaction(params, signer, options = {}) {
     if (typeof options.review !== 'function') {
       throw privacyError('PRIVATE_REVIEW_REQUIRED', 'A main-owned transaction review is required');
     }
+    if (!require('./private-transaction-intent').validIntent(options.intent)) {
+      throw privacyError(
+        'PRIVATE_INTENT_INVALID',
+        'A classified private transaction intent is required'
+      );
+    }
   }
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } =
     params;

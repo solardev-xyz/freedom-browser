@@ -30,6 +30,10 @@ const service = require('./transaction-service');
 const chainData = require('../networks/chain-data-router');
 const wallet = new Wallet(`0x${'1'.repeat(64)}`); // Public synthetic fixture only.
 const params = { chainId: 11155111, to: `0x${'2'.repeat(40)}`, value: '1', gasLimit: '21000' };
+const fixtureIntent = require('./private-transaction-intent').transactionIntent(
+  'ppv2-register-auth',
+  { ...params, from: wallet.address, data: '0x' }
+);
 let scope, handle, network, tor, journalDirectory;
 let requests;
 let receipt, canonical;
@@ -99,7 +103,7 @@ afterEach(() => {
 });
 
 test('fees, gas, simulation, nonce, signing, submission and receipts use only the context route', async () => {
-  const options = { privacyContext: handle, review: async () => true };
+  const options = { privacyContext: handle, intent: fixtureIntent, review: async () => true };
   expect(await service.estimateGas({ ...params, from: wallet.address }, options)).toEqual({
     gasLimit: '25200',
   });
@@ -143,6 +147,7 @@ test('signers that broadcast through their own RPC are rejected before network o
   await expect(
     service.signAndSendTransaction(params, signer, {
       privacyContext: handle,
+      intent: fixtureIntent,
       review: async () => true,
     })
   ).rejects.toMatchObject({ code: 'PRIVATE_REMOTE_BROADCAST_UNSUPPORTED' });
@@ -155,6 +160,7 @@ test('changed signer output and lock during signing never reach broadcast', asyn
   await expect(
     service.signAndSendTransaction(params, signer, {
       privacyContext: handle,
+      intent: fixtureIntent,
       review: async () => true,
     })
   ).rejects.toMatchObject({ code: 'PRIVATE_SIGNED_INTENT_MISMATCH' });
@@ -165,6 +171,7 @@ test('changed signer output and lock during signing never reach broadcast', asyn
   await expect(
     service.signAndSendTransaction(params, signer, {
       privacyContext: handle,
+      intent: fixtureIntent,
       review: async () => true,
     })
   ).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
@@ -180,20 +187,27 @@ test('a lost broadcast response preserves deterministic hash and refuses a dupli
     }
   };
   const error = await service
-    .signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true })
+    .signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
     .catch((error) => error);
   expect(error).toMatchObject({
     code: 'PRIVATE_BROADCAST_UNCERTAIN',
     submissionStatus: 'unknown',
     transactionHash: Transaction.from(signed).hash,
   });
-  await expect(network.broadcastRawTransaction(11155111, signed)).rejects.toMatchObject({
+  await expect(
+    network.broadcastRawTransaction(11155111, signed, { intent: fixtureIntent })
+  ).rejects.toMatchObject({
     code: 'PRIVATE_BROADCAST_ALREADY_ATTEMPTED',
   });
   responseHook = null;
   expect(
     await service.getTransactionStatus(error.transactionHash, 11155111, {
       privacyContext: handle,
+      intent: fixtureIntent,
       review: async () => true,
     })
   ).toMatchObject({ status: 'unknown' });
@@ -229,10 +243,12 @@ test('a fresh caller gets a new client after Tor restarts while old references s
 test('lock cancels receipt polling without waiting for its timer', async () => {
   const sent = await service.signAndSendTransaction(params, signer, {
     privacyContext: handle,
+    intent: fixtureIntent,
     review: async () => true,
   });
   const waiting = service.waitForTransaction(sent.hash, 11155111, 1, {
     privacyContext: handle,
+    intent: fixtureIntent,
     review: async () => true,
   });
   await new Promise(setImmediate);
@@ -248,11 +264,16 @@ test('review sees complete frozen intent; rejection, expiry and lock prevent sig
     return false;
   });
   await expect(
-    service.signAndSendTransaction(params, signer, { privacyContext: handle, review })
+    service.signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review,
+    })
   ).rejects.toMatchObject({ code: 'PRIVATE_REVIEW_REJECTED' });
   await expect(
     service.signAndSendTransaction(params, signer, {
       privacyContext: handle,
+      intent: fixtureIntent,
       review: () => new Promise(() => {}),
       reviewTimeoutMs: 5,
     })
@@ -278,7 +299,11 @@ test('restart recovers a lost-response hash for receipt queries and blocks a new
     if (call.method === 'eth_sendRawTransaction') throw new Error('lost');
   };
   const error = await service
-    .signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true })
+    .signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      intent: fixtureIntent,
+      review: async () => true,
+    })
     .catch((error) => error);
   scope.close();
   scope = createPrivacyScope({ profileId: 'test', signal: new AbortController().signal });
@@ -301,6 +326,7 @@ test('restart recovers a lost-response hash for receipt queries and blocks a new
   await expect(
     service.signAndSendTransaction({ ...params, value: '2' }, signer, {
       privacyContext: handle,
+      intent: fixtureIntent,
       review: async () => true,
     })
   ).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
@@ -319,6 +345,7 @@ test('disk failure before broadcast sends no bytes; a failed acknowledgment keep
     await expect(
       service.signAndSendTransaction(params, signer, {
         privacyContext: handle,
+        intent: fixtureIntent,
         review: async () => true,
       })
     ).rejects.toMatchObject({ code: 'PRIVATE_STORAGE_WRITE_FAILED' });
@@ -334,7 +361,11 @@ test('disk failure before broadcast sends no bytes; a failed acknowledgment keep
   };
   try {
     const error = await service
-      .signAndSendTransaction(params, signer, { privacyContext: handle, review: async () => true })
+      .signAndSendTransaction(params, signer, {
+        privacyContext: handle,
+        intent: fixtureIntent,
+        review: async () => true,
+      })
       .catch((error) => error);
     expect(error).toMatchObject({
       code: 'PRIVATE_BROADCAST_UNCERTAIN',
@@ -349,7 +380,7 @@ test('disk failure before broadcast sends no bytes; a failed acknowledgment keep
 });
 
 test('a reviewed resolution allows one new nonce; missing evidence before or during signing closes the gate', async () => {
-  const options = { privacyContext: handle, review: async () => true };
+  const options = { privacyContext: handle, intent: fixtureIntent, review: async () => true };
   const first = await service.signAndSendTransaction(params, signer, options);
   const included = {
     transactionHash: first.hash,
@@ -428,6 +459,7 @@ test('an absolute preparation deadline cannot be extended by slow nonce reads', 
     await expect(
       service.signAndSendTransaction(params, signer, {
         privacyContext: handle,
+        intent: fixtureIntent,
         reviewExpiresAt: expiresAt,
         review: async () => true,
       })
@@ -580,4 +612,20 @@ test('legacy exit recovery queries only its recorded hash through the owner cont
   await expect(network.assertCanSubmit()).rejects.toMatchObject({
     code: 'PRIVATE_SUBMISSION_UNRESOLVED',
   });
+});
+
+test('private submissions require classification before signing and again at raw handoff', async () => {
+  await expect(
+    service.signAndSendTransaction(params, signer, {
+      privacyContext: handle,
+      review: async () => true,
+    })
+  ).rejects.toMatchObject({ code: 'PRIVATE_INTENT_INVALID' });
+  expect(signer.signTransaction).not.toHaveBeenCalled();
+  const signed = await wallet.signTransaction({ ...params, gasPrice: 100, nonce: 0 });
+  await expect(network.broadcastRawTransaction(11155111, signed)).rejects.toMatchObject({
+    code: 'PRIVATE_INTENT_INVALID',
+  });
+  expect(await network.listSubmissions()).toEqual([]);
+  expect(mockRequest).not.toHaveBeenCalled();
 });

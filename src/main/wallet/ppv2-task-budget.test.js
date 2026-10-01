@@ -184,3 +184,55 @@ test('a lower subsequent head does not invalidate an earlier scan bound, includi
   );
   expect(scope.signal.aborted).toBe(false);
 });
+
+test('a fresh recovery provider renews long scans after the main provider established a high-water mark', async () => {
+  jest.useFakeTimers();
+  try {
+    const main = budget.createScanReporter();
+    await budget.run(
+      'session-open',
+      async () => {
+        for (let i = 1; i <= 100; i++) {
+          budget.beforeScan({ fromBlock: 0n, toBlock: 4999n, floor: 0n, head: 500000n });
+          main({ completedWindows: i, scannedBlocks: i * 5000 });
+        }
+      },
+      300000,
+      { allowScanProgress: true }
+    );
+    const recovery = budget.createScanReporter();
+    let finish;
+    const pending = budget.run(
+      'sdk-operation',
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      300000,
+      { allowScanProgress: true }
+    );
+    for (let i = 1; i <= 5; i++) {
+      await jest.advanceTimersByTimeAsync(240000);
+      budget.beforeScan({ fromBlock: 0n, toBlock: 4999n, floor: 0n, head: 500000n });
+      recovery({ completedWindows: i, scannedBlocks: i * 5000 });
+      expect(scope.signal.aborted).toBe(false);
+    }
+    finish('recovered');
+    await expect(pending).resolves.toBe('recovered');
+    expect(events.filter((e) => e.stage === 'history').at(-1)).toMatchObject({
+      completedWindows: 105,
+      scannedBlocks: 525000,
+    });
+    const stalled = budget.run('sdk-operation', () => new Promise(() => {}), 300000, {
+      allowScanProgress: true,
+    });
+    const refusal = expect(stalled).rejects.toMatchObject({ code: 'PRIVATE_PPV2_TASK_TIMEOUT' });
+    await jest.advanceTimersByTimeAsync(240000);
+    recovery({ completedWindows: 5, scannedBlocks: 25000 });
+    recovery({ completedWindows: 4, scannedBlocks: 20000 });
+    await jest.advanceTimersByTimeAsync(60000);
+    await refusal;
+  } finally {
+    jest.useRealTimers();
+  }
+});

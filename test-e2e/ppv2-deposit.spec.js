@@ -293,7 +293,12 @@ test('real Kohaku session prepares a verified native deposit through the utility
   expect(report.recovered).toBe(true);
   expect(report.badArtifact).toBe('PRIVATE_PPV2_OPERATION_FAILED');
   expect(report.badArtifactStartedProver).toBe(false);
-  expect(report.methods).toEqual(['eth_blockNumber', 'eth_call', 'eth_getLogs']);
+  expect(report.methods).toEqual([
+    'eth_blockNumber',
+    'eth_call',
+    'eth_getBlockByNumber',
+    'eth_getLogs',
+  ]);
   expect(report.productionGate).toBe(false);
   if (report.packaged) expect(report.jobFromAsar).toBe(true);
 });

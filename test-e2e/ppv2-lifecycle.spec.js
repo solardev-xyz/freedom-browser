@@ -347,7 +347,38 @@ for (const outage of [false, true]) {
           const emptyPersistentStore = !fs.existsSync(sdkCache);
           session = await open();
           if (cold) {
+            // Stop after two completed network windows, then reopen the same
+            // encrypted profile. Completed pages must survive without granting
+            // any note/cursor authority to the checkpoint cache.
+            scanFault = true;
+            faultWindows = 0;
+            const failureStart = scanWindows.length;
+            const interrupted = await session.notes().then(
+              () => null,
+              (error) => error.code
+            );
+            scanFault = false;
+            const completedBeforeFailure = scanWindows.slice(failureStart, failureStart + 2);
+            session.close();
+            vault.lockVault();
+            await vault.unlockVault(directory, 'fixture-password', 0);
+            session = await open();
+            const resumeStart = scanWindows.length;
             const recovered = await session.notes();
+            const resumedWindows = scanWindows.slice(resumeStart);
+            const pageKey = (window) =>
+              JSON.stringify([window.address, window.topics, window.from, window.to]);
+            const reusedCompletedPages = completedBeforeFailure.filter(
+              (window) => !resumedWindows.some((other) => pageKey(other) === pageKey(window))
+            ).length;
+            const freshComparison = await session.inspectNoteRecovery();
+            const sameUncachedNotes =
+              JSON.stringify(freshComparison.notes, (_key, value) =>
+                typeof value === 'bigint' ? value.toString() : value
+              ) ===
+              JSON.stringify(recovered, (_key, value) =>
+                typeof value === 'bigint' ? value.toString() : value
+              );
             const coldWindows = scanWindows.length;
             session.close();
             // Withhold encrypted note events only during reopen. A fresh rebuild
@@ -368,6 +399,9 @@ for (const outage of [false, true]) {
             const cache = sdkCache;
             return {
               emptyPersistentStore,
+              interrupted,
+              reusedCompletedPages,
+              sameUncachedNotes,
               coldWindows,
               reopenWindows: scanWindows.length - coldWindows,
               noteEventsWithheld: noteEvents.length,
@@ -743,6 +777,9 @@ for (const outage of [false, true]) {
         expect(report.coldProfile.noteEventsWithheld).toBeGreaterThan(0);
         expect(report.coldProfile).toMatchObject({
           emptyPersistentStore: true,
+          interrupted: 'PRIVATE_PPV2_OPERATION_FAILED',
+          reusedCompletedPages: 2,
+          sameUncachedNotes: true,
           recovered: true,
           persisted: true,
           encrypted: true,

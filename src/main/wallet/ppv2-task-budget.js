@@ -35,6 +35,31 @@ function createPPv2TaskBudget({ scope, handle, onProgress }) {
       /* Diagnostics cannot change operation authority. */
     }
   }
+  let reportedWindows = 0,
+    reportedBlocks = 0;
+  function createScanReporter() {
+    let priorWindows = 0,
+      priorBlocks = 0;
+    return (counts) => {
+      if (
+        !current ||
+        scope.signal.aborted ||
+        !Number.isSafeInteger(counts?.completedWindows) ||
+        !Number.isSafeInteger(counts?.scannedBlocks) ||
+        counts.completedWindows <= priorWindows ||
+        counts.scannedBlocks <= priorBlocks
+      )
+        return;
+      const nextWindows = reportedWindows + counts.completedWindows - priorWindows;
+      const nextBlocks = reportedBlocks + counts.scannedBlocks - priorBlocks;
+      if (!Number.isSafeInteger(nextWindows) || !Number.isSafeInteger(nextBlocks)) return;
+      priorWindows = counts.completedWindows;
+      priorBlocks = counts.scannedBlocks;
+      reportedWindows = nextWindows;
+      reportedBlocks = nextBlocks;
+      progress('history', { completedWindows: reportedWindows, scannedBlocks: reportedBlocks });
+    };
+  }
   function observeHead(head) {
     if (!current || !current.allowScanProgress || scope.signal.aborted) return;
     if (
@@ -142,6 +167,6 @@ function createPPv2TaskBudget({ scope, handle, onProgress }) {
       current = null;
     }
   }
-  return Object.freeze({ run, progress, beforeScan, observeHead });
+  return Object.freeze({ run, progress, beforeScan, observeHead, createScanReporter });
 }
 module.exports = { createPPv2TaskBudget, MAX_TASK_MS };

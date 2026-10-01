@@ -17,6 +17,7 @@ Implementation checkpoint: `9700540aa556aa226d4f8641d0c08ed0c44207b3`. Main was 
 
 7. Relayed operations: PPv2 session, signed quotes, relay handoff/journal/reconciliation and note recovery. Check SDK-selected inputs, deadlines, body equality, one-use review, durable uncertainty, finalized-event matching and checkpoint revalidation.
 8. Post-live follow-ups: exit reservations/legacy recovery, task budget and Sepolia preflight. Read the [live finding](ppv2-live-lifecycle-2026-10-01.md), then [reservation](ppv2-exit-reservations-2026-10-01.md), [legacy recovery](ppv2-legacy-exit-recovery-2026-10-01.md), [bounded work](ppv2-bounded-recovery-2026-10-01.md) and [ASP outage](ppv2-asp-outage-2026-10-01.md) reports.
+   The October 2 [encrypted scan checkpoints](ppv2-scan-checkpoints-2026-10-02.md) retain finalized RPC pages across interrupted discovery, preserve uncached recovery inspection and aggregate progress across providers. They do not establish RPC completeness or advance SDK cursors.
 9. Existing renderer balance experiment and settings diff; no shielded-wallet product UI exists. New private-operation authority remains in main. The branch uses existing balance IPC for a gated public-balance experiment.
 
 No top-level package/process ownership changed. No PPv2 SDK dependency was added to the application package. Its separately qualified ASAR is not a production asset.

@@ -26,6 +26,8 @@ function createKohakuProvider({
   onScan,
   beforeScan,
   onHead,
+  scanCacheStorage,
+  bypassScanCache = false,
 }) {
   const context = getPrivacyContext(handle);
   if (context.subject.kind !== 'private-account' || context.subject.role !== 'protocol-rpc') {
@@ -40,7 +42,8 @@ function createKohakuProvider({
   if (
     (onScan !== undefined && typeof onScan !== 'function') ||
     (beforeScan !== undefined && typeof beforeScan !== 'function') ||
-    (onHead !== undefined && typeof onHead !== 'function')
+    (onHead !== undefined && typeof onHead !== 'function') ||
+    typeof bypassScanCache !== 'boolean'
   )
     throw refused();
   let completedWindows = 0,
@@ -112,6 +115,13 @@ function createKohakuProvider({
   const route = (target) => (ownerTargets.has(target?.toLowerCase()) ? publicRpc : rpc);
   const read = async (method, params, validate, target) =>
     (await route(target).request(method, params, validate)).result;
+  const scanCache = scanCacheStorage
+    ? require('./kohaku-scan-cache').createKohakuScanCache({
+        storage: scanCacheStorage,
+        read,
+        assertActive: () => rpc.assertActive(),
+      })
+    : null;
   const head = async (target) => {
     const value = await read('eth_blockNumber', [], block, target);
     if (!target) {
@@ -220,32 +230,31 @@ function createKohakuProvider({
       }
       // These grants permit only unfiltered public event scans. They carry no
       // owner topic and must not share the owner's transaction connection.
-      const result = await read(
-        method,
-        [query],
-        (logs) =>
-          Array.isArray(logs) &&
-          logs.length <= 2048 &&
-          logs.every(
-            (log) =>
-              log &&
-              address(log.address) &&
-              log.address.toLowerCase() === target &&
-              Array.isArray(log.topics) &&
-              log.topics.length > 0 &&
-              log.topics.length <= 4 &&
-              log.topics.every(hash) &&
-              allowedTopics.has(log.topics[0].toLowerCase()) &&
-              bytes(log.data) &&
-              block(log.blockNumber) &&
-              BigInt(log.blockNumber) >= from &&
-              BigInt(log.blockNumber) <= to &&
-              hash(log.blockHash) &&
-              hash(log.transactionHash) &&
-              block(log.logIndex) &&
-              log.removed === false
-          )
-      );
+      const validLogs = (logs) =>
+        Array.isArray(logs) &&
+        logs.length <= 2048 &&
+        logs.every(
+          (log) =>
+            log &&
+            address(log.address) &&
+            log.address.toLowerCase() === target &&
+            Array.isArray(log.topics) &&
+            log.topics.length > 0 &&
+            log.topics.length <= 4 &&
+            log.topics.every(hash) &&
+            allowedTopics.has(log.topics[0].toLowerCase()) &&
+            bytes(log.data) &&
+            block(log.blockNumber) &&
+            BigInt(log.blockNumber) >= from &&
+            BigInt(log.blockNumber) <= to &&
+            hash(log.blockHash) &&
+            hash(log.transactionHash) &&
+            block(log.logIndex) &&
+            log.removed === false
+        );
+      const result = scanCache
+        ? await scanCache.logs(query, validLogs, { bypass: bypassScanCache })
+        : await read(method, [query], validLogs);
       rpc.assertActive();
       completedWindows++;
       scannedBlocks += Number(to - from + 1n);

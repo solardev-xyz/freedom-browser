@@ -10,7 +10,7 @@ const {
 } = require('../networks/privacy-context');
 const { openPrivacySession } = require('./privacy-session');
 const { createPPv2Keystore } = require('../identity/ppv2-keys');
-const { createPPv2Storage } = require('./ppv2-storage');
+const { createPPv2Storage, createPPv2ScanStorage } = require('./ppv2-storage');
 const { createKohakuProvider } = require('../networks/kohaku-provider');
 const { createKohakuNetworkRouter } = require('../networks/kohaku-network-router');
 const { createPPv2DepositProver } = require('./ppv2-deposit-prover');
@@ -63,12 +63,14 @@ async function openPPv2Session({
   relayerRoute = 'tor',
   startupTimeoutMs = MAX_TASK_MS,
   onProgress,
+  bypassScanCache = false,
 }) {
   if (
     !Number.isInteger(startupTimeoutMs) ||
     startupTimeoutMs < 1 ||
     startupTimeoutMs > MAX_TASK_MS ||
     (onProgress !== undefined && typeof onProgress !== 'function') ||
+    typeof bypassScanCache !== 'boolean' ||
     !['tor', 'direct-sepolia-test'].includes(relayerRoute) ||
     !require('../settings-store').isWalletTorExperimentAvailable() ||
     !Number.isInteger(accountIndex) ||
@@ -207,18 +209,6 @@ async function openPPv2Session({
       journal: getPrivateSubmissionJournal(ownerHandle),
       pool: config.deployment.poolAddress,
     });
-    const provider = createKohakuProvider({
-      handle: handle('protocol-rpc'),
-      contracts: config.contracts,
-      publicReadHandle: ownerHandle,
-      publicContracts: [config.deployment.keystoreAddress, ...(config.erc20Tokens || [])],
-      onScan: (counts) => budget.progress('history', counts),
-      beforeScan: budget.beforeScan,
-      onHead: budget.observeHead,
-      logFloors: deploymentKeys
-        .slice(0, 4)
-        .map((name) => ({ address: config.deployment[name], fromBlock: config.deploymentBlock })),
-    });
     const transport = createKohakuNetworkRouter(
       config.networks.map(({ role, endpoints }) => ({
         handle: handle(role),
@@ -269,6 +259,31 @@ async function openPPv2Session({
     };
     budget.progress('storage');
     const storage = await createPPv2Storage({ handle: handle('storage'), accountIndex, binding });
+    const scanCacheStorage = await createPPv2ScanStorage({
+      handle: handle('storage'),
+      cacheHandle: scope.getContext({
+        ...getPrivacyContext(handle('storage')).subject,
+        operation: 'scan-cache-v1',
+      }),
+      accountIndex,
+      binding: { ...binding, chainId: config.chainId, contracts: config.contracts },
+    });
+    const makeProvider = (useCache = true) =>
+      createKohakuProvider({
+        handle: handle('protocol-rpc'),
+        contracts: config.contracts,
+        publicReadHandle: ownerHandle,
+        publicContracts: [config.deployment.keystoreAddress, ...(config.erc20Tokens || [])],
+        onScan: budget.createScanReporter(),
+        beforeScan: budget.beforeScan,
+        onHead: budget.observeHead,
+        scanCacheStorage: useCache ? scanCacheStorage : undefined,
+        bypassScanCache,
+        logFloors: deploymentKeys
+          .slice(0, 4)
+          .map((name) => ({ address: config.deployment[name], fromBlock: config.deploymentBlock })),
+      });
+    const provider = makeProvider();
     const depositProver = proving
       ? createPPv2DepositProver({
           handle: handle('prover'),
@@ -651,7 +666,7 @@ async function openPPv2Session({
               return inspectPPv2NoteRecovery({
                 handle: sessionHandle,
                 createPlugin,
-                host,
+                host: Object.freeze({ ...host, provider: makeProvider(false) }),
                 params,
                 plugin,
               });

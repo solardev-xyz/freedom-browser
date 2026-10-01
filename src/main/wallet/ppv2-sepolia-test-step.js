@@ -29,6 +29,11 @@ const ACTIONS = Object.freeze([
   'resolve-relay',
   'status',
 ]);
+const publicSummary = (record) => {
+  if (!record || typeof record !== 'object') return record;
+  const { ordinary: _ordinary, ...summary } = record;
+  return summary;
+};
 async function runSepoliaTestStep({
   handle,
   session,
@@ -67,7 +72,7 @@ async function runSepoliaTestStep({
     relayRecords = await session.listRelayAttempts();
   if (action === 'status')
     return {
-      publicSubmissions: publicRecords,
+      publicSubmissions: publicRecords.map(publicSummary),
       relayAttempts: relayRecords,
       notes: await session.notes(),
     };
@@ -77,20 +82,22 @@ async function runSepoliaTestStep({
       !publicRecords.some((r) => r.hash === reference)
     )
       throw fail();
-    return session.resolvePublicSubmission(reference, {
-      minimumConfirmations: POLICY.minimumConfirmations,
-      review: async (review) => {
-        if (
-          review.transactionHash !== reference ||
-          !(action === 'resolve-public' ? ['included'] : ['reverted', 'nonce-consumed']).includes(
-            review.observation?.status
-          ) ||
-          review.observation.confirmations < POLICY.minimumConfirmations
-        )
-          throw fail();
-        return { allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' };
-      },
-    });
+    return publicSummary(
+      await session.resolvePublicSubmission(reference, {
+        minimumConfirmations: POLICY.minimumConfirmations,
+        review: async (review) => {
+          if (
+            review.transactionHash !== reference ||
+            !(action === 'resolve-public' ? ['included'] : ['reverted', 'nonce-consumed']).includes(
+              review.observation?.status
+            ) ||
+            review.observation.confirmations < POLICY.minimumConfirmations
+          )
+            throw fail();
+          return { allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' };
+        },
+      })
+    );
   }
   if (action === 'resolve-relay') {
     if (!relayRecords.some((r) => r.id === reference)) throw fail();
