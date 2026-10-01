@@ -92,7 +92,8 @@ function getPrivateTransactionNetwork(handle) {
       if (!validIntent(intent) || transactionIntent(intent.kind, transaction).digest !== intent.digest) {
         throw privacyError('PRIVATE_INTENT_INVALID', 'Signed transaction differs from its operation intent');
       }
-      intent = Object.freeze({ ...intent });
+      // Derive all reservation metadata from signed bytes, never caller fields.
+      intent = transactionIntent(intent.kind, transaction);
     }
     const txHash = transaction.hash.toLowerCase();
     const assertDeadline = () => {

@@ -119,11 +119,13 @@ test('failed public reconciliation is a separate explicit action and never submi
   expect(signer.signTransaction).not.toHaveBeenCalled(); expect(session.submitPublicOperation).not.toHaveBeenCalled();
 });
 test('competing ragequit requires one matching unresolved relay and explicit cancellation review', async () => {
-  const commitment = `0x${'56'.repeat(32)}`;
+  const commitment = `0x${'7'.padStart(64, '0')}`;
   args.action = 'ragequit-cancel'; args.reference = commitment;
   session.listRelayAttempts = async () => [{ commitment, resolution: null }];
   session.notes.mockResolvedValue([{ commitment, value: POLICY.deposit, status: 'active', asset: { __type: 'native' } }]);
-  tx = { ...tx, kind: 'ppv2-native-ragequit', to: CANDIDATE.pool, commitment };
+  tx = { ...tx, kind: 'ppv2-native-ragequit', to: CANDIDATE.pool, commitment,
+    data: new (require('ethers').Interface)([require('./ppv2-ragequit-policy').RAGEQUIT_ABI]).encodeFunctionData('ragequit',
+      [[[1n, 2n], [[3n, 4n], [5n, 6n]], [7n, 8n], [1n, BigInt(commitment), 3n, BigInt(owner), POLICY.deposit, BigInt(require('./ppv2-deposit-policy').NATIVE), 4n]]]) };
   session.prepareNativeRagequit = jest.fn(async () => tx);
   session.submitPublicOperation.mockImplementation(async (_prepared, options) => {
     const review = { operation: tx.kind, intent: transactionIntent(tx.kind, tx), maxGasFee: POLICY.gasFee,

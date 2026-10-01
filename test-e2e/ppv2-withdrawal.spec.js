@@ -3,11 +3,12 @@ const artifact = process.env.FREEDOM_PP_V2_PROCESS_ASAR;
 
 const cases = [false, true].flatMap(direct => (direct ? [false] : [false, true]).flatMap(tokenMode => [false, true].map(cancel => ({ direct, tokenMode, cancel }))));
 cases.push({ direct: true, tokenMode: false, cancel: false, controller: true });
-for (const { direct, tokenMode, cancel, controller = false } of cases) {
-test(controller ? 'PPv2 bounded controller registration, deposit, withdrawal, reconciliation and separate-note exit' : `PPv2 ${direct ? 'direct test ' : ''}${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart and reviewed emergency exit' : 'deposit, ASP state, lost withdrawal, restart, reconciliation and second spend'}`, async ({ electronApp, relaunchApp }, testInfo) => {
+cases.push({ direct: true, tokenMode: false, cancel: false, exitPrepared: true });
+for (const { direct, tokenMode, cancel, controller = false, exitPrepared = false } of cases) {
+test(exitPrepared ? 'PPv2 prepared withdrawal cannot submit after a resolved public exit' : controller ? 'PPv2 bounded controller registration, deposit, withdrawal, reconciliation and separate-note exit' : `PPv2 ${direct ? 'direct test ' : ''}${tokenMode ? 'token' : 'native'} ${cancel ? 'withheld relay, restart and reviewed emergency exit' : 'deposit, ASP state, lost withdrawal, restart, reconciliation and second spend'}`, async ({ electronApp, relaunchApp }, testInfo) => {
   test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the qualified Kohaku/SDK fixture');
   test.setTimeout(240000);
-  const exercise = async ({ app }, { artifact, restart, exit, second, checkpoint, tokenMode, cancel, direct, controller }) => {
+  const exercise = async ({ app }, { artifact, restart, exit, second, checkpoint, tokenMode, cancel, direct, controller, exitPrepared }) => {
     const req = process.mainModule.require('module').createRequire(`${app.getAppPath()}/package.json`);
     const runtimeLoader = req('./src/main/wallet/ppv2-runtime');
     artifact = runtimeLoader.verifyPPv2Runtime(artifact);
@@ -296,6 +297,16 @@ test(controller ? 'PPv2 bounded controller registration, deposit, withdrawal, re
           if(relaySends!==0 || (await session.listRelayAttempts()).length!==0) throw new Error('Short quote reserved or sent');
           quoteLifetime=60000; stage='withdrawal preparation';
           let prepared=await session[tokenMode?'prepareTokenWithdrawal':'prepareNativeWithdrawal']({token,commitment:saved.commitment,amount:5900n,maxFee:100n,recipient:`0x${'77'.repeat(20)}`});
+          if (exitPrepared) {
+            stage = 'exit after withdrawal preparation';
+            const exitPlan = await session.prepareNativeRagequit(saved.commitment);
+            const result = await session.submitPublicOperation(exitPlan, options);
+            await resolve(result.hash);
+            errorCodes.length = 0;
+            const refused = await session.submitNativeWithdrawal(prepared, async () => true).then(() => null, e => e.code);
+            return { refused, reservationFired: errorCodes.includes('PRIVATE_PPV2_EXIT_RESERVED'), relaySends, relayRecords: (await session.listRelayAttempts()).length,
+              exitResolved: !!(await session.listPublicSubmissions()).at(-1).resolution };
+          }
           if (!tokenMode && !cancel) {
             // A root changes while the user reviews. Refuse before reserving
             // the note, then allow a freshly prepared operation to proceed.
@@ -447,7 +458,11 @@ test(controller ? 'PPv2 bounded controller registration, deposit, withdrawal, re
     return;
   }
   await electronApp.close(); const withdrawing = await relaunchApp();
-  report.withdrawal = await withdrawing.evaluate(exercise, { artifact, tokenMode, cancel, direct, restart:true, exit:true });
+  report.withdrawal = await withdrawing.evaluate(exercise, { artifact, tokenMode, cancel, direct, exitPrepared, restart:true, exit:true });
+  if (exitPrepared) {
+    expect(report.withdrawal).toMatchObject({ refused: 'PRIVATE_PPV2_RELAY_REFUSED', reservationFired: true, relaySends: 0, relayRecords: 0, exitResolved: true });
+    return;
+  }
   await withdrawing.close(); const restored = await relaunchApp();
   report.checkpoint = await restored.evaluate(exercise, { artifact, tokenMode, cancel, direct, restart:true, second:true, checkpoint:true });
   await restored.close(); const resumed = await relaunchApp();

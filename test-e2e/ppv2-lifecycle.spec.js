@@ -135,12 +135,22 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
           await resolve(saved.depositHash);
           const preparedExit = await session.prepareNativeRagequit(saved.commitment);
           const result = await session.submitPublicOperation(preparedExit, options);
+          // Public resolution precedes SDK finality. The host must reserve the
+          // note even after a new session reconstructs its view from storage.
+          await resolve(result.hash);
+          const pendingExit = await session.notes();
+          const pendingBalance = await session.balance();
+          session.close(); session = await open();
+          const restartedExit = await session.notes();
+          const retryExit = await session.prepareNativeRagequit(saved.commitment).then(() => null, e => e.code);
           head += 3;
           const afterExit = await session.notes();
           return { kind: preparedExit.kind, amount: preparedExit.amount.toString(), value: preparedExit.value.toString(),
             proofVerified: preparedExit.proofVerified, chainStateVerified: preparedExit.chainStateVerified,
             commitmentBound: preparedExit.commitment === saved.commitment, ownerBound: preparedExit.from === config.ownerAddress,
             poolBound: preparedExit.to === config.deployment.poolAddress, sent: sends.length, journalKind: (await session.listPublicSubmissions())[3].intent.kind,
+            pendingStatus: pendingExit[0]?.status, restartedStatus: restartedExit[0]?.status, retryExit,
+            pendingSpendable: pendingBalance.find(b => b.tag === 'spendable')?.amount.toString(),
             observedStatus: afterExit[0]?.status, reviewed: reviews[0]?.operation, recordedHash: (await session.listPublicSubmissions())[3].hash === result.hash };
         }
         return { recovered: notes.length === 1 && notes[0].commitment === saved.commitment,
@@ -236,7 +246,8 @@ test('PPv2 reviewed registration, uncertain deposit and encrypted note recovery'
   expect(report.productionGate).toBe(false);
   expect(report.nativeExit).toMatchObject({ kind: 'ppv2-native-ragequit', amount: '10000', value: '0', proofVerified: true,
     chainStateVerified: false, commitmentBound: true, ownerBound: true, poolBound: true, sent: 1,
-    journalKind: 'ppv2-native-ragequit', observedStatus: 'exited', reviewed: 'ppv2-native-ragequit', recordedHash: true });
+    journalKind: 'ppv2-native-ragequit', pendingStatus: 'exit_pending', restartedStatus: 'exit_pending',
+    retryExit: 'PRIVATE_PPV2_EXIT_RESERVED', pendingSpendable: '0', observedStatus: 'exited', reviewed: 'ppv2-native-ragequit', recordedHash: true });
   expect(report.processRestart).toMatchObject({ recovered: true, rescanRecovered: true, journalRestored: true,
     blocked: 'PRIVATE_SUBMISSION_UNRESOLVED', sends: 0, productionGate: false });
   expect(report.blockedSecond).toBe('PRIVATE_SUBMISSION_UNRESOLVED');

@@ -210,7 +210,8 @@ test('intent is durable before transport sees signed bytes and cannot be changed
 test('native ragequit review exposes its full note amount and uses the public submission journal', async () => {
   registered = false; // Publishing a viewing key is not a prerequisite for exit.
   const prepared = Object.freeze({ kind: 'ppv2-native-ragequit', chainId: 11155111, from: wallet.address,
-    to: config.deployment.poolAddress, value: 0n, data: '0xabcd', amount: 10000n, fee: 0n,
+    to: config.deployment.poolAddress, value: 0n, data: new Interface([require('./ppv2-ragequit-policy').RAGEQUIT_ABI]).encodeFunctionData('ragequit',
+      [[[1n, 2n], [[3n, 4n], [5n, 6n]], [7n, 8n], [1n, 7n, 3n, BigInt(wallet.address), 10000n, BigInt(require('./ppv2-deposit-policy').NATIVE), 4n]]]), amount: 10000n, fee: 0n,
     commitment: `0x${'7'.padStart(64, '0')}`, proofVerified: true, chainStateVerified: false });
   expect(() => operations.ragequit(Object.freeze({ ...prepared, value: 1n }))).toThrow();
   expect(() => operations.ragequit(Object.freeze({ ...prepared, to: wallet.address }))).toThrow();

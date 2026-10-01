@@ -88,6 +88,8 @@ function createPPv2PublicOperations({ scope, configuration, provider, tokenPolic
     if (!['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(prepared?.kind) || prepared.chainId !== 11155111 || prepared.value !== 0n ||
         prepared.from?.toLowerCase() !== owner || prepared.to?.toLowerCase() !== configuration.deployment.poolAddress.toLowerCase() ||
         prepared.proofVerified !== true || prepared.chainStateVerified !== false || !Object.isFrozen(prepared)) throw refused();
+    const intent = transactionIntent(prepared.kind, prepared);
+    if (intent.commitment !== prepared.commitment?.toLowerCase()) throw refused();
     return issue(prepared, [prepared]);
   }
   async function submit(prepared, { step = 0, signer, review, gasLimit, maxGasFee, reviewTimeoutMs = 120000 } = {}) {

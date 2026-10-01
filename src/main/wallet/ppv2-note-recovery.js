@@ -61,10 +61,10 @@ async function inspectPPv2NoteRecovery({ handle, createPlugin, host, params, plu
     return Object.freeze({ notes, missingFromScan: Object.freeze([...commitments].filter((id) => !recovered.has(id))),
       newlyDiscovered: Object.freeze([...recovered].filter((id) => !commitments.has(id))),
       chainStateVerified: false, historyCompletenessVerified: false, cacheReplaced: false,
-      requiresReview: true });
+      requiresReview: true, noteStatusSource: 'sdk-only', spendAuthority: false });
   } catch {
     assertActive();
     throw fail();
   } finally { open = false; values.clear(); }
 }
-module.exports = { inspectPPv2NoteRecovery };
+module.exports = { inspectPPv2NoteRecovery, safeNotes };

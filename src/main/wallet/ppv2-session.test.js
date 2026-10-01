@@ -1,6 +1,12 @@
 jest.mock('./ppv2-deposit-prover', () => ({ createPPv2DepositProver: () => ({ service: {} }) }));
 jest.mock('./ppv2-ragequit-prover', () => ({ createPPv2RagequitProver: () => ({ service: {}, prepare: (...args) => mockExitPrepare(...args) }) }));
 const mockExitPrepare = jest.fn();
+jest.mock('./ppv2-transact-prover', () => ({ createPPv2TransactProver: () => ({ service: {}, prepare: (...args) => mockTransactPrepare(...args) }) }));
+const mockTransactPrepare = jest.fn();
+jest.mock('./ppv2-public-operations', () => { const actual = jest.requireActual('./ppv2-public-operations');
+  return { ...actual, createPPv2PublicOperations: (...args) => { const ops = actual.createPPv2PublicOperations(...args);
+    return { ...ops, submit: (...args) => mockPublicSubmit ? mockPublicSubmit(...args) : ops.submit(...args) }; } }; });
+let mockPublicSubmit;
 jest.mock('./privacy-session', () => { const actual = jest.requireActual('./privacy-session');
   return { ...actual, openPrivacySession: jest.fn(actual.openPrivacySession) }; });
 jest.mock('./ppv2-runtime', () => ({ assertPPv2Candidate: jest.fn(), assertPPv2RuntimeEntries: jest.fn() }));
@@ -29,6 +35,7 @@ const snapshot = () => Object.freeze({ instanceId: async () => config.ownerAddre
 const handle = (role, index = 0) => scope.getContext({ kind: 'private-account', principal: `ppv2:${index}`,
   protocol: 'privacy-pools-v2', deployment: 'sepolia', chainId: 11155111, role });
 beforeEach(() => {
+  mockPublicSubmit = null;
   mockVault = new AbortController(); mockAvailable = true;
   tor = new AbortController(); mockEndpoint = { signal: tor.signal };
   mockProfile = { id: 'fixture', userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-ppv2-state-test-')) };
@@ -175,7 +182,7 @@ test('refuses production, unreviewed candidates and SDK diagnostics', async () =
   mockAvailable = true;
   await expect(openPPv2Session({ candidate: { ...candidate, sdk: 'other' }, configuration: config })).rejects.toThrow();
   await expect(openPPv2Session({ candidate, configuration: { ...config, chainId: 1 } })).rejects.toThrow();
-  candidate.createPlugin = async () => ({ ...snapshot(), balance: async () => { throw new Error('sensitive URL and note'); } });
+  candidate.createPlugin = async () => ({ ...snapshot(), notes: async () => { throw new Error('sensitive URL and note'); } });
   const session = await openPPv2Session({ candidate, configuration: config });
   await expect(session.balance()).rejects.toMatchObject({ code: 'PRIVATE_PPV2_OPERATION_FAILED', message: 'Controlled PPv2 operation failed' });
   session.close();
@@ -283,4 +290,62 @@ test('direct route requires its top-level choice and marker, and exposure remain
   fs.renameSync(path.join(mockProfile.userDataDir, MARKER + '.saved'), path.join(mockProfile.userDataDir, MARKER));
   mockEndpoint = null;
   await expect(openPPv2Session({ candidate, configuration: config, relayerRoute: 'direct-sepolia-test' })).rejects.toThrow();
+});
+
+
+test('durable public exit blocks stale SDK notes, balances and spending before proving or relay work across reopening', async () => {
+  const { Interface } = require('ethers');
+  const { transactionIntent } = require('./private-transaction-intent');
+  const { getPrivateSubmissionJournal } = require('./private-submission-journal');
+  const { word } = require('../../../test/helpers/ppv2-relay-fixture');
+  const commitment = word(7);
+  const note = { commitment, value: 10000n, asset: { __type: 'native' }, status: 'active', labelState: 'approved' };
+  const notes = jest.fn(async () => [note]);
+  candidate.createPlugin.mockImplementation(async () => ({ ...snapshot(), notes }));
+  candidate.createBroadcaster = jest.fn(); candidate.inspectChange = jest.fn();
+  config.relayers[0].quoteSigner = config.ownerAddress;
+  const data = new Interface([require('./ppv2-ragequit-policy').RAGEQUIT_ABI]).encodeFunctionData('ragequit',
+    [[[1n, 2n], [[3n, 4n], [5n, 6n]], [7n, 8n], [1n, 7n, 3n, BigInt(config.ownerAddress), 10000n, BigInt(require('./ppv2-deposit-policy').NATIVE), 4n]]]);
+  const intent = transactionIntent('ppv2-native-ragequit', { chainId: 11155111, from: config.ownerAddress,
+    to: config.deployment.poolAddress, value: 0n, data });
+  const journal = getPrivateSubmissionJournal(scope.getContext({ kind: 'public-address', principal: config.ownerAddress,
+    role: 'transaction-rpc', chainId: 11155111 }));
+  await journal.begin(word(90), 1, intent);
+  await journal.observe(word(90), { status: 'included', trust: 'unverified', observedAt: Date.now(), confirmations: 12,
+    blockNumber: 20, blockHash: word(21) }, 0);
+  await journal.resolve(word(90), 1, 12);
+  for (let i = 0; i < 2; i++) {
+    const session = await openPPv2Session({ candidate, configuration: config,
+      proving: { sdkEntry: '/reviewed/sdk.cjs', ragequitProverEntry: '/reviewed/serial-prover.cjs', transactProverEntry: '/reviewed/serial-prover.cjs' } });
+    expect(await session.notes()).toMatchObject([{ status: 'exit_pending', labelState: 'unknown' }]);
+    expect(await session.balance()).toMatchObject([{ tag: 'spendable', amount: 0n }, { tag: 'unspendable', amount: 10000n }]);
+    mockCall.mockClear(); notes.mockClear(); mockExitPrepare.mockClear(); mockTransactPrepare.mockClear();
+    await expect(session.prepareNativeRagequit(commitment)).rejects.toMatchObject({ code: 'PRIVATE_PPV2_EXIT_RESERVED' });
+    await expect(session.submitPublicOperation({ kind: 'ppv2-native-ragequit', commitment }, {})).rejects.toMatchObject({ code: 'PRIVATE_PPV2_EXIT_RESERVED' });
+    await expect(session.prepareNativeWithdrawal({ commitment, amount: 100n, maxFee: 10n, recipient: config.ownerAddress }))
+      .rejects.toMatchObject({ code: 'PRIVATE_PPV2_EXIT_RESERVED' });
+    expect(await session.listRelayAttempts()).toEqual([]);
+    expect(notes).not.toHaveBeenCalled(); expect(mockExitPrepare).not.toHaveBeenCalled(); expect(mockTransactPrepare).not.toHaveBeenCalled();
+    expect(mockCall).not.toHaveBeenCalled(); expect(mockFetch).not.toHaveBeenCalled();
+    session.close();
+  }
+});
+
+
+test('an exit reservation appearing during review prevents signing after approval', async () => {
+  const { getPrivateSubmissionJournal } = require('./private-submission-journal');
+  const { word } = require('../../../test/helpers/ppv2-relay-fixture');
+  const commitment = word(7);
+  candidate.createPlugin.mockImplementation(async () => ({ ...snapshot(), notes: async () => [
+    { commitment, value: 10000n, asset: { __type: 'native' }, status: 'active', labelState: 'approved' }] }));
+  const sign = jest.fn();
+  mockPublicSubmit = async (prepared, options) => { await options.review(prepared); return sign(); };
+  const session = await openPPv2Session({ candidate, configuration: config });
+  const journal = getPrivateSubmissionJournal(scope.getContext({ kind: 'public-address', principal: config.ownerAddress,
+    role: 'transaction-rpc', chainId: 11155111 }));
+  await expect(session.submitPublicOperation({ kind: 'ppv2-native-ragequit', commitment }, { review: async () => {
+    await journal.begin(word(90), 1, { kind: 'ppv2-native-ragequit', digest: word(4), pool: config.deployment.poolAddress, commitment });
+    return true;
+  } })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_EXIT_RESERVED' });
+  expect(sign).not.toHaveBeenCalled(); expect(mockFetch).not.toHaveBeenCalled(); session.close();
 });

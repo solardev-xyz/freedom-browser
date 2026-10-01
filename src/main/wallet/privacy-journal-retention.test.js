@@ -157,7 +157,7 @@ describe.each(['public', 'relay'])('%s history retention', (kind) => {
     await expect(archive({ review: accept })).rejects.toMatchObject({ code: 'PRIVATE_STORAGE_WRITE_FAILED' });
     expect(await journal.list()).toHaveLength(1); expect(await journal.listArchive()).toEqual([]);
     rename.mockRestore(); await archive({ review: accept }); await add(1, false);
-    expect(JSON.parse(await storage.get(storageKey)).version).toBe(2);
+    expect(JSON.parse(await storage.get(storageKey)).version).toBe(kind === 'public' ? 3 : 2);
   });
 
   test('permanent archive cap is distinct and maximum encoded history fits the storage bound', async () => {

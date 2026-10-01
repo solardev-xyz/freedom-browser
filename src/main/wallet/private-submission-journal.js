@@ -8,7 +8,7 @@ const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { mnemonicToSeedSync } = require('@scure/bip39');
 const { createPrivacyStorage } = require('./privacy-storage');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
-const { validIntent } = require('./private-transaction-intent');
+const { validIntent, isExitIntent } = require('./private-transaction-intent');
 const journals = new WeakMap();
 const HASH = /^0x[0-9a-f]{64}$/;
 const KEY = 'submissions-v1';
@@ -43,7 +43,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
     if (value === null) return { records: [], archive: [] };
     try {
       const data = JSON.parse(value);
-      if (![1, 2].includes(data.version) || !Array.isArray(data.records) || data.records.length > 64) throw invalid();
+      if (![1, 2, 3].includes(data.version) || !Array.isArray(data.records) || data.records.length > 64) throw invalid();
       const hashes = new Set();
       for (const record of data.records) {
         if (!HASH.test(record.hash) || hashes.has(record.hash) ||
@@ -77,7 +77,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
   function modify(change) {
     return storage.update(KEY, (value) => {
       const state = decode(value);
-      return JSON.stringify({ version: 2, records: change(state.records, state.archive), archive: state.archive });
+      return JSON.stringify({ version: 3, records: change(state.records, state.archive), archive: state.archive });
     });
   }
   async function assertCanSubmit() {
@@ -89,7 +89,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
     async archiveResolved(expected, anchors) {
       await storage.update(KEY, (value) => {
         const state = decode(value);
-        return JSON.stringify({ version: 2, ...retention.archivePrefix(state.records, state.archive, expected, anchors, 'public') });
+        return JSON.stringify({ version: 3, ...retention.archivePrefix(state.records, state.archive, expected, anchors, 'public') });
       });
       getPrivacyContext(handle);
     },
@@ -99,11 +99,15 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
     },
     async begin(hash, nonce, intent) {
       if (!HASH.test(hash) || !Number.isSafeInteger(nonce) || nonce < 0 ||
-          (intent !== undefined && !validIntent(intent))) throw invalid();
+          (intent !== undefined && (!validIntent(intent) || (isExitIntent(intent) && !intent.commitment)))) throw invalid();
       const metadata = intent === undefined ? {} : { intent: { ...intent } };
       await modify((records, archive) => {
         if ([...records, ...archive].some((record) => record.hash === hash)) {
           throw Object.assign(privacyError('PRIVATE_BROADCAST_ALREADY_ATTEMPTED', 'Query the existing submission before any further action'), { transactionHash: hash });
+        }
+        if (isExitIntent(intent) && [...records, ...archive].some((record) => isExitIntent(record.intent) &&
+            record.intent.pool === intent.pool && record.intent.commitment === intent.commitment)) {
+          throw privacyError('PRIVATE_PPV2_EXIT_RESERVED', 'Selected note has a recorded exit attempt');
         }
         // Conservatively serialize all sends for this account. Unverified RPC
         // receipts alone cannot clear the gate; an explicit review must.

@@ -18,6 +18,8 @@ const { createPPv2RelayHandoff } = require('./ppv2-relay-handoff');
 const { assertCurrentPPv2Roots } = require('./ppv2-relay-roots');
 const { createPPv2RelayReconciliation } = require('./ppv2-relay-reconciliation');
 const { createPPv2TokenPolicy } = require('./ppv2-token-policy');
+const { createPPv2ExitReservations } = require('./ppv2-exit-reservations');
+const { getPrivateSubmissionJournal } = require('./private-submission-journal');
 const { NATIVE } = require('./ppv2-deposit-policy');
 const { getPPv2RelayJournal } = require('./ppv2-relay-journal');
 const PPV2_CANDIDATE = Object.freeze({
@@ -93,6 +95,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
     if (relayerPrivacy.identityMayBeIpLinked) await relayJournal.recordDirectExposure();
     relayerPrivacy = Object.freeze({ ...relayerPrivacy, identityMayBeIpLinked: await relayJournal.hasDirectExposure() });
     const ownerHandle = scope.getContext({ kind: 'public-address', principal: config.ownerAddress.toLowerCase(), chainId: 11155111, role: 'transaction-rpc' });
+    const exits = createPPv2ExitReservations({ journal: getPrivateSubmissionJournal(ownerHandle), pool: config.deployment.poolAddress });
     const provider = createKohakuProvider({ handle: handle('protocol-rpc'), contracts: config.contracts, publicReadHandle: ownerHandle,
       publicContracts: [config.deployment.keystoreAddress, ...(config.erc20Tokens || [])],
       logFloors: deploymentKeys.slice(0, 4).map((name) => ({ address: config.deployment[name], fromBlock: config.deploymentBlock })) });
@@ -163,6 +166,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       const token = request.token ?? NATIVE;
       if (token !== NATIVE) tokenPolicy.assertToken(token);
       const asset = token === NATIVE ? { __type: 'native' } : { __type: 'erc20', contract: token.toLowerCase() };
+      await exits.assertAvailable(request.commitment);
       await availableToSpend();
       const note = (await plugin.notes(undefined, true)).find((n) => n.commitment === request.commitment);
       if (!note || note.status !== 'active' || (token === NATIVE ? note.asset?.__type !== 'native' :
@@ -203,6 +207,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
           BigInt(change.tokenId) !== BigInt(token)) throw unavailable();
       const word = (v) => `0x${BigInt(v).toString(16).padStart(64, '0')}`;
       const gate = createPPv2RelayHandoff({ handle: handle('relayer'), journal: relayJournal, network: transport, beforeBegin: async (signal, id) => {
+        await exits.assertAvailable(note.commitment);
         await availableToSpend(signal);
         await assertCurrentPPv2Roots({ handle: scope.getContext({ ...subject, role: 'protocol-rpc', operation: id }),
           deployment: config.deployment, publicSignals: proof.publicSignals, signal });
@@ -235,6 +240,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       busy = true;
       try {
         return await scope.run(sessionHandle, async () => {
+          if (method === 'notes' || method === 'balance') return exits[method](await plugin.notes(undefined, true));
           if (method === 'prepareTokenWithdrawal') tokenPolicy.assertToken(args[0].token);
           if (['prepareNativeWithdrawal', 'prepareTokenWithdrawal'].includes(method)) return prepareWithdrawal(args[0]);
           if (method === 'prepareTokenApproval') {
@@ -261,6 +267,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
             if (method === 'prepareTokenRagequit') tokenPolicy.assertToken(token);
             const commitment = method === 'prepareTokenRagequit' ? args[0].commitment : args[0];
             await relayJournal.assertCanExit(commitment);
+            await exits.assertAvailable(commitment);
             const note = (await plugin.notes(undefined, true)).find((note) => note.commitment === commitment);
             if (!note || ['spent', 'exited', 'exit_pending'].includes(note.status) ||
                 (token === NATIVE ? note.asset?.__type !== 'native' : note.asset?.contract?.toLowerCase() !== token.toLowerCase())) throw unavailable();
@@ -274,7 +281,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       } catch (error) {
         // Never forward SDK exceptions (URLs, notes, payloads or nested causes).
         getPrivacyContext(sessionHandle);
-        const safe = ['PRIVATE_PPV2_RELAY_REUSE_REFUSED', 'PRIVATE_PPV2_NOTE_UNAVAILABLE', 'PRIVATE_PPV2_ALLOWANCE_REQUIRED', 'PRIVATE_PPV2_REGISTRATION_MISMATCH', 'PRIVATE_SUBMISSION_UNRESOLVED', 'PRIVATE_PPV2_RELAY_UNRESOLVED',
+        const safe = ['PRIVATE_PPV2_EXIT_RESERVED', 'PRIVATE_PPV2_EXIT_RECOVERY_REQUIRED', 'PRIVATE_PPV2_RELAY_REUSE_REFUSED', 'PRIVATE_PPV2_NOTE_UNAVAILABLE', 'PRIVATE_PPV2_ALLOWANCE_REQUIRED', 'PRIVATE_PPV2_REGISTRATION_MISMATCH', 'PRIVATE_SUBMISSION_UNRESOLVED', 'PRIVATE_PPV2_RELAY_UNRESOLVED',
           'PRIVATE_PPV2_RELAY_REFUSED', 'PRIVATE_PPV2_RECONCILIATION_REFUSED', 'PRIVATE_RECONCILIATION_UNAVAILABLE',
           'PRIVATE_PROFILE_MOVED', 'PRIVATE_PROFILE_STORE_MISSING', 'PRIVATE_PROFILE_INVENTORY_INVALID', 'PRIVATE_PROFILE_INVENTORY_MISSING'];
         if (safe.includes(error?.code)) throw privacyError(error.code, 'Controlled PPv2 operation refused');
@@ -326,6 +333,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
           const checkRelay = async () => {
             if (exiting) {
               await relayJournal.assertCanExit(prepared.commitment);
+              await exits.assertAvailable(prepared.commitment);
             } else {
               if ((await relayJournal.list()).some((r) => r.resolution)) await relayReconciliation().refreshResolved();
               await relayJournal.assertCanSubmit();

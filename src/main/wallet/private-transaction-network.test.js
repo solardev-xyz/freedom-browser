@@ -213,3 +213,26 @@ test('an absolute preparation deadline cannot be extended by slow nonce reads', 
     expect(requests.some((request) => request.method === 'eth_sendRawTransaction')).toBe(false);
   } finally { clock?.mockRestore(); }
 });
+
+
+test('exit reservation is derived from signed calldata and durable before an uncertain transport handoff', async () => {
+  const { transactionIntent } = require('./private-transaction-intent');
+  const { Interface } = require('ethers');
+  const word = (n) => `0x${BigInt(n).toString(16).padStart(64, '0')}`;
+  const data = new Interface([require('./ppv2-ragequit-policy').RAGEQUIT_ABI]).encodeFunctionData('ragequit',
+    [[[1n, 2n], [[3n, 4n], [5n, 6n]], [7n, 8n], [1n, 7n, 3n, BigInt(wallet.address), 100n, BigInt(require('./ppv2-deposit-policy').NATIVE), 4n]]]);
+  const tx = { ...params, from: wallet.address, data, value: 0n, nonce: 0, gasPrice: 100n };
+  const intent = transactionIntent('ppv2-native-ragequit', tx);
+  const signed = await wallet.signTransaction(tx);
+  let durable = false;
+  responseHook = async (call) => {
+    if (call.method !== 'eth_sendRawTransaction') return;
+    const records = await network.listSubmissions();
+    durable = records[0].intent.commitment === word(7) && records[0].intent.pool === params.to;
+    throw new Error('Lost response');
+  };
+  await expect(network.broadcastRawTransaction(11155111, signed, { intent: { ...intent, commitment: word(8) } }))
+    .rejects.toMatchObject({ code: 'PRIVATE_BROADCAST_UNCERTAIN' });
+  expect(durable).toBe(true);
+  expect((await network.listSubmissions())[0]).toMatchObject({ state: 'attempted', intent });
+});

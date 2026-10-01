@@ -2,6 +2,7 @@
  * guards survive forever; archived remote evidence is no longer revalidated.
  */
 const { privacyError } = require('../networks/privacy-context');
+const { validIntent } = require('./private-transaction-intent');
 const ARCHIVE_MAX = 1024;
 const MINIMUM_AGE_MS = 24 * 60 * 60 * 1000;
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -16,7 +17,8 @@ function validAnchor(v) {
 function validArchive(archive, kind) {
   const identifiers = kind === 'public' ? ['hash', 'nonce'] : ['id', 'nullifier', 'commitment'];
   return Array.isArray(archive) && archive.length <= ARCHIVE_MAX && archive.every((r) =>
-    exact(r, [...identifiers, 'status', 'blockNumber', 'blockHash', 'archivedAt', 'finalized']) &&
+    exact(r, [...identifiers, 'status', 'blockNumber', 'blockHash', 'archivedAt', 'finalized', ...(kind === 'public' && Object.hasOwn(r, 'intent') ? ['intent'] : [])]) &&
+    (!Object.hasOwn(r, 'intent') || (kind === 'public' && validIntent(r.intent))) &&
     identifiers.every((k) => k === 'nonce' ? integer(r[k]) : typeof r[k] === 'string' && HASH.test(r[k])) &&
     (kind === 'public' ? ['included', 'reverted', 'nonce-consumed'] : ['included', 'exited']).includes(r.status) &&
     integer(r.blockNumber) && HASH.test(r.blockHash) && integer(r.archivedAt) && validAnchor(r.finalized) &&
@@ -33,7 +35,7 @@ function archivePrefix(records, archive, expected, anchors, kind) {
     if (!exact(e, [id, 'revision']) || r[id] !== e[id] || r.revision !== e.revision || !r.resolution ||
         now - r.resolution.reviewedAt < MINIMUM_AGE_MS || !validAnchor(finalized) ||
         r.observation.blockNumber > finalized.blockNumber || (kind === 'relay' && !r.settlement)) throw fail();
-    return { ...(kind === 'public' ? { hash: r.hash, nonce: r.nonce } : { id: r.id, nullifier: r.nullifier, commitment: r.commitment }),
+    return { ...(kind === 'public' ? { hash: r.hash, nonce: r.nonce, ...(r.intent ? { intent: { ...r.intent } } : {}) } : { id: r.id, nullifier: r.nullifier, commitment: r.commitment }),
       status: r.observation.status, blockNumber: r.observation.blockNumber, blockHash: r.observation.blockHash,
       archivedAt: now, finalized: { ...finalized } };
   });
