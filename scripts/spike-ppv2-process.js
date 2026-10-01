@@ -172,8 +172,9 @@ async function main() {
       path.join(repository, 'scripts/fixtures/ppv2-exit-job.js'),
       path.join(source, 'exit-job.cjs')
     );
-    // Same locked snarkjs dependency, using its supported prover option. This
-    // is an experimental factory implementation, not a patched SDK/dependency.
+    // Same locked snarkjs dependency. Proving has a supported single-thread
+    // option; verification needs the narrowly pinned source adaptation below.
+    let serialVerifierPatched = false;
     await build({
       stdin: {
         contents: `const { groth16 } = require('snarkjs');
@@ -187,6 +188,43 @@ async function main() {
       format: 'cjs',
       target: 'node24',
       plugins: [
+        {
+          name: 'single-thread-groth16-verification',
+          setup(build) {
+            build.onLoad({ filter: /snarkjs[/\\]build[/\\]main\.cjs$/ }, ({ path: file }) => {
+              if (serialVerifierPatched) throw new Error('Repeated verifier source');
+              const contents = fs.readFileSync(file, 'utf8');
+              if (
+                createHash('sha256').update(contents).digest('hex') !==
+                recipe.pins.serialVerifierSourceSha256
+              )
+                throw new Error('Changed pinned verifier source');
+              const start = contents.indexOf('async function groth16Verify(');
+              const end = contents.indexOf('\nfunction isWellConstructed$1(', start);
+              const call = 'const curve = await getCurveFromName(vk_verifier.curve);';
+              const body = contents.slice(start, end);
+              if (
+                contents.split('async function groth16Verify(').length !== 2 ||
+                start < 0 ||
+                end <= start ||
+                body.split(call).length !== 2
+              )
+                throw new Error('Unexpected Groth16 verifier source');
+              serialVerifierPatched = true;
+              return {
+                contents:
+                  contents.slice(0, start) +
+                  body.replace(
+                    call,
+                    'const curve = await getCurveFromName(vk_verifier.curve, { singleThread: true });'
+                  ) +
+                  contents.slice(end),
+                loader: 'js',
+                resolveDir: path.dirname(file),
+              };
+            });
+          },
+        },
         {
           name: 'preserve-serial-worker-bootstrap',
           setup(build) {
@@ -202,6 +240,7 @@ async function main() {
         },
       ],
     });
+    if (!serialVerifierPatched) throw new Error('Groth16 verifier adaptation was not applied');
   }
 
   // Optional real Kohaku session candidate for the assembled-deposit probe.
@@ -331,6 +370,7 @@ async function main() {
       builderSha256: recipe.digest(fs.readFileSync(__filename)),
       helperSha256: recipe.digest(fs.readFileSync(require.resolve('./lib/ppv2-build-inputs'))),
       sdkCompatibility: 'empty-asp-root-v1',
+      snarkjsAdaptation: 'groth16-verify-single-thread-v1',
       dependencyResolution: 'Kohaku dependencies resolve from the pinned PPv2 pnpm tree',
       licenseReviewRequired: true,
       productionDistributionApproved: false,
