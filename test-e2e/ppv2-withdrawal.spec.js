@@ -1058,7 +1058,7 @@ for (const {
                 tokenMode ? 'prepareTokenRagequit' : 'prepareNativeRagequit'
               ](tokenMode ? { token, commitment: zero.commitment } : zero.commitment).then(
                 () => false,
-                  (e) => e.code === 'PRIVATE_PPV2_NOTE_UNAVAILABLE'
+                (e) => e.code === 'PRIVATE_PPV2_NOTE_UNAVAILABLE'
               );
               if (relaySends !== sendsBefore) throw new Error('Zero note submitted');
             }
@@ -1259,7 +1259,58 @@ for (const {
           tor.getWalletSocksEndpoint = original.tor;
         }
       };
-      const report = await electronApp.evaluate(exercise, {
+      const execute = async (application, input) => {
+        if (!fullValue) return application.evaluate(exercise, input);
+        // This is a main-only protocol fixture. Stop unrelated chrome Ant
+        // polling before counting every outbound attempt; grant no URL bypass.
+        const window = await application.firstWindow();
+        await window.waitForSelector('[data-test="address-input"]', { state: 'attached' });
+        await application.evaluate(async ({ BrowserWindow }) => {
+          await Promise.all(
+            BrowserWindow.getAllWindows().map((window) => window.loadURL('about:blank'))
+          );
+          await new Promise(setImmediate);
+          await new Promise(setImmediate);
+        });
+        await application.evaluate(({ app, net, session }) => {
+          const req = process.mainModule
+            .require('module')
+            .createRequire(`${app.getAppPath()}/package.json`);
+          const { installPPv2EgressTripwire } = req('./scripts/fixtures/ppv2-egress-tripwire');
+          if (globalThis.__ppv2EgressTripwire) throw new Error('Tripwire already installed');
+          globalThis.__ppv2EgressTripwire = installPPv2EgressTripwire(net, session.defaultSession);
+        });
+        try {
+          const value = await application.evaluate(exercise, input);
+          const egress = await application.evaluate(async () => {
+            await new Promise(setImmediate);
+            await new Promise(setImmediate);
+            const guard = globalThis.__ppv2EgressTripwire;
+            guard.assertClean();
+            return guard.report();
+          });
+          expect(egress.refusedCanaries).toEqual(egress.hooks);
+          expect(egress.hooks).toEqual(
+            expect.arrayContaining([
+              'net.Socket.connect',
+              'global.fetch',
+              'electron.session.fetch',
+              'electron.session.resolveHost',
+              'electron.session.resolveProxy',
+              'dns.lookup',
+              'worker_threads.Worker',
+              'child_process.spawn',
+            ])
+          );
+          // Keep denial hooks installed through application shutdown. Each
+          // execute owns a fresh process; no restored network window remains.
+          await application.close();
+          return { ...value, egress };
+        } finally {
+          await application.close();
+        }
+      };
+      const report = await execute(electronApp, {
         artifact,
         tokenMode,
         cancel,
@@ -1285,7 +1336,7 @@ for (const {
       }
       await electronApp.close();
       const withdrawing = await relaunchApp();
-      report.withdrawal = await withdrawing.evaluate(exercise, {
+      report.withdrawal = await execute(withdrawing, {
         artifact,
         tokenMode,
         cancel,
@@ -1306,7 +1357,7 @@ for (const {
       }
       await withdrawing.close();
       const restored = await relaunchApp();
-      report.checkpoint = await restored.evaluate(exercise, {
+      report.checkpoint = await execute(restored, {
         artifact,
         tokenMode,
         cancel,
@@ -1317,7 +1368,7 @@ for (const {
       });
       await restored.close();
       const resumed = await relaunchApp();
-      report.secondSpend = await resumed.evaluate(exercise, {
+      report.secondSpend = await execute(resumed, {
         artifact,
         fullValue,
         tokenMode,
