@@ -64,13 +64,19 @@ function checkQuote(quote, now = Date.now()) {
   } catch { throw refused(); }
 }
 
-async function inspectSepoliaDeployment({ rpc, getJson, postJson, signal, onStep = () => {}, expected = PINS }) {
+async function inspectSepoliaDeployment({ rpc, getJson, postJson, signal, onStep = () => {}, expected = PINS, purpose = 'full' }) {
+  insist(['full', 'exit'].includes(purpose));
   insist(typeof rpc === 'function' && typeof getJson === 'function' && typeof postJson === 'function' && signal);
-  const report = { chainId: CANDIDATE.chainId, observedAt: new Date().toISOString(), chainStateVerified: false,
+  const report = { purpose, chainId: CANDIDATE.chainId, observedAt: new Date().toISOString(), chainStateVerified: false,
     signingEnabled: false, broadcastEnabled: false, fundingReady: false, checks: [], contracts: {}, verifiers: {} };
   const active = () => { if (signal.aborted) throw refused(); };
+  const exitOmissions = new Set(['native-asset', 'asp-pool-feed', 'asp-public-key', 'asp-root-observations',
+    'relayer-deployment', 'signed-native-quote', 'quote-allows-proving-and-handoff']);
   async function check(name, task) {
     active(); onStep(name);
+    if (purpose === 'exit' && exitOmissions.has(name)) {
+      report.checks.push({ name, notApplicable: true, reason: 'not-required-for-exit' }); return null;
+    }
     try { const value = await task(); active(); report.checks.push({ name, passed: true }); return value; }
     catch (error) { active(); report.checks.push({ name, passed: false, code: error?.code === 'PRIVATE_PPV2_PREFLIGHT_REFUSED' ? error.code : 'PREFLIGHT_READ_FAILED' }); return null; }
   }
@@ -194,7 +200,7 @@ async function inspectSepoliaDeployment({ rpc, getJson, postJson, signal, onStep
     const after = await read('eth_getBlockByNumber', [block.number, false]);
     insist(after?.hash === block.hash && after.number === block.number);
   });
-  report.observationsConsistent = report.checks.every((c) => c.passed);
+  report.observationsConsistent = report.checks.every((c) => c.passed === true || c.notApplicable === true);
   return report;
 }
 module.exports = { CANDIDATE, ABI, IMPLEMENTATION_SLOT, QUOTE_REQUEST, checkQuote, inspectSepoliaDeployment };

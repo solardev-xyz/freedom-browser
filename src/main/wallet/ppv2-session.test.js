@@ -349,3 +349,23 @@ test('an exit reservation appearing during review prevents signing after approva
   } })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_EXIT_RESERVED' });
   expect(sign).not.toHaveBeenCalled(); expect(mockFetch).not.toHaveBeenCalled(); session.close();
 });
+
+test('startup timeout releases the lease and refuses late plugin publication and storage writes', async () => {
+  let finish, oldHost;
+  candidate.createPlugin = async h => { oldHost = h; return new Promise(resolve => { finish = resolve; }); };
+  const progress = [];
+  const opening = openPPv2Session({ candidate, configuration: config, startupTimeoutMs: 30, onProgress: event => progress.push(event) });
+  await expect(opening).rejects.toMatchObject({ code: 'PRIVATE_PPV2_TASK_TIMEOUT' });
+  expect(progress.at(-1)).toMatchObject({ task: 'session-open', stage: 'timed-out' });
+  expect(progress.every(e => Object.keys(e).every(k => ['task', 'stage', 'elapsedMs', 'completedWindows', 'scannedBlocks'].includes(k)))).toBe(true);
+  candidate.createPlugin = async () => snapshot();
+  const reopened = await openPPv2Session({ candidate, configuration: config });
+  finish(snapshot()); await new Promise(resolve => setImmediate(resolve));
+  await expect(oldHost.storage.set('ppv2:controlled:late', 'secret')).rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
+  expect(await reopened.notes()).toEqual([]); reopened.close();
+});
+
+test.each([0, -1, 300001, 1.5, '100'])('refuses invalid startup budget %s before creating a plugin', async startupTimeoutMs => {
+  await expect(openPPv2Session({ candidate, configuration: config, startupTimeoutMs })).rejects.toMatchObject({ code: 'PRIVATE_PPV2_UNAVAILABLE' });
+  expect(candidate.createPlugin).not.toHaveBeenCalled();
+});

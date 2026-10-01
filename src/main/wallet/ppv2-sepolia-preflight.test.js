@@ -116,3 +116,33 @@ test('reports service-root disagreement without confusing it with leaves validat
   expect(result.aspRoot).toMatchObject({ serviceMatchesLatest: false, leavesQualified: false });
   expect(result.fundingReady).toBe(false);
 });
+
+test('exit readiness does not contact ASP or relayer, or require deposit eligibility', async () => {
+  const client = fixture({ call: (name, value) => name === 'assets' ? [false, 0n, 0n, 0n] : value });
+  client.getJson.mockRejectedValue(new Error('ASP and relayer unavailable'));
+  client.postJson.mockRejectedValue(new Error('Relayer unavailable'));
+  const result = await inspectSepoliaDeployment({ ...client, purpose: 'exit' });
+  expect(result).toMatchObject({ purpose: 'exit', observationsConsistent: true, signingEnabled: false, chainStateVerified: false });
+  expect(client.getJson).not.toHaveBeenCalled(); expect(client.postJson).not.toHaveBeenCalled();
+  expect(result.checks.filter(c => c.notApplicable).map(c => c.name)).toEqual(['native-asset', 'asp-pool-feed', 'asp-public-key',
+    'asp-root-observations', 'relayer-deployment', 'signed-native-quote', 'quote-allows-proving-and-handoff']);
+  for (const name of ['verifier-ragequit', 'reviewed-deployment-pins', 'keystore-root-liveness', 'finalized-anchor-still-canonical']) {
+    expect(result.checks).toContainEqual({ name, passed: true });
+  }
+});
+
+test.each(['chain', 'code', 'verifier', 'canonical', 'paused'])('exit readiness still refuses %s drift', async kind => {
+  const client = fixture({ rpc: (method, params, block) => kind === 'chain' && method === 'eth_chainId' ? '0x1'
+    : kind === 'code' && method === 'eth_getCode' ? '0x'
+      : kind === 'canonical' && method === 'eth_getBlockByNumber' && params[0] !== 'finalized' ? { ...block, hash: `0x${'cd'.repeat(32)}` } : undefined,
+  call: (name, value) => kind === 'verifier' && name === 'ragequitVerifier' ? CANDIDATE.pool : kind === 'paused' && name === 'paused' ? true : value });
+  expect((await inspectSepoliaDeployment({ ...client, purpose: 'exit' })).observationsConsistent).toBe(false);
+});
+
+test('full readiness remains the default, and an unknown purpose cannot weaken checks', async () => {
+  const client = fixture(); client.getJson.mockRejectedValue(new Error('unavailable'));
+  expect(await inspectSepoliaDeployment(client)).toMatchObject({ purpose: 'full', observationsConsistent: false });
+  client.rpc.mockClear();
+  await expect(inspectSepoliaDeployment({ ...client, purpose: 'unknown' })).rejects.toThrow();
+  expect(client.rpc).not.toHaveBeenCalled();
+});

@@ -7,6 +7,9 @@
 const fs = require('fs'), path = require('path'), assert = require('assert/strict');
 const { randomBytes, createHash } = require('crypto');
 const { app, safeStorage } = require('electron');
+let cancelBackgroundFailure = () => app.exit(1);
+// Never let a detached SDK rejection print URLs, note data or nested causes.
+process.on('unhandledRejection', () => { console.error('Qualification background task failed'); cancelBackgroundFailure(); });
 const RPC = 'https://sepolia.rpc.sentio.xyz';
 async function main() {
   const [archive, profileDirectory, output, stepOption, reference] = process.argv.slice(2);
@@ -68,6 +71,11 @@ async function main() {
     controllerSha256: createHash('sha256').update(fs.readFileSync(require.resolve('../src/main/wallet/ppv2-sepolia-test-step'))).digest('hex'), observedAt: new Date().toISOString(), owner, chainId: 11155111, rpc: RPC, signingEnabled: false,
     broadcastEnabled: false, chainStateVerified: false, protocolLifecycleQualified: false, transportPrivacyQualified: false };
   let session, scope, stage = 'tor-start';
+  cancelBackgroundFailure = () => {
+    report.failure = { stage, code: 'PRIVATE_PPV2_BACKGROUND_FAILURE' };
+    session?.close();
+    if (scope) scope.close(); else app.exit(1);
+  };
   try {
     await tor.startTor(); const started = Date.now();
     while (!tor.getWalletSocksEndpoint()) { assert.ok(Date.now() - started < 180000); await new Promise(r => setTimeout(r, 200)); }
@@ -84,16 +92,24 @@ async function main() {
       route: g.role === 'relayer' ? 'direct-sepolia-test' : 'tor' })));
     stage = 'deployment-preflight'; console.log(stage);
     const { inspectSepoliaDeployment, CANDIDATE } = require('../src/main/wallet/ppv2-sepolia-preflight');
-    const inspect = () => inspectSepoliaDeployment({ signal: scope.signal, onStep: name => console.log('Preflight ' + name),
-      rpc: async (method, params) => (await rpc.request(method, params, () => true)).result,
-      getJson: async (role, p) => { const r = await network.fetch(CANDIDATE[role] + p); assert.ok(r.ok); return r.json(); },
-      postJson: async (role, p, body) => { const r = await network.fetch(CANDIDATE[role] + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); assert.ok(r.ok); return r.json(); },
-    });
+    const purpose = ['ragequit', 'ragequit-cancel'].includes(action) ? 'exit' : 'full';
+    const inspect = async () => {
+      const result = await inspectSepoliaDeployment({ purpose, signal: scope.signal, onStep: name => console.log('Preflight ' + name),
+        rpc: async (method, params) => (await rpc.request(method, params, () => true)).result,
+        getJson: async (role, p) => { const r = await network.fetch(CANDIDATE[role] + p); assert.ok(r.ok); return r.json(); },
+        postJson: async (role, p, body) => { const r = await network.fetch(CANDIDATE[role] + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); assert.ok(r.ok); return r.json(); },
+      });
+      assert.equal(result.purpose, purpose);
+      return result;
+    };
     report.deployment = await inspect();
     assert.ok(report.deployment.observationsConsistent);
     stage = 'session-open'; console.log(stage);
     const open = () => require('../src/main/wallet/ppv2-session').openPPv2Session({ candidate: runtime.candidate, configuration: config,
-      relayerRoute: 'direct-sepolia-test', proving: { sdkEntry: runtime.sdkEntry, ragequitProverEntry: runtime.proverEntry, transactProverEntry: runtime.proverEntry, directory: artifactDirectory } });
+      relayerRoute: 'direct-sepolia-test', onProgress: event => {
+        report.sessionProgress = event;
+        if (event.stage !== 'history' || event.completedWindows % 20 === 0) console.log('Session ' + JSON.stringify(event));
+      }, proving: { sdkEntry: runtime.sdkEntry, ragequitProverEntry: runtime.proverEntry, transactProverEntry: runtime.proverEntry, directory: artifactDirectory } });
     session = await open(); report.descriptor = session.descriptor;
     if (action) {
       const funding = JSON.parse(fs.readFileSync(path.join(profileDirectory, 'funding.json'), 'utf8'));
@@ -176,7 +192,8 @@ async function main() {
       report.funding = funding;
     }
     console.log(JSON.stringify({ passed: report.passed, owner, balanceWei: report.balanceWei }));
-  } catch (error) { report.failure = { stage, code: /^[A-Z0-9_]+$/.test(error.code || '') ? error.code : error.name };
+  } catch (error) { report.failure = { stage, code: /^[A-Z0-9_]+$/.test(error.code || '') ? error.code : error.name,
+    ...(error.submissionStatus === 'unknown' ? { submissionStatus: 'unknown', reconciliationRequired: true } : {}) };
     // eslint-disable-next-line preserve-caught-error -- Keep remote SDK/RPC payloads out of diagnostics.
     throw new Error('Qualification step refused', { cause: report.failure }); }
   finally {

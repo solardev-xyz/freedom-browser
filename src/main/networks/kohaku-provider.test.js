@@ -73,10 +73,15 @@ test('owner contract reads use the public-address connection while pool reads re
     publicReadHandle: owner, publicContracts: [target] });
   await provider.call({ to: target, data: '0x12345678' });
   await provider.getCode(target);
-  await provider._internal.request({ method: 'eth_getLogs', params: [{ ...filter(), toBlock: 'latest' }] });
   expect(seen.every(({ context }) => context === owner)).toBe(true);
+  seen.length = 0;
+  await provider._internal.request({ method: 'eth_getLogs', params: [{ ...filter(), toBlock: 'latest' }] });
+  expect(seen.every(({ context }) => context === handle)).toBe(true);
   await provider.call({ to: pool, data: '0x12345678' });
   expect(seen.at(-1).context).toBe(handle);
+  const before = seen.length;
+  await expect(provider.call({ to: pool, data: `0x12345678${'9'.repeat(40).padStart(64, '0')}` })).rejects.toThrow();
+  expect(seen).toHaveLength(before);
   expect(getPrivacyContext(owner).isolationToken).not.toBe(getPrivacyContext(handle).isolationToken);
   const foreign = createPrivacyScope({ profileId: 'other', signal: new AbortController().signal });
   expect(() => createKohakuProvider({ handle, contracts, publicReadHandle: foreign.getContext({ kind: 'public-address',
@@ -219,4 +224,24 @@ const statusFixture = process.env.FREEDOM_PP_V2_STATUS_FIXTURE;
     expect(status.labelStateFor('REJECTED')).toBe('revoked');
     expect(() => status.statusToReport('FUTURE_UNKNOWN_STATE')).toThrow();
   });
+});
+
+
+test('scan progress exposes counts only, and a failing observer cannot break reads', async () => {
+  const progress = jest.fn(async () => { throw new Error('observer failed'); });
+  provider = createKohakuProvider({ handle, contracts, onScan: progress });
+  await provider._internal.request({ method: 'eth_getLogs', params: [filter()] });
+  expect(progress).toHaveBeenCalledWith({ completedWindows: 1, scannedBlocks: Number(BigInt(filter().toBlock) - BigInt(filter().fromBlock) + 1n) });
+  expect(Object.isFrozen(progress.mock.calls[0][0])).toBe(true);
+});
+
+
+test('bounded scans require audited floors and check the work grant before log transport', async () => {
+  expect(() => createKohakuProvider({ handle, contracts, beforeScan: () => {} })).toThrow();
+  const gate = jest.fn(() => { throw new Error('work limit'); });
+  provider = createKohakuProvider({ handle, contracts, logFloors: [{ address: target, fromBlock: 0 }], beforeScan: gate });
+  const before = mockRequest.mock.calls.length;
+  await expect(provider._internal.request({ method: 'eth_getLogs', params: [filter()] })).rejects.toThrow('work limit');
+  expect(gate).toHaveBeenCalledTimes(1);
+  expect(mockRequest.mock.calls.slice(before).some(([, , options]) => JSON.parse(options.body).method === 'eth_getLogs')).toBe(false);
 });

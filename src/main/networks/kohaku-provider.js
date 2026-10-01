@@ -12,13 +12,16 @@ const block = (value) => isQuantity(value) && BigInt(value) <= BigInt(Number.MAX
 const onlyKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).every((key) => keys.includes(key));
 
-function createKohakuProvider({ handle, contracts, signal, publicReadHandle, publicContracts = [], logFloors = [] }) {
+function createKohakuProvider({ handle, contracts, signal, publicReadHandle, publicContracts = [], logFloors = [], onScan, beforeScan, onHead }) {
   const context = getPrivacyContext(handle);
   if (context.subject.kind !== 'private-account' || context.subject.role !== 'protocol-rpc') {
     throw privacyError('PRIVATE_SDK_UNAVAILABLE', 'Protocol provider requires its own private-account context');
   }
   const refused = () => privacyError('PRIVATE_SDK_RPC_REFUSED', 'SDK RPC request is outside its read capability');
   if (!Array.isArray(contracts) || !contracts.length || contracts.length > 16) throw refused();
+  if ((onScan !== undefined && typeof onScan !== 'function') || (beforeScan !== undefined && typeof beforeScan !== 'function') ||
+      (onHead !== undefined && typeof onHead !== 'function')) throw refused();
+  let completedWindows = 0, scannedBlocks = 0;
   const grants = new Map();
   for (const contract of contracts) {
     if (!onlyKeys(contract, ['address', 'selectors', 'eventTopics']) || !address(contract.address) ||
@@ -39,8 +42,11 @@ function createKohakuProvider({ handle, contracts, signal, publicReadHandle, pub
         !Number.isSafeInteger(floor.fromBlock) || floor.fromBlock < 0 || floors.has(floor.address.toLowerCase())) throw refused();
     floors.set(floor.address.toLowerCase(), BigInt(floor.fromBlock));
   }
+  if (beforeScan && [...grants].some(([target, grant]) => grant.events.size && !floors.has(target))) throw refused();
+  const scanFloor = beforeScan && floors.size ? [...floors.values()].reduce((a, b) => a < b ? a : b) : 0n;
+  let observedHead = null;
   const rpc = createPrivateRpc(handle, 'protocol-rpc', { signal });
-  let publicRpc;
+  let publicRpc, ownerWord;
   if (!Array.isArray(publicContracts) || publicContracts.some((target) => !address(target) || !grants.has(target.toLowerCase()))) throw refused();
   const ownerTargets = new Set(publicContracts.map((target) => target.toLowerCase()));
   if (ownerTargets.size) {
@@ -48,11 +54,16 @@ function createKohakuProvider({ handle, contracts, signal, publicReadHandle, pub
     if (owner.profileId !== context.profileId || owner.generation !== context.generation || owner.subject.kind !== 'public-address' ||
         owner.subject.role !== 'transaction-rpc' || owner.subject.chainId !== context.subject.chainId || owner.subject.operation !== null ||
         owner.subject.protocol !== null || owner.subject.deployment !== null) throw refused();
+    ownerWord = owner.subject.principal.slice(2).padStart(64, '0');
     publicRpc = createPrivateRpc(publicReadHandle, 'transaction-rpc', { signal });
   }
   const route = (target) => ownerTargets.has(target?.toLowerCase()) ? publicRpc : rpc;
   const read = async (method, params, validate, target) => (await route(target).request(method, params, validate)).result;
-  const head = (target) => read('eth_blockNumber', [], block, target);
+  const head = async (target) => {
+    const value = await read('eth_blockNumber', [], block, target);
+    if (!target) { observedHead = BigInt(value); onHead?.(observedHead); }
+    return value;
+  };
   async function request(input) {
     rpc.assertActive();
     if (!onlyKeys(input, ['method', 'params']) || typeof input.method !== 'string') throw refused();
@@ -76,6 +87,7 @@ function createKohakuProvider({ handle, contracts, signal, publicReadHandle, pub
       const call = params[0];
       if (!onlyKeys(call, ['to', 'data']) || !address(call.to) || !bytes(call.data) || call.data.length > 8194 ||
           !grants.get(call.to.toLowerCase())?.selectors.has(call.data.slice(0, 10).toLowerCase())) throw refused();
+      if (!ownerTargets.has(call.to.toLowerCase()) && ownerWord && call.data.slice(10).toLowerCase().includes(ownerWord)) throw refused();
       return read(method, [{ to: call.to.toLowerCase(), data: call.data }, 'latest'], bytes, call.to);
     }
     if (method === 'eth_getLogs' && params.length === 1) {
@@ -90,17 +102,28 @@ function createKohakuProvider({ handle, contracts, signal, publicReadHandle, pub
       // or filter while the chain check/head request is in flight.
       const allowedTopics = new Set(topics.map((value) => value.toLowerCase()));
       let from = BigInt(filter.fromBlock);
-      const to = BigInt(filter.toBlock === 'latest' ? await head(target) : filter.toBlock);
+      const to = BigInt(filter.toBlock === 'latest' ? await head() : filter.toBlock);
       if (to < from || to - from >= 5000n) throw refused();
       const floor = floors.get(target) || 0n;
       if (to < floor) { rpc.assertActive(); return []; }
       if (from < floor) from = floor;
       const query = { address: target, topics: [[...allowedTopics]], fromBlock: `0x${from.toString(16)}`, toBlock: `0x${to.toString(16)}` };
-      return read(method, [query], (logs) => Array.isArray(logs) && logs.length <= 2048 && logs.every((log) =>
+      if (beforeScan) {
+        if (observedHead === null) await head();
+        beforeScan({ fromBlock: from, toBlock: to, floor: scanFloor, head: observedHead });
+      }
+      // These grants permit only unfiltered public event scans. They carry no
+      // owner topic and must not share the owner's transaction connection.
+      const result = await read(method, [query], (logs) => Array.isArray(logs) && logs.length <= 2048 && logs.every((log) =>
         log && address(log.address) && log.address.toLowerCase() === target && Array.isArray(log.topics) &&
         log.topics.length > 0 && log.topics.length <= 4 && log.topics.every(hash) && allowedTopics.has(log.topics[0].toLowerCase()) &&
         bytes(log.data) && block(log.blockNumber) && BigInt(log.blockNumber) >= from && BigInt(log.blockNumber) <= to &&
-        hash(log.blockHash) && hash(log.transactionHash) && block(log.logIndex) && log.removed === false), target);
+        hash(log.blockHash) && hash(log.transactionHash) && block(log.logIndex) && log.removed === false));
+      rpc.assertActive();
+      completedWindows++; scannedBlocks += Number(to - from + 1n);
+      if (!Number.isSafeInteger(scannedBlocks)) throw refused();
+      try { Promise.resolve(onScan?.(Object.freeze({ completedWindows, scannedBlocks }))).catch(() => {}); } catch { /* Diagnostics are optional. */ }
+      rpc.assertActive(); return result;
     }
     throw refused();
   }
