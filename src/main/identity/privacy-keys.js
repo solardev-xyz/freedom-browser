@@ -2,8 +2,8 @@
  * handed to plugins. Algorithm: babyjubjub-seed HMAC hardened tree, matching
  * derive-railgun-keys 0.1.0 (https://github.com/kassandraoftroy/derive-railgun-keys).
  */
-const { createHmac } = require('crypto');
 const { mnemonicToSeedSync } = require('@scure/bip39');
+const { deriveRailgunKey } = require('./railgun-key-derivation');
 const vault = require('./vault');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 
@@ -47,16 +47,7 @@ function createRailgunKeystore(handle, keyIndex = 0) {
       const seed = mnemonicToSeedSync(vault.getMnemonic());
       let node;
       try {
-        node = createHmac('sha512', 'babyjubjub seed').update(seed).digest();
-        for (const segment of path.split('/').slice(1)) {
-          const input = Buffer.alloc(37);
-          node.copy(input, 1, 0, 32);
-          input.writeUInt32BE(Number(segment.slice(0, -1)) + 0x80000000, 33);
-          const next = createHmac('sha512', node.subarray(32)).update(input).digest();
-          input.fill(0);
-          node.fill(0);
-          node = next;
-        }
+        node = deriveRailgunKey(seed, path);
         assertActive();
         return `0x${node.subarray(0, 32).toString('hex')}`;
       } finally {
@@ -67,4 +58,21 @@ function createRailgunKeystore(handle, keyIndex = 0) {
   });
 }
 
-module.exports = { createRailgunKeystore };
+// Engine-facing view capability: never pass the broader keystore above across
+// the process boundary. The spending key is reserved for a reviewed host signer.
+function createRailgunViewingKeystore(handle, keyIndex = 0) {
+  const keystore = createRailgunKeystore(handle, keyIndex);
+  const viewingPath = `m/420'/1984'/0'/0'/${keyIndex}'`;
+  return Object.freeze({
+    async deriveAt(path) {
+      if (path !== viewingPath)
+        throw privacyError(
+          'PRIVATE_DERIVATION_REFUSED',
+          'Viewing capability cannot derive this key'
+        );
+      return keystore.deriveAt(path);
+    },
+  });
+}
+
+module.exports = { createRailgunKeystore, createRailgunViewingKeystore };

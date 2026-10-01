@@ -1,0 +1,9 @@
+{
+  "name": "freedom-railgun-engine-qualification",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Proposed isolated development fixture; dependency installation awaits approval",
+  "dependencies": {
+    "@railgun-community/engine": "9.6.0"
+  }
+}

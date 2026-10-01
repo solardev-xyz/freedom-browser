@@ -61,3 +61,15 @@ test('never exposes public-wallet/Ant paths, another index, or old-session keys'
     code: 'PRIVACY_CONTEXT_REVOKED',
   });
 });
+
+test('the engine view capability cannot derive spending keys and expires on lock', async () => {
+  const { createRailgunViewingKeystore } = require('./privacy-keys');
+  const view = createRailgunViewingKeystore(handle, 1);
+  expect(await view.deriveAt("m/420'/1984'/0'/0'/1'")).toBe(`0x${vectors[1][1]}`);
+  for (const path of ["m/44'/1984'/0'/0'/1'", "m/420'/1984'/0'/0'/0'"])
+    await expect(view.deriveAt(path)).rejects.toMatchObject({ code: 'PRIVATE_DERIVATION_REFUSED' });
+  mockVault.abort();
+  await expect(view.deriveAt("m/420'/1984'/0'/0'/1'")).rejects.toMatchObject({
+    code: 'PRIVACY_CONTEXT_REVOKED',
+  });
+});
