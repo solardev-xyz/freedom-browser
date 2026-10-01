@@ -1,5 +1,7 @@
 # PPv2 Sepolia: checks before funding
 
+**October 1 update:** [RPC screening and revised test route](ppv2-testnet-route-2026-10-01.md) supersedes the all-testing dependency on Tor relayer support or a PP-recommended RPC. Tenderly and Sentio return the first historical events over Tor; complete replay remains pending. An explicit direct-relayer disposable test is the next planned route. The measurements below remain the September 29 record.
+
 The published deployment is compatible with our pinned proof circuits. Funding is still gated by relayer access over Tor and complete recovery history. No funding wallet was created, no live transaction was submitted, and production remains disabled. [Machine-readable evidence](qualification/ppv2-live-preflight-2026-09-29.json).
 
 ## What passed
