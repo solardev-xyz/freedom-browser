@@ -327,7 +327,13 @@ async function main() {
     for (const [kind, , name] of definitions) artifacts[kind] = await loader.load(name);
     report.artifacts = manifest;
     const filename = path.join(__dirname, 'fixtures/ppv2-sdk-proof-worker.js');
-    const args = { handle: context('prover'), filename, heapMb: 256, timeoutMs: 60000 };
+    const args = {
+      handle: context('prover'),
+      filename,
+      heapMb: 256,
+      timeoutMs: 60000,
+      validateResult: (value) => value?.verified === true && value?.tamperedRejected === true,
+    };
     const workerData = { sdkEntry, artifacts, shared: new SharedArrayBuffer(8) };
     try {
       report.workerProof = await runPrivacyWorker({ ...args, workerData });

@@ -9,7 +9,13 @@ const { createRequire } = require('module');
 const esbuild = require('esbuild');
 
 async function main() {
-  const checkout = process.argv[2];
+  let checkout = process.argv[2];
+  let fixtures = process.argv[3];
+  let repository = path.resolve(__dirname, '..');
+  const deterministic = process.argv.includes('--deterministic');
+  const recipe = require('./lib/ppv2-build-inputs');
+  const originalPaths = [checkout, fixtures].filter(Boolean);
+  const recipeRevision = deterministic ? recipe.committedRecipe(repository) : null;
   if (!checkout || !path.isAbsolute(checkout))
     throw new Error('Absolute pinned PPv2 checkout required');
   const revision = execFileSync('git', ['-C', checkout, 'rev-parse', 'HEAD'], {
@@ -23,14 +29,46 @@ async function main() {
     }).trim()
   )
     throw new Error('Clean SDK checkout required');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ppv2-process-asar-'));
+  const outputOption = process.argv.find((arg) => arg.startsWith('--output-root='));
+  let directory = outputOption
+    ? outputOption.slice('--output-root='.length)
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'ppv2-process-asar-'));
+  if (!path.isAbsolute(directory)) throw new Error('Absolute output root required');
+  if (outputOption) fs.mkdirSync(directory);
+  directory = fs.realpathSync(directory);
+  let staged;
+  const metafiles = [];
+  if (deterministic) {
+    if (!fixtures || process.argv[4] !== '--exit-circuits')
+      throw new Error('Complete runtime inputs required');
+    staged = recipe.prepareInputs({ checkout, fixtures, directory, repository });
+    ({ checkout, fixtures, repository } = staged);
+  }
+  const build = async (options) => {
+    const result = await esbuild.build({
+      ...options,
+      ...(deterministic
+        ? {
+            absWorkingDir: staged.root,
+            metafile: true,
+            legalComments: 'eof',
+            charset: 'ascii',
+            sourcemap: false,
+            minify: false,
+            tsconfig: options.tsconfig || path.join(checkout, 'packages/sdk/tsconfig.json'),
+          }
+        : {}),
+    });
+    if (deterministic) metafiles.push(result.metafile);
+    return result;
+  };
   const source = path.join(directory, 'source');
   fs.mkdirSync(source);
   const sdkEntry = path.join(checkout, 'packages/sdk/dist/index.cjs');
   // web-worker uses its own __filename as a child bootstrap. Keep that package
   // separate rather than flattening it into the SDK bundle and breaking it.
   const workers = new Map();
-  const built = await esbuild.build({
+  const built = await build({
     entryPoints: [sdkEntry],
     outfile: path.join(source, 'sdk.cjs'),
     bundle: true,
@@ -65,6 +103,7 @@ async function main() {
           build.onResolve({ filter: /^web-worker$/ }, ({ importer }) => {
             const entry = createRequire(importer).resolve('web-worker');
             const root = path.dirname(path.dirname(entry));
+            if (deterministic) recipe.within(staged.root, root);
             const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version;
             workers.set(version, root);
             return { path: `./node_modules/web-worker-${version}/cjs/node.js`, external: true };
@@ -76,7 +115,7 @@ async function main() {
   for (const [version, root] of workers)
     fs.cpSync(root, path.join(source, `node_modules/web-worker-${version}`), { recursive: true });
   fs.copyFileSync(
-    path.join(__dirname, 'fixtures/ppv2-process-job.js'),
+    path.join(repository, 'scripts/fixtures/ppv2-process-job.js'),
     path.join(source, 'job.cjs')
   );
   const artifacts = path.join(source, 'artifacts');
@@ -86,11 +125,23 @@ async function main() {
     provingKey: ['groth16_pkey.zkey', 'deposit.zkey'],
     verificationKey: ['groth16_vkey.json', 'deposit.vkey.json'],
   };
-  const sdk = require(sdkEntry);
+  // Do not execute installed dependency code while verifying build inputs.
+  const circuitManifest = deterministic
+    ? Object.fromEntries(
+        ['deposit', 'ragequit', 'transact_1x1'].map((circuit) => [
+          circuit,
+          Object.fromEntries(
+            recipe.pins.circuitFiles
+              .filter((file) => file.circuit === circuit)
+              .map((file) => [`${file.kind}Sha256`, file.sha256])
+          ),
+        ])
+      )
+    : require(sdkEntry).DEFAULT_CIRCUIT_MANIFEST;
   const manifest = Object.entries(names).map(([kind, [relative, name]]) => {
     const bytes = fs.readFileSync(path.join(checkout, 'packages/circuits/build/deposit', relative));
     const sha256 = createHash('sha256').update(bytes).digest('hex');
-    if (sha256 !== sdk.DEFAULT_CIRCUIT_MANIFEST.deposit[`${kind}Sha256`])
+    if (sha256 !== circuitManifest.deposit[`${kind}Sha256`])
       throw new Error('Artifact digest mismatch');
     fs.writeFileSync(path.join(artifacts, name), bytes);
     return { kind, name, size: bytes.length, sha256 };
@@ -110,7 +161,7 @@ async function main() {
           path.join(checkout, 'packages/circuits/build', circuit, relative)
         );
         const sha256 = createHash('sha256').update(bytes).digest('hex');
-        if (sha256 !== sdk.DEFAULT_CIRCUIT_MANIFEST[circuit][`${kind}Sha256`])
+        if (sha256 !== circuitManifest[circuit][`${kind}Sha256`])
           throw new Error('Exit artifact digest mismatch');
         const name = `${circuit}.${{ wasm: 'wasm', provingKey: 'zkey', verificationKey: 'vkey.json' }[kind]}`;
         fs.writeFileSync(path.join(artifacts, name), bytes);
@@ -119,12 +170,12 @@ async function main() {
     }
     fs.writeFileSync(path.join(source, 'exit-manifest.json'), JSON.stringify(exitManifest));
     fs.copyFileSync(
-      path.join(__dirname, 'fixtures/ppv2-exit-job.js'),
+      path.join(repository, 'scripts/fixtures/ppv2-exit-job.js'),
       path.join(source, 'exit-job.cjs')
     );
     // Same locked snarkjs dependency, using its supported prover option. This
     // is an experimental factory implementation, not a patched SDK/dependency.
-    await esbuild.build({
+    await build({
       stdin: {
         contents: `const { groth16 } = require('snarkjs');
       exports.fullProve = (input, wasm, key) => groth16.fullProve(input, wasm, key, undefined, undefined, { singleThread: true });
@@ -143,6 +194,7 @@ async function main() {
             build.onResolve({ filter: /^web-worker$/ }, ({ importer }) => {
               const entry = createRequire(importer).resolve('web-worker');
               const root = path.dirname(path.dirname(entry));
+              if (deterministic) recipe.within(staged.root, root);
               const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version;
               if (!workers.has(version)) throw new Error('Unreviewed worker version');
               return { path: `./node_modules/web-worker-${version}/cjs/node.js`, external: true };
@@ -154,14 +206,13 @@ async function main() {
   }
 
   // Optional real Kohaku session candidate for the assembled-deposit probe.
-  const fixtures = process.argv[3];
   let sessionCandidate = null;
   if (fixtures) {
     if (!path.isAbsolute(fixtures))
       throw new Error('Absolute compatibility fixture directory required');
     const previous = JSON.parse(fs.readFileSync(path.join(fixtures, 'report.json')));
     const patchHash = createHash('sha256')
-      .update(fs.readFileSync(path.join(__dirname, 'fixtures/kohaku-ppv2-compat.patch')))
+      .update(fs.readFileSync(path.join(repository, 'scripts/fixtures/kohaku-ppv2-compat.patch')))
       .digest('hex');
     if (
       !previous.adapterTypecheck.passed ||
@@ -171,7 +222,7 @@ async function main() {
         createHash('sha256').update(fs.readFileSync(sdkEntry)).digest('hex')
     )
       throw new Error('Rebuild reviewed compatibility fixtures');
-    await esbuild.build({
+    await build({
       stdin: {
         contents: `
       export { createPPv2Plugin } from './plugin';
@@ -209,6 +260,7 @@ async function main() {
       format: 'cjs',
       target: 'node24',
       nodePaths: [path.join(checkout, 'packages/sdk/node_modules')],
+      ...(deterministic ? { tsconfig: path.join(fixtures, 'tsconfig.json') } : {}),
       alias: { '@kohaku-eth/plugins': path.join(fixtures, 'packages/plugins/src/index.ts') },
       plugins: [
         {
@@ -222,7 +274,7 @@ async function main() {
         },
       ],
     });
-    await esbuild.build({
+    await build({
       entryPoints: [path.join(checkout, 'packages/sdk/src/constant/ContractInteractor.ts')],
       outfile: path.join(source, 'abis.cjs'),
       bundle: true,
@@ -231,11 +283,12 @@ async function main() {
       target: 'node24',
     });
     fs.copyFileSync(
-      path.join(__dirname, '../test/helpers/ppv2-session-fixture.js'),
+      path.join(repository, 'test/helpers/ppv2-session-fixture.js'),
       path.join(source, 'configuration.cjs')
     );
-    await esbuild.build({
+    await build({
       entryPoints: [path.join(fixtures, 'packages/privacy-pools/src/v2/adapters/http.adapter.ts')],
+      ...(deterministic ? { tsconfig: path.join(fixtures, 'tsconfig.json') } : {}),
       outfile: path.join(source, 'http.cjs'),
       bundle: true,
       platform: 'node',
@@ -246,10 +299,61 @@ async function main() {
     fs.writeFileSync(path.join(source, 'candidate.json'), JSON.stringify(sessionCandidate));
   }
   const output = path.join(directory, 'ppv2.asar');
-  await require('@electron/asar').createPackage(source, output);
+  let inventory;
+  if (deterministic) {
+    inventory = recipe.inventoryInputs(staged.root, metafiles);
+    inventory.workers = [...workers.values()].flatMap((root) =>
+      recipe.inventoryTree(staged.root, root)
+    );
+    inventory.configs = ['ppv2/packages/sdk/tsconfig.json', 'kohaku/tsconfig.json'].map((file) => ({
+      file,
+      sha256: recipe.digest(fs.readFileSync(path.join(staged.root, file))),
+    }));
+    recipe.verifyInventory(inventory, recipe.pins.dependencyInventorySha256);
+    const licenseDirectory = path.join(source, 'licenses');
+    for (const item of inventory.packages)
+      for (const license of item.licenses) {
+        const target = path.join(licenseDirectory, license.file);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(path.join(staged.root, license.file), target);
+      }
+    fs.mkdirSync(path.join(licenseDirectory, 'ppv2'), { recursive: true });
+    fs.copyFileSync(path.join(checkout, 'LICENSE'), path.join(licenseDirectory, 'ppv2/LICENSE'));
+    inventory.recipe = {
+      revision: recipeRevision,
+      pins: recipe.pins,
+      builderSha256: recipe.digest(fs.readFileSync(__filename)),
+      helperSha256: recipe.digest(fs.readFileSync(require.resolve('./lib/ppv2-build-inputs'))),
+      sdkCompatibility: 'empty-asp-root-v1',
+      dependencyResolution: 'Kohaku dependencies resolve from the pinned PPv2 pnpm tree',
+      licenseReviewRequired: true,
+      productionDistributionApproved: false,
+    };
+    fs.writeFileSync(
+      path.join(source, 'build-inventory.json'),
+      JSON.stringify(inventory, null, 2) + '\n'
+    );
+    const files = recipe.packedFiles(source);
+    recipe.assertNoHostPaths(files, [
+      directory,
+      staged.root,
+      process.env.HOME,
+      ...originalPaths,
+      ...originalPaths.map((value) => fs.realpathSync(value)),
+    ]);
+    await require('@electron/asar').createPackageFromFiles(source, output, files);
+  } else await require('@electron/asar').createPackage(source, output);
   const report = {
     revision,
     output,
+    deterministicRecipe: deterministic,
+    ...(inventory
+      ? {
+          inventorySha256: recipe.digest(
+            fs.readFileSync(path.join(source, 'build-inventory.json'))
+          ),
+        }
+      : {}),
     sdkCompatibility: 'empty-asp-root-v1',
     manifest,
     exitManifest,
