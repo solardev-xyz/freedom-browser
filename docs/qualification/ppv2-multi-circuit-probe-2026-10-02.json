@@ -1,0 +1,84 @@
+{
+  "passed": true,
+  "syntheticOnly": true,
+  "networkOperations": false,
+  "egressPolicy": "runPrivacyProcess network-denial hooks; this probe does not measure egress",
+  "signingEnabled": false,
+  "broadcastEnabled": false,
+  "productionOperationsEnabled": false,
+  "runtimeSha256": "a7327fce6acde362b05e439c0db579c06fdc87272feaaa21046b0b34dd182f34",
+  "candidate": {
+    "sdk": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+    "kohaku": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e"
+  },
+  "sdkCheckoutRevision": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+  "sourceSha256": {
+    "scripts/qualify-ppv2-multi-circuits.js": "af44ae98b6050b87aa3c12a38ca4418ca3825a08e729a8461571cf5facd546f3",
+    "scripts/fixtures/ppv2-multi-circuit-job.js": "8ba42ac16955adfbce500200247162122381fa3e21e8a68da914c6f36178c240"
+  },
+  "rssMeasurement": "Working-set sampling every 100 ms plus at result; includes in-process verification",
+  "platform": "darwin",
+  "arch": "arm64",
+  "logicalCores": 14,
+  "node": "24.21.0",
+  "electron": "44.4.5",
+  "limits": {
+    "heapMiB": 256,
+    "rssMiB": 768,
+    "deadlineMs": 120000
+  },
+  "checks": [
+    {
+      "circuit": "transact_1x2",
+      "verified": true,
+      "publicSignalsBound": true,
+      "tamperedAmountRejected": true,
+      "publicSignalCount": 9,
+      "provingMs": 4459,
+      "rssBytes": 616153088,
+      "passed": true,
+      "elapsedMs": 4827,
+      "peakRssBytes": 616153088,
+      "inventory": {
+        "wasm": {
+          "size": 3247355,
+          "sha256": "71ffcdc53e5808c89ebf735ef45d0ffabfce9e6f640d565adc4f02e36ad1a72e"
+        },
+        "provingKey": {
+          "size": 18573744,
+          "sha256": "f107598438dee56e053d76724500a58f91457fec14df0f4ee057042a1025bf07"
+        },
+        "verificationKey": {
+          "size": 4725,
+          "sha256": "3bb6f18aa4fec0961151fdc21a74ad9ca7326356cd4a4151b3e808dc12e30ad4"
+        }
+      }
+    },
+    {
+      "circuit": "transact_2x1",
+      "verified": true,
+      "publicSignalsBound": true,
+      "tamperedAmountRejected": true,
+      "publicSignalCount": 9,
+      "provingMs": 5709,
+      "rssBytes": 651001856,
+      "passed": true,
+      "elapsedMs": 6091,
+      "peakRssBytes": 651001856,
+      "inventory": {
+        "wasm": {
+          "size": 3339833,
+          "sha256": "a1fa16ad0824fe40df716e8bfd0716effad68dcb1ce81f108db596e6a752f15c"
+        },
+        "provingKey": {
+          "size": 26871204,
+          "sha256": "add0ae7441be69dc7d25cc76fe8afb43c47511c134834ecbf76eff4451e6e1b2"
+        },
+        "verificationKey": {
+          "size": 4720,
+          "sha256": "4c5e51b308829a549b54d6d898556a3bf8e40656173919597564cd674997c333"
+        }
+      }
+    }
+  ]
+}
