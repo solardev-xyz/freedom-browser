@@ -55,7 +55,6 @@ async function main() {
             charset: 'ascii',
             sourcemap: false,
             minify: false,
-            tsconfig: options.tsconfig || path.join(checkout, 'packages/sdk/tsconfig.json'),
           }
         : {}),
     });
@@ -260,7 +259,6 @@ async function main() {
       format: 'cjs',
       target: 'node24',
       nodePaths: [path.join(checkout, 'packages/sdk/node_modules')],
-      ...(deterministic ? { tsconfig: path.join(fixtures, 'tsconfig.json') } : {}),
       alias: { '@kohaku-eth/plugins': path.join(fixtures, 'packages/plugins/src/index.ts') },
       plugins: [
         {
@@ -288,7 +286,6 @@ async function main() {
     );
     await build({
       entryPoints: [path.join(fixtures, 'packages/privacy-pools/src/v2/adapters/http.adapter.ts')],
-      ...(deterministic ? { tsconfig: path.join(fixtures, 'tsconfig.json') } : {}),
       outfile: path.join(source, 'http.cjs'),
       bundle: true,
       platform: 'node',
