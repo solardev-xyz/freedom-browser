@@ -1,5 +1,7 @@
 # Independent review: `feat/wallet-privacy-foundation` (reviewer record)
 
+**October 1 editorial correction:** this is a historical reviewer record. Its later “628/768 MiB” summary is not supported by the retained measurement report; the [exit-circuit qualification](../docs/ppv2-exit-circuits-2026-09-27.md) records approximately 539/599 MiB for the respective single-thread packaged proof cases. The original review text is preserved below.
+
 **Date:** 2026-09-28
 **Reviewer:** Claude (independent reviewer; the implementation is by Codex)
 **Baseline:** committed `35e4a68b`, merge base `2983dc62` (17 commits, 153 files)
