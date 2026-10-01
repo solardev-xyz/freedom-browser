@@ -1,8 +1,18 @@
-import { startBalanceRefresh, loadCachedBalances, refreshBalances, initBalanceDisplay } from './balance-display.js';
+import {
+  startBalanceRefresh,
+  loadCachedBalances,
+  refreshBalances,
+  initBalanceDisplay,
+} from './balance-display.js';
 import { walletState } from './wallet-state.js';
 
 beforeEach(() => jest.useFakeTimers());
-afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); delete global.document; delete global.window; });
+afterEach(() => {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+  delete global.document;
+  delete global.window;
+});
 
 test('hidden ancestors and hidden documents suppress automatic balance IPC', async () => {
   const walletTab = { checkVisibility: jest.fn(() => false) };
@@ -22,28 +32,38 @@ test('hidden ancestors and hidden documents suppress automatic balance IPC', asy
   expect(window.wallet.getBalances).toHaveBeenCalledWith('0xabc');
 });
 
-
 test.each([
   [true, false, null, 1],
   [true, false, {}, 0],
   [false, false, null, 0],
   [true, true, null, 0],
-])('startup visibility=%s hidden=%s cached=%s refreshes only a visible miss', async (visible, hidden, balances, calls) => {
-  global.document = { hidden, getElementById: () => ({ checkVisibility: () => visible }) };
-  global.window = { wallet: {
-    getBalancesCached: jest.fn(async () => ({ success: true, balances })),
-    getBalances: jest.fn(async () => null),
-  } };
-  walletState.fullAddresses = { wallet: '0xabc', swarm: null };
-  await loadCachedBalances();
-  expect(window.wallet.getBalances).toHaveBeenCalledTimes(calls);
-});
-
+])(
+  'startup visibility=%s hidden=%s cached=%s refreshes only a visible miss',
+  async (visible, hidden, balances, calls) => {
+    global.document = { hidden, getElementById: () => ({ checkVisibility: () => visible }) };
+    global.window = {
+      wallet: {
+        getBalancesCached: jest.fn(async () => ({ success: true, balances })),
+        getBalances: jest.fn(async () => null),
+      },
+    };
+    walletState.fullAddresses = { wallet: '0xabc', swarm: null };
+    await loadCachedBalances();
+    expect(window.wallet.getBalances).toHaveBeenCalledTimes(calls);
+  }
+);
 
 test('late refresh after an account switch cannot overwrite the current wallet', async () => {
   let finish;
   global.document = { getElementById: () => null };
-  global.window = { wallet: { getBalances: () => new Promise((resolve) => { finish = resolve; }) } };
+  global.window = {
+    wallet: {
+      getBalances: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    },
+  };
   walletState.fullAddresses = { wallet: '0xaaa', swarm: null };
   walletState.currentBalances = { current: true };
   const work = refreshBalances();
@@ -55,17 +75,25 @@ test('late refresh after an account switch cannot overwrite the current wallet',
 
 test('experimental stale status stays visible and a later unavailable refresh clears displayed values', async () => {
   const status = { classList: { add: jest.fn(), remove: jest.fn() }, textContent: '' };
-  global.document = { getElementById: (id) => id === 'balance-error' ? status : null };
+  global.document = { getElementById: (id) => (id === 'balance-error' ? status : null) };
   global.window = { addEventListener: jest.fn(), wallet: { getBalances: jest.fn() } };
   initBalanceDisplay();
   walletState.fullAddresses = { wallet: '0xaaa', swarm: null };
-  window.wallet.getBalances.mockResolvedValue({ success: true, balances: {
-    privacyMode: 'tor-experimental', status: 'stale', '11155111:native': { raw: '1' },
-  } });
+  window.wallet.getBalances.mockResolvedValue({
+    success: true,
+    balances: {
+      privacyMode: 'tor-experimental',
+      status: 'stale',
+      '11155111:native': { raw: '1' },
+    },
+  });
   await refreshBalances();
   expect(status.textContent).toContain('stale');
   expect(status.classList.remove).toHaveBeenCalledWith('hidden');
-  window.wallet.getBalances.mockResolvedValue({ success: true, balances: { privacyMode: 'tor-experimental', status: 'unavailable' } });
+  window.wallet.getBalances.mockResolvedValue({
+    success: true,
+    balances: { privacyMode: 'tor-experimental', status: 'unavailable' },
+  });
   await refreshBalances();
   expect(walletState.currentBalances['11155111:native']).toBeUndefined();
 });

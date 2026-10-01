@@ -301,10 +301,7 @@
     "passed": 6372,
     "skipped": 33,
     "failed": 3,
-    "baselineFailures": [
-      "two macOS shortcut-remap cases",
-      "one Safe fork integration case"
-    ],
+    "baselineFailures": ["two macOS shortcut-remap cases", "one Safe fork integration case"],
     "existingAsynchronousLoggingWarnings": true
   },
   "packaged": {
@@ -314,28 +311,8 @@
       "productionAsarSha256": "06da31fea0bab19d9ff51042f4b4ab83b6b66e975cbe8da2437d55c63c3c897f",
       "sameAsar": true,
       "sameAsarIntegrity": true,
-      "originalFuses": [
-        49,
-        48,
-        48,
-        48,
-        49,
-        49,
-        48,
-        49,
-        49
-      ],
-      "testFuses": [
-        49,
-        48,
-        48,
-        49,
-        49,
-        49,
-        48,
-        49,
-        49
-      ],
+      "originalFuses": [49, 48, 48, 48, 49, 49, 48, 49, 49],
+      "testFuses": [49, 48, 48, 49, 49, 49, 48, 49, 49],
       "onlyChangedFuse": "EnableNodeCliInspectArguments",
       "signing": "ad hoc test copy only; never distribute"
     },

@@ -8,8 +8,10 @@ test('public recovery replays actual pool batches and keystore inserts/updates',
   expect(leaves).toEqual(['0xa', '0xd', '0xc']);
 });
 test.each([
-  ['LeavesInserted', [[1], 100, 1]], ['LeavesInserted', [[], 100, 0]],
-  ['LeafInserted', [1, 100, 1]], ['LeafUpdated', [1, 100, 0]],
+  ['LeavesInserted', [[1], 100, 1]],
+  ['LeavesInserted', [[], 100, 0]],
+  ['LeafInserted', [1, 100, 1]],
+  ['LeafUpdated', [1, 100, 0]],
 ])('refuses missing or out-of-order %s history', (name, values) => {
   expect(() => applyTreeEvent([], event(name, values))).toThrow();
 });

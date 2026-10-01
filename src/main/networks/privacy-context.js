@@ -30,9 +30,12 @@ function normalizeRequirements(input = {}) {
     throw privacyError('INVALID_PRIVACY_REQUIREMENTS', 'Unknown privacy requirement');
   }
   const result = { ...defaults, ...input };
-  if (result.origin !== 'tor' || !['public', 'pir'].includes(result.content) ||
-      !['any', 'quorum', 'proof'].includes(result.correctness) ||
-      (result.maxAgeMs !== null && (!Number.isSafeInteger(result.maxAgeMs) || result.maxAgeMs < 0))) {
+  if (
+    result.origin !== 'tor' ||
+    !['public', 'pir'].includes(result.content) ||
+    !['any', 'quorum', 'proof'].includes(result.correctness) ||
+    (result.maxAgeMs !== null && (!Number.isSafeInteger(result.maxAgeMs) || result.maxAgeMs < 0))
+  ) {
     throw privacyError('INVALID_PRIVACY_REQUIREMENTS', 'Unsupported privacy requirements');
   }
   return Object.freeze(result);
@@ -54,16 +57,28 @@ function normalizeSubject(input) {
     principal = principal.toLowerCase();
   }
   const chainId = Number(input.chainId);
-  if (!['number', 'string'].includes(typeof input.chainId) || !Number.isSafeInteger(chainId) || chainId <= 0) {
+  if (
+    !['number', 'string'].includes(typeof input.chainId) ||
+    !Number.isSafeInteger(chainId) ||
+    chainId <= 0
+  ) {
     throw privacyError('INVALID_PRIVACY_CONTEXT', 'Invalid privacy chain');
   }
   const protocol = input.protocol === undefined ? null : requiredString(input.protocol, 'protocol');
-  const deployment = input.deployment === undefined ? null : requiredString(input.deployment, 'deployment');
+  const deployment =
+    input.deployment === undefined ? null : requiredString(input.deployment, 'deployment');
   if (kind === 'private-account' && (!protocol || !deployment)) {
-    throw privacyError('INVALID_PRIVACY_CONTEXT', 'Private accounts require protocol and deployment');
+    throw privacyError(
+      'INVALID_PRIVACY_CONTEXT',
+      'Private accounts require protocol and deployment'
+    );
   }
   return Object.freeze({
-    kind, principal, chainId, protocol, deployment,
+    kind,
+    principal,
+    chainId,
+    protocol,
+    deployment,
     role: requiredString(input.role, 'service role'),
     operation: input.operation === undefined ? null : requiredString(input.operation, 'operation'),
   });
@@ -126,7 +141,10 @@ function createPrivacyScope({ profileId, signal, isCurrent = () => true }) {
     }
     const handle = Object.freeze(Object.create(null));
     const value = Object.freeze({
-      profileId, generation, subject, requirements: policy,
+      profileId,
+      generation,
+      subject,
+      requirements: policy,
       isolationToken: randomBytes(32).toString('hex'),
       signal: controller.signal,
     });
@@ -158,20 +176,23 @@ function createPrivacyScope({ profileId, signal, isCurrent = () => true }) {
         else resolve(result);
       }
       controller.signal.addEventListener('abort', onAbort, { once: true });
-      Promise.resolve().then(() => {
-        assertOwned(handle);
-        return task(controller.signal);
-      }).then((result) => {
-        assertOwned(handle);
-        finish(null, result);
-      }).catch((error) => {
-        // A task may reject with a falsy value; preserve rejection semantics.
-        if (settled) return;
-        settled = true;
-        pendingTasks -= 1;
-        controller.signal.removeEventListener('abort', onAbort);
-        reject(error);
-      });
+      Promise.resolve()
+        .then(() => {
+          assertOwned(handle);
+          return task(controller.signal);
+        })
+        .then((result) => {
+          assertOwned(handle);
+          finish(null, result);
+        })
+        .catch((error) => {
+          // A task may reject with a falsy value; preserve rejection semantics.
+          if (settled) return;
+          settled = true;
+          pendingTasks -= 1;
+          controller.signal.removeEventListener('abort', onAbort);
+          reject(error);
+        });
     });
   }
 

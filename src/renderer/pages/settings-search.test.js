@@ -556,7 +556,9 @@ describe('matchSettingsSearch', () => {
       expect(`${result.label} ${result.help}`.toLowerCase()).toContain('downloads');
     }
     expect(
-      search('experimental').filter((entry) => entry.sectionId === 'experimental').map((entry) => entry.label)
+      search('experimental')
+        .filter((entry) => entry.sectionId === 'experimental')
+        .map((entry) => entry.label)
     ).toEqual(['Experimental', 'Tor balance reads (experimental)']);
   });
 

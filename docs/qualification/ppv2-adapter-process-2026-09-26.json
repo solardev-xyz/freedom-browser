@@ -31,9 +31,7 @@
         "sha256": "cc0c1647983f2ca75b192e5c671b9b2932fd690709922bf32443a4053cd0912a"
       }
     ],
-    "webWorkerVersions": [
-      "1.2.0"
-    ],
+    "webWorkerVersions": ["1.2.0"],
     "asarSha256": "5bb23aef29d004308927e0fad019d048e317074c27acdfe85b1de4a1ba7b96f5",
     "bundleInputs": 1638
   },
@@ -53,16 +51,7 @@
     },
     "egress": {
       "result": {
-        "refused": [
-          "fetch",
-          "http",
-          "socket",
-          "dns",
-          "udp",
-          "http2",
-          "child",
-          "electron"
-        ],
+        "refused": ["fetch", "http", "socket", "dns", "udp", "http2", "child", "electron"],
         "nested": true,
         "inheritedSecret": null
       },

@@ -23,12 +23,12 @@ The scratch builder now emits a separate `serial-prover.cjs` factory using that 
 
 Packaged macOS arm64 measurements from one run:
 
-| Circuit | Factory | Proving time | Sampled peak RSS |
-|---|---|---:|---:|
-| ragequit | SDK default | 382 ms | 980 MiB |
-| ragequit | single-thread | 1,637 ms | 539 MiB |
-| transact_1x1 | SDK default | 849 ms | 1,476 MiB |
-| transact_1x1 | single-thread | 4,596 ms | 599 MiB |
+| Circuit      | Factory       | Proving time | Sampled peak RSS |
+| ------------ | ------------- | -----------: | ---------------: |
+| ragequit     | SDK default   |       382 ms |          980 MiB |
+| ragequit     | single-thread |     1,637 ms |          539 MiB |
+| transact_1x1 | SDK default   |       849 ms |        1,476 MiB |
+| transact_1x1 | single-thread |     4,596 ms |          599 MiB |
 
 Times measure proof generation, excluding process startup, witness construction and verification. Memory is sampled process RSS, not a hard OS allocation quota or total application memory. These synthetic, single-note measurements are not a device-support or latency guarantee. The default worker pool scales with reported CPU count, so repeat on other hardware before choosing product limits. Larger note sets/shapes remain unmeasured.
 

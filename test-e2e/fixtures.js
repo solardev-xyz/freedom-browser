@@ -55,28 +55,44 @@ async function launchApp(userDataDir) {
   if (isPackagedRun()) return app; // CDP launcher owns readiness and bounded shutdown.
   const originalClose = app.close.bind(app);
   let closing;
-  app.close = () => closing ||= (async () => {
-    let timer;
-    try {
-      await Promise.race([originalClose(), new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          // Only this fixture's own Electron child; never another app process.
-          app.process().kill('SIGKILL');
-          reject(new Error('Controlled Electron shutdown exceeded 30 seconds'));
-        }, 30000);
-      })]);
-    } finally { clearTimeout(timer); }
-  })();
+  app.close = () =>
+    (closing ||= (async () => {
+      let timer;
+      try {
+        await Promise.race([
+          originalClose(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              // Only this fixture's own Electron child; never another app process.
+              app.process().kill('SIGKILL');
+              reject(new Error('Controlled Electron shutdown exceeded 30 seconds'));
+            }, 30000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    })());
   let timer;
   try {
-    await Promise.race([app.evaluate(async ({ app }) => { await app.whenReady(); }), new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Controlled Electron readiness timed out')), launchOptions(userDataDir).timeout);
-    })]);
+    await Promise.race([
+      app.evaluate(async ({ app }) => {
+        await app.whenReady();
+      }),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Controlled Electron readiness timed out')),
+          launchOptions(userDataDir).timeout
+        );
+      }),
+    ]);
     return app;
   } catch (error) {
     await app.close().catch(() => {});
     throw error;
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // First BrowserWindow, waited until the browser chrome has mounted. The
@@ -150,7 +166,9 @@ const test = base.extend({
     await use(async ({ freshProfile = false } = {}) => {
       // Opt-in restoration tests get a genuinely empty, test-owned profile.
       // Keep it under this fixture's temporary root for ordinary teardown.
-      const directory = freshProfile ? fs.mkdtempSync(path.join(userDataDir, 'cold-profile-')) : userDataDir;
+      const directory = freshProfile
+        ? fs.mkdtempSync(path.join(userDataDir, 'cold-profile-'))
+        : userDataDir;
       const app = await launchApp(directory);
       started.push(app);
       return app;

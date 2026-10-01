@@ -51,7 +51,6 @@ node_modules/.bin/electron scripts/qualify-ppv2-recovery.js /absolute/ppv2.asar 
 
 The RPC choice is explicit (`publicnode`, `onfinality`, `ethpandaops`) and never a fallback sequence. Scripts use synthetic public service contexts; a funded wallet must use the actual account/operation context paths. The circuit script's `passed` concerns verifier binding only; inspect its deployment report separately. Recovery refuses missing, duplicate, removed or discontinuous events. All reports retain unverified-state and no-signing/no-broadcast status.
 
-
 ## Validation and review
 
 Implementation commit: `2151252c`. Claude reviewed the qualification code, pins, log-floor change and pre-journal guard. The initial owner-context guard was corrected to per-attempt isolation before committing; the reviewer approved the fix and found no remaining blocking code issue in this slice.

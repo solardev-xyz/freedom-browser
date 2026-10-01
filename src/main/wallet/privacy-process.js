@@ -9,26 +9,60 @@ const { getPrivacyContext, privacyError } = require('../networks/privacy-context
 let activeProcesses = 0;
 
 function ownsInputBuffers(input, seen = new Set()) {
-  if (input === null || ['undefined', 'string', 'boolean', 'number', 'bigint'].includes(typeof input)) return true;
+  if (
+    input === null ||
+    ['undefined', 'string', 'boolean', 'number', 'bigint'].includes(typeof input)
+  )
+    return true;
   if (typeof input !== 'object') return false;
-  if (ArrayBuffer.isView(input)) return isArrayBuffer(input.buffer) && input.byteOffset === 0 && input.buffer.byteLength === input.byteLength;
+  if (ArrayBuffer.isView(input))
+    return (
+      isArrayBuffer(input.buffer) &&
+      input.byteOffset === 0 &&
+      input.buffer.byteLength === input.byteLength
+    );
   // Bare backing stores may be pooled slabs; callers pass bounded views.
   if (isArrayBuffer(input)) return false;
-  if (!Array.isArray(input) && ![Object.prototype, null].includes(Object.getPrototypeOf(input))) return false;
+  if (!Array.isArray(input) && ![Object.prototype, null].includes(Object.getPrototypeOf(input)))
+    return false;
   if (seen.has(input)) return true;
   if (seen.size >= 10000) return false;
   seen.add(input);
   return Object.values(input).every((value) => ownsInputBuffers(value, seen));
 }
 
-function runPrivacyProcess({ handle, filename, input, validateResult, onProgress,
-  signal, timeoutMs = 120000, heapMb = 256, rssMb = 768 }) {
+function runPrivacyProcess({
+  handle,
+  filename,
+  input,
+  validateResult,
+  onProgress,
+  signal,
+  timeoutMs = 120000,
+  heapMb = 256,
+  rssMb = 768,
+}) {
   const context = getPrivacyContext(handle);
-  const fail = (code = 'PRIVATE_PROCESS_FAILED') => privacyError(code, 'Private computation could not complete');
-  if (context.subject.kind !== 'private-account' || context.subject.role !== 'prover' || context.subject.chainId !== 11155111 ||
-      typeof filename !== 'string' || !path.isAbsolute(filename) || typeof validateResult !== 'function' || (onProgress !== undefined && typeof onProgress !== 'function') ||
-      !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000 ||
-      !Number.isInteger(heapMb) || heapMb < 16 || heapMb > 1024 || !Number.isInteger(rssMb) || rssMb < 64 || rssMb > 2048) {
+  const fail = (code = 'PRIVATE_PROCESS_FAILED') =>
+    privacyError(code, 'Private computation could not complete');
+  if (
+    context.subject.kind !== 'private-account' ||
+    context.subject.role !== 'prover' ||
+    context.subject.chainId !== 11155111 ||
+    typeof filename !== 'string' ||
+    !path.isAbsolute(filename) ||
+    typeof validateResult !== 'function' ||
+    (onProgress !== undefined && typeof onProgress !== 'function') ||
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 120000 ||
+    !Number.isInteger(heapMb) ||
+    heapMb < 16 ||
+    heapMb > 1024 ||
+    !Number.isInteger(rssMb) ||
+    rssMb < 64 ||
+    rssMb > 2048
+  ) {
     throw fail('PRIVATE_PROCESS_INVALID');
   }
   // Electron clones a view's entire backing buffer, not just its visible
@@ -41,16 +75,27 @@ function runPrivacyProcess({ handle, filename, input, validateResult, onProgress
   if (activeProcesses >= 2) throw fail('PRIVATE_PROCESS_BUSY');
   activeProcesses += 1;
   return new Promise((resolve, reject) => {
-    let child, outcome, result, exited = false, stopping = false, escalation, deadline, memoryPoll;
-    let peakRssBytes = 0, progressSeen = false;
+    let child,
+      outcome,
+      result,
+      exited = false,
+      stopping = false,
+      escalation,
+      deadline,
+      memoryPoll;
+    let peakRssBytes = 0,
+      progressSeen = false;
     const abort = () => stop(fail('PRIVACY_REQUEST_ABORTED'));
     const quit = () => stop(fail('PRIVACY_REQUEST_ABORTED'));
     // Capacity and result remain held until exit is observed, even after kill().
     function finish() {
       if (exited) return;
       exited = true;
-      clearTimeout(escalation); clearTimeout(deadline); clearInterval(memoryPoll);
-      lifetime.removeEventListener('abort', abort); app.removeListener('before-quit', quit);
+      clearTimeout(escalation);
+      clearTimeout(deadline);
+      clearInterval(memoryPoll);
+      lifetime.removeEventListener('abort', abort);
+      app.removeListener('before-quit', quit);
       activeProcesses -= 1;
       try {
         getPrivacyContext(handle);
@@ -58,16 +103,26 @@ function runPrivacyProcess({ handle, filename, input, validateResult, onProgress
         if (outcome) throw outcome;
         if (result === undefined) throw fail();
         resolve({ result, peakRssBytes });
-      } catch (error) { reject(error); }
+      } catch (error) {
+        reject(error);
+      }
     }
     function terminate() {
       if (exited || !child?.pid) return;
       const pid = child.pid;
-      try { child.kill(); } catch { /* Escalate below; never deliver a result while alive. */ }
+      try {
+        child.kill();
+      } catch {
+        /* Escalate below; never deliver a result while alive. */
+      }
       if (exited) return;
       escalation ||= setTimeout(() => {
         if (!exited && child.pid === pid) {
-          try { process.kill(pid, 'SIGKILL'); } catch { /* Exit event remains authoritative. */ }
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            /* Exit event remains authoritative. */
+          }
         }
       }, 250);
     }
@@ -86,7 +141,9 @@ function runPrivacyProcess({ handle, filename, input, validateResult, onProgress
           peakRssBytes = Math.max(peakRssBytes, bytes);
           if (bytes > rssMb * 1024 * 1024) stop(fail('PRIVATE_PROCESS_MEMORY_LIMIT'));
         }
-      } catch { stop(fail('PRIVATE_PROCESS_MEMORY_UNAVAILABLE')); }
+      } catch {
+        stop(fail('PRIVATE_PROCESS_MEMORY_UNAVAILABLE'));
+      }
     }
     try {
       child = utilityProcess.fork(path.join(__dirname, 'privacy-process-entry.js'), [], {
@@ -94,32 +151,52 @@ function runPrivacyProcess({ handle, filename, input, validateResult, onProgress
         // inherited variables. Blank every parent key before process creation;
         // the bootstrap removes these empty entries before loading SDK code.
         env: Object.fromEntries(Object.keys(process.env).map((key) => [key, ''])),
-        execArgv: [`--max-old-space-size=${heapMb}`], cwd: app.getPath('temp'),
-        stdio: 'ignore', serviceName: 'Freedom private computation',
+        execArgv: [`--max-old-space-size=${heapMb}`],
+        cwd: app.getPath('temp'),
+        stdio: 'ignore',
+        serviceName: 'Freedom private computation',
       });
       child.once('exit', finish);
       child.once('error', () => stop(fail()));
       child.once('spawn', () => {
-        if (stopping || lifetime.aborted) { stop(fail('PRIVACY_REQUEST_ABORTED')); return; }
+        if (stopping || lifetime.aborted) {
+          stop(fail('PRIVACY_REQUEST_ABORTED'));
+          return;
+        }
         try {
           if (!ownsInputBuffers(input)) throw fail('PRIVATE_PROCESS_INVALID');
           child.postMessage({ filename, input });
-        } catch { stop(fail()); }
+        } catch {
+          stop(fail());
+        }
       });
       child.on('message', (message) => {
         if (stopping || exited) return;
         try {
           getPrivacyContext(handle);
-          if (lifetime.aborted) { abort(); return; }
-          if (message?.type === 'progress' && message.phase === 'proving' && !progressSeen) {
-            progressSeen = true; onProgress?.('proving'); return;
+          if (lifetime.aborted) {
+            abort();
+            return;
           }
-          if (message?.type !== 'result' || serialize(message.value).length > 1024 * 1024 || validateResult(message.value) !== true) {
-            stop(fail()); return;
+          if (message?.type === 'progress' && message.phase === 'proving' && !progressSeen) {
+            progressSeen = true;
+            onProgress?.('proving');
+            return;
+          }
+          if (
+            message?.type !== 'result' ||
+            serialize(message.value).length > 1024 * 1024 ||
+            validateResult(message.value) !== true
+          ) {
+            stop(fail());
+            return;
           }
           result = message.value;
-          sampleMemory(); stop();
-        } catch { stop(fail()); }
+          sampleMemory();
+          stop();
+        } catch {
+          stop(fail());
+        }
       });
       lifetime.addEventListener('abort', abort, { once: true });
       app.once('before-quit', quit);

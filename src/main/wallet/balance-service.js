@@ -13,7 +13,11 @@ const { isChainAvailable } = require('../networks/network-registry');
 const persistentCache = require('./balance-cache');
 
 // ERC-20 ABI (minimal for balance checking)
-const ERC20_ABI = ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)', 'function symbol() view returns (string)'];
+const ERC20_ABI = [
+  'function balanceOf(address) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'function symbol() view returns (string)',
+];
 const ERC20_INTERFACE = new Interface(ERC20_ABI);
 
 // In-memory balance cache (for fast repeated lookups within session)
@@ -26,19 +30,30 @@ const CACHE_TTL_MS = 30000; // 30 seconds
  */
 async function getNativeBalance(address, chainId, tokenInfo, options = {}) {
   try {
-    const response = await chainData.request(chainId, 'eth_getBalance', [address, 'latest'], options);
+    const response = await chainData.request(
+      chainId,
+      'eth_getBalance',
+      [address, 'latest'],
+      options
+    );
     const { result } = response;
     const balance = BigInt(result);
 
     return {
-      ...(options.privacyContext ? { observedAt: response.observedAt, trust: response.trust, privacy: response.privacy } : {}),
+      ...(options.privacyContext
+        ? { observedAt: response.observedAt, trust: response.trust, privacy: response.privacy }
+        : {}),
       raw: balance.toString(),
       formatted: formatEther(balance),
       symbol: tokenInfo.symbol,
       decimals: tokenInfo.decimals,
     };
   } catch (err) {
-    if (!options.privacyContext) console.error(`[BalanceService] Failed to get native balance for ${address} on chain ${chainId}:`, err.message);
+    if (!options.privacyContext)
+      console.error(
+        `[BalanceService] Failed to get native balance for ${address} on chain ${chainId}:`,
+        err.message
+      );
     throw err;
   }
 }
@@ -49,14 +64,21 @@ async function getNativeBalance(address, chainId, tokenInfo, options = {}) {
 async function getTokenBalance(address, tokenAddress, chainId, tokenInfo, options = {}) {
   try {
     const [balanceCall, decimalsCall] = await Promise.all([
-      chainData.request(chainId, 'eth_call', [
-        { to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('balanceOf', [address]) },
-        'latest',
-      ], options),
-      chainData.request(chainId, 'eth_call', [
-        { to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('decimals') },
-        'latest',
-      ], options),
+      chainData.request(
+        chainId,
+        'eth_call',
+        [
+          { to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('balanceOf', [address]) },
+          'latest',
+        ],
+        options
+      ),
+      chainData.request(
+        chainId,
+        'eth_call',
+        [{ to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('decimals') }, 'latest'],
+        options
+      ),
     ]);
     const [balance] = ERC20_INTERFACE.decodeFunctionResult('balanceOf', balanceCall.result);
     const [decimals] = ERC20_INTERFACE.decodeFunctionResult('decimals', decimalsCall.result);
@@ -67,10 +89,20 @@ async function getTokenBalance(address, tokenAddress, chainId, tokenInfo, option
       symbol: tokenInfo.symbol,
       decimals: Number(decimals),
       tokenAddress,
-      ...(options.privacyContext ? { observedAt: balanceCall.observedAt, trust: balanceCall.trust, privacy: balanceCall.privacy } : {}),
+      ...(options.privacyContext
+        ? {
+            observedAt: balanceCall.observedAt,
+            trust: balanceCall.trust,
+            privacy: balanceCall.privacy,
+          }
+        : {}),
     };
   } catch (err) {
-    if (!options.privacyContext) console.error(`[BalanceService] Failed to get token balance for ${address} (${tokenAddress}) on chain ${chainId}:`, err.message);
+    if (!options.privacyContext)
+      console.error(
+        `[BalanceService] Failed to get token balance for ${address} (${tokenAddress}) on chain ${chainId}:`,
+        err.message
+      );
     throw err;
   }
 }

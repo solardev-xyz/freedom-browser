@@ -8,15 +8,15 @@ This continues the [funding readiness report](ppv2-funding-readiness-2026-10-01.
 
 Network: Ethereum Sepolia, chain 11155111. Disposable owner: `0x6d7d00e435919ead9845f25e2c2f85b969d2c331`.
 
-| Operation | Transaction | Observed result |
-| --- | --- | --- |
-| Auth registration | `0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04` | Receipt succeeded; explicitly resolved after 25 confirmations |
-| Viewing-key registration | `0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e` | Receipt succeeded; explicitly resolved after 21 confirmations |
-| First 0.005 ETH deposit | `0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2` | Receipt succeeded; explicitly resolved after 16 confirmations; active native note recovered |
-| 0.002 ETH withdrawal | `0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116` | Owner payment and change recovered; finalized inclusion explicitly resolved at block 11823149 |
-| Second 0.005 ETH deposit | `0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5` | Receipt succeeded; pending native note recovered; explicitly resolved after 17 confirmations |
-| Separate-note emergency exit | `0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad` | Receipt succeeded; 0.005 ETH returned less gas; explicitly resolved after 33 confirmations |
-| Recovered-change emergency exit | `0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37` | Receipt succeeded; change returned less gas; explicitly resolved after 18 confirmations |
+| Operation                       | Transaction                                                          | Observed result                                                                               |
+| ------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Auth registration               | `0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04` | Receipt succeeded; explicitly resolved after 25 confirmations                                 |
+| Viewing-key registration        | `0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e` | Receipt succeeded; explicitly resolved after 21 confirmations                                 |
+| First 0.005 ETH deposit         | `0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2` | Receipt succeeded; explicitly resolved after 16 confirmations; active native note recovered   |
+| 0.002 ETH withdrawal            | `0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116` | Owner payment and change recovered; finalized inclusion explicitly resolved at block 11823149 |
+| Second 0.005 ETH deposit        | `0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5` | Receipt succeeded; pending native note recovered; explicitly resolved after 17 confirmations  |
+| Separate-note emergency exit    | `0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad` | Receipt succeeded; 0.005 ETH returned less gas; explicitly resolved after 33 confirmations    |
+| Recovered-change emergency exit | `0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37` | Receipt succeeded; change returned less gas; explicitly resolved after 18 confirmations       |
 
 The controller requires at least twelve confirmations before accepting public transaction evidence. Relay resolution separately requires matching finalized events, receipt, encrypted-note digest, nullifier and canonical block observations. An acknowledgement alone does not authorize another spend. Every subsequent action refreshes prior evidence; no automatic retry or resend is enabled.
 

@@ -19,10 +19,7 @@
   "syncCursorRestored": true,
   "vaultLockRejectsLateRead": true,
   "reopenedAfterUnlock": true,
-  "recoveredOwnerRotationIndices": [
-    7,
-    8
-  ],
+  "recoveredOwnerRotationIndices": [7, 8],
   "staleCachedRotationRechecked": true,
   "unknownRotationRefused": true,
   "malformedRotationRecordRefused": true,

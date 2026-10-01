@@ -357,9 +357,7 @@ describe('settings-store', () => {
       })
     ).toBe(true);
 
-    const persisted = JSON.parse(
-      fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8')
-    );
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
     expect(persisted.shortcutOverrides).toEqual({ 'tab.new': 'Ctrl+Shift+U' });
 
     expect(listener).toHaveBeenCalledTimes(1);
@@ -581,7 +579,6 @@ describe('normalizeSearchUrlTemplate parity (main vs renderer)', () => {
     }
   });
 });
-
 
 test('wallet Tor qualification gate is main-owned and cannot enable packaged builds', async () => {
   const userDataDir = createTempUserDataDir();

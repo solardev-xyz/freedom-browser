@@ -80,12 +80,16 @@ function createFallbackProvider(chainId) {
  */
 function getEip1193Provider(chainId, { privacyContext } = {}) {
   if (privacyContext != null) {
-    const client = require('./private-transaction-network').getPrivateTransactionNetwork(privacyContext);
+    const client = require('./private-transaction-network').getPrivateTransactionNetwork(
+      privacyContext
+    );
     client.assertActive(chainId);
-    return Object.freeze({ request: async ({ method, params = [] }) => {
-      const response = await client.request(chainId, method, params);
-      return response.result;
-    } });
+    return Object.freeze({
+      request: async ({ method, params = [] }) => {
+        const response = await client.request(chainId, method, params);
+        return response.result;
+      },
+    });
   }
   if (!eip1193Cache.has(chainId)) {
     const providers = createProviderPool(chainId);
@@ -128,7 +132,9 @@ async function withRetry(fn, retries = PROVIDER_CONFIG.retries, chainId = null) 
       // If we hit a server error (403, 429, etc.), the FallbackProvider may be in a bad state
       // Clear the cache so the next attempt creates fresh providers
       if (chainId && isServerError(err)) {
-        console.warn(`[ProviderManager] Server error detected, clearing provider cache for chain ${chainId}`);
+        console.warn(
+          `[ProviderManager] Server error detected, clearing provider cache for chain ${chainId}`
+        );
         providerCache.delete(chainId);
       }
 
@@ -162,7 +168,10 @@ function isServerError(err) {
  */
 function getProvider(chainId, { privacyContext } = {}) {
   if (privacyContext != null) {
-    throw require('../networks/privacy-context').privacyError('PRIVATE_PROVIDER_UNSUPPORTED', 'Use the context-bound request adapter');
+    throw require('../networks/privacy-context').privacyError(
+      'PRIVATE_PROVIDER_UNSUPPORTED',
+      'Use the context-bound request adapter'
+    );
   }
   if (!providerCache.has(chainId)) {
     try {

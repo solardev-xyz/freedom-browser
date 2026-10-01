@@ -21,11 +21,7 @@
   "recovered": true,
   "badArtifact": "PRIVATE_PPV2_OPERATION_FAILED",
   "badArtifactStartedProver": false,
-  "methods": [
-    "eth_blockNumber",
-    "eth_call",
-    "eth_getLogs"
-  ],
+  "methods": ["eth_blockNumber", "eth_call", "eth_getLogs"],
   "productionGate": false,
   "packaged": true,
   "jobFromAsar": true,

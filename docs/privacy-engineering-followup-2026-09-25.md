@@ -10,14 +10,14 @@ Merged `origin/main` at `2983dc62` into `feat/wallet-privacy-foundation` in `390
 
 Installed the merged lockfile with `npm ci`, then explicitly refreshed the downloaded nodes and required bundled assets. No independent npm dependency or node pin was changed by the privacy work.
 
-| Component | Installed/verified version | Verification |
-| --- | --- | --- |
-| Electron | 44.4.5 | Installed-version guard and unsigned packaged Electron tests |
-| Ant | 0.5.45 | Pinned checksum download, all published targets; host `antd --version` |
-| Myotis | 0.1.11, ABI 29 | Official pinned addons, all published targets; host constructor checks; supervisor rebuilt |
-| Radicle | 0.7.1 | Host addon downloaded against pinned checksum manifest |
-| freedom-ipfs | 0.4.3 | Pinned host asset installed in development and packaging locations |
-| Arti | 2.6.0 | Existing host executable reports the current main pin; no version change |
+| Component    | Installed/verified version | Verification                                                                               |
+| ------------ | -------------------------- | ------------------------------------------------------------------------------------------ |
+| Electron     | 44.4.5                     | Installed-version guard and unsigned packaged Electron tests                               |
+| Ant          | 0.5.45                     | Pinned checksum download, all published targets; host `antd --version`                     |
+| Myotis       | 0.1.11, ABI 29             | Official pinned addons, all published targets; host constructor checks; supervisor rebuilt |
+| Radicle      | 0.7.1                      | Host addon downloaded against pinned checksum manifest                                     |
+| freedom-ipfs | 0.4.3                      | Pinned host asset installed in development and packaging locations                         |
+| Arti         | 2.6.0                      | Existing host executable reports the current main pin; no version change                   |
 
 `npm run check-binaries` passes. Adblock lists and scriptlet resources were refreshed too. Version pins in the repository govern this synchronization; it is not an independent upgrade to arbitrary upstream releases. The [binary playbook](agent-playbooks/bundled-binaries.md) now records this post-merge step explicitly.
 
@@ -52,15 +52,15 @@ Reproduce with `node scripts/spike-kohaku-network.js /absolute/kohaku/checkout` 
 
 ## Current egress inventory and next gates
 
-| Surface at inspected revision | Evidence / next work |
-| --- | --- |
-| Host ASP/relayer HTTP | Explicit injection exists. Adapter and current relayer-client fixture pass. Validate complete operation-specific endpoints and payloads before granting capabilities. |
-| Chain provider | Separate `host.provider` surface. Our public transaction/balance RPC restrictions do not cover private pool log scans or arbitrary protocol calls. Add method/contract/range capabilities; do not grant unrestricted EIP-1193 access. |
-| External synchronization | Host adds `externalSyncProvider`; Privacy Pools also has a Saga-backed log-source path. Review its fetches, manifests, integrity checks and fallback before enabling it. |
-| Proving artifacts | Tornado's default circuit loader still calls ambient fetch, with an injectable `artifactsLoader`. Privacy Pools has a `proverFactory` dependency boundary. Require pinned local artifacts or a qualified bounded loader; the 4 MiB HTTP adapter is not a large-artifact solution. |
-| Workers/provers | Passing this host adapter is not an OS network sandbox. Qualify every worker/library path and cancellation/resource limits before loading real secrets. |
-| Railgun | Select and review a maintained adapter/runtime after upstream's Rust deprecation; do not assume the old package is the current route. |
-| PPv2 | The currently inspected Kohaku Privacy Pools implementation identifies itself as PPv1. The public `@privacy-pools-v2/sdk/latest` npm endpoint returned HTTP 404 again on September 25. PPv2 source/SDK/artifact access remains unresolved. No PPv1 shipping phase is implied. |
+| Surface at inspected revision | Evidence / next work                                                                                                                                                                                                                                                              |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host ASP/relayer HTTP         | Explicit injection exists. Adapter and current relayer-client fixture pass. Validate complete operation-specific endpoints and payloads before granting capabilities.                                                                                                             |
+| Chain provider                | Separate `host.provider` surface. Our public transaction/balance RPC restrictions do not cover private pool log scans or arbitrary protocol calls. Add method/contract/range capabilities; do not grant unrestricted EIP-1193 access.                                             |
+| External synchronization      | Host adds `externalSyncProvider`; Privacy Pools also has a Saga-backed log-source path. Review its fetches, manifests, integrity checks and fallback before enabling it.                                                                                                          |
+| Proving artifacts             | Tornado's default circuit loader still calls ambient fetch, with an injectable `artifactsLoader`. Privacy Pools has a `proverFactory` dependency boundary. Require pinned local artifacts or a qualified bounded loader; the 4 MiB HTTP adapter is not a large-artifact solution. |
+| Workers/provers               | Passing this host adapter is not an OS network sandbox. Qualify every worker/library path and cancellation/resource limits before loading real secrets.                                                                                                                           |
+| Railgun                       | Select and review a maintained adapter/runtime after upstream's Rust deprecation; do not assume the old package is the current route.                                                                                                                                             |
+| PPv2                          | The currently inspected Kohaku Privacy Pools implementation identifies itself as PPv1. The public `@privacy-pools-v2/sdk/latest` npm endpoint returned HTTP 404 again on September 25. PPv2 source/SDK/artifact access remains unresolved. No PPv1 shipping phase is implied.     |
 
 Source anchors: [PPv1 host wiring](https://github.com/ethereum/kohaku/blob/8ac0c528f63e1d43be7b662a1f2f7c15514ca61e/packages/privacy-pools/src/plugin/base.ts), [Saga log source](https://github.com/ethereum/kohaku/blob/8ac0c528f63e1d43be7b662a1f2f7c15514ca61e/packages/privacy-pools/src/data/saga-log-source.ts), [Tornado artifact loader](https://github.com/ethereum/kohaku/blob/8ac0c528f63e1d43be7b662a1f2f7c15514ca61e/packages/tornado-cash/src/utils/circuit-loader.ts). The plugins package still lacks a license field in the inspected package manifest; distribution approval remains open.
 

@@ -82,9 +82,7 @@
     "chainStateVerified": false,
     "protocolLifecycleQualified": false,
     "transportPrivacyQualified": false,
-    "protocolRpcHosts": [
-      "sepolia.rpc.sentio.xyz"
-    ],
+    "protocolRpcHosts": ["sepolia.rpc.sentio.xyz"],
     "deployment": {
       "chainId": 11155111,
       "observedAt": "2026-10-01T15:00:45.621Z",
@@ -344,9 +342,7 @@
       "viewingKey": false,
       "registeredViewingKey": "0x0000000000000000000000000000000000000000000000000000000000000000"
     },
-    "ownerRpcHosts": [
-      "sepolia.rpc.sentio.xyz"
-    ],
+    "ownerRpcHosts": ["sepolia.rpc.sentio.xyz"],
     "simulations": [
       {
         "kind": "ppv2-register-auth",
@@ -451,9 +447,7 @@
     "chainStateVerified": false,
     "protocolLifecycleQualified": false,
     "transportPrivacyQualified": false,
-    "protocolRpcHosts": [
-      "sepolia.rpc.sentio.xyz"
-    ],
+    "protocolRpcHosts": ["sepolia.rpc.sentio.xyz"],
     "deployment": {
       "chainId": 11155111,
       "observedAt": "2026-10-01T15:17:04.457Z",

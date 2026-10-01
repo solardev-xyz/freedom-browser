@@ -57,8 +57,13 @@ export async function refreshBalances(forceRefresh = false) {
       swarmAddress ? window.wallet.getBalances(swarmAddress) : Promise.resolve(null),
     ]);
 
-    if (generation !== balanceGeneration || identity !== walletState.identityData ||
-        userAddress !== walletState.fullAddresses.wallet || swarmAddress !== walletState.fullAddresses.swarm) return;
+    if (
+      generation !== balanceGeneration ||
+      identity !== walletState.identityData ||
+      userAddress !== walletState.fullAddresses.wallet ||
+      swarmAddress !== walletState.fullAddresses.swarm
+    )
+      return;
     showPrivacyStatus(userResult?.balances);
 
     // Display user wallet balances
@@ -74,7 +79,6 @@ export async function refreshBalances(forceRefresh = false) {
     } else if (swarmResult) {
       console.error('[WalletUI] Failed to fetch Swarm balances:', swarmResult.error);
     }
-
   } catch (err) {
     console.error('[WalletUI] Failed to refresh balances:', err);
   }
@@ -134,7 +138,7 @@ export function getChainsWithBalance() {
     }
   }
   return [...chainIds]
-    .map(id => ({ chainId: id, ...walletState.registeredChains[id] }))
+    .map((id) => ({ chainId: id, ...walletState.registeredChains[id] }))
     .sort((a, b) => a.chainId - b.chainId);
 }
 
@@ -175,16 +179,18 @@ export function renderAssetList() {
     row.dataset.tokenKey = token.key;
 
     // Logo or placeholder
-    const logoHtml = token.logo && token.builtin
-      ? `<img class="asset-logo" src="assets/tokens/${token.logo}" alt="${token.symbol}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
-      : '';
+    const logoHtml =
+      token.logo && token.builtin
+        ? `<img class="asset-logo" src="assets/tokens/${token.logo}" alt="${token.symbol}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+        : '';
 
     const placeholderHtml = `<div class="asset-logo-placeholder" style="${token.logo && token.builtin ? 'display:none' : ''}">${token.symbol.charAt(0)}</div>`;
 
     // Only show chain name when "All Chains" is selected
-    const chainNameHtml = walletState.selectedChainId === null
-      ? `<span class="asset-chain">${escapeHtml(chainName)}</span>`
-      : '';
+    const chainNameHtml =
+      walletState.selectedChainId === null
+        ? `<span class="asset-chain">${escapeHtml(chainName)}</span>`
+        : '';
 
     row.innerHTML = `
       <div class="asset-info-wrapper">
@@ -261,8 +267,10 @@ function displaySwarmBalances(balances) {
   }
 
   // xBZZ balance (find the xBZZ token key)
-  const xbzzKey = Object.keys(walletState.registeredTokens).find(key =>
-    walletState.registeredTokens[key].symbol === 'xBZZ' && walletState.registeredTokens[key].chainId === 100
+  const xbzzKey = Object.keys(walletState.registeredTokens).find(
+    (key) =>
+      walletState.registeredTokens[key].symbol === 'xBZZ' &&
+      walletState.registeredTokens[key].chainId === 100
   );
   const xbzzBalance = xbzzKey ? balances[xbzzKey] : null;
   if (swarmBalanceXbzzEl) {
@@ -295,8 +303,13 @@ export async function loadCachedBalances() {
       swarmAddress ? window.wallet.getBalancesCached(swarmAddress) : Promise.resolve(null),
     ]);
 
-    if (generation !== balanceGeneration || identity !== walletState.identityData ||
-        userAddress !== walletState.fullAddresses.wallet || swarmAddress !== walletState.fullAddresses.swarm) return;
+    if (
+      generation !== balanceGeneration ||
+      identity !== walletState.identityData ||
+      userAddress !== walletState.fullAddresses.wallet ||
+      swarmAddress !== walletState.fullAddresses.swarm
+    )
+      return;
     showPrivacyStatus(userResult?.balances);
     if (userResult?.success && userResult.balances) {
       displayUserBalances(userResult.balances);
@@ -305,7 +318,8 @@ export async function loadCachedBalances() {
     if (swarmResult?.success && swarmResult.balances) {
       displaySwarmBalances(swarmResult.balances);
     }
-    const cacheMiss = (userAddress && !(userResult?.success && userResult.balances)) ||
+    const cacheMiss =
+      (userAddress && !(userResult?.success && userResult.balances)) ||
       (swarmAddress && !(swarmResult?.success && swarmResult.balances));
     if (cacheMiss && walletIsVisible()) await refreshBalances();
   } catch (err) {
@@ -351,12 +365,13 @@ function showPrivacyStatus(balances) {
   if (balances?.privacyMode !== 'tor-experimental') return;
   torBalanceMode = true;
   if (!balanceErrorEl) return;
-  balanceErrorEl.textContent = balances.status === 'fresh'
-    ? 'Experimental Tor reads · Sepolia balances only · sending uses existing routes'
-    : balances.status === 'stale'
-      ? 'Sepolia balances are stale · refresh required'
-      : balances.refreshError === 'PRIVACY_EXPERIMENT_UNQUALIFIED'
-        ? 'Tor balance experiment unavailable pending qualification'
-        : 'Sepolia balances unavailable · unlock the wallet and start bundled Tor';
+  balanceErrorEl.textContent =
+    balances.status === 'fresh'
+      ? 'Experimental Tor reads · Sepolia balances only · sending uses existing routes'
+      : balances.status === 'stale'
+        ? 'Sepolia balances are stale · refresh required'
+        : balances.refreshError === 'PRIVACY_EXPERIMENT_UNQUALIFIED'
+          ? 'Tor balance experiment unavailable pending qualification'
+          : 'Sepolia balances unavailable · unlock the wallet and start bundled Tor';
   balanceErrorEl.classList.remove('hidden');
 }

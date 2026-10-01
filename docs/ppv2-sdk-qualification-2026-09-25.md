@@ -16,16 +16,16 @@ The [reproduction script](../scripts/spike-kohaku-ppv2-sdk.js) extracts exact Ko
 
 ## Results and required changes
 
-| Check | Result |
-| --- | --- |
-| SDK build | Passed; upstream declaration-bundler warnings remain |
-| Upstream crypto, keystore, builder and proof-service tests | 96 passed |
-| Kohaku canonical signature and independent SDK key calculation | Four account/rotation cases passed |
-| Complete Kohaku v2 source typecheck against new SDK declarations | Failed: four diagnostics for two substantive interface changes |
-| Real deposit proof in Freedom's existing Node worker | Failed: transitive worker runtime incompatibility |
-| Same unchanged SDK/proof fixture in a separate Node process | Generated and verified; tampered public signals rejected |
-| Freedom artifact-loader/worker regressions | 11 passed; lint passed |
-| Live registration/shield/sync/unshield, recovery, packaged Electron | Not qualified |
+| Check                                                               | Result                                                         |
+| ------------------------------------------------------------------- | -------------------------------------------------------------- |
+| SDK build                                                           | Passed; upstream declaration-bundler warnings remain           |
+| Upstream crypto, keystore, builder and proof-service tests          | 96 passed                                                      |
+| Kohaku canonical signature and independent SDK key calculation      | Four account/rotation cases passed                             |
+| Complete Kohaku v2 source typecheck against new SDK declarations    | Failed: four diagnostics for two substantive interface changes |
+| Real deposit proof in Freedom's existing Node worker                | Failed: transitive worker runtime incompatibility              |
+| Same unchanged SDK/proof fixture in a separate Node process         | Generated and verified; tampered public signals rejected       |
+| Freedom artifact-loader/worker regressions                          | 11 passed; lint passed                                         |
+| Live registration/shield/sync/unshield, recovery, packaged Electron | Not qualified                                                  |
 
 ### Derivation matches, but production identity is not finalized
 

@@ -10,9 +10,16 @@ const { getPrivacyContext, privacyError } = require('../networks/privacy-context
 function createRailgunKeystore(handle, keyIndex = 0) {
   const context = getPrivacyContext(handle);
   const { subject } = context;
-  if (subject.kind !== 'private-account' || subject.protocol !== 'railgun' || subject.role !== 'keystore' ||
-      subject.chainId !== 11155111 || subject.deployment !== 'sepolia' ||
-      !Number.isInteger(keyIndex) || keyIndex < 0 || keyIndex > 65535) {
+  if (
+    subject.kind !== 'private-account' ||
+    subject.protocol !== 'railgun' ||
+    subject.role !== 'keystore' ||
+    subject.chainId !== 11155111 ||
+    subject.deployment !== 'sepolia' ||
+    !Number.isInteger(keyIndex) ||
+    keyIndex < 0 ||
+    keyIndex > 65535
+  ) {
     throw privacyError('PRIVATE_DERIVATION_REFUSED', 'Unsupported privacy key scope');
   }
   const vaultSignal = vault.getSessionSignal();
@@ -25,10 +32,18 @@ function createRailgunKeystore(handle, keyIndex = 0) {
   }
   assertActive();
   return Object.freeze({
-    descriptor: Object.freeze({ protocol: 'railgun', algorithm: 'babyjubjub-hardened-v1', keyIndex }),
+    descriptor: Object.freeze({
+      protocol: 'railgun',
+      algorithm: 'babyjubjub-hardened-v1',
+      keyIndex,
+    }),
     async deriveAt(path) {
       assertActive();
-      if (!paths.includes(path)) throw privacyError('PRIVATE_DERIVATION_REFUSED', 'Derivation path is outside this privacy account');
+      if (!paths.includes(path))
+        throw privacyError(
+          'PRIVATE_DERIVATION_REFUSED',
+          'Derivation path is outside this privacy account'
+        );
       const seed = mnemonicToSeedSync(vault.getMnemonic());
       let node;
       try {
@@ -38,11 +53,16 @@ function createRailgunKeystore(handle, keyIndex = 0) {
           node.copy(input, 1, 0, 32);
           input.writeUInt32BE(Number(segment.slice(0, -1)) + 0x80000000, 33);
           const next = createHmac('sha512', node.subarray(32)).update(input).digest();
-          input.fill(0); node.fill(0); node = next;
+          input.fill(0);
+          node.fill(0);
+          node = next;
         }
         assertActive();
         return `0x${node.subarray(0, 32).toString('hex')}`;
-      } finally { seed.fill(0); node?.fill(0); }
+      } finally {
+        seed.fill(0);
+        node?.fill(0);
+      }
     },
   });
 }

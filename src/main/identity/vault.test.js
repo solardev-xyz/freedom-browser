@@ -187,7 +187,9 @@ describe('vault', () => {
         jest.advanceTimersByTime(600);
         expect(isUnlocked()).toBe(false);
         expect(signal.aborted).toBe(true);
-      } finally { jest.useRealTimers(); }
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     test('does not unlock a locked vault while changing its password', async () => {

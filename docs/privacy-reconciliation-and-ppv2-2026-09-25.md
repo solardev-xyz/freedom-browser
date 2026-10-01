@@ -6,12 +6,12 @@ Date: 2026-09-25. Continues the [recovery and SDK transport work](privacy-engine
 
 The encrypted journal now retains versioned observations and an explicit reviewed resolution alongside the original attempt. Old version-1 attempt records still load and remain blocked. Neither polling nor an RPC acknowledgment silently permits another send.
 
-| Observation | Meaning and effect |
-| --- | --- |
-| `unknown` | Neither receipt nor transaction is returned. It may still have been submitted; keep the gate closed. |
-| `pending` | A matching transaction is returned without a receipt. No inclusion claim. |
+| Observation             | Meaning and effect                                                                                                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unknown`               | Neither receipt nor transaction is returned. It may still have been submitted; keep the gate closed.                                                                      |
+| `pending`               | A matching transaction is returned without a receipt. No inclusion claim.                                                                                                 |
 | `included` / `reverted` | Receipt, block-at-height and head agree at this RPC; record block hash, height and confirmation depth. These are **unverified observations**, not cryptographic finality. |
-| `reorged` | Inclusion disappeared or the reported canonical block/head contradicts it. Any previous resolution is revoked. |
+| `reorged`               | Inclusion disappeared or the reported canonical block/head contradicts it. Any previous resolution is revoked.                                                            |
 
 Main must supply a positive confirmation threshold and a review callback to `resolveSubmission`. The immutable review states the transaction, nonce and unverified evidence. Approval must explicitly return `{ allowNextTransaction: true, acceptedEvidence: 'unverified-rpc' }`; a bare `true` is refused. Evidence is fetched again after review, with an expiry and scope cancellation. Changed inclusion, insufficient depth, rejection or timeout leaves the gate closed.
 

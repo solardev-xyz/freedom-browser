@@ -25,14 +25,33 @@ function stale(data, code = null) {
 
 function stateFor(address) {
   const scope = openPrivacySession();
-  const handle = scope.getContext({ kind: 'public-address', principal: address, chainId: 11155111, role: 'balance-rpc' });
+  const handle = scope.getContext({
+    kind: 'public-address',
+    principal: address,
+    chainId: 11155111,
+    role: 'balance-rpc',
+  });
   let state = states.get(handle);
   if (!state) {
     const context = getPrivacyContext(handle);
-    state = { scope, handle, profileId: context.profileId, address: context.subject.principal, data: null, refresh: null };
+    state = {
+      scope,
+      handle,
+      profileId: context.profileId,
+      address: context.subject.principal,
+      data: null,
+      refresh: null,
+    };
     states.set(handle, state);
     liveStates.add(state);
-    scope.signal.addEventListener('abort', () => { state.data = null; liveStates.delete(state); }, { once: true });
+    scope.signal.addEventListener(
+      'abort',
+      () => {
+        state.data = null;
+        liveStates.delete(state);
+      },
+      { once: true }
+    );
   }
   return state;
 }
@@ -42,20 +61,30 @@ function observedData(state) {
 }
 
 function isFresh(state) {
-  return state.data?.status === 'fresh' && Date.now() - state.completedAt < TTL_MS &&
-    state.endpoint && state.endpoint === getWalletSocksEndpoint() && !state.endpoint.signal.aborted;
+  return (
+    state.data?.status === 'fresh' &&
+    Date.now() - state.completedAt < TTL_MS &&
+    state.endpoint &&
+    state.endpoint === getWalletSocksEndpoint() &&
+    !state.endpoint.signal.aborted
+  );
 }
 
 function getPrivateBalances(address, { cacheOnly = false, force = false } = {}) {
-  if (!isWalletTorExperimentAvailable()) return Promise.resolve(unavailable('PRIVACY_EXPERIMENT_UNQUALIFIED'));
+  if (!isWalletTorExperimentAvailable())
+    return Promise.resolve(unavailable('PRIVACY_EXPERIMENT_UNQUALIFIED'));
   let state;
-  try { state = stateFor(address); } catch {
+  try {
+    state = stateFor(address);
+  } catch {
     return Promise.resolve(unavailable('PRIVACY_SESSION_UNAVAILABLE'));
   }
   if (!force && isFresh(state)) return Promise.resolve(state.data);
   if (cacheOnly) return Promise.resolve(stale(observedData(state)));
   if (state.refresh) return state.refresh;
-  state.refresh = refresh(state).finally(() => { state.refresh = null; });
+  state.refresh = refresh(state).finally(() => {
+    state.refresh = null;
+  });
   return state.refresh;
 }
 
@@ -68,18 +97,25 @@ async function refresh(state) {
   try {
     const data = await scope.run(handle, async () => {
       const { getNativeBalance, getTokenBalance } = require('./balance-service');
-      const balances = { privacyMode: MODE, status: 'fresh', lastUpdated: previous?.lastUpdated || null, refreshError: null };
+      const balances = {
+        privacyMode: MODE,
+        status: 'fresh',
+        lastUpdated: previous?.lastUpdated || null,
+        refreshError: null,
+      };
       let successes = 0;
       // Sequential tokens bound concurrency per account and never form a
       // multi-account batch. Token metadata shares the account context.
       for (const [key, token] of Object.entries(getTokens())) {
-        if (signal.aborted) throw privacyError('PRIVACY_REQUEST_ABORTED', 'Balance refresh cancelled');
+        if (signal.aborted)
+          throw privacyError('PRIVACY_REQUEST_ABORTED', 'Balance refresh cancelled');
         if (Number(token.chainId) !== 11155111) continue;
         try {
           const options = { privacyContext: handle, includeTrust: true, signal };
-          const value = token.address === null
-            ? await getNativeBalance(state.address, token.chainId, token, options)
-            : await getTokenBalance(state.address, token.address, token.chainId, token, options);
+          const value =
+            token.address === null
+              ? await getNativeBalance(state.address, token.chainId, token, options)
+              : await getTokenBalance(state.address, token.address, token.chainId, token, options);
           balances[key] = { ...value, stale: false, refreshError: null };
           balances.lastUpdated = value.observedAt;
           successes += 1;
@@ -87,7 +123,12 @@ async function refresh(state) {
           balances.refreshError = 'PRIVATE_BALANCE_REFRESH_FAILED';
           balances[key] = previous?.[key]
             ? { ...previous[key], stale: true, refreshError: balances.refreshError }
-            : { symbol: token.symbol, stale: true, refreshError: balances.refreshError, observedAt: null };
+            : {
+                symbol: token.symbol,
+                stale: true,
+                refreshError: balances.refreshError,
+                observedAt: null,
+              };
         }
       }
       if (!successes) balances.status = previous?.lastUpdated ? 'stale' : 'unavailable';
@@ -107,7 +148,11 @@ async function refresh(state) {
     });
   } catch {
     // A revoked session may not return an old account snapshot to the UI.
-    try { getPrivacyContext(handle); } catch { return unavailable('PRIVACY_SESSION_UNAVAILABLE'); }
+    try {
+      getPrivacyContext(handle);
+    } catch {
+      return unavailable('PRIVACY_SESSION_UNAVAILABLE');
+    }
     return stale(previous, 'PRIVACY_REQUEST_ABORTED');
   }
 }

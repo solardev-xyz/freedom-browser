@@ -6,15 +6,15 @@ Date: 2026-09-25. Decision: begin a bounded internal Sepolia spike through Kohak
 
 ## Earlier access checkpoint (before invitation acceptance)
 
-| Check | Result |
-| --- | --- |
-| Freedom main | Still `2983dc62`; already merged. No new dependency or node refresh required. |
-| Kohaku master | `cae352597009b369c7f3a2aafbef4653385a092d`, September 25 |
-| PPv2 PR #258 | Still open at `6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e` |
-| CLI main | Still `e7d8e9d54661cbfe3134a7afa415910adad0e711`, September 7 |
-| SDK registry, authenticated as `flotob` | HTTP 403, `permission_denied` |
-| Existing GitHub token scopes | `read:packages` is not listed |
-| Referenced `0xbow-io/v2-monorepo`, authenticated lookup | HTTP 404 |
+| Check                                                   | Result                                                                        |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Freedom main                                            | Still `2983dc62`; already merged. No new dependency or node refresh required. |
+| Kohaku master                                           | `cae352597009b369c7f3a2aafbef4653385a092d`, September 25                      |
+| PPv2 PR #258                                            | Still open at `6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e`                      |
+| CLI main                                                | Still `e7d8e9d54661cbfe3134a7afa415910adad0e711`, September 7                 |
+| SDK registry, authenticated as `flotob`                 | HTTP 403, `permission_denied`                                                 |
+| Existing GitHub token scopes                            | `read:packages` is not listed                                                 |
+| Referenced `0xbow-io/v2-monorepo`, authenticated lookup | HTTP 404                                                                      |
 
 The registry request used existing GitHub CLI authentication in memory, sent only to GitHub's package registry, with redirects disabled. No credential was printed, saved, committed, refreshed or given additional scopes. **The 403 does not establish that the account itself lacks package entitlement:** missing package-read scope is a known obstacle. The repository 404 also does not distinguish missing access from an obsolete repository location.
 

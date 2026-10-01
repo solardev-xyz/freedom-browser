@@ -255,7 +255,10 @@ function loadSettings() {
 }
 
 function broadcastSettingsUpdated(merged) {
-  broadcastToAllWebContents(IPC.SETTINGS_UPDATED, { ...merged, walletTorExperimentAvailable: isWalletTorExperimentAvailable() });
+  broadcastToAllWebContents(IPC.SETTINGS_UPDATED, {
+    ...merged,
+    walletTorExperimentAvailable: isWalletTorExperimentAvailable(),
+  });
 }
 
 // Main-process subscribers to committed settings changes (e.g. the
@@ -287,7 +290,8 @@ function notifySettingsChanged(merged, previous) {
 // by === .
 function saveSettings(newSettings) {
   try {
-    if (newSettings?.walletTorBalanceReads === true && !isWalletTorExperimentAvailable()) return false;
+    if (newSettings?.walletTorBalanceReads === true && !isWalletTorExperimentAvailable())
+      return false;
     const previous = loadSettings();
     const merged = { ...previous };
     let changed = false;

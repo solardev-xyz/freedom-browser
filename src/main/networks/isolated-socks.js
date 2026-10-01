@@ -6,12 +6,22 @@ const { privacyError } = require('./privacy-context');
 
 function connectIsolatedSocks({ endpoint, hostname, port, token, signal, timeoutMs = 10000 }) {
   return new Promise((resolve, reject) => {
-    if (!endpoint || !['127.0.0.1', '::1'].includes(endpoint.host) ||
-        !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 ||
-        !Number.isInteger(port) || port < 1 || port > 65535 ||
-        typeof hostname !== 'string' || !/^[a-zA-Z0-9._-]+$/.test(hostname) ||
-        Buffer.byteLength(hostname) > 255 || !/^[0-9a-f]{64}$/.test(token) ||
-        !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    if (
+      !endpoint ||
+      !['127.0.0.1', '::1'].includes(endpoint.host) ||
+      !Number.isInteger(endpoint.port) ||
+      endpoint.port < 1 ||
+      endpoint.port > 65535 ||
+      !Number.isInteger(port) ||
+      port < 1 ||
+      port > 65535 ||
+      typeof hostname !== 'string' ||
+      !/^[a-zA-Z0-9._-]+$/.test(hostname) ||
+      Buffer.byteLength(hostname) > 255 ||
+      !/^[0-9a-f]{64}$/.test(token) ||
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs <= 0
+    ) {
       reject(privacyError('INVALID_SOCKS_REQUEST', 'Invalid isolated SOCKS request'));
       return;
     }
@@ -19,7 +29,8 @@ function connectIsolatedSocks({ endpoint, hostname, port, token, signal, timeout
     let buffer = Buffer.alloc(0);
     let phase = 'method';
     let settled = false;
-    const error = (code = 'SOCKS_PROTOCOL_ERROR') => privacyError(code, 'Isolated SOCKS connection failed');
+    const error = (code = 'SOCKS_PROTOCOL_ERROR') =>
+      privacyError(code, 'Isolated SOCKS connection failed');
     const onAbort = () => finish(error('PRIVACY_REQUEST_ABORTED'));
     const onError = () => finish(error('SOCKS_CONNECTION_FAILED'));
     const onClose = () => finish(error('SOCKS_CONNECTION_CLOSED'));
@@ -58,7 +69,8 @@ function connectIsolatedSocks({ endpoint, hostname, port, token, signal, timeout
         const username = '<torS0X>0';
         // Keep isolation credentials out of the shared Buffer pool.
         const authentication = Buffer.alloc(3 + username.length + Buffer.byteLength(token));
-        authentication[0] = 1; authentication[1] = username.length;
+        authentication[0] = 1;
+        authentication[1] = username.length;
         authentication.write(username, 2);
         authentication[2 + username.length] = Buffer.byteLength(token);
         authentication.write(token, 3 + username.length);

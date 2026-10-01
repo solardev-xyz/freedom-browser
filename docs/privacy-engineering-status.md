@@ -14,13 +14,13 @@ Local implementation and qualification work; no production activation or shielde
 
 ## What works now
 
-| Area | Implemented and exercised | Scope still missing |
-| --- | --- | --- |
-| Contexts and transport | Profile/account/session ownership, vault-lock cancellation, strict authenticated SOCKS, context-specific HTTP/TLS pools, remote destination DNS, no automatic fallback | Complete SDK traffic coverage and every supported platform |
-| Balance flow | Sepolia native/ERC-20 reads through existing wallet IPC; account separation; preserved observation timestamps during outage; restart and both lock paths | Production activation, comprehensive OS egress tracing, additional chains |
-| Transactions | Main-only context-bound nonce, gas, simulation, raw submission and receipt hooks; exact signed-intent checks; bounded review lifetime; uncertain submission handling | Durable submission journal, restart recovery, real approval/transaction-recorder integration and end-to-end qualification |
-| Kohaku host primitives | Restricted Railgun key derivation and authenticated encrypted atomic storage | Product key/backup lifecycle, actual SDK persistence/restore, worker/proving cancellation |
-| Kohaku runtime | Pinned isolated SDK bundle initializes WASM and reconstructs a synthetic address in Node and packaged Electron from ASAR | Sync, proving, shielding, unshielding, sponsored submission, network mediation |
+| Area                   | Implemented and exercised                                                                                                                                              | Scope still missing                                                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Contexts and transport | Profile/account/session ownership, vault-lock cancellation, strict authenticated SOCKS, context-specific HTTP/TLS pools, remote destination DNS, no automatic fallback | Complete SDK traffic coverage and every supported platform                                                                |
+| Balance flow           | Sepolia native/ERC-20 reads through existing wallet IPC; account separation; preserved observation timestamps during outage; restart and both lock paths               | Production activation, comprehensive OS egress tracing, additional chains                                                 |
+| Transactions           | Main-only context-bound nonce, gas, simulation, raw submission and receipt hooks; exact signed-intent checks; bounded review lifetime; uncertain submission handling   | Durable submission journal, restart recovery, real approval/transaction-recorder integration and end-to-end qualification |
+| Kohaku host primitives | Restricted Railgun key derivation and authenticated encrypted atomic storage                                                                                           | Product key/backup lifecycle, actual SDK persistence/restore, worker/proving cancellation                                 |
+| Kohaku runtime         | Pinned isolated SDK bundle initializes WASM and reconstructs a synthetic address in Node and packaged Electron from ASAR                                               | Sync, proving, shielding, unshielding, sponsored submission, network mediation                                            |
 
 The development balance gate remains closed in packaged builds. Sending through the ordinary wallet is unchanged. The new transaction APIs have no renderer/IPC entry point and do not make normal sends private. No application dependency was added or upgraded. No real wallet keys or funds were used.
 
@@ -30,14 +30,14 @@ The development balance gate remains closed in packaged builds. Sending through 
 
 Observed on macOS arm64, Arti 2.6.0, at 2026-09-14T20:34:18Z:
 
-| Request | Context | Circuit | HTTP status | Connection/request time |
-| --- | --- | --- | --- | --- |
-| 1 | A | Circ 3.0 | 200 | 1,321 ms |
-| 2 | A | Circ 4.0 | 200 | 404 ms |
-| 3 | B | Circ 4.1 | 200 | 3,425 ms |
-| 4 | B | Circ 4.1 | 200 | 2,012 ms |
-| 5 | A | Circ 4.0 | 200 | 592 ms |
-| 6 | B | Circ 4.1 | 200 | 1,682 ms |
+| Request | Context | Circuit  | HTTP status | Connection/request time |
+| ------- | ------- | -------- | ----------- | ----------------------- |
+| 1       | A       | Circ 3.0 | 200         | 1,321 ms                |
+| 2       | A       | Circ 4.0 | 200         | 404 ms                  |
+| 3       | B       | Circ 4.1 | 200         | 3,425 ms                |
+| 4       | B       | Circ 4.1 | 200         | 2,012 ms                |
+| 5       | A       | Circ 4.0 | 200         | 592 ms                  |
+| 6       | B       | Circ 4.1 | 200         | 1,682 ms                |
 
 No circuit was shared across A/B in this run; both contexts reused a circuit across fresh connections. A context is allowed to use more than one circuit. Bootstrap took 4,028 ms in this run; six sequential requests are not a representative latency/load benchmark. The checked-in [machine-readable report](qualification/wallet-tor-macos-arm64-2026-09-14.json) includes the Arti binary hash. Its `qualified: true` means this probe's assertions passed, not that the wallet feature is release-qualified.
 
@@ -74,11 +74,11 @@ Before handing signed bytes to transport, the network client records the determi
 
 The SDK spike uses an isolated temporary npm project; the app's dependency files are unchanged. Exact inputs and the Node/address result are in [runtime report](qualification/kohaku-runtime-macos-arm64-2026-09-14.json), with its [scratch dependency manifest](qualification/kohaku-spike-package.json) and [lockfile](qualification/kohaku-spike-package-lock.json).
 
-| Package | Exact tested version | Direct Node ESM import | Published license metadata |
-| --- | --- | --- | --- |
-| `@kohaku-eth/plugins` | `0.0.1-alpha.13` | Fails: extensionless module import | Missing |
-| `@kohaku-eth/provider` | `0.1.0-alpha.9` | Loads | MIT |
-| `@kohaku-eth/railgun` | `0.0.1-alpha.30` | Fails: directory import | MIT |
+| Package                | Exact tested version | Direct Node ESM import             | Published license metadata |
+| ---------------------- | -------------------- | ---------------------------------- | -------------------------- |
+| `@kohaku-eth/plugins`  | `0.0.1-alpha.13`     | Fails: extensionless module import | Missing                    |
+| `@kohaku-eth/provider` | `0.1.0-alpha.9`      | Loads                              | MIT                        |
+| `@kohaku-eth/railgun`  | `0.0.1-alpha.30`     | Fails: directory import            | MIT                        |
 
 The Railgun bundle also imports `viem`, which the inspected package lists only as a development dependency. Supplying the already installed `viem@2.56.3` explicitly to the scratch bundler resolves it. Production adoption must declare and approve the actual dependency set rather than depend on a transitive installation. The plugins package's missing license metadata needs clarification; this observation does not establish redistribution rights.
 

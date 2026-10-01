@@ -1222,10 +1222,12 @@ const applyFormState = (settings) => {
   fields.enableIdentity.checked = settings.enableIdentityWallet === true;
   fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
   fields.walletTorBalanceReads.checked = settings.walletTorBalanceReads === true;
-  fields.walletTorBalanceReads.disabled = settings.walletTorExperimentAvailable !== true && !fields.walletTorBalanceReads.checked;
-  $('wallet-tor-help').textContent = settings.walletTorExperimentAvailable === true
-    ? 'Sepolia balances only. Start bundled Tor first. Other balances are unavailable; sending and other wallet traffic keep their existing routes. Circuit isolation is still under test.'
-    : 'Unavailable pending circuit and platform qualification. You can turn off a previously enabled experiment.';
+  fields.walletTorBalanceReads.disabled =
+    settings.walletTorExperimentAvailable !== true && !fields.walletTorBalanceReads.checked;
+  $('wallet-tor-help').textContent =
+    settings.walletTorExperimentAvailable === true
+      ? 'Sepolia balances only. Start bundled Tor first. Other balances are unavailable; sending and other wallet traffic keep their existing routes. Circuit isolation is still under test.'
+      : 'Unavailable pending circuit and platform qualification. You can turn off a previously enabled experiment.';
   fields.autoUpdate.checked = settings.autoUpdate !== false;
   fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';
   fields.adblockEnabled.checked = settings.adblockEnabled !== false;

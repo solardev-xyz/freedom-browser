@@ -6,7 +6,10 @@ const subject = { kind: 'public-address', principal: address, chainId: 11155111,
 function deferred() {
   let resolve;
   let reject;
-  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
   return { promise, resolve, reject };
 }
 
@@ -21,13 +24,24 @@ describe('privacy contexts', () => {
 
   test('canonical address/chain variants reuse opaque handles and random tokens', () => {
     const handle = scope.getContext(subject);
-    expect(scope.getContext({ ...subject, chainId: '11155111', principal: `0x${address.slice(2).toUpperCase()}` })).toBe(handle);
+    expect(
+      scope.getContext({
+        ...subject,
+        chainId: '11155111',
+        principal: `0x${address.slice(2).toUpperCase()}`,
+      })
+    ).toBe(handle);
     expect(JSON.stringify(handle)).toBe('{}');
     expect(Object.isFrozen(handle)).toBe(true);
     const context = getPrivacyContext(handle);
     expect(context.isolationToken).toMatch(/^[0-9a-f]{64}$/);
     expect(context.isolationToken).not.toContain(address.slice(2));
-    expect(context.requirements).toEqual({ origin: 'tor', content: 'public', correctness: 'any', maxAgeMs: null });
+    expect(context.requirements).toEqual({
+      origin: 'tor',
+      content: 'public',
+      correctness: 'any',
+      maxAgeMs: null,
+    });
     expect(Object.isFrozen(context.requirements)).toBe(true);
   });
 
@@ -42,28 +56,44 @@ describe('privacy contexts', () => {
       scope.getContext(subject, { correctness: 'proof' }),
       other.getContext(subject),
     ];
-    expect(new Set(handles.map((h) => getPrivacyContext(h).isolationToken)).size).toBe(handles.length);
+    expect(new Set(handles.map((h) => getPrivacyContext(h).isolationToken)).size).toBe(
+      handles.length
+    );
     expect(() => scope.commit(handles.at(-1), () => {})).toThrow('another privacy session');
     other.close();
   });
 
   test('private protocol accounts require deployment and never reuse funding contexts', () => {
-    const privateSubject = { ...subject, kind: 'private-account', principal: 'private-1', protocol: 'ppv2', deployment: 'v9' };
+    const privateSubject = {
+      ...subject,
+      kind: 'private-account',
+      principal: 'private-1',
+      protocol: 'ppv2',
+      deployment: 'v9',
+    };
     const handle = scope.getContext(privateSubject);
     expect(handle).not.toBe(scope.getContext(subject));
     expect(handle).not.toBe(scope.getContext({ ...privateSubject, deployment: 'v10' }));
-    expect(() => scope.getContext({ ...privateSubject, deployment: undefined })).toThrow('protocol and deployment');
+    expect(() => scope.getContext({ ...privateSubject, deployment: undefined })).toThrow(
+      'protocol and deployment'
+    );
   });
 
   test('rejects forged handles, wrong chains, invalid subjects and unknown protection requirements', () => {
     expect(() => getPrivacyContext({})).toThrow('Unknown privacy context');
     expect(() => getPrivacyContext(scope.getContext(subject), 1)).toThrow('another chain');
-    expect(() => scope.getContext({ ...subject, principal: '0x123' })).toThrow('Invalid privacy address');
+    expect(() => scope.getContext({ ...subject, principal: '0x123' })).toThrow(
+      'Invalid privacy address'
+    );
     expect(() => scope.getContext({ ...subject, chainId: true })).toThrow('Invalid privacy chain');
     expect(() => scope.getContext(null)).toThrow('Invalid privacy subject');
-    expect(() => scope.getContext(subject, { origin: 'direct' })).toThrow('Unsupported privacy requirements');
+    expect(() => scope.getContext(subject, { origin: 'direct' })).toThrow(
+      'Unsupported privacy requirements'
+    );
     expect(() => scope.getContext(subject, { typo: 'tor' })).toThrow('Unknown privacy requirement');
-    expect(() => scope.getContext(subject, { maxAgeMs: -1 })).toThrow('Unsupported privacy requirements');
+    expect(() => scope.getContext(subject, { maxAgeMs: -1 })).toThrow(
+      'Unsupported privacy requirements'
+    );
   });
 
   test('lock revokes pending work promptly even if the dependency ignores abort', async () => {

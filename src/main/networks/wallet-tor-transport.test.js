@@ -14,12 +14,24 @@ describe('wallet Tor transport', () => {
   function handler(req, res) {
     seen.push({ url: req.url, headers: req.headers });
     if (req.url === '/stall') return;
-    if (req.url === '/redirect') { res.writeHead(302, { location: 'http://leak.example/' }); res.end(); return; }
-    if (req.url === '/large') { res.end(Buffer.alloc(4 * 1024 * 1024 + 1)); return; }
+    if (req.url === '/redirect') {
+      res.writeHead(302, { location: 'http://leak.example/' });
+      res.end();
+      return;
+    }
+    if (req.url === '/large') {
+      res.end(Buffer.alloc(4 * 1024 * 1024 + 1));
+      return;
+    }
     res.end('ok');
   }
   function context(char = '1') {
-    return scope.getContext({ kind: 'public-address', principal: `0x${char.repeat(40)}`, chainId: 1, role: 'rpc' });
+    return scope.getContext({
+      kind: 'public-address',
+      principal: `0x${char.repeat(40)}`,
+      chainId: 1,
+      role: 'rpc',
+    });
   }
   beforeEach(async () => {
     seen.length = 0;
@@ -53,7 +65,13 @@ describe('wallet Tor transport', () => {
     expect(socks.records).toHaveLength(2);
     expect(new Set(socks.records.map((r) => r.token)).size).toBe(2);
     for (const record of socks.records) {
-      expect(record).toMatchObject({ greeting: [5, 1, 2], user: '<torS0X>0', hostname: 'rpc.example.test', addressType: 3, port: 80 });
+      expect(record).toMatchObject({
+        greeting: [5, 1, 2],
+        user: '<torS0X>0',
+        hostname: 'rpc.example.test',
+        addressType: 3,
+        port: 80,
+      });
       expect(record.token).toMatch(/^[a-f0-9]{64}$/);
     }
     expect(lookup).not.toHaveBeenCalled();
@@ -61,18 +79,25 @@ describe('wallet Tor transport', () => {
     expect(JSON.stringify(seen)).not.toContain(socks.records[0].token);
   });
 
-  test.each(['downgrade', 'auth-failure', 'bad-reply'])("refuses SOCKS %s before HTTP data", async (behavior) => {
-    await socks.close();
-    socks = await proxy(server.address().port, behavior);
-    await expect(transport.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({ code: 'TOR_REQUEST_FAILED' });
-    expect(seen).toHaveLength(0);
-  });
+  test.each(['downgrade', 'auth-failure', 'bad-reply'])(
+    'refuses SOCKS %s before HTTP data',
+    async (behavior) => {
+      await socks.close();
+      socks = await proxy(server.address().port, behavior);
+      await expect(transport.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({
+        code: 'TOR_REQUEST_FAILED',
+      });
+      expect(seen).toHaveLength(0);
+    }
+  );
 
   test('cancels a stalled handshake immediately', async () => {
     await socks.close();
     socks = await proxy(server.address().port, 'stall');
     const controller = new AbortController();
-    const pending = transport.request(context(), 'http://rpc.example.test/', { signal: controller.signal });
+    const pending = transport.request(context(), 'http://rpc.example.test/', {
+      signal: controller.signal,
+    });
     const rejected = expect(pending).rejects.toMatchObject({ code: 'PRIVACY_REQUEST_ABORTED' });
     await socks.greeting;
     controller.abort();
@@ -88,13 +113,19 @@ describe('wallet Tor transport', () => {
     await arrived;
     socks.controller.abort();
     await rejected;
-    await expect(transport.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({ code: 'TOR_NOT_READY' });
+    await expect(transport.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({
+      code: 'TOR_NOT_READY',
+    });
   });
 
   test('lock destroys pools; redirects and oversized responses never complete', async () => {
-    await expect(transport.request(context(), 'http://rpc.example.test/redirect')).rejects.toMatchObject({ code: 'PRIVATE_REDIRECT_REFUSED' });
+    await expect(
+      transport.request(context(), 'http://rpc.example.test/redirect')
+    ).rejects.toMatchObject({ code: 'PRIVATE_REDIRECT_REFUSED' });
     expect(seen.map((r) => r.url)).toEqual(['/redirect']);
-    await expect(transport.request(context(), 'http://rpc.example.test/large')).rejects.toMatchObject({ code: 'PRIVATE_RESPONSE_TOO_LARGE' });
+    await expect(
+      transport.request(context(), 'http://rpc.example.test/large')
+    ).rejects.toMatchObject({ code: 'PRIVATE_RESPONSE_TOO_LARGE' });
     await transport.request(context(), 'http://rpc.example.test/warm');
     const closedSockets = Promise.all([...socks.sockets].map((socket) => once(socket, 'close')));
     lifetime.abort();
@@ -103,9 +134,13 @@ describe('wallet Tor transport', () => {
   });
 
   test('deadlines bound a stalled response and transport shutdown is terminal', async () => {
-    await expect(transport.request(context(), 'http://rpc.example.test/stall', { timeoutMs: 30 })).rejects.toMatchObject({ code: 'TOR_REQUEST_TIMEOUT' });
+    await expect(
+      transport.request(context(), 'http://rpc.example.test/stall', { timeoutMs: 30 })
+    ).rejects.toMatchObject({ code: 'TOR_REQUEST_TIMEOUT' });
     transport.close();
-    await expect(transport.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({ code: 'TOR_TRANSPORT_CLOSED' });
+    await expect(transport.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({
+      code: 'TOR_TRANSPORT_CLOSED',
+    });
   });
 
   test('restart uses a fresh SOCKS connection instead of old pooled sockets', async () => {
@@ -119,21 +154,37 @@ describe('wallet Tor transport', () => {
 
   test('idle pools expire and unsupported content protection fails before networking', async () => {
     transport.close();
-    transport = createWalletTorTransport({ getEndpoint: () => socks.endpoint, allowHttp: true, idleMs: 10 });
+    transport = createWalletTorTransport({
+      getEndpoint: () => socks.endpoint,
+      allowHttp: true,
+      idleMs: 10,
+    });
     const a = context();
     await transport.request(a, 'http://rpc.example.test/');
     await Promise.all([...socks.sockets].map((socket) => once(socket, 'close')));
     await transport.request(a, 'http://rpc.example.test/');
     expect(socks.records).toHaveLength(2);
-    const privateRead = scope.getContext({ kind: 'public-address', principal: `0x${'3'.repeat(40)}`, chainId: 1, role: 'rpc' }, { content: 'pir' });
-    await expect(transport.request(privateRead, 'http://rpc.example.test/')).rejects.toMatchObject({ code: 'UNSUPPORTED_PRIVACY_REQUIREMENTS' });
+    const privateRead = scope.getContext(
+      { kind: 'public-address', principal: `0x${'3'.repeat(40)}`, chainId: 1, role: 'rpc' },
+      { content: 'pir' }
+    );
+    await expect(transport.request(privateRead, 'http://rpc.example.test/')).rejects.toMatchObject({
+      code: 'UNSUPPORTED_PRIVACY_REQUIREMENTS',
+    });
     expect(socks.records).toHaveLength(2);
   });
 
   test('explicit operation release permits more than 32 sequential isolated groups without waiting for idle expiry', async () => {
     for (let index = 1; index <= 36; index++) {
-      const handle = scope.getContext({ kind: 'private-account', principal: 'fixture', protocol: 'ppv2-fixture', deployment: 'sepolia',
-        chainId: 11155111, role: 'protocol-rpc', operation: `attempt-${index}` });
+      const handle = scope.getContext({
+        kind: 'private-account',
+        principal: 'fixture',
+        protocol: 'ppv2-fixture',
+        deployment: 'sepolia',
+        chainId: 11155111,
+        role: 'protocol-rpc',
+        operation: `attempt-${index}`,
+      });
       await transport.request(handle, 'http://rpc.example.test/');
       transport.release(handle);
     }
@@ -143,10 +194,16 @@ describe('wallet Tor transport', () => {
 
   test('requires HTTPS by default, forbids credential URLs and cookie injection', async () => {
     const strict = createWalletTorTransport({ getEndpoint: () => socks.endpoint });
-    await expect(strict.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({ code: 'INVALID_PRIVATE_REQUEST' });
+    await expect(strict.request(context(), 'http://rpc.example.test/')).rejects.toMatchObject({
+      code: 'INVALID_PRIVATE_REQUEST',
+    });
     strict.close();
-    await expect(transport.request(context(), 'http://user:secret@rpc.example.test/')).rejects.toMatchObject({ code: 'INVALID_PRIVATE_REQUEST' });
-    await expect(transport.request(context(), 'http://rpc.example.test/', { headers: { cookie: 'id=1' } })).rejects.toMatchObject({ code: 'INVALID_PRIVATE_REQUEST' });
+    await expect(
+      transport.request(context(), 'http://user:secret@rpc.example.test/')
+    ).rejects.toMatchObject({ code: 'INVALID_PRIVATE_REQUEST' });
+    await expect(
+      transport.request(context(), 'http://rpc.example.test/', { headers: { cookie: 'id=1' } })
+    ).rejects.toMatchObject({ code: 'INVALID_PRIVATE_REQUEST' });
     expect(socks.records).toHaveLength(0);
   });
 
@@ -155,8 +212,14 @@ describe('wallet Tor transport', () => {
     expect(error.code).toBe('INVALID_PRIVATE_REQUEST');
     expect(error.input).toBeUndefined();
     expect(error.message).not.toContain('secret');
-    await expect(transport.request(context(), 'http://rpc.example.test/', { headers: { authorization: 'secret\nvalue' } }))
-      .rejects.toMatchObject({ code: 'INVALID_PRIVATE_REQUEST', message: 'Invalid private request headers' });
+    await expect(
+      transport.request(context(), 'http://rpc.example.test/', {
+        headers: { authorization: 'secret\nvalue' },
+      })
+    ).rejects.toMatchObject({
+      code: 'INVALID_PRIVATE_REQUEST',
+      message: 'Invalid private request headers',
+    });
     expect(socks.records).toHaveLength(0);
   });
 
@@ -165,27 +228,48 @@ describe('wallet Tor transport', () => {
     const port = await listen(secureServer);
     await socks.close();
     socks = await proxy(port);
-    const trusted = createWalletTorTransport({ getEndpoint: () => socks.endpoint, ca: fixture.cert });
+    const trusted = createWalletTorTransport({
+      getEndpoint: () => socks.endpoint,
+      ca: fixture.cert,
+    });
     const untrusted = createWalletTorTransport({ getEndpoint: () => socks.endpoint });
     try {
       const response = await trusted.request(context(), 'https://rpc.example.test/');
       expect(response.body.toString()).toBe('ok');
-      await expect(untrusted.request(context(), 'https://rpc.example.test/untrusted')).rejects.toMatchObject({ code: 'TOR_REQUEST_FAILED' });
-      await expect(trusted.request(context(), 'https://wrong.example.test/wrong')).rejects.toMatchObject({ code: 'TOR_REQUEST_FAILED' });
+      await expect(
+        untrusted.request(context(), 'https://rpc.example.test/untrusted')
+      ).rejects.toMatchObject({ code: 'TOR_REQUEST_FAILED' });
+      await expect(
+        trusted.request(context(), 'https://wrong.example.test/wrong')
+      ).rejects.toMatchObject({ code: 'TOR_REQUEST_FAILED' });
       expect(seen.map((r) => r.url)).toEqual(['/']);
     } finally {
-      trusted.close(); untrusted.close();
+      trusted.close();
+      untrusted.close();
       secureServer.closeAllConnections();
       await new Promise((resolve) => secureServer.close(resolve));
     }
   });
 
   test('low-level connector requires a literal loopback proxy and bounds stalled negotiation', async () => {
-    await expect(connectIsolatedSocks({ endpoint: { host: 'proxy.example', port: 1 }, hostname: 'rpc.example', port: 443, token: 'a'.repeat(64) }))
-      .rejects.toMatchObject({ code: 'INVALID_SOCKS_REQUEST' });
+    await expect(
+      connectIsolatedSocks({
+        endpoint: { host: 'proxy.example', port: 1 },
+        hostname: 'rpc.example',
+        port: 443,
+        token: 'a'.repeat(64),
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_SOCKS_REQUEST' });
     await socks.close();
     socks = await proxy(server.address().port, 'stall');
-    await expect(connectIsolatedSocks({ endpoint: socks.endpoint, hostname: 'rpc.example', port: 443, token: 'a'.repeat(64), timeoutMs: 20 }))
-      .rejects.toMatchObject({ code: 'SOCKS_TIMEOUT' });
+    await expect(
+      connectIsolatedSocks({
+        endpoint: socks.endpoint,
+        hostname: 'rpc.example',
+        port: 443,
+        token: 'a'.repeat(64),
+        timeoutMs: 20,
+      })
+    ).rejects.toMatchObject({ code: 'SOCKS_TIMEOUT' });
   });
 });

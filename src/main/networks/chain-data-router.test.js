@@ -1,4 +1,7 @@
-jest.mock('../settings-store', () => ({ loadSettings: () => ({}), isWalletTorExperimentAvailable: () => false }));
+jest.mock('../settings-store', () => ({
+  loadSettings: () => ({}),
+  isWalletTorExperimentAvailable: () => false,
+}));
 const mockRegistry = {
   getNetwork: jest.fn(),
   getEndpoints: jest.fn(),
@@ -6,7 +9,10 @@ const mockRegistry = {
   getEndpointSourceList: jest.fn(() => []),
 };
 const mockMyotis = {
-  NETWORKS: new Map([[1, {}], [100, {}]]),
+  NETWORKS: new Map([
+    [1, {}],
+    [100, {}],
+  ]),
   isReady: jest.fn(),
   markUnhealthy: jest.fn(),
   getStatus: jest.fn(),
@@ -76,19 +82,26 @@ describe('chain-data-router', () => {
     const lifetime = new AbortController();
     const scope = createPrivacyScope({ profileId: 'wallet', signal: lifetime.signal });
     const privacyContext = scope.getContext({
-      kind: 'public-address', principal: `0x${'1'.repeat(40)}`, chainId: 1, role: 'rpc',
+      kind: 'public-address',
+      principal: `0x${'1'.repeat(40)}`,
+      chainId: 1,
+      role: 'rpc',
     });
     global.fetch = jest.fn();
     const options = { privacyContext, routingContext: { origin: 'https://app.example' } };
-    await expect(request(1, 'eth_getBalance', ['0xabc', 'latest'], options))
-      .rejects.toMatchObject({ code: 'PRIVACY_TRANSPORT_UNAVAILABLE' });
-    await expect(request(100, 'eth_getBalance', [], options))
-      .rejects.toMatchObject({ code: 'PRIVACY_CHAIN_MISMATCH' });
+    await expect(request(1, 'eth_getBalance', ['0xabc', 'latest'], options)).rejects.toMatchObject({
+      code: 'PRIVACY_TRANSPORT_UNAVAILABLE',
+    });
+    await expect(request(100, 'eth_getBalance', [], options)).rejects.toMatchObject({
+      code: 'PRIVACY_CHAIN_MISMATCH',
+    });
     lifetime.abort();
-    await expect(request(1, 'eth_getBalance', [], options))
-      .rejects.toMatchObject({ code: 'PRIVACY_CONTEXT_REVOKED' });
-    await expect(request(1, 'eth_getBalance', [], { privacyContext: {} }))
-      .rejects.toMatchObject({ code: 'INVALID_PRIVACY_CONTEXT' });
+    await expect(request(1, 'eth_getBalance', [], options)).rejects.toMatchObject({
+      code: 'PRIVACY_CONTEXT_REVOKED',
+    });
+    await expect(request(1, 'eth_getBalance', [], { privacyContext: {} })).rejects.toMatchObject({
+      code: 'INVALID_PRIVACY_CONTEXT',
+    });
     expect(mockRegistry.getNetwork).not.toHaveBeenCalled();
     expect(mockMyotis.getAccount).not.toHaveBeenCalled();
     expect(mockRequestViaColibri).not.toHaveBeenCalled();
@@ -108,25 +121,39 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
-  test.each(['eth_call', 'eth_estimateGas'])('preserves verified %s revert data without another source', async (method) => {
-    const native = method === 'eth_call' ? mockMyotis.ethCall : mockMyotis.estimateGas;
-    native.mockResolvedValue({ status: 'revert', dataHex: '0x08c379a0abcd' });
-    global.fetch = jest.fn();
-    await expect(request(1, method, [{ to: '0xabc' }])).rejects.toMatchObject({ code: 3, data: '0x08c379a0abcd' });
-    expect(mockRequestViaColibri).not.toHaveBeenCalled();
-    expect(global.fetch).not.toHaveBeenCalled();
-  });
+  test.each(['eth_call', 'eth_estimateGas'])(
+    'preserves verified %s revert data without another source',
+    async (method) => {
+      const native = method === 'eth_call' ? mockMyotis.ethCall : mockMyotis.estimateGas;
+      native.mockResolvedValue({ status: 'revert', dataHex: '0x08c379a0abcd' });
+      global.fetch = jest.fn();
+      await expect(request(1, method, [{ to: '0xabc' }])).rejects.toMatchObject({
+        code: 3,
+        data: '0x08c379a0abcd',
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    }
+  );
 
-  test.each([{ status: 'unavailable', reason: 'cancelled' }, { error: 'deadline exceeded' }])('falls through unavailable read shapes: %s', async (payload) => {
-    mockMyotis.ethCall.mockResolvedValue(payload);
-    mockRequestViaColibri.mockResolvedValue('0xfallback');
-    await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toMatchObject({ source: 'colibri', result: '0xfallback' });
-  });
+  test.each([{ status: 'unavailable', reason: 'cancelled' }, { error: 'deadline exceeded' }])(
+    'falls through unavailable read shapes: %s',
+    async (payload) => {
+      mockMyotis.ethCall.mockResolvedValue(payload);
+      mockRequestViaColibri.mockResolvedValue('0xfallback');
+      await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toMatchObject({
+        source: 'colibri',
+        result: '0xfallback',
+      });
+    }
+  );
 
   test('does not retry an in-band failed broadcast at another broadcaster', async () => {
     mockMyotis.sendRawTransaction.mockResolvedValue({ error: 'connection lost' });
     global.fetch = jest.fn();
-    await expect(broadcastRawTransaction(1, '0xsigned')).rejects.toMatchObject({ code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+    await expect(broadcastRawTransaction(1, '0xsigned')).rejects.toMatchObject({
+      code: 'MYOTIS_BROADCAST_UNCERTAIN',
+    });
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -134,9 +161,7 @@ describe('chain-data-router', () => {
     mockMyotis.getAccount.mockResolvedValue({ status: 'ok', nonce: 3 });
     mockRequestViaColibri.mockResolvedValue('0x5');
 
-    await expect(
-      request(100, 'eth_getTransactionCount', ['0xabc', 'pending'])
-    ).resolves.toEqual({
+    await expect(request(100, 'eth_getTransactionCount', ['0xabc', 'pending'])).resolves.toEqual({
       result: '0x5',
       source: 'colibri',
       verified: true,
@@ -224,12 +249,9 @@ describe('chain-data-router', () => {
     mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
 
     await expect(
-      request(
-        1,
-        'eth_call',
-        [{ to: '0xabc', data: '0x70a08231' }, 'latest'],
-        { includeTrust: true }
-      )
+      request(1, 'eth_call', [{ to: '0xabc', data: '0x70a08231' }, 'latest'], {
+        includeTrust: true,
+      })
     ).resolves.toEqual({
       result: '0x2a',
       source: 'myotis',
@@ -254,12 +276,9 @@ describe('chain-data-router', () => {
       .mockReturnValueOnce({ optimisticBlockNumber: 25_684_160 });
     mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
 
-    const response = await request(
-      1,
-      'eth_call',
-      [{ to: '0xabc', data: '0x70a08231' }, 'latest'],
-      { includeTrust: true }
-    );
+    const response = await request(1, 'eth_call', [{ to: '0xabc', data: '0x70a08231' }, 'latest'], {
+      includeTrust: true,
+    });
 
     expect(response.trust.block).toBeNull();
   });
@@ -272,16 +291,15 @@ describe('chain-data-router', () => {
       source: 'colibri',
       verified: true,
     });
-    expect(mockRequestViaColibri).toHaveBeenCalledWith(100, 'eth_getCode', [
-      '0xabc',
-      'latest',
-    ]);
+    expect(mockRequestViaColibri).toHaveBeenCalledWith(100, 'eth_getCode', ['0xabc', 'latest']);
   });
 
   test('does not fall through to another broadcaster after an uncertain Myotis outcome', async () => {
     global.fetch = jest.fn();
     mockMyotis.isReady.mockReturnValue(true);
-    const error = Object.assign(new Error('broadcast outcome uncertain'), { code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+    const error = Object.assign(new Error('broadcast outcome uncertain'), {
+      code: 'MYOTIS_BROADCAST_UNCERTAIN',
+    });
     mockMyotis.sendRawTransaction.mockRejectedValueOnce(error);
     await expect(broadcastRawTransaction(100, '0xsigned')).rejects.toBe(error);
     expect(global.fetch).not.toHaveBeenCalled();
@@ -405,9 +423,7 @@ describe('chain-data-router', () => {
     });
 
     await expect(
-      request(1, 'eth_estimateGas', [
-        { from: '0xabc', to: '0xdef', value: '1000000000000000000' },
-      ])
+      request(1, 'eth_estimateGas', [{ from: '0xabc', to: '0xdef', value: '1000000000000000000' }])
     ).resolves.toEqual({ result: '0x5208', source: 'quorum', verified: true });
     expect(
       global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body).params[0].value)
@@ -510,10 +526,7 @@ describe('chain-data-router', () => {
     mockRequestViaColibri.mockResolvedValue('0xstrict');
 
     await expect(
-      request(100, 'eth_call', [
-        { to: '0xabc', data: '0x70a08231', input: '0xa9059cbb' },
-        'latest',
-      ])
+      request(100, 'eth_call', [{ to: '0xabc', data: '0x70a08231', input: '0xa9059cbb' }, 'latest'])
     ).resolves.toMatchObject({ result: '0xstrict', source: 'colibri' });
     expect(mockMyotis.ethCall).not.toHaveBeenCalled();
   });
@@ -610,10 +623,13 @@ describe('chain-data-router', () => {
       ok: true,
       json: async () => ({ result: '0xrpc' }),
     });
-    const params = [{
-      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      data: '0x1234',
-    }, 'latest'];
+    const params = [
+      {
+        to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        data: '0x1234',
+      },
+      'latest',
+    ];
     const options = { routingContext: { origin: 'https://swap.example' } };
 
     const first = request(1, 'eth_call', params, options);
@@ -643,10 +659,19 @@ describe('chain-data-router', () => {
     });
     const options = { routingContext: { origin: 'https://swap.example' } };
     const requests = Array.from({ length: 6 }, (_value, index) =>
-      request(1, 'eth_call', [{
-        to: `0x${String(index + 1).padStart(40, '0')}`,
-        data: '0x1234',
-      }, 'latest'], options));
+      request(
+        1,
+        'eth_call',
+        [
+          {
+            to: `0x${String(index + 1).padStart(40, '0')}`,
+            data: '0x1234',
+          },
+          'latest',
+        ],
+        options
+      )
+    );
 
     await jest.advanceTimersByTimeAsync(2000);
     // Compare the whole source list, not `arrayContaining`: identical matchers
@@ -665,10 +690,12 @@ describe('chain-data-router', () => {
       quorum: { timeoutMs: 5000 },
     });
     const slowRead = deferred();
-    mockMyotis.ethCall.mockReturnValueOnce(slowRead.promise)
+    mockMyotis.ethCall
+      .mockReturnValueOnce(slowRead.promise)
       .mockResolvedValue({ resultHex: '0xverified' });
     global.fetch = jest.fn().mockResolvedValue({
-      ok: true, json: async () => ({ result: '0xrpc' }),
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
     });
     const options = { routingContext: { origin: 'https://swap.example' } };
     const read = (to) => request(1, 'eth_call', [{ to, data: '0x1234' }, 'latest'], options);
@@ -735,10 +762,12 @@ describe('chain-data-router', () => {
     });
     mockMyotis.getAccount.mockResolvedValue({ status: 'ok', balanceWei: '42', nonce: 3 });
 
-    await expect(Promise.all([
-      request(1, 'eth_getBalance', ['0xabc', 'latest']),
-      request(1, 'eth_getTransactionCount', ['0xabc', 'latest']),
-    ])).resolves.toEqual([
+    await expect(
+      Promise.all([
+        request(1, 'eth_getBalance', ['0xabc', 'latest']),
+        request(1, 'eth_getTransactionCount', ['0xabc', 'latest']),
+      ])
+    ).resolves.toEqual([
       { result: '0x2a', source: 'myotis', verified: true },
       { result: '0x3', source: 'myotis', verified: true },
     ]);
@@ -759,10 +788,14 @@ describe('chain-data-router', () => {
     // One read holds the slot, sixteen queue behind it, the eighteenth is
     // refused outright rather than waiting on a slot that is not turning over.
     const requests = Array.from({ length: 18 }, (_value, index) =>
-      request(1, 'eth_call', [{
-        to: `0x${String(index + 1).padStart(40, '0')}`,
-        data: '0x1234',
-      }, 'latest']));
+      request(1, 'eth_call', [
+        {
+          to: `0x${String(index + 1).padStart(40, '0')}`,
+          data: '0x1234',
+        },
+        'latest',
+      ])
+    );
 
     await expect(requests[17]).resolves.toMatchObject({ source: 'direct' });
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
@@ -786,17 +819,23 @@ describe('chain-data-router', () => {
       ok: true,
       json: async () => ({ result: '0xrpc' }),
     });
-    const params = [{
-      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      data: '0x1234',
-    }, 'latest'];
+    const params = [
+      {
+        to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        data: '0x1234',
+      },
+      'latest',
+    ];
 
-    await expect(request(1, 'eth_call', params, { includeTrust: true }))
-      .resolves.toMatchObject({ source: 'direct' });
+    await expect(request(1, 'eth_call', params, { includeTrust: true })).resolves.toMatchObject({
+      source: 'direct',
+    });
     // A single synchronous throw must not strand the one Myotis slot: the next
     // read still reaches Myotis instead of queueing behind a leaked count.
-    await expect(request(1, 'eth_call', params, { includeTrust: true }))
-      .resolves.toMatchObject({ source: 'myotis', verified: true });
+    await expect(request(1, 'eth_call', params, { includeTrust: true })).resolves.toMatchObject({
+      source: 'myotis',
+      verified: true,
+    });
   });
 
   test('escalates Colibri timeout cooldowns from 15 to 30 to 60 seconds and resets on success', async () => {
@@ -826,19 +865,25 @@ describe('chain-data-router', () => {
     };
 
     await timeOutAttempt(0);
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      source: 'direct',
+    });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
 
     await jest.advanceTimersByTimeAsync(15_000);
     await timeOutAttempt(1);
     await jest.advanceTimersByTimeAsync(29_999);
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      source: 'direct',
+    });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
 
     await jest.advanceTimersByTimeAsync(1);
     await timeOutAttempt(2);
     await jest.advanceTimersByTimeAsync(59_999);
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      source: 'direct',
+    });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(3);
 
     await jest.advanceTimersByTimeAsync(1);
@@ -862,14 +907,20 @@ describe('chain-data-router', () => {
       ok: true,
       json: async () => ({ result: '0xrpc' }),
     });
-    const firstTarget = [{
-      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      data: '0x1234',
-    }, 'latest'];
-    const secondTarget = [{
-      to: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      data: '0x1234',
-    }, 'latest'];
+    const firstTarget = [
+      {
+        to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        data: '0x1234',
+      },
+      'latest',
+    ];
+    const secondTarget = [
+      {
+        to: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        data: '0x1234',
+      },
+      'latest',
+    ];
     const firstApp = { routingContext: { origin: 'https://swap.example' } };
     const secondApp = { routingContext: { origin: 'https://other.example' } };
 
@@ -904,8 +955,9 @@ describe('chain-data-router', () => {
 
     const first = request(1, 'eth_call', params, options);
     const second = request(1, 'eth_call', params, options);
-    await expect(request(1, 'eth_call', params, options))
-      .resolves.toMatchObject({ source: 'direct' });
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      source: 'direct',
+    });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
 
     await jest.advanceTimersByTimeAsync(2000);
@@ -1003,14 +1055,16 @@ describe('chain-data-router', () => {
       'https://b.example',
       'https://c.example',
     ]);
-    global.fetch = jest.fn().mockImplementation((_url, options) =>
-      new Promise((_resolve, reject) => {
-        options.signal.addEventListener('abort', () => {
-          const error = new Error('aborted');
-          error.name = 'AbortError';
-          reject(error);
-        });
-      }));
+    global.fetch = jest.fn().mockImplementation(
+      (_url, options) =>
+        new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        })
+    );
     mockRequestViaColibri.mockResolvedValue('0xverified');
 
     const response = request(1, 'eth_call', [{ to: '0xabc' }, 'latest'], {
@@ -1036,17 +1090,19 @@ describe('chain-data-router', () => {
       'https://b.example',
       'https://c.example',
     ]);
-    global.fetch = jest.fn().mockImplementation((_url, options) =>
-      new Promise((resolve, reject) => {
-        // Slow-but-healthy endpoints: they agree at 3s, inside the chain's
-        // configured 5s quorum timeout but past the interactive budget.
-        setTimeout(() => resolve({ ok: true, json: async () => ({ result: '0x42' }) }), 3000);
-        options.signal.addEventListener('abort', () => {
-          const error = new Error('aborted');
-          error.name = 'AbortError';
-          reject(error);
-        });
-      }));
+    global.fetch = jest.fn().mockImplementation(
+      (_url, options) =>
+        new Promise((resolve, reject) => {
+          // Slow-but-healthy endpoints: they agree at 3s, inside the chain's
+          // configured 5s quorum timeout but past the interactive budget.
+          setTimeout(() => resolve({ ok: true, json: async () => ({ result: '0x42' }) }), 3000);
+          options.signal.addEventListener('abort', () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        })
+    );
 
     // No routingContext: this is a wallet-internal read, not a page a user is
     // watching, so it must not be downgraded to an unverified Direct answer.
@@ -1071,15 +1127,17 @@ describe('chain-data-router', () => {
       'https://b.example',
       'https://c.example',
     ]);
-    global.fetch = jest.fn().mockImplementation((_url, options) =>
-      new Promise((resolve, reject) => {
-        setTimeout(() => resolve({ ok: true, json: async () => ({ result: '0x42' }) }), 3000);
-        options.signal.addEventListener('abort', () => {
-          const error = new Error('aborted');
-          error.name = 'AbortError';
-          reject(error);
-        });
-      }));
+    global.fetch = jest.fn().mockImplementation(
+      (_url, options) =>
+        new Promise((resolve, reject) => {
+          setTimeout(() => resolve({ ok: true, json: async () => ({ result: '0x42' }) }), 3000);
+          options.signal.addEventListener('abort', () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        })
+    );
 
     // Even an app-driven read: with nothing to fall through to, cutting the
     // per-endpoint timeout to 2s only turns a working read into a failure.
@@ -1227,27 +1285,32 @@ describe('chain-data-router', () => {
   });
 });
 
-
 describe('Ant bridge cancellation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     clearAdaptiveRoutingForTest();
-    mockRegistry.getNetwork.mockReturnValue({ access: {
-      readOrder: ['myotis', 'direct'], broadcastOrder: ['myotis', 'direct'],
-    } });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: {
+        readOrder: ['myotis', 'direct'],
+        broadcastOrder: ['myotis', 'direct'],
+      },
+    });
     mockMyotis.isReady.mockReturnValue(true);
     global.fetch = jest.fn();
   });
-  afterEach(() => { global.fetch = originalFetch; });
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
 
   test.each(['read', 'broadcast'])('does not fall through after a cancelled %s', async (kind) => {
     const controller = new AbortController();
     const waiting = deferred();
     const native = kind === 'read' ? mockMyotis.getAccount : mockMyotis.sendRawTransaction;
     native.mockReturnValue(waiting.promise);
-    const pending = kind === 'read'
-      ? request(100, 'eth_getBalance', ['0xabc', 'latest'], { signal: controller.signal })
-      : broadcastRawTransaction(100, '0xsigned', { signal: controller.signal });
+    const pending =
+      kind === 'read'
+        ? request(100, 'eth_getBalance', ['0xabc', 'latest'], { signal: controller.signal })
+        : broadcastRawTransaction(100, '0xsigned', { signal: controller.signal });
     await flushMicrotasks();
     controller.abort();
     waiting.reject(new Error('node stopped'));
@@ -1264,27 +1327,34 @@ describe('Ant bridge cancellation', () => {
     const wallet = request(100, 'eth_call', call);
     await flushMicrotasks();
     // The slot is busy: Ant's read skips Myotis at once instead of waiting.
-    await expect(request(100, 'eth_call', call, { background: true }))
-      .resolves.toMatchObject({ source: 'direct' });
+    await expect(request(100, 'eth_call', call, { background: true })).resolves.toMatchObject({
+      source: 'direct',
+    });
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
     held.resolve({ resultHex: '0x1' });
     await expect(wallet).resolves.toMatchObject({ source: 'myotis' });
     // Nothing was left parked on the slot; an idle slot still serves Ant.
-    await expect(request(100, 'eth_call', call, { background: true }))
-      .resolves.toMatchObject({ source: 'myotis' });
+    await expect(request(100, 'eth_call', call, { background: true })).resolves.toMatchObject({
+      source: 'myotis',
+    });
   });
 
   test('direct timeout names a query timeout and can be widened, never narrowed', async () => {
     jest.useFakeTimers();
     try {
       mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['direct'] }, quorum: { timeoutMs: 5000 },
+        access: { readOrder: ['direct'] },
+        quorum: { timeoutMs: 5000 },
       });
       mockRegistry.getEndpoints.mockReturnValue(['https://one.example']);
-      global.fetch.mockImplementation((_url, { signal }) => new Promise((_resolve, reject) => {
-        signal.addEventListener('abort', () =>
-          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-      }));
+      global.fetch.mockImplementation(
+        (_url, { signal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () =>
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            );
+          })
+      );
       const wide = request(100, 'eth_getLogs', [{}], { directTimeoutMs: 60000 });
       const settled = jest.fn();
       wide.then(settled, settled);
@@ -1310,10 +1380,12 @@ describe('Ant bridge cancellation', () => {
   // These pin that callers without rankError (wallet/app reads, broadcasts)
   // report failures exactly as before.
   const THREE_RPCS = ['https://a.example', 'https://b.example', 'https://c.example'];
-  const hangUntilAborted = (_url, { signal }) => new Promise((_resolve, reject) => {
-    signal.addEventListener('abort', () =>
-      reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-  });
+  const hangUntilAborted = (_url, { signal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () =>
+        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+      );
+    });
 
   test('without rankError a quorum member error never replaces the aggregate', async () => {
     mockRegistry.getNetwork.mockReturnValue({
@@ -1328,8 +1400,9 @@ describe('Ant bridge cancellation', () => {
       }),
     });
     const params = [{ to: '0x0000000000000000000000000000000000000001', data: '0x' }, 'latest'];
-    await expect(request(100, 'eth_call', params))
-      .rejects.toThrow(/^All chain sources failed for eth_call/);
+    await expect(request(100, 'eth_call', params)).rejects.toThrow(
+      /^All chain sources failed for eth_call/
+    );
   });
 
   test('without rankError a range limit neither ends the request nor is kept', async () => {
@@ -1355,8 +1428,11 @@ describe('Ant bridge cancellation', () => {
       // Quorum waits for the hung member, Direct asks the untried d and then
       // retries a at the widened budget; the last endpoint's error is reported.
       await expect(pending).rejects.toThrow('RPC query timeout after 60000ms');
-      expect(global.fetch.mock.calls.map(([url]) => url))
-        .toEqual([...THREE_RPCS, 'https://d.example', 'https://a.example']);
+      expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([
+        ...THREE_RPCS,
+        'https://d.example',
+        'https://a.example',
+      ]);
     } finally {
       jest.useRealTimers();
     }
@@ -1373,12 +1449,14 @@ describe('Ant bridge cancellation', () => {
         quorum: { timeoutMs: 5000 },
       });
       mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example']);
-      global.fetch.mockImplementation((url, options) => (url === 'https://a.example'
-        ? Promise.resolve({
-          ok: true,
-          json: async () => ({ error: { code: -32005, message: 'rate limit exceeded' } }),
-        })
-        : hangUntilAborted(url, options)));
+      global.fetch.mockImplementation((url, options) =>
+        url === 'https://a.example'
+          ? Promise.resolve({
+              ok: true,
+              json: async () => ({ error: { code: -32005, message: 'rate limit exceeded' } }),
+            })
+          : hangUntilAborted(url, options)
+      );
       const sent = broadcastRawTransaction(100, '0xsigned');
       sent.catch(() => {});
       await jest.advanceTimersByTimeAsync(5000);
@@ -1396,8 +1474,9 @@ describe('Ant bridge cancellation', () => {
       controller.abort();
       throw new Error('disconnected');
     });
-    await expect(broadcastRawTransaction(100, '0xsigned', { signal: controller.signal }))
-      .rejects.toMatchObject({ name: 'AbortError' });
+    await expect(
+      broadcastRawTransaction(100, '0xsigned', { signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' });
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });

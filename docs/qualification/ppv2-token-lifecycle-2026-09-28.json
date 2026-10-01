@@ -116,11 +116,7 @@
         }
       ],
       "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-      "journalKinds": [
-        "ppv2-register-auth",
-        "ppv2-register-viewing",
-        "ppv2-native-deposit"
-      ],
+      "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-native-deposit"],
       "attemptedRecovered": true,
       "missingTimestampCount": 0,
       "proofCommitmentRecovered": true,
@@ -286,11 +282,7 @@
         }
       ],
       "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-      "journalKinds": [
-        "ppv2-register-auth",
-        "ppv2-register-viewing",
-        "ppv2-native-deposit"
-      ],
+      "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-native-deposit"],
       "attemptedRecovered": true,
       "missingTimestampCount": 0,
       "proofCommitmentRecovered": true,
@@ -351,9 +343,7 @@
         "recoveredChange": "4000",
         "reorgBlocked": true,
         "secondHash": true,
-        "remaining": [
-          "2900"
-        ],
+        "remaining": ["2900"],
         "resolved": 2,
         "relaySends": 1
       }
@@ -384,11 +374,7 @@
         }
       ],
       "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-      "journalKinds": [
-        "ppv2-register-auth",
-        "ppv2-register-viewing",
-        "ppv2-token-deposit"
-      ],
+      "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-token-deposit"],
       "attemptedRecovered": true,
       "missingTimestampCount": 0,
       "proofCommitmentRecovered": true,
@@ -449,9 +435,7 @@
         "recoveredChange": "4000",
         "reorgBlocked": true,
         "secondHash": true,
-        "remaining": [
-          "2900"
-        ],
+        "remaining": ["2900"],
         "resolved": 2,
         "relaySends": 1
       }

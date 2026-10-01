@@ -149,7 +149,8 @@ async function decryptVaultMnemonic(dataDir, password) {
 async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS) {
   const startedGeneration = lockGeneration;
   const mnemonic = await decryptVaultMnemonic(dataDir, password);
-  if (startedGeneration !== lockGeneration) throw new Error('Vault unlock cancelled by a newer session');
+  if (startedGeneration !== lockGeneration)
+    throw new Error('Vault unlock cancelled by a newer session');
   // Only an explicit unlock replaces the lifetime and inactivity timer.
   lockVault();
   unlockedMnemonic = mnemonic;

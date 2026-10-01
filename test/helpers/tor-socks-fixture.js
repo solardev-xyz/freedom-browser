@@ -13,7 +13,9 @@ async function proxy(targetPort, behavior = 'normal') {
   const sockets = new Set();
   const records = [];
   let greeted;
-  const greeting = new Promise((resolve) => { greeted = resolve; });
+  const greeting = new Promise((resolve) => {
+    greeted = resolve;
+  });
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
@@ -30,9 +32,14 @@ async function proxy(targetPort, behavior = 'normal') {
         data = data.subarray(3);
         phase = 1;
         if (behavior === 'stall') return;
-        if (behavior === 'downgrade') { socket.write(Buffer.from([5, 0])); return; }
+        if (behavior === 'downgrade') {
+          socket.write(Buffer.from([5, 0]));
+          return;
+        }
         socket.write(Buffer.from([5]));
-        setImmediate(() => { if (!socket.destroyed) socket.write(Buffer.from([2])); });
+        setImmediate(() => {
+          if (!socket.destroyed) socket.write(Buffer.from([2]));
+        });
       }
       if (phase === 1 && data.length >= 2) {
         const userEnd = 2 + data[1];
@@ -48,11 +55,17 @@ async function proxy(targetPort, behavior = 'normal') {
         record.hostname = data.subarray(5, 5 + data[4]).toString();
         record.port = data.readUInt16BE(5 + data[4]);
         phase = 3;
-        if (behavior === 'bad-reply') { socket.write(Buffer.from([5, 0, 1, 1, 0, 0, 0, 0, 0, 0])); return; }
+        if (behavior === 'bad-reply') {
+          socket.write(Buffer.from([5, 0, 1, 1, 0, 0, 0, 0, 0, 0]));
+          return;
+        }
         const upstream = net.connect(targetPort, '127.0.0.1');
         sockets.add(upstream);
         upstream.on('error', () => socket.destroy());
-        upstream.on('close', () => { sockets.delete(upstream); socket.destroy(); });
+        upstream.on('close', () => {
+          sockets.delete(upstream);
+          socket.destroy();
+        });
         socket.on('close', () => upstream.destroy());
         upstream.once('connect', () => {
           socket.removeListener('data', receive);
@@ -66,7 +79,10 @@ async function proxy(targetPort, behavior = 'normal') {
   const port = await listen(server);
   const controller = new AbortController();
   return {
-    records, sockets, controller, greeting,
+    records,
+    sockets,
+    controller,
+    greeting,
     endpoint: Object.freeze({ host: '127.0.0.1', port, generation: 1, signal: controller.signal }),
     async close() {
       controller.abort();

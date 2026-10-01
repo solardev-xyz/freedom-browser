@@ -30,9 +30,7 @@ const {
   getReservedProfilePorts,
   updateActiveProfileNodeConfig,
 } = require('./profile-resolver');
-const {
-  promptForDefaultExternalCandidateProtocol,
-} = require('./profile-external-candidates');
+const { promptForDefaultExternalCandidateProtocol } = require('./profile-external-candidates');
 const { probeSocks5Endpoint, probeTcpEndpoint } = require('./socks-probe');
 const { applyOnionProxy, clearOnionProxy } = require('./tor-proxy');
 const {
@@ -142,10 +140,12 @@ function getProfileTorConfig() {
 }
 
 function getPromptWindowForEvent(event) {
-  return BrowserWindow.fromWebContents?.(event?.sender)
-    || BrowserWindow.getFocusedWindow?.()
-    || BrowserWindow.getAllWindows?.()[0]
-    || null;
+  return (
+    BrowserWindow.fromWebContents?.(event?.sender) ||
+    BrowserWindow.getFocusedWindow?.() ||
+    BrowserWindow.getAllWindows?.()[0] ||
+    null
+  );
 }
 
 function isManagedTorConfig(config = getProfileTorConfig()) {
@@ -161,9 +161,12 @@ function isDisabledTorConfig(config = getProfileTorConfig()) {
 }
 
 function hasUnknownTorMode(config) {
-  return Boolean(config?.mode) && !isManagedTorConfig(config)
-    && !isExternalTorConfig(config)
-    && !isDisabledTorConfig(config);
+  return (
+    Boolean(config?.mode) &&
+    !isManagedTorConfig(config) &&
+    !isExternalTorConfig(config) &&
+    !isDisabledTorConfig(config)
+  );
 }
 
 function getConfiguredTorSocksPort(config = getProfileTorConfig()) {
@@ -278,7 +281,11 @@ function isPortOpen(port, host = '127.0.0.1') {
 }
 
 /** Find an available port starting from the default. */
-async function findAvailablePort(defaultPort, maxAttempts = DEFAULTS.tor.fallbackRange, options = {}) {
+async function findAvailablePort(
+  defaultPort,
+  maxAttempts = DEFAULTS.tor.fallbackRange,
+  options = {}
+) {
   const reservedPorts = options.reservedPorts || new Set();
   for (let i = 0; i < maxAttempts; i++) {
     const port = defaultPort + i;
@@ -679,10 +686,10 @@ async function startTor(opts = {}) {
   const maxAttempts = 120; // up to ~120s for first bootstrap
   const pollInterval = setInterval(async () => {
     if (
-      superseded()
-      || currentState === STATUS.STOPPED
-      || currentState === STATUS.ERROR
-      || !artiProcess
+      superseded() ||
+      currentState === STATUS.STOPPED ||
+      currentState === STATUS.ERROR ||
+      !artiProcess
     ) {
       clearInterval(pollInterval);
       return;

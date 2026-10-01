@@ -280,9 +280,10 @@ describe('tor-manager IPC', () => {
     const spawn = jest.fn();
     let releasePrompt;
     const promptForDefaultExternalCandidateProtocol = jest.fn(
-      () => new Promise((resolve) => {
-        releasePrompt = () => resolve([]);
-      })
+      () =>
+        new Promise((resolve) => {
+          releasePrompt = () => resolve([]);
+        })
     );
     const updateActiveProfileNodeConfig = jest.fn();
 
@@ -373,13 +374,15 @@ describe('tor-manager IPC', () => {
     // the runtime and optional-feature lines. Only the version belongs in the UI.
     const execFile = jest.fn((file, args, options, callback) => {
       callback(null, {
-        stdout: 'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
+        stdout:
+          'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
         stderr: '',
       });
     });
     execFile[require('util').promisify.custom] = () =>
       Promise.resolve({
-        stdout: 'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
+        stdout:
+          'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
         stderr: '',
       });
 
@@ -437,23 +440,24 @@ describe('tor-manager IPC', () => {
 describe('tor-manager .onion routing across sessions', () => {
   const createSessionMock = () => ({ setProxy: jest.fn().mockResolvedValue(undefined) });
 
-  const loadExternalTorManager = () => loadTorManager({
-    enableTorIntegration: true,
-    socksProbeResult: true,
-    activeProfile: {
-      metadata: {
-        nodes: {
-          tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' },
+  const loadExternalTorManager = () =>
+    loadTorManager({
+      enableTorIntegration: true,
+      socksProbeResult: true,
+      activeProfile: {
+        metadata: {
+          nodes: {
+            tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' },
+          },
         },
       },
-    },
-  });
+    });
 
-  const pacCalls = (targetSession) => targetSession.setProxy.mock.calls
-    .filter(([arg]) => arg?.mode === 'pac_script');
+  const pacCalls = (targetSession) =>
+    targetSession.setProxy.mock.calls.filter(([arg]) => arg?.mode === 'pac_script');
 
-  const directCalls = (targetSession) => targetSession.setProxy.mock.calls
-    .filter(([arg]) => arg?.mode === 'direct');
+  const directCalls = (targetSession) =>
+    targetSession.setProxy.mock.calls.filter(([arg]) => arg?.mode === 'direct');
 
   afterEach(() => {
     jest.restoreAllMocks();

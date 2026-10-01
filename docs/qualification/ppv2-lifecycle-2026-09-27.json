@@ -23,11 +23,7 @@
     }
   ],
   "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-  "journalKinds": [
-    "ppv2-register-auth",
-    "ppv2-register-viewing",
-    "ppv2-native-deposit"
-  ],
+  "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-native-deposit"],
   "attemptedRecovered": true,
   "missingTimestampCount": 0,
   "proofCommitmentRecovered": true,

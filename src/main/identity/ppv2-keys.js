@@ -9,18 +9,35 @@ const vault = require('./vault');
 const { getActiveProfile } = require('../profile-resolver');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 
-const PPV2_IDENTITY = Object.freeze({ version: 1, appIdentifier: 'TODO-privacy-pools-v2', pathFamily: "m/28784'/2'", provisional: true });
+const PPV2_IDENTITY = Object.freeze({
+  version: 1,
+  appIdentifier: 'TODO-privacy-pools-v2',
+  pathFamily: "m/28784'/2'",
+  provisional: true,
+});
 
 function assertPPv2Context(handle, role, accountIndex) {
   const context = getPrivacyContext(handle);
   const profile = getActiveProfile();
   const subject = context.subject;
-  if (!Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex > 65535 ||
-      subject.kind !== 'private-account' || subject.principal !== `ppv2:${accountIndex}` ||
-      subject.protocol !== 'privacy-pools-v2' || subject.deployment !== 'sepolia' ||
-      subject.chainId !== 11155111 || subject.role !== role || subject.operation !== null ||
-      !profile?.id || !profile.userDataDir || context.profileId !==
-        createHash('sha256').update(JSON.stringify([profile.id, profile.userDataDir])).digest('hex')) {
+  if (
+    !Number.isInteger(accountIndex) ||
+    accountIndex < 0 ||
+    accountIndex > 65535 ||
+    subject.kind !== 'private-account' ||
+    subject.principal !== `ppv2:${accountIndex}` ||
+    subject.protocol !== 'privacy-pools-v2' ||
+    subject.deployment !== 'sepolia' ||
+    subject.chainId !== 11155111 ||
+    subject.role !== role ||
+    subject.operation !== null ||
+    !profile?.id ||
+    !profile.userDataDir ||
+    context.profileId !==
+      createHash('sha256')
+        .update(JSON.stringify([profile.id, profile.userDataDir]))
+        .digest('hex')
+  ) {
     throw privacyError('PRIVATE_PPV2_SCOPE', 'Unsupported PPv2 account scope');
   }
   return { context, profile };
@@ -41,13 +58,19 @@ function createPPv2Keystore(handle, accountIndex) {
     descriptor: Object.freeze({ ...PPV2_IDENTITY, accountIndex }),
     async deriveAt(requested) {
       assertActive();
-      if (requested !== path) throw privacyError('PRIVATE_DERIVATION_REFUSED', 'Derivation path is outside this PPv2 account');
+      if (requested !== path)
+        throw privacyError(
+          'PRIVATE_DERIVATION_REFUSED',
+          'Derivation path is outside this PPv2 account'
+        );
       const seed = mnemonicToSeedSync(vault.getMnemonic());
       try {
         const key = HDNodeWallet.fromSeed(seed).derivePath(path).privateKey;
         assertActive();
         return key;
-      } finally { seed.fill(0); }
+      } finally {
+        seed.fill(0);
+      }
     },
   });
 }

@@ -40,7 +40,7 @@ Arti is built locally and needs the documented Rust/native prerequisites. Myotis
 
 At the implementation checkpoint: 6,731 tests passed / 33 skipped excluding OpenLV; six OpenLV tests passed separately; 319 plus one passing suites; five suites skipped. Lint passed. Earlier dated documents retain older failures and lower counts; do not add historical runs together.
 
-Changed-file Prettier checking found 167 files with formatting differences. It is an explicit draft follow-up, not a passing check or a reason to reformat unrelated main code. Whitespace/diff checks passed. Human review and CI remain required.
+At publication, changed-file Prettier checking found 167 files with formatting differences. The October 1 continuation formats those branch-touched files only and fixes the two expected Linux experimental-settings screenshot baselines from CI run `36917879697`. All 140 changed JavaScript syntax trees retain the same semantics (ignoring source locations, comments, raw literal spelling and equivalent static property-key spelling); one lint suppression moved to the formatted `cause` property. Full unit regression again passed 6,737 tests with 33 skips, lint and changed-file formatting passed, and four real pinned-SDK process/lifecycle Electron checks passed. The historical runtime ASAR pin remains unchanged by this formatting commit. Human review and updated CI remain required.
 
 ## Reproduce the real SDK tests
 

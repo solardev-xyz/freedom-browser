@@ -11,7 +11,9 @@ function currentProfileKey() {
   if (!profile?.id || !profile.userDataDir) {
     throw privacyError('PRIVACY_PROFILE_UNAVAILABLE', 'No active privacy profile');
   }
-  return createHash('sha256').update(JSON.stringify([profile.id, profile.userDataDir])).digest('hex');
+  return createHash('sha256')
+    .update(JSON.stringify([profile.id, profile.userDataDir]))
+    .digest('hex');
 }
 
 function openPrivacySession() {
@@ -21,7 +23,12 @@ function openPrivacySession() {
   const signal = vault.getSessionSignal();
   if (signal.aborted) throw privacyError('PRIVACY_VAULT_LOCKED', 'Vault is locked');
   const profileId = currentProfileKey();
-  if (active && active.profileId === profileId && active.vaultSignal === signal && !active.scope.signal.aborted) {
+  if (
+    active &&
+    active.profileId === profileId &&
+    active.vaultSignal === signal &&
+    !active.scope.signal.aborted
+  ) {
     return active.scope;
   }
   active?.scope.close();
@@ -30,7 +37,11 @@ function openPrivacySession() {
     signal,
     isCurrent: () => {
       if (shuttingDown) return false;
-      try { return currentProfileKey() === profileId; } catch { return false; }
+      try {
+        return currentProfileKey() === profileId;
+      } catch {
+        return false;
+      }
     },
   });
   active = { profileId, vaultSignal: signal, scope };

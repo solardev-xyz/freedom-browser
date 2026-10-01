@@ -8,20 +8,45 @@ const { serialize } = require('v8');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
 let activeWorkers = 0;
 
-function runPrivacyWorker({ handle, filename, workerData, validateResult, signal, timeoutMs = 120000, heapMb = 256 }) {
+function runPrivacyWorker({
+  handle,
+  filename,
+  workerData,
+  validateResult,
+  signal,
+  timeoutMs = 120000,
+  heapMb = 256,
+}) {
   const context = getPrivacyContext(handle);
-  if (context.subject.kind !== 'private-account' || context.subject.role !== 'prover' || context.subject.chainId !== 11155111 ||
-      typeof validateResult !== 'function' || typeof filename !== 'string' || !path.isAbsolute(filename) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000 ||
-      !Number.isSafeInteger(heapMb) || heapMb < 16 || heapMb > 1024) {
+  if (
+    context.subject.kind !== 'private-account' ||
+    context.subject.role !== 'prover' ||
+    context.subject.chainId !== 11155111 ||
+    typeof validateResult !== 'function' ||
+    typeof filename !== 'string' ||
+    !path.isAbsolute(filename) ||
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 120000 ||
+    !Number.isSafeInteger(heapMb) ||
+    heapMb < 16 ||
+    heapMb > 1024
+  ) {
     throw privacyError('PRIVATE_WORKER_INVALID', 'Invalid proving worker configuration');
   }
-  const lifetime = AbortSignal.any([context.signal, ...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
+  const lifetime = AbortSignal.any([
+    context.signal,
+    ...(signal ? [signal] : []),
+    AbortSignal.timeout(timeoutMs),
+  ]);
   const cancelled = () => privacyError('PRIVACY_REQUEST_ABORTED', 'Proving worker cancelled');
   if (lifetime.aborted) return Promise.reject(cancelled());
-  if (activeWorkers >= 2) throw privacyError('PRIVATE_WORKER_BUSY', 'Proving worker capacity reached');
+  if (activeWorkers >= 2)
+    throw privacyError('PRIVATE_WORKER_BUSY', 'Proving worker capacity reached');
   activeWorkers += 1;
   return new Promise((resolve, reject) => {
-    let worker, finished = false;
+    let worker,
+      finished = false;
     const abort = () => finish(cancelled());
     // Always wait for termination before releasing capacity or delivering a
     // result. A late message cannot commit state after cancellation or timeout.
@@ -35,24 +60,47 @@ function runPrivacyWorker({ handle, filename, workerData, validateResult, signal
         if (lifetime.aborted) throw cancelled();
         if (error) throw error;
         resolve(result);
-      } catch (failure) { reject(failure); }
-      finally { activeWorkers -= 1; }
+      } catch (failure) {
+        reject(failure);
+      } finally {
+        activeWorkers -= 1;
+      }
     }
     try {
-      worker = new Worker(filename, { workerData, execArgv: [], env: {}, stdout: true, stderr: true,
-        resourceLimits: { maxOldGenerationSizeMb: heapMb, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 } });
-      worker.stdout.resume(); worker.stderr.resume();
+      worker = new Worker(filename, {
+        workerData,
+        execArgv: [],
+        env: {},
+        stdout: true,
+        stderr: true,
+        resourceLimits: {
+          maxOldGenerationSizeMb: heapMb,
+          maxYoungGenerationSizeMb: 16,
+          stackSizeMb: 4,
+        },
+      });
+      worker.stdout.resume();
+      worker.stderr.resume();
       worker.once('message', (result) => {
         try {
-          if (serialize(result).length > 1024 * 1024 || validateResult(result) !== true) throw new Error('shape');
+          if (serialize(result).length > 1024 * 1024 || validateResult(result) !== true)
+            throw new Error('shape');
           finish(null, result);
-        } catch { finish(privacyError('PRIVATE_WORKER_FAILED', 'Invalid proving worker result')); }
+        } catch {
+          finish(privacyError('PRIVATE_WORKER_FAILED', 'Invalid proving worker result'));
+        }
       });
-      worker.once('error', () => finish(privacyError('PRIVATE_WORKER_FAILED', 'Proving worker failed')));
-      worker.once('exit', () => finish(privacyError('PRIVATE_WORKER_FAILED', 'Proving worker exited without a result')));
+      worker.once('error', () =>
+        finish(privacyError('PRIVATE_WORKER_FAILED', 'Proving worker failed'))
+      );
+      worker.once('exit', () =>
+        finish(privacyError('PRIVATE_WORKER_FAILED', 'Proving worker exited without a result'))
+      );
       lifetime.addEventListener('abort', abort, { once: true });
       if (lifetime.aborted) abort();
-    } catch { finish(privacyError('PRIVATE_WORKER_FAILED', 'Proving worker could not start')); }
+    } catch {
+      finish(privacyError('PRIVATE_WORKER_FAILED', 'Proving worker could not start'));
+    }
   });
 }
 

@@ -94,15 +94,15 @@ Use synthetic accounts and a disposable development profile first. Add Sepolia t
 
 Preserve the README's process boundaries. Main-process services own policy, identity, approvals, persistence, and managed runtime lifecycle. Renderer code displays serializable state and sends narrow allowed intents. Protocol execution/proving may run in a main-owned worker or utility process, but receives only the capabilities it needs. That runtime is not an OS network sandbox by default.
 
-| Existing area | Planned responsibility |
-| --- | --- |
-| `src/main/wallet/` | Privacy-account coordinator, capability descriptors, protocol adapters, operation review/state |
-| `src/main/networks/` | Privacy contexts, controlled HTTP/SOCKS transport, route eligibility and response evidence |
-| `src/main/tor-manager.js` | Arti lifecycle and trusted endpoint/readiness generation; reuse existing managed instance |
-| `src/main/identity/` and `identity-manager.js` | Authoritative lock lifecycle, restricted protocol derivation and encrypted-state access |
-| `src/main/wallet/transaction-service.js` | Existing public signing/review path, context-aware preparation and submission |
-| `src/shared/ipc-channels.js` and existing preload | Only narrow UI-facing calls when the first surface is ready |
-| `test-e2e/` | Electron and packaged integration checks; controlled network tests |
+| Existing area                                     | Planned responsibility                                                                         |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `src/main/wallet/`                                | Privacy-account coordinator, capability descriptors, protocol adapters, operation review/state |
+| `src/main/networks/`                              | Privacy contexts, controlled HTTP/SOCKS transport, route eligibility and response evidence     |
+| `src/main/tor-manager.js`                         | Arti lifecycle and trusted endpoint/readiness generation; reuse existing managed instance      |
+| `src/main/identity/` and `identity-manager.js`    | Authoritative lock lifecycle, restricted protocol derivation and encrypted-state access        |
+| `src/main/wallet/transaction-service.js`          | Existing public signing/review path, context-aware preparation and submission                  |
+| `src/shared/ipc-channels.js` and existing preload | Only narrow UI-facing calls when the first surface is ready                                    |
+| `test-e2e/`                                       | Electron and packaged integration checks; controlled network tests                             |
 
 No change to public-account derivation or the Ant identity path. No migration of private keys into UI contexts. PPv2 remains the Privacy Pools target; PPv1 is optional reference coverage.
 

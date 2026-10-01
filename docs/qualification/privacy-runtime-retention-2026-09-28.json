@@ -154,11 +154,7 @@
             "recovered": true,
             "badArtifact": "PRIVATE_PPV2_OPERATION_FAILED",
             "badArtifactStartedProver": false,
-            "methods": [
-              "eth_blockNumber",
-              "eth_call",
-              "eth_getLogs"
-            ],
+            "methods": ["eth_blockNumber", "eth_call", "eth_getLogs"],
             "productionGate": false,
             "packaged": true,
             "jobFromAsar": true,
@@ -196,11 +192,7 @@
               }
             ],
             "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-            "journalKinds": [
-              "ppv2-register-auth",
-              "ppv2-register-viewing",
-              "ppv2-native-deposit"
-            ],
+            "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-native-deposit"],
             "attemptedRecovered": true,
             "missingTimestampCount": 0,
             "proofCommitmentRecovered": true,
@@ -474,11 +466,7 @@
               }
             ],
             "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-            "journalKinds": [
-              "ppv2-register-auth",
-              "ppv2-register-viewing",
-              "ppv2-native-deposit"
-            ],
+            "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-native-deposit"],
             "attemptedRecovered": true,
             "missingTimestampCount": 0,
             "proofCommitmentRecovered": true,
@@ -549,9 +537,7 @@
               "reorgBlocked": true,
               "reorgCode": "PRIVATE_PPV2_RELAY_UNRESOLVED",
               "secondHash": true,
-              "remaining": [
-                "2900"
-              ],
+              "remaining": ["2900"],
               "resolved": 2,
               "relaySends": 1
             }
@@ -594,11 +580,7 @@
               }
             ],
             "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-            "journalKinds": [
-              "ppv2-register-auth",
-              "ppv2-register-viewing",
-              "ppv2-native-deposit"
-            ],
+            "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-native-deposit"],
             "attemptedRecovered": true,
             "missingTimestampCount": 0,
             "proofCommitmentRecovered": true,
@@ -719,11 +701,7 @@
               }
             ],
             "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-            "journalKinds": [
-              "ppv2-register-auth",
-              "ppv2-register-viewing",
-              "ppv2-token-deposit"
-            ],
+            "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-token-deposit"],
             "attemptedRecovered": true,
             "missingTimestampCount": 0,
             "proofCommitmentRecovered": true,
@@ -794,9 +772,7 @@
               "reorgBlocked": true,
               "reorgCode": "PRIVATE_PPV2_RELAY_UNRESOLVED",
               "secondHash": true,
-              "remaining": [
-                "2900"
-              ],
+              "remaining": ["2900"],
               "resolved": 2,
               "relaySends": 1
             }
@@ -839,11 +815,7 @@
               }
             ],
             "uncertain": "PRIVATE_BROADCAST_UNCERTAIN",
-            "journalKinds": [
-              "ppv2-register-auth",
-              "ppv2-register-viewing",
-              "ppv2-token-deposit"
-            ],
+            "journalKinds": ["ppv2-register-auth", "ppv2-register-viewing", "ppv2-token-deposit"],
             "attemptedRecovered": true,
             "missingTimestampCount": 0,
             "proofCommitmentRecovered": true,
@@ -1287,18 +1259,12 @@
           "path",
           "readline"
         ],
-        "local": [
-          "node_modules/web-worker-1.2.0/cjs/node.js"
-        ]
+        "local": ["node_modules/web-worker-1.2.0/cjs/node.js"]
       },
       "node_modules/web-worker-1.2.0/cjs/node.js": {
         "size": 6428,
         "sha256": "92ebb9ee1099aa5da7009e72edfc9818fe289ba85523a4f958526a4e6fa0fbd1",
-        "imports": [
-          "url",
-          "vm",
-          "worker_threads"
-        ],
+        "imports": ["url", "vm", "worker_threads"],
         "local": []
       },
       "sdk.cjs": {
@@ -1332,20 +1298,13 @@
           "worker_threads",
           "zlib"
         ],
-        "local": [
-          "node_modules/web-worker-1.2.0/cjs/node.js"
-        ]
+        "local": ["node_modules/web-worker-1.2.0/cjs/node.js"]
       },
       "plugin.cjs": {
         "size": 1488231,
         "sha256": "2e17527bc9f75637d3cd56ae2ac5a0a948a64f7a2e7c09597dac061746c66f2d",
-        "imports": [
-          "./sdk.cjs",
-          "node:crypto"
-        ],
-        "local": [
-          "sdk.cjs"
-        ]
+        "imports": ["./sdk.cjs", "node:crypto"],
+        "local": ["sdk.cjs"]
       }
     },
     "limitation": "Literal require/import inventory only; computed imports and behavioral authority require source review",

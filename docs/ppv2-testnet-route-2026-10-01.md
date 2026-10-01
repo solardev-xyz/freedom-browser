@@ -10,12 +10,12 @@ Using the [Chainlist Sepolia list](https://chainlist.org/chain/11155111) and its
 
 The historical checks queried the known first keystore block 10994877 and pool blocks 10994884–10995383, filtering LeafInserted, LeavesInserted and LeafUpdated. These are discovery checks, not a scan of all history.
 
-| Endpoint | Direct results | Tor results |
-| --- | --- | --- |
-| `https://gateway.tenderly.co/public/sepolia` | 1 keystore event; 18 pool events; both begin at leaf 0 | Same events and first block/transaction hashes |
-| `https://sepolia.rpc.sentio.xyz` | Same as Tenderly | Same as direct |
-| `https://0xrpc.io/sep` | Same as Tenderly | HTTP 404 on chain-ID request in this run |
-| `https://ethereum-sepolia-rpc.publicnode.com` | Empty for both known historical ranges | Not repeated in this run; September 29 full scan was incomplete |
+| Endpoint                                      | Direct results                                         | Tor results                                                     |
+| --------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------- |
+| `https://gateway.tenderly.co/public/sepolia`  | 1 keystore event; 18 pool events; both begin at leaf 0 | Same events and first block/transaction hashes                  |
+| `https://sepolia.rpc.sentio.xyz`              | Same as Tenderly                                       | Same as direct                                                  |
+| `https://0xrpc.io/sep`                        | Same as Tenderly                                       | HTTP 404 on chain-ID request in this run                        |
+| `https://ethereum-sepolia-rpc.publicnode.com` | Empty for both known historical ranges                 | Not repeated in this run; September 29 full scan was incomplete |
 
 1RPC and Nodies also returned the first keystore event, but refused the 500-block pool request. Other screened candidates had HTTP, RPC or connection failures. These failures do not establish that their history is unavailable: provider-specific range limits, API behavior or availability may explain them. The shortlist is sufficient to proceed with deeper qualification.
 

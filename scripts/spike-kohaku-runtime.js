@@ -11,8 +11,13 @@ const esbuild = require('esbuild');
 
 async function main() {
   const workspace = process.argv[2];
-  if (!workspace || !path.isAbsolute(workspace)) throw new Error('An absolute scratch workspace is required');
-  const versions = { plugins: '0.0.1-alpha.13', provider: '0.1.0-alpha.9', railgun: '0.0.1-alpha.30' };
+  if (!workspace || !path.isAbsolute(workspace))
+    throw new Error('An absolute scratch workspace is required');
+  const versions = {
+    plugins: '0.0.1-alpha.13',
+    provider: '0.1.0-alpha.9',
+    railgun: '0.0.1-alpha.30',
+  };
   const metadata = {};
   const imports = {};
   for (const [name, expected] of Object.entries(versions)) {
@@ -21,16 +26,29 @@ async function main() {
     if (pkg.version !== expected) throw new Error(`Unexpected ${name} version`);
     metadata[name] = { version: pkg.version, license: pkg.license || null };
     const entry = name === 'railgun' ? 'dist/sdk/lib.js' : 'dist/index.js';
-    try { await import(pathToFileURL(path.join(root, entry)).href); imports[name] = 'loaded'; }
-    catch (error) { imports[name] = error.code || error.name; }
+    try {
+      await import(pathToFileURL(path.join(root, entry)).href);
+      imports[name] = 'loaded';
+    } catch (error) {
+      imports[name] = error.code || error.name;
+    }
   }
   const directory = path.join(workspace, 'asar-input');
   fs.mkdirSync(directory, { recursive: true });
   const railgun = path.join(workspace, 'node_modules/@kohaku-eth/railgun/dist');
-  esbuild.buildSync({ entryPoints: [path.join(railgun, 'sdk/lib.js')], outfile: path.join(directory, 'railgun.mjs'),
-    bundle: true, platform: 'node', format: 'esm', target: 'node24', nodePaths: [path.resolve(__dirname, '../node_modules')] });
+  esbuild.buildSync({
+    entryPoints: [path.join(railgun, 'sdk/lib.js')],
+    outfile: path.join(directory, 'railgun.mjs'),
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node24',
+    nodePaths: [path.resolve(__dirname, '../node_modules')],
+  });
   fs.copyFileSync(path.join(railgun, 'pkg/index_bg.wasm'), path.join(directory, 'railgun.wasm'));
-  fs.writeFileSync(path.join(directory, 'smoke.mjs'), `
+  fs.writeFileSync(
+    path.join(directory, 'smoke.mjs'),
+    `
 import * as sdk from './railgun.mjs';
 import { readFile } from 'node:fs/promises';
 export async function probe() {
@@ -51,16 +69,31 @@ export async function probe() {
     return report;
   } finally { globalThis.fetch = previous; }
 }
-`);
-  fs.writeFileSync(path.join(directory, 'loader.cjs'), "exports.probe = async () => (await import('./smoke.mjs')).probe();\n");
+`
+  );
+  fs.writeFileSync(
+    path.join(directory, 'loader.cjs'),
+    "exports.probe = async () => (await import('./smoke.mjs')).probe();\n"
+  );
   const output = path.join(workspace, 'kohaku-runtime.asar');
   await require('@electron/asar').createPackage(directory, output);
-  const nodeReport = await (await import(pathToFileURL(path.join(directory, 'smoke.mjs')).href)).probe();
-  const report = { metadata, directImports: imports, explicitBundlerDependency: { viem: require('viem/package.json').version },
-    asarSha256: createHash('sha256').update(fs.readFileSync(output)).digest('hex'), nodeReport,
-    scope: 'Loading, WASM initialization and synthetic address reconstruction only; no sync, proving or broadcast' };
+  const nodeReport = await (
+    await import(pathToFileURL(path.join(directory, 'smoke.mjs')).href)
+  ).probe();
+  const report = {
+    metadata,
+    directImports: imports,
+    explicitBundlerDependency: { viem: require('viem/package.json').version },
+    asarSha256: createHash('sha256').update(fs.readFileSync(output)).digest('hex'),
+    nodeReport,
+    scope:
+      'Loading, WASM initialization and synthetic address reconstruction only; no sync, proving or broadcast',
+  };
   fs.writeFileSync(path.join(workspace, 'runtime-report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
   console.log(`Electron fixture: ${output}`);
 }
-main().catch((error) => { console.error(error.message); process.exitCode = 1; });
+main().catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});

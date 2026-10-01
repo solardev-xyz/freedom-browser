@@ -6,7 +6,9 @@ jest.mock('fs', () => ({
 jest.mock('@metamask/browser-passworder', () => ({
   decrypt: jest.fn(async () => ({ mnemonic: 'valid fixture' })),
 }));
-jest.mock('../identity/derivation', () => ({ isValidMnemonic: (value) => value === 'valid fixture' }));
+jest.mock('../identity/derivation', () => ({
+  isValidMnemonic: (value) => value === 'valid fixture',
+}));
 jest.mock('../profile-resolver', () => ({ getActiveProfile: jest.fn() }));
 jest.mock('electron', () => ({ ipcMain: {} }));
 jest.mock('../profile-paths', () => ({}));
@@ -18,7 +20,12 @@ const manager = require('../identity-manager');
 const { decrypt } = require('@metamask/browser-passworder');
 const { openPrivacySession, shutdownPrivacySessions } = require('./privacy-session');
 const { getPrivacyContext } = require('../networks/privacy-context');
-const subject = { kind: 'public-address', principal: `0x${'1'.repeat(40)}`, chainId: 1, role: 'rpc' };
+const subject = {
+  kind: 'public-address',
+  principal: `0x${'1'.repeat(40)}`,
+  chainId: 1,
+  role: 'rpc',
+};
 
 describe('wallet privacy lifecycle', () => {
   beforeEach(() => {
@@ -70,7 +77,12 @@ describe('wallet privacy lifecycle', () => {
 
   test('a lock during async decryption prevents a late unlock from reviving the vault', async () => {
     let finish;
-    decrypt.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    decrypt.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
     const unlocking = vault.unlockVault('/fixture', 'password', 0);
     vault.lockVault();
     finish({ mnemonic: 'valid fixture' });
