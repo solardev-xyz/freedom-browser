@@ -49,7 +49,7 @@ async function resolveRecord({ method, name, addressHex, coinType = 60n }) {
     isResolverNotFoundError,
   } = require('../ens-resolver');
   const provider = new MyotisProvider();
-  // Generic calls are always optimistic in the pinned addon. Each callback
+  // This provider requests latest (optimistic) state. Each callback
   // is independently verified; never claim finalized or block-pinned results.
   const metadata = { verified: false, blockNumber: null };
   try {

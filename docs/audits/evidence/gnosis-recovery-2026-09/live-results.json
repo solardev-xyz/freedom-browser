@@ -1,0 +1,165 @@
+[
+  {
+    "startedAt": "2026-09-24T19:48:07.810Z",
+    "elapsedMs": 3937,
+    "offline": null,
+    "checkpoint": {
+      "schemaVersion": 2,
+      "chainId": 100,
+      "network": "gnosis",
+      "root": "0x31418dbdb1fa6f60e1ff776ac2d43e9ed32e49a2522ff4f032e8a83a19fb7ae7",
+      "slot": 30257136,
+      "verifiedAt": 1790279291745,
+      "sources": [
+        "https://checkpoint.gnosischain.com",
+        "https://checkpoint-sync-gnosis.dappnode.net",
+        "https://gnosis-beacon-api.publicnode.com"
+      ],
+      "finalizedEpoch": 1891071
+    },
+    "diagnostics": [
+      {
+        "source": "https://gnosis-beacon-api.publicnode.com",
+        "slot": 30257136,
+        "elapsedMs": 185,
+        "outcome": "vote"
+      },
+      {
+        "source": "https://checkpoint-sync-gnosis.dappnode.net",
+        "slot": 30257136,
+        "elapsedMs": 406,
+        "outcome": "vote"
+      },
+      {
+        "source": "https://checkpoint.gnosischain.com",
+        "slot": 30257136,
+        "elapsedMs": 3029,
+        "outcome": "vote"
+      }
+    ],
+    "proofSha256": "55d4cbc8189fe758405294c84f49364a8eb80e501d50f1c4c550cec9cd2b8232"
+  },
+  {
+    "startedAt": "2026-09-24T19:48:11.776Z",
+    "elapsedMs": 970,
+    "offline": "https://checkpoint.gnosischain.com",
+    "checkpoint": {
+      "schemaVersion": 2,
+      "chainId": 100,
+      "network": "gnosis",
+      "root": "0x31418dbdb1fa6f60e1ff776ac2d43e9ed32e49a2522ff4f032e8a83a19fb7ae7",
+      "slot": 30257136,
+      "verifiedAt": 1790279292744,
+      "sources": [
+        "https://checkpoint-sync-gnosis.dappnode.net",
+        "https://gnosis-beacon-api.publicnode.com"
+      ],
+      "finalizedEpoch": 1891071
+    },
+    "diagnostics": [
+      {
+        "source": "https://checkpoint.gnosischain.com",
+        "slot": 30257136,
+        "elapsedMs": 2,
+        "outcome": "CHECKPOINT_UNAVAILABLE",
+        "stage": "block-root",
+        "failure": "transport"
+      },
+      {
+        "source": "https://gnosis-beacon-api.publicnode.com",
+        "slot": 30257136,
+        "elapsedMs": 104,
+        "outcome": "vote"
+      },
+      {
+        "source": "https://checkpoint-sync-gnosis.dappnode.net",
+        "slot": 30257136,
+        "elapsedMs": 164,
+        "outcome": "vote"
+      }
+    ],
+    "proofSha256": "2075350ca4736abd7a5f1b8a1913529a9d74fe8da3963032ea5b976e7d683d61"
+  },
+  {
+    "startedAt": "2026-09-24T19:48:12.774Z",
+    "elapsedMs": 974,
+    "offline": "https://checkpoint-sync-gnosis.dappnode.net",
+    "checkpoint": {
+      "schemaVersion": 2,
+      "chainId": 100,
+      "network": "gnosis",
+      "root": "0x31418dbdb1fa6f60e1ff776ac2d43e9ed32e49a2522ff4f032e8a83a19fb7ae7",
+      "slot": 30257136,
+      "verifiedAt": 1790279293745,
+      "sources": [
+        "https://checkpoint.gnosischain.com",
+        "https://gnosis-beacon-api.publicnode.com"
+      ],
+      "finalizedEpoch": 1891071
+    },
+    "diagnostics": [
+      {
+        "source": "https://checkpoint-sync-gnosis.dappnode.net",
+        "slot": 30257136,
+        "elapsedMs": 1,
+        "outcome": "CHECKPOINT_UNAVAILABLE",
+        "stage": "block-root",
+        "failure": "transport"
+      },
+      {
+        "source": "https://gnosis-beacon-api.publicnode.com",
+        "slot": 30257136,
+        "elapsedMs": 77,
+        "outcome": "vote"
+      },
+      {
+        "source": "https://checkpoint.gnosischain.com",
+        "slot": 30257136,
+        "elapsedMs": 172,
+        "outcome": "vote"
+      }
+    ],
+    "proofSha256": "2075350ca4736abd7a5f1b8a1913529a9d74fe8da3963032ea5b976e7d683d61"
+  },
+  {
+    "startedAt": "2026-09-24T19:48:13.779Z",
+    "elapsedMs": 1188,
+    "offline": "https://gnosis-beacon-api.publicnode.com",
+    "checkpoint": {
+      "schemaVersion": 2,
+      "chainId": 100,
+      "network": "gnosis",
+      "root": "0x31418dbdb1fa6f60e1ff776ac2d43e9ed32e49a2522ff4f032e8a83a19fb7ae7",
+      "slot": 30257136,
+      "verifiedAt": 1790279294965,
+      "sources": [
+        "https://checkpoint.gnosischain.com",
+        "https://checkpoint-sync-gnosis.dappnode.net"
+      ],
+      "finalizedEpoch": 1891071
+    },
+    "diagnostics": [
+      {
+        "source": "https://gnosis-beacon-api.publicnode.com",
+        "slot": 30257136,
+        "elapsedMs": 1,
+        "outcome": "CHECKPOINT_UNAVAILABLE",
+        "stage": "block-root",
+        "failure": "transport"
+      },
+      {
+        "source": "https://checkpoint.gnosischain.com",
+        "slot": 30257136,
+        "elapsedMs": 170,
+        "outcome": "vote"
+      },
+      {
+        "source": "https://checkpoint-sync-gnosis.dappnode.net",
+        "slot": 30257136,
+        "elapsedMs": 398,
+        "outcome": "vote"
+      }
+    ],
+    "proofSha256": "2075350ca4736abd7a5f1b8a1913529a9d74fe8da3963032ea5b976e7d683d61"
+  }
+]

@@ -574,10 +574,31 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Every harness spec (`test-e2e/*.spec.js`) runs in one of the curated
+  # e2e-* jobs below, or is listed here with the reason it does not.
+  # `scripts/ci/e2e-spec-coverage.test.js` (run by the `test` job) fails on a
+  # spec that is in neither place, so a new spec can't silently go unrun (the
+  # #319 lesson: specs no job listed shipped their regressions green). Keep
+  # the `e2e-not-in-ci:` prefix; the guard reads these lines.
+  #
+  # e2e-not-in-ci: safe-accounts.spec.js — crashes the main process (SIGSEGV on the colibri read path) against the anvil Gnosis fork, #453
+  # e2e-not-in-ci: safe-dapp.spec.js — same main-process SIGSEGV as safe-accounts, #453
+  # e2e-not-in-ci: safe-phone.spec.js — same SIGSEGV (#453), and the freedom-bridge page it pairs through still speaks openlv 0.0.3 (#452)
+  # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
+
   # Settings navigation, persistence, and chain policy are shipped control
   # surfaces. Exercise their real renderer/webview integration so malformed
   # sidebar markup, broken transitions, and Myotis policy regressions cannot
-  # pass unit-only CI.
+  # pass unit-only CI. `myotis-recovery.spec.js` joins them for the Nodes-menu
+  # side of the same Myotis policy: synthetic checkpoint-recovery states drive
+  # the real renderer, so the retry button's visibility while a background
+  # retry waits and the notice clearing on success are asserted in CI.
+  #
+  # The other internal pages ride along: `internal-pages-csp.spec.js` drives
+  # each page under `script-src 'self'` and fails on any CSP violation (#432),
+  # `error-page.spec.js` covers the error page's title and node-state copy
+  # (#236, #445), and `internal-page-theme.spec.js` asserts the pages follow
+  # Settings > Appearance rather than the OS scheme (#233).
   e2e-settings:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -610,8 +631,15 @@ jobs:
           # GitHub's API; the token avoids its anonymous rate limit.
           GITHUB_TOKEN: ${{ github.token }}
 
-      - name: Run settings E2E
-        run: xvfb-run -a npm run test:e2e -- test-e2e/settings.spec.js test-e2e/settings-adblock.spec.js
+      - name: Run settings + internal-page E2E
+        run: >-
+          xvfb-run -a npm run test:e2e --
+          test-e2e/settings.spec.js
+          test-e2e/settings-adblock.spec.js
+          test-e2e/myotis-recovery.spec.js
+          test-e2e/internal-pages-csp.spec.js
+          test-e2e/error-page.spec.js
+          test-e2e/internal-page-theme.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -748,7 +776,9 @@ jobs:
   # allow and an allow that must survive a real app restart.
   # `dweb-link-gesture.spec.js` covers the dweb-link side of the same gate
   # (#443), which now asks the main-process popup blocker instead of keeping
-  # its own budget.
+  # its own budget. `ant-api-guard.spec.js` (#428) needs a real guest too: the
+  # guard that keeps web content off the local Ant API keys on the requesting
+  # frame and webContents type, which only a real tab `<webview>` produces.
   e2e-tabs:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -774,7 +804,7 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks + page-context-menu + permissions + external-protocol + popup-blocker + ant-api-guard E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
@@ -786,7 +816,8 @@ jobs:
             test-e2e/permissions.spec.js \
             test-e2e/external-protocol.spec.js \
             test-e2e/dweb-link-gesture.spec.js \
-            test-e2e/popup-blocker.spec.js
+            test-e2e/popup-blocker.spec.js \
+            test-e2e/ant-api-guard.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -816,6 +847,13 @@ jobs:
   # the toolbar's Back/Forward through the real webview session history and
   # asserts the trust badge re-verifies for the restored entry (#86), which no
   # unit-level dispatch can exercise.
+  #
+  # `chrome-page-spoof.spec.js` pins what the bar may *not* show: a remote
+  # page serving an `/error.html` or `/ens-conflict.html` path must not get
+  # to pick the name and protocol icon (#235). `tez-unverified.spec.js` and
+  # `tez-head-conflict.spec.js` drive the Tezos Domains interstitials: the
+  # "Continue once" button has to load the resolved content, and a
+  # chain-head disagreement has to be a hard block.
   e2e-address-bar-ens:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -841,18 +879,133 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run address-bar + ENSv2 E2E
+      - name: Run address-bar + ENSv2 + name-interstitial E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/address-bar.spec.js \
             test-e2e/ensv2.spec.js \
-            test-e2e/ens-history-traversal.spec.js
+            test-e2e/ens-history-traversal.spec.js \
+            test-e2e/chrome-page-spoof.spec.js \
+            test-e2e/tez-unverified.spec.js \
+            test-e2e/tez-head-conflict.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-address-bar-ens-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Wallet approval surfaces, driven through the real sidebar renderer with the
+  # main-process IPC replaced per app instance. A hardware-account signature
+  # can't be recalled once the device prompt is up, so these pin that nothing
+  # else can hide or cancel it: a dApp transaction (`dapp-tx-ledger-confirm`),
+  # a send (`send-ledger-confirm`), an x402 payment (`x402-payment-in-flight`)
+  # and the sidebar chrome above them (`sidebar-in-flight-chrome`).
+  # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
+  # is deployed on, and `publisher-identity-selector.spec.js` renders
+  # unusable publisher identities as inert. The anvil-backed Safe specs are
+  # on the not-in-CI list above, not here.
+  e2e-wallet:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run wallet approval E2E
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/dapp-tx-ledger-confirm.spec.js \
+            test-e2e/send-ledger-confirm.spec.js \
+            test-e2e/x402-payment-in-flight.spec.js \
+            test-e2e/sidebar-in-flight-chrome.spec.js \
+            test-e2e/safe-send-chain.spec.js \
+            test-e2e/publisher-identity-selector.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-wallet-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Browser chrome around the page that only a real window can exercise, and
+  # that `e2e-tabs` (already the longest e2e job) has no room for: the find
+  # bar against a real guest's find-in-page results (`find-in-page`), the tab
+  # audio indicator and its mute toggle (`tab-mute`), private windows on their
+  # own session and palette (`private-windows`, `private-tab-color`), the one
+  # focus ring every chrome text field draws (`chrome-input-focus`, #246),
+  # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
+  # and the download shelf, whose dismissed card must stay dismissed for the
+  # rest of the transfer (`downloads`, #309).
+  e2e-chrome:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads E2E
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/find-in-page.spec.js \
+            test-e2e/tab-mute.spec.js \
+            test-e2e/private-windows.spec.js \
+            test-e2e/private-tab-color.spec.js \
+            test-e2e/chrome-input-focus.spec.js \
+            test-e2e/sidebar-subscreen-headers.spec.js \
+            test-e2e/downloads.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-chrome-traces
           path: |
             test-results/
             playwright-report/
@@ -1481,6 +1634,7 @@ jobs:
         e2e-address-bar-clipboard,
         e2e-address-bar-ens,
         e2e-ant,
+        e2e-chrome,
         e2e-chrome-webstore,
         e2e-close-tab-shortcut,
         e2e-ipfs-quit,
@@ -1491,6 +1645,7 @@ jobs:
         e2e-shortcuts-zoom,
         e2e-tabs,
         e2e-theme-parity,
+        e2e-wallet,
         freedom-ipfs-native-addon,
         ipfs-gateway-proxy,
         migration-cross-platform,

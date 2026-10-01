@@ -108,6 +108,8 @@ Playwright has four projects:
 
 All four suites use a temporary Electron `userData` directory and run sequentially. The full CI matrix covers the operating-system-specific and native-node checks that most contributors cannot reproduce locally.
 
+CI does not run the harness project wholesale: each `e2e-*` job in `.github/workflows/ci.yml` names its own list of specs. When you add a `test-e2e/*.spec.js`, add it to the job that fits its area. If it can't run in CI yet, add a `# e2e-not-in-ci: <spec> — <reason>` line to the list above those jobs, with the issue that tracks it. `scripts/ci/e2e-spec-coverage.test.js` fails the `test` job on a spec that is in neither place.
+
 ## Logging and debugging
 
 The main process uses `electron-log`:

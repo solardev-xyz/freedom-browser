@@ -1,19 +1,33 @@
 // Tab audio indicator + click-to-mute — mute via the tab context menu,
 // unmute via the on-tab speaker button, and the menu label round-trip.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, clickOverGuest } = require('./fixtures');
 
-// Right-click a tab and click a context-menu action, then run `verify`.
+// Right-click a tab and click a context-menu action until `verify` passes.
 // Retried as a unit: a stray window blur (e.g. the previous Electron
 // instance releasing OS focus) can close the menu between the right-click
-// and the item click, turning the click into a no-op.
+// and the item click, turning the click into a no-op. The menu opens over the
+// tab's `<webview>`, so the item click itself can also go to the guest
+// (`clickOverGuest`); that leaves the menu open, and its backdrop would take
+// the next right-click, so an open menu is not reopened.
 async function clickTabContextAction(window, tabLocator, action, verify) {
+  const menu = window.locator('#tab-context-menu');
+  const landed = () =>
+    verify().then(
+      () => true,
+      () => false
+    );
   await expect(async () => {
-    await tabLocator.click({ button: 'right' });
-    const menu = window.locator('#tab-context-menu');
-    await expect(menu).toBeVisible({ timeout: 1000 });
-    await menu.locator(`[data-action="${action}"]`).click({ timeout: 1000 });
-    await verify();
+    if (!(await menu.isVisible())) {
+      await tabLocator.click({ button: 'right' });
+      await expect(menu).toBeVisible({ timeout: 1000 });
+    }
+    await clickOverGuest(
+      window,
+      () => menu.locator(`[data-action="${action}"]`).click({ timeout: 1000 }),
+      landed,
+      { timeout: 5000 }
+    );
   }).toPass({ timeout: 15_000 });
 }
 

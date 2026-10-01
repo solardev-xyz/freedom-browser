@@ -1,6 +1,6 @@
 # Myotis process isolation
 
-Official Myotis v0.1.11 / ABI 29 is pinned. No downstream native patch is used. Every addon call, including init,
+Official Myotis v0.1.12 / ABI 32 is pinned. No downstream native patch is used. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.
 Main retains profile configuration and paths, chain routing policy, signing,
@@ -94,7 +94,8 @@ seats; three conflicting responses cannot cause a search for agreeable reserves.
 HTTP failures, malformed bodies and missing/lagging finality may be replaced.
 Clock-invalid or contradictory evidence is not treated as mere unavailability.
 The existing overall worker deadline bounds all replacement rounds. Gnosis requires
-both `checkpoint.gnosischain.com` and `checkpoint-sync-gnosis.dappnode.net`.
+two of three operators: `checkpoint.gnosischain.com`,
+`checkpoint-sync-gnosis.dappnode.net`, and `gnosis-beacon-api.publicnode.com`.
 Proofs still come from `mainnet1.colibri-proof.tech` and
 `gnosis.colibri-proof.tech`, respectively, and Colibri proof verification is
 mandatory. There is no reduced-threshold fallback to any prover or RPC server.
@@ -106,11 +107,16 @@ cover both chains; the WASM runtime remains mandatory.
 
 Each provider gets one vote for the exact requested slot/root only after an
 explicit finality endorsement. If its latest checkpoint has advanced, the
-Checkpointz finalized-history API can endorse the same older block. Mere block
+Checkpointz finalized-history API can endorse the same older block. Standard
+Beacon APIs can instead explicitly endorse finalized history with `finalized: true`
+and `execution_optimistic: false` on the requested block-root response. PublicNode
+must supply both flags, even for the current checkpoint; missing/malformed flags
+never count as a vote. The flag on a head-state response does not describe the
+requested block. Same-epoch conflicts and clock checks still apply. Mere block
 existence is insufficient. Publication lag or missing history is retryable;
 conflicting evidence that prevents quorum pauses recovery with an explanation
-and Retry. Ethereum can tolerate a dissenting or unavailable third source;
-Gnosis cannot recover while either source is unavailable.
+and Retry. Both networks tolerate a dissenting or unavailable third source when
+two others agree and Colibri verification succeeds.
 
 This is an external checkpoint trust policy. Security depends on sufficiently
 many independent operators being honest; domain names alone do not establish
@@ -132,7 +138,7 @@ the native weak-subjectivity bound; renewed staleness triggers another recovery.
 New schema-v2 checkpoint records retain the distinct quorum voter origins;
 worker and new-generation validation require the configured threshold. Historical
 schema-v1 records retain their original single-authority provenance for migration;
-patched ABI 25 generations are preserved and replaced, not resumed under ABI 29.
+patched ABI 25 generations are preserved and replaced, not resumed under ABI 32.
 They cannot authorize a new recovery or be relabeled as quorum-verified. New
 recovery always requires v2 acquisition.
 Malformed records or unsafe state paths fail closed as storage failures.
@@ -143,8 +149,10 @@ state directory. Only an absent record or a validated native-retired record
 permits migration. A new directory is not a way around an unconfirmed old exit.
 
 Service unavailability, a checkpoint changing during verification, and an
-outdated checkpoint receive at most three automatic attempts, with 15-second
-and 60-second delays. Verification mismatch, clock disagreement, storage errors,
+outdated checkpoint retry after 15 seconds and 60 seconds, then every five minutes
+while the node is wanted in the active profile. **Retry sync** can start a fresh
+attempt immediately during a wait. Verification mismatch, quorum conflict,
+clock disagreement, storage errors,
 unconfirmed ownership, missing checkpoint-import capability, or restart failures
 stop automatic retries.
 Five minutes without read readiness shows **Syncing slowly** and explains that
@@ -273,27 +281,46 @@ requirement is a release limitation.
 
 ## Build and signing
 
-`npm run myotis:download` downloads the official v0.1.11 Node addons for all
+`npm run myotis:download` downloads the official v0.1.12 Node addons for all
 five supported targets (or one `MYOTIS_DOWNLOAD_TARGET`). The release checksum
 manifest and each addon digest are pinned in `scripts/myotis-release.json`.
 Packaging checks the actual bytes against these pins before signing; runtime
-requires exactly ABI 29. No Rust build, downstream patch, or build-provenance
+requires exactly ABI 32. No Rust build, downstream patch, or build-provenance
 sidecar is required for Myotis. Other native components retain their own builds.
 
 The official API is `createWithCheckpoint(network, dataDir, root, slot)`.
 Myotis writes `sync-anchor[-gnosis].json` and allows only the same root/slot to
 resume that directory; `-3 ANCHOR_MISMATCH` is a storage failure, never a fallback
 to the embedded anchor. Freedom validates existing native markers against its
-own authenticated checkpoint record. New generations record `nativeCheckpointApi:
-29` in `anchor.json`. Generations recorded against any other value — including
-the ABI 26 ones written before the v0.1.11 bump — are preserved and replaced
-rather than resumed, so upgrading to v0.1.11 starts a fresh generation and
-re-syncs once. Pre-release generations made by our patched ABI 25 build
-are preserved and replaced with a clean bundled generation, after checking
-retired ownership. No old snapshot is copied or relabeled. If the bundled anchor
-is stale, the usual quorum and Colibri recovery runs. Ordinary ABI 29 restarts
-retain their generation and need no new external checkpoint unless native sync
-reports a stale anchor.
+own authenticated checkpoint record. `nativeCheckpointApi` is the persisted
+checkpoint contract, not the current engine ABI: records written by official
+ABI 26 and ABI 29 hosts remain compatible with ABI 32. New records retain the
+value 29 written by v0.1.11. Unknown values fail closed; the native loader still
+requires exactly ABI 32. Patched ABI 25 generations lacking the marker are
+preserved and replaced after checking retired ownership.
+
+Every new generation inherits only its chain's `peers[-gnosis].cache` and
+`cl-peers[-gnosis].cache`: first from the generation named by the current
+pointer, then from the legacy base directory per missing/unreadable file.
+Inheritance is best effort, bounded to 4 MiB per file, rejects symlinks and
+non-regular files, and never overwrites a destination. A malformed pointer
+during repair permits only the legacy fallback, never guessed orphan state.
+Ownership checks still run before creation and before the pointer swap.
+Snapshots, native anchor markers and old host anchor records are never copied.
+
+Readiness requires beacon `SYNCED`, the EL reader available and not hunting,
+and a numeric `snapServingPeers > 0`. Missing serving counts fail closed.
+`snapPeers` remains available alongside `snapServingPeers` in renderer status.
+A serving count reflects announced/proven head coverage and read-bench state;
+it is not a guarantee that the next peer request succeeds. ENS continues to
+request `latest`, with existing fallbacks for transient failures. Finalized state
+reads are not enabled by this update. Host seed pins now run through
+the existing private startup message and apply in the native child after every
+start, including recovered generations; see [seed configuration and refresh](myotis-seed-pins.md).
+
+If the bundled anchor is stale, quorum and Colibri verification still supply
+a fresh checkpoint. Ordinary compatible restarts retain their generation and
+need no new external checkpoint unless native sync reports a stale anchor.
 
 Build the small supervisor from the checked-in C source with an already
 installed compiler:

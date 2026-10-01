@@ -21,6 +21,8 @@ const {
   platformKey,
   artiBinaryName,
   cargoFeatures,
+  cargoEnv,
+  nonSystemDylibs,
   installArgs,
   isRetryableCargoFailure,
   buildArti,
@@ -74,10 +76,18 @@ describe('host output layout', () => {
 // `libsqlite3-sys` emits a bare `-l sqlite3` when it finds no system SQLite,
 // and MSVC's linker then stops with LNK1181.
 describe('cargo features', () => {
-  test('asks Arti to bundle SQLite on Windows only', () => {
+  test('asks Arti to bundle SQLite on Windows and macOS', () => {
     expect(cargoFeatures('win32')).toEqual(['static-sqlite']);
-    expect(cargoFeatures('darwin')).toEqual([]);
+    expect(cargoFeatures('darwin')).toEqual(['static-sqlite']);
     expect(cargoFeatures('linux')).toEqual([]);
+  });
+
+  // The 2.6.0 nightly linked Homebrew's liblzma dynamically on the macOS
+  // runner and failed to start on users' Macs.
+  test('links liblzma statically on macOS only', () => {
+    expect(cargoEnv('darwin')).toEqual({ LZMA_API_STATIC: '1' });
+    expect(cargoEnv('linux')).toEqual({});
+    expect(cargoEnv('win32')).toEqual({});
   });
 
   test('builds the pinned version, locked, into the given root', () => {
@@ -104,6 +114,47 @@ describe('cargo features', () => {
       '--features',
       'static-sqlite',
     ]);
+  });
+});
+
+describe('nonSystemDylibs', () => {
+  // `otool -L` of the arti binary from the broken nightly.
+  const broken = [
+    '/tmp/root/bin/arti:',
+    '\t/opt/homebrew/opt/xz/lib/liblzma.5.dylib (compatibility version 14.0.0, current version 14.8.0)',
+    '\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61439.1.1)',
+    '\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)',
+    '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)',
+    '',
+  ].join('\n');
+
+  test('flags a Homebrew dylib', () => {
+    expect(nonSystemDylibs(broken)).toEqual(['/opt/homebrew/opt/xz/lib/liblzma.5.dylib']);
+  });
+
+  test('accepts a binary that links only macOS itself', () => {
+    const fixed = broken
+      .split('\n')
+      .filter((line) => !line.includes('homebrew'))
+      .join('\n');
+    expect(nonSystemDylibs(fixed)).toEqual([]);
+  });
+
+  test('flags /usr/local and @rpath libraries too', () => {
+    const out = [
+      'arti:',
+      '\t/usr/local/opt/sqlite/lib/libsqlite3.0.dylib (compatibility version 9.0.0, current version 9.6.0)',
+      '\t@rpath/libzstd.1.dylib (compatibility version 1.0.0, current version 1.5.7)',
+      '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)',
+    ].join('\n');
+    expect(nonSystemDylibs(out)).toEqual([
+      '/usr/local/opt/sqlite/lib/libsqlite3.0.dylib',
+      '@rpath/libzstd.1.dylib',
+    ]);
+  });
+
+  test('ignores the header line naming the file itself', () => {
+    expect(nonSystemDylibs('/opt/homebrew/somewhere/arti:\n')).toEqual([]);
   });
 });
 
@@ -243,9 +294,9 @@ describe('buildArti', () => {
   /** A fake `cargo` that writes `stderr` and exits with `code`. */
   function fakeCargo(runs) {
     const calls = [];
-    const spawnFn = (bin, args) => {
+    const spawnFn = (bin, args, spawnOptions) => {
       const run = runs[calls.length];
-      calls.push({ bin, args });
+      calls.push({ bin, args, spawnOptions });
       const child = new EventEmitter();
       child.stderr = new PassThrough();
       process.nextTick(() => {
@@ -280,6 +331,12 @@ describe('buildArti', () => {
     await buildArti(installArgs('2.6.0', '/tmp/root', 'linux'), { ...noWait, spawnFn });
     expect(calls).toHaveLength(2);
     expect(calls[0].args).toContain('--locked');
+  });
+
+  test('keeps the inherited environment for cargo', async () => {
+    const { calls, spawnFn } = fakeCargo([{ code: 0, stderr: '' }]);
+    await buildArti(installArgs('2.6.0', '/tmp/root', 'linux'), { ...noWait, spawnFn });
+    expect(calls[0].spawnOptions.env).toMatchObject({ ...cargoEnv(), PATH: process.env.PATH });
   });
 
   // A compile error takes minutes to reproduce and will reproduce exactly.

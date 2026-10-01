@@ -48,7 +48,161 @@ describe('checkpoint generation store on the real filesystem', () => {
   // tests preserve displaced files with rename rather than deleting user data.
   afterEach(() => jest.restoreAllMocks());
 
-  test('legacy snapshots and peers remain untouched outside the new bundled generation', async () => {
+  test.each(
+    [1, 100].flatMap((chainId) =>
+      ['legacy', 'recovery', 'repair', 'ABI25'].map((operation) => [chainId, operation])
+    )
+  )('chain %i inherits only its peer caches during %s', async (chainId, operation) => {
+    const suffix = chainId === 100 ? '-gnosis' : '';
+    const names = [`peers${suffix}.cache`, `cl-peers${suffix}.cache`];
+    const old =
+      operation === 'legacy' ? null : await replaceCheckpoint(baseDir, chainId, checkpoint(chainId));
+    const source = old?.dataDir || baseDir;
+    await fs.mkdir(source, { recursive: true });
+    const bytes = Buffer.from('proven peer snapok\nsecond peer\n');
+    for (const name of names) await fs.writeFile(path.join(source, name), bytes);
+    const snapshot = `sync-state${suffix}.snapshot`;
+    await fs.writeFile(path.join(source, snapshot), 'old lineage');
+    await fs.writeFile(
+      path.join(source, `sync-anchor${suffix}.json`),
+      JSON.stringify({
+        checkpointRoot: checkpoint(chainId).root,
+        checkpointSlot: checkpoint(chainId).slot,
+      })
+    );
+    const otherSuffix = chainId === 100 ? '' : '-gnosis';
+    await fs.writeFile(path.join(source, `peers${otherSuffix}.cache`), 'wrong chain');
+    if (operation === 'ABI25') {
+      const record = await readJson(path.join(source, 'anchor.json'));
+      delete record.nativeCheckpointApi;
+      await writeJson(path.join(source, 'anchor.json'), record);
+    }
+    const before = await Promise.all(
+      (await fs.readdir(source))
+        .filter((name) => name !== 'verified-sync')
+        .map(async (name) => [name, await fs.readFile(path.join(source, name))])
+    );
+    const created =
+      operation === 'recovery'
+        ? await replaceCheckpoint(baseDir, chainId, checkpoint(chainId, '34'))
+        : operation === 'repair'
+          ? await repairState(baseDir, chainId)
+          : await loadOrCreateState(baseDir, chainId);
+    expect(await fs.readdir(created.dataDir)).toEqual(['anchor.json', ...names].sort());
+    for (const name of names)
+      expect(await fs.readFile(path.join(created.dataDir, name))).toEqual(bytes);
+    for (const [name, content] of before)
+      expect(await fs.readFile(path.join(source, name))).toEqual(content);
+  });
+
+  test('prefers the current generation and falls back to legacy per missing file', async () => {
+    const old = await loadOrCreateState(baseDir, 1);
+    await fs.writeFile(path.join(old.dataDir, 'peers.cache'), 'current snapok');
+    await fs.writeFile(path.join(baseDir, 'peers.cache'), 'legacy snapbad');
+    await fs.writeFile(path.join(baseDir, 'cl-peers.cache'), 'legacy CL');
+    const created = await replaceCheckpoint(baseDir, 1, checkpoint());
+    expect(await fs.readFile(path.join(created.dataDir, 'peers.cache'), 'utf8')).toBe(
+      'current snapok'
+    );
+    expect(await fs.readFile(path.join(created.dataDir, 'cl-peers.cache'), 'utf8')).toBe('legacy CL');
+  });
+
+  test('repair of a malformed pointer uses legacy caches, never orphan generations', async () => {
+    const orphan = await loadOrCreateState(baseDir, 1);
+    await fs.writeFile(path.join(orphan.dataDir, 'peers.cache'), 'orphan');
+    await fs.writeFile(path.join(baseDir, 'peers.cache'), 'legacy');
+    await fs.writeFile(path.join(baseDir, 'verified-sync.json'), '{');
+    const created = await repairState(baseDir, 1);
+    expect(await fs.readFile(path.join(created.dataDir, 'peers.cache'), 'utf8')).toBe('legacy');
+  });
+
+  test.each(['symlink', 'directory', 'oversized', 'unreadable'])(
+    'skips %s peer hints without failing generation creation',
+    async (kind) => {
+      await fs.mkdir(baseDir);
+      const cache = path.join(baseDir, 'peers.cache');
+      if (kind === 'symlink') {
+        const target = path.join(temporary, 'unrelated');
+        await fs.writeFile(target, 'do not follow');
+        await fs.symlink(target, cache, 'file');
+      } else if (kind === 'directory') await fs.mkdir(cache);
+      else if (kind === 'oversized') await fs.writeFile(cache, Buffer.alloc(4 * 1024 * 1024 + 1));
+      else {
+        await fs.writeFile(cache, 'unreadable');
+        const open = fs.open.bind(fs);
+        jest
+          .spyOn(fs, 'open')
+          .mockImplementation((filename, ...args) =>
+            filename === cache
+              ? Promise.reject(Object.assign(new Error('permission denied'), { code: 'EACCES' }))
+              : open(filename, ...args)
+          );
+      }
+      const created = await loadOrCreateState(baseDir, 1);
+      expect(await fs.readdir(created.dataDir)).toEqual(['anchor.json']);
+      expect((await readJson(path.join(baseDir, 'verified-sync.json'))).generation).toBe(
+        created.generation
+      );
+    }
+  );
+
+  test.each(['existing', 'unwritable'])(
+    'a %s destination cache never prevents pointer publication',
+    async (kind) => {
+      await fs.mkdir(baseDir);
+      await fs.writeFile(path.join(baseDir, 'peers.cache'), 'source');
+      if (kind === 'existing') {
+        const mkdir = fs.mkdir.bind(fs);
+        jest.spyOn(fs, 'mkdir').mockImplementation(async (filename, options) => {
+          const result = await mkdir(filename, options);
+          if (path.basename(path.dirname(filename)) === 'verified-sync')
+            await fs.writeFile(path.join(filename, 'peers.cache'), 'already present', { flag: 'wx' });
+          return result;
+        });
+      } else {
+        const open = fs.open.bind(fs);
+        jest
+          .spyOn(fs, 'open')
+          .mockImplementation((filename, flags, ...args) =>
+            path.basename(filename) === 'peers.cache' && flags === 'wx'
+              ? Promise.reject(Object.assign(new Error('disk full'), { code: 'ENOSPC' }))
+              : open(filename, flags, ...args)
+          );
+      }
+      const created = await loadOrCreateState(baseDir, 1);
+      expect((await loadOrCreateState(baseDir, 1)).generation).toBe(created.generation);
+      if (kind === 'existing')
+        expect(await fs.readFile(path.join(created.dataDir, 'peers.cache'), 'utf8')).toBe(
+          'already present'
+        );
+      else expect(await fs.readdir(created.dataDir)).toEqual(['anchor.json']);
+    }
+  );
+
+  test('a failed mid-write removes the partial cache and falls back to the next source', async () => {
+    const old = await loadOrCreateState(baseDir, 1);
+    await fs.writeFile(path.join(old.dataDir, 'peers.cache'), 'current generation peers');
+    await fs.writeFile(path.join(baseDir, 'peers.cache'), 'legacy peers');
+    const open = fs.open.bind(fs);
+    let failed = false;
+    jest.spyOn(fs, 'open').mockImplementation(async (filename, flags, ...args) => {
+      const handle = await open(filename, flags, ...args);
+      if (!failed && path.basename(filename) === 'peers.cache' && flags === 'wx') {
+        failed = true;
+        const writeFile = handle.writeFile.bind(handle);
+        handle.writeFile = async (bytes) => {
+          await writeFile(bytes.subarray(0, 3));
+          throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+        };
+      }
+      return handle;
+    });
+    const created = await replaceCheckpoint(baseDir, 1, checkpoint());
+    expect(failed).toBe(true);
+    expect(await fs.readFile(path.join(created.dataDir, 'peers.cache'), 'utf8')).toBe('legacy peers');
+  });
+
+  test('legacy peers are inherited while snapshots remain outside the new bundled generation', async () => {
     await fs.mkdir(baseDir);
     const legacy = {
       'sync-state.snapshot': Buffer.from('legacy state after an old risk override'),
@@ -67,7 +221,8 @@ describe('checkpoint generation store on the real filesystem', () => {
       checkpoint: null,
     });
     expect(created.dataDir).toBe(path.join(baseDir, 'verified-sync', created.generation));
-    expect(await fs.readdir(created.dataDir)).toEqual(['anchor.json']);
+    expect(await fs.readdir(created.dataDir)).toEqual(['anchor.json', 'cl-peers.cache']);
+    expect(await fs.readFile(path.join(created.dataDir, 'cl-peers.cache'))).toEqual(legacy['cl-peers.cache']);
     for (const [name, bytes] of Object.entries(legacy)) {
       expect(await fs.readFile(path.join(baseDir, name))).toEqual(bytes);
     }
@@ -117,7 +272,8 @@ describe('checkpoint generation store on the real filesystem', () => {
 
     const replacement = await replaceCheckpoint(baseDir, 1, checkpoint(1, '34'));
     expect(replacement.generation).not.toBe(old.generation);
-    expect(await fs.readdir(replacement.dataDir)).toEqual(['anchor.json']);
+    expect(await fs.readdir(replacement.dataDir)).toEqual(['anchor.json', 'cl-peers.cache']);
+    expect(await fs.readFile(path.join(replacement.dataDir, 'cl-peers.cache'), 'utf8')).toBe('old peers');
     expect(await fs.readFile(path.join(old.dataDir, 'anchor.json'))).toEqual(oldAnchor);
     expect(await fs.readFile(path.join(old.dataDir, 'sync-state.snapshot'), 'utf8')).toBe(
       'old committee lineage'
@@ -166,6 +322,16 @@ describe('checkpoint generation store on the real filesystem', () => {
     expect(await fs.readFile(anchorPath)).toEqual(stored);
     expect(JSON.parse(await fs.readFile(path.join(baseDir, 'verified-sync.json'), 'utf8')).generation)
       .toBe(created.generation);
+  });
+
+  test.each([1, 100])('resumes an official ABI 26 checkpoint generation on chain %i without replacing it', async (chainId) => {
+    const created = await replaceCheckpoint(baseDir, chainId, checkpoint(chainId));
+    const anchorPath = path.join(created.dataDir, 'anchor.json');
+    const record = { ...await readJson(anchorPath), nativeCheckpointApi: 26 };
+    await writeJson(anchorPath, record);
+    const before = await fs.readFile(anchorPath);
+    expect(await loadOrCreateState(baseDir, chainId)).toMatchObject({ ...record, dataDir: created.dataDir });
+    expect(await fs.readFile(anchorPath)).toEqual(before);
   });
 
   test('native marker must match the authenticated anchor and is never rewritten', async () => {

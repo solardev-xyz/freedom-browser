@@ -1,0 +1,41 @@
+{
+  "startedAt": "2026-09-24T19:51:21.912Z",
+  "elapsedMs": 1213,
+  "checkpoint": {
+    "schemaVersion": 2,
+    "chainId": 100,
+    "network": "gnosis",
+    "root": "0x0bb251a478eeab140fdab41bdc96a7a477aab63bd420a8fb1438dbd2098cb6b9",
+    "slot": 30257168,
+    "verifiedAt": 1790279483122,
+    "sources": [
+      "https://checkpoint.gnosischain.com",
+      "https://checkpoint-sync-gnosis.dappnode.net",
+      "https://gnosis-beacon-api.publicnode.com"
+    ],
+    "finalizedEpoch": 1891073
+  },
+  "diagnostics": [
+    {
+      "chainId": 100,
+      "source": "https://gnosis-beacon-api.publicnode.com",
+      "slot": 30257168,
+      "outcome": "vote",
+      "elapsedMs": 110
+    },
+    {
+      "chainId": 100,
+      "source": "https://checkpoint.gnosischain.com",
+      "slot": 30257168,
+      "outcome": "vote",
+      "elapsedMs": 317
+    },
+    {
+      "chainId": 100,
+      "source": "https://checkpoint-sync-gnosis.dappnode.net",
+      "slot": 30257168,
+      "outcome": "vote",
+      "elapsedMs": 382
+    }
+  ]
+}

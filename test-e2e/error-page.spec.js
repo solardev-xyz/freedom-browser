@@ -154,6 +154,11 @@ test.describe('the error page reads node state from the registry', () => {
   const descriptionFor = async (window, protocol) => {
     // A per-load marker, so the poll can never read the previous error page.
     const nonce = `load-${(loads += 1)}`;
+    // A fresh window paints the address bar before the first tab's
+    // `<webview>` is attached; the first load of a test must wait for it.
+    await window.waitForFunction(() =>
+      document.querySelector('webview.active, webview:not(.hidden)')
+    );
     await window.evaluate(
       ([proto, marker]) => {
         const wv = document.querySelector('webview.active, webview:not(.hidden)');

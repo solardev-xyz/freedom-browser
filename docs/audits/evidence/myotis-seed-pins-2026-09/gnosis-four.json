@@ -1,0 +1,115 @@
+{
+  "date": "2026-09-25",
+  "pins": 4,
+  "rawLogSha256": "d357b0ecb612714e3442f73abd34869fd97ef5419f86bc564e2d95c6f26e1319",
+  "events": [
+    {
+      "type": "status",
+      "elapsedMs": 216,
+      "state": "syncing"
+    },
+    {
+      "type": "status",
+      "elapsedMs": 1218,
+      "state": "syncing",
+      "beaconState": "SYNCING",
+      "snapPeers": 0,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 2220,
+      "state": "syncing",
+      "beaconState": "SYNCING",
+      "snapPeers": 3,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 3220,
+      "state": "syncing",
+      "beaconState": "SYNCING",
+      "snapPeers": 3,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 4221,
+      "state": "syncing",
+      "beaconState": "SYNCING",
+      "snapPeers": 3,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 5223,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 3,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 6224,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 3,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 7225,
+      "state": "syncing",
+      "beaconState": "SYNCED",
+      "snapPeers": 3,
+      "snapServingPeers": 0
+    },
+    {
+      "type": "status",
+      "elapsedMs": 8225,
+      "state": "ready",
+      "beaconState": "SYNCED",
+      "snapPeers": 3,
+      "snapServingPeers": 1
+    },
+    {
+      "type": "account",
+      "elapsedMs": 8279,
+      "firstReadyMs": 8225,
+      "ms": 54,
+      "result": {
+        "accountHashHex": "0x1468288056310c82aa4c01a7e12a10f8111a0560e72b700555479031b86c357d",
+        "address": "0x0000000000000000000000000000000000000001",
+        "anchor": "head",
+        "balanceWei": "469841162495078009658",
+        "beaconChainVerified": true,
+        "beaconSynced": true,
+        "blockNumber": 48428174,
+        "blsVerified": true,
+        "codeHashHex": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+        "exists": true,
+        "failReason": null,
+        "finalizedBlockNumber": 48428134,
+        "finalizedPeriod": 3694,
+        "matchedBeaconSlot": 30265914,
+        "nonce": 0,
+        "optimisticBlockNumber": 48428174,
+        "peerProofValid": true,
+        "peerStateRootHex": "0x7a1560762b641e4d48165aa5ca83de8abb46c33e7fa1f00ef18cdb4107c134b3",
+        "proofNodesHex": [],
+        "storageRootHex": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+        "verifyMethod": "stateRootMatch",
+        "wallClockPeriod": 3694
+      }
+    },
+    {
+      "type": "complete",
+      "elapsedMs": 8348,
+      "success": true,
+      "stopped": [
+        true,
+        true
+      ]
+    }
+  ]
+}

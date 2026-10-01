@@ -244,6 +244,24 @@ const waitForPopoverFrame = (window) =>
       })
   );
 
+// Click a chrome element that sits over the tab's `<webview>` and has only just
+// appeared (or moved) there, until the click's effect shows. The frame wait
+// above closes most of the window, but not all of it: in a just-launched app on
+// a loaded machine the guest has been seen (2026-09-29, `tab-mute`, `downloads`,
+// `publisher-identity-selector`, `chrome-input-focus`, 1 run in 5–10) to take
+// the click after two frames — no pointer event reached the chrome, and
+// `document.activeElement` was the `<webview>`. `click` is re-issued only while
+// `landed()` is false, so a toggle is never clicked twice by the retry itself.
+const clickOverGuest = async (window, click, landed, { timeout = 15_000 } = {}) => {
+  await expect(async () => {
+    if (!(await landed())) {
+      await waitForPopoverFrame(window);
+      await click();
+    }
+    await expect.poll(landed, { timeout: 1000 }).toBe(true);
+  }).toPass({ timeout });
+};
+
 // Convenience: an arbitrary 64-char Swarm hex hash for fixture-driven
 // `bzz://` navigation. Specs should treat this as opaque.
 const SAMPLE_BZZ_HASH = 'a'.repeat(64);
@@ -254,6 +272,7 @@ module.exports = {
   expect,
   browserWindow,
   waitForPopoverFrame,
+  clickOverGuest,
   SAMPLE_BZZ_HASH,
   SAMPLE_IPFS_CID,
 };

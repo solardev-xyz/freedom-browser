@@ -14,13 +14,15 @@ const { getMyotisDataDir } = require('../profile-paths');
 
 const { MyotisProcess } = require('./myotis-process');
 const checkpointStore = require('./checkpoint-store');
+const seedPins = require('./seed-pins');
 const { acquireCheckpoint } = require('./checkpoint-verifier');
-const MYOTIS_VERSION = '0.1.11';
+const MYOTIS_VERSION = '0.1.12';
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
 const RECOVERY_COOLDOWN_MS = 15000;
 const RECOVERY_RETRY_MS = [15000, 60000];
+const RECOVERY_BACKGROUND_RETRY_MS = 5 * 60 * 1000;
 const RECOVERY_NOTICE_MS = 60 * 1000;
 const SYNC_NOTICE_MS = 5 * 60 * 1000;
 
@@ -274,10 +276,17 @@ function storageFailureReason(error) {
     CHECKPOINT_STORAGE_IO: 'storage-io' })[error.code] || 'startup';
 }
 
-function failRecovery(instance, reason, retry = false) {
+// `background` keeps retrying slowly after the fast schedule runs out. Only
+// checkpoint *acquisition* failures (a source outage) opt in: they cost a few
+// requests each. A checkpoint that verified and imported but still reports a
+// stale anchor must stay bounded — every retry of that path creates a new
+// verified generation and restarts the native child.
+function failRecovery(instance, reason, retry = false, { background = false } = {}) {
   if (!instance.wanted || shuttingDown || instance.stopping) return;
   clearRecoveryTimer(instance);
-  const delay = retry ? RECOVERY_RETRY_MS[instance.recoveryAttempt - 1] : null;
+  const delay = retry
+    ? (RECOVERY_RETRY_MS[instance.recoveryAttempt - 1] ?? (background ? RECOVERY_BACKGROUND_RETRY_MS : null))
+    : null;
   const token = instance.lifecycleToken;
   instance.recovery = {
     phase: delay ? 'waiting' : 'blocked', reason,
@@ -287,6 +296,7 @@ function failRecovery(instance, reason, retry = false) {
   };
   if (!delay) clearRecoveryNotice(instance);
   instance.lastError = null;
+  log.warn(`[myotis] ${instance.name} recovery ${JSON.stringify(instance.recovery)}`);
   publishAvailability(instance, false, 'checkpoint-recovery-failed');
   publishStatus(publicStatus(instance.chainId));
   if (delay) {
@@ -333,7 +343,8 @@ function observeSync(instance, status) {
   }
   const finished = canFinishRecovery(instance, status);
   const ready = finished && status.running === true && status.paused !== true &&
-    status.elReaderAvailable === true && status.elHunting === false && status.snapPeers > 0;
+    status.elReaderAvailable === true && status.elHunting === false &&
+    typeof status.snapServingPeers === 'number' && status.snapServingPeers > 0;
   if ((finished && instance.recovery?.phase === 'restarting') ||
       (ready && instance.recovery?.reason === 'stalled')) {
     clearRecoveryTimer(instance);
@@ -358,7 +369,15 @@ async function launchClient(instance, token) {
     network: instance.name,
     dataDir: instance.storage.dataDir,
     checkpoint: instance.storage.checkpoint,
-    onLifecycle: (event) => log.info(`[myotis] ${instance.name} lifecycle ${JSON.stringify(event)}`),
+    bootEnodes: seedPins.select(seedPins.load(instance.name)),
+    onLifecycle: (event) => {
+      if (event.event === 'seed-pins') {
+        const message = `[myotis] ${instance.name} seed pins (${event.count}) ${event.applied ? 'applied' : 'refused'}`;
+        if (event.applied) log.info(message);
+        else log.warn(message);
+      }
+      log.info(`[myotis] ${instance.name} lifecycle ${JSON.stringify(event)}`);
+    },
     onStatus: (status) => {
       if (instance.client !== client || !currentRun(instance, token)) return;
       instance.lastStatus = status;
@@ -419,14 +438,22 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
   const controller = new AbortController();
   instance.recoveryController = controller;
   instance.recoveryAttempt += 1;
+  log.info(`[myotis] ${instance.name} checkpoint attempt ${instance.recoveryAttempt}`);
   instance.recovery = { phase: 'checking', reason: null, attempt: instance.recoveryAttempt,
     nextRetryAt: null, canRetry: false };
   publishAvailability(instance, false, 'checkpoint-recovery', true);
   publishStatus(publicStatus(instance.chainId));
   const pending = (async () => {
     try {
-      const checkpoint = await acquireCheckpoint(instance.chainId, { signal: controller.signal });
+      const checkpoint = await acquireCheckpoint(instance.chainId, {
+        signal: controller.signal,
+        onDiagnostic: (diagnostic) => {
+          if (currentRun(instance, token) && !controller.signal.aborted)
+            log.info(`[myotis] checkpoint source ${JSON.stringify({ ...diagnostic, attempt: instance.recoveryAttempt })}`);
+        },
+      });
       if (!currentRun(instance, token) || controller.signal.aborted) return false;
+      log.info(`[myotis] ${instance.name} checkpoint attempt ${instance.recoveryAttempt} verified`);
       instance.recovery = { ...instance.recovery, phase: 'restarting' };
       publishStatus(publicStatus(instance.chainId));
       const previous = instance.client;
@@ -463,7 +490,7 @@ function recoverCheckpoint(instance, { resetAttempts = false } = {}) {
         CHECKPOINT_INCOMPATIBLE: 'unsupported',
       };
       const retry = ['CHECKPOINT_UNAVAILABLE', 'CHECKPOINT_QUORUM_UNAVAILABLE', 'CHECKPOINT_RACE', 'CHECKPOINT_STALE'].includes(error.code);
-      failRecovery(instance, reasons[error.code] || 'unavailable', retry);
+      failRecovery(instance, reasons[error.code] || 'unavailable', retry, { background: retry });
       return false;
     }
   })();
@@ -580,13 +607,13 @@ function getStatus(chainId = 1) {
 
 // Ready = the verified read path can actually serve: beacon SYNCED, the EL
 // reader up (and not hunting for a servable head context — first reads
-// during a hunt fail on the cold context), and at least one snap-capable
-// peer held. Callers treat not-ready as "skip myotis, use the next tier" —
+// during a hunt fail on the cold context), and at least one peer covering
+// the anchored head and not read-benched. Callers treat not-ready as "skip myotis, use the next tier" —
 // never as an error.
 function updateReadiness(instance, s) {
   const ready = Boolean(
     !instance.recovery && canFinishRecovery(instance, s) && s && s.running === true && s.paused !== true && s.beaconState === 'SYNCED' && s.elReaderAvailable === true && s.elHunting === false &&
-    typeof s.snapPeers === 'number' && s.snapPeers > 0
+    typeof s.snapServingPeers === 'number' && s.snapServingPeers > 0
   );
   publishAvailability(instance, ready, ready ? 'ready' : 'not-ready');
   return ready;
@@ -733,7 +760,7 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
-    abi: 29,
+    abi: 32,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,
@@ -774,6 +801,7 @@ function publicStatus(chainId = 1) {
     targetPeriod: s.targetPeriod,
     peerCount: s.peerCount,
     snapPeers: s.snapPeers,
+    snapServingPeers: s.snapServingPeers,
     finalizedBlockNumber: s.finalizedBlockNumber,
     uptimeSeconds: Math.round((Date.now() - instance.startedAt) / 1000),
   };
@@ -837,7 +865,7 @@ async function recoveryHelp(event, chainId = 1) {
   }[reason];
   if (!guidance) return;
   // Deliberately bounded: no paths, profile identifiers, wallet data or logs.
-  const details = `Myotis ${MYOTIS_VERSION} / ABI 29\nNetwork: ${status.displayName}\nPlatform: ${process.platform}-${process.arch}\nFailure: ${reason}\nAddon found: ${status.available}\nCheckpoint verification: required`;
+  const details = `Myotis ${MYOTIS_VERSION} / ABI 32\nNetwork: ${status.displayName}\nPlatform: ${process.platform}-${process.arch}\nFailure: ${reason}\nAddon found: ${status.available}\nCheckpoint verification: required`;
   const { dialog, clipboard } = require('electron');
   const { response } = await dialog.showMessageBox(win, {
     type: 'info', title: `${status.displayName} sync help`, message: 'Help with sync recovery',

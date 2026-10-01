@@ -68,7 +68,10 @@ function fixture(chainId = 1) {
   const fetch = jest.fn(async (url) => {
     if (url === config.prover) return new Response(Buffer.from('bounded test proof'));
     if (url.endsWith('finality_checkpoints')) return new Response(JSON.stringify(finality));
-    return new Response(JSON.stringify({ data: { root: headerRoot(header) } }));
+    return new Response(JSON.stringify({ data: { root: headerRoot(header) },
+      ...(config.beaconSources?.some(source => url.startsWith(source))
+        ? { finalized: true, execution_optimistic: false } : {}),
+    }));
   });
   return {
     config,
@@ -321,6 +324,87 @@ describe('checkpoint proof/finality policy', () => {
     expect(result.sources).toEqual(f.config.sources.slice(0, 3).filter((_, i) => i !== index));
   });
 
+  test.each([0, 1, 2])('Gnosis verifies with authority %i offline, including historical Beacon votes', async (index) => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    const diagnostics = [];
+    f.dependencies.onDiagnostic = value => diagnostics.push(value);
+    f.fetch.mockImplementation(url => {
+      if (url.startsWith(f.config.sources[index])) return Promise.resolve(new Response('down', { status: 503 }));
+      if (url.startsWith(f.config.sources[2]) && url.endsWith('finality_checkpoints')) {
+        return Promise.resolve(new Response(JSON.stringify({ finalized: false, execution_optimistic: false,
+          data: { finalized: { epoch: String(f.slot / 16 + 1), root: '0x' + '99'.repeat(32) } },
+        })));
+      }
+      return original(url);
+    });
+    const result = await verifyCheckpoint(100, f.dependencies);
+    expect(result.sources).toEqual(f.config.sources.filter((_, i) => i !== index));
+    expect(f.fetch.mock.calls.some(([url]) => url.endsWith('/slots'))).toBe(false);
+    expect(diagnostics).toContainEqual(expect.objectContaining({ source: f.config.sources[index],
+      outcome: 'CHECKPOINT_UNAVAILABLE', stage: 'block-root', failure: 'http', httpStatus: 503 }));
+    expect(diagnostics.filter(value => value.outcome === 'vote')).toHaveLength(2);
+  });
+
+  test.each([
+    [{}, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+    [{ finalized: true }, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+    [{ finalized: false, execution_optimistic: false }, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+    [{ finalized: 'true', execution_optimistic: false }, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+    [{ finalized: true, execution_optimistic: true }, 'CHECKPOINT_QUORUM_CONFLICT'],
+    [{ finalized: true, execution_optimistic: 'false' }, 'CHECKPOINT_QUORUM_UNAVAILABLE'],
+  ])('Beacon root flags %j cannot vote without explicit finality and execution verification', async (flags, code) => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(url => {
+      if (url.startsWith(f.config.sources[1])) return Promise.reject(new Error('offline'));
+      if (url.startsWith(f.config.sources[2]) && url.endsWith('/root')) {
+        return Promise.resolve(new Response(JSON.stringify({ ...flags, data: { root: headerRoot(f.header) } })));
+      }
+      return original(url);
+    });
+    await expect(verifyCheckpoint(100, f.dependencies)).rejects.toMatchObject({ code });
+  });
+
+  test.each(['same-epoch-conflict', 'behind', 'future'])('Beacon finalized flag cannot bypass %s', async variant => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(url => {
+      if (url.startsWith(f.config.sources[1])) return Promise.reject(new Error('offline'));
+      if (url.startsWith(f.config.sources[2]) && url.endsWith('finality_checkpoints')) {
+        return Promise.resolve(new Response(JSON.stringify({ data: { finalized: {
+          epoch: String(f.slot / 16 + (variant === 'behind' ? -1 : variant === 'future' ? 100 : 0)),
+          root: '0x' + '99'.repeat(32),
+        } } })));
+      }
+      return original(url);
+    });
+    await expect(verifyCheckpoint(100, f.dependencies)).rejects.toMatchObject({
+      code: variant === 'same-epoch-conflict' ? 'CHECKPOINT_QUORUM_CONFLICT' : 'CHECKPOINT_QUORUM_UNAVAILABLE',
+    });
+  });
+
+  test('a Gnosis quorum containing PublicNode cannot bypass an invalid Colibri proof', async () => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    f.fetch.mockImplementation(url => url.startsWith(f.config.sources[0])
+      ? Promise.reject(new Error('offline')) : original(url));
+    f.failVerification(new Error('invalid proof'));
+    await expect(verifyCheckpoint(100, f.dependencies)).rejects.toMatchObject({ code: 'CHECKPOINT_MISMATCH' });
+  });
+
+  test('malformed source JSON has bounded diagnostics; diagnostic failure cannot veto other votes', async () => {
+    const f = fixture(100);
+    const original = f.fetch.getMockImplementation();
+    const diagnostics = [];
+    f.dependencies.onDiagnostic = value => { diagnostics.push(value); throw new Error('logging failed'); };
+    f.fetch.mockImplementation(url => url.startsWith(f.config.sources[0])
+      ? Promise.resolve(new Response('<html>secret upstream response</html>')) : original(url));
+    await expect(verifyCheckpoint(100, f.dependencies)).resolves.toMatchObject({ sources: f.config.sources.slice(1) });
+    expect(diagnostics).toContainEqual(expect.objectContaining({ failure: 'invalid-json', stage: 'block-root' }));
+    expect(JSON.stringify(diagnostics)).not.toContain('secret');
+  });
+
   test.each([1, 100])('chain %i never accepts one vote', async (chainId) => {
     const f = fixture(chainId);
     const original = f.fetch.getMockImplementation();
@@ -443,6 +527,7 @@ describe('checkpoint proof/finality policy', () => {
     const original = f.fetch.getMockImplementation();
     const entry = { slot: f.slot, block_root: headerRoot(f.header) };
     f.fetch.mockImplementation((url) => {
+      if (url.startsWith(f.config.sources[2])) return Promise.reject(new Error('offline'));
       if (!url.startsWith(f.config.sources[1])) return original(url);
       if (url.endsWith('finality_checkpoints')) return Promise.resolve(new Response(JSON.stringify({
         data: { finalized: { epoch: String(f.slot / 16 + 1), root: '0x' + '99'.repeat(32) } },
@@ -465,7 +550,7 @@ describe('checkpoint proof/finality policy', () => {
       return originalVerify.apply(this, args);
     };
     await verifyCheckpoint(100, f.dependencies);
-    expect(f.fetch).toHaveBeenCalledTimes(5);
+    expect(f.fetch).toHaveBeenCalledTimes(7);
   });
 
   test('all authorities agreeing cannot override invalid Colibri proof', async () => {
@@ -502,6 +587,19 @@ describe('checkpoint proof/finality policy', () => {
 });
 
 describe('bounded HTTP bodies', () => {
+  test('a silent source times out with a bounded diagnostic', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetch = (_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+      const result = fetchBytes(fetch, 'https://test.invalid', {}, MAX_METADATA_BYTES);
+      const assertion = expect(result).rejects.toMatchObject({ code: 'CHECKPOINT_UNAVAILABLE', failure: 'timeout' });
+      await jest.advanceTimersByTimeAsync(20000);
+      await assertion;
+      expect(jest.getTimerCount()).toBe(0);
+    } finally { jest.useRealTimers(); }
+  });
   test('rejects oversized Content-Length before reading it', async () => {
     const response = new Response('x', {
       headers: { 'content-length': String(MAX_PROOF_BYTES + 1) },
@@ -558,6 +656,45 @@ describe('captured proofs with the real Colibri WASM', () => {
     // These captures qualify this exact verifier/API, not a semver-compatible build.
     expect(require('@corpus-core/colibri-stateless/package.json').version).toBe('3.0.0');
   });
+  test('real Gnosis proof requires PublicNode historical finality when Gnosis Checkpointz is offline', () => {
+    const dir = path.resolve(__dirname, '../../../docs/audits/evidence/gnosis-recovery-2026-09/capture');
+    const script = `
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const { verifyCheckpoint } = require(${JSON.stringify(path.join(__dirname, 'checkpoint-verifier-worker.js'))});
+      const dir = ${JSON.stringify(dir)};
+      const original = JSON.parse(fs.readFileSync(path.join(dir, 'verified-checkpoint.json')));
+      const responses = JSON.parse(fs.readFileSync(path.join(dir, 'responses.json')));
+      const proof = fs.readFileSync(path.join(dir, 'proof.ssz'));
+      Date.now = () => original.verifiedAt;
+      const fetch = (stripFinality, corrupt) => async (url, options) => {
+        if (options.method === 'POST') {
+          const bytes = Buffer.from(proof);
+          if (corrupt) bytes[bytes.length - 1] ^= 1;
+          return new Response(bytes);
+        }
+        if (!responses[url]) throw new Error('Provider offline in capture');
+        const response = responses[url];
+        const body = JSON.parse(response.body);
+        if (stripFinality && url.startsWith('https://gnosis-beacon-api.publicnode.com/') && url.endsWith('/root'))
+          delete body.finalized;
+        return new Response(JSON.stringify(body), { status: response.status });
+      };
+      (async () => {
+        const good = await verifyCheckpoint(100, { fetch: fetch(false, false) });
+        let missingFinality, corrupt;
+        try { await verifyCheckpoint(100, { fetch: fetch(true, false) }); } catch (e) { missingFinality = e.code; }
+        try { await verifyCheckpoint(100, { fetch: fetch(false, true) }); } catch (e) { corrupt = e.code; }
+        console.log(JSON.stringify({ good, missingFinality, corrupt }));
+      })().catch(e => { console.error(e); process.exitCode = 1; });
+    `;
+    const result = JSON.parse(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 30000 })
+      .trim().split('\n').at(-1));
+    expect(result.good).toEqual(JSON.parse(fs.readFileSync(path.join(dir, 'verified-checkpoint.json'))));
+    expect(result.good.sources).toContain('https://gnosis-beacon-api.publicnode.com');
+    expect(result.missingFinality).toBe('CHECKPOINT_QUORUM_UNAVAILABLE');
+    expect(result.corrupt).toBe('CHECKPOINT_MISMATCH');
+  }, 40000);
   test.each(['mainnet', 'gnosis'])(
     '%s proof verifies; corruption, wrong chain, stale and legacy proofs reject',
     (network) => {

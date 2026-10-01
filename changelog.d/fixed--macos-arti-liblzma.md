@@ -1,0 +1,1 @@
+- Fix Tor not starting on macOS: the bundled Arti client was linked against Homebrew's `liblzma` from the build machine, so it failed to load on Macs without Homebrew xz and, since the hardened-runtime tightening, on Macs with it too. Arti now links xz and SQLite statically, and the build and the macOS release smoke test fail if any bundled Arti links a library outside macOS.
