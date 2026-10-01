@@ -151,6 +151,21 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
       getPrivacyContext(handle);
       return snapshot(updated);
     },
+    async bindExitIntent(hash, revision, intent, assertCurrent) {
+      if (!HASH.test(hash) || !validIntent(intent) || !isExitIntent(intent) || !intent.commitment || typeof assertCurrent !== 'function') throw invalid();
+      const binding = { ...intent };
+      await modify(records => {
+        assertCurrent();
+        const record = records.find(r => r.hash === hash);
+        if (!record || (record.revision || 0) !== revision || !Number.isSafeInteger(revision + 1) ||
+            !record.intent || record.intent.commitment || record.intent.kind !== binding.kind || record.intent.digest !== binding.digest) {
+          throw privacyError('PRIVATE_RECONCILIATION_STALE', 'Legacy exit recovery was superseded');
+        }
+        record.intent = binding; record.revision = revision + 1;
+        return records;
+      });
+      getPrivacyContext(handle);
+    },
     async markSubmitted(hash) {
       await modify((records) => {
         const record = records.find((entry) => entry.hash === hash);

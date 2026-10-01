@@ -78,3 +78,12 @@ test('known legacy non-exit intent does not reserve unrelated notes', async () =
   await journal.begin(word(90), 1, { kind: 'ppv2-native-deposit', digest: word(4) });
   expect(await exits.notes([note])).toEqual([note]);
 });
+
+
+test('avoids SDK coin selection while a reserved input is still active for that asset', async () => {
+  await journal.begin(word(90), 1, intent);
+  await expect(exits.assertSelectable([note, { ...note, commitment: word(8) }], { __type: 'native' }))
+    .rejects.toMatchObject({ code: 'PRIVATE_PPV2_EXIT_RESERVED' });
+  await expect(exits.assertSelectable([{ ...note, status: 'exit_pending' }], { __type: 'native' })).resolves.toBeUndefined();
+  await expect(exits.assertSelectable([note], { __type: 'erc20', contract: pool })).resolves.toBeUndefined();
+});

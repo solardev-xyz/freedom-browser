@@ -327,6 +327,14 @@ test('durable public exit blocks stale SDK notes, balances and spending before p
     expect(await session.listRelayAttempts()).toEqual([]);
     expect(notes).not.toHaveBeenCalled(); expect(mockExitPrepare).not.toHaveBeenCalled(); expect(mockTransactPrepare).not.toHaveBeenCalled();
     expect(mockCall).not.toHaveBeenCalled(); expect(mockFetch).not.toHaveBeenCalled();
+    notes.mockResolvedValue([note, { ...note, commitment: word(8) }]);
+    const network = jest.spyOn(require('./private-transaction-network'), 'getPrivateTransactionNetwork').mockReturnValue({ assertCanSubmit: async () => {} });
+    try {
+      await expect(session.prepareNativeWithdrawal({ commitment: word(8), amount: 100n, maxFee: 10n, recipient: config.ownerAddress }))
+        .rejects.toMatchObject({ code: 'PRIVATE_PPV2_EXIT_RESERVED' });
+      expect(mockTransactPrepare).not.toHaveBeenCalled(); expect(mockFetch).not.toHaveBeenCalled();
+    } finally { network.mockRestore(); }
+    notes.mockResolvedValue([note]);
     session.close();
   }
 });

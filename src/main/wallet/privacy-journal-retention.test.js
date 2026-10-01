@@ -15,7 +15,7 @@ describe.each(['public', 'relay'])('%s history retention', (kind) => {
   const identifier = (i) => word(100 + i);
   const factory = kind === 'public' ? createSubmissionJournal : createPPv2RelayJournal;
   async function add(i, resolve = true) {
-    if (kind === 'public') await journal.begin(identifier(i), i);
+    if (kind === 'public') await journal.begin(identifier(i), i, { kind: 'ppv2-native-deposit', digest: word(i) });
     else {
       const { attempt, settlement } = validateRelay(relayFixture());
       await journal.begin({ ...attempt, id: identifier(i), nullifier: word(200 + i), commitment: word(300 + i) }, settlement);
@@ -192,4 +192,19 @@ describe.each(['public', 'relay'])('%s history retention', (kind) => {
     release?.(await accept()); await new Promise((resolve) => setImmediate(resolve));
     expect(await journal.list()).toHaveLength(1); expect(await journal.listArchive()).toEqual([]);
   });
+
+  if (kind === 'public') test('stops an archive prefix before unclassified history without reviewing impossible work', async () => {
+    await add(0); await add(1); await add(2); now += MINIMUM_AGE_MS + 1;
+    const storage = createPrivacyStorage(config), state = JSON.parse(await storage.get(storageKey));
+    delete state.records[1].intent;
+    await storage.set(storageKey, JSON.stringify(state));
+    const review = jest.fn(accept);
+    expect(await archive({ review })).toMatchObject({ archived: 1 });
+    expect(review.mock.calls[0][0].recordCount).toBe(1);
+    rpc.request.mockClear(); review.mockClear();
+    await expect(archive({ review })).rejects.toMatchObject({ code: 'PRIVATE_HISTORY_ARCHIVE_REFUSED' });
+    expect(rpc.request).not.toHaveBeenCalled(); expect(review).not.toHaveBeenCalled();
+    expect(await journal.list()).toHaveLength(2);
+  });
+
 });

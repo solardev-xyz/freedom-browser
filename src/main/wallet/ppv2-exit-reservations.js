@@ -23,6 +23,15 @@ function createPPv2ExitReservations({ journal, pool }) {
   async function assertAvailable(commitment) {
     if ((await commitments()).has(commitment?.toLowerCase())) throw reserved();
   }
+  async function assertSelectable(values, asset) {
+    const held = await commitments();
+    // The pinned adapter chooses inputs itself. Avoid asking it for a quote
+    // while its current active set still includes a held input of this asset.
+    for (const note of safeNotes(values)) {
+      if (note.status === 'active' && held.has(note.commitment) && note.asset.__type === asset.__type &&
+          (asset.__type === 'native' || note.asset.contract === asset.contract)) throw reserved();
+    }
+  }
   async function notes(values) {
     const held = await commitments();
     return Object.freeze(safeNotes(values).map((note) => held.has(note.commitment) && !['spent', 'exited'].includes(note.status)
@@ -39,6 +48,6 @@ function createPPv2ExitReservations({ journal, pool }) {
     return Object.freeze([...totals.values()].flatMap((entry) => ['spendable', 'unspendable'].map((tag) =>
       Object.freeze({ asset: entry.asset, amount: entry[tag], tag }))));
   }
-  return Object.freeze({ assertAvailable, notes, balance });
+  return Object.freeze({ assertAvailable, assertSelectable, notes, balance });
 }
 module.exports = { createPPv2ExitReservations };

@@ -236,3 +236,31 @@ test('exit reservation is derived from signed calldata and durable before an unc
   expect(durable).toBe(true);
   expect((await network.listSubmissions())[0]).toMatchObject({ state: 'attempted', intent });
 });
+
+test('legacy exit recovery queries only its recorded hash through the owner context without broadcasting', async () => {
+  const { Interface } = require('ethers');
+  const { transactionIntent } = require('./private-transaction-intent');
+  const { createPrivacyStorage } = require('./privacy-storage');
+  const data = new Interface([require('./ppv2-ragequit-policy').RAGEQUIT_ABI]).encodeFunctionData('ragequit',
+    [[[1n, 2n], [[3n, 4n], [5n, 6n]], [7n, 8n], [1n, 7n, 3n, BigInt(wallet.address), 100n, BigInt(require('./ppv2-deposit-policy').NATIVE), 4n]]]);
+  const tx = Transaction.from(await wallet.signTransaction({ ...params, type: 0, data, value: 0n, nonce: 0, gasPrice: 100n }));
+  const intent = transactionIntent('ppv2-native-ragequit', tx);
+  await createPrivacyStorage({ handle, directory: journalDirectory, key: Buffer.alloc(32, 3) }).set('submissions-v1', JSON.stringify({
+    version: 2, records: [{ hash: tx.hash, nonce: 0, state: 'attempted', attemptedAt: Date.now(), intent: { kind: intent.kind, digest: intent.digest } }], archive: [],
+  }));
+  const methods = [];
+  mockRequest.mockImplementation(async (context, _url, options) => {
+    expect(context).toBe(handle);
+    const call = JSON.parse(options.body); methods.push(call.method);
+    if (call.method !== 'eth_chainId') expect(call.params).toEqual([tx.hash]);
+    return { status: 200, body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id,
+      result: call.method === 'eth_chainId' ? '0xaa36a7' : { type: '0x0', hash: tx.hash, from: tx.from, to: tx.to, nonce: '0x0',
+        gas: `0x${tx.gasLimit.toString(16)}`, gasPrice: '0x64', value: '0x0', input: data,
+        v: `0x${tx.signature.networkV.toString(16)}`, r: tx.signature.r, s: tx.signature.s } })) };
+  });
+  await expect(network.recoverExitIntent(tx.hash, params.to, { review: async () => ({ recoverExitBinding: true, acceptedEvidence: 'signed-transaction-hash' }) }))
+    .resolves.toMatchObject({ signatureVerified: true, releasesReservation: false });
+  expect(methods).toEqual(['eth_chainId', 'eth_getTransactionByHash']);
+  expect((await network.listSubmissions())[0]).toMatchObject({ state: 'attempted', revision: 1, intent });
+  await expect(network.assertCanSubmit()).rejects.toMatchObject({ code: 'PRIVATE_SUBMISSION_UNRESOLVED' });
+});

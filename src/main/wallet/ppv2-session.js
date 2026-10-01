@@ -175,7 +175,9 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       const asset = token === NATIVE ? { __type: 'native' } : { __type: 'erc20', contract: token.toLowerCase() };
       await exits.assertAvailable(request.commitment);
       await availableToSpend();
-      const note = (await plugin.notes(undefined, true)).find((n) => n.commitment === request.commitment);
+      const selectable = await plugin.notes(undefined, true);
+      await exits.assertSelectable(selectable, asset);
+      const note = selectable.find((n) => n.commitment === request.commitment);
       if (!note || note.status !== 'active' || (token === NATIVE ? note.asset?.__type !== 'native' :
           note.asset?.__type !== 'erc20' || note.asset.contract.toLowerCase() !== token.toLowerCase())) {
         throw privacyError('PRIVATE_PPV2_NOTE_UNAVAILABLE', 'Selected note is not currently spendable');
@@ -360,6 +362,7 @@ async function openPPv2Session({ candidate, accountIndex = 0, configuration, pro
       }, { maySubmit: true, allowScanProgress: true }),
       listRelayAttempts: () => relayJournal.list(),
       listPublicSubmissions: () => publicOperations.list(),
+      recoverPublicExitIntent: (hash, policy) => exclusive(() => publicNetwork().recoverExitIntent(hash, config.deployment.poolAddress.toLowerCase(), policy)),
       observePublicSubmission: (hash) => publicOperations.observe(hash),
       resolvePublicSubmission: (hash, policy) => publicOperations.resolve(hash, policy),
     });

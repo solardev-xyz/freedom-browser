@@ -2,7 +2,7 @@
  * guards survive forever; archived remote evidence is no longer revalidated.
  */
 const { privacyError } = require('../networks/privacy-context');
-const { validIntent } = require('./private-transaction-intent');
+const { validIntent, isExitIntent } = require('./private-transaction-intent');
 const ARCHIVE_MAX = 1024;
 const MINIMUM_AGE_MS = 24 * 60 * 60 * 1000;
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -32,6 +32,7 @@ function archivePrefix(records, archive, expected, anchors, kind) {
   const now = Date.now();
   const moved = records.slice(0, expected.length).map((r, i) => {
     const e = expected[i], finalized = anchors[i];
+    if (kind === 'public' && (!r.intent || (isExitIntent(r.intent) && !r.intent.commitment))) throw fail();
     if (!exact(e, [id, 'revision']) || r[id] !== e[id] || r.revision !== e.revision || !r.resolution ||
         now - r.resolution.reviewedAt < MINIMUM_AGE_MS || !validAnchor(finalized) ||
         r.observation.blockNumber > finalized.blockNumber || (kind === 'relay' && !r.settlement)) throw fail();

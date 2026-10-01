@@ -2,6 +2,7 @@
  * The journal commits the entire prefix and permanent reuse guards atomically.
  */
 const { MINIMUM_AGE_MS, ARCHIVE_MAX, fail } = require('./privacy-journal-retention');
+const { isExitIntent } = require('./private-transaction-intent');
 const { privacyError } = require('../networks/privacy-context');
 const { isQuantity } = require('../networks/private-rpc');
 const hash = (v) => typeof v === 'string' && /^0x[0-9a-f]{64}$/i.test(v);
@@ -57,6 +58,7 @@ function createJournalArchiver({ journal, kind, withRpc, assertActive, lifetime 
       const records = await journal.list(), archive = await journal.listArchive();
       const prefix = [];
       for (const record of records) {
+        if (kind === 'public' && (!record.intent || (isExitIntent(record.intent) && !record.intent.commitment))) break;
         if (prefix.length === limit || !record.resolution || Date.now() - record.resolution.reviewedAt < MINIMUM_AGE_MS ||
             (kind === 'relay' && !record.settlement)) break;
         prefix.push(record);

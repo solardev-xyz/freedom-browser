@@ -122,6 +122,11 @@ function getPrivateTransactionNetwork(handle) {
   }
   const client = Object.freeze({ request, getFeeQuote, broadcastRawTransaction, assertSigner, assertActive, signal: rpc.signal,
     assertCanSubmit, listSubmissions: () => journal().list(),
+    recoverExitIntent: (hash, pool, policy) => require('./ppv2-exit-recovery').createPPv2ExitRecovery({
+      journal: journal(), principal, pool: pool.toLowerCase(), assertActive, lifetime: rpc.signal,
+      readTransaction: async (hash, signal) => (await createPrivateRpc(handle, 'transaction-rpc', { signal })
+        .request('eth_getTransactionByHash', [hash], value => value !== null && typeof value === 'object' && !Array.isArray(value))).result,
+    })(hash, policy),
     reconcileSubmission: (hash) => reconciliation().observe(hash),
     resolveSubmission: (hash, policy) => reconciliation().resolve(hash, policy),
     archiveResolvedSubmissions: (policy) => reconciliation().archiveResolved(policy) });
