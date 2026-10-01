@@ -1,5 +1,7 @@
 # PPv2 Sepolia: ready for test ETH
 
+**Historical pre-funding checkpoint.** The requested ETH arrived and the [funded lifecycle](ppv2-live-lifecycle-2026-10-01.md) has now executed. The statements below preserve the earlier unfunded observations; they do not describe the current wallet balance or transaction state.
+
 The complete public history and real unfunded Kohaku session checks now pass. A persistent disposable wallet is prepared. The next live step requires Sepolia ETH. No live transaction has been signed or submitted, and production remains disabled.
 
 ## Funding handoff

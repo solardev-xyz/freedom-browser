@@ -1,6 +1,8 @@
 # PPv2 live qualification prerequisites
 
-**Latest October 1 result:** [Funding readiness](ppv2-funding-readiness-2026-10-01.md) supersedes the earlier pending checks: complete history reconstruction, real unfunded SDK session/registration simulations and a fresh-process restart passed. The explicit direct-relayer development route is implemented. The next live step requires Sepolia ETH; no live transaction has been submitted.
+**Latest October 1 funded result:** [Live Sepolia lifecycle](ppv2-live-lifecycle-2026-10-01.md) records two registrations, two native deposits, one finalized relayed withdrawal with change recovery, and two successful emergency exits. All submissions are resolved; finalized SDK recovery shows both exits terminal and zero active notes. The owner retains 0.046280298618996486 Sepolia ETH. The live test exposed a pending-exit state gap that must be fixed before user-facing spendable balances/withdrawals. Production remains disabled.
+
+**Earlier October 1 pre-funding checkpoint (historical):** [Funding readiness](ppv2-funding-readiness-2026-10-01.md) supersedes the earlier pending checks: complete history reconstruction, real unfunded SDK session/registration simulations and a fresh-process restart passed. The explicit direct-relayer development route is implemented. The next live step requires Sepolia ETH; no live transaction has been submitted.
 
 This is the concrete handoff needed to move the controlled Kohaku/PPv2 experiment onto live Sepolia. It does not authorize a transaction, enable a product feature, or assume the final upstream release is available. No new outreach has been sent.
 

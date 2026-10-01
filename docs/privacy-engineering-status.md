@@ -1,6 +1,8 @@
 # Wallet privacy engineering status
 
-**Latest October 1 result:** [Funding readiness](ppv2-funding-readiness-2026-10-01.md) supersedes the earlier pending checks: complete history reconstruction, real unfunded SDK session/registration simulations and a fresh-process restart passed. The explicit direct-relayer development route is implemented. The next live step requires Sepolia ETH; no live transaction has been submitted.
+**Latest October 1 funded result:** [Live Sepolia lifecycle](ppv2-live-lifecycle-2026-10-01.md) records two registrations, two native deposits, one finalized relayed withdrawal with change recovery, and two successful emergency exits. All submissions are resolved; finalized SDK recovery shows both exits terminal and zero active notes. The owner retains 0.046280298618996486 Sepolia ETH. The live test exposed a pending-exit state gap that must be fixed before user-facing spendable balances/withdrawals. Production remains disabled.
+
+**Earlier October 1 pre-funding checkpoint (historical):** [Funding readiness](ppv2-funding-readiness-2026-10-01.md) supersedes the earlier pending checks: complete history reconstruction, real unfunded SDK session/registration simulations and a fresh-process restart passed. The explicit direct-relayer development route is implemented. The next live step requires Sepolia ETH; no live transaction has been submitted.
 
 **Latest continuation:** [Runtime integrity and reviewed history retention](privacy-runtime-retention-2026-09-28.md) adds authenticated SDK loading and explicit journal compaction. Its archival trust tradeoff, permanent bounds and one-way state format are documented there. [Live qualification prerequisites](ppv2-live-qualification-prerequisites.md) lists the remaining PP handoff.
 
