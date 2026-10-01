@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "archiveSha256": "fa71e37dab6f558a2a73c2903233667f30809201a6ef1af1f2ab17f8971fe19d",
+  "archiveBytes": 47806236,
+  "recipeRevision": "58a6dd9a381b6f6285d1cc27ad3f8c5cd6897e10",
+  "independentArchivesIdentical": true,
+  "normalizedHistoricalBundlesIdentical": [
+    "sdk.cjs",
+    "plugin.cjs",
+    "serial-prover.cjs",
+    "abis.cjs",
+    "http.cjs"
+  ],
+  "historicalArtifactWorkerMetadataFilesIdentical": 20,
+  "inputs": 2173,
+  "packages": 103,
+  "unattributedInputs": 21,
+  "packagesMissingLicenseText": [
+    {
+      "name": "@ethersproject/logger",
+      "version": "5.8.0",
+      "declaredLicense": "MIT"
+    },
+    {
+      "name": "@iden3/bigarray",
+      "version": "0.0.2",
+      "declaredLicense": "GPL-3.0"
+    },
+    {
+      "name": "@iden3/binfileutils",
+      "version": "0.0.12",
+      "declaredLicense": "GPL-3.0"
+    },
+    {
+      "name": "blake-hash",
+      "version": "2.0.0",
+      "declaredLicense": "MIT"
+    },
+    {
+      "name": "brorand",
+      "version": "1.1.0",
+      "declaredLicense": "MIT"
+    },
+    {
+      "name": "circomlibjs",
+      "version": "0.1.7",
+      "declaredLicense": "GPL-3.0"
+    },
+    {
+      "name": "elliptic",
+      "version": "6.6.1",
+      "declaredLicense": "MIT"
+    },
+    {
+      "name": "hash.js",
+      "version": "1.1.7",
+      "declaredLicense": "MIT"
+    },
+    {
+      "name": "hmac-drbg",
+      "version": "1.0.1",
+      "declaredLicense": "MIT"
+    },
+    {
+      "name": "minimalistic-crypto-utils",
+      "version": "1.0.1",
+      "declaredLicense": "MIT"
+    },
+    {
+      "name": "@privacy-pools-v2/sdk",
+      "version": "0.0.0",
+      "declaredLicense": "MIT"
+    }
+  ],
+  "latentLoads": {
+    "sdk.cjs": {
+      "newWorkerExpressions": 4,
+      "workerThreadsRequires": 2,
+      "nativeLoaderReferences": 10,
+      "exhaustiveEgressQualification": false
+    },
+    "serial-prover.cjs": {
+      "newWorkerExpressions": 2,
+      "workerThreadsRequires": 0,
+      "nativeLoaderReferences": 0,
+      "exhaustiveEgressQualification": false
+    }
+  },
+  "tests": {
+    "startTime": "2026-10-01T21:05:44.442Z",
+    "duration": 472877.06200000003,
+    "expected": 19,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "productionDistributionApproved": false
+}
