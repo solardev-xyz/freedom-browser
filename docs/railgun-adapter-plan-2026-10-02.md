@@ -1,5 +1,7 @@
 # Railgun adapter: source check and next implementation boundary
 
+**October 2 process continuation:** [Host-owned storage and a shared revocable session](railgun-session-qualification-2026-10-02.md) now pass four actual-engine Node child runs, including lock, SQLite failure, forced termination and restoration. The child receives viewing material and a spending public key; no spending private key or database key is delivered. Product Electron lifecycle/profile enrollment and current Kohaku balance/notes remain open. This slice awaits Claude review.
+
 **October 2 approved-engine continuation:** [The published engine and encrypted-store qualification](railgun-engine-qualification-2026-10-02.md) now execute the approved, isolated engine 9.6.0 fixture with its committed dependency lock. The older “not installed / pending approval” statements below describe the preceding source-only checkpoint. Actual identity, storage restart/failure and host-provider checks pass; the Kohaku protocol adapter and production process/session remain unfinished. Dependency advisories, complete distribution licensing and full-tree storage capacity remain explicit gates.
 
 This is a development plan, not an implemented Railgun integration. We will build an adapter for the current Kohaku host/plugin interface, with the official Railgun engine isolated behind it. The existing historical WASM spike and CLI remain reference evidence, not the runtime to ship.

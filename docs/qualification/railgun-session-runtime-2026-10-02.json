@@ -1,0 +1,112 @@
+{
+  "sourceSha256": {
+    "scripts/qualify-railgun-session.js": "ba39be61398589723e61d9d3d0bb6201f9db6e0fdacd6c08b0a1df679e214cc7",
+    "scripts/fixtures/railgun-session-child.js": "fb688620e25ce6987e69924209f5ba2f6710d7265b63ba276516902103bd5cff",
+    "scripts/railgun-fixture-integrity.js": "ecb3bdd30ed61572ac14444c9579f978f222c35fd203274c25428d5fb313aa93",
+    "scripts/fixtures/ppv2-egress-tripwire.js": "3547e13c2e71a44c0c70e3a0e77d86e3388b2ffb6a36ccef36db169cc27c7730",
+    "src/main/wallet/railgun-session.js": "5a08ab8da8a8fa417103a45695194da3baad8bfa95b91525e7ceededc6081172",
+    "src/main/wallet/railgun-remote.js": "5d4ff82c2b486e6a07e3d4494d3c26fe4dd07ebdf4b5d1966bc326a5126a327e",
+    "src/main/wallet/railgun-store.js": "0841c7805d16dbe3b94da3be258bcf6f8a3f0badaad82632dc5f4ee444ff56ee",
+    "src/main/networks/railgun-host-provider.js": "e88c94a796c01daf115df8507def59abf2ad12715b7c3cbc8a92cda42fccf57a",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133"
+  },
+  "publicTestKeysOnly": true,
+  "actualEngine": true,
+  "platform": "darwin",
+  "architecture": "arm64",
+  "productionEnabled": false,
+  "runs": [
+    {
+      "mode": "create",
+      "checks": [
+        "viewing-only-hardware-wallet-without-signing",
+        "actual-engine-remote-database-and-fresh-restore",
+        "remote-stable-iterator-seek-limit-and-clear",
+        "actual-engine-controlled-network-over-host-rpc"
+      ],
+      "inventory": "d46dbb16c9161c25baffe12701b2efdb844cb788f7e083d610729973d009e420",
+      "hooks": 87,
+      "canaries": 87,
+      "directAttempts": 0,
+      "address": "0zk1qyf3gjac8zwjwens6k5w0qy52f0jhahkemxgl4lrf7mh3qg3znf0rrv7j6fe3z53lah858xa9xct0r738t6v2kv0al6w725hzehrefhjunalenvq2pdlzqfcylz",
+      "databaseInChild": false,
+      "spendingKeyDelivered": false,
+      "contractHistoryScanned": false,
+      "hostStorage": true,
+      "sharedRpcRevoked": true,
+      "forcedExitObserved": true,
+      "termination": "SIGKILL",
+      "injectedSqliteFailure": false,
+      "lateReplyDelivered": false
+    },
+    {
+      "mode": "lock",
+      "checks": [
+        "viewing-only-hardware-wallet-without-signing",
+        "actual-engine-remote-database-and-fresh-restore",
+        "remote-stable-iterator-seek-limit-and-clear",
+        "actual-engine-controlled-network-over-host-rpc"
+      ],
+      "inventory": "d46dbb16c9161c25baffe12701b2efdb844cb788f7e083d610729973d009e420",
+      "hooks": 87,
+      "canaries": 87,
+      "directAttempts": 0,
+      "address": "0zk1qyf3gjac8zwjwens6k5w0qy52f0jhahkemxgl4lrf7mh3qg3znf0rrv7j6fe3z53lah858xa9xct0r738t6v2kv0al6w725hzehrefhjunalenvq2pdlzqfcylz",
+      "databaseInChild": false,
+      "spendingKeyDelivered": false,
+      "contractHistoryScanned": false,
+      "hostStorage": true,
+      "sharedRpcRevoked": true,
+      "forcedExitObserved": true,
+      "termination": "SIGKILL",
+      "injectedSqliteFailure": false,
+      "lateReplyDelivered": false
+    },
+    {
+      "mode": "fault",
+      "checks": [
+        "viewing-only-hardware-wallet-without-signing",
+        "actual-engine-remote-database-and-fresh-restore",
+        "remote-stable-iterator-seek-limit-and-clear",
+        "actual-engine-controlled-network-over-host-rpc"
+      ],
+      "inventory": "d46dbb16c9161c25baffe12701b2efdb844cb788f7e083d610729973d009e420",
+      "hooks": 87,
+      "canaries": 87,
+      "directAttempts": 0,
+      "address": "0zk1qyf3gjac8zwjwens6k5w0qy52f0jhahkemxgl4lrf7mh3qg3znf0rrv7j6fe3z53lah858xa9xct0r738t6v2kv0al6w725hzehrefhjunalenvq2pdlzqfcylz",
+      "databaseInChild": false,
+      "spendingKeyDelivered": false,
+      "contractHistoryScanned": false,
+      "hostStorage": true,
+      "sharedRpcRevoked": true,
+      "forcedExitObserved": true,
+      "termination": "SIGKILL",
+      "injectedSqliteFailure": true,
+      "lateReplyDelivered": false
+    },
+    {
+      "mode": "restore",
+      "checks": [
+        "viewing-only-hardware-wallet-without-signing",
+        "actual-engine-remote-database-and-fresh-restore",
+        "remote-stable-iterator-seek-limit-and-clear",
+        "actual-engine-controlled-network-over-host-rpc"
+      ],
+      "inventory": "d46dbb16c9161c25baffe12701b2efdb844cb788f7e083d610729973d009e420",
+      "hooks": 87,
+      "canaries": 87,
+      "directAttempts": 0,
+      "address": "0zk1qyf3gjac8zwjwens6k5w0qy52f0jhahkemxgl4lrf7mh3qg3znf0rrv7j6fe3z53lah858xa9xct0r738t6v2kv0al6w725hzehrefhjunalenvq2pdlzqfcylz",
+      "databaseInChild": false,
+      "spendingKeyDelivered": false,
+      "contractHistoryScanned": false,
+      "hostStorage": true,
+      "sharedRpcRevoked": true,
+      "forcedExitObserved": true,
+      "termination": "SIGKILL",
+      "injectedSqliteFailure": false,
+      "lateReplyDelivered": false
+    }
+  ]
+}
