@@ -120,7 +120,16 @@ async function ccipReadFetch(transaction, data, urls, signal, deps = {}) {
         chunks.push(next.value);
       }
       const result = JSON.parse(Buffer.concat(chunks).toString('utf8')).data;
-      if (typeof result === 'string' && /^0x(?:[0-9a-fA-F]{2})*$/.test(result)) return result;
+      // A repeated two-character group can exhaust V8's regexp stack on an
+      // otherwise valid body at the cap. Check byte pairing separately from
+      // the flat character scan; whitespace (including final CRLF) is invalid.
+      if (
+        typeof result === 'string' &&
+        result.startsWith('0x') &&
+        result.length % 2 === 0 &&
+        !/[^0-9a-fA-F]/.test(result.slice(2))
+      )
+        return result;
     } catch {
       /* Try the next gateway without logging names, URLs or payloads. */
     } finally {

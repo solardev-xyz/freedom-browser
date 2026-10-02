@@ -192,6 +192,21 @@ test('cancelling a resolution aborts its request and prevents subsequent gateway
   expect(net.requests[0].aborted).toBe(true);
 });
 
+test.each(['0x', '0x00', '0xCAfe'])('accepts paired hexadecimal data %j', async (data) => {
+  const { deps } = gateways(answer(data));
+  expect(await ccipReadFetch(TX, '0x', ['https://ok.example/{data}'], undefined, deps)).toBe(data);
+});
+
+test.each(['0xc', '0Xcafe', '0xcafe\n', '0xcafe\r\n', '0xca fe', '0xcafg'])(
+  'rejects malformed hexadecimal data %j',
+  async (data) => {
+    const { deps } = gateways(answer(data));
+    await expect(
+      ccipReadFetch(TX, '0x', ['https://ok.example/{data}'], undefined, deps)
+    ).rejects.toMatchObject({ code: 'CCIP_GATEWAY_FAILED' });
+  }
+);
+
 // The bounds this helper exists for. ethers' inherited implementation has
 // neither: a 300s FetchRequest default and no response-size cap, for URLs an
 // OffchainLookup revert — not us — chose.

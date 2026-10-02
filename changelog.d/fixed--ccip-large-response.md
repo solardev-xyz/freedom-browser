@@ -1,0 +1,1 @@
+- Large ENS offchain-lookup responses no longer fail as invalid ([#476](https://github.com/solardev-xyz/freedom-browser/pull/476)).
