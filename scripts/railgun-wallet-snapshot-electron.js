@@ -7,6 +7,7 @@ async function runWalletSnapshot({
   snapshot,
   walletSession,
   walletId,
+  walletGrant,
   restore,
   interruptAfterWalletBatches = 0,
 }) {
@@ -16,7 +17,12 @@ async function runWalletSnapshot({
       interruptAfterWalletBatches <= 128
   );
   let walletBatches = 0;
-  const router = createRailgunWalletStorage({ publicSnapshot: snapshot, walletSession, walletId });
+  const router = createRailgunWalletStorage({
+    publicSnapshot: snapshot,
+    walletSession,
+    walletId,
+    walletGrant,
+  });
   let result,
     task,
     sequence = 0,

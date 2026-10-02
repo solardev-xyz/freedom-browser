@@ -235,6 +235,11 @@ async function main() {
     'scripts/railgun-wallet-snapshot-electron.js',
     'scripts/fixtures/railgun-wallet-snapshot-job.js',
     'src/main/wallet/railgun-wallet-storage.js',
+    'src/main/wallet/railgun-wallet-coverage.js',
+    'src/main/wallet/railgun-wallet-coverage-store.js',
+    'src/main/wallet/railgun-wallet-journal.js',
+    'src/main/wallet/railgun-wallet-runner.js',
+    'src/main/wallet/railgun-wallet-state.js',
     'src/main/wallet/railgun-wallet-scan.js',
     'src/main/wallet/railgun-wallet-records.js',
     'scripts/railgun-coordinated-electron.js',
@@ -249,6 +254,7 @@ async function main() {
     'scripts/railgun-log-capture-data.js',
     'scripts/verify-railgun-sepolia-history.js',
     'scripts/railgun-fixture-integrity.js',
+    'scripts/fixtures/railgun-engine/runtime-integrity.json',
     'src/main/wallet/railgun-session.js',
     'src/main/wallet/railgun-session-worker-entry.js',
     'src/main/wallet/railgun-paged-store.js',
@@ -271,7 +277,18 @@ async function main() {
   const walletId = sha(
     Buffer.from(require('./fixtures/railgun-wallet-snapshot-job').shared, 'hex')
   );
-  let walletSession;
+  const { createRailgunWalletRunner } = require('../src/main/wallet/railgun-wallet-runner');
+  const {
+    createRailgunWalletCoverageStore,
+  } = require('../src/main/wallet/railgun-wallet-coverage-store');
+  const { createRailgunWalletJournal } = require('../src/main/wallet/railgun-wallet-journal');
+  const policy = sha('wallet-policy-fixture-v1\0' + JSON.stringify(sourceSha256));
+  const runner = createRailgunWalletRunner({
+    runJob: require('./railgun-wallet-snapshot-electron').runWalletSnapshot,
+    inventory: require('./fixtures/railgun-engine/runtime-integrity.json').inventory.sha256,
+    policy,
+  });
+  let walletSession, walletJournal;
   try {
     await open(false);
     assert.equal((await coordinator.recover()).to.number, capture.report.anchor.number);
@@ -297,15 +314,53 @@ async function main() {
       await walletSession.ready;
       const started = performance.now(),
         beforeRequests = requests;
-      const result = await coordinator.withPublicSnapshot((snapshot) =>
-        require('./railgun-wallet-snapshot-electron').runWalletSnapshot({
-          handle,
-          snapshot,
-          walletSession,
-          walletId,
-          restore,
-        })
-      );
+      const coverageStore = createRailgunWalletCoverageStore({
+        session: walletSession,
+        walletId,
+        policy,
+        assertScan: runner.assertScan,
+      });
+      walletJournal = await createRailgunWalletJournal({
+        handle: scope.getContext({
+          ...subject,
+          role: 'storage',
+          operation: 'railgun-wallet-v1:' + walletId,
+        }),
+        directory,
+        key: Buffer.alloc(32, 65),
+        binding: 'e'.repeat(64),
+        walletId,
+        policy,
+        storeSession: walletSession,
+        coverageStore,
+        coordinator,
+        assertScan: runner.assertScan,
+        create: !restore,
+      });
+      let pending;
+      const checked = await coordinator.withPublicSnapshot(async (snapshot) => {
+        if (!restore) pending = await walletJournal.prepare(snapshot.checkpoint);
+        return runner.run({ handle, snapshot, walletSession, coverageStore, walletId, restore });
+      });
+      const coverage = restore
+        ? await coverageStore.read(checked.value.receipt)
+        : await coverageStore.write(
+            coordinator.assertSnapshot(checked.evidence),
+            checked.value.coverage,
+            checked.value.receipt
+          );
+      const state = await walletSession.inspectWalletState();
+      const evidence = {
+        snapshot: checked.evidence,
+        coverage,
+        state,
+        receipt: checked.value.receipt,
+      };
+      if (restore) await walletJournal.revalidate(evidence);
+      else await walletJournal.complete(pending, evidence);
+      assert.equal(walletJournal.assertReady().status, 'wallet-scanned-unverified');
+      assert.equal(walletJournal.assertReady().spendableGranted, false);
+      const result = { evidence: checked.evidence, value: checked.value.result };
       assert.equal(
         coordinator.assertSnapshot(result.evidence).to.number,
         capture.report.anchor.number
@@ -327,6 +382,7 @@ async function main() {
           scannedLeaves: result.value.scannedLeaves,
         })
       );
+      walletJournal.close();
       walletSession.close();
       await walletSession.closed;
     }
@@ -341,7 +397,8 @@ async function main() {
           archivedPublicHistory: true,
           liveAcquisition: false,
           publicViewingVector: true,
-          walletCoverageGranted: false,
+          walletCoverageGranted: true,
+          durableJournal: true,
           spendableGranted: false,
           submissions: 0,
           anchor: capture.report.anchor,
@@ -355,6 +412,7 @@ async function main() {
       { flag: 'wx', mode: 0o600 }
     );
   } finally {
+    walletJournal?.close();
     walletSession?.close();
     if (walletSession) await walletSession.closed;
     await close();

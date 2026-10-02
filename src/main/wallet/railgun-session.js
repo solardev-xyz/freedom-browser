@@ -7,6 +7,7 @@ const { createRailgunStore } = require('./railgun-store');
 const { createRailgunPagedStore } = require('./railgun-paged-store');
 const { createRailgunStoreCursor, clearRailgunStore } = require('./railgun-store-cursor');
 const { inspectPublicRecords } = require('./railgun-public-records');
+const { inspectRailgunWalletState } = require('./railgun-wallet-state');
 const { readRailgunFrontier, readRailgunPosition } = require('./railgun-frontier');
 const MAX_MESSAGE = 2 * 1024 * 1024;
 const READS = new Set([
@@ -441,6 +442,18 @@ function createRailgunSession({ handle, storage, createProvider, onClose, onRevi
     observations.set(result, revision);
     return result;
   };
+  const inspectWalletState = () => {
+    active();
+    if (transaction || cursors.size) throw unavailable('RAILGUN_FRONTIER_BUSY');
+    try {
+      const result = inspectRailgunWalletState(store);
+      observations.set(result, revision);
+      return result;
+    } catch {
+      close();
+      throw unavailable('RAILGUN_FRONTIER_INVALID');
+    }
+  };
   const inspectPosition = (frontier, { tree, index } = {}) => {
     active();
     if (transaction || frontiers.get(frontier) !== revision)
@@ -469,6 +482,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose, onRevi
     inspectFrontier,
     inspectStoreIdentity,
     inspectPublicState,
+    inspectWalletState,
     inspectPosition,
     assertFresh,
   });

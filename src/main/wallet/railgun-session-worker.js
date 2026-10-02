@@ -332,6 +332,7 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     return value;
   }
   const inspectPublicState = () => inspect({ method: 'publicState' });
+  const inspectWalletState = () => inspect({ method: 'walletState' });
   const inspectStoreIdentity = () => inspect({ method: 'storeIdentity' });
   const inspectFrontier = () => inspect({ method: 'frontier' });
   function inspectPosition(frontier, position) {
@@ -350,6 +351,7 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     inspectFrontier,
     inspectStoreIdentity,
     inspectPublicState,
+    inspectWalletState,
     inspectPosition,
     assertFresh,
   });

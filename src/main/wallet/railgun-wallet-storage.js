@@ -6,14 +6,20 @@ const assert = require('assert/strict');
 const { paths } = require('./railgun-frontier');
 const reads = new Set(['get', 'getMany', 'open', 'next', 'nextMany', 'seek', 'end']);
 const segment = (text) => text.padStart(64, '0');
-function createRailgunWalletStorage({ publicSnapshot, walletSession, walletId }) {
+function getRailgunWalletPrefixes(walletId) {
   assert.match(walletId, /^[0-9a-f]{64}$/);
-  assert.ok(typeof publicSnapshot.dispatch === 'function');
-  const walletGrant = walletSession.claimDispatch();
-  const controller = new AbortController();
-  const signal = AbortSignal.any([publicSnapshot.signal, walletSession.signal, controller.signal]);
   const walletRoot = segment(Buffer.from('wallet').toString('hex'));
   const network = segment('aa36a7');
+  return Object.freeze(
+    [walletId, `${walletId}-spent`.slice(-64)].map((id) => `${walletRoot}:${id}:${network}`)
+  );
+}
+function createRailgunWalletStorage({ publicSnapshot, walletSession, walletId, walletGrant }) {
+  assert.match(walletId, /^[0-9a-f]{64}$/);
+  assert.ok(typeof publicSnapshot.dispatch === 'function');
+  walletGrant ??= walletSession.claimDispatch();
+  const controller = new AbortController();
+  const signal = AbortSignal.any([publicSnapshot.signal, walletSession.signal, controller.signal]);
   const channels = {
     public: {
       dispatch: publicSnapshot.dispatch,
@@ -22,9 +28,7 @@ function createRailgunWalletStorage({ publicSnapshot, walletSession, walletId })
     },
     wallet: {
       dispatch: walletGrant.dispatch,
-      prefixes: [walletId, `${walletId}-spent`.slice(-64)].map(
-        (id) => `${walletRoot}:${id}:${network}`
-      ),
+      prefixes: getRailgunWalletPrefixes(walletId),
       cursors: new Map(),
     },
   };
@@ -129,4 +133,4 @@ function createRailgunWalletStorage({ publicSnapshot, walletSession, walletId })
     },
   });
 }
-module.exports = { createRailgunWalletStorage };
+module.exports = { createRailgunWalletStorage, getRailgunWalletPrefixes };

@@ -507,3 +507,35 @@ test('permits the three isolated scan stores and refuses a fourth or duplicate o
   });
   await reopened.ready;
 });
+test('wallet-store evidence binds exact persisted content and becomes stale on dispatch', async () => {
+  start();
+  await worker.ready;
+  await call(1, 'batch', { operations: [put('wallet-note', 'derived')] });
+  const first = await worker.inspectWalletState();
+  expect(first).toMatchObject({ schema: 'wallet-store-v1', count: 1 });
+  worker.assertFresh(first);
+  expect(() => worker.assertFresh({ ...first })).toThrow();
+  await call(2, 'get', { key: b64('wallet-note') });
+  expect(() => worker.assertFresh(first)).toThrow();
+  const second = await worker.inspectWalletState();
+  expect(second).toEqual(first);
+  worker.close();
+  await worker.closed;
+  start({ storage: { ...options.storage, create: false } });
+  await worker.ready;
+  const cold = await worker.inspectWalletState();
+  expect(cold).toEqual(first);
+  await call(1, 'batch', { operations: [put('wallet-note', 'changed')] });
+  expect((await worker.inspectWalletState()).sha256).not.toBe(cold.sha256);
+  const cursor = await call(2, 'open', { options: {} });
+  await expect(worker.inspectWalletState()).rejects.toMatchObject({
+    code: 'RAILGUN_FRONTIER_BUSY',
+  });
+  await call(3, 'end', { cursor });
+  const transaction = await call(4, 'txBegin', {});
+  await expect(worker.inspectWalletState()).rejects.toMatchObject({
+    code: 'RAILGUN_FRONTIER_BUSY',
+  });
+  await call(5, 'txAbort', { transaction });
+  worker.assertFresh(await worker.inspectWalletState());
+});
