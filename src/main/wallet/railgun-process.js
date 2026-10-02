@@ -1,5 +1,8 @@
 /** Main-owned persistent Electron utility session. No renderer channel. The
  * caller supplies a reviewed runtime entry and minimum viewing-only JSON input.
+ * A supplied host broker is borrowed for this job; its owner retains storage
+ * lifetime and must drain its own dispatches. It is mutually exclusive with
+ * process-owned storage/provider sessions.
  * Ready means initialization completed, never a balance/proof result. RSS limits
  * are sampled soft limits; these JavaScript processes are not an OS sandbox.
  */
@@ -15,6 +18,7 @@ function startRailgunProcess({
   input,
   storage,
   createProvider,
+  broker,
   storageWorker = false,
   startupMs = 30000,
   lifetimeMs = 600000,
@@ -30,6 +34,13 @@ function startRailgunProcess({
     typeof input !== 'string' ||
     Buffer.byteLength(input) > 65536 ||
     typeof storageWorker !== 'boolean' ||
+    (broker !== undefined &&
+      (!broker ||
+        typeof broker.dispatch !== 'function' ||
+        !(broker.signal instanceof AbortSignal) ||
+        storage !== undefined ||
+        createProvider !== undefined ||
+        storageWorker)) ||
     !Number.isInteger(startupMs) ||
     startupMs < 1 ||
     startupMs > 120000 ||
@@ -108,7 +119,7 @@ function startRailgunProcess({
     stopping = true;
     controller.abort();
     if (!readyDelivered) rejectReady(fail(cause));
-    session?.close();
+    if (!broker) session?.close();
     closePorts();
     terminate();
   }
@@ -123,18 +134,20 @@ function startRailgunProcess({
   }
   const aborted = () => stop('PRIVACY_CONTEXT_REVOKED');
   const quit = () => stop('RAILGUN_PROCESS_CLOSED');
+  const brokerAborted = () => stop('RAILGUN_SESSION_REVOKED');
   function finish(exitCode = null) {
     if (exited) return;
     exited = true;
     controller.abort();
     cause ||= 'RAILGUN_PROCESS_EXITED';
-    session?.close();
+    if (!broker) session?.close();
     closePorts();
     clearTimeout(escalation);
     clearTimeout(startup);
     clearTimeout(deadline);
     clearInterval(memoryPoll);
     context.signal.removeEventListener('abort', aborted);
+    broker?.signal.removeEventListener('abort', brokerAborted);
     app.removeListener('before-quit', quit);
     if (!readyDelivered) rejectReady(fail(cause));
     const release = () => {
@@ -144,7 +157,7 @@ function startRailgunProcess({
       );
     };
     // A stopped engine cannot release a database still owned by its host worker.
-    if (session?.closed) session.closed.then(release);
+    if (!broker && session?.closed) session.closed.then(release);
     else release();
   }
   function sampleMemory() {
@@ -174,13 +187,15 @@ function startRailgunProcess({
   }
   try {
     const createSession = storageWorker ? startRailgunSessionWorker : createRailgunSession;
-    session = createSession({
-      handle,
-      storage,
-      createProvider,
-      onClose: () =>
-        stop(context.signal.aborted ? 'PRIVACY_CONTEXT_REVOKED' : 'RAILGUN_SESSION_REVOKED'),
-    });
+    session = broker
+      ? Object.freeze({ dispatch: broker.dispatch.bind(broker), signal: broker.signal })
+      : createSession({
+          handle,
+          storage,
+          createProvider,
+          onClose: () =>
+            stop(context.signal.aborted ? 'PRIVACY_CONTEXT_REVOKED' : 'RAILGUN_SESSION_REVOKED'),
+        });
     if (storageWorker)
       session.ready.then(
         () => {
@@ -191,9 +206,10 @@ function startRailgunProcess({
         () => stop('RAILGUN_SESSION_REVOKED')
       );
     context.signal.addEventListener('abort', aborted, { once: true });
+    broker?.signal.addEventListener('abort', brokerAborted, { once: true });
     app.once('before-quit', quit);
     if (context.signal.aborted || session.signal.aborted || stopping) {
-      stop('PRIVACY_CONTEXT_REVOKED');
+      stop(context.signal.aborted ? 'PRIVACY_CONTEXT_REVOKED' : 'RAILGUN_SESSION_REVOKED');
       finish();
     } else {
       channel = new MessageChannelMain();

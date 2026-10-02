@@ -396,3 +396,74 @@ test.each(['egress', 'job', 'protocol'])(
     );
   }
 );
+
+function borrowedOptions(controller = new AbortController()) {
+  const borrowed = {
+    signal: controller.signal,
+    dispatch: jest.fn(async (wire) => JSON.stringify({ id: JSON.parse(wire).id, value: null })),
+    close: jest.fn(),
+    closed: new Promise(() => {}),
+  };
+  return {
+    controller,
+    borrowed,
+    options: { ...args, storage: undefined, createProvider: undefined, broker: borrowed },
+  };
+}
+test('borrowed coordinator dispatch is the sole authority and survives normal child shutdown', async () => {
+  const { borrowed, options } = borrowedOptions();
+  task = startRailgunProcess(options);
+  expect(mockCreate).not.toHaveBeenCalled();
+  expect(mockCreateWorker).not.toHaveBeenCalled();
+  child.emit('spawn');
+  message(command(1));
+  expect(borrowed.dispatch).toHaveBeenCalledWith(command(1).wire);
+  message({ type: 'ready' });
+  await task.ready;
+  task.close();
+  child.emit('exit', 0);
+  await task.closed;
+  expect(borrowed.close).not.toHaveBeenCalled();
+  expect(borrowed.signal.aborted).toBe(false);
+});
+test('borrowed broker revocation stops the process and drops late replies', async () => {
+  const { controller, borrowed, options } = borrowedOptions();
+  let reply;
+  borrowed.dispatch.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        reply = resolve;
+      })
+  );
+  task = startRailgunProcess(options);
+  child.emit('spawn');
+  message(command(1));
+  controller.abort();
+  reply('{}');
+  await Promise.resolve();
+  expect(mockPort.postMessage).not.toHaveBeenCalled();
+  child.emit('exit', 1);
+  expect((await task.closed).code).toBe('RAILGUN_SESSION_REVOKED');
+  expect(borrowed.close).not.toHaveBeenCalled();
+});
+test('an already revoked borrowed broker never forks a child', async () => {
+  const { controller, options } = borrowedOptions();
+  controller.abort();
+  task = startRailgunProcess(options);
+  await expect(task.ready).rejects.toThrow();
+  await task.closed;
+  expect(mockFork).not.toHaveBeenCalled();
+});
+test.each(['storage', 'provider', 'worker', 'no-signal', 'no-dispatch'])(
+  'rejects ambiguous borrowed authority: %s',
+  (mode) => {
+    const { options } = borrowedOptions();
+    if (mode === 'storage') options.storage = {};
+    if (mode === 'provider') options.createProvider = () => {};
+    if (mode === 'worker') options.storageWorker = true;
+    if (mode === 'no-signal') options.broker.signal = {};
+    if (mode === 'no-dispatch') options.broker.dispatch = null;
+    expect(() => startRailgunProcess(options)).toThrow();
+    expect(mockFork).not.toHaveBeenCalled();
+  }
+);
