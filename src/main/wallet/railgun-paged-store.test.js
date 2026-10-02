@@ -503,3 +503,40 @@ test('stores and cold-reopens more than the old key and byte limits with bounded
   expect(store.get(key(65000))).toEqual(Buffer.alloc(512, 65000 % 256));
   expect(store.stats().keys).toBe(72000);
 }, 30000);
+
+test('LevelDOWN presentation options stay out of strict paged storage ranges', async () => {
+  const { createRailgunLeveldown } = require('./railgun-leveldown');
+  const level = createRailgunLeveldown({
+    AbstractLevelDOWN: class {},
+    AbstractIterator: class {},
+    store,
+  });
+  store.batch([put(1), put(2), put(3)]);
+  const iterator = level._iterator({
+    gte: key(2),
+    lte: key(3),
+    keys: true,
+    values: true,
+    reverse: false,
+    limit: -1,
+    keyAsBuffer: true,
+    valueAsBuffer: false,
+    valueEncoding: 'utf8',
+  });
+  const next = () =>
+    new Promise((resolve, reject) =>
+      iterator._next((error, key, value) => (error ? reject(error) : resolve([key, value])))
+    );
+  expect(await next()).toEqual([key(2), 'value-2']);
+  expect(await next()).toEqual([key(3), 'value-3']);
+  expect(await next()).toEqual([undefined, undefined]);
+  await new Promise((resolve) => iterator._end(resolve));
+  await new Promise((resolve, reject) =>
+    level._clear({ gte: key(2), lte: key(2), keyAsBuffer: true }, (error) =>
+      error ? reject(error) : resolve()
+    )
+  );
+  expect(store.get(key(1)).toString()).toBe('value-1');
+  expect(store.get(key(2))).toBe(null);
+  expect(store.get(key(3)).toString()).toBe('value-3');
+});

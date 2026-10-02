@@ -2,6 +2,14 @@
 const { createRailgunStoreCursor, clearRailgunStore } = require('./railgun-store-cursor');
 function createRailgunLeveldown({ AbstractLevelDOWN, AbstractIterator, store }) {
   const iterators = new Set();
+  // Encoding-down adds presentation options (keyAsBuffer, valueAsBuffer,
+  // encodings). They belong to this adapter, not the strict storage range API.
+  const rangeOptions = (options) =>
+    Object.fromEntries(
+      ['gt', 'gte', 'lt', 'lte', 'reverse', 'limit', 'keys', 'values']
+        .filter((key) => options[key] !== undefined)
+        .map((key) => [key, options[key]])
+    );
   let closed = false;
   const active = () => {
     if (closed)
@@ -32,7 +40,7 @@ function createRailgunLeveldown({ AbstractLevelDOWN, AbstractIterator, store }) 
       active();
       if (iterators.size >= 2) throw new Error('Railgun iterator capacity exceeded');
       this.options = options;
-      this.reader = createRailgunStoreCursor(store, options);
+      this.reader = createRailgunStoreCursor(store, rangeOptions(options));
       this.disposed = false;
       iterators.add(this);
     }
@@ -133,7 +141,7 @@ function createRailgunLeveldown({ AbstractLevelDOWN, AbstractIterator, store }) 
     }
     _clear(options, callback) {
       finish(callback, () => {
-        clearRailgunStore(store, options);
+        clearRailgunStore(store, rangeOptions(options));
         return [];
       });
     }
