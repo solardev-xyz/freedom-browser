@@ -27,7 +27,7 @@ All reports below include source hashes and use public synthetic fixtures:
 
 The measured synchronous maintenance stalls require moving storage work off the main event loop before product use. Capacity tests do not establish performance at the advertised maximum limits, on other platforms, or during a live scan.
 
-Claude reviewed the store, cursor protocol, failure semantics and corrected Electron fixture and accepted this implementation. This is engineering review, not an independent security audit. Full local coverage passes **7,315 tests / 33 skipped** across 340 passing suites; lint passes. Main synchronization follows this isolated storage commit.
+Claude reviewed the store, cursor protocol, failure semantics and corrected Electron fixture and accepted this implementation. This is engineering review, not an independent security audit. Full local coverage passes **7,315 tests / 33 skipped** across 340 passing suites; lint passes. Storage is committed in `d4d2b324`. Main `495aa3d8` is merged in `12088164`; post-merge full coverage passes **7,362 tests / 33 skipped**, plus six OpenLV tests separately, and lint passes. The installers refreshed Ant 0.5.53, freedom-ipfs 0.4.3, libradicle 0.7.1 and Myotis 0.1.12, and rebuilt the Myotis supervisor. Arti 2.6.0 is unchanged and verified. Binary presence checks pass; the dependency lock is unchanged. Claude accepted the merge. Main now allows deletion of an inactive default profile, which also removes its local privacy journals and reservations; profile backup/recovery policy remains part of product work. Railgun pages still live in development harness directories and are not yet enrolled in profile storage.
 
 ## Continuing toward PPv2 parity
 
