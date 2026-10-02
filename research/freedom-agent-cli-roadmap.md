@@ -1,14 +1,52 @@
 # Freedom Agent and Automation Roadmap
 
 Created: 2026-08-22
-Last updated: 2026-09-29
+Last updated: 2026-10-02
 Status: Living research roadmap
 Scope: embedded Freedom Agent, shared automation kernel, and optional external adapters
 Planning basis: current Freedom mainline, current product requirements, and fresh validation of external dependencies
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-09-29
+## Current working status — 2026-10-02
+
+### Pi 1.0 and provider authentication — 2026-10-02
+
+The feature branch now pins Pi **1.0.0**. Freedom continues to use explicit
+controller-backed tools, its no-discovery resource loader, profile-owned encrypted
+credentials, and disabled prompt-cache warming. Pi's new built-in MCP/codemode
+extensions are not loaded by this upgrade.
+
+- **ChatGPT:** new connections use Pi's native OpenAI Sign in with ChatGPT flow
+  (PKCE, local callback, and token refresh) against the Responses API. The normal
+  flow needs no device code. A collapsed manual callback fallback handles a busy
+  callback port; callback inputs stay out of history/logs and are cleared after
+  submission. Login is cancellable and bounded to five minutes. Its stable random
+  device ID is profile-scoped. Freedom keeps this connection's encrypted credential
+  and conversation identity separate from OpenAI API keys. Existing Codex logins
+  remain usable and offer an explicit upgrade action; no token is reinterpreted or
+  silently migrated to the new grant.
+- **Meta/Muse:** was already offered with an API key. It now uses Pi's native Meta
+  Responses transport and bundled Muse catalog, replacing the single-model custom
+  Completions adapter. Meta subscription login is not exposed in Freedom yet.
+- **Validation:** full unit suite **7,903 passed / 129 skipped**, lint clean,
+  and three selected disposable Electron scenarios passed (provider setup, new
+  ChatGPT UI in both themes, and browser-helper approval/handoff/Stop). Native
+  SDK tests exercise OAuth exchange/refresh with fake HTTP,
+  stable device identity, independent credentials/disconnect, Responses tool calls,
+  and existing session/helper isolation. Disposable Electron checks cover provider
+  setup and ChatGPT cancellation/manual callback/disconnect in both themes. Live
+  ChatGPT authorization and a live Muse request remain user smoke tests; no account
+  credentials or paid inference were used for qualification.
+
+**Next discussion, separate from this upgrade:** evaluate codemode over only
+Freedom-owned tools (nested action receipts, cancellation and approvals); generic
+MCP connections (distinct from our existing website WebMCP, with explicit server,
+credential and process/network permissions); optional Jev classification through
+an already-connected provider; and model routing constrained by connected models,
+privacy settings and cost visibility. Ordinary Agent must still work with one
+ChatGPT, API-key or local-model connection. These are research/design follow-ups,
+not enabled capabilities or a prerequisite for the current feature.
 
 ### Pre-PR stabilization — 2026-09-29
 

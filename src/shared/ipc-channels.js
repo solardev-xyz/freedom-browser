@@ -223,6 +223,7 @@ module.exports = {
   AGENT_PROVIDER_CONFIGURE_OLLAMA: 'agent:provider:configure-ollama',
   AGENT_PROVIDER_LOGIN_SUBSCRIPTION: 'agent:provider:login-subscription',
   AGENT_PROVIDER_CANCEL_LOGIN: 'agent:provider:cancel-login',
+  AGENT_PROVIDER_SUBMIT_LOGIN: 'agent:provider:submit-login',
   AGENT_PROVIDER_AUTH_EVENT: 'agent:provider:auth-event',
   AGENT_PROVIDER_SELECT_MODEL: 'agent:provider:select-model',
   AGENT_PROVIDER_REMOVE: 'agent:provider:remove',

@@ -372,6 +372,7 @@ describe('preload', () => {
         [{ providerId: 'openai-codex', modelId: 'codex-model' }],
       ],
       [exposures.electronAPI, 'cancelAgentProviderLogin', [], IPC.AGENT_PROVIDER_CANCEL_LOGIN, []],
+      [exposures.electronAPI, 'submitAgentProviderLogin', ['request', 'callback'], IPC.AGENT_PROVIDER_SUBMIT_LOGIN, [{ requestId: 'request', callbackUrl: 'callback' }]],
       [
         exposures.electronAPI,
         'selectAgentModel',

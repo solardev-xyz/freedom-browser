@@ -10,6 +10,7 @@ const LEGACY_PROVIDER_STORE_VERSION = 1;
 const PROVIDER_STORE_FILE = 'provider.json';
 const MAX_PROVIDER_STORE_BYTES = 256 * 1024;
 const MAX_STORED_OLLAMA_MODELS = 128;
+const SUBSCRIPTION_IDS = new Set(['openai-codex', 'openai-chatgpt']);
 
 class AgentProviderStoreError extends Error {
   constructor(code, message) {
@@ -73,7 +74,7 @@ function isStoredSelection(selection) {
       selection.encryptedApiKey.length <= 128 * 1024
     );
   }
-  if (selection.kind === 'subscription') return selection.providerId === 'openai-codex';
+  if (selection.kind === 'subscription') return SUBSCRIPTION_IDS.has(selection.providerId);
   return selection.kind === 'ollama' && typeof selection.baseUrl === 'string';
 }
 
@@ -109,7 +110,7 @@ function isStoredConnection(connection, providerId) {
       connection.encryptedApiKey.length <= 128 * 1024
     );
   }
-  if (connection.kind === 'subscription') return providerId === 'openai-codex';
+  if (connection.kind === 'subscription') return SUBSCRIPTION_IDS.has(providerId);
   return (
     connection.kind === 'ollama' &&
     providerId === 'ollama' &&
@@ -146,7 +147,7 @@ function isStoredCredentialMap(credentials) {
   if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) return false;
   return Object.entries(credentials).every(
     ([providerId, encryptedCredential]) =>
-      providerId === 'openai-codex' &&
+      SUBSCRIPTION_IDS.has(providerId) &&
       typeof encryptedCredential === 'string' &&
       encryptedCredential.length > 0 &&
       encryptedCredential.length <= 192 * 1024
@@ -182,6 +183,15 @@ class AgentProviderStore {
     this.binding = createBinding(options.profileId, options.userDataDir || this.dataDir);
     this.credentialOperations = new Map();
     this.credentialStore = this.#createCredentialStore();
+  }
+
+  getDeviceId() {
+    const payload = this.#read();
+    if (!this.deviceId) {
+      this.deviceId = crypto.randomUUID();
+      this.#write(payload);
+    }
+    return this.deviceId;
   }
 
   isEncryptionAvailable() {
@@ -408,6 +418,9 @@ class AgentProviderStore {
         'Agent provider storage does not belong to this profile'
       );
     }
+    if (typeof payload.deviceId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.deviceId)) {
+      this.deviceId = payload.deviceId;
+    }
     const connection = validCurrent ? null : connectionFromSelection(payload.selection);
     const state = validCurrent
       ? {
@@ -437,6 +450,7 @@ class AgentProviderStore {
       JSON.stringify(
         {
           version: PROVIDER_STORE_VERSION,
+          ...(this.deviceId && { deviceId: this.deviceId }),
           ...this.binding,
           connections,
           activeProviderId,
@@ -504,7 +518,7 @@ class AgentProviderStore {
   }
 
   #writeOAuthCredential(providerId, credential) {
-    if (providerId !== 'openai-codex' || !isOAuthCredential(credential)) {
+    if (!SUBSCRIPTION_IDS.has(providerId) || !isOAuthCredential(credential)) {
       throw new AgentProviderStoreError(
         'AGENT_CREDENTIAL_UNAVAILABLE',
         'The provider credential is invalid'

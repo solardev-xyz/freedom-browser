@@ -18,8 +18,10 @@ const HOSTED_PROVIDERS = Object.freeze(
   )
 );
 const SUBSCRIPTION_PROVIDERS = Object.freeze({
-  'openai-codex': 'ChatGPT (Codex)',
+  'openai-chatgpt': 'OpenAI · ChatGPT',
+  'openai-codex': 'OpenAI · ChatGPT (legacy)',
 });
+const runtimeProviderId = id => id === 'openai-chatgpt' ? 'openai' : id;
 const OLLAMA_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
@@ -115,13 +117,14 @@ class AgentProviderResolver {
       providerId,
       name,
       authType,
+      defaultModelId: providerId === 'openai-chatgpt' ? 'gpt-6.1-sol' : providerId === 'meta' ? 'muse-spark-1.3' : undefined,
       group: PROVIDER_DEFINITIONS[providerId].group,
       privacy: PROVIDER_DEFINITIONS[providerId].privacy,
       policies: PROVIDER_DEFINITIONS[providerId].policies || [],
       canRefresh: Boolean(PROVIDER_DEFINITIONS[providerId].catalogUrl),
       updatedAt: this.catalog.get(providerId).updatedAt || null,
       models: runtime
-        .getModels(providerId)
+        .getModels(runtimeProviderId(providerId))
         .filter(
           (model) =>
             !this.catalog.get(providerId).updatedAt ||
@@ -155,7 +158,7 @@ class AgentProviderResolver {
     if (!apiKey)
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Provider API key is invalid');
     const runtime = await this.#createRuntime();
-    if (!runtime.getModel(providerId, modelId)) {
+    if (!runtime.getModel(runtimeProviderId(providerId), modelId)) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
     }
     const privacyPolicy = input.privacyPolicy;
@@ -247,15 +250,16 @@ class AgentProviderResolver {
         'Provider login interaction is invalid'
       );
     }
-    const runtime = await this.#createRuntime();
-    if (!runtime.getModel(providerId, modelId)) {
+    const runtime = await this.#createRuntime(providerId);
+    if (!runtime.getModel(runtimeProviderId(providerId), modelId)) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
     }
-    await runtime.login(providerId, 'oauth', interaction);
+    await runtime.login(runtimeProviderId(providerId), 'oauth', interaction,
+      providerId === 'openai-chatgpt' ? { getDeviceId: () => this.store.getDeviceId() } : undefined);
     try {
       this.store.saveSubscription({ providerId, modelId });
     } catch (error) {
-      await runtime.logout(providerId).catch(() => {});
+      await runtime.logout(runtimeProviderId(providerId)).catch(() => {});
       throw error;
     }
     return this.getStatus();
@@ -272,7 +276,7 @@ class AgentProviderResolver {
     }
     if (providerId !== 'ollama') {
       const runtime = await this.#createRuntime();
-      if (!runtime.getModel(providerId, modelId)) {
+      if (!runtime.getModel(runtimeProviderId(providerId), modelId)) {
         throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
       }
     }
@@ -386,7 +390,7 @@ class AgentProviderResolver {
   }
 
   #enforceRequestPolicy(runtime, providerId) {
-    if (!['openrouter', 'venice', 'near-ai', 'meta'].includes(providerId)) return;
+    if (!['openrouter', 'venice', 'near-ai'].includes(providerId)) return;
     for (const method of ['stream', 'streamSimple']) {
       if (typeof runtime[method] !== 'function') continue;
       const original = runtime[method].bind(runtime);
@@ -465,7 +469,7 @@ class AgentProviderResolver {
     if (selection.kind === 'hosted' && !Object.hasOwn(HOSTED_PROVIDERS, selection.providerId)) {
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Hosted provider is not supported');
     }
-    const runtime = await this.#createRuntime();
+    const runtime = await this.#createRuntime(selection.providerId);
     if (selection.kind === 'hosted') {
       await runtime.setRuntimeApiKey(selection.providerId, selection.apiKey);
     } else if (selection.kind === 'ollama') {
@@ -495,15 +499,15 @@ class AgentProviderResolver {
           'The saved provider credential is unavailable'
         );
       }
-      await runtime.refresh({ allowNetwork: false, providers: [selection.providerId] });
-      if (!runtime.hasConfiguredAuth(selection.providerId)) {
+      await runtime.refresh({ allowNetwork: false, providers: [runtimeProviderId(selection.providerId)] });
+      if (!runtime.hasConfiguredAuth(runtimeProviderId(selection.providerId))) {
         throw new AgentProviderError(
           'AGENT_PROVIDER_AUTH_UNAVAILABLE',
           'The model provider did not accept the saved credential'
         );
       }
     }
-    const model = runtime.getModel(selection.providerId, selection.modelId);
+    const model = runtime.getModel(runtimeProviderId(selection.providerId), selection.modelId);
     if (!model) {
       throw new AgentProviderError(
         'AGENT_MODEL_UNAVAILABLE',
@@ -515,14 +519,24 @@ class AgentProviderResolver {
     return {
       model,
       modelRuntime: runtime,
+      ...(selection.providerId === 'openai-chatgpt' && { connectionProviderId: selection.providerId }),
       thinkingLevel: selection.kind === 'subscription' || model.id === 'gpt-6-astra' ? 'medium' : 'off',
     };
   }
 
-  async #createRuntime() {
+  async #createRuntime(connectionId) {
+    // Freedom keeps API-key and ChatGPT connections independent. Pi's new
+    // ChatGPT transport must retain the native "openai" provider identity.
+    const credentials = connectionId === 'openai-chatgpt' ? {
+      read: (id, options) => this.credentials.read(id === 'openai' ? connectionId : id, options),
+      list: async options => (await this.credentials.list(options)).map(entry =>
+        ({ ...entry, providerId: entry.providerId === connectionId ? 'openai' : entry.providerId })),
+      modify: (id, update, options) => this.credentials.modify(id === 'openai' ? connectionId : id, update, options),
+      delete: (id, options) => this.credentials.delete(id === 'openai' ? connectionId : id, options),
+    } : this.credentials;
     const sdk = await this.loadSdk();
     const runtime = await sdk.ModelRuntime.create({
-      credentials: this.credentials,
+      credentials,
       modelsPath: null,
       modelsStorePath: path.join(this.dataDir, 'pi-model-cache.json'),
       allowModelNetwork: false,

@@ -373,7 +373,7 @@
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
     "@corpus-core/colibri-stateless": "3.0.0",
-    "@earendil-works/pi-coding-agent": "0.86.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^13.0.0",
     "@ghostery/adblocker": "^2.18.1",

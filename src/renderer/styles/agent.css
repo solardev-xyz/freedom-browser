@@ -3660,6 +3660,7 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .agent-provider-models-list li + li { border-top: 1px solid var(--border); }
 .agent-provider-models-list:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .agent-provider-models-empty { padding: 12px; color: var(--muted); }
+.agent-auth-callback summary,
 .agent-provider-advanced summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 14px; }
 #agent-setup-view button:focus-visible, .agent-model-star:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .agent-connected-provider { width: 100%; text-align: left; cursor: pointer; }

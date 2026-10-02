@@ -3917,3 +3917,22 @@ describe('publication continuation', () => {
     await service.dispose();
   });
 });
+
+test('ChatGPT connection identity survives history without changing the native OpenAI model', async () => {
+  const fake = createFakeSession();
+  const historyStore = createHistoryStore();
+  const { service, dependencies } = createService(fake, { historyStore });
+  await service.start(startOptions({
+    model: { id: 'gpt-6.1-sol', provider: 'openai' },
+    connectionProviderId: 'openai-chatgpt',
+  }));
+  expect(dependencies.createSession).toHaveBeenCalledWith(expect.objectContaining({
+    model: { id: 'gpt-6.1-sol', provider: 'openai' },
+  }));
+  expect(historyStore.createSession).toHaveBeenCalledWith(expect.objectContaining({
+    providerId: 'openai-chatgpt', modelId: 'gpt-6.1-sol',
+  }));
+  fake.prompt.resolve();
+  await service.waitForIdle();
+  expect(service.conversation).toMatchObject({ providerId: 'openai-chatgpt', providerLabel: 'OpenAI · ChatGPT' });
+});

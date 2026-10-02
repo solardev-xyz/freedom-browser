@@ -247,6 +247,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loginSubscriptionAgentProvider: (providerId, modelId) =>
     ipcRenderer.invoke('agent:provider:login-subscription', { providerId, modelId }),
   cancelAgentProviderLogin: () => ipcRenderer.invoke('agent:provider:cancel-login'),
+  submitAgentProviderLogin: (requestId, callbackUrl) => ipcRenderer.invoke('agent:provider:submit-login', { requestId, callbackUrl }),
   selectAgentModel: (providerId, modelId) =>
     ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId }),
   removeAgentProvider: (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId }),

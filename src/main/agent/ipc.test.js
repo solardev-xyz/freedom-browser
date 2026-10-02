@@ -492,6 +492,16 @@ describe('Freedom agent IPC', () => {
     );
   });
 
+  test('forwards the subscription connection identity separately from the native model provider', async () => {
+    const ctx = register({ resolveModel: async () => ({
+      model: { id: 'gpt-6.1-sol', provider: 'openai' }, modelRuntime: {}, connectionProviderId: 'openai-chatgpt',
+    }) });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: null, prompt: 'Hello' });
+    expect(ctx.service.start).toHaveBeenCalledWith(expect.objectContaining({
+      model: { id: 'gpt-6.1-sol', provider: 'openai' }, connectionProviderId: 'openai-chatgpt',
+    }));
+  });
+
   test('continues an idle conversation without resolving a new tab or model', async () => {
     const service = createService();
     service.start
@@ -1312,6 +1322,8 @@ describe('Freedom agent IPC', () => {
   });
 
   test('rejects spoofed subscription auth events', () => {
+    expect(normalizeSubscriptionAuthEvent({ type: 'auth_url', url: 'https://auth.openai.com.evil.test/api/accounts/authorize' }, 'openai-chatgpt')).toBeNull();
+    expect(normalizeSubscriptionAuthEvent({ type: 'auth_url', url: 'https://auth.openai.com/other' }, 'openai-chatgpt')).toBeNull();
     expect(
       normalizeSubscriptionAuthEvent({
         type: 'device_code',
@@ -1326,6 +1338,49 @@ describe('Freedom agent IPC', () => {
         verificationUri: OPENAI_DEVICE_VERIFICATION_URL,
       })
     ).toBeNull();
+  });
+
+  test('ChatGPT callback fallback is owner-bound and never exposes the authorization URL', async () => {
+    const ctx = register();
+    let prompted;
+    const ready = new Promise(resolve => { prompted = resolve; });
+    ctx.providerResolver.loginSubscription.mockImplementation(async (_input, interaction) => {
+      interaction.notify({ type: 'auth_url', url: 'https://auth.openai.com/api/accounts/authorize?state=private-state' });
+      const result = interaction.prompt({ type: 'manual_code', signal: interaction.signal });
+      prompted();
+      expect(await result).toBe('http://127.0.0.1:1455/auth/callback?code=test&state=test&client_id=test');
+      return { configured: true };
+    });
+    const login = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION);
+    const submit = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_SUBMIT_LOGIN);
+    const pending = login({ sender: ctx.sender }, { providerId: 'openai-chatgpt', modelId: 'model' });
+    await ready;
+    const authEvents = ctx.sender.send.mock.calls.filter(([channel]) => channel === IPC.AGENT_PROVIDER_AUTH_EVENT).map(([, event]) => event);
+    expect(JSON.stringify(authEvents)).not.toContain('private-state');
+    const requestId = authEvents.find(event => event.type === 'manual_code').requestId;
+    const callbackUrl = 'http://127.0.0.1:1455/auth/callback?code=test&state=test&client_id=test';
+    await expect(submit({ sender: ctx.sender }, { requestId: 'old-request', callbackUrl })).resolves.toMatchObject({ ok: false });
+    await expect(submit({ sender: ctx.sender }, { requestId, callbackUrl: 'https://evil.test/' })).resolves.toMatchObject({ ok: false });
+    await expect(submit({ sender: { id: 999 } }, { requestId, callbackUrl })).resolves.toMatchObject({ ok: false });
+    await expect(submit({ sender: ctx.sender }, { requestId, callbackUrl })).resolves.toEqual({ ok: true, submitted: true });
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    await expect(submit({ sender: ctx.sender }, { requestId, callbackUrl })).resolves.toMatchObject({ ok: false });
+  });
+
+  test('cancelling ChatGPT rejects its pending manual callback prompt', async () => {
+    const ctx = register();
+    let prompted;
+    const ready = new Promise(resolve => { prompted = resolve; });
+    ctx.providerResolver.loginSubscription.mockImplementation(async (_input, interaction) => {
+      const result = interaction.prompt({ type: 'manual_code', signal: interaction.signal });
+      prompted();
+      await result;
+    });
+    const pending = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION)(
+      { sender: ctx.sender }, { providerId: 'openai-chatgpt', modelId: 'model' });
+    await ready;
+    await ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_CANCEL_LOGIN)({ sender: ctx.sender });
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'AGENT_PROVIDER_AUTH_CANCELLED' } });
   });
 
   test('stops the run and clears its conversation when its chrome renderer is destroyed', async () => {

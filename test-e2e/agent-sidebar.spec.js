@@ -28,6 +28,60 @@ const test = baseTest.extend({
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
+test('ChatGPT browser sign-in supports cancellation and a private callback fallback in both themes', async ({ electronApp, window }, testInfo) => {
+  // Exercise the real IPC/store/UI without opening an external browser or using
+  // real credentials. Native Pi OAuth and refresh are tested at the HTTP boundary.
+  await electronApp.evaluate(({ shell }, root) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const { AgentProviderResolver } = require(root + '/src/main/agent/provider-resolver');
+    shell.openExternal = async () => {};
+    AgentProviderResolver.prototype.loginSubscription = async function(input, interaction) {
+      interaction.notify({ type: 'auth_url', url: 'https://auth.openai.com/api/accounts/authorize?state=test-only' });
+      const callback = await interaction.prompt({ type: 'manual_code', signal: interaction.signal });
+      if (!callback.includes('code=fixture')) throw new Error('Invalid fixture callback');
+      await this.credentials.modify(input.providerId, async () => ({ type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: Date.now() + 3600000, clientId: 'fixture-client' }));
+      this.store.saveSubscription(input);
+      return this.getStatus();
+    };
+  }, repositoryRoot);
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await window.locator('#agent-provider-chatgpt').click();
+  await expect(window.locator('#agent-provider-select')).toHaveValue('openai-chatgpt');
+  await expect(window.locator('#agent-model-select')).toHaveValue('gpt-6.1-sol');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.locator('#agent-setup-view').screenshot({ path: testInfo.outputPath(`chatgpt-${theme}-before.png`) });
+    await window.locator('#agent-provider-login').click();
+    await expect(window.locator('#agent-provider-message')).toContainText('Finish signing in');
+    await expect(window.locator('#agent-auth-code')).toBeHidden();
+    await window.locator('#agent-auth-callback summary').click();
+    await expect(window.locator('#agent-auth-callback-input')).toBeVisible();
+    await expect(window.locator('#agent-auth-callback-input')).toHaveAttribute('type', 'password');
+    await window.locator('#agent-setup-view').screenshot({ path: testInfo.outputPath(`chatgpt-${theme}-callback.png`) });
+    await window.locator('#agent-provider-cancel-login').click();
+    await expect(window.locator('#agent-provider-login')).toBeVisible();
+    await expect(window.locator('#agent-auth-callback')).toBeHidden();
+  }
+  await window.locator('#agent-provider-login').click();
+  await window.locator('#agent-auth-callback summary').click();
+  await window.locator('#agent-auth-callback-input').fill('http://127.0.0.1:1455/auth/callback?code=fixture&state=test&client_id=test');
+  await window.locator('#agent-auth-callback-submit').click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await expect(window.locator('#agent-auth-callback-input')).toHaveValue('');
+  await expect(window.locator('#agent-auth-callback')).toBeHidden();
+  await expect(window.locator('#agent-provider-login')).toBeHidden();
+  window.once('dialog', dialog => dialog.accept());
+  await window.locator('#agent-provider-disconnect').click();
+  await expect(window.locator('#agent-provider-add')).toBeVisible();
+  expect((await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.configured).toBe(false);
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
+  await expect(window.locator('#agent-model-select')).toHaveValue('muse-spark-1.3');
+  await expect(window.locator('#agent-provider-models-list')).toContainText('Muse Spark');
+});
+
 for (const database of ['agent-history.sqlite', 'agent-node-operations.sqlite', 'agent-workspaces.sqlite']) {
   test(`browser starts without resetting unavailable ${database}`, async ({ userDataDir, relaunchApp }) => {
     const databasePath = path.join(userDataDir, database);

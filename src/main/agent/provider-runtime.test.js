@@ -20,7 +20,7 @@ test('custom providers stream tool calls and apply privacy to stream and complet
       } });
       const descriptor = { id: 'test', name: 'Test', tools: true, available: true,
         privacy: 'tee', contextWindow: 32000, maxTokens: 4096 };
-      const catalog = { get: (id) => ['venice', 'near-ai', 'openrouter', 'meta'].includes(id)
+      const catalog = { get: (id) => ['venice', 'near-ai', 'openrouter'].includes(id)
         ? { updatedAt: Date.now(), models: [descriptor] } : { models: [] } };
       const resolver = new AgentProviderResolver({ store, dataDir, catalog });
       let requests = [];
@@ -36,7 +36,7 @@ test('custom providers stream tool calls and apply privacy to stream and complet
       };
       const context = { messages: [{ role: 'user', content: 'Test', timestamp: Date.now() }],
         tools: [{ name: 'inspect', description: 'Inspect', parameters: { type: 'object', properties: { value: { type: 'number' } } } }] };
-      for (const providerId of ['meta', 'venice', 'near-ai', 'openrouter']) {
+      for (const providerId of ['venice', 'near-ai', 'openrouter']) {
         store.saveHosted({ providerId, modelId: 'test', apiKey: 'test-key' });
         store.savePreferences(providerId, { privacyPolicy: providerId === 'openrouter' ? 'zdr' : providerId === 'meta' ? 'standard' : 'tee' });
         const resolved = await resolver.resolveModel();
@@ -94,8 +94,8 @@ test('custom providers stream tool calls and apply privacy to stream and complet
           descriptor.privacy = 'tee';
         }
       }
-      assert.equal(requests.length, 20);
-      process.stdout.write('20 transports and 4 cancellations passed');
+      assert.equal(requests.length, 15);
+      process.stdout.write('15 transports and 3 cancellations passed');
     })().catch((error) => { console.error(error); process.exitCode = 1; });
   `;
   const result = execFileSync(process.execPath, ['-e', script], {
@@ -103,7 +103,105 @@ test('custom providers stream tool calls and apply privacy to stream and complet
     encoding: 'utf8',
     timeout: 30_000,
   });
-  expect(result).toBe('20 transports and 4 cancellations passed');
+  expect(result).toBe('15 transports and 3 cancellations passed');
+}, 35_000);
+
+test('native ChatGPT login, refresh and Meta Responses stay separate from API keys and legacy Codex', () => {
+  const script = `
+    (async () => {
+      const assert = require('assert/strict');
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const { AgentProviderStore } = require('./src/main/agent/provider-store');
+      const { AgentProviderResolver } = require('./src/main/agent/provider-resolver');
+      const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-native-auth-'));
+      const safeStorage = { isEncryptionAvailable: () => true,
+        encryptString: text => Buffer.from(text), decryptString: buffer => buffer.toString() };
+      const store = new AgentProviderStore({ dataDir, safeStorage });
+      const resolver = new AgentProviderResolver({ store, dataDir });
+      store.saveHosted({ providerId: 'openai', modelId: 'gpt-6.1-sol', apiKey: 'sk-api-test' });
+      const credentials = store.createCredentialStore();
+      await credentials.modify('openai-codex', async () => ({ type: 'oauth', access: 'legacy-test', refresh: 'legacy-refresh', expires: Date.now() + 3600000 }));
+      store.saveSubscription({ providerId: 'openai-codex', modelId: 'gpt-6-astra' });
+      const requests = [];
+      globalThis.fetch = async (url, init) => {
+        const body = new URLSearchParams(init.body);
+        requests.push({ url: String(url), body });
+        assert.equal(String(url), 'https://auth.openai.com/api/accounts/oauth/token');
+        return Response.json({ access_token: body.get('grant_type') === 'refresh_token' ? 'refreshed-test' : 'chatgpt-test',
+          refresh_token: 'refresh-test', id_token: 'identity-test', expires_in: 3600,
+          scope: 'openid chatgpt.tokens.use.direct' });
+      };
+      let authorization;
+      await resolver.loginSubscription({ providerId: 'openai-chatgpt', modelId: 'gpt-6.1-sol' }, {
+        signal: new AbortController().signal,
+        notify: event => { if (event.type === 'auth_url') authorization = new URL(event.url); },
+        prompt: async prompt => {
+          assert.equal(prompt.type, 'manual_code');
+          assert.equal(authorization.origin, 'https://auth.openai.com');
+          assert.equal(authorization.searchParams.get('code_challenge_method'), 'S256');
+          return 'http://127.0.0.1:1455/auth/callback?code=test-code&client_id=issued-client&state=' + authorization.searchParams.get('state');
+        },
+      });
+      assert.equal(requests[0].body.get('client_id'), 'issued-client');
+      assert(requests[0].body.get('code_verifier'));
+      const deviceId = store.getDeviceId();
+      assert.equal(authorization.searchParams.get('ext_agent_host_id'), 'urn:uuid:' + deviceId);
+      const reopened = new AgentProviderStore({ dataDir, safeStorage });
+      assert.equal(reopened.getDeviceId(), deviceId);
+      assert.equal((await credentials.read('openai-chatgpt')).clientId, 'issued-client');
+      assert.equal(store.getSelection('openai').apiKey, 'sk-api-test');
+      assert.equal((await credentials.read('openai-codex')).access, 'legacy-test');
+      await credentials.modify('openai-chatgpt', async previous => ({ ...previous, expires: 1 }));
+      const chat = await resolver.resolveModel({ providerId: 'openai-chatgpt' });
+      assert.equal(chat.model.provider, 'openai');
+      assert.equal(chat.connectionProviderId, 'openai-chatgpt');
+      assert.equal(chat.model.api, 'openai-responses');
+      assert.equal((await chat.modelRuntime.getAuth('openai')).auth.apiKey, 'refreshed-test');
+      assert.equal(requests.at(-1).body.get('grant_type'), 'refresh_token');
+      assert.equal(requests.at(-1).body.get('client_id'), 'issued-client');
+      const sent = [];
+      const fetch = async (url, init) => {
+        sent.push({ url: String(url), auth: new Headers(init.headers).get('authorization'), body: JSON.parse(init.body) });
+        const events = [
+          { type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', id: 'fc_test', call_id: 'call_test', name: 'inspect', arguments: '' } },
+          { type: 'response.function_call_arguments.delta', output_index: 0, delta: '{}' },
+          { type: 'response.output_item.done', output_index: 0, item: { type: 'function_call', id: 'fc_test', call_id: 'call_test', name: 'inspect', arguments: '{}' } },
+          { type: 'response.completed', response: { id: 'test', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1 } } },
+        ];
+        return new Response(events.map(event => 'data: ' + JSON.stringify(event) + '\\n\\n').join(''), { headers: { 'content-type': 'text/event-stream' } });
+      };
+      const context = { messages: [{ role: 'user', content: 'Inspect', timestamp: Date.now() }], tools: [
+        { name: 'inspect', description: 'Inspect', parameters: { type: 'object', properties: {} } },
+      ] };
+      const api = await resolver.resolveModel({ providerId: 'openai' });
+      store.saveHosted({ providerId: 'meta', modelId: 'muse-spark-1.3', apiKey: 'meta-test' });
+      const meta = await resolver.resolveModel({ providerId: 'meta' });
+      assert.equal(meta.model.api, 'openai-responses');
+      assert((await resolver.getCatalog()).find(p => p.providerId === 'meta').models.length > 1);
+      for (const resolved of [chat, api, meta]) {
+        const result = await resolved.modelRuntime.completeSimple(resolved.model, context, { fetch, maxRetries: 0 });
+        assert.equal(result.stopReason, 'toolUse', result.errorMessage);
+        assert.equal(result.content[0].name, 'inspect');
+        assert.equal(sent.at(-1).body.tools[0].name, 'inspect');
+      }
+      assert.deepEqual(sent.map(request => [request.url, request.auth]), [
+        ['https://api.openai.com/v1/responses', 'Bearer refreshed-test'],
+        ['https://api.openai.com/v1/responses', 'Bearer sk-api-test'],
+        ['https://api.meta.ai/v1/responses', 'Bearer meta-test'],
+      ]);
+      assert(!JSON.stringify(store.getPublicStatus()).includes('refreshed-test'));
+      store.remove('openai-chatgpt');
+      assert.equal(await credentials.read('openai-chatgpt'), undefined);
+      assert.equal(store.getSelection('openai').apiKey, 'sk-api-test');
+      assert.equal((await credentials.read('openai-codex')).access, 'legacy-test');
+      process.stdout.write('native auth and Responses verified');
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `;
+  expect(execFileSync(process.execPath, ['-e', script], {
+    cwd: path.resolve(__dirname, '../../..'), encoding: 'utf8', timeout: 30_000,
+  })).toBe('native auth and Responses verified');
 }, 35_000);
 
 test('OpenAI catalog additions retain native Responses transports, bundled models and OAuth', () => {

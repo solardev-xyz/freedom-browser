@@ -12,6 +12,7 @@ function createRuntime() {
     ['anthropic/model-a', { provider: 'anthropic', id: 'model-a', name: 'Model A' }],
     ['openai/model-b', { provider: 'openai', id: 'model-b', name: 'Model B' }],
     ['openrouter/model-c', { provider: 'openrouter', id: 'model-c', name: 'Model C' }],
+    ['meta/muse-spark-1.3', { provider: 'meta', id: 'muse-spark-1.3', name: 'Muse Spark 1.3', api: 'openai-responses' }],
     [
       'openai-codex/codex-model',
       { provider: 'openai-codex', id: 'codex-model', name: 'Codex Model', reasoning: true },
@@ -362,7 +363,7 @@ describe('AgentProviderResolver', () => {
     );
     const resolved = await ctx.resolver.resolveModel();
 
-    expect(ctx.runtime.login).toHaveBeenCalledWith('openai-codex', 'oauth', interaction);
+    expect(ctx.runtime.login).toHaveBeenCalledWith('openai-codex', 'oauth', interaction, undefined);
     expect(ctx.store.saveSubscription).toHaveBeenCalledWith({
       providerId: 'openai-codex',
       modelId: 'codex-model',
@@ -469,13 +470,14 @@ describe('AgentProviderResolver', () => {
       'openrouter',
       'venice',
       'near-ai',
+      'openai-chatgpt',
       'openai-codex',
     ]);
     expect(catalog.find((p) => p.providerId === 'anthropic').models).toEqual([
       expect.objectContaining({ id: 'model-a', name: 'Model A', reasoning: false }),
     ]);
     expect(catalog.find((p) => p.providerId === 'meta').models).toEqual([
-      expect.objectContaining({ id: 'muse-spark-1.3', tools: true }),
+      expect.objectContaining({ id: 'muse-spark-1.3', name: 'Muse Spark 1.3' }),
     ]);
     expect(catalog.find((p) => p.providerId === 'venice')).toMatchObject({ canRefresh: true });
     expect(JSON.stringify(await ctx.resolver.getCatalog())).not.toContain('sk-secret');

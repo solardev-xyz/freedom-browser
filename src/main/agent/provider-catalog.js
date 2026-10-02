@@ -69,8 +69,14 @@ const PROVIDER_DEFINITIONS = Object.freeze({
       ['tee', 'TEE models only'],
     ],
   },
-  'openai-codex': {
+  'openai-chatgpt': {
     name: 'OpenAI · ChatGPT',
+    group: 'Subscriptions',
+    authType: 'subscription',
+    privacy: 'Uses Sign in with ChatGPT. Requests go to OpenAI through its Responses API.',
+  },
+  'openai-codex': {
+    name: 'OpenAI · ChatGPT (legacy)',
     baseUrl: 'https://chatgpt.com/backend-api',
     // Catalog compatibility revision from OpenAI's Astra metadata (2026-09-17).
     // This is Codex's version namespace, not Pi's package version; originator stays pi.
@@ -87,7 +93,7 @@ const PROVIDER_DEFINITIONS = Object.freeze({
     privacy: 'Model requests go only to your local Ollama server.',
   },
 });
-const CUSTOM_PROVIDERS = new Set(['meta', 'venice', 'near-ai']);
+const CUSTOM_PROVIDERS = new Set(['venice', 'near-ai']);
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_MODELS = 2000;
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -322,22 +328,6 @@ class ProviderCatalog {
   }
 
   get(providerId) {
-    if (providerId === 'meta')
-      return {
-        models: [
-          {
-            id: 'muse-spark-1.3',
-            name: 'Muse Spark 1.3',
-            contextWindow: 1_048_576,
-            maxTokens: 8192,
-            reasoning: true,
-            vision: true,
-            tools: true,
-            available: true,
-            privacy: 'standard',
-          },
-        ],
-      };
     return this.entries[providerId] || { models: ['openai', 'openai-codex'].includes(providerId) ? [{ ...ASTRA, ...(providerId === 'openai-codex' && { contextWindow: 272_000 }) }] : [] };
   }
 

@@ -8,7 +8,8 @@ import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature
 const PROVIDER_NAMES = Object.freeze({
   anthropic: 'Anthropic',
   openai: 'OpenAI · API',
-  'openai-codex': 'OpenAI · ChatGPT',
+  'openai-chatgpt': 'OpenAI · ChatGPT',
+  'openai-codex': 'OpenAI · ChatGPT (legacy)',
   openrouter: 'OpenRouter',
   xai: 'xAI (Grok)',
   meta: 'Meta (Muse)',
@@ -500,7 +501,7 @@ function providerPrivacyMessage(providerId) {
   if (providerId === 'ollama') {
     return 'Model requests stay on this device and are sent only to your local Ollama server.';
   }
-  if (providerId === 'openai-codex') {
+  if (['openai-chatgpt', 'openai-codex'].includes(providerId)) {
     return 'Requests go to OpenAI through your ChatGPT subscription, including conversation and content Agent reads.';
   }
   const description = providerCatalog.find((provider) => provider.providerId === providerId)?.privacy;
@@ -511,7 +512,7 @@ function providerPrivacyMessage(providerId) {
 function providerAuthType(providerId) {
   return (
     providerCatalog.find((candidate) => candidate.providerId === providerId)?.authType ||
-    (providerId === 'openai-codex' ? 'subscription' : 'api_key')
+    (['openai-chatgpt', 'openai-codex'].includes(providerId) ? 'subscription' : 'api_key')
   );
 }
 
@@ -1406,6 +1407,7 @@ function renderProviderFields() {
   const isSubscription = providerAuthType(providerId) === 'subscription';
   const connection = providerConnection(providerId);
   const isConnectedSubscription = connection?.kind === 'subscription';
+  const canUpgradeChatgpt = providerId === 'openai-codex' && isConnectedSubscription;
   const descriptor = providerCatalog.find((item) => item.providerId === providerId);
   elements.providerHeading.textContent = providerName(providerId);
   elements.providerStatus.textContent = connection ? 'Connected' : 'Not connected';
@@ -1415,12 +1417,16 @@ function renderProviderFields() {
   elements.ollamaFields.classList.toggle('hidden', !isOllama);
   elements.apiKeyField.classList.toggle('hidden', isSubscription || isOllama);
   (connection ? elements.keySettings : elements.connectionFields).prepend(elements.apiKeyField);
-  elements.subscriptionFields.classList.toggle('hidden', !isSubscription || (isConnectedSubscription && !providerLoginPending));
+  elements.subscriptionFields.classList.toggle('hidden', !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt && !providerLoginPending));
   elements.saveProvider.hidden = isSubscription;
   elements.authCode.hidden = !providerLoginPending || !elements.authUserCode.textContent;
-  elements.subscriptionNote.hidden = Boolean(connection);
+  elements.subscriptionNote.hidden = Boolean(connection) && !canUpgradeChatgpt;
+  elements.subscriptionNote.textContent = canUpgradeChatgpt
+    ? 'This connection uses the older Codex login. Sign in with ChatGPT to use the new connection. Your current connection stays available.'
+    : 'Connect with your ChatGPT subscription.';
   elements.loginProvider.hidden =
-    !isSubscription || isConnectedSubscription || providerLoginPending;
+    !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt) || providerLoginPending;
+  elements.loginProvider.textContent = canUpgradeChatgpt ? 'Upgrade ChatGPT sign-in' : 'Continue with ChatGPT';
   elements.cancelProviderLogin.hidden = !isSubscription || !providerLoginPending;
   elements.provider.disabled = providerLoginPending;
   elements.model.disabled = providerLoginPending;
@@ -1449,7 +1455,7 @@ function renderProviderFields() {
     : descriptor?.canRefresh ? 'Refresh to discover current models. No prompts are sent.' : 'Bundled model catalog';
   if (!isOllama) renderModelOptions(providerId);
   else renderProviderModelPreview(providerId);
-  const chatgptConnected = Boolean(providerConnection('openai-codex'));
+  const chatgptConnected = Boolean(providerConnection('openai-chatgpt') || providerConnection('openai-codex'));
   const apiConnected = Boolean(providerConnection('openai'));
   elements.chatgptConnectionState.textContent = chatgptConnected ? 'Connected' : 'Connect';
   elements.apiConnectionState.textContent = apiConnected ? 'Connected' : 'Connect';
@@ -1523,7 +1529,7 @@ function openProviderDetail(providerId, chooseMethod = false) {
 
 function createProviderLogo(providerId) {
   const files = {
-    openai: 'openai.png', 'openai-codex': 'openai.png', anthropic: 'anthropic.png',
+    openai: 'openai.png', 'openai-chatgpt': 'openai.png', 'openai-codex': 'openai.png', anthropic: 'anthropic.png',
     xai: 'xai-light.svg', meta: 'meta.svg', openrouter: 'openrouter.png',
     venice: 'venice.png', 'near-ai': 'near-ai.svg', ollama: 'ollama.png',
   };
@@ -1582,7 +1588,7 @@ function renderProviderOptions() {
     ollama: 'Models running on your computer',
   };
   for (const definition of definitions) {
-    if (definition.providerId === 'openai-codex') continue;
+    if (['openai-chatgpt', 'openai-codex'].includes(definition.providerId)) continue;
     const name = definition.providerId === 'openai' ? 'OpenAI' : definition.name;
     if (!`${name} ${definition.providerId} ${definition.providerId === 'openai' ? 'ChatGPT subscription API' : ''}`.toLowerCase().includes(query)) continue;
     if (!groupRows || group !== definition.group) {
@@ -1608,7 +1614,7 @@ function renderProviderOptions() {
     copy.appendChild(title);
     copy.appendChild(description);
     const connected = Boolean(providerConnection(definition.providerId) ||
-      (definition.providerId === 'openai' && providerConnection('openai-codex')));
+      (definition.providerId === 'openai' && (providerConnection('openai-chatgpt') || providerConnection('openai-codex'))));
     const indicator = document.createElement('span');
     indicator.className = 'agent-provider-indicator';
     indicator.textContent = connected ? '✓' : '›';
@@ -1665,7 +1671,8 @@ function renderModelOptions(providerId) {
   if (options.some((option) => option.value === selectedModel && !option.disabled)) {
     elements.model.value = selectedModel;
   } else {
-    elements.model.value = options.find((option) => !option.disabled)?.value || '';
+    elements.model.value = options.find((option) => option.value === provider?.defaultModelId && !option.disabled)?.value ||
+      options.find((option) => !option.disabled)?.value || '';
   }
   renderModelDetails();
 }
@@ -1986,6 +1993,14 @@ async function saveProvider() {
 }
 
 function handleProviderAuthEvent(event) {
+  if (providerLoginPending && event?.providerId === 'openai-chatgpt' && elements.provider.value === event.providerId) {
+    if (event.type === 'auth_url') setMessage(elements.providerMessage, 'Finish signing in with ChatGPT in your browser');
+    if (event.type === 'manual_code' && typeof event.requestId === 'string') {
+      elements.authCallback.hidden = false;
+      elements.authCallback.dataset.requestId = event.requestId;
+    }
+    return;
+  }
   if (
     !providerLoginPending ||
     event?.type !== 'device_code' ||
@@ -2000,6 +2015,9 @@ function handleProviderAuthEvent(event) {
 }
 
 async function loginSubscriptionProvider() {
+  if (elements.provider.value === 'openai-codex' && providerConnection('openai-codex')) {
+    openProviderDetail('openai-chatgpt');
+  }
   const providerId = elements.provider.value;
   const modelId = elements.model.value;
   if (providerAuthType(providerId) !== 'subscription' || !modelId) {
@@ -2007,6 +2025,9 @@ async function loginSubscriptionProvider() {
     return;
   }
   providerLoginPending = true;
+  elements.authCallback.hidden = true;
+  elements.authCallback.open = false;
+  elements.authCallbackInput.value = '';
   elements.authCode.hidden = true;
   elements.authUserCode.textContent = '';
   setMessage(elements.providerMessage, 'Starting ChatGPT sign-in…');
@@ -2028,6 +2049,9 @@ async function loginSubscriptionProvider() {
     setMessage(elements.providerMessage, 'Could not sign in with ChatGPT', true);
   } finally {
     providerLoginPending = false;
+    elements.authCallback.hidden = true;
+    elements.authCallbackInput.value = '';
+    delete elements.authCallback.dataset.requestId;
     renderProviderFields();
   }
 }
@@ -4510,6 +4534,9 @@ export function initAgentUi(options = {}) {
     loginProvider: byId('agent-provider-login'),
     cancelProviderLogin: byId('agent-provider-cancel-login'),
     authCode: byId('agent-auth-code'),
+    authCallback: byId('agent-auth-callback'),
+    authCallbackInput: byId('agent-auth-callback-input'),
+    authCallbackSubmit: byId('agent-auth-callback-submit'),
     authUserCode: byId('agent-auth-user-code'),
     providerMessage: byId('agent-provider-message'),
     pageContexts: byId('agent-page-contexts'),
@@ -4703,7 +4730,7 @@ export function initAgentUi(options = {}) {
   elements.providerAdd.addEventListener('click', () => { renderProviderOptions(); showProviderScreen('browser'); });
   elements.providerListBack.addEventListener('click', () => showProviderScreen('home'));
   elements.providerDetailBack.addEventListener('click', () => { if (!providerLoginPending) showProviderScreen('home'); });
-  elements.providerChatgpt.addEventListener('click', () => openProviderDetail('openai-codex'));
+  elements.providerChatgpt.addEventListener('click', () => openProviderDetail('openai-chatgpt'));
   elements.providerApi.addEventListener('click', () => openProviderDetail('openai'));
   elements.providerSearch.addEventListener('input', renderProviderOptions);
   elements.model.addEventListener('change', renderModelDetails);
@@ -4715,6 +4742,15 @@ export function initAgentUi(options = {}) {
   elements.providerDisconnect.addEventListener('click', () => removeProviderConnection(elements.provider.value));
   elements.saveProvider.addEventListener('click', saveProvider);
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
+  elements.authCallbackSubmit.addEventListener('click', async () => {
+    if (!providerLoginPending) return;
+    const callbackUrl = elements.authCallbackInput.value.trim();
+    elements.authCallbackInput.value = '';
+    try {
+      const response = await window.electronAPI.submitAgentProviderLogin(elements.authCallback.dataset.requestId, callbackUrl);
+      if (!response?.ok) setMessage(elements.providerMessage, responseMessage(response, 'Could not complete sign-in'), true);
+    } catch { setMessage(elements.providerMessage, 'Could not complete sign-in', true); }
+  });
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
   elements.run.addEventListener('click', event => submitComposer({ allowStop: !(event.detail > 1) }));
   elements.processCompactToggle.addEventListener('click', () => {

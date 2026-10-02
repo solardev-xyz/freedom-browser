@@ -102,6 +102,7 @@ const PROVIDER_LABELS = Object.freeze({
   venice: 'Venice',
   'near-ai': 'NEAR AI',
   'openai-codex': 'ChatGPT (Codex)',
+  'openai-chatgpt': 'OpenAI · ChatGPT',
   ollama: 'Ollama',
 });
 
@@ -1565,10 +1566,10 @@ class FreedomAgentService {
       subagentAbortController: new AbortController(),
       delegationTool: existingConversation?.delegationTool,
       finished: false,
-      providerId: (needsRuntime ? options.model?.provider : existingConversation?.providerId) || '',
+      providerId: (needsRuntime ? options.connectionProviderId || options.model?.provider : existingConversation?.providerId) || '',
       providerLabel:
         (!needsRuntime && existingConversation?.providerLabel) ||
-        PROVIDER_LABELS[options.model?.provider] ||
+        PROVIDER_LABELS[options.connectionProviderId || options.model?.provider] ||
         options.model?.provider ||
         'the selected model provider',
       modelId: (needsRuntime ? options.model?.id : existingConversation?.modelId) || '',
@@ -1871,7 +1872,7 @@ class FreedomAgentService {
             conversationId: conversation.conversationId,
             title: conversation.title,
             approvalMode,
-            providerId: options.model?.provider,
+            providerId: run.providerId,
             modelId: options.model?.id,
             thinkingLevel: options.thinkingLevel,
             createdAt: run.startedAt,

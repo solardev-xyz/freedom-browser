@@ -100,6 +100,9 @@ function createAgentElements() {
     'agent-provider-save',
     'agent-provider-login',
     'agent-provider-cancel-login',
+    'agent-auth-callback',
+    'agent-auth-callback-input',
+    'agent-auth-callback-submit',
     'agent-auth-code',
     'agent-auth-user-code',
     'agent-provider-message',
@@ -316,11 +319,12 @@ async function loadAgentUi(options = {}) {
           models: [{ id: 'gpt-4.1-mini', name: 'GPT 4.1 mini' }],
         },
         {
-          providerId: 'openai-codex',
-          name: 'ChatGPT (Codex)',
+          providerId: 'openai-chatgpt',
+          name: 'OpenAI · ChatGPT',
           authType: 'subscription',
           models: [{ id: 'codex-model', name: 'Codex Model' }],
         },
+        { providerId: 'openai-codex', name: 'OpenAI · ChatGPT (legacy)', authType: 'subscription', models: [{ id: 'codex-model', name: 'Codex Model' }] },
       ],
     }),
     configureHostedAgentProvider: jest.fn().mockResolvedValue({
@@ -1294,7 +1298,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-provider-connection-fields'].hidden).toBe(true);
     ctx.elements['agent-api-key'].value = 'draft-key';
     ctx.elements['agent-provider-chatgpt'].dispatch('click');
-    expect(ctx.elements['agent-provider-select'].value).toBe('openai-codex');
+    expect(ctx.elements['agent-provider-select'].value).toBe('openai-chatgpt');
     expect(ctx.elements['agent-api-key'].value).toBe('');
     expect(ctx.elements['agent-provider-methods'].hidden).toBe(true);
     expect(ctx.elements['agent-provider-login'].hidden).toBe(false);
@@ -4356,7 +4360,8 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-provider-message'].textContent).toBe(
       'ChatGPT connected'
     );
-    expect(ctx.elements['agent-provider-login'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-login'].textContent).toBe('Upgrade ChatGPT sign-in');
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(false);
   });
 
   test('never initializes provider or run IPC in a private window', async () => {

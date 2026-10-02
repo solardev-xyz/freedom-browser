@@ -40,7 +40,15 @@ function providerError(code, message) {
   return error;
 }
 
-function normalizeSubscriptionAuthEvent(event) {
+function normalizeSubscriptionAuthEvent(event, providerId = 'openai-codex') {
+  if (providerId === 'openai-chatgpt' && event?.type === 'auth_url') {
+    try {
+      const url = new URL(event.url);
+      if (url.origin !== 'https://auth.openai.com' || url.pathname !== '/api/accounts/authorize' || url.username || url.password || url.hash) return null;
+      return { type: 'auth_url', providerId, url: url.href };
+    } catch { return null; }
+  }
+  if (providerId !== 'openai-codex') return null;
   if (event?.type !== 'device_code') return null;
   if (
     typeof event.userCode !== 'string' ||
@@ -449,6 +457,7 @@ function registerFreedomAgentIpc(options = {}) {
             createWorkspacePage: (url) => createAutomationPageForHost(pendingOwner.sender, url),
             model: resolved.model,
             modelRuntime: resolved.modelRuntime,
+            ...(resolved.connectionProviderId && { connectionProviderId: resolved.connectionProviderId }),
             thinkingLevel: resolved.thinkingLevel,
           }),
         });
@@ -1077,16 +1086,35 @@ function registerFreedomAgentIpc(options = {}) {
       }
       const controller = new AbortController();
       const pending = {
+        requestId: require('crypto').randomUUID(),
         sender: event.sender,
         controller,
         onDestroyed: () => controller.abort(),
       };
+      const loginTimeout = setTimeout(() => controller.abort(), 5 * 60_000);
       providerLogin = pending;
       event.sender.once?.('destroyed', pending.onDestroyed);
       try {
         const status = await providerResolver.loginSubscription(payload, {
           signal: controller.signal,
           prompt: async (prompt) => {
+            if (payload?.providerId === 'openai-chatgpt' && prompt?.type === 'manual_code') {
+              const signal = AbortSignal.any([controller.signal, ...(prompt.signal ? [prompt.signal] : [])]);
+              signal.throwIfAborted();
+              return new Promise((resolve, reject) => {
+                const finish = (error, value) => {
+                  signal.removeEventListener('abort', abort);
+                  pending.submit = null;
+                  if (error) reject(error); else resolve(value);
+                };
+                const abort = () => finish(providerError('AGENT_PROVIDER_AUTH_CANCELLED', 'Provider sign-in was cancelled'));
+                pending.submit = value => finish(null, value);
+                signal.addEventListener('abort', abort, { once: true });
+                pending.sender.send(IPC.AGENT_PROVIDER_AUTH_EVENT, {
+                  type: 'manual_code', providerId: 'openai-chatgpt', requestId: pending.requestId,
+                });
+              });
+            }
             if (
               prompt?.type === 'select' &&
               prompt.options?.some((option) => option?.id === 'device_code')
@@ -1099,11 +1127,15 @@ function registerFreedomAgentIpc(options = {}) {
             );
           },
           notify: (authEvent) => {
-            const normalized = normalizeSubscriptionAuthEvent(authEvent);
+            const normalized = normalizeSubscriptionAuthEvent(authEvent, payload?.providerId);
             if (!normalized || controller.signal.aborted) return;
             try {
-              pending.sender.send(IPC.AGENT_PROVIDER_AUTH_EVENT, normalized);
-              Promise.resolve(openExternal(normalized.verificationUri)).catch(() => {});
+              // Authorization URLs stay in main; they contain per-login state.
+              pending.sender.send(IPC.AGENT_PROVIDER_AUTH_EVENT, normalized.type === 'auth_url'
+                ? { type: 'auth_url', providerId: normalized.providerId } : normalized);
+              Promise.resolve(openExternal(normalized.url || normalized.verificationUri)).catch(() => {
+                controller.abort();
+              });
             } catch {
               controller.abort();
             }
@@ -1116,9 +1148,27 @@ function registerFreedomAgentIpc(options = {}) {
         }
         throw error;
       } finally {
+        clearTimeout(loginTimeout);
         pending.sender.off?.('destroyed', pending.onDestroyed);
         if (providerLogin === pending) providerLogin = null;
       }
+    });
+  const handleSubmitProviderLogin = (event, payload) =>
+    handleProviderRequest(event, () => {
+      if (!providerLogin || providerLogin.sender !== event.sender ||
+          payload?.requestId !== providerLogin.requestId || !providerLogin.submit) {
+        throw providerError('AGENT_PROVIDER_AUTH_CANCELLED', 'This sign-in is no longer waiting for a callback');
+      }
+      let url;
+      try {
+        if (typeof payload.callbackUrl !== 'string' || payload.callbackUrl.length > 16384) throw new Error();
+        url = new URL(payload.callbackUrl);
+      } catch { throw providerError('AGENT_PROVIDER_INVALID', 'Paste the complete sign-in callback URL'); }
+      if (url.origin !== 'http://127.0.0.1:1455' || url.pathname !== '/auth/callback' || url.username || url.password || url.hash) {
+        throw providerError('AGENT_PROVIDER_INVALID', 'Paste the complete sign-in callback URL');
+      }
+      providerLogin.submit(url.href);
+      return { submitted: true };
     });
   const handleCancelProviderLogin = (event) =>
     handleProviderRequest(event, () => {
@@ -1338,6 +1388,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA, handleConfigureOllama);
   ipcMain.handle(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION, handleLoginSubscription);
   ipcMain.handle(IPC.AGENT_PROVIDER_CANCEL_LOGIN, handleCancelProviderLogin);
+  ipcMain.handle(IPC.AGENT_PROVIDER_SUBMIT_LOGIN, handleSubmitProviderLogin);
   ipcMain.handle(IPC.AGENT_PROVIDER_SELECT_MODEL, handleSelectModel);
   ipcMain.handle(IPC.AGENT_PROVIDER_REMOVE, handleRemoveProvider);
   ipcMain.handle(IPC.AGENT_PROVIDER_CLEAR, handleClearProvider);
@@ -1380,6 +1431,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CANCEL_LOGIN);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_SUBMIT_LOGIN);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_SELECT_MODEL);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_REMOVE);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CLEAR);
