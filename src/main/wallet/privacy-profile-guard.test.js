@@ -44,18 +44,61 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-test.each(['wallet-ppv2-experiment', 'wallet-ppv2-relays', 'wallet-private-submissions'])(
-  'missing initialized %s fails across a fresh scope',
-  async (name) => {
-    await store(name).set('record', 'pending');
-    const directory = path.join(profile.userDataDir, name),
-      file = path.join(directory, fs.readdirSync(directory)[0]);
-    fs.renameSync(file, `${file}.preserved`);
-    scope.close();
-    bind();
-    expect(guard).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_STORE_MISSING' }));
-  }
-);
+test.each([
+  'wallet-ppv2-experiment',
+  'wallet-ppv2-relays',
+  'wallet-private-submissions',
+  'wallet-railgun-accounts',
+])('missing initialized %s fails across a fresh scope', async (name) => {
+  await store(name).set('record', 'pending');
+  const directory = path.join(profile.userDataDir, name),
+    file = path.join(directory, fs.readdirSync(directory)[0]);
+  fs.renameSync(file, `${file}.preserved`);
+  scope.close();
+  bind();
+  expect(guard).toThrow(expect.objectContaining({ code: 'PRIVATE_PROFILE_STORE_MISSING' }));
+});
+
+test.each([
+  'source.sqlite',
+  'public.sqlite',
+  'a'.repeat(64) + '.json',
+  'railgun-cache-' + 'b'.repeat(64) + '/wallet.sqlite',
+  'railgun-cache-' + 'b'.repeat(64) + '/' + 'c'.repeat(64) + '.json',
+])('Railgun nested inventory retains and requires %s', (name) => {
+  const inventory = guard(),
+    file = path.join(
+      profile.userDataDir,
+      'wallet-railgun-accounts',
+      'account-' + 'd'.repeat(64),
+      name
+    );
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, 'authenticated-by-owner-fixture');
+  inventory.remember(file);
+  inventory.assert(file);
+  fs.renameSync(file, file + '.preserved');
+  expect(() => inventory.assert(file)).toThrow(
+    expect.objectContaining({ code: 'PRIVATE_PROFILE_STORE_MISSING' })
+  );
+});
+test.each([
+  'private.key',
+  'wallet.sqlite',
+  'source.sqlite-wal',
+  'railgun-cache-' + 'b'.repeat(64) + '/other.sqlite',
+  'railgun-cache-short/wallet.sqlite',
+  'nested/' + 'c'.repeat(64) + '.json',
+])('Railgun inventory refuses unrelated nested path %s', (name) => {
+  const inventory = guard(),
+    file = path.join(
+      profile.userDataDir,
+      'wallet-railgun-accounts',
+      'account-' + 'd'.repeat(64),
+      name
+    );
+  expect(() => inventory.assert(file)).toThrow();
+});
 
 test('a moved profile is recognized without interpreting its journals as empty', async () => {
   await store('wallet-ppv2-relays').set('record', 'pending');

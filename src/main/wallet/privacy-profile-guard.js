@@ -6,7 +6,16 @@ const fs = require('fs');
 const path = require('path');
 const { createHash, createHmac, randomBytes, timingSafeEqual } = require('crypto');
 const { getPrivacyContext, privacyError } = require('../networks/privacy-context');
-const STORES = ['wallet-ppv2-experiment', 'wallet-ppv2-relays', 'wallet-private-submissions'];
+const STORES = [
+  'wallet-ppv2-experiment',
+  'wallet-ppv2-relays',
+  'wallet-private-submissions',
+  'wallet-railgun-accounts',
+];
+const RAILGUN_FILE = new RegExp(
+  '^wallet-railgun-accounts/account-[0-9a-f]{64}/(?:[0-9a-f]{64}\\.json|' +
+    '(?:source|public)\\.sqlite|railgun-cache-[0-9a-f]{64}/(?:wallet\\.sqlite|[0-9a-f]{64}\\.json))$'
+);
 
 function createPrivacyProfileGuard({ handle, profile, seed }) {
   const context = getPrivacyContext(handle);
@@ -25,7 +34,8 @@ function createPrivacyProfileGuard({ handle, profile, seed }) {
     privacyError(code, 'Privacy inventory requires recovery');
   const validName = (name) =>
     typeof name === 'string' &&
-    STORES.some((dir) => new RegExp(`^${dir}/[0-9a-f]{64}\\.json$`).test(name));
+    (STORES.some((dir) => new RegExp(`^${dir}/[0-9a-f]{64}\\.json$`).test(name)) ||
+      RAILGUN_FILE.test(name));
   const mac = (state) => createHmac('sha256', key).update(JSON.stringify(state)).digest();
   function write(state) {
     getPrivacyContext(handle);

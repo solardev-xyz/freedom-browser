@@ -1,0 +1,191 @@
+/** Real vault/engine identity and durable enrollment; public disposable keys only. */
+const { app } = require('electron');
+const fs = require('fs'),
+  path = require('path'),
+  assert = require('assert/strict');
+const { createHash } = require('crypto');
+const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
+let lock;
+async function main() {
+  const [archive, output] = process.argv.slice(2);
+  assert.ok(path.isAbsolute(archive) && path.isAbsolute(output) && !fs.existsSync(output));
+  fs.mkdirSync(output, { mode: 0o700 });
+  const profile = require('../src/main/profile-resolver').initializeProfile(app, {
+    env: { FREEDOM_TEST_USER_DATA: path.join(output, 'profile') },
+  });
+  lock = acquireProfileLock(profile, { onCompromised: () => app.exit(1) });
+  app.dock?.hide();
+  await app.whenReady();
+  const vault = require('../src/main/identity/vault'),
+    { openRailgunIdentity } = require('../src/main/wallet/railgun-identity'),
+    { openRailgunAccountEnrollment } = require('../src/main/wallet/railgun-account-enrollment'),
+    { startRailgunSessionWorker } = require('../src/main/wallet/railgun-session-worker');
+  const sources = [
+    'scripts/qualify-railgun-enrollment.js',
+    'src/main/wallet/railgun-account-enrollment.js',
+    'src/main/wallet/privacy-profile-guard.js',
+    'src/main/wallet/privacy-storage.js',
+    'src/main/wallet/railgun-wallet-catalog.js',
+    'src/main/wallet/railgun-identity.js',
+    'src/main/wallet/railgun-identity-job.js',
+    'src/main/wallet/railgun-engine-runtime.js',
+    'src/main/wallet/railgun-engine-manifest.json',
+    'src/main/identity/privacy-keys.js',
+    'src/main/identity/railgun-key-derivation.js',
+    'src/main/wallet/privacy-session.js',
+    'src/main/networks/privacy-context.js',
+    'src/main/wallet/railgun-process.js',
+    'src/main/wallet/railgun-process-entry.js',
+    'src/main/wallet/railgun-process-guards.js',
+    'src/main/wallet/railgun-session-worker.js',
+    'src/main/wallet/railgun-session-worker-entry.js',
+    'src/main/wallet/railgun-session.js',
+    'src/main/wallet/railgun-paged-store.js',
+  ];
+  const hashes = () =>
+    Object.fromEntries(
+      sources.map((p) => [
+        p,
+        createHash('sha256')
+          .update(fs.readFileSync(path.join(__dirname, '..', p)))
+          .digest('hex'),
+      ])
+    );
+  const sourceSha256 = hashes();
+  const password = 'public-fixture-password-not-a-user-credential',
+    phrase =
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    vaultDirectory = path.join(profile.userDataDir, 'identity');
+  let identity, enrollment, worker;
+  const storeIds = {};
+  async function store(purpose, filename, key, create) {
+    const entry = startRailgunSessionWorker({
+      handle: enrollment.getContext('engine'),
+      storage: { format: 'paged-v2', filename, key, binding: enrollment.binding, create },
+      createProvider: ({ signal }) => ({
+        signal,
+        request: async () => {
+          throw Error('No RPC');
+        },
+      }),
+      onClose: () => {},
+    });
+    worker = entry;
+    try {
+      await entry.ready;
+      const observed = await entry.inspectStoreIdentity();
+      entry.assertFresh(observed);
+      assert.equal(observed.format, 'paged-v2');
+      if (create) storeIds[purpose] = observed.instanceId;
+      else assert.equal(observed.instanceId, storeIds[purpose]);
+      enrollment.profileGuard.remember(filename);
+    } finally {
+      entry.close();
+      await entry.closed;
+      worker = null;
+    }
+  }
+  try {
+    await vault.importVault(vaultDirectory, password, phrase);
+    await vault.unlockVault(vaultDirectory, password, 0);
+    identity = await openRailgunIdentity({ archive });
+    enrollment = await openRailgunAccountEnrollment({ identity, create: true });
+    const descriptor = identity.descriptor,
+      directory = enrollment.directory,
+      candidate = await enrollment.catalog.begin('2'.repeat(64));
+    let borrowed;
+    for (const create of [true, false]) {
+      await enrollment.withPublicKeys(async (keys) => {
+        borrowed = Object.values(keys);
+        await store('source', path.join(directory, 'source.sqlite'), keys['source-ledger'], create);
+        await store('public', path.join(directory, 'public.sqlite'), keys['public-store'], create);
+      });
+      assert.ok(borrowed.every((k) => k.every((v) => v === 0)));
+      await enrollment.withGenerationKeys(candidate.id, async (keys) => {
+        borrowed = Object.values(keys);
+        await store(
+          'wallet',
+          path.join(candidate.directory, 'wallet.sqlite'),
+          keys['wallet-store'],
+          create
+        );
+      });
+      assert.ok(borrowed.every((k) => k.every((v) => v === 0)));
+      if (create) {
+        enrollment.close();
+        identity.close();
+        vault.lockVault();
+        await vault.unlockVault(vaultDirectory, password, 0);
+        identity = await openRailgunIdentity({ archive });
+        assert.deepEqual(identity.descriptor, descriptor);
+        enrollment = await openRailgunAccountEnrollment({ identity });
+        assert.equal(enrollment.directory, directory);
+        assert.equal((await enrollment.catalog.resume()).id, candidate.id);
+      }
+    }
+    await assert.rejects(
+      enrollment.withPublicKeys(async (keys) => {
+        borrowed = Object.values(keys);
+        vault.lockVault();
+        assert.ok(borrowed.every((k) => k.every((v) => v === 0)));
+      })
+    );
+    assert.equal(enrollment.signal.aborted, true);
+    await vault.unlockVault(vaultDirectory, password, 0);
+    identity = await openRailgunIdentity({ archive });
+    const filename = path.join(candidate.directory, 'wallet.sqlite');
+    fs.renameSync(filename, filename + '.preserved');
+    await assert.rejects(openRailgunAccountEnrollment({ identity }), {
+      code: 'PRIVATE_PROFILE_STORE_MISSING',
+    });
+    await assert.rejects(openRailgunAccountEnrollment({ identity, create: true }), {
+      code: 'PRIVATE_PROFILE_STORE_MISSING',
+    });
+    assert.equal(fs.existsSync(filename), false);
+    assert.deepEqual(hashes(), sourceSha256);
+    const inventory = JSON.parse(
+      fs.readFileSync(path.join(profile.userDataDir, 'wallet-privacy-inventory.json'))
+    );
+    assert.equal(inventory.state.files.length, 5);
+    fs.writeFileSync(
+      path.join(output, 'report.json'),
+      JSON.stringify(
+        {
+          observedAt: new Date().toISOString(),
+          sourceSha256,
+          publicVaultFixture: true,
+          identityMatchesAfterUnlock: true,
+          encryptedEnrollmentAndCatalog: true,
+          registeredFiles: inventory.state.files.length,
+          realPagedStoresCreatedAndReopened: Object.keys(storeIds),
+          distinctStoreIds: new Set(Object.values(storeIds)).size === 3,
+          borrowedKeysWipedAfterUseAndLock: true,
+          missingEnrolledStoreRefused: true,
+          scansPerformed: false,
+          spendabilityGranted: false,
+          submissions: 0,
+        },
+        null,
+        2
+      ) + '\n',
+      { mode: 0o600 }
+    );
+  } finally {
+    worker?.close();
+    if (worker) await worker.closed;
+    enrollment?.close();
+    identity?.close();
+    vault.lockVault();
+  }
+}
+main().then(
+  () => {
+    releaseProfileLock(lock);
+    app.exit(0);
+  },
+  (error) => {
+    console.error(error.stack);
+    releaseProfileLock(lock);
+    app.exit(1);
+  }
+);

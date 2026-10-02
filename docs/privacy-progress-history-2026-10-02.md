@@ -38,3 +38,19 @@ The replaced source/coordinator, Node replay, earlier main/node-refresh and CI r
 Earlier checkpoints below remain historical evidence; linked documents record exact source pins and remaining gates.
 
 ---
+
+## October 2 continuation: durable Railgun wallet recovery and real offline proofs
+
+[Wallet checkpoints](https://github.com/solardev-xyz/freedom-browser/blob/a12418c58fd3bf24426fa8d2066ffc09133060b2/docs/railgun-wallet-checkpoints-2026-10-02.md) now bind guarded scan receipts, encrypted cumulative coverage and a fresh whole-cache digest to current public history. Thirteen actual Electron cases cover scan/restore, interrupted derived writes, coverage-before-journal recovery, stale/replayed evidence refusal, same-content snapshot renewal and cache-generation publication after old-worker exit. Full archived scans/restores cover all 10,194 commitments; the known public vector retains 70 separately classified unrecoverable-sent entries. The encrypted catalog is policy-aware, keeps at most eight generations including abandoned candidates, and does not automatically delete them. Profile erasure/key rotation remains open. `walletCoverageGranted` in these development reports means `wallet-scanned-unverified`, not product balances, POI or spendability.
+
+[Artifacts and proofs](https://github.com/solardev-xyz/freedom-browser/blob/10ef82aab4a2c160e1d3ecc9072af0239f8e921e/docs/railgun-artifacts-proofs-2026-10-02.md) pin five transaction shapes (1×1, 1×2, 1×3, 2×2, 2×3) and POI3×3. All vkeys are locally derived from upstream-pinned zkeys; five transaction keys match a fresh two-RPC contract capture at block11,831,583. That is newer than the replay/governance boundary11,829,346; the three earlier keys match, but the intervening governance range is not yet replayed. All six guarded Electron proof jobs verify and reject changed public roots; transaction jobs also reject changed bound parameters. Fixtures use public/synthetic inputs, zero egress attempts and zero submissions. POI service/root eligibility is not established. The proof experiment temporarily reuses the authenticated existing serial prover archive; local vkey derivation uses the ignored pinned PPv2 build-input tree. Neither installs a dependency nor approves production distribution.
+
+Main834409b1 is merged; all pinned nodes were explicitly refreshed again (Ant0.5.54, freedom-ipfs0.4.3, libradicle0.7.1, Myotis0.1.12 plus supervisor, Arti2.6.0). Binary checks and main's onboarding E2E pass. Lint, eight focused artifact/loader tests and six real proof jobs pass; merged-tree full regression: 7,753 passed /33 skipped across365 passing suites, plus six isolated OpenLV checks. Claude reviewed code and evidence, which is engineering review rather than a security audit. Checkpoint a12418c5 CI failed on rerun in Ant E2E and macOS onboarding-identity. Main’s onboarding fix is now merged; Ant E2E timed out waiting for a play-shaped element on meinhard.eth; onboarding timed out waiting for the welcome step. These failures are not labelled flakes or attributed to an external cause. No merged-head CI success is asserted here.
+
+Next: current-Kohaku viewing reads and account enrollment; live acquisition; independent Railgun prover packaging; TXID/POI and relay service qualification; independently checked intent-bound proof/signing, reservations/journals and funded shield/private-transfer/unshield recovery. No Railgun funds have moved. Product UI and production activation remain unfinished.
+
+Previous coordination updates, including their exact pins, test/CI status and superseded next steps, are retained in the [progress history](https://github.com/solardev-xyz/freedom-browser/blob/10ef82aab4a2c160e1d3ecc9072af0239f8e921e/docs/privacy-progress-history-2026-10-02.md). Earlier checkpoints below are historical evidence.
+
+---
+
+#
