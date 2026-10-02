@@ -1,5 +1,7 @@
 # Freedom Browser — Privacy Roadmap (synthesis)
 
+**October 2 single-thread verifier continuation:** [The fresh public-proof verifier](../docs/ppv2-single-thread-verification-2026-10-02.md) uses a narrowly pinned, locally modified snarkjs build, refuses worker creation and requires an empty shared curve cache. The accepted runtime is `eacc3247…`; earlier runtime pins below are historical. Deposit’s original SDK-side verification remains unchanged, so broader proving/core-count/platform qualification is still open.
+
 **October 2 egress qualification:** [Main-process tripwires](../docs/ppv2-main-egress-2026-10-02.md) observe zero direct attempts in eight fresh instances spanning native/token controlled lifecycles, with positive refusal canaries for all 92 hooks. The main-only fixture suspends unrelated chrome polling and retains denial through shutdown. This is bounded JavaScript/Electron API evidence, not native/renderer/OS-sandbox or exhaustive SDK coverage.
 
 **October 2 Railgun groundwork:** [Current-engine adapter plan](../docs/railgun-adapter-plan-2026-10-02.md) records the Kohaku stub, official engine and POI findings. Restricted viewing-key derivation and a host-only ethers provider bridge are implemented and tested; the real engine, persistent engine storage and Kohaku protocol adapter are still unimplemented. The isolated engine dependency fixture awaits approval; no app dependency downgrade is required.

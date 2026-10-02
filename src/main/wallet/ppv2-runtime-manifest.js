@@ -5,6 +5,6 @@
  */
 module.exports = Object.freeze({
   compatibilityPatchSha256: '411957dbb894d0fcb499933a3fb54367befb7fd474bac6098ac07afa32f0133e',
-  size: 47806767,
-  sha256: 'a7327fce6acde362b05e439c0db579c06fdc87272feaaa21046b0b34dd182f34',
+  size: 47806955,
+  sha256: 'eacc32476b2fc3be0344e1c9b341a9964e405f59703604385b29307350bcca7a',
 });

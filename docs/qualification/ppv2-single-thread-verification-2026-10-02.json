@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 1,
+  "baseRevision": "6710830d12ed575c2cdbd9d05077a0d786ecbbb3",
+  "recipeRevision": "e673d45abbe5e983d41a60bb9b6d4b039c75bea8",
+  "sourceSha256": {
+    "scripts/check-ppv2-rebuild.js": "3c31557790d2421573de297c4eb9b8f3d9864dbcdc484a317348733f3bfff428",
+    "src/main/wallet/ppv2-proof-verify-job.js": "3407ed554d1486c4624a34215c9a28bb123d5e29af0c7a92a60739712564d554",
+    "src/main/wallet/ppv2-runtime-manifest.js": "9717899ed7f2f0f787d2c9500b2a06d33f46003ef1128e07b6310577360269c7",
+    "test-e2e/ppv2-process.spec.js": "68f34f39a85d25e1af5badc8628aee5c719731510026a3ee55ef2aa7ebf81062"
+  },
+  "fullRunTestSourceSha256": "ed113516f9ce0ca745e20f27aa341f0089380cff52eff9f1a6cc2263a6b581f2",
+  "unit": {
+    "passed": 6894,
+    "skipped": 33,
+    "passingSuites": 329,
+    "skippedSuites": 5,
+    "openlvSeparatelyPassed": 6
+  },
+  "sdk": {
+    "startTime": "2026-10-01T23:43:22.383Z",
+    "duration": 598542.331,
+    "expected": 22,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "reportOnlyRerun": {
+    "startTime": "2026-10-01T23:54:17.218Z",
+    "duration": 9972.336,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "postRunChange": "Only two literal report flags were renamed to enforcedByJobGuards; proof generation, verification and assertions are unchanged. The affected case passed again.",
+  "rebuild": {
+    "schemaVersion": 1,
+    "archiveSha256": "eacc32476b2fc3be0344e1c9b341a9964e405f59703604385b29307350bcca7a",
+    "archiveBytes": 47806955,
+    "recipeRevision": "e673d45abbe5e983d41a60bb9b6d4b039c75bea8",
+    "independentArchivesIdentical": true,
+    "normalizedHistoricalBundlesIdentical": ["sdk.cjs", "abis.cjs", "http.cjs"],
+    "pluginHistoricalDifference": "Exactly the reviewed inspectNullifier helper and two export entries",
+    "serialProverHistoricalDifference": "Exactly the Groth16 curve-construction singleThread option; PLONK remains unchanged",
+    "historicalArtifactWorkerMetadataFilesIdentical": 20,
+    "inputs": 2173,
+    "packages": 103,
+    "unattributedInputs": 21,
+    "packagesMissingLicenseText": [
+      {
+        "name": "@ethersproject/logger",
+        "version": "5.8.0",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "@iden3/bigarray",
+        "version": "0.0.2",
+        "declaredLicense": "GPL-3.0"
+      },
+      {
+        "name": "@iden3/binfileutils",
+        "version": "0.0.12",
+        "declaredLicense": "GPL-3.0"
+      },
+      {
+        "name": "blake-hash",
+        "version": "2.0.0",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "brorand",
+        "version": "1.1.0",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "circomlibjs",
+        "version": "0.1.7",
+        "declaredLicense": "GPL-3.0"
+      },
+      {
+        "name": "elliptic",
+        "version": "6.6.1",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "hash.js",
+        "version": "1.1.7",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "hmac-drbg",
+        "version": "1.0.1",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "minimalistic-crypto-utils",
+        "version": "1.0.1",
+        "declaredLicense": "MIT"
+      },
+      {
+        "name": "@privacy-pools-v2/sdk",
+        "version": "0.0.0",
+        "declaredLicense": "MIT"
+      }
+    ],
+    "latentLoads": {
+      "sdk.cjs": {
+        "newWorkerExpressions": 4,
+        "workerThreadsRequires": 2,
+        "nativeLoaderReferences": 10,
+        "exhaustiveEgressQualification": false
+      },
+      "serial-prover.cjs": {
+        "newWorkerExpressions": 2,
+        "workerThreadsRequires": 0,
+        "nativeLoaderReferences": 0,
+        "exhaustiveEgressQualification": false
+      }
+    },
+    "tests": {
+      "startTime": "2026-10-01T23:43:22.383Z",
+      "duration": 598542.331,
+      "expected": 22,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "productionDistributionApproved": false
+  },
+  "fullRunVerifierObservations": {
+    "checks": [
+      {
+        "circuit": "deposit",
+        "name": "valid",
+        "verified": true,
+        "peakRssBytes": 90210304
+      },
+      {
+        "circuit": "deposit",
+        "name": "changed-signal",
+        "verified": false,
+        "peakRssBytes": 90619904
+      },
+      {
+        "circuit": "ragequit",
+        "name": "valid",
+        "verified": true,
+        "peakRssBytes": 89915392
+      },
+      {
+        "circuit": "ragequit",
+        "name": "changed-signal",
+        "verified": false,
+        "peakRssBytes": 89735168
+      },
+      {
+        "circuit": "transact_1x1",
+        "name": "valid",
+        "verified": true,
+        "peakRssBytes": 89751552
+      },
+      {
+        "circuit": "transact_1x1",
+        "name": "changed-signal",
+        "verified": false,
+        "peakRssBytes": 89751552
+      }
+    ],
+    "logicalCores": 14,
+    "enforcedByJobGuards": ["worker-creation-refused", "shared-curve-cache-empty"]
+  },
+  "previousFreshVerifierSampledPeakRssBytes": 226181120,
+  "comparisonLimit": "Same 14-core darwin-arm64 host; individual sampled working-set observations, not a statistical benchmark or cross-platform memory bound.",
+  "depositSdkSideVerificationUnchanged": true,
+  "locallyModifiedGPLBuildOutput": true,
+  "lintPassed": true,
+  "claudeReview": "Pinned-source adaptation, curve lifetime, worker/cache guards, exact generated delta and actual-proof controls reviewed without blockers; report fields clarified as enforced conditions.",
+  "liveTransactionsSubmitted": false,
+  "fundedProfileChanged": false,
+  "productionEnabled": false
+}

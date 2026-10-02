@@ -23,11 +23,22 @@ exports.run = async function run(input) {
   )
     throw new Error('Invalid public proof verification input');
   require('./ppv2-runtime').assertPPv2RuntimeEntries(input);
+  // Verification has its own pinned single-thread curve path. Refuse worker
+  // creation before loading that implementation, even if upstream regresses.
+  require('worker_threads').Worker = class {
+    constructor() {
+      throw new Error('Public verification cannot create workers');
+    }
+  };
+  require('module').syncBuiltinESMExports();
   const verifier = require(input.proverEntry);
   const verified = await verifier.verify(
     JSON.parse(Buffer.from(input.vkey).toString('utf8')),
     input.proof.publicSignals,
     input.proof.proof
   );
+  // The module initializes this cache to null; only its multi-thread path
+  // populates it with a curve. A fresh verification must leave it empty.
+  if (globalThis.curve_bn128 != null) throw new Error('Unexpected shared verification curve');
   return { verified: verified === true };
 };

@@ -1,6 +1,8 @@
 # PPv2 deterministic development runtime
 
-**October 2 superseding pin:** the [selected-note binding and fresh-verification continuation](ppv2-full-value-verification-2026-10-02.md) adds the authenticated `inspectNullifier` helper. The accepted archive is now `a7327fce6acde362b05e439c0db579c06fdc87272feaaa21046b0b34dd182f34`, 47,806,767 bytes, recipe `d8fe7b706a52e42cf4761cd9d16958f49603e35f`. The checker accepts only the exact reviewed plugin additions; dependency inputs and circuit artifacts are unchanged. The build results below remain historical evidence for `fa71e37d…`.
+**October 2 single-thread continuation:** the [fresh-verifier update](ppv2-single-thread-verification-2026-10-02.md) supersedes the earlier pins below with `eacc32476b2fc3be0344e1c9b341a9964e405f59703604385b29307350bcca7a`, 47,806,955 bytes, recipe `e673d45abbe5e983d41a60bb9b6d4b039c75bea8`. Its checker permits only the exact reviewed Groth16 single-thread call adaptation plus the earlier plugin helper additions. The SDK bundle, dependency inputs and circuits are unchanged; the serial bundle is locally modified GPL-3.0 build output.
+
+**Earlier October 2 helper pin:** the [selected-note binding and fresh-verification continuation](ppv2-full-value-verification-2026-10-02.md) adds the authenticated `inspectNullifier` helper. That continuation accepted archive `a7327fce6acde362b05e439c0db579c06fdc87272feaaa21046b0b34dd182f34`, 47,806,767 bytes, recipe `d8fe7b706a52e42cf4761cd9d16958f49603e35f`. The checker accepts only the exact reviewed plugin additions; dependency inputs and circuit artifacts are unchanged. The build results below remain historical evidence for `fa71e37d…`.
 
 This continuation of [the review guide](privacy-review-guide-2026-10-01.md) replaces a locally assembled archive containing build-machine paths with an offline, pinned assembly recipe. It does not activate PPv2, change application dependencies, qualify a current upstream release, or authorize distributing the runtime.
 
@@ -52,7 +54,7 @@ node scripts/check-ppv2-rebuild.js /absolute/historical-ce18.asar \
   /absolute/new/ppv2.asar /absolute/repeated/ppv2.asar /absolute/sdk-tests.json
 ```
 
-The checker binds the candidate to the accepted runtime pin, checks its exact file set, input/recipe/helper/licence hashes, normalizes only the historical bundle paths, and binds the seven-spec, harness-only report (21 cases after the October 2 full-value withdrawal additions; the original qualification below had 19) to the candidate through its runtime-integrity attachment. It rejects the same file supplied twice (same path or inode), skips, failures and flakes. The independence claim rests on the recorded separate build runs: equal bytes alone cannot distinguish an independently assembled archive from a copy. Generate that JSON using the complete suite:
+The checker binds the candidate to the accepted runtime pin, checks its exact file set, input/recipe/helper/licence hashes, normalizes only the historical bundle paths, and binds the seven-spec, harness-only report (22 cases after the October 2 full-value withdrawal and single-thread verifier additions; the original qualification below had 19) to the candidate through its runtime-integrity attachment. It rejects the same file supplied twice (same path or inode), skips, failures and flakes. The independence claim rests on the recorded separate build runs: equal bytes alone cannot distinguish an independently assembled archive from a copy. Generate that JSON using the complete suite:
 
 ```sh
 FREEDOM_PP_V2_PROCESS_ASAR=/absolute/new/ppv2.asar \

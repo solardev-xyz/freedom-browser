@@ -1,6 +1,124 @@
 const { test, expect } = require('./fixtures');
 const artifact = process.env.FREEDOM_PP_V2_PROCESS_ASAR;
 
+test('PPv2 fresh single-thread verification accepts all circuits and rejects changed signals', async ({
+  electronApp,
+}, testInfo) => {
+  test.skip(!artifact, 'Set FREEDOM_PP_V2_PROCESS_ASAR to the reviewed packed runtime');
+  test.setTimeout(180000);
+  const report = await electronApp.evaluate(async ({ app }, artifact) => {
+    const req = process.mainModule
+      .require('module')
+      .createRequire(`${app.getAppPath()}/package.json`);
+    const fs = req('fs'),
+      path = req('path');
+    const runtime = req('./src/main/wallet/ppv2-runtime').loadPPv2Runtime(artifact);
+    const { createPrivacyScope } = req('./src/main/networks/privacy-context');
+    const scope = createPrivacyScope({
+      profileId: 'single-thread-verifier-fixture',
+      signal: new AbortController().signal,
+    });
+    const handle = scope.getContext({
+      kind: 'private-account',
+      principal: 'synthetic',
+      protocol: 'ppv2-fixture',
+      deployment: 'fixture',
+      chainId: 11155111,
+      role: 'prover',
+    });
+    const { ARTIFACTS, NATIVE, FIELD } = req('./src/main/wallet/ppv2-deposit-policy');
+    const run = req('./src/main/wallet/privacy-process').runPrivacyProcess;
+    const checks = [];
+    try {
+      for (const circuit of ['deposit', 'ragequit', 'transact_1x1']) {
+        const manifest =
+          circuit === 'deposit'
+            ? ARTIFACTS
+            : JSON.parse(fs.readFileSync(path.join(runtime.archive, 'exit-manifest.json'))).filter(
+                (entry) => entry.circuit === circuit
+              );
+        const artifacts = {};
+        for (const entry of manifest) {
+          const bytes = fs.readFileSync(path.join(runtime.archive, 'artifacts', entry.name));
+          artifacts[entry.kind] = Buffer.alloc(bytes.length);
+          bytes.copy(artifacts[entry.kind]);
+        }
+        const proved = await run({
+          handle,
+          filename:
+            circuit === 'deposit'
+              ? req.resolve('./src/main/wallet/ppv2-deposit-job')
+              : path.join(runtime.archive, 'exit-job.cjs'),
+          input: {
+            sdkEntry: runtime.sdkEntry,
+            artifacts,
+            ...(circuit === 'deposit'
+              ? {
+                  witness: {
+                    tokenId: NATIVE,
+                    value: '0x64',
+                    context: '0x3',
+                    noteAddressHash: '0x1',
+                    depositSecret: '0x2',
+                  },
+                }
+              : { circuit, singleThread: true, relayContext: '0x1234' }),
+          },
+          validateResult: (value) => value?.verified === true,
+        });
+        const proof =
+          circuit === 'deposit' ? proved.result.proof : proved.result.publicFixture.proof;
+        const changed = structuredClone(proof);
+        changed.publicSignals[0] = `0x${((BigInt(changed.publicSignals[0]) + 1n) % FIELD).toString(16)}`;
+        for (const [name, value, expected] of [
+          ['valid', proof, true],
+          ['changed-signal', changed, false],
+        ]) {
+          const verified = await run({
+            handle,
+            filename: req.resolve('./src/main/wallet/ppv2-proof-verify-job'),
+            input: {
+              sdkEntry: runtime.sdkEntry,
+              proverEntry: runtime.proverEntry,
+              circuit,
+              proof: value,
+              vkey: Uint8Array.from(artifacts.verificationKey),
+            },
+            timeoutMs: 30000,
+            heapMb: 256,
+            rssMb: 768,
+            // A crash, timeout or malformed result is not a negative-control pass.
+            validateResult: (value) => typeof value?.verified === 'boolean',
+          });
+          if (verified.result.verified !== expected) throw new Error('Verifier control mismatch');
+          checks.push({
+            circuit,
+            name,
+            verified: verified.result.verified,
+            peakRssBytes: verified.peakRssBytes,
+          });
+        }
+      }
+      return {
+        checks,
+        logicalCores: req('os').cpus().length,
+        runtimeSha256: req('./src/main/wallet/ppv2-runtime-manifest').sha256,
+        enforcedByJobGuards: ['worker-creation-refused', 'shared-curve-cache-empty'],
+        syntheticOnly: true,
+        liveTransactionSubmitted: false,
+      };
+    } finally {
+      scope.close();
+    }
+  }, artifact);
+  expect(report.checks).toHaveLength(6);
+  expect(report.checks.filter((check) => check.verified)).toHaveLength(3);
+  await testInfo.attach('ppv2-single-thread-verifier-report', {
+    body: JSON.stringify(report, null, 2),
+    contentType: 'application/json',
+  });
+});
+
 test('PPv2 proves from ASAR in a managed utility process; cancellation, crash and egress fail closed', async ({
   electronApp,
 }, testInfo) => {

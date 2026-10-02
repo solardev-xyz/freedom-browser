@@ -32,6 +32,7 @@ assert.equal(hash, accepted.sha256, 'Candidate is not the accepted runtime');
 assert.equal(firstStat.size, accepted.size);
 const inventory = JSON.parse(asar.extractFile(candidate, 'build-inventory.json'));
 assert.equal(inventory.recipe.productionDistributionApproved, false);
+assert.equal(inventory.recipe.snarkjsAdaptation, 'groth16-verify-single-thread-v1');
 assert.deepEqual(inventory.recipe.pins, pins);
 assert.equal(inventory.recipe.revision, committedRecipe(path.resolve(__dirname, '..')));
 assert.equal(
@@ -78,6 +79,25 @@ const nullifierAdditions = [
 ];
 for (const file of bundles) {
   let source = asar.extractFile(candidate, file).toString();
+  if (file === 'serial-prover.cjs') {
+    const prefix = `async function groth16Verify(_vk_verifier, _publicSignals, _proof, logger) {
+      const vk_verifier = unstringifyBigInts$9(_vk_verifier);
+      const proof = unstringifyBigInts$9(_proof);
+      const publicSignals = unstringifyBigInts$9(_publicSignals);
+      const curve2 = await getCurveFromName(vk_verifier.curve`;
+    const changed = prefix + ', { singleThread: true });';
+    assert.equal(
+      source.split(changed).length,
+      2,
+      'Missing or repeated single-thread verifier change'
+    );
+    // The identical original call in plonkVerify must remain untouched.
+    assert.equal(
+      source.split('const curve2 = await getCurveFromName(vk_verifier.curve);').length,
+      2
+    );
+    source = source.replace(changed, prefix + ');');
+  }
   if (file === 'plugin.cjs')
     for (const addition of nullifierAdditions) {
       assert.equal(
@@ -133,14 +153,14 @@ let tests = null;
 if (testReport) {
   const report = JSON.parse(fs.readFileSync(testReport));
   tests = report.stats;
-  assert.equal(tests.expected, 21, 'Run the complete seven-spec PPv2 SDK suite');
+  assert.equal(tests.expected, 22, 'Run the complete seven-spec PPv2 SDK suite');
   for (const kind of ['skipped', 'unexpected', 'flaky']) assert.equal(tests[kind], 0, kind);
   assert.equal(report.errors.length, 0, 'Runner errors');
   const expectedSpecs = {
     'ppv2-deposit.spec.js': 1,
     'ppv2-exit-circuits.spec.js': 4,
     'ppv2-lifecycle.spec.js': 2,
-    'ppv2-process.spec.js': 2,
+    'ppv2-process.spec.js': 3,
     'ppv2-relay.spec.js': 1,
     'ppv2-token-deposit.spec.js': 1,
     'ppv2-withdrawal.spec.js': 10,
@@ -177,9 +197,13 @@ console.log(
       archiveBytes: fs.statSync(candidate).size,
       recipeRevision: inventory.recipe.revision,
       independentArchivesIdentical: true,
-      normalizedHistoricalBundlesIdentical: bundles.filter((file) => file !== 'plugin.cjs'),
+      normalizedHistoricalBundlesIdentical: bundles.filter(
+        (file) => !['plugin.cjs', 'serial-prover.cjs'].includes(file)
+      ),
       pluginHistoricalDifference:
         'Exactly the reviewed inspectNullifier helper and two export entries',
+      serialProverHistoricalDifference:
+        'Exactly the Groth16 curve-construction singleThread option; PLONK remains unchanged',
       historicalArtifactWorkerMetadataFilesIdentical: preservedFiles,
       inputs: inventory.inputs.length,
       packages: inventory.packages.length,
