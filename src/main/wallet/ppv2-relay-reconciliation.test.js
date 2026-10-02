@@ -15,7 +15,7 @@ const { createPPv2RelayReconciliation, ABI } = require('./ppv2-relay-reconciliat
 const { validateRelay } = require('./ppv2-relay-policy');
 const { relayFixture, word, signQuote } = require('../../../test/helpers/ppv2-relay-fixture');
 let scope, journal, reconcile, record, receipt, logs, mockRequest, canonical, spent, final;
-let mockRpcHandles;
+let mockRpcHandles, capacityTask;
 const mockRelease = jest.fn();
 const iface = new Interface(ABI),
   txHash = word(71),
@@ -105,7 +105,18 @@ beforeEach(async () => {
     getOperationHandle,
   });
 });
-afterEach(() => scope.close());
+afterEach(async () => {
+  const closingScope = scope,
+    task = capacityTask;
+  // A Jest timeout does not cancel the test body. Drain the fsync-heavy
+  // capacity run before revoking the shared scope or starting another test.
+  try {
+    await task?.catch(() => {});
+  } finally {
+    if (capacityTask === task) capacityTask = null;
+    closingScope.close();
+  }
+}, 30_000);
 const accept = async () => ({ allowNextOperation: true, acceptedEvidence: 'unverified-rpc' });
 
 function exitEvidence() {
@@ -494,7 +505,8 @@ test('compact refresh preserves reviewed evidence on missing blocks or wrong hei
   expect(mockRelease).toHaveBeenCalledTimes(mockRpcHandles.length);
 });
 
-test('63 resolved attempts revalidate inside a 60-second quote without receipt rescans or retained transport groups', async () => {
+async function qualifyRelayCapacity() {
+  const capacityScope = scope;
   await reconcile.resolve(record.id, accept);
   for (let index = 1; index < 63; index++) {
     const id = word(1000 + index);
@@ -521,6 +533,7 @@ test('63 resolved attempts revalidate inside a 60-second quote without receipt r
     await journal.resolve(id, 1);
   }
   jest.useFakeTimers();
+  let pending;
   try {
     const started = Date.now(),
       request = relayFixture();
@@ -552,7 +565,7 @@ test('63 resolved attempts revalidate inside a 60-second quote without receipt r
       }),
     };
     const gate = require('./ppv2-relay-handoff').createPPv2RelayHandoff({
-      handle: scope.getContext({
+      handle: capacityScope.getContext({
         kind: 'private-account',
         principal: 'ppv2:0',
         protocol: 'privacy-pools-v2',
@@ -566,7 +579,7 @@ test('63 resolved attempts revalidate inside a 60-second quote without receipt r
       beforeBegin: (signal) => reconcile.refreshResolved(signal),
     });
     const prepared = await gate.prepare(request);
-    const pending = gate.submit(prepared, {
+    pending = gate.submit(prepared, {
       review: async () => true,
       invoke: (net) =>
         net.fetch(request.endpoint, {
@@ -575,6 +588,9 @@ test('63 resolved attempts revalidate inside a 60-second quote without receipt r
           body: request.body,
         }),
     });
+    // Observe rejection immediately, including while the fake clock advances.
+    // Awaiting the original below still makes a rejection fail the test.
+    pending.catch(() => {});
     await jest.advanceTimersByTimeAsync(5000);
     await pending;
     expect(handedOff - started).toBeLessThan(45000);
@@ -586,9 +602,25 @@ test('63 resolved attempts revalidate inside a 60-second quote without receipt r
     expect(network.fetch).toHaveBeenCalledTimes(1);
     expect(await journal.list()).toHaveLength(64);
   } finally {
-    jest.useRealTimers();
+    try {
+      if (pending) {
+        capacityScope.close();
+        await jest.runOnlyPendingTimersAsync();
+        await pending.catch(() => {});
+      }
+    } finally {
+      jest.useRealTimers();
+    }
   }
-});
+}
+
+// The setup performs almost 200 real durable writes. Keep the simulated quote
+// deadline assertion while allowing slower CI filesystem I/O.
+test('63 resolved attempts revalidate inside a 60-second quote without receipt rescans or retained transport groups', () => {
+  capacityTask = qualifyRelayCapacity();
+  capacityTask.catch(() => {});
+  return capacityTask;
+}, 30_000);
 
 test('an aborted relay refresh cannot commit a delayed block response', async () => {
   await reconcile.resolve(record.id, accept);
