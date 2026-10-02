@@ -356,7 +356,7 @@ async function createRailgunWalletJournal({
     try {
       const next = attest(work.target, evidence);
       check(JSON.stringify(next) === JSON.stringify(current.checkpoint));
-      ready = { sequence: current.sequence, evidence };
+      ready = { sequence: current.sequence, evidence: Object.freeze({ ...evidence }) };
     } catch {
       close();
       throw Object.assign(fail(), { storageCommitted: true });
@@ -372,7 +372,7 @@ async function createRailgunWalletJournal({
       JSON.stringify(next.wallet) === JSON.stringify(value.checkpoint.wallet) &&
         JSON.stringify(next.coverage) === JSON.stringify(value.checkpoint.coverage)
     );
-    ready = { sequence: current.sequence, evidence };
+    ready = { sequence: current.sequence, evidence: Object.freeze({ ...evidence }) };
     return assertReady();
   }
   function assertReady() {
@@ -396,6 +396,11 @@ async function createRailgunWalletJournal({
       spendableGranted: false,
     });
   }
+  function assertReceipt(receipt) {
+    const readiness = assertReady();
+    check(ready.evidence.receipt === receipt);
+    return readiness;
+  }
   const instance = Object.freeze({
     identity: Object.freeze({ walletId, policy, storeId, directory }),
     prepare,
@@ -403,6 +408,7 @@ async function createRailgunWalletJournal({
     readState,
     revalidate,
     assertReady,
+    assertReceipt,
     close,
     signal: scope.signal,
   });

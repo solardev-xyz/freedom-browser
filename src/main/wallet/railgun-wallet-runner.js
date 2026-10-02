@@ -3,6 +3,9 @@
  * boolean or deserialized receipt can grant scan completion.
  */
 const assert = require('assert/strict');
+const { normalizeRailgunWalletRead } = require('./railgun-wallet-read');
+const { isRailgunWalletJournal } = require('./railgun-wallet-journal');
+const instances = new WeakSet();
 const {
   kinds,
   checkpointHash,
@@ -52,11 +55,13 @@ function createRailgunWalletRunner({ runJob, inventory, policy }) {
         snapshot.checkpoint,
         Object.fromEntries(['scannedLeaves', ...kinds].map((name) => [name, result[name]]))
       );
+      const read = normalizeRailgunWalletRead(result, coverage);
       const state = await walletSession.inspectWalletState();
       walletSession.assertFresh(state);
       if (restore) assert.deepEqual(state, before);
       const receipt = Object.freeze({});
       receipts.set(receipt, {
+        read,
         session: walletSession,
         walletId,
         checkpoint: checkpointHash(snapshot.checkpoint),
@@ -71,6 +76,18 @@ function createRailgunWalletRunner({ runJob, inventory, policy }) {
       throw error;
     }
   }
-  return Object.freeze({ run, assertScan });
+  function read(receipt, journal) {
+    assert.ok(isRailgunWalletJournal(journal));
+    const saved = receipts.get(receipt);
+    assert.ok(saved && !saved.session.signal.aborted);
+    assert.equal(journal.identity.walletId, saved.walletId);
+    assert.equal(journal.identity.policy, policy);
+    assert.equal(journal.identity.storeId, saved.state.storeId);
+    const readiness = journal.assertReceipt(receipt);
+    return Object.freeze({ ...saved.read, readiness });
+  }
+  const instance = Object.freeze({ run, assertScan, read });
+  instances.add(instance);
+  return instance;
 }
-module.exports = { createRailgunWalletRunner };
+module.exports = { createRailgunWalletRunner, isRailgunWalletRunner: (v) => instances.has(v) };

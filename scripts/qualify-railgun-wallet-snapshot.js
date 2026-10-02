@@ -239,6 +239,8 @@ async function main() {
     'src/main/wallet/railgun-wallet-coverage-store.js',
     'src/main/wallet/railgun-wallet-journal.js',
     'src/main/wallet/railgun-wallet-runner.js',
+    'src/main/wallet/railgun-wallet-read.js',
+    'src/main/wallet/railgun-kohaku-read.js',
     'src/main/wallet/railgun-wallet-state.js',
     'src/main/wallet/railgun-wallet-scan.js',
     'src/main/wallet/railgun-wallet-records.js',
@@ -360,6 +362,15 @@ async function main() {
       else await walletJournal.complete(pending, evidence);
       assert.equal(walletJournal.assertReady().status, 'wallet-scanned-unverified');
       assert.equal(walletJournal.assertReady().spendableGranted, false);
+      const view = require('../src/main/wallet/railgun-kohaku-read').createRailgunKohakuRead({
+        runner,
+        journal: walletJournal,
+        receipt: checked.value.receipt,
+      });
+      assert.deepEqual(await view.balance(), []);
+      assert.deepEqual(await view.notes(undefined, true), []);
+      assert.equal((await view.status()).coverage.unrecoverableSent.count, 70);
+      assert.equal(await view.instanceId(), checked.value.result.instanceId);
       const result = { evidence: checked.evidence, value: checked.value.result };
       assert.equal(
         coordinator.assertSnapshot(result.evidence).to.number,
@@ -373,6 +384,12 @@ async function main() {
         restore,
         elapsedMs: Math.round(performance.now() - started),
         sourceHeaderRequests: requests - beforeRequests,
+        kohakuReads: {
+          observedAmount: '0',
+          unspentNotes: 0,
+          tag: 'unverified',
+          spendableGranted: false,
+        },
         ...result.value,
       });
       console.log(
@@ -383,6 +400,7 @@ async function main() {
         })
       );
       walletJournal.close();
+      await assert.rejects(view.balance());
       walletSession.close();
       await walletSession.closed;
     }

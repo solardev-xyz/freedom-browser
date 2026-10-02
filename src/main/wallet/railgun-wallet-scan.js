@@ -126,9 +126,11 @@ async function scanRailgunWallet({ wallet, tree, checkpoint, runtime, signal, re
     txid: item.txid,
     hash: item.note.hash.toString(16).padStart(64, '0'),
     tokenHash: item.note.tokenHash,
+    tokenData: { ...item.note.tokenData },
     value: item.note.value.toString(),
   });
   return {
+    instanceId: wallet.getAddress(),
     scannedLeaves: total,
     expectedReceived,
     expectedSent,

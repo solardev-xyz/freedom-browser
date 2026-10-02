@@ -201,6 +201,8 @@ async function main() {
     'src/main/wallet/railgun-wallet-coverage-store.js',
     'src/main/wallet/railgun-wallet-journal.js',
     'src/main/wallet/railgun-wallet-runner.js',
+    'src/main/wallet/railgun-wallet-read.js',
+    'src/main/wallet/railgun-kohaku-read.js',
     'src/main/wallet/railgun-wallet-state.js',
     'scripts/fixtures/railgun-wallet-source.js',
     'scripts/railgun-wallet-snapshot-electron.js',
@@ -430,8 +432,48 @@ async function main() {
         assert.ok(
           retainedDirectories.every((dir) => fs.existsSync(path.join(dir, 'wallet.sqlite')))
         );
+        const view = require('../src/main/wallet/railgun-kohaku-read').createRailgunKohakuRead({
+          runner,
+          journal: walletJournal,
+          receipt: checked.value.receipt,
+        });
+        assert.throws(() =>
+          require('../src/main/wallet/railgun-kohaku-read').createRailgunKohakuRead({
+            runner,
+            journal: walletJournal,
+            receipt: {},
+          })
+        );
+        const originalValue = checked.value.result.received[0].value;
+        checked.value.result.received[0].value = '999999999';
+        const balances = await view.balance(),
+          notes = await view.notes();
+        assert.equal(
+          balances.reduce((sum, item) => sum + item.amount, 0n),
+          stage === 10 ? 3000n : stage === 20 ? 2000n : 2700n
+        );
+        checked.value.result.received[0].value = originalValue;
+        assert.ok(
+          balances.every((item) => item.tag === 'unverified' && item.asset.__type === 'erc20')
+        );
+        assert.equal(notes.length, stage === 10 ? 2 : stage === 20 ? 1 : 2);
+        assert.equal((await view.notes(undefined, true)).length, stage === 30 ? 3 : 2);
+        assert.equal((await view.balance([{ __type: 'native' }])).length, 0);
+        assert.equal(await view.instanceId(), checked.value.result.instanceId);
+        assert.equal((await view.status()).spendableGranted, false);
+        assert.equal(view.prepareTransfer, undefined);
+        const kohakuReads = {
+          unspentNotes: notes.length,
+          observedAmount: balances.reduce((sum, item) => sum + item.amount, 0n).toString(),
+          tag: 'unverified',
+          spendableGranted: false,
+        };
         await assert.rejects(coverageStore.read(checked.value.receipt));
         assert.throws(() => walletJournal.assertReady());
+        await assert.rejects(view.balance());
+        await assert.rejects(view.notes());
+        await assert.rejects(view.instanceId());
+        kohakuReads.staleReadsRefused = true;
         const result = { evidence: evidence.snapshot, value: checked.value.result };
         assert.equal(coordinator.assertSnapshot(result.evidence).to.number, stage);
         previousEvidence = result.evidence;
@@ -454,6 +496,7 @@ async function main() {
           stage,
           attempt,
           restore,
+          kohakuReads,
           renewedSameCheckpoint: stage === 20 && !restore,
           elapsedMs: Math.round(performance.now() - started),
           sourceHeaderRequests: requests - beforeRequests,

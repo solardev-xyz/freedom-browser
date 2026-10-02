@@ -223,3 +223,16 @@ test('failed journal construction still holds generation ownership until the wor
   await Promise.resolve();
   expect(() => assertRailgunWalletGenerationClosed(options.directory)).not.toThrow();
 });
+
+test('read evidence requires the exact current receipt and cannot be reassigned by its caller', async () => {
+  const j = await open(),
+    evidence = { ...currentEvidence },
+    receipt = evidence.receipt;
+  await j.complete(await j.prepare(plan()), evidence);
+  expect(j.assertReceipt(receipt).status).toBe('wallet-scanned-unverified');
+  expect(() => j.assertReceipt({})).toThrow();
+  evidence.receipt = {};
+  expect(() => j.assertReceipt(receipt)).not.toThrow();
+  await j.prepare(plan());
+  expect(() => j.assertReceipt(receipt)).toThrow();
+});

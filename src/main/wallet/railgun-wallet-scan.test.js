@@ -6,6 +6,7 @@ beforeEach(() => {
     checkpoint: { state: { trees: [] } },
     tree: { getTreeLength: jest.fn(), getRoot: jest.fn(), getCommitmentRange: jest.fn() },
     wallet: {
+      getAddress: () => '0zk1' + 'q'.repeat(123),
       loadUTXOMerkletree: jest.fn(async () => {}),
       scanLeaves: jest.fn(async () => {}),
       TXOs: jest.fn(async () => []),
@@ -53,6 +54,7 @@ test.each(['length', 'root', 'missing-leaf', 'wrong-position', 'unsupported-type
 );
 test('an empty completed public history produces no spendable grant or invented notes', async () => {
   expect(await scanRailgunWallet(input)).toEqual({
+    instanceId: '0zk1' + 'q'.repeat(123),
     scannedLeaves: 0,
     expectedReceived: [],
     expectedSent: [],
