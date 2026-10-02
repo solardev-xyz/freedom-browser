@@ -34,3 +34,9 @@ Missing or rolled-back committed ledger state fails closed. The content hash no 
 Claude reviewed the implementation and requested the enforced dispatch claim, apply deadline, retention lock, provider-independent content hashing and safe hex validation. Those fixes are included. This is engineering review, not a security audit.
 
 Next: run real Railgun events through this coordinator using the captured source, connect the bounded guarded planner and Electron supervisor, qualify live scoped scanning, then actual wallet decryption/current Kohaku balance and notes, deployment-bound artifacts/proofs/signing/POI, and funded recoverable shield/private-transfer/unshield. No Railgun funds have moved.
+
+## Main compatibility and local nodes
+
+Main `d8f1d3be` (Ant 0.5.54) merged cleanly as `22956c0d`, after implementation commit `ad32b170`. Claude accepted the compatibility diff. The merged branch again passed 7,565 tests / 33 skips / 353 suites and lint; package-lock.json is unchanged. Pinned installs were explicitly refreshed: Ant 0.5.54, freedom-ipfs 0.4.3, libradicle 0.7.1, Myotis 0.1.12 plus rebuilt supervisor, and Arti 2.6.0. `npm run check-binaries` passes.
+
+Arti was built with the already installed `RUSTUP_TOOLCHAIN=1.99.0`; the machine's default cargo 1.88 was too old. The overwritten destination was killed by macOS despite passing code-signature verification. A fresh file containing identical bytes launched successfully and reports Arti 2.6.0; the prior inode was retained in temporary storage. No fetch script or toolchain pin changed. This is a local refresh observation, not a cross-platform binary qualification.
