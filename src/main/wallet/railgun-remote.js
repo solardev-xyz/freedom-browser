@@ -9,23 +9,71 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
   const controller = new AbortController();
   const lifetime = AbortSignal.any([signal, controller.signal]);
   let sequence = 0,
-    pending = 0;
+    pending = 0,
+    queuedBytes = 0;
+  const queue = [];
   const active = () => {
     if (lifetime.aborted) throw fail();
   };
   const close = () => controller.abort();
-  async function call(method, args) {
-    let counted = false,
-      abort,
-      timer;
+  lifetime.addEventListener(
+    'abort',
+    () => {
+      for (const item of queue.splice(0)) {
+        clearTimeout(item.deadline);
+        item.payload = '';
+        item.reject(fail());
+      }
+      queuedBytes = 0;
+    },
+    { once: true }
+  );
+  function pump() {
+    while (!lifetime.aborted && pending < 8 && queue.length) {
+      const item = queue.shift();
+      queuedBytes -= item.bytes;
+      clearTimeout(item.deadline);
+      pending++;
+      const { method, args } = JSON.parse(item.payload);
+      item.payload = '';
+      exchange(method, args)
+        .then(item.resolve, item.reject)
+        .finally(() => {
+          pending--;
+          pump();
+        });
+    }
+  }
+  function call(method, args) {
     try {
       active();
-      if (pending >= 8) throw fail();
+      // Snapshot arguments on arrival. Assign IDs only when dequeued, preserving
+      // FIFO storage ordering without ever exceeding the host's eight-call limit.
+      const payload = JSON.stringify({ method, args }),
+        bytes = Buffer.byteLength(payload);
+      if (
+        bytes > 2 * 1024 * 1024 - 64 ||
+        queue.length >= 1024 ||
+        queuedBytes + bytes > 8 * 1024 * 1024
+      )
+        throw fail();
+      return new Promise((resolve, reject) => {
+        queue.push({ payload, bytes, resolve, reject, deadline: setTimeout(close, 30000) });
+        queuedBytes += bytes;
+        pump();
+      });
+    } catch {
+      close();
+      return Promise.reject(fail());
+    }
+  }
+  async function exchange(method, args) {
+    let abort, timer;
+    try {
+      active();
       const id = ++sequence,
         wire = JSON.stringify({ id, method, args });
       if (Buffer.byteLength(wire) > 2 * 1024 * 1024) throw fail();
-      pending++;
-      counted = true;
       const cancelled = new Promise((_, reject) => {
         abort = () => reject(fail());
         lifetime.addEventListener('abort', abort, { once: true });
@@ -83,7 +131,6 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
       close();
       throw fail();
     } finally {
-      if (counted) pending--;
       clearTimeout(timer);
       if (abort) lifetime.removeEventListener('abort', abort);
     }

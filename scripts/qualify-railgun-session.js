@@ -17,6 +17,7 @@ const expectedChecks = [
   'actual-engine-remote-database-and-fresh-restore',
   'remote-stable-iterator-seek-limit-and-clear',
   'actual-engine-controlled-network-over-host-rpc',
+  'actual-engine-cold-merkle-path-and-concurrent-reads',
 ];
 const sources = [
   'scripts/qualify-railgun-session.js',
@@ -62,6 +63,9 @@ async function run(directory, mode) {
     lateResolve,
     armed = false,
     lateReplyId,
+    lateSettlement,
+    lateResolvedWhileAlive = false,
+    observedExit = false,
     stopping = false,
     escalated = false,
     repliesAfterRevocation = 0,
@@ -118,6 +122,11 @@ async function run(directory, mode) {
       onClose: () => {
         revoked = true;
         terminate();
+        if (lateResolve) {
+          lateResolvedWhileAlive =
+            !observedExit && child.exitCode === null && child.signalCode === null;
+          lateResolve({ number: '0x123', hash: '0x' + '99'.repeat(32) });
+        }
       },
     });
     child = fork(path.join(__dirname, 'fixtures/railgun-session-child.js'), [], {
@@ -129,13 +138,13 @@ async function run(directory, mode) {
     deadline = setTimeout(() => stop(new Error('Process qualification deadline')), 60000);
     child.once('error', () => stop(new Error('Process qualification failed')));
     child.once('exit', (code, signal) => {
+      observedExit = true;
       clearTimeout(deadline);
       clearTimeout(escalation);
       const expectedRevocation = revoked;
       session.close();
       scope.close();
       Database.prototype.prepare = originalPrepare;
-      lateResolve?.({ number: '0x123', hash: '0x' + '99'.repeat(32) });
       setImmediate(() => {
         try {
           if (outcome) throw outcome;
@@ -159,6 +168,8 @@ async function run(directory, mode) {
           if (['lock', 'fault'].includes(mode)) {
             assert.ok(lateResolve && Number.isSafeInteger(lateReplyId));
             assert.ok(!delivered.includes(lateReplyId));
+            assert.equal(lateResolvedWhileAlive, true);
+            assert.equal(lateSettlement, 'RAILGUN_SESSION_REVOKED');
           }
           resolve({
             ...report,
@@ -168,6 +179,8 @@ async function run(directory, mode) {
             termination: signal,
             injectedSqliteFailure: injected,
             lateReplyDelivered: false,
+            lateResolvedWhileAlive,
+            lateDispatchSettlement: lateSettlement ?? null,
           });
         } catch (error) {
           reject(error);
@@ -201,12 +214,14 @@ async function run(directory, mode) {
           session
             .dispatch(message.wire)
             .then((wire) => {
+              if (command.id === lateReplyId) lateSettlement = 'fulfilled';
               if (session.signal.aborted || stopping) return;
               if (revoked) repliesAfterRevocation++;
               delivered.push(JSON.parse(wire).id);
               child.send({ type: 'reply', wire });
             })
-            .catch(() => {
+            .catch((error) => {
+              if (command.id === lateReplyId) lateSettlement = error?.code;
               if (!(mode === 'fault' && injected) && mode !== 'lock')
                 stop(new Error('Host command refused'));
             });

@@ -135,17 +135,86 @@ test('closing while an iterator is opening rejects reads without another transpo
   await invoke(iterator, '_end');
   expect(send).toHaveBeenCalledTimes(1);
 });
-test('in-flight capacity revokes all outstanding calls', async () => {
+test('a large read burst queues in FIFO order with at most eight requests in flight', async () => {
+  let inflight = 0,
+    peak = 0;
+  const ids = [];
+  send.mockImplementation(async (wire) => {
+    inflight++;
+    peak = Math.max(peak, inflight);
+    const message = JSON.parse(wire);
+    ids.push(message.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    inflight--;
+    return reply(wire, message.args.params[0]);
+  });
+  const values = await Promise.all(
+    Array.from({ length: 128 }, (_, i) =>
+      remote.provider.request({ method: 'eth_blockNumber', params: [i] })
+    )
+  );
+  expect(values).toEqual(Array.from({ length: 128 }, (_, i) => i));
+  expect(ids).toEqual(Array.from({ length: 128 }, (_, i) => i + 1));
+  expect(peak).toBe(8);
+  expect(remote.signal.aborted).toBe(false);
+});
+test('cancellation drops queued requests without sending them', async () => {
   send.mockImplementation(() => new Promise(() => {}));
-  const tasks = Array.from({ length: 8 }, () =>
+  const tasks = Array.from({ length: 64 }, () =>
     expect(remote.provider.request({ method: 'eth_blockNumber', params: [] })).rejects.toThrow()
   );
   await Promise.resolve();
-  await expect(
-    remote.provider.request({ method: 'eth_blockNumber', params: [] })
-  ).rejects.toThrow();
+  expect(send).toHaveBeenCalledTimes(8);
+  controller.abort();
   await Promise.all(tasks);
   expect(send).toHaveBeenCalledTimes(8);
+});
+test.each(['count', 'bytes'])(
+  'queue %s overflow fails closed without forwarding waiting requests',
+  async (mode) => {
+    send.mockImplementation(() => new Promise(() => {}));
+    const tasks = Array.from({ length: 8 }, () =>
+      expect(remote.provider.request({ method: 'eth_blockNumber', params: [] })).rejects.toThrow()
+    );
+    await Promise.resolve();
+    const count = mode === 'count' ? 1025 : 9;
+    for (let i = 0; i < count; i++)
+      tasks.push(
+        expect(
+          remote.provider.request({
+            method: 'eth_blockNumber',
+            params: mode === 'count' ? [] : ['x'.repeat(1024 * 1024)],
+          })
+        ).rejects.toThrow()
+      );
+    await Promise.all(tasks);
+    expect(send).toHaveBeenCalledTimes(8);
+    expect(remote.signal.aborted).toBe(true);
+  }
+);
+test('queued inputs are copied before callers can mutate them', async () => {
+  const held = [];
+  send.mockImplementation(
+    (wire) =>
+      new Promise((resolve) =>
+        held.push(() => resolve(reply(wire, JSON.parse(wire).args.params[0])))
+      )
+  );
+  const active = Array.from({ length: 8 }, () =>
+    remote.provider.request({ method: 'eth_blockNumber', params: [0] })
+  );
+  const input = { method: 'eth_blockNumber', params: [7] };
+  const waiting = remote.provider.request(input);
+  input.params[0] = 99;
+  await Promise.resolve();
+  held[0]();
+  await active[0];
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(held).toHaveLength(9);
+  held[8]();
+  expect(await waiting).toBe(7);
+  held.slice(1, 8).forEach((resolve) => resolve());
+  await Promise.all(active);
 });
 test('multi-get uses one request and rejects a partial response', async () => {
   send.mockImplementation(async (wire) => {

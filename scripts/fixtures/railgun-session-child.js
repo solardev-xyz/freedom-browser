@@ -157,6 +157,20 @@ async function main(input) {
     instance.getUTXOMerkletree(engine.TXIDVersion.V2_PoseidonMerkle, { type: 0, id: 11155111 })
   );
   checks.push('actual-engine-controlled-network-over-host-rpc');
+  const tree = instance.getUTXOMerkletree(engine.TXIDVersion.V2_PoseidonMerkle, {
+    type: 0,
+    id: 11155111,
+  });
+  const proof = await tree.getMerkleProof(0, 0);
+  assert.equal(proof.elements.length, 16);
+  // Empty-tree proof construction still performs the cold parallel DB reads;
+  // upstream catches missing nodes, so also assert the session remains active.
+  assert.equal(remote.signal.aborted, false);
+  const burst = await Promise.all(
+    Array.from({ length: 128 }, () => instance.db.get(['aa'], 'utf8'))
+  );
+  assert.ok(burst.every((address) => address === wallet.getAddress()));
+  checks.push('actual-engine-cold-merkle-path-and-concurrent-reads');
   assert.ok(
     !Object.keys(require.cache).some(
       (file) => file.includes('better-sqlite3') || file.endsWith('/railgun-store.js')
