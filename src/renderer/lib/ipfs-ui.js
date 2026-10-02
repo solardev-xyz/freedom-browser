@@ -1,13 +1,15 @@
 // IPFS node UI controls
 import { state, getDisplayMessage } from './state.js';
 import { pushDebug } from './debug.js';
-import { versionText } from './ui-format.js';
+import { versionText, UNKNOWN } from './ui-format.js';
 
 // DOM elements (initialized in initIpfsUi)
 let ipfsToggleBtn = null;
 let ipfsToggleSwitch = null;
 let ipfsActiveRequestsCount = null;
 let ipfsDataRead = null;
+let ipfsPeersCount = null;
+let ipfsBandwidth = null;
 let ipfsVersionText = null;
 let ipfsInfoPanel = null;
 let ipfsStatusRow = null;
@@ -29,6 +31,8 @@ export const stopIpfsInfoPolling = () => {
   ipfsInfoPanel?.classList.remove('visible');
   if (ipfsActiveRequestsCount) ipfsActiveRequestsCount.textContent = '0';
   if (ipfsDataRead) ipfsDataRead.textContent = '';
+  if (ipfsPeersCount) ipfsPeersCount.textContent = '0';
+  if (ipfsBandwidth) ipfsBandwidth.textContent = '';
   if (ipfsVersionText)
     ipfsVersionText.textContent = versionText(
       state.ipfsVersionFetched ? state.ipfsVersionValue : ''
@@ -39,6 +43,42 @@ const formatBytes = (bytes) => {
   if (bytes < 1024) return `${Math.round(bytes)} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const formatRate = (bytesPerSec) => `${formatBytes(bytesPerSec)}/s`;
+
+const isExternalMode = () => state.registry?.ipfs?.mode === 'external';
+
+// The managed freedom-ipfs node and an external node (e.g. Kubo) have different
+// numbers worth showing (#417): the managed node reports its own gateway
+// counters, an external one its peers and bandwidth off the Kubo RPC API. The
+// panel's `external` class picks which rows are visible (services.css).
+//
+// Whenever the external rows come into view without a reading of their own —
+// the menu opening, or the profile flipping to external while it is open — they
+// read `Unknown` until the first stats poll lands, not the markup/reset `0`
+// (a slow or filtered RPC can take up to its 2s timeout to answer).
+const syncIpfsInfoMode = ({ opening = false } = {}) => {
+  if (!ipfsInfoPanel) return;
+  const external = isExternalMode();
+  const wasExternal = ipfsInfoPanel.classList.contains('external');
+  ipfsInfoPanel.classList.toggle('external', external);
+  if (external && (opening || !wasExternal)) renderExternalNodeStats(null);
+};
+
+// Peers/bandwidth for an external node. `stats` is null when the RPC could not
+// be reached (a remote gateway is never dialled on :5001, see kuboRpcUrl in
+// main/ipfs-manager.js), which reads as `Unknown` rather than a misleading 0.
+const renderExternalNodeStats = (stats) => {
+  if (ipfsPeersCount) {
+    ipfsPeersCount.textContent = typeof stats?.peers === 'number' ? String(stats.peers) : UNKNOWN;
+  }
+  if (ipfsBandwidth) {
+    const hasRates = typeof stats?.rateIn === 'number' && typeof stats?.rateOut === 'number';
+    ipfsBandwidth.textContent = hasRates
+      ? `↓${formatRate(stats.rateIn)} ↑${formatRate(stats.rateOut)}`
+      : UNKNOWN;
+  }
 };
 
 const parseNativeBuildInfo = (raw) => {
@@ -111,25 +151,29 @@ const fetchNativeStats = async () => {
   if (!ipfsInfoPanel?.classList.contains('visible')) return;
 
   try {
-    const status = await window.ipfs?.getStatus?.();
+    const status = await window.ipfs?.getStatus?.({ nodeStats: true });
     if (!ipfsInfoPanel?.classList.contains('visible')) return;
-    const stats = JSON.parse(status?.diagnostics?.nativeGatewayStats || '{}');
-    if (ipfsActiveRequestsCount) {
-      ipfsActiveRequestsCount.textContent = String(stats.active_native_handles ?? 0);
-    }
-    if (ipfsDataRead) {
-      ipfsDataRead.textContent = formatBytes(stats.bytes_read || 0);
-    }
-    if (state.registry?.ipfs?.mode === 'external') {
+    syncIpfsInfoMode();
+    if (isExternalMode()) {
+      renderExternalNodeStats(status?.diagnostics?.externalNodeStats);
       if (ipfsVersionText) {
         ipfsVersionText.textContent = externalIdentityLabel(status?.diagnostics);
       }
     } else {
+      const stats = JSON.parse(status?.diagnostics?.nativeGatewayStats || '{}');
+      if (ipfsActiveRequestsCount) {
+        ipfsActiveRequestsCount.textContent = String(stats.active_native_handles ?? 0);
+      }
+      if (ipfsDataRead) {
+        ipfsDataRead.textContent = formatBytes(stats.bytes_read || 0);
+      }
       updateVersionFromDiagnostics(status?.diagnostics);
     }
   } catch {
     if (ipfsActiveRequestsCount) ipfsActiveRequestsCount.textContent = '0';
     if (ipfsDataRead) ipfsDataRead.textContent = '';
+    if (ipfsPeersCount) ipfsPeersCount.textContent = UNKNOWN;
+    if (ipfsBandwidth) ipfsBandwidth.textContent = UNKNOWN;
   }
 };
 
@@ -139,6 +183,7 @@ export const startIpfsInfoPolling = () => {
     return;
   }
 
+  syncIpfsInfoMode({ opening: !ipfsInfoPanel?.classList.contains('visible') });
   ipfsInfoPanel?.classList.add('visible');
 
   // fetchNativeStats also reads the node version off the same getStatus call and
@@ -307,6 +352,8 @@ export const initIpfsUi = () => {
   ipfsToggleSwitch = document.getElementById('ipfs-toggle-switch');
   ipfsActiveRequestsCount = document.getElementById('ipfs-active-requests-count');
   ipfsDataRead = document.getElementById('ipfs-data-read');
+  ipfsPeersCount = document.getElementById('ipfs-peers-count');
+  ipfsBandwidth = document.getElementById('ipfs-bandwidth');
   ipfsVersionText = document.getElementById('ipfs-version-text');
   ipfsInfoPanel = document.querySelector('.ipfs-info');
   ipfsStatusRow = document.getElementById('ipfs-status-row');

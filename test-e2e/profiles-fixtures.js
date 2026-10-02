@@ -26,6 +26,13 @@ const os = require('os');
 const repoRoot = path.resolve(__dirname, '..');
 
 const test = base.extend({
+  // Profile to launch as (`FREEDOM_PROFILE`), or null for the normal bare
+  // launch that opens `default`. A spec that needs `default` to be a
+  // *non-active* profile — e.g. to delete it (#124) — sets this via
+  // `test.use({ launchProfile: 'work' })`; the first run still registers
+  // `default` alongside it.
+  launchProfile: [null, { option: true }],
+
   // Per-test isolated dev-home (the profile catalog root).
   // eslint-disable-next-line no-empty-pattern
   devHome: async ({}, use) => {
@@ -38,7 +45,7 @@ const test = base.extend({
     }
   },
 
-  electronApp: async ({ devHome }, use) => {
+  electronApp: async ({ devHome, launchProfile }, use) => {
     const app = await electron.launch({
       args: ['.'],
       cwd: repoRoot,
@@ -48,6 +55,7 @@ const test = base.extend({
         // Catalog mode, isolated per run. NOTE: deliberately no
         // FREEDOM_TEST_USER_DATA — that would disable the profile manager.
         FREEDOM_DEV_HOME: devHome,
+        ...(launchProfile ? { FREEDOM_PROFILE: launchProfile } : {}),
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
       },

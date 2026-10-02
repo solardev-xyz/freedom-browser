@@ -16,6 +16,7 @@
     "url": "https://github.com/solardev-xyz/freedom-browser/issues"
   },
   "main": "src/main/index.js",
+  "desktopName": "freedom.desktop",
   "scripts": {
     "start": "electron .",
     "test": "npm run test:unit",
@@ -156,11 +157,7 @@
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
       "executableName": "freedom",
-      "desktop": {
-        "entry": {
-          "StartupWMClass": "freedom-browser"
-        }
-      },
+      "syncDesktopName": true,
       "mimeTypes": [
         "x-scheme-handler/ipfs",
         "x-scheme-handler/ipns",

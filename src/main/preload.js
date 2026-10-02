@@ -377,7 +377,11 @@ contextBridge.exposeInMainWorld('myotis', {
 contextBridge.exposeInMainWorld('ipfs', {
   start: () => ipcRenderer.invoke('ipfs:start'),
   stop: () => ipcRenderer.invoke('ipfs:stop'),
-  getStatus: () => ipcRenderer.invoke('ipfs:getStatus'),
+  // `{ nodeStats: true }` also reads an external node's peers/bandwidth (#417).
+  getStatus: (options) =>
+    options?.nodeStats === true
+      ? ipcRenderer.invoke('ipfs:getStatus', { nodeStats: true })
+      : ipcRenderer.invoke('ipfs:getStatus'),
   checkBinary: () => ipcRenderer.invoke('ipfs:checkBinary'),
   onStatusUpdate: (callback) => {
     const handler = (_event, value) => callback(value);

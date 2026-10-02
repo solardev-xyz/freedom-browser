@@ -877,7 +877,11 @@ jobs:
   # to pick the name and protocol icon (#235). `tez-unverified.spec.js` and
   # `tez-head-conflict.spec.js` drive the Tezos Domains interstitials: the
   # "Continue once" button has to load the resolved content, and a
-  # chain-head disagreement has to be a hard block.
+  # chain-head disagreement has to be a hard block. `ens-trust-popover.spec.js`
+  # (#68) drives the address-bar trust shield and its popover for all four
+  # trust levels: status sentence and row sequences, click-to-copy of the
+  # full value, one click from an open menu to the popover, and the shield
+  # giving way to the neutral globe on an internal page.
   e2e-address-bar-ens:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -911,7 +915,8 @@ jobs:
             test-e2e/ens-history-traversal.spec.js \
             test-e2e/chrome-page-spoof.spec.js \
             test-e2e/tez-unverified.spec.js \
-            test-e2e/tez-head-conflict.spec.js
+            test-e2e/tez-head-conflict.spec.js \
+            test-e2e/ens-trust-popover.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

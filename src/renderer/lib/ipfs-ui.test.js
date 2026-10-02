@@ -39,6 +39,8 @@ const loadIpfsModule = async (options = {}) => {
   const ipfsToggleSwitch = createElement('div');
   const ipfsActiveRequestsCount = createElement('span');
   const ipfsDataRead = createElement('span');
+  const ipfsPeersCount = createElement('span');
+  const ipfsBandwidth = createElement('span');
   const ipfsVersionText = createElement('span');
   const ipfsInfoPanel = createElement('div', {
     classes: ['ipfs-info'],
@@ -55,6 +57,8 @@ const loadIpfsModule = async (options = {}) => {
       'ipfs-toggle-switch': ipfsToggleSwitch,
       'ipfs-active-requests-count': ipfsActiveRequestsCount,
       'ipfs-data-read': ipfsDataRead,
+      'ipfs-peers-count': ipfsPeersCount,
+      'ipfs-bandwidth': ipfsBandwidth,
       'ipfs-version-text': ipfsVersionText,
       'ipfs-status-row': ipfsStatusRow,
       'ipfs-status-label': ipfsStatusLabel,
@@ -137,6 +141,8 @@ const loadIpfsModule = async (options = {}) => {
       ipfsToggleSwitch,
       ipfsActiveRequestsCount,
       ipfsDataRead,
+      ipfsPeersCount,
+      ipfsBandwidth,
       ipfsVersionText,
       ipfsInfoPanel,
       ipfsStatusRow,
@@ -183,6 +189,9 @@ describe('ipfs-ui', () => {
 
     expect(ctx.buildIpfsApiUrl).not.toHaveBeenCalled();
     expect(ctx.elements.ipfsInfoPanel.classList.contains('visible')).toBe(true);
+    // The managed node shows its own gateway counters, not external-node rows.
+    expect(ctx.elements.ipfsInfoPanel.classList.contains('external')).toBe(false);
+    expect(ctx.ipfsApi.getStatus).toHaveBeenCalledWith({ nodeStats: true });
     expect(ctx.elements.ipfsActiveRequestsCount.textContent).toBe('3');
     expect(ctx.elements.ipfsDataRead.textContent).toBe('1.5 KB');
     expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS v0.4.1');
@@ -480,6 +489,136 @@ describe('ipfs-ui', () => {
     expect(ctx.state.ipfsInfoInterval).not.toBeNull();
     expect(ctx.elements.ipfsActiveRequestsCount.textContent).toBe('2');
     expect(ctx.elements.ipfsDataRead.textContent).toBe('2.0 KB');
+  });
+
+  // #417: an external node (e.g. Kubo) shows peers/bandwidth from its RPC API
+  // instead of freedom-ipfs's own gateway counters.
+  test('shows peers and bandwidth instead of freedom-ipfs counters for an external node', async () => {
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      mode: 'external',
+      statusResult: {
+        status: 'running',
+        error: null,
+        diagnostics: {
+          nativeGatewayStats: JSON.stringify({ active_native_handles: 7, bytes_read: 9999 }),
+          externalGateway: 'http://127.0.0.1:8080',
+          externalVersion: 'Kubo 0.30.0',
+          externalNodeStats: { peers: 42, rateIn: 1536, rateOut: 2 * 1024 * 1024 },
+        },
+      },
+    });
+
+    ctx.mod.initIpfsUi();
+    ctx.mod.startIpfsInfoPolling();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(ctx.ipfsApi.getStatus).toHaveBeenCalledWith({ nodeStats: true });
+    expect(ctx.elements.ipfsInfoPanel.classList.contains('external')).toBe(true);
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('42');
+    expect(ctx.elements.ipfsBandwidth.textContent).toBe('↓1.5 KB/s ↑2.0 MB/s');
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('Kubo 0.30.0');
+    // The managed counters are not written from an external node's proxy tally.
+    expect(ctx.elements.ipfsActiveRequestsCount.textContent).toBe('');
+    expect(ctx.elements.ipfsDataRead.textContent).toBe('');
+
+    ctx.mod.stopIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('0');
+    expect(ctx.elements.ipfsBandwidth.textContent).toBe('');
+
+    // Switching the profile back to the managed node swaps the rows back.
+    ctx.state.registry.ipfs.mode = 'bundled';
+    ctx.mod.startIpfsInfoPolling();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(ctx.elements.ipfsInfoPanel.classList.contains('external')).toBe(false);
+    expect(ctx.elements.ipfsActiveRequestsCount.textContent).toBe('7');
+  });
+
+  // R1-M1: until the first stats read lands (the RPC may take up to its 2s
+  // timeout), the external rows read Unknown, not the markup/reset `0`/blank —
+  // on first open, on a reopen after close, and on a flip to external mode.
+  test('external rows read Unknown until the first stats read lands', async () => {
+    const external = {
+      status: 'running',
+      error: null,
+      diagnostics: {
+        externalGateway: 'http://127.0.0.1:8080',
+        externalVersion: 'Kubo 0.30.0',
+        externalNodeStats: { peers: 5, rateIn: 0, rateOut: 0 },
+      },
+    };
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      mode: 'external',
+    });
+    const pending = [];
+    ctx.ipfsApi.getStatus.mockImplementation(
+      () => new Promise((resolve) => pending.push(() => resolve(external)))
+    );
+
+    ctx.mod.initIpfsUi();
+    ctx.elements.ipfsPeersCount.textContent = '0'; // markup default
+    ctx.mod.startIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('Unknown');
+    expect(ctx.elements.ipfsBandwidth.textContent).toBe('Unknown');
+
+    // A repeat start while already open (updateIpfsUi) must not blank a reading.
+    pending.splice(0).forEach((resolve) => resolve());
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('5');
+    ctx.mod.startIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('5');
+
+    // Close resets to 0; reopening shows Unknown again, not the stale reset.
+    ctx.mod.stopIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('0');
+    ctx.mod.startIpfsInfoPolling();
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('Unknown');
+    expect(ctx.elements.ipfsBandwidth.textContent).toBe('Unknown');
+    pending.splice(0).forEach((resolve) => resolve());
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // Flip managed -> external while the menu stays open.
+    ctx.mod.stopIpfsInfoPolling();
+    ctx.state.registry.ipfs.mode = 'bundled';
+    ctx.mod.startIpfsInfoPolling();
+    ctx.elements.ipfsPeersCount.textContent = '0';
+    ctx.state.registry.ipfs.mode = 'external';
+    ctx.mod.startIpfsInfoPolling();
+    expect(ctx.elements.ipfsInfoPanel.classList.contains('external')).toBe(true);
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('Unknown');
+  });
+
+  test('reads Unknown, not 0 peers, when the external node exposes no RPC', async () => {
+    const ctx = await loadIpfsModule({
+      antMenuOpen: true,
+      currentIpfsStatus: 'running',
+      mode: 'external',
+      statusResult: {
+        status: 'running',
+        error: null,
+        diagnostics: {
+          externalGateway: 'https://gw.example.com',
+          externalVersion: null,
+          externalNodeStats: null,
+        },
+      },
+    });
+
+    ctx.mod.initIpfsUi();
+    ctx.mod.startIpfsInfoPolling();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(ctx.elements.ipfsPeersCount.textContent).toBe('Unknown');
+    expect(ctx.elements.ipfsBandwidth.textContent).toBe('Unknown');
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('External · gw.example.com');
   });
 
   test('falls back to the menu-wide Unknown placeholder when diagnostics are missing', async () => {

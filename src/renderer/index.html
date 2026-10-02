@@ -751,13 +751,23 @@
             </span>
           </button>
           <div class="ipfs-info">
-            <div class="ipfs-info-row">
+            <!-- Managed freedom-ipfs node: its own gateway counters. -->
+            <div class="ipfs-info-row ipfs-managed-stat">
               <span class="ipfs-info-label">Active Requests:</span>
               <span id="ipfs-active-requests-count">0</span>
             </div>
-            <div class="ipfs-info-row">
+            <div class="ipfs-info-row ipfs-managed-stat">
               <span class="ipfs-info-label">Session Download:</span>
               <span id="ipfs-data-read"></span>
+            </div>
+            <!-- External node (e.g. Kubo): read off its RPC API (#417). -->
+            <div class="ipfs-info-row ipfs-external-stat">
+              <span class="ipfs-info-label">Connected Peers:</span>
+              <span id="ipfs-peers-count">0</span>
+            </div>
+            <div class="ipfs-info-row ipfs-external-stat">
+              <span class="ipfs-info-label">Bandwidth:</span>
+              <span id="ipfs-bandwidth"></span>
             </div>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Version:</span>

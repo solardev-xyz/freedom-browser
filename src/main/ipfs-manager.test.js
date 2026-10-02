@@ -1606,6 +1606,338 @@ describe('ipfs-manager', () => {
     }
   });
 
+  // #417: an external Kubo node's menu stats come from its RPC API.
+  describe('external node stats for the nodes menu', () => {
+    const settle = async () => {
+      for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+    const externalProfile = (gateway) => ({
+      metadata: { nodes: { ipfs: { mode: 'external', externalGateway: gateway } } },
+    });
+    const kuboRpc = (overrides = {}) =>
+      mockGatewayFetch(async (url) => {
+        const u = String(url);
+        for (const [suffix, body] of Object.entries(overrides)) {
+          if (u.endsWith(suffix)) return typeof body === 'function' ? body() : body;
+        }
+        if (u.endsWith('/api/v0/swarm/peers')) {
+          return new Response(JSON.stringify({ Peers: [{ Peer: 'a' }, { Peer: 'b' }] }));
+        }
+        if (u.endsWith('/api/v0/stats/bw')) {
+          return new Response(JSON.stringify({ RateIn: 1536.5, RateOut: 42 }));
+        }
+        if (u.endsWith('/api/v0/version')) {
+          return new Response(JSON.stringify({ Version: '0.30.0' }));
+        }
+        return new Response('external-body', { status: 200 });
+      });
+    let realFetch;
+    beforeEach(() => {
+      realFetch = global.fetch;
+    });
+    afterEach(() => {
+      global.fetch = realFetch;
+    });
+
+    test('reads peer count and bandwidth off the Kubo RPC when the menu asks', async () => {
+      global.fetch = kuboRpc();
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: externalProfile('http://127.0.0.1:8080'),
+      });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      await settle();
+
+      const result = await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      expect(result.diagnostics.externalNodeStats).toEqual({
+        peers: 2,
+        rateIn: 1536.5,
+        rateOut: 42,
+      });
+      for (const rpc of ['/api/v0/swarm/peers', '/api/v0/stats/bw']) {
+        expect(global.fetch).toHaveBeenCalledWith(
+          `http://127.0.0.1:5001${rpc}`,
+          expect.objectContaining({ method: 'POST' })
+        );
+      }
+    });
+
+    test('plain status checks never dial the RPC for stats', async () => {
+      global.fetch = kuboRpc();
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: externalProfile('http://127.0.0.1:8080'),
+      });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      await settle();
+
+      const result = await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS);
+      expect(result.diagnostics.externalNodeStats).toBeNull();
+      const statsCalls = global.fetch.mock.calls.filter(([url]) =>
+        /swarm\/peers|stats\/bw/.test(String(url))
+      );
+      expect(statsCalls).toEqual([]);
+    });
+
+    test('Kubo answering Peers: null is zero peers, not unknown', async () => {
+      global.fetch = kuboRpc({
+        '/api/v0/swarm/peers': () => new Response(JSON.stringify({ Peers: null })),
+      });
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: externalProfile('http://127.0.0.1:8080'),
+      });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      await settle();
+
+      const result = await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      expect(result.diagnostics.externalNodeStats.peers).toBe(0);
+    });
+
+    test('a failing RPC yields null stats rather than zeros', async () => {
+      global.fetch = kuboRpc({
+        '/api/v0/swarm/peers': () => new Response('nope', { status: 500 }),
+        '/api/v0/stats/bw': () => new Response('nope', { status: 500 }),
+      });
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: externalProfile('http://127.0.0.1:8080'),
+      });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      await settle();
+
+      const result = await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      expect(result.diagnostics.externalNodeStats).toBeNull();
+    });
+
+    test('a remote gateway is never dialled on :5001 for stats', async () => {
+      global.fetch = kuboRpc();
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: externalProfile('http://192.168.1.20:8080'),
+      });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      await settle();
+
+      const result = await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      expect(result.diagnostics.externalNodeStats).toBeNull();
+      expect(global.fetch.mock.calls.some(([url]) => String(url).includes(':5001'))).toBe(false);
+    });
+
+    test('the managed node reports no external stats', async () => {
+      global.fetch = kuboRpc();
+      const ctx = loadIpfsManagerModule();
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+
+      const result = await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      expect(result.diagnostics.externalNodeStats).toBeUndefined();
+      expect(global.fetch.mock.calls.some(([url]) => String(url).includes(':5001'))).toBe(false);
+    });
+
+    // Same blind spot as the version detect: a stop and a restart onto the
+    // same endpoint leave mode and endpoint identical, so only the generation
+    // separates the old activation's in-flight read from the new one.
+    test('a stats read from a previous activation cannot land on a restarted node', async () => {
+      let releasePeers = null;
+      let peersCalls = 0;
+      global.fetch = kuboRpc({
+        '/api/v0/swarm/peers': () => {
+          peersCalls += 1;
+          if (peersCalls === 1) {
+            return new Promise((resolve) => {
+              releasePeers = resolve;
+            });
+          }
+          return new Response(JSON.stringify({ Peers: [{ Peer: 'new' }] }));
+        },
+      });
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: externalProfile('http://127.0.0.1:8080'),
+      });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      await settle();
+
+      const stale = ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      await settle();
+      expect(releasePeers).toBeInstanceOf(Function);
+
+      await ctx.mod.stopIpfs();
+      await ctx.mod.startIpfs();
+      await settle();
+
+      // The restarted node gets its own read, not the old in-flight one.
+      const fresh = await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      expect(fresh.diagnostics.externalNodeStats.peers).toBe(1);
+
+      releasePeers(new Response(JSON.stringify({ Peers: [{ Peer: 'a' }, { Peer: 'b' }] })));
+      const staleResult = await stale;
+      expect(staleResult.diagnostics.externalNodeStats).toBeNull();
+    });
+
+    // R1-M2: the menu polls every second; a :5001 that doesn't answer as Kubo
+    // must not be POSTed twice a second for as long as the menu stays open.
+    test('backs off the RPC after a read that learned nothing, and recovers', async () => {
+      let now = 1_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      let kuboUp = false;
+      global.fetch = kuboRpc({
+        // Not Kubo: something answers 200 with unrelated JSON, or 500s.
+        '/api/v0/swarm/peers': () =>
+          kuboUp
+            ? new Response(JSON.stringify({ Peers: [{ Peer: 'a' }] }))
+            : new Response(JSON.stringify({ hello: 'world' })),
+        '/api/v0/stats/bw': () =>
+          kuboUp
+            ? new Response(JSON.stringify({ RateIn: 1, RateOut: 2 }))
+            : new Response('nope', { status: 500 }),
+      });
+      try {
+        const ctx = loadIpfsManagerModule({
+          nativeAvailable: false,
+          activeProfile: externalProfile('http://127.0.0.1:8080'),
+        });
+        ctx.mod.registerIpfsIpc();
+        await ctx.mod.startIpfs();
+        await settle();
+        const statsCalls = () =>
+          global.fetch.mock.calls.filter(([url]) => /swarm\/peers|stats\/bw/.test(String(url)))
+            .length;
+        const poll = async () =>
+          (await ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true })).diagnostics
+            .externalNodeStats;
+
+        expect(await poll()).toBeNull();
+        expect(statsCalls()).toBe(2);
+
+        // Menu keeps polling once a second: no further dials inside the window.
+        for (let i = 0; i < 4; i += 1) {
+          now += 1000;
+          expect(await poll()).toBeNull();
+        }
+        expect(statsCalls()).toBe(2);
+
+        // Window (5s) elapses: one retry, which misses again and doubles it.
+        now += 1000;
+        expect(await poll()).toBeNull();
+        expect(statsCalls()).toBe(4);
+        now += 9000;
+        expect(await poll()).toBeNull();
+        expect(statsCalls()).toBe(4);
+
+        // Kubo comes up; the next retry after the 10s window reads it and
+        // resets the back-off, so the following poll dials again right away.
+        kuboUp = true;
+        now += 1000;
+        expect(await poll()).toEqual({ peers: 1, rateIn: 1, rateOut: 2 });
+        expect(statsCalls()).toBe(6);
+        now += 1000;
+        expect(await poll()).toEqual({ peers: 1, rateIn: 1, rateOut: 2 });
+        expect(statsCalls()).toBe(8);
+
+        // The success reset the miss count: a new miss waits 5s again, not 20s.
+        kuboUp = false;
+        now += 1000;
+        expect(await poll()).toBeNull();
+        expect(statsCalls()).toBe(10);
+        now += 5000;
+        expect(await poll()).toBeNull();
+        expect(statsCalls()).toBe(12);
+
+        // A new activation starts without the old one's back-off.
+        await ctx.mod.stopIpfs();
+        await ctx.mod.startIpfs();
+        await settle();
+        kuboUp = true;
+        expect(await poll()).toEqual({ peers: 1, rateIn: 1, rateOut: 2 });
+        expect(statsCalls()).toBe(14);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    test("a previous activation's late miss does not clobber the new one's back-off", async () => {
+      let now = 1_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      let releaseStale = null;
+      let peersCalls = 0;
+      global.fetch = kuboRpc({
+        '/api/v0/swarm/peers': () => {
+          peersCalls += 1;
+          if (peersCalls === 1) {
+            return new Promise((resolve) => {
+              releaseStale = resolve;
+            });
+          }
+          return new Response('nope', { status: 500 });
+        },
+        '/api/v0/stats/bw': () => new Response('nope', { status: 500 }),
+      });
+      try {
+        const ctx = loadIpfsManagerModule({
+          nativeAvailable: false,
+          activeProfile: externalProfile('http://127.0.0.1:8080'),
+        });
+        ctx.mod.registerIpfsIpc();
+        await ctx.mod.startIpfs();
+        await settle();
+        const poll = () => ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+
+        const stale = poll();
+        await settle();
+        await ctx.mod.stopIpfs();
+        await ctx.mod.startIpfs();
+        await settle();
+
+        await poll(); // new activation misses: backs off for 5s
+        expect(peersCalls).toBe(2);
+        releaseStale(new Response('nope', { status: 500 }));
+        await stale;
+
+        now += 1000;
+        await poll();
+        expect(peersCalls).toBe(2);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    test('overlapping menu polls share one in-flight RPC read', async () => {
+      let releasePeers = null;
+      let peersCalls = 0;
+      global.fetch = kuboRpc({
+        '/api/v0/swarm/peers': () => {
+          peersCalls += 1;
+          return new Promise((resolve) => {
+            releasePeers = resolve;
+          });
+        },
+      });
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: externalProfile('http://127.0.0.1:8080'),
+      });
+      ctx.mod.registerIpfsIpc();
+      await ctx.mod.startIpfs();
+      await settle();
+
+      const first = ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      const second = ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS, { nodeStats: true });
+      await settle();
+      expect(peersCalls).toBe(1);
+      releasePeers(new Response(JSON.stringify({ Peers: [] })));
+      expect((await first).diagnostics.externalNodeStats.peers).toBe(0);
+      expect((await second).diagnostics.externalNodeStats.peers).toBe(0);
+    });
+  });
+
   // R4-F3: the loopback gate is what keeps that unsolicited RPC POST on the
   // user's own machine, so it must only accept *literal* loopback addresses. A
   // `127.` prefix test also accepts a resolvable DNS name whose owner points it

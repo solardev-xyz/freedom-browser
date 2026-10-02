@@ -331,6 +331,7 @@ describe('menus', () => {
       'bee-peers-count',
       'bee-network-peers',
       'ipfs-active-requests-count',
+      'ipfs-peers-count',
       'myotis-peers-count',
       'myotis-gnosis-peers-count',
       'radicle-peers-count',

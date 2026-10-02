@@ -1,0 +1,1 @@
+- A `bzz://` address of raw uploaded data, such as a Swarm video segment, loads instead of failing ([#477](https://github.com/solardev-xyz/freedom-browser/pull/477))

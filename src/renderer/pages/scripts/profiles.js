@@ -84,11 +84,17 @@ const renderProfiles = (profiles) => {
   const shown = profiles.filter((profile) => !pendingDeleteIds.has(profile.id));
   setStats(`${shown.length} profile${shown.length === 1 ? '' : 's'}`);
 
+  // Deleting must never leave zero profiles (#124) — the catalog refuses the
+  // last one too; this just avoids offering a control that can only fail.
+  // Count the full catalog, not `shown`, so an in-flight delete can't hide
+  // the trash on the card that will actually remain.
+  const registeredCount = profiles.filter((profile) => profile.isUnregistered !== true).length;
+
   const cards = shown
     .map((profile) => {
       const isUnregistered = profile.isUnregistered === true;
       const isActive = profile.isActive === true;
-      const canDelete = !isActive && profile.id !== 'default' && !isUnregistered;
+      const canDelete = !isActive && !isUnregistered && registeredCount > 1;
       const displayName = profile.displayName || profile.id;
 
       const badge = isActive
@@ -108,8 +114,8 @@ const renderProfiles = (profiles) => {
             esc(displayName) +
             '"';
 
-      // Only registered, non-active, non-default profiles can be deleted,
-      // so omit the trash button entirely for the rest rather than show a
+      // Only registered, non-active profiles can be deleted (the default one
+      // included, as long as another profile remains), so omit the trash button entirely for the rest rather than show a
       // dead, disabled control.
       const controls = isUnregistered
         ? '<button type="button" class="link-btn" data-import-profile>Register</button>'

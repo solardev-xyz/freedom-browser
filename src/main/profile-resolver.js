@@ -105,6 +105,33 @@ function resolveLastOpenedProfileId(appRoot) {
   return lastId;
 }
 
+// The profile a cold start falls back to when nothing (argv, env, last-opened)
+// picked one. That is the `default` profile while it is registered; once the
+// user has deleted it (#124) it is the first remaining registered profile, so
+// a bare launch opens an existing profile instead of silently resurrecting the
+// deleted one. Returns null for an empty/unreadable catalog (first run), where
+// the caller creates `default`.
+function resolveFallbackProfileId(appRoot) {
+  let catalog;
+  try {
+    catalog = loadCatalog(appRoot);
+  } catch {
+    return null;
+  }
+
+  const ids = (catalog.profiles || []).map((profile) => profile?.id).filter(Boolean);
+  if (ids.includes(DEFAULT_PROFILE_ID)) return DEFAULT_PROFILE_ID;
+  return ids[0] || null;
+}
+
+function hasRegisteredProfiles(appRoot) {
+  try {
+    return (loadCatalog(appRoot).profiles || []).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function resolveProfile(app, options = {}) {
   const env = options.env || process.env;
   const argv = options.argv || process.argv;
@@ -153,13 +180,18 @@ function resolveProfile(app, options = {}) {
     getArgValue(argv, 'profile') ||
     env.FREEDOM_PROFILE ||
     resolveLastOpenedProfileId(appRoot) ||
+    resolveFallbackProfileId(appRoot) ||
     DEFAULT_PROFILE_ID;
   const profileId = sanitizeProfileId(profileInput);
   const defaultProfileDir = isDev
     ? path.join(appRoot, 'Profiles', DEFAULT_PROFILE_ID)
     : appRoot;
 
-  if (profileId !== DEFAULT_PROFILE_ID) {
+  // Register `default` (slot 0, and in a packaged build the adopted
+  // pre-profiles userData) only on a first run, when the catalog is still
+  // empty. Once profiles exist the user may have deleted `default` on purpose
+  // (#124), and launching another profile must not bring it back.
+  if (profileId !== DEFAULT_PROFILE_ID && !hasRegisteredProfiles(appRoot)) {
     ensureProfile(appRoot, DEFAULT_PROFILE_ID, {
       checkoutHash,
       defaultProfileDir,
@@ -423,6 +455,7 @@ module.exports = {
   initializeProfile,
   listProfilesForActiveApp,
   renameProfileForActiveApp,
+  resolveFallbackProfileId,
   resolveLastOpenedProfileId,
   resolveProfile,
   updateActiveProfileNodeConfig,

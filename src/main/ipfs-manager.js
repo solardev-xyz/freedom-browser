@@ -201,31 +201,34 @@ function unreachableEndpointHint(rawUrl) {
 // unsolicited `:5001` RPC POST below is allowed, and the two must not drift.
 
 // The user configures only the gateway (e.g. :8080), but Kubo's RPC API answers
-// POST /api/v0/version with the running version. We derive the host from the
-// configured gateway URL and try the RPC there. Any failure just yields null and the
-// UI falls back to showing the gateway endpoint, so this only ever adds information.
-function kuboVersionUrl(gatewayUrl) {
+// on the same host: POST /api/v0/version with the running version, and
+// /api/v0/swarm/peers + /api/v0/stats/bw with the numbers the nodes menu shows
+// for an external node (#417). We derive the host from the configured gateway
+// URL and try the RPC there. Any failure just yields null and the UI falls back
+// to showing the gateway endpoint / `Unknown`, so this only ever adds information.
+function kuboRpcUrl(gatewayUrl, rpcPath) {
   try {
     const parsed = new URL(gatewayUrl);
     // ASSUMPTION: the RPC API is on port 5001 on the same host as the gateway.
     // This is Kubo's conventional default and it is NOT user-configured.
-    // If a deployment moves the RPC port, version detection simply fails.
+    // If a deployment moves the RPC port, detection simply fails.
     //
     // Only attempted for a loopback gateway. The user configures a gateway, not
     // an RPC API, so on any other host `:5001` belongs to whoever is listening
     // there — a LAN box, or a remote `https://gw.example.com:5001` — and Kubo's
     // own `:5001` is its *admin* RPC. Freedom must not send an unsolicited POST
     // to an address the user never named; remote gateways simply fall back to
-    // showing the endpoint instead of a detected version.
+    // showing the endpoint instead of a detected version and node stats.
     if (!isLoopbackHostname(parsed.hostname)) return null;
-    return `${parsed.protocol}//${parsed.hostname}:5001/api/v0/version`;
+    return `${parsed.protocol}//${parsed.hostname}:5001${rpcPath}`;
   } catch {
     return null;
   }
 }
 
-async function detectExternalGatewayVersion(gatewayUrl, { timeoutMs = 2000 } = {}) {
-  const url = kuboVersionUrl(gatewayUrl);
+// POST one Kubo RPC call and parse its JSON body; null on any failure.
+async function kuboRpcJson(gatewayUrl, rpcPath, { timeoutMs = 2000 } = {}) {
+  const url = kuboRpcUrl(gatewayUrl, rpcPath);
   if (!url) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -238,13 +241,107 @@ async function detectExternalGatewayVersion(gatewayUrl, { timeoutMs = 2000 } = {
       return null;
     }
     const data = await res.json();
-    const version = typeof data?.Version === 'string' ? data.Version.trim() : '';
-    return version ? `Kubo ${version}` : null;
+    return data && typeof data === 'object' ? data : null;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function detectExternalGatewayVersion(gatewayUrl, options) {
+  const data = await kuboRpcJson(gatewayUrl, '/api/v0/version', options);
+  const version = typeof data?.Version === 'string' ? data.Version.trim() : '';
+  return version ? `Kubo ${version}` : null;
+}
+
+const finiteOrNull = (value) =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+// Live numbers for an external Kubo node: connected peer count and current
+// bandwidth rates (bytes/s). Kubo answers `{"Peers": null}` when it has no
+// peers, which is a real 0, not a missing value. Null when neither call
+// answered (no RPC reachable — e.g. a remote gateway, see kuboRpcUrl).
+async function fetchExternalNodeStats(gatewayUrl, options) {
+  const [peers, bandwidth] = await Promise.all([
+    kuboRpcJson(gatewayUrl, '/api/v0/swarm/peers', options),
+    kuboRpcJson(gatewayUrl, '/api/v0/stats/bw', options),
+  ]);
+  if (!peers && !bandwidth) return null;
+  let peerCount = null;
+  if (peers) {
+    if (Array.isArray(peers.Peers)) peerCount = peers.Peers.length;
+    else if (peers.Peers === null) peerCount = 0;
+  }
+  const stats = {
+    peers: peerCount,
+    rateIn: finiteOrNull(bandwidth?.RateIn),
+    rateOut: finiteOrNull(bandwidth?.RateOut),
+  };
+  // Something answered on :5001 but not in Kubo's shape: no stats either.
+  if (Object.values(stats).every((value) => value === null)) return null;
+  return stats;
+}
+
+// Back-off after a stats read that learned nothing (RPC down, filtered, or not
+// Kubo). The menu polls every second while open; without this a loopback
+// gateway whose :5001 is something else — or nothing — would get two POSTs a
+// second for as long as the menu stays open. Doubles per consecutive miss, up
+// to a minute; any answer resets it, and a new activation starts clean.
+const EXTERNAL_NODE_STATS_BACKOFF_BASE_MS = 5_000;
+const EXTERNAL_NODE_STATS_BACKOFF_MAX_MS = 60_000;
+let externalNodeStatsBackoff = null; // { generation, failures, retryAt }
+
+function externalNodeStatsBackingOff(generation) {
+  return (
+    externalNodeStatsBackoff?.generation === generation &&
+    Date.now() < externalNodeStatsBackoff.retryAt
+  );
+}
+
+function recordExternalNodeStatsResult(generation, stats) {
+  // A read from a previous activation says nothing about the current node.
+  if (generation !== externalStateGeneration) return;
+  if (stats) {
+    if (externalNodeStatsBackoff?.generation === generation) externalNodeStatsBackoff = null;
+    return;
+  }
+  const failures =
+    externalNodeStatsBackoff?.generation === generation ? externalNodeStatsBackoff.failures + 1 : 1;
+  const delay = Math.min(
+    EXTERNAL_NODE_STATS_BACKOFF_BASE_MS * 2 ** (failures - 1),
+    EXTERNAL_NODE_STATS_BACKOFF_MAX_MS
+  );
+  externalNodeStatsBackoff = { generation, failures, retryAt: Date.now() + delay };
+}
+
+// One in-flight stats read per external activation. The nodes menu polls every
+// second while the RPC may take up to its 2s timeout, so polls share the read
+// instead of stacking. Keyed by the activation generation (not the endpoint):
+// a stop and restart onto the same endpoint must not hand the new activation a
+// read started for the old one — the same blind spot the version detect guards.
+let externalNodeStatsRead = null;
+
+async function getExternalNodeStats() {
+  if (currentMode !== MODE.EXTERNAL || !externalGatewayUrl) return null;
+  const generation = externalStateGeneration;
+  if (!externalNodeStatsRead || externalNodeStatsRead.generation !== generation) {
+    if (externalNodeStatsBackingOff(generation)) return null;
+    const read = {
+      generation,
+      promise: fetchExternalNodeStats(externalGatewayUrl).then((stats) => {
+        if (externalNodeStatsRead === read) externalNodeStatsRead = null;
+        recordExternalNodeStatsResult(generation, stats);
+        return stats;
+      }),
+    };
+    externalNodeStatsRead = read;
+  }
+  const stats = await externalNodeStatsRead.promise;
+  // Landed after the external state moved on: it describes a node that is no
+  // longer the one being shown.
+  if (externalStateGeneration !== generation || currentMode !== MODE.EXTERNAL) return null;
+  return stats;
 }
 
 // Probe an external IPFS gateway by requesting the empty-file CID `bafkqaaa`,
@@ -994,8 +1091,17 @@ function registerIpfsIpc() {
     return { status: currentState, error: lastError };
   });
 
-  ipcMain.handle(IPC.IPFS_GET_STATUS, () => {
-    return { status: currentState, error: lastError, diagnostics: getNativeDiagnostics() };
+  // `{ nodeStats: true }` is the nodes menu's stats poll: on an external node it
+  // also reads peers/bandwidth off the Kubo RPC (#417). The plain status checks
+  // don't ask for it, so they never dial the RPC.
+  ipcMain.handle(IPC.IPFS_GET_STATUS, async (_event, options) => {
+    const externalNodeStats =
+      options?.nodeStats && currentMode === MODE.EXTERNAL ? await getExternalNodeStats() : null;
+    const diagnostics = getNativeDiagnostics();
+    if (diagnostics.externalGateway !== undefined) {
+      diagnostics.externalNodeStats = externalNodeStats;
+    }
+    return { status: currentState, error: lastError, diagnostics };
   });
 
   ipcMain.handle(IPC.IPFS_CHECK_BINARY, () => {

@@ -2117,4 +2117,309 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
     vm.runInContext('new HTMLIFrameElement().contentWindow;', parent);
     expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
   });
+
+  // window[i] / frames[i] (#414): no accessor to hook, so every DOM insertion
+  // API is wrapped to adopt the inserting document's new frames right after
+  // the call. The parent realm models a Node whose appendChild "creates" the
+  // child frame, reachable only by index.
+  function makeFramesRealms() {
+    const { child } = makeRealms();
+    const parent = vm.createContext({ __child: vm.runInContext('globalThis', child) });
+    vm.runInContext(
+      `var window = globalThis;
+       var location = { href: 'https://www.youtube.com/watch?v=x' };
+       var frameCount = 0;
+       Object.defineProperty(globalThis, 'length', {
+         configurable: true, enumerable: true, get() { return frameCount; }, set(v) {},
+       });
+       Object.defineProperty(globalThis, '0', {
+         configurable: true, get() { return frameCount ? __child : undefined; },
+       });
+       function Document() {}
+       Object.defineProperty(Document.prototype, 'defaultView', {
+         configurable: true, enumerable: true, get() { return window; },
+       });
+       var document = new Document();
+       function Node() {}
+       Object.defineProperty(Node.prototype, 'ownerDocument', {
+         // Brand-checked like the real one: a non-node (HTMLOptionsCollection) throws.
+         configurable: true, enumerable: true,
+         get() { if (!(this instanceof Node)) throw new TypeError('Illegal invocation'); return document; },
+       });
+       Node.prototype.appendChild = function appendChild(node) { frameCount = 1; return node; };
+       function Range() {}
+       function HTMLTableElement() {}
+       Object.setPrototypeOf(HTMLTableElement.prototype, Node.prototype);
+       Object.defineProperty(HTMLTableElement.prototype, 'caption', {
+         configurable: true, enumerable: true, get() { return null; }, set(v) { frameCount = 1; },
+       });
+       // Not a node: the window comes from the element it inserted.
+       function HTMLOptionsCollection() {}
+       HTMLOptionsCollection.prototype.add = function add(element) { frameCount = 1; };`,
+      parent
+    );
+    return { parent, child };
+  }
+
+  test.each([
+    ['an untouched page', ''],
+    [
+      'window.length shadowed',
+      "Object.defineProperty(window, 'length', { value: 0, configurable: true });",
+    ],
+    ['WeakSet.prototype.has replaced', 'WeakSet.prototype.has = () => true;'],
+    ['Reflect.apply replaced', 'Reflect.apply = () => {};'],
+    ['the Array iterator replaced', 'Array.prototype[Symbol.iterator] = function* () {};'],
+  ])('patches a child reached only as window[i] with %s', (_label, sabotage) => {
+    const src = bundleSource();
+    const { parent, child } = makeFramesRealms();
+    vm.runInContext(`(${src})()`, parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', parent)).toBe(1);
+    // The wrapper keeps the native's result and name.
+    expect(
+      vm.runInContext(
+        `${sabotage}\n var n = {}; [new Node().appendChild(n) === n, Node.prototype.appendChild.name]`,
+        parent
+      )
+    ).toEqual([true, 'appendChild']);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+    // Seen once: later insertions don't re-run it.
+    vm.runInContext('new Node().appendChild({});', parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  test.each([
+    ['the table caption setter', 'new HTMLTableElement().caption = new Node();'],
+    ['HTMLOptionsCollection#add', 'new HTMLOptionsCollection().add(new Node());'],
+  ])('patches a child inserted through %s', (_label, insert) => {
+    const src = bundleSource();
+    const { parent, child } = makeFramesRealms();
+    vm.runInContext(`(${src})()`, parent);
+    vm.runInContext(insert, parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  // R1-M2: anti-adblock scripts fingerprint hot DOM methods by `length` and
+  // by whether they print as [native code].
+  test('wrappers keep the native length and print as the native', () => {
+    const src = bundleSource();
+    const { parent } = makeFramesRealms();
+    const shape = `[
+      Node.prototype.appendChild.length,
+      Function.prototype.toString.call(Node.prototype.appendChild),
+      String(Object.getOwnPropertyDescriptor(HTMLTableElement.prototype, 'caption').set),
+      Function.prototype.toString.toString(),
+      Function.prototype.toString.length,
+      Function.prototype.toString.name,
+      Object.getOwnPropertyDescriptor(Function.prototype, 'toString').enumerable,
+    ]`;
+    const before = vm.runInContext(shape, parent);
+    vm.runInContext('var appendChildBefore = Node.prototype.appendChild;', parent);
+    vm.runInContext(`(${src})()`, parent);
+    // Sanity: the method really was replaced, it just doesn't show.
+    expect(vm.runInContext('Node.prototype.appendChild === appendChildBefore', parent)).toBe(false);
+    expect(vm.runInContext(shape, parent)).toEqual(before);
+    expect(before[0]).toBe(1);
+    // Ordinary functions still print their own source.
+    expect(vm.runInContext('String(function f(a) { return a; })', parent)).toBe(
+      'function f(a) { return a; }'
+    );
+    // Non-functions still throw, as the native does (a TypeError from the
+    // parent realm, so matched on the message).
+    expect(() => vm.runInContext('Function.prototype.toString.call({})', parent)).toThrow(
+      /requires that 'this' be a Function/
+    );
+  });
+
+  test('wrappers installed in an adopted child print as the child’s natives', () => {
+    const src = bundleSource();
+    const { parent, child } = makeFramesRealms();
+    vm.runInContext(
+      `function Node() {}
+       Node.prototype.appendChild = function appendChild(node) { return node; };
+       var nativeAppend = Node.prototype.appendChild;`,
+      child
+    );
+    const shape = `[Node.prototype.appendChild.length, String(Node.prototype.appendChild)]`;
+    const before = vm.runInContext(shape, child);
+    vm.runInContext(`(${src})()`, parent);
+    vm.runInContext('new Node().appendChild({});', parent);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+    expect(vm.runInContext('Node.prototype.appendChild === nativeAppend', child)).toBe(false);
+    expect(vm.runInContext(shape, child)).toEqual(before);
+  });
+
+  // R2-M1: custom-element reactions run inside the native insertion, after
+  // the frame exists but before the wrapper's sweep. The fake registry reads
+  // the callbacks off the prototype at define time, like the real one, and
+  // the fake appendChild runs the stored connectedCallback before returning.
+  function makeCustomElementRealms() {
+    const realms = makeFramesRealms();
+    vm.runInContext(
+      `function CustomElementRegistry() { this.defs = {}; }
+       CustomElementRegistry.prototype.define = function define(name, ctor, options) {
+         var p = ctor.prototype;
+         this.defs[name] = { ctor: ctor, connected: p.connectedCallback,
+           attributeChanged: p.attributeChangedCallback,
+           formAssociated: ctor.formAssociated ? p.formAssociatedCallback : undefined,
+           formDisabled: ctor.formAssociated ? p.formDisabledCallback : undefined };
+       };
+       var customElements = new CustomElementRegistry();
+       Node.prototype.appendChild = function appendChild(node) {
+         frameCount = 1;
+         var def = node.__def && customElements.defs[node.__def];
+         if (def && def.formAssociated) def.formAssociated.call(node, this);
+         if (def && def.formDisabled) def.formDisabled.call(node, true);
+         if (def && def.connected) def.connected.call(node);
+         return node;
+       };`,
+      realms.parent
+    );
+    return realms;
+  }
+
+  test('a custom element connectedCallback run by the insertion sees an adopted frame', () => {
+    const src = bundleSource();
+    const { parent, child } = makeCustomElementRealms();
+    vm.runInContext(`(${src})()`, parent);
+    const result = vm.runInContext(
+      `function Base() {}
+       Base.prototype = Object.create(Node.prototype);
+       Base.prototype.connectedCallback = function connectedCallback() {
+         // What the page's callback would find in window[i] right now.
+         seenInCallback = window[0].__freedomScriptletRan;
+       };
+       function XA() {}
+       XA.prototype = Object.create(Base.prototype);
+       var ownBefore = Object.getOwnPropertyDescriptor(XA.prototype, 'connectedCallback');
+       customElements.define('x-a', XA);
+       var el = new XA(); el.__def = 'x-a';
+       new Node().appendChild(el);
+       [
+         seenInCallback,
+         // The prototype is left exactly as the page made it…
+         Object.getOwnPropertyDescriptor(XA.prototype, 'connectedCallback') === ownBefore,
+         XA.prototype.connectedCallback === Base.prototype.connectedCallback,
+         // …no callback is invented where the class has none…
+         customElements.defs['x-a'].attributeChanged,
+         // …and the stored callback prints as the page's own.
+         String(customElements.defs['x-a'].connected) === String(Base.prototype.connectedCallback),
+         customElements.defs['x-a'].connected.name,
+         String(CustomElementRegistry.prototype.define).includes('this.defs'),
+         CustomElementRegistry.prototype.define.length,
+       ]`,
+      parent
+    );
+    expect(result).toEqual([1, true, true, undefined, true, 'connectedCallback', true, 3]);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  // R3-M1: inserting a form-associated element into a <form> / disabled
+  // <fieldset> runs formAssociatedCallback / formDisabledCallback in the
+  // same [CEReactions] scope as connectedCallback.
+  test('form-associated callbacks run by the insertion see an adopted frame', () => {
+    const src = bundleSource();
+    const { parent, child } = makeCustomElementRealms();
+    vm.runInContext(`(${src})()`, parent);
+    const result = vm.runInContext(
+      `seen = [];
+       function XF() {}
+       XF.formAssociated = true;
+       XF.prototype = Object.create(Node.prototype);
+       XF.prototype.formAssociatedCallback = function formAssociatedCallback(form) {
+         seen.push(['assoc', window[0].__freedomScriptletRan]);
+       };
+       XF.prototype.formDisabledCallback = function formDisabledCallback(disabled) {
+         seen.push(['disabled', window[0].__freedomScriptletRan]);
+       };
+       var ownAssoc = XF.prototype.formAssociatedCallback;
+       var ownDisabled = XF.prototype.formDisabledCallback;
+       customElements.define('x-f', XF);
+       var el = new XF(); el.__def = 'x-f';
+       new Node().appendChild(el);
+       [
+         seen,
+         XF.prototype.formAssociatedCallback === ownAssoc,
+         XF.prototype.formDisabledCallback === ownDisabled,
+         customElements.defs['x-f'].formAssociated.length,
+         customElements.defs['x-f'].formDisabled.name,
+       ]`,
+      parent
+    );
+    expect(result).toEqual([
+      [
+        ['assoc', 1],
+        ['disabled', 1],
+      ],
+      true,
+      true,
+      1,
+      'formDisabledCallback',
+    ]);
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
+
+  // R3-M2: the lent callback is only on the prototype for define()'s own
+  // duration — a getter define() consults sees it, code after doesn't.
+  test('lent callbacks are visible only while define() runs', () => {
+    const src = bundleSource();
+    const { parent } = makeCustomElementRealms();
+    vm.runInContext(
+      `var nativeDefine = CustomElementRegistry.prototype.define;
+       CustomElementRegistry.prototype.define = function define(name, ctor, options) {
+         duringDefine = ctor.observedAttributes;
+         return nativeDefine.call(this, name, ctor, options);
+       };`,
+      parent
+    );
+    vm.runInContext(`(${src})()`, parent);
+    const result = vm.runInContext(
+      `function XO() {}
+       XO.prototype.connectedCallback = function connectedCallback() {};
+       var orig = XO.prototype.connectedCallback;
+       Object.defineProperty(XO, 'observedAttributes', {
+         get: function () { return XO.prototype.connectedCallback === orig; },
+       });
+       customElements.define('x-o', XO);
+       [duringDefine, XO.prototype.connectedCallback === orig]`,
+      parent
+    );
+    expect(result).toEqual([false, true]);
+  });
+
+  test('define restores an own callback and still registers a frozen class', () => {
+    const src = bundleSource();
+    const { parent } = makeCustomElementRealms();
+    vm.runInContext(`(${src})()`, parent);
+    const result = vm.runInContext(
+      `function XB() {}
+       XB.prototype.connectedCallback = function connectedCallback() {};
+       var own = XB.prototype.connectedCallback;
+       customElements.define('x-b', XB);
+       function XC() {}
+       XC.prototype.connectedCallback = function connectedCallback() {};
+       Object.freeze(XC.prototype);
+       customElements.define('x-c', XC);
+       [
+         XB.prototype.connectedCallback === own,
+         Object.getOwnPropertyDescriptor(XB.prototype, 'connectedCallback').enumerable,
+         customElements.defs['x-b'].connected !== own,
+         customElements.defs['x-c'].connected === XC.prototype.connectedCallback,
+       ]`,
+      parent
+    );
+    expect(result).toEqual([true, true, true, true]);
+  });
+
+  test('a throwing insertion still throws, and still sweeps', () => {
+    const src = bundleSource();
+    const { parent, child } = makeFramesRealms();
+    vm.runInContext(
+      `Node.prototype.appendChild = function appendChild() { frameCount = 1; throw new Error('boom'); };`,
+      parent
+    );
+    vm.runInContext(`(${src})()`, parent);
+    expect(() => vm.runInContext('new Node().appendChild({});', parent)).toThrow('boom');
+    expect(vm.runInContext('window.__freedomScriptletRan', child)).toBe(1);
+  });
 });

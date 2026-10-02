@@ -138,7 +138,6 @@ function createMainWindow(initialUrl = null, options = {}) {
     mainWindows.delete(window);
   });
 
-
   // Close renderer menus when window loses focus (e.g., clicking system menu)
   window.on('blur', () => {
     window.webContents.send('menus:close');
@@ -187,6 +186,24 @@ function focusBrowserWindow(window) {
         window.flashFrame(true);
         window.once('focus', () => window.flashFrame(false));
       }
+    } else if (process.platform === 'linux') {
+      // Warm profile switch: this process was asked to focus by a file
+      // request from another profile's process, not by input it received, so
+      // an X11 window manager with focus-stealing prevention may refuse a bare
+      // focus() and mark the window "demands attention" instead (GNOME turns
+      // that into a "'Freedom' is ready" notification). Same always-on-top
+      // nudge the cold-start path uses in ready-to-show. Deliberately no
+      // flashFrame() fallback here: on Linux that *sets* demands-attention,
+      // i.e. it would post the very notification this is trying to avoid.
+      // Unproven, kept for parity with cold start: headless mutter 50.1 on
+      // X11 (probed 2026-10, PR #470) accepted a bare focus() here too, so this
+      // only matters for stricter WMs (e.g. KWin focus-stealing "medium"/
+      // "high"), which nobody has tested. Wayland-native windows ignore it, and
+      // that is where #142 still reproduces: raising another process's window
+      // needs an xdg-activation token, which Electron can't mint or pass on.
+      window.setAlwaysOnTop(true);
+      window.focus();
+      window.setAlwaysOnTop(false);
     }
   } catch {
     // Best-effort only; BrowserWindow.focus() below is the real fallback.
@@ -230,6 +247,7 @@ function getMainWindows() {
 
 module.exports = {
   createMainWindow,
+  focusBrowserWindow,
   focusOrCreateMainWindow,
   setWindowTitle,
   getWindowTitle,

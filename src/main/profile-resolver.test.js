@@ -534,6 +534,108 @@ describe('profile resolver', () => {
     expect(fs.existsSync(radicleDir)).toBe(false);
   });
 
+  // #124: once another profile exists, the default one can be deleted, and
+  // nothing that used to assume it exists may bring it back.
+  test('deletes the packaged default profile from another profile and never resurrects it', () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const {
+      deleteProfileForActiveApp,
+      initializeProfile,
+      listProfilesForActiveApp,
+      resolveProfile,
+    } = require('./profile-resolver');
+    const { loadCatalog } = require('./profile-catalog');
+
+    // First run creates default; then the user switches to work.
+    resolveProfile(app, { argv: ['electron', '.'], env: {}, now: '2026-05-25T00:00:00.000Z' });
+    fs.writeFileSync(path.join(userDataDir, 'Cookies'), 'default-profile data');
+    const work = initializeProfile(app, {
+      argv: ['electron', '.', '--profile=work'],
+      env: {},
+      now: '2026-05-26T00:00:00.000Z',
+    });
+    expect(work.id).toBe('work');
+
+    deleteProfileForActiveApp('default', 'My Profile');
+
+    expect(fs.existsSync(path.join(userDataDir, 'Cookies'))).toBe(false);
+    expect(fs.existsSync(path.join(userDataDir, 'profile.json'))).toBe(false);
+    expect(fs.existsSync(work.userDataDir)).toBe(true);
+    expect(listProfilesForActiveApp().map((p) => p.id)).toEqual(['work']);
+
+    // Relaunching work (explicitly, or as the last-opened profile on a bare
+    // cold start) must not re-register default. A fresh app mock stands in for
+    // the new process (initializeProfile repointed this one's userData).
+    const relaunched = createAppMock({ isPackaged: true, userDataDir });
+    resolveProfile(relaunched, {
+      argv: ['electron', '.', '--profile=work'],
+      env: {},
+      now: '2026-05-27T00:00:00.000Z',
+    });
+    const bare = resolveProfile(relaunched, {
+      argv: ['electron', '.'],
+      env: {},
+      now: '2026-05-28T00:00:00.000Z',
+    });
+    expect(bare.id).toBe('work');
+    expect(loadCatalog(userDataDir).profiles.map((p) => p.id)).toEqual(['work']);
+    expect(fs.existsSync(path.join(userDataDir, 'profile.json'))).toBe(false);
+
+    // Now the only profile — it cannot be deleted in turn.
+    expect(() => deleteProfileForActiveApp('work', 'Work')).toThrow(
+      'The active profile cannot be deleted'
+    );
+  });
+
+  test('falls back to the first registered profile when default is gone and none was opened', () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const { resolveFallbackProfileId, resolveProfile } = require('./profile-resolver');
+    const { loadCatalog, saveCatalog } = require('./profile-catalog');
+
+    expect(resolveFallbackProfileId(userDataDir)).toBe(null);
+
+    resolveProfile(app, { argv: ['electron', '.', '--profile=work'], env: {} });
+    expect(resolveFallbackProfileId(userDataDir)).toBe('default');
+
+    // Default deleted, and no lastOpenedAt anywhere (e.g. a hand-edited or
+    // older catalog) — a bare launch picks the remaining profile rather than
+    // recreating default.
+    const catalog = loadCatalog(userDataDir);
+    catalog.profiles = catalog.profiles
+      .filter((p) => p.id !== 'default')
+      .map(({ lastOpenedAt: _unused, ...rest }) => rest);
+    saveCatalog(userDataDir, catalog);
+    expect(resolveFallbackProfileId(userDataDir)).toBe('work');
+
+    const profile = resolveProfile(app, { argv: ['electron', '.'], env: {} });
+    expect(profile.id).toBe('work');
+    expect(loadCatalog(userDataDir).profiles.map((p) => p.id)).toEqual(['work']);
+  });
+
+  test('an explicit --profile=default recreates a fresh default after deletion', () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const { deleteProfileForActiveApp, initializeProfile, resolveProfile } =
+      require('./profile-resolver');
+
+    resolveProfile(app, { argv: ['electron', '.'], env: {} });
+    fs.writeFileSync(path.join(userDataDir, 'Cookies'), 'old default data');
+    initializeProfile(app, { argv: ['electron', '.', '--profile=work'], env: {} });
+    deleteProfileForActiveApp('default', 'My Profile');
+
+    const relaunched = createAppMock({ isPackaged: true, userDataDir });
+    const recreated = resolveProfile(relaunched, {
+      argv: ['electron', '.', '--profile=default'],
+      env: {},
+    });
+    expect(recreated.id).toBe('default');
+    expect(recreated.userDataDir).toBe(userDataDir);
+    expect(recreated.metadata.slot).toBe(0);
+    expect(fs.existsSync(path.join(userDataDir, 'Cookies'))).toBe(false);
+  });
+
   test('rejects path-like profile ids', () => {
     const userDataDir = track(makeTempDir());
     const app = createAppMock({ isPackaged: true, userDataDir });

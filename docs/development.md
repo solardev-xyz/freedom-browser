@@ -8,6 +8,14 @@ This guide covers local setup, the repository layout, tests, debugging, and deve
 - npm, included with Node.js.
 - Git.
 - Platform build tools required by Electron native modules.
+- On Linux, the udev and libusb development headers for the Ledger USB modules (`usb`, pulled in by `@ledgerhq/hw-transport-node-hid`, is rebuilt from source during `npm ci`). On Debian/Ubuntu:
+
+  ```bash
+  sudo apt install libudev-dev libusb-1.0-0-dev
+  ```
+
+  This is the same pair CI installs in [`install-linux-native-deps`](../.github/actions/install-linux-native-deps/action.yml). Without `libudev-dev`, `npm ci` fails in `electron-builder install-app-deps` with `fatal error: libudev.h: No such file or directory` while building `node_modules/usb`; install the packages and run `npm ci` again.
+
 - Optional, for the bundled Tor client only (`npm run tor:download`): a Rust toolchain at or above the pinned Arti release's MSRV (`MIN_RUST_VERSION` in [`scripts/fetch-arti.js`](../scripts/fetch-arti.js); the script checks before building). Arti is compiled from crates.io rather than downloaded, for the host platform only. On Linux that build also needs OpenSSL development headers, and `libsqlite3-dev` when `pkg-config` is installed; on Windows it needs the x64 MSVC tools (the same developer shell the Myotis supervisor build uses), and the script asks Arti for its `static-sqlite` feature there because Windows ships no system SQLite for `libsqlite3-sys` to link.
 
 With `nvm` installed, select the repository version with:
@@ -29,6 +37,16 @@ npm run myotis:download
 npm run myotis:build-supervisor
 npm start
 ```
+
+**Linux: `chrome-sandbox` must be setuid root.** On distributions that restrict unprivileged user namespaces through AppArmor (Ubuntu 24.04 and later ship `kernel.apparmor_restrict_unprivileged_userns=1`), Chromium falls back to its SUID sandbox helper, and `npm start` aborts with `The SUID sandbox helper binary was found, but is not configured correctly` and `exited with signal SIGTRAP`. Electron downloads its binary on first launch rather than during `npm ci`, so fetch it first, then hand the helper to root:
+
+```bash
+npx --no install-electron
+sudo chown root:root node_modules/electron/dist/chrome-sandbox
+sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+```
+
+Repeat all three commands after every `npm ci` and every Electron version bump: both discard the binary, and the fresh download is owned by you again. `--no-sandbox` is for throwaway headless runs only — the headless skill in `.claude/skills/run-freedom/`, the packaged CI smoke tests, and the source-tree Playwright e2e runs on Linux use it. The `harness` and `live` projects get it from Playwright's own Electron launcher, which adds it on Linux unless a test opts in with `chromiumSandbox: true`, so `npm run test:e2e` does not exercise the sandbox there. The `packaged` projects bypass that launcher and start the binary themselves, so they only add it when you set `FREEDOM_E2E_NO_SANDBOX=1` (see below) — without it, a packaged run on such a distribution hits the same SUID abort unless that build's own `chrome-sandbox` is setuid root. Don't develop with `--no-sandbox`, because a browser running with the renderer sandbox disabled hides real behaviour.
 
 Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. Install optional Tor support with `npm run tor:download` (macOS, Linux, and Windows x64 — it compiles Arti for the host), then enable it under **Settings → Experimental**; the Tor rows stay hidden until that binary exists.
 

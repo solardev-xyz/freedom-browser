@@ -310,7 +310,7 @@ test('an endpoint-dependent failure reaches Ant without wording it would halve o
   );
 });
 
-test("Ant's shrink needles match v0.5.52 is_range_limit_error", () => {
+test("Ant's shrink needles match v0.5.53 is_range_limit_error", () => {
   expect(antShrinksLogScanOn('Query Timeout')).toBe(true);
   expect(antShrinksLogScanOn('Log response size exceeded')).toBe(true);
   expect(antShrinksLogScanOn('the method eth_getLogs does not exist/is not available')).toBe(false);
