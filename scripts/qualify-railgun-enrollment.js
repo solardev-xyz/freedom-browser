@@ -19,10 +19,11 @@ async function main() {
   const vault = require('../src/main/identity/vault'),
     { openRailgunIdentity } = require('../src/main/wallet/railgun-identity'),
     { openRailgunAccountEnrollment } = require('../src/main/wallet/railgun-account-enrollment'),
-    { startRailgunSessionWorker } = require('../src/main/wallet/railgun-session-worker');
+    { openRailgunAccountStore } = require('../src/main/wallet/railgun-account-store');
   const sources = [
     'scripts/qualify-railgun-enrollment.js',
     'src/main/wallet/railgun-account-enrollment.js',
+    'src/main/wallet/railgun-account-store.js',
     'src/main/wallet/privacy-profile-guard.js',
     'src/main/wallet/privacy-storage.js',
     'src/main/wallet/railgun-wallet-catalog.js',
@@ -58,30 +59,29 @@ async function main() {
     vaultDirectory = path.join(profile.userDataDir, 'identity');
   let identity, enrollment, worker;
   const storeIds = {};
-  async function store(purpose, filename, key, create) {
-    const entry = startRailgunSessionWorker({
-      handle: enrollment.getContext('engine'),
-      storage: { format: 'paged-v2', filename, key, binding: enrollment.binding, create },
-      createProvider: ({ signal }) => ({
-        signal,
-        request: async () => {
-          throw Error('No RPC');
-        },
-      }),
-      onClose: () => {},
+  async function store(kind, create, generationId) {
+    const opened = await openRailgunAccountStore({
+      enrollment,
+      kind,
+      create,
+      generationId,
+      expectedStoreId: create ? undefined : storeIds[kind],
     });
-    worker = entry;
+    worker = opened.session;
     try {
-      await entry.ready;
-      const observed = await entry.inspectStoreIdentity();
-      entry.assertFresh(observed);
-      assert.equal(observed.format, 'paged-v2');
-      if (create) storeIds[purpose] = observed.instanceId;
-      else assert.equal(observed.instanceId, storeIds[purpose]);
-      enrollment.profileGuard.remember(filename);
+      const observed = await worker.inspectStoreIdentity();
+      worker.assertFresh(observed);
+      assert.equal(observed.instanceId, opened.storeId);
+      if (create) storeIds[kind] = opened.storeId;
+      else assert.equal(opened.storeId, storeIds[kind]);
+      assert.ok(
+        !fs
+          .readdirSync(path.dirname(opened.filename))
+          .some((name) => name.startsWith(kind + '.init-'))
+      );
     } finally {
-      entry.close();
-      await entry.closed;
+      worker.close();
+      await worker.closed;
       worker = null;
     }
   }
@@ -97,18 +97,13 @@ async function main() {
     for (const create of [true, false]) {
       await enrollment.withPublicKeys(async (keys) => {
         borrowed = Object.values(keys);
-        await store('source', path.join(directory, 'source.sqlite'), keys['source-ledger'], create);
-        await store('public', path.join(directory, 'public.sqlite'), keys['public-store'], create);
+        await store('source', create);
+        await store('public', create);
       });
       assert.ok(borrowed.every((k) => k.every((v) => v === 0)));
       await enrollment.withGenerationKeys(candidate.id, async (keys) => {
         borrowed = Object.values(keys);
-        await store(
-          'wallet',
-          path.join(candidate.directory, 'wallet.sqlite'),
-          keys['wallet-store'],
-          create
-        );
+        await store('wallet', create, candidate.id);
       });
       assert.ok(borrowed.every((k) => k.every((v) => v === 0)));
       if (create) {
@@ -154,6 +149,9 @@ async function main() {
           observedAt: new Date().toISOString(),
           sourceSha256,
           publicVaultFixture: true,
+          hostStoreComposition: true,
+          stagedInitialization: true,
+          automaticInventoryRegistration: true,
           identityMatchesAfterUnlock: true,
           encryptedEnrollmentAndCatalog: true,
           registeredFiles: inventory.state.files.length,

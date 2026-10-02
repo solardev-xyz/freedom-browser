@@ -15,6 +15,7 @@ const { createPrivacyStorage, getPrivacyStoragePath } = require('./privacy-stora
 const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { createRailgunWalletCatalog } = require('./railgun-wallet-catalog');
 const owners = new Set(),
+  instances = new WeakSet(),
   RECORD = 'railgun-account-enrollment-v1';
 const fail = () =>
   Object.assign(new Error('Railgun account requires recovery'), {
@@ -219,7 +220,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       });
     }
   }
-  return Object.freeze({
+  const instance = Object.freeze({
     descriptor,
     binding,
     directory: accountDirectory,
@@ -248,5 +249,10 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       return scope.getContext(next);
     },
   });
+  instances.add(instance);
+  return instance;
 }
-module.exports = { openRailgunAccountEnrollment };
+module.exports = {
+  openRailgunAccountEnrollment,
+  isRailgunAccountEnrollment: (value) => instances.has(value),
+};
