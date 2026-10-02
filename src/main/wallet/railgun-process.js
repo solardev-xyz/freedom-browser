@@ -1,5 +1,7 @@
 /** Main-owned persistent Electron utility session. No renderer channel. The
- * caller supplies a reviewed runtime entry and minimum viewing-only JSON input.
+ * caller supplies a reviewed runtime entry and minimum non-spending JSON input.
+ * Only the dedicated identity and vault-bound viewing-wallet entries can
+ * receive one binary key response. Other runtime entries cannot opt in.
  * A supplied host broker is borrowed for this job; its owner retains storage
  * lifetime and must drain its own dispatches. It is mutually exclusive with
  * process-owned storage/provider sessions.
@@ -20,6 +22,7 @@ function startRailgunProcess({
   createProvider,
   broker,
   storageWorker = false,
+  binaryKey = false,
   startupMs = 30000,
   lifetimeMs = 600000,
   heapMb = 256,
@@ -34,6 +37,20 @@ function startRailgunProcess({
     typeof input !== 'string' ||
     Buffer.byteLength(input) > 65536 ||
     typeof storageWorker !== 'boolean' ||
+    typeof binaryKey !== 'boolean' ||
+    (binaryKey &&
+      (!broker ||
+        context.subject.protocol !== 'railgun' ||
+        context.subject.chainId !== 11155111 ||
+        context.subject.deployment !== 'sepolia' ||
+        !(
+          (context.subject.role === 'keystore' &&
+            ['spending-public', 'viewing-identity'].includes(context.subject.operation) &&
+            filename === require.resolve('./railgun-identity-job')) ||
+          (context.subject.role === 'engine' &&
+            context.subject.operation === 'wallet-viewing' &&
+            filename === require.resolve('./railgun-wallet-job'))
+        ))) ||
     (broker !== undefined &&
       (!broker ||
         typeof broker.dispatch !== 'function' ||
@@ -72,6 +89,7 @@ function startRailgunProcess({
     memoryPoll,
     peakRssBytes = 0,
     missingMetrics = 0,
+    binaryKeyUsed = false,
     readySeen = false,
     brokerReady = !storageWorker,
     readyDelivered = false,
@@ -283,12 +301,37 @@ function startRailgunProcess({
           // establishes storage ordering and reserves the host request slot.
           session.dispatch(message.wire).then(
             (reply) => {
-              if (stopping || exited || session.signal.aborted) return;
+              const bytes = reply instanceof Uint8Array;
               try {
+                if (stopping || exited || session.signal.aborted) return;
                 getPrivacyContext(handle);
-                channel.port1.postMessage(JSON.stringify({ type: 'reply', wire: reply }));
+                if (bytes) {
+                  const request = JSON.parse(message.wire);
+                  if (
+                    !binaryKey ||
+                    binaryKeyUsed ||
+                    reply.byteLength !== 32 ||
+                    reply.byteOffset !== 0 ||
+                    reply.buffer.byteLength !== 32 ||
+                    !(reply.buffer instanceof ArrayBuffer) ||
+                    request.id !== 1 ||
+                    request.method !== 'key' ||
+                    request.purpose !== context.subject.operation
+                  )
+                    throw new Error();
+                  binaryKeyUsed = true;
+                  // Electron MessagePortMain supports transferable ports, not
+                  // transferable ArrayBuffers. Structured clone avoids immutable
+                  // hex/JSON key strings; wipe owned buffers after the copy.
+                  channel.port1.postMessage({ type: 'key-reply', id: 1, bytes: reply });
+                } else {
+                  if (typeof reply !== 'string') throw new Error();
+                  channel.port1.postMessage(JSON.stringify({ type: 'reply', wire: reply }));
+                }
               } catch {
                 stop('RAILGUN_PROCESS_FAILED');
+              } finally {
+                if (bytes) reply.fill(0);
               }
             },
             () => stop('RAILGUN_SESSION_REVOKED')

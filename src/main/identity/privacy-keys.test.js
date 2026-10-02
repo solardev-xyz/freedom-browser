@@ -73,3 +73,24 @@ test('the engine view capability cannot derive spending keys and expires on lock
     code: 'PRIVACY_CONTEXT_REVOKED',
   });
 });
+
+test('host byte derivation is independently owned and viewing byte grants refuse spending paths', async () => {
+  const { createRailgunViewingKeystore } = require('./privacy-keys');
+  const host = createRailgunKeystore(handle),
+    path = "m/44'/1984'/0'/0'/0'";
+  const bytes = await host.deriveBytesAt(path);
+  expect(bytes.toString('hex')).toBe(vectors[0][0]);
+  expect(bytes.byteOffset).toBe(0);
+  expect(bytes.buffer.byteLength).toBe(32);
+  bytes.fill(0);
+  expect(await host.deriveAt(path)).toBe('0x' + vectors[0][0]);
+  const view = createRailgunViewingKeystore(handle);
+  await expect(view.deriveBytesAt(path)).rejects.toMatchObject({
+    code: 'PRIVATE_DERIVATION_REFUSED',
+  });
+  const viewing = await view.deriveBytesAt("m/420'/1984'/0'/0'/0'");
+  expect(viewing.toString('hex')).toBe(vectors[0][1]);
+  viewing.fill(0);
+  mockVault.abort();
+  await expect(host.deriveBytesAt(path)).rejects.toThrow();
+});

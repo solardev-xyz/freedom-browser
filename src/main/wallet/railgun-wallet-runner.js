@@ -12,9 +12,12 @@ const {
   normalizeRailgunWalletCoverage,
   summarizeRailgunWalletCoverage,
 } = require('./railgun-wallet-coverage');
-function createRailgunWalletRunner({ runJob, inventory, policy }) {
+function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
   assert.equal(typeof runJob, 'function');
   for (const value of [inventory, policy]) assert.match(value, /^[0-9a-f]{64}$/);
+  const currentIdentity = () =>
+    identity === undefined ? null : require('./railgun-identity').assertRailgunIdentity(identity);
+  currentIdentity();
   const receipts = new WeakMap();
   function assertScan(receipt, expected) {
     const saved = receipts.get(receipt);
@@ -28,6 +31,8 @@ function createRailgunWalletRunner({ runJob, inventory, policy }) {
     if (expected.state && saved.mode === 'restore') assert.deepEqual(saved.state, expected.state);
   }
   async function run({ snapshot, walletSession, coverageStore, walletId, restore, ...options }) {
+    const descriptor = currentIdentity();
+    if (descriptor) assert.equal(walletId, descriptor.walletId);
     assert.equal(typeof restore, 'boolean');
     assert.equal(coverageStore.session, walletSession);
     const before = await walletSession.inspectWalletState();
@@ -56,6 +61,10 @@ function createRailgunWalletRunner({ runJob, inventory, policy }) {
         Object.fromEntries(['scannedLeaves', ...kinds].map((name) => [name, result[name]]))
       );
       const read = normalizeRailgunWalletRead(result, coverage);
+      if (descriptor) {
+        assert.equal(read.instanceId, descriptor.instanceId);
+        currentIdentity();
+      }
       const state = await walletSession.inspectWalletState();
       walletSession.assertFresh(state);
       if (restore) assert.deepEqual(state, before);
@@ -77,6 +86,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy }) {
     }
   }
   function read(receipt, journal) {
+    currentIdentity();
     assert.ok(isRailgunWalletJournal(journal));
     const saved = receipts.get(receipt);
     assert.ok(saved && !saved.session.signal.aborted);
@@ -90,4 +100,19 @@ function createRailgunWalletRunner({ runJob, inventory, policy }) {
   instances.add(instance);
   return instance;
 }
-module.exports = { createRailgunWalletRunner, isRailgunWalletRunner: (v) => instances.has(v) };
+function createRailgunAccountRunner({ identity, archive, policy }) {
+  require('./railgun-identity').assertRailgunIdentity(identity);
+  archive = require('./railgun-engine-runtime').verifyRailgunEngineRuntime(archive);
+  return createRailgunWalletRunner({
+    identity,
+    policy,
+    inventory: require('./railgun-engine-manifest.json').inventory.sha256,
+    runJob: (options) =>
+      require('./railgun-wallet-run').runRailgunWalletSnapshot({ ...options, identity, archive }),
+  });
+}
+module.exports = {
+  createRailgunWalletRunner,
+  createRailgunAccountRunner,
+  isRailgunWalletRunner: (v) => instances.has(v),
+};

@@ -1,8 +1,14 @@
 /** Internal Electron utility bootstrap. Accidental egress guards, not an OS
- * sandbox. The reviewed runtime may receive viewing material, never host state.
+ * sandbox. General jobs may receive viewing material. The dedicated identity
+ * job can receive one main-authorized binary key for public-key derivation.
  */
 'use strict';
 for (const key of Object.keys(process.env)) delete process.env[key];
+// ws is imported transitively by the pinned engine, but these compute jobs
+// never use its transports. Keep its optional helpers on their JS fallback;
+// the guards below refuse all normal Node native-addon loading.
+process.env.WS_NO_BUFFER_UTIL = '1';
+process.env.WS_NO_UTF_8_VALIDATE = '1';
 const parent = process.parentPort;
 const pending = new Map();
 const controller = new AbortController();
@@ -30,6 +36,24 @@ function fail(reason = 'protocol') {
 function receive({ data, ports = [] }) {
   if (stopped) return;
   try {
+    if (data && typeof data === 'object' && data.type === 'key-reply') {
+      const task = pending.get(data.id);
+      if (
+        ports.length ||
+        Object.keys(data).sort().join(',') !== 'bytes,id,type' ||
+        data.id !== 1 ||
+        !task?.binary ||
+        !(data.bytes instanceof Uint8Array) ||
+        !(data.bytes.buffer instanceof ArrayBuffer) ||
+        data.bytes.byteLength !== 32 ||
+        data.bytes.byteOffset !== 0 ||
+        data.bytes.buffer.byteLength !== 32
+      )
+        throw new Error();
+      pending.delete(data.id);
+      task.resolve(data.bytes);
+      return;
+    }
     if (
       ports.length ||
       typeof data !== 'string' ||
@@ -48,7 +72,7 @@ function receive({ data, ports = [] }) {
       throw new Error();
     const id = JSON.parse(message.wire).id,
       task = pending.get(id);
-    if (!task) throw new Error();
+    if (!task || task.binary) throw new Error();
     pending.delete(id);
     task.resolve(message.wire);
   } catch {
@@ -98,7 +122,7 @@ parent.on('message', ({ data, ports = [] }) => {
       fail('job');
       return;
     }
-    const request = (wire) => {
+    const request = (wire, binary = false) => {
       if (
         controller.signal.aborted ||
         typeof wire !== 'string' ||
@@ -110,14 +134,15 @@ parent.on('message', ({ data, ports = [] }) => {
       if (!Number.isSafeInteger(id) || id < 1 || pending.has(id))
         return Promise.reject(new Error('Railgun session unavailable'));
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
+        pending.set(id, { resolve, reject, binary });
         port.postMessage(JSON.stringify({ type: 'command', wire }));
       });
     };
     Promise.resolve()
       .then(() =>
         job.run(message.input, {
-          request,
+          request: (wire) => request(wire),
+          requestKey: (wire) => request(wire, true),
           signal: controller.signal,
           guardReport: guard.report,
           close: () => port.close(),

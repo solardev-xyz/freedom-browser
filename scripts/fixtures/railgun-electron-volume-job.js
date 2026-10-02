@@ -10,7 +10,7 @@ const {
 async function run(serialized, { request, signal, guardReport }) {
   const { write } = JSON.parse(serialized);
   assert.equal(typeof write, 'boolean');
-  assert.deepEqual(Object.keys(process.env), []);
+  assert.deepEqual({ ...process.env }, { WS_NO_BUFFER_UTIL: '1', WS_NO_UTF_8_VALIDATE: '1' });
   const fixture = path.join(__dirname, 'railgun-engine');
   const inventory = assertRailgunFixture(path.join(fixture, 'node_modules'));
   const r = createRequire(path.join(fixture, 'package.json'));

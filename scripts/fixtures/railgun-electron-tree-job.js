@@ -9,7 +9,7 @@ const {
 } = require('../../src/main/wallet/railgun-tree-transactions');
 async function run(serialized, { request, signal, guardReport }) {
   const input = JSON.parse(serialized);
-  assert.deepEqual(Object.keys(process.env), []);
+  assert.deepEqual({ ...process.env }, { WS_NO_BUFFER_UTIL: '1', WS_NO_UTF_8_VALIDATE: '1' });
   assert.ok(Number.isInteger(input.target) && input.target > 0 && input.target <= 4096);
   const fixture = path.join(__dirname, 'railgun-engine');
   const inventory = assertRailgunFixture(path.join(fixture, 'node_modules'));

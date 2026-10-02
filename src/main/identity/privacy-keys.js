@@ -31,28 +31,42 @@ function createRailgunKeystore(handle, keyIndex = 0) {
     }
   }
   assertActive();
+  async function deriveBytesAt(path) {
+    assertActive();
+    if (!paths.includes(path))
+      throw privacyError(
+        'PRIVATE_DERIVATION_REFUSED',
+        'Derivation path is outside this privacy account'
+      );
+    const seed = mnemonicToSeedSync(vault.getMnemonic());
+    let node;
+    try {
+      node = deriveRailgunKey(seed, path);
+      assertActive();
+      const output = Buffer.alloc(32);
+      node.copy(output);
+      return output;
+    } finally {
+      seed.fill(0);
+      node?.fill(0);
+    }
+  }
   return Object.freeze({
     descriptor: Object.freeze({
       protocol: 'railgun',
       algorithm: 'babyjubjub-hardened-v1',
       keyIndex,
     }),
+    // Main-only caller owns this buffer and must wipe it. Never pass this
+    // spending-capable object into a viewing engine or renderer.
+    deriveBytesAt,
     async deriveAt(path) {
-      assertActive();
-      if (!paths.includes(path))
-        throw privacyError(
-          'PRIVATE_DERIVATION_REFUSED',
-          'Derivation path is outside this privacy account'
-        );
-      const seed = mnemonicToSeedSync(vault.getMnemonic());
-      let node;
+      const bytes = await deriveBytesAt(path);
       try {
-        node = deriveRailgunKey(seed, path);
         assertActive();
-        return `0x${node.subarray(0, 32).toString('hex')}`;
+        return `0x${bytes.toString('hex')}`;
       } finally {
-        seed.fill(0);
-        node?.fill(0);
+        bytes.fill(0);
       }
     },
   });
@@ -63,14 +77,18 @@ function createRailgunKeystore(handle, keyIndex = 0) {
 function createRailgunViewingKeystore(handle, keyIndex = 0) {
   const keystore = createRailgunKeystore(handle, keyIndex);
   const viewingPath = `m/420'/1984'/0'/0'/${keyIndex}'`;
+  const check = (path) => {
+    if (path !== viewingPath)
+      throw privacyError('PRIVATE_DERIVATION_REFUSED', 'Viewing capability cannot derive this key');
+  };
   return Object.freeze({
     async deriveAt(path) {
-      if (path !== viewingPath)
-        throw privacyError(
-          'PRIVATE_DERIVATION_REFUSED',
-          'Viewing capability cannot derive this key'
-        );
+      check(path);
       return keystore.deriveAt(path);
+    },
+    async deriveBytesAt(path) {
+      check(path);
+      return keystore.deriveBytesAt(path);
     },
   });
 }

@@ -4,16 +4,89 @@ const fs = require('fs'),
   path = require('path'),
   assert = require('assert/strict'),
   { createHash } = require('crypto');
+const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
+let qualificationLock;
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 async function main() {
-  const [sourceFilename, directory] = process.argv.slice(2);
+  const [sourceFilename, directory, accountArchive] = process.argv.slice(2);
+  assert.ok(accountArchive === undefined || path.isAbsolute(accountArchive));
   assert.ok(
     path.isAbsolute(sourceFilename) && path.isAbsolute(directory) && !fs.existsSync(directory)
   );
   fs.mkdirSync(directory, { mode: 0o700 });
-  app.setPath('userData', path.join(directory, 'electron'));
+  if (accountArchive) {
+    const profile = require('../src/main/profile-resolver').initializeProfile(app, {
+      env: { FREEDOM_TEST_USER_DATA: path.join(directory, 'profile') },
+    });
+    qualificationLock = acquireProfileLock(profile, { onCompromised: () => app.exit(1) });
+  } else app.setPath('userData', path.join(directory, 'electron'));
   app.dock?.hide();
   await app.whenReady();
+  let accountIdentity, accountParent, accountProfileId;
+  const vault = accountArchive ? require('../src/main/identity/vault') : null;
+  let lockOnViewingKey = false,
+    cancelledViewingKey,
+    cancelledViewingClosed,
+    cancelledViewingMessages = 0,
+    cancelledViewingProcessClosed = false,
+    cancelledViewingProcess = null;
+  if (accountArchive) {
+    const runtime = require('../src/main/wallet/railgun-process'),
+      originalStart = runtime.startRailgunProcess;
+    runtime.startRailgunProcess = (options) => {
+      if (!options.broker) return originalStart(options);
+      const original = options.broker;
+      let cancelledThisTask = false,
+        messages = 0;
+      const task = originalStart({
+        ...options,
+        broker: {
+          ...original,
+          async dispatch(wire) {
+            messages++;
+            const message = JSON.parse(wire),
+              reply = await original.dispatch(wire);
+            if (
+              lockOnViewingKey &&
+              message.method === 'key' &&
+              message.purpose === 'wallet-viewing'
+            ) {
+              lockOnViewingKey = false;
+              cancelledViewingKey = reply;
+              cancelledThisTask = true;
+              cancelledViewingClosed = task.closed;
+              vault.lockVault();
+            }
+            return reply;
+          },
+        },
+      });
+      task.closed.then((result) => {
+        if (cancelledThisTask) {
+          cancelledViewingMessages = messages;
+          cancelledViewingProcess = result;
+          cancelledViewingProcessClosed = [
+            'PRIVACY_CONTEXT_REVOKED',
+            'RAILGUN_SESSION_REVOKED',
+          ].includes(result.code);
+        }
+      });
+      return task;
+    };
+  }
+  if (accountArchive) {
+    const vaultDirectory = path.join(directory, 'profile', 'identity');
+    await vault.importVault(
+      vaultDirectory,
+      'public-fixture-password-not-a-user-credential',
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+    );
+    await vault.unlockVault(vaultDirectory, 'public-fixture-password-not-a-user-credential', 0);
+    accountIdentity = await require('../src/main/wallet/railgun-identity').openRailgunIdentity({
+      archive: accountArchive,
+    });
+    accountParent = require('../src/main/wallet/privacy-session').openPrivacySession();
+  }
   const sourceBytes = fs.readFileSync(sourceFilename),
     { logs } = JSON.parse(sourceBytes);
   const hash = (n) => '0x' + n.toString(16).padStart(64, '0');
@@ -89,11 +162,15 @@ async function main() {
   let jobs;
   const subject = {
     kind: 'private-account',
-    principal: 'fixture',
+    principal: accountArchive ? 'railgun:0' : 'fixture',
     chainId: 11155111,
     protocol: 'railgun',
-    deployment: 'archived-sepolia',
+    deployment: accountArchive ? 'sepolia' : 'archived-sepolia',
   };
+  if (accountArchive)
+    accountProfileId = getPrivacyContext(
+      accountParent.getContext({ ...subject, role: 'engine' })
+    ).profileId;
   let scope,
     ledger,
     source,
@@ -103,8 +180,8 @@ async function main() {
   const applications = [];
   async function open(create) {
     scope = createPrivacyScope({
-      profileId: 'coordinated-public-history',
-      signal: new AbortController().signal,
+      profileId: accountProfileId ?? 'coordinated-public-history',
+      signal: accountParent?.signal ?? new AbortController().signal,
     });
     const rpcHandle = scope.getContext({ ...subject, role: 'protocol-rpc' }),
       engineHandle = scope.getContext({ ...subject, role: 'engine' });
@@ -196,6 +273,15 @@ async function main() {
   }
   const sources = [
     'scripts/qualify-railgun-wallet-journal.js',
+    'src/main/wallet/railgun-identity.js',
+    'src/main/wallet/railgun-identity-job.js',
+    'src/main/wallet/railgun-wallet-job.js',
+    'src/main/wallet/railgun-wallet-run.js',
+    'src/main/wallet/railgun-engine-runtime.js',
+    'src/main/wallet/railgun-engine-manifest.json',
+    'src/main/identity/privacy-keys.js',
+    'src/main/identity/railgun-key-derivation.js',
+    'src/main/wallet/privacy-session.js',
     'src/main/wallet/railgun-wallet-catalog.js',
     'src/main/wallet/railgun-wallet-coverage.js',
     'src/main/wallet/railgun-wallet-coverage-store.js',
@@ -242,20 +328,32 @@ async function main() {
     );
   const sourceSha256 = hashes(),
     runs = [];
-  const walletId = sha(
-    Buffer.from(require('./fixtures/railgun-wallet-snapshot-job').shared, 'hex')
-  );
+  const walletId =
+    accountIdentity?.descriptor.walletId ??
+    sha(Buffer.from(require('./fixtures/railgun-wallet-snapshot-job').shared, 'hex'));
+  if (accountIdentity) {
+    const vector = JSON.parse(sourceBytes);
+    assert.equal(vector.publicVaultVector, true);
+    assert.equal(vector.walletId, walletId);
+    assert.equal(vector.instanceId, accountIdentity.descriptor.instanceId);
+  }
   const { createRailgunWalletRunner } = require('../src/main/wallet/railgun-wallet-runner');
   const {
     createRailgunWalletCoverageStore,
   } = require('../src/main/wallet/railgun-wallet-coverage-store');
   const { createRailgunWalletJournal } = require('../src/main/wallet/railgun-wallet-journal');
   const policy = sha('wallet-policy-fixture-v1\0' + JSON.stringify(sourceSha256));
-  const runner = createRailgunWalletRunner({
-    runJob: require('./railgun-wallet-snapshot-electron').runWalletSnapshot,
-    inventory: require('./fixtures/railgun-engine/runtime-integrity.json').inventory.sha256,
-    policy,
-  });
+  const runner = accountIdentity
+    ? require('../src/main/wallet/railgun-wallet-runner').createRailgunAccountRunner({
+        identity: accountIdentity,
+        archive: accountArchive,
+        policy,
+      })
+    : createRailgunWalletRunner({
+        runJob: require('./railgun-wallet-snapshot-electron').runWalletSnapshot,
+        inventory: require('./fixtures/railgun-engine/runtime-integrity.json').inventory.sha256,
+        policy,
+      });
   const { createRailgunWalletCatalog } = require('../src/main/wallet/railgun-wallet-catalog');
   let walletSession, walletJournal, catalog, generation, walletDirectory;
   const retainedDirectories = [];
@@ -263,20 +361,25 @@ async function main() {
     await open(true);
     let previousEvidence;
     for (const stage of [10, 20, 30]) {
-      if (stage !== 20) await coordinator.advance({ to: stage, anchor: capture.report.anchor });
+      if (stage !== 20 || accountIdentity)
+        await coordinator.advance({ to: stage, anchor: capture.report.anchor });
       if (previousEvidence) assert.throws(() => coordinator.assertSnapshot(previousEvidence));
-      for (const attempt of stage === 10
-        ? [
-            'interrupt',
-            'incomplete-restore',
-            'coverage-crash',
-            'restore-pending',
-            'restore',
-            'stale-public',
-          ]
-        : stage === 20
-          ? ['scan', 'host-first', 'restore']
-          : ['scan', 'restore', 'rebuild', 'rebuild-restore']) {
+      for (const attempt of accountIdentity
+        ? stage === 30
+          ? ['scan', 'restore', 'rebuild', 'rebuild-restore']
+          : ['scan', 'restore']
+        : stage === 10
+          ? [
+              'interrupt',
+              'incomplete-restore',
+              'coverage-crash',
+              'restore-pending',
+              'restore',
+              'stale-public',
+            ]
+          : stage === 20
+            ? ['scan', 'host-first', 'restore']
+            : ['scan', 'restore', 'rebuild', 'rebuild-restore']) {
         const restore = [
           'restore',
           'incomplete-restore',
@@ -297,7 +400,9 @@ async function main() {
             filename: path.join(walletDirectory, 'wallet.sqlite'),
             key: Buffer.alloc(32, 64),
             binding: 'd'.repeat(64),
-            create: (stage === 10 && attempt === 'interrupt') || attempt === 'rebuild',
+            create:
+              (stage === 10 && attempt === (accountIdentity ? 'scan' : 'interrupt')) ||
+              attempt === 'rebuild',
           },
           createProvider: ({ signal }) => ({
             signal,
@@ -334,7 +439,9 @@ async function main() {
           coverageStore,
           coordinator,
           assertScan: runner.assertScan,
-          create: (stage === 10 && attempt === 'interrupt') || attempt === 'rebuild',
+          create:
+            (stage === 10 && attempt === (accountIdentity ? 'scan' : 'interrupt')) ||
+            attempt === 'rebuild',
         });
         const started = performance.now(),
           beforeRequests = requests;
@@ -515,6 +622,66 @@ async function main() {
       }
     }
     assert.equal(applications.length, 3);
+    if (accountIdentity) {
+      const handle = scope.getContext({ ...subject, role: 'engine' });
+      walletSession = startRailgunSessionWorker({
+        handle,
+        storage: {
+          format: 'paged-v2',
+          filename: path.join(directory, 'cancel-wallet.sqlite'),
+          key: Buffer.alloc(32, 64),
+          binding: 'd'.repeat(64),
+          create: true,
+        },
+        createProvider: ({ signal }) => ({
+          signal,
+          request: async () => {
+            throw Error('No wallet RPC');
+          },
+        }),
+        onClose: () => {},
+      });
+      await walletSession.ready;
+      const cancelledCoverage = createRailgunWalletCoverageStore({
+        session: walletSession,
+        walletId,
+        policy,
+        assertScan: runner.assertScan,
+      });
+      lockOnViewingKey = true;
+      await assert.rejects(
+        coordinator.withPublicSnapshot((snapshot) =>
+          runner.run({
+            handle,
+            snapshot,
+            walletSession,
+            coverageStore: cancelledCoverage,
+            walletId,
+            restore: false,
+          })
+        ),
+        { code: 'RAILGUN_SCAN_COORDINATOR_REFUSED' }
+      );
+      assert.ok(cancelledViewingClosed);
+      await cancelledViewingClosed;
+      assert.equal(vault.isUnlocked(), false);
+      assert.equal(accountIdentity.signal.aborted, true);
+      assert.equal(cancelledViewingMessages, 1);
+      assert.equal(
+        cancelledViewingProcessClosed,
+        true,
+        JSON.stringify({
+          closed: cancelledViewingProcess,
+          keyProduced: !!cancelledViewingKey,
+          vaultUnlocked: vault.isUnlocked(),
+        })
+      );
+      assert.ok(
+        cancelledViewingKey instanceof Uint8Array && cancelledViewingKey.every((v) => v === 0)
+      );
+      walletSession.close();
+      await walletSession.closed;
+    }
     assert.deepEqual(hashes(), sourceSha256);
     fs.writeFileSync(
       path.join(directory, 'report.json'),
@@ -525,6 +692,14 @@ async function main() {
           syntheticPublicHistory: true,
           liveAcquisition: false,
           publicViewingVector: true,
+          vaultBoundAccount: !!accountIdentity,
+          cancelledViewingProcess,
+          cancelledViewingMessages: accountIdentity ? cancelledViewingMessages : null,
+          viewingKeyTransferCancelled: accountIdentity ? cancelledViewingProcessClosed : null,
+          cancelledViewingKeyWiped: accountIdentity
+            ? cancelledViewingKey.every((v) => v === 0)
+            : null,
+          independentEngineIdentityMatches: !!accountIdentity,
           walletCoverageGranted: true,
           receiptReplayRefused: true,
           durableJournal: true,
@@ -547,12 +722,18 @@ async function main() {
     walletSession?.close();
     if (walletSession) await walletSession.closed;
     await close();
+    accountIdentity?.close();
+    vault?.lockVault();
   }
 }
 main().then(
-  () => app.exit(0),
+  () => {
+    if (qualificationLock) releaseProfileLock(qualificationLock);
+    app.exit(0);
+  },
   (error) => {
     console.error(error.stack);
+    if (qualificationLock) releaseProfileLock(qualificationLock);
     app.exit(1);
   }
 );

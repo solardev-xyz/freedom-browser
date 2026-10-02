@@ -11,7 +11,7 @@ const {
 let retained;
 async function run(input, { request, signal, close, guardReport }) {
   const { mode, viewingKey, spendingPublicKey } = JSON.parse(input);
-  assert.deepEqual(Object.keys(process.env), []);
+  assert.deepEqual({ ...process.env }, { WS_NO_BUFFER_UTIL: '1', WS_NO_UTF_8_VALIDATE: '1' });
   const guards = guardReport();
   assert.ok(guards.hooks.length >= 88);
   assert.equal(guards.canaries, guards.hooks.length);

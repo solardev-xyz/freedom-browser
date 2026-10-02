@@ -7,7 +7,9 @@ const assert = require('assert/strict'),
   path = require('path'),
   { createRequire } = require('module');
 async function main() {
-  const filename = process.argv[2];
+  const filename = process.argv[2],
+    mode = process.argv[3];
+  assert.ok(mode === undefined || mode === 'vault-public-vector');
   assert.ok(path.isAbsolute(filename));
   const fixture = path.join(__dirname, 'railgun-engine');
   require('../railgun-fixture-integrity').assertRailgunFixture(path.join(fixture, 'node_modules'));
@@ -22,14 +24,26 @@ async function main() {
   const { getNoteBlindingKeys, getSharedSymmetricKey } = require(
     path.join(root, 'utils/keys-utils')
   );
-  const shared = require('./railgun-wallet-snapshot-job').shared;
-  const wallet = await ViewOnlyWallet.createWallet(
-    ViewOnlyWallet.generateID(shared),
-    {},
-    shared,
-    undefined,
-    {}
-  );
+  let wallet;
+  if (mode === 'vault-public-vector') {
+    const { WalletNode } = require(path.join(root, 'key-derivation/wallet-node'));
+    const seed = WalletNode.fromMnemonic(
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+    );
+    const spending = seed.derive("m/44'/1984'/0'/0'/0'").getSpendingKeyPair();
+    const viewing = await seed.derive("m/420'/1984'/0'/0'/0'").getViewingKeyPair();
+    wallet = new ViewOnlyWallet('0'.repeat(64), {}, viewing, spending.pubkey, undefined, {});
+    spending.privateKey.fill(0);
+  } else {
+    const shared = require('./railgun-wallet-snapshot-job').shared;
+    wallet = await ViewOnlyWallet.createWallet(
+      ViewOnlyWallet.generateID(shared),
+      {},
+      shared,
+      undefined,
+      {}
+    );
+  }
   require(path.join(root, 'wallet/wallet-info')).default.setWalletSource('freedomfixture');
   const token = '0x' + '12'.repeat(20),
     shields = [];
@@ -120,10 +134,24 @@ async function main() {
     ])
   );
   assert.equal(guards.report().attempts, 0);
-  fs.writeFileSync(filename, JSON.stringify({ logs, guards: guards.report() }), {
-    flag: 'wx',
-    mode: 0o600,
-  });
+  fs.writeFileSync(
+    filename,
+    JSON.stringify({
+      logs,
+      guards: guards.report(),
+      ...(mode
+        ? {
+            publicVaultVector: true,
+            walletId: ViewOnlyWallet.generateID(wallet.generateShareableViewingKey()),
+            instanceId: wallet.getAddress(),
+          }
+        : {}),
+    }),
+    {
+      flag: 'wx',
+      mode: 0o600,
+    }
+  );
 }
 main().catch((error) => {
   console.error(error.stack);

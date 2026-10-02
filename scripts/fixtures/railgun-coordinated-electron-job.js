@@ -4,7 +4,7 @@ const assert = require('assert/strict'),
   path = require('path'),
   { createRequire } = require('module');
 async function runtime() {
-  assert.deepEqual(Object.keys(process.env), []);
+  assert.deepEqual({ ...process.env }, { WS_NO_BUFFER_UTIL: '1', WS_NO_UTF_8_VALIDATE: '1' });
   const fixture = path.join(__dirname, 'railgun-engine');
   const inventory = require('../railgun-fixture-integrity').assertRailgunFixture(
     path.join(fixture, 'node_modules')

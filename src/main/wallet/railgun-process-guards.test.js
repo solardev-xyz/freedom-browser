@@ -30,6 +30,17 @@ test('canaries verify every hook; caught refusals still notify the owner, includ
   expect(report.hooks).toContain('electron.net.resolveHost');
   expect(report.hooks).toContain('worker_threads.Worker');
 });
+test('the normal native addon loader is refused before it can extract or load a binary', () => {
+  const report = run(`
+    let calls = 0;
+    const guard = installRailgunProcessGuards({ onRefusal: () => calls++ });
+    assert.throws(() => process.dlopen({}, '/not-loaded.node'), /Railgun process capability refused/);
+    assert.equal(calls, 1);
+    process.stdout.write(JSON.stringify(guard.report()));
+  `);
+  expect(report.hooks).toContain('process.dlopen');
+  expect(report.attempts).toBe(1);
+});
 test('a non-configurable read-only capability fails guard installation instead of silently staying live', () => {
   const report = run(`
     const net = {};

@@ -40,6 +40,9 @@ function installRailgunProcessGuards({ electronNet, onRefusal }) {
   }
   patch(globalThis, 'fetch', 'global.fetch');
   patch(globalThis, 'WebSocket', 'global.WebSocket');
+  // These compute jobs do not need Node addons. Refuse their normal loader
+  // before any engine import, including Electron's ASAR extraction path.
+  patch(process, 'dlopen', 'process.dlopen');
   for (const [name, methods] of [
     ['http', ['request', 'get']],
     ['https', ['request', 'get']],
