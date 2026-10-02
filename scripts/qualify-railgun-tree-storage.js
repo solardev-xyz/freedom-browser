@@ -7,6 +7,7 @@ const path = require('path');
 const assert = require('assert/strict');
 const crypto = require('crypto');
 const root = path.join(__dirname, 'fixtures/railgun-engine');
+const paged = process.argv[3] === '--paged';
 const hex = (n) => BigInt(n).toString(16).padStart(64, '0');
 
 async function childMain(input) {
@@ -167,6 +168,7 @@ async function run(
     reject = false,
     failStage = 0,
     failInsert = 0,
+    failStatement,
     killBeforeCommit = false,
     killAfterCommit = false,
   } = {}
@@ -211,10 +213,10 @@ async function run(
   const originalPrepare = Database.prototype.prepare;
   Database.prototype.prepare = function (sql) {
     const statement = originalPrepare.call(this, sql);
-    if (sql === 'INSERT INTO records VALUES (?, ?)') {
+    if (sql === 'INSERT INTO records VALUES (?, ?)' || sql === failStatement) {
       const originalRun = statement.run.bind(statement);
       statement.run = (...args) => {
-        if (armFault || (failInsert && ++inserts === failInsert)) {
+        if (sql === failStatement || armFault || (failInsert && ++inserts === failInsert)) {
           armFault = false;
           injected = true;
           throw new Error('Synthetic SQLite write fault');
@@ -236,6 +238,7 @@ async function run(
     session = createRailgunSession({
       handle,
       storage: {
+        format: paged ? 'paged-v2' : undefined,
         filename: path.join(directory, 'state.sqlite'),
         key: Buffer.alloc(32, 31),
         binding: 'e'.repeat(64),
@@ -364,7 +367,7 @@ async function run(
     if (input.poll) assert.ok(rpcCalls > 0);
     else assert.equal(rpcCalls, 0);
     assert.equal(session.signal.aborted, true);
-    assert.equal(injected, Boolean(failBatch || failInsert));
+    assert.equal(injected, Boolean(failBatch || failInsert || failStatement));
     if (reject) {
       assert.equal(childFailure, false);
       assert.equal(result, undefined);
@@ -375,7 +378,7 @@ async function run(
       else if (failStage) {
         assert.equal(failedCommand.method, 'txStage');
         assert.equal(failedCommand.batch, failStage);
-      } else if (failInsert || killBeforeCommit || killAfterCommit)
+      } else if (failInsert || failStatement || killBeforeCommit || killAfterCommit)
         assert.equal(failedCommand.method, 'txCommit');
       else {
         assert.equal(failedCommand.method, 'batch');
@@ -481,9 +484,13 @@ async function main() {
     ['stage-1', { failStage: 1 }],
     ['stage-2', { failStage: 2 }],
     ['stage-3', { failStage: 3 }],
-    ['commit-node', { failInsert: 1 }],
-    ['commit-data', { failInsert: 82 }],
-    ['commit-metadata', { failInsert: 114 }],
+    [paged ? 'commit-page' : 'commit-node', { failInsert: 1 }],
+    paged
+      ? ['commit-directory', { failStatement: 'UPDATE records SET ciphertext = ? WHERE id = ?' }]
+      : ['commit-data', { failInsert: 82 }],
+    paged
+      ? ['commit-collection', { failStatement: 'DELETE FROM records WHERE id = ?' }]
+      : ['commit-metadata', { failInsert: 114 }],
     ['killed-before-commit', { killBeforeCommit: true }],
     ['killed-after-commit', { killAfterCommit: true }],
   ]) {
@@ -548,6 +555,8 @@ async function main() {
     'src/main/wallet/railgun-session.js',
     'src/main/wallet/railgun-remote.js',
     'src/main/wallet/railgun-store.js',
+    'src/main/wallet/railgun-paged-store.js',
+    'src/main/wallet/railgun-store-cursor.js',
     'src/main/wallet/railgun-frontier.js',
     'src/main/wallet/railgun-tree-transactions.js',
     'src/main/wallet/railgun-process-guards.js',
@@ -567,6 +576,7 @@ async function main() {
     platform: process.platform,
     architecture: process.arch,
     sourceSha256,
+    storageFormat: paged ? 'paged-v2' : 'legacy-v1',
     syntheticLeaves: true,
     liveHistory: false,
     runs,

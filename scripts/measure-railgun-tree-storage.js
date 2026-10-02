@@ -1,5 +1,5 @@
-/** Fixture-only, plaintext in-memory UTXO workload measurement. This backend is
- * never imported by product code and holds only generated public synthetic data.
+/** Fixture-only UTXO workload measurement with a plaintext Map or --paged store.
+ * Never imported by product code; holds only generated public synthetic data.
  * No quick-sync, RPC logs, wallet decryption, TXID tree or POI is exercised.
  */
 const fs = require('fs');
@@ -14,6 +14,33 @@ const hex = (n) => BigInt(n).toString(16).padStart(64, '0');
 async function main() {
   const output = process.argv[2];
   assert.ok(output && path.isAbsolute(output) && !fs.existsSync(output));
+  const paged = process.argv[3] === '--paged';
+  let store, scope, storeOptions;
+  const storageMetrics = { writes: 0, maxWriteMs: 0, maxOpenMs: 0, maxClearMs: 0 };
+  const { createRailgunPagedStore } = require('../src/main/wallet/railgun-paged-store');
+  const { createRailgunStoreCursor } = require('../src/main/wallet/railgun-store-cursor');
+  if (paged) {
+    const { createPrivacyScope } = require('../src/main/networks/privacy-context');
+    scope = createPrivacyScope({
+      profileId: 'synthetic-paged-volume',
+      signal: new AbortController().signal,
+    });
+    storeOptions = {
+      handle: scope.getContext({
+        kind: 'private-account',
+        principal: 'fixture',
+        protocol: 'railgun',
+        deployment: 'offline',
+        chainId: 11155111,
+        role: 'storage',
+      }),
+      filename: output + '.sqlite',
+      key: Buffer.alloc(32, 47),
+      binding: 'c'.repeat(64),
+      onFatal: () => {},
+    };
+    store = createRailgunPagedStore({ ...storeOptions, create: true });
+  }
   const inventory = assertRailgunFixture(path.join(fixture, 'node_modules'));
   const guard = require('../src/main/wallet/railgun-process-guards').installRailgunProcessGuards({
     onRefusal: () => process.exit(2),
@@ -25,6 +52,17 @@ async function main() {
   const { MERKLE_ZERO_VALUE } = require(path.join(engine, 'models/merkletree-types'));
   const { AbstractLevelDOWN, AbstractIterator } = r('abstract-leveldown');
   await initPoseidonPromise;
+  const rangeOptions = (options) =>
+    Object.fromEntries(
+      Object.entries(options)
+        .filter(([name]) =>
+          ['gt', 'gte', 'lt', 'lte', 'limit', 'reverse', 'keys', 'values'].includes(name)
+        )
+        .map(([name, value]) => [
+          name,
+          ['gt', 'gte', 'lt', 'lte'].includes(name) ? Buffer.from(value) : value,
+        ])
+    );
   const values = new Map();
   let totalBytes = 0,
     openIterators = 0,
@@ -59,14 +97,16 @@ async function main() {
     constructor(db, options) {
       super(db);
       this.options = options;
-      this.rows = select(options);
+      this.rows = paged ? [] : select(options);
+      this.cursor = paged ? createRailgunStoreCursor(store, rangeOptions(options)) : null;
       this.index = 0;
       stats.iterators++;
       openIterators++;
       stats.peakIterators = Math.max(stats.peakIterators, openIterators);
     }
     _next(callback) {
-      const row = this.rows[this.index++];
+      const pair = this.cursor?.next();
+      const row = this.cursor ? pair && { key: pair[0], value: pair[1] } : this.rows[this.index++];
       if (row) stats.iteratorRows++;
       queueMicrotask(() =>
         row
@@ -87,6 +127,7 @@ async function main() {
       );
     }
     _end(callback) {
+      this.cursor?.close();
       this.rows = [];
       openIterators--;
       queueMicrotask(callback);
@@ -104,7 +145,10 @@ async function main() {
     }
     _get(key, options, callback) {
       stats.gets++;
-      const row = values.get(Buffer.from(key).toString('hex'));
+      const value = paged ? store.get(Buffer.from(key)) : null;
+      const row = paged
+        ? value !== null && { value }
+        : values.get(Buffer.from(key).toString('hex'));
       if (!row) stats.misses++;
       queueMicrotask(() =>
         row
@@ -125,6 +169,33 @@ async function main() {
       batchActive++;
       stats.peakBatchOverlap = Math.max(stats.peakBatchOverlap, batchActive);
       let bytes = 0;
+      if (paged) {
+        const start = performance.now();
+        store.batch(
+          operations.map(({ type, key, value }) =>
+            type === 'del'
+              ? { type, key: Buffer.from(key) }
+              : { type, key: Buffer.from(key), value: Buffer.from(value) }
+          )
+        );
+        storageMetrics.writes++;
+        storageMetrics.maxWriteMs = Math.max(storageMetrics.maxWriteMs, performance.now() - start);
+        const measured = store.stats();
+        stats.maxKeys = Math.max(stats.maxKeys, measured.keys);
+        stats.maxBytes = Math.max(stats.maxBytes, measured.bytes);
+        totalBytes = measured.bytes;
+        bytes = operations.reduce(
+          (n, op) =>
+            n + Buffer.byteLength(op.key) + (op.type === 'put' ? Buffer.byteLength(op.value) : 0),
+          0
+        );
+        stats.batches.push({ operations: operations.length, bytes });
+        queueMicrotask(() => {
+          batchActive--;
+          callback();
+        });
+        return;
+      }
       for (const op of operations) {
         const key = Buffer.from(op.key),
           index = key.toString('hex'),
@@ -152,6 +223,13 @@ async function main() {
     }
     _clear(options, callback) {
       stats.clears++;
+      if (paged) {
+        const start = performance.now();
+        store.clear(rangeOptions(options));
+        storageMetrics.maxClearMs = Math.max(storageMetrics.maxClearMs, performance.now() - start);
+        queueMicrotask(callback);
+        return;
+      }
       this._batch(
         select(options).map(({ key }) => ({ type: 'del', key })),
         {},
@@ -205,8 +283,14 @@ async function main() {
       );
       inserted += count;
     }
-    // New wrappers clear the engine's in-memory caches, but retain fixture Map
-    // contents. This is deliberately not a process restart or persistence claim.
+    // The optional encrypted backend is closed/reopened here; engine wrappers
+    // also clear their caches. This remains one Node process, not supervision.
+    if (paged) {
+      store.close();
+      const openStart = performance.now();
+      store = createRailgunPagedStore(storeOptions);
+      storageMetrics.maxOpenMs = Math.max(storageMetrics.maxOpenMs, performance.now() - openStart);
+    }
     const coldDb = new Database(new Memory());
     const cold = await UTXOMerkletree.create(coldDb, chain, version, validator);
     const countStart = stats.iteratorRows,
@@ -232,28 +316,40 @@ async function main() {
     checkpoints.push({
       leaves: target,
       trees,
-      keys: values.size,
+      keys: paged ? store.stats().keys : values.size,
       plaintextBytes: totalBytes,
       elapsedMs: Math.round(performance.now() - start),
       rssBytes: process.memoryUsage().rss,
+      ...(paged
+        ? {
+            pages: store.stats().pages,
+            directoryBytes: store.stats().directoryBytes,
+            pageFill: store.stats().pageFill,
+            fileBytes: fs.statSync(storeOptions.filename).size,
+          }
+        : {}),
       coldReads: stats.gets - getStart,
       countRows: stats.iteratorRows - countStart,
       batches: stats.batches.slice(firstBatch),
     });
     await coldDb.level.close();
   }
-  const beforeClear = values.size;
+  const beforeClear = paged ? store.stats().keys : values.size;
   await tree.clearDataForMerkletree();
-  assert.equal(values.size, 0);
+  assert.equal(paged ? store.stats().keys : values.size, 0);
   assert.equal(await tree.getTreeLength(0), 0);
   assert.equal(openIterators, 0);
   await db.level.close();
+  store?.close();
+  scope?.close();
   const egress = guard.report();
   assert.equal(egress.attempts, 0);
   const sources = [
     'scripts/measure-railgun-tree-storage.js',
     'scripts/railgun-fixture-integrity.js',
     'src/main/wallet/railgun-process-guards.js',
+    'src/main/wallet/railgun-paged-store.js',
+    'src/main/wallet/railgun-store-cursor.js',
     'scripts/fixtures/railgun-engine/runtime-integrity.json',
   ];
   const sourceSha256 = Object.fromEntries(
@@ -272,6 +368,8 @@ async function main() {
     inventory: inventory.sha256,
     sourceSha256,
     syntheticPublicData: true,
+    storageFormat: paged ? 'paged-v2' : 'plaintext-map',
+    ...(paged ? { storageMetrics } : {}),
     fullChainScan: false,
     checkpoints,
     stats,

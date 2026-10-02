@@ -4,6 +4,8 @@
  */
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createRailgunStore } = require('./railgun-store');
+const { createRailgunPagedStore } = require('./railgun-paged-store');
+const { createRailgunStoreCursor, clearRailgunStore } = require('./railgun-store-cursor');
 const { readRailgunFrontier, readRailgunPosition } = require('./railgun-frontier');
 const MAX_MESSAGE = 2 * 1024 * 1024;
 const READS = new Set([
@@ -28,7 +30,8 @@ function decode(value, max, empty = false) {
   if (
     typeof value !== 'string' ||
     value.length > Math.ceil(max / 3) * 4 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+    value.length % 4 !== 0 ||
+    /[^A-Za-z0-9+/=]/.test(value)
   )
     throw fail();
   const bytes = Buffer.from(value, 'base64');
@@ -49,7 +52,7 @@ function range(input) {
   for (const [key, value] of Object.entries(input)) {
     if (['gt', 'gte', 'lt', 'lte'].includes(key)) result[key] = decode(value, 4096);
     else if (key === 'limit') {
-      if (!Number.isInteger(value) || value < -1 || value > 65536) throw fail();
+      if (!Number.isInteger(value) || value < -1 || value > 2000000) throw fail();
       result[key] = value;
     } else {
       if (typeof value !== 'boolean') throw fail();
@@ -105,19 +108,13 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
     }
     transaction = undefined;
   };
-  const wipe = (rows) => {
-    for (const [key, value] of rows) {
-      key.fill(0);
-      value.fill(0);
-    }
-  };
   const close = () => {
     if (closed) return;
     closed = true;
     scope.signal.removeEventListener('abort', close);
     scope.close();
     discardTransaction();
-    for (const cursor of cursors.values()) wipe(cursor.rows);
+    for (const cursor of cursors.values()) cursor.reader.close();
     cursors.clear();
     try {
       store?.close();
@@ -138,7 +135,9 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
   };
   scope.signal.addEventListener('abort', close, { once: true });
   try {
-    store = createRailgunStore({ ...storage, handle: storeHandle, onFatal: close });
+    if (storage.format !== undefined && storage.format !== 'paged-v2') throw fail();
+    const factory = storage.format === 'paged-v2' ? createRailgunPagedStore : createRailgunStore;
+    store = factory({ ...storage, handle: storeHandle, onFatal: close });
     provider = createProvider({ handle: rpcHandle, signal: scope.signal });
     if (typeof provider?.request !== 'function' || provider.signal !== scope.signal) throw fail();
     active();
@@ -288,50 +287,73 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
       if (method === 'clear' && transaction) throw fail();
       const options = range(args.options);
       if (method === 'open' && cursors.size >= 2) throw fail();
-      const rows = store.snapshot(options, method === 'clear' || options.values === false);
-      if (options.reverse) rows.reverse();
       if (method === 'clear') {
         revision++;
-        try {
-          const selected = options.limit >= 0 ? rows.slice(0, options.limit) : rows;
-          if (selected.length) store.batch(selected.map(([key]) => ({ type: 'del', key })));
-          return null;
-        } finally {
-          wipe(rows);
-        }
+        clearRailgunStore(store, options);
+        return null;
       }
       const cursor = ++nextCursor;
-      cursors.set(cursor, { rows, options, position: 0, count: 0 });
+      cursors.set(cursor, { reader: createRailgunStoreCursor(store, options), options });
       return cursor;
     }
     if (
-      ['next', 'seek', 'end'].includes(method) &&
-      shape(args, method === 'seek' ? ['cursor', 'target'] : ['cursor'])
+      ['next', 'nextMany', 'seek', 'end'].includes(method) &&
+      shape(
+        args,
+        method === 'seek'
+          ? ['cursor', 'target']
+          : method === 'nextMany'
+            ? ['cursor', 'limit']
+            : ['cursor']
+      )
     ) {
       if (!Number.isSafeInteger(args.cursor) || !cursors.has(args.cursor)) throw fail();
       const cursor = cursors.get(args.cursor),
-        { rows, options } = cursor;
+        { reader, options } = cursor;
       if (method === 'end') {
-        wipe(rows);
+        reader.close();
         cursors.delete(args.cursor);
         return null;
       }
       if (method === 'seek') {
         const target = decode(args.target, 4096);
-        const index = rows.findIndex(([key]) =>
-          options.reverse ? Buffer.compare(key, target) <= 0 : Buffer.compare(key, target) >= 0
-        );
-        cursor.position = index < 0 ? rows.length : index;
+        try {
+          reader.seek(target);
+        } finally {
+          target.fill(0);
+        }
         return null;
       }
-      if (cursor.position >= rows.length || (options.limit >= 0 && cursor.count >= options.limit))
-        return null;
-      cursor.count++;
-      const [key, value] = rows[cursor.position++];
-      return [
-        options.keys === false ? null : key.toString('base64'),
-        options.values === false ? null : value.toString('base64'),
-      ];
+      const next = () => {
+        const row = reader.next();
+        if (!row) return null;
+        const [key, value] = row;
+        try {
+          return [
+            options.keys === false ? null : key.toString('base64'),
+            options.values === false ? null : value.toString('base64'),
+          ];
+        } finally {
+          key.fill(0);
+          value.fill(0);
+        }
+      };
+      if (method === 'next') return next();
+      if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 128) throw fail();
+      const rows = [];
+      let size = 128;
+      while (rows.length < args.limit) {
+        const row = next();
+        if (!row) return { rows, done: true };
+        const bytes = JSON.stringify(row).length + 1;
+        // Stop after crossing the target size. One bounded row added to less
+        // than 512 KiB remains below the hard 2 MiB frame cap, without consuming
+        // an invisible overflow row that would alter seek/limit semantics.
+        rows.push(row);
+        size += bytes;
+        if (size > 512 * 1024) break;
+      }
+      return { rows, done: false };
     }
     throw fail();
   }

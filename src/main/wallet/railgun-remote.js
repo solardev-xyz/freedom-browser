@@ -15,6 +15,7 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
     pending = 0,
     queuedBytes = 0;
   const queue = [];
+  const iterators = new Set();
   const active = () => {
     if (lifetime.aborted) throw fail();
   };
@@ -22,6 +23,8 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
   lifetime.addEventListener(
     'abort',
     () => {
+      for (const iterator of iterators) iterator.rows.length = 0;
+      iterators.clear();
       for (const item of queue.splice(0)) {
         clearTimeout(item.deadline);
         item.payload = '';
@@ -130,6 +133,11 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
         const decoded = Buffer.from(input, 'base64');
         return decoded.length <= maximum && decoded.toString('base64') === input;
       };
+      const rowValid = (row) =>
+        Array.isArray(row) &&
+        row.length === 2 &&
+        (row[0] === null || bytes(row[0], 4096)) &&
+        (row[1] === null || bytes(row[1], 1024 * 1024));
       if (
         (method === 'get' && value !== null && !bytes(value, 1024 * 1024)) ||
         (method === 'getMany' &&
@@ -139,12 +147,16 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
         (['batch', 'clear', 'seek', 'end', 'txStage', 'txCommit', 'txAbort'].includes(method) &&
           value !== null) ||
         (['open', 'txBegin'].includes(method) && (!Number.isSafeInteger(value) || value < 1)) ||
-        (method === 'next' &&
-          value !== null &&
-          (!Array.isArray(value) ||
-            value.length !== 2 ||
-            (value[0] !== null && !bytes(value[0], 4096)) ||
-            (value[1] !== null && !bytes(value[1], 1024 * 1024))))
+        (method === 'next' && value !== null && !rowValid(value)) ||
+        (method === 'nextMany' &&
+          (!value ||
+            Array.isArray(value) ||
+            Object.keys(value).length !== 2 ||
+            typeof value.done !== 'boolean' ||
+            !Array.isArray(value.rows) ||
+            value.rows.length > args.limit ||
+            (!value.done && !value.rows.length) ||
+            !value.rows.every(rowValid)))
       )
         throw fail();
       return response.value;
@@ -269,8 +281,14 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
       active();
       this.options = options;
       this.ended = false;
+      this.rows = [];
+      this.done = false;
+      this.count = 0;
+      iterators.add(this);
       this.error = null;
-      this.tail = call('open', { options: optionsFor(options) })
+      // Enforce the caller's limit on delivered rows, not prefetched rows. A
+      // seek can discard a buffered suffix without consuming that allowance.
+      this.tail = call('open', { options: optionsFor({ ...options, limit: -1 }) })
         .then((cursor) => {
           if (!Number.isSafeInteger(cursor) || cursor < 1) throw fail();
           this.cursor = cursor;
@@ -294,8 +312,18 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
       finish(callback, () =>
         this.enqueue(async () => {
           if (this.ended) throw fail();
-          const row = await call('next', { cursor: this.cursor });
-          if (row === null) return [];
+          if (this.options.limit >= 0 && this.count >= this.options.limit) return [];
+          if (!this.rows.length && !this.done) {
+            const result = await call('nextMany', {
+              cursor: this.cursor,
+              limit: Math.min(128, this.options.limit >= 0 ? this.options.limit - this.count : 128),
+            });
+            this.rows = result.rows;
+            this.done = result.done;
+          }
+          const row = this.rows.shift();
+          if (!row) return [];
+          this.count++;
           if (!Array.isArray(row) || row.length !== 2) throw fail();
           return row.map((value, index) =>
             value === null
@@ -310,9 +338,11 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
     _seek(target) {
       active();
       if (this.ended) throw fail();
-      this.enqueue(() => call('seek', { cursor: this.cursor, target: encode(target) })).catch(
-        () => {}
-      );
+      this.enqueue(() => {
+        this.rows.length = 0;
+        this.done = false;
+        return call('seek', { cursor: this.cursor, target: encode(target) });
+      }).catch(() => {});
     }
     _end(callback) {
       if (this.ended) {
@@ -320,6 +350,8 @@ function createRailgunRemote({ AbstractLevelDOWN, AbstractIterator, send, signal
         return;
       }
       this.ended = true;
+      this.rows.length = 0;
+      iterators.delete(this);
       if (lifetime.aborted) {
         queueMicrotask(callback);
         return;

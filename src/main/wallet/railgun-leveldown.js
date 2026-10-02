@@ -1,4 +1,5 @@
 /** Injected engine LevelDOWN bridge; no engine imports or file/key authority. */
+const { createRailgunStoreCursor, clearRailgunStore } = require('./railgun-store-cursor');
 function createRailgunLeveldown({ AbstractLevelDOWN, AbstractIterator, store }) {
   const iterators = new Set();
   let closed = false;
@@ -31,46 +32,37 @@ function createRailgunLeveldown({ AbstractLevelDOWN, AbstractIterator, store }) 
       active();
       if (iterators.size >= 2) throw new Error('Railgun iterator capacity exceeded');
       this.options = options;
-      this.rows = store.snapshot(options, options.values === false);
-      this.position = 0;
-      this.count = 0;
+      this.reader = createRailgunStoreCursor(store, options);
       this.disposed = false;
-      if (options.reverse) this.rows.reverse();
       iterators.add(this);
     }
     dispose() {
-      for (const [k, v] of this.rows) {
-        k.fill(0);
-        v.fill(0);
-      }
-      this.rows = [];
+      this.reader.close();
       this.disposed = true;
       iterators.delete(this);
     }
     _next(callback) {
       finish(callback, () => {
         if (this.disposed) throw new Error('Railgun iterator revoked');
-        if (
-          this.position >= this.rows.length ||
-          (this.options.limit >= 0 && this.count >= this.options.limit)
-        )
-          return [];
-        const [k, v] = this.rows[this.position++];
-        this.count++;
+        const row = this.reader.next();
+        if (!row) return [];
+        const [k, v] = row;
         const format = (b, asBuffer) => (asBuffer === false ? b.toString() : Buffer.from(b));
-        return [
-          this.options.keys === false ? undefined : format(k, this.options.keyAsBuffer),
-          this.options.values === false ? undefined : format(v, this.options.valueAsBuffer),
-        ];
+        try {
+          return [
+            this.options.keys === false ? undefined : format(k, this.options.keyAsBuffer),
+            this.options.values === false ? undefined : format(v, this.options.valueAsBuffer),
+          ];
+        } finally {
+          k.fill(0);
+          v.fill(0);
+        }
       });
     }
     _seek(target) {
       active();
       if (this.disposed) throw new Error('Railgun iterator revoked');
-      const index = this.rows.findIndex(([k]) =>
-        this.options.reverse ? Buffer.compare(k, target) <= 0 : Buffer.compare(k, target) >= 0
-      );
-      this.position = index < 0 ? this.rows.length : index;
+      this.reader.seek(target);
     }
     _end(callback) {
       this.dispose();
@@ -141,14 +133,7 @@ function createRailgunLeveldown({ AbstractLevelDOWN, AbstractIterator, store }) 
     }
     _clear(options, callback) {
       finish(callback, () => {
-        const snapshot = store.snapshot(options, true);
-        try {
-          if (options.reverse) snapshot.reverse();
-          const rows = options.limit >= 0 ? snapshot.slice(0, options.limit) : snapshot;
-          if (rows.length) store.batch(rows.map(([key]) => ({ type: 'del', key })));
-        } finally {
-          for (const [key] of snapshot) key.fill(0);
-        }
+        clearRailgunStore(store, options);
         return [];
       });
     }

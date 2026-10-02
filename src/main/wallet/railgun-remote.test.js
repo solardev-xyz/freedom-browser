@@ -108,8 +108,11 @@ test('seek and end queue behind an unresolved remote iterator open', async () =>
     return Promise.resolve(
       reply(
         wire,
-        message.method === 'next'
-          ? [Buffer.from('b').toString('base64'), Buffer.from('v').toString('base64')]
+        message.method === 'nextMany'
+          ? {
+              rows: [[Buffer.from('b').toString('base64'), Buffer.from('v').toString('base64')]],
+              done: true,
+            }
           : null
       )
     );
@@ -122,7 +125,7 @@ test('seek and end queue behind an unresolved remote iterator open', async () =>
   opened();
   expect(await next).toEqual(['b', 'v']);
   await invoke(iterator, '_end');
-  expect(methods).toEqual(['open', 'seek', 'next', 'end']);
+  expect(methods).toEqual(['open', 'seek', 'nextMany', 'end']);
 });
 test('closing while an iterator is opening rejects reads without another transport call', async () => {
   send.mockImplementation(() => new Promise(() => {}));
@@ -134,6 +137,53 @@ test('closing while an iterator is opening rejects reads without another transpo
   await rejected;
   await invoke(iterator, '_end');
   expect(send).toHaveBeenCalledTimes(1);
+});
+test('buffered iteration reduces round trips while seek discards cached rows without consuming the limit', async () => {
+  const b = (v) => Buffer.from(v).toString('base64');
+  let offset = 0;
+  send.mockImplementation(async (wire) => {
+    const { method, args } = JSON.parse(wire);
+    if (method === 'open') {
+      expect(args.options.limit).toBe(-1);
+      return reply(wire, 1);
+    }
+    if (method === 'seek') {
+      offset = 50;
+      return reply(wire, null);
+    }
+    if (method === 'end') return reply(wire, null);
+    expect(method).toBe('nextMany');
+    const rows = Array.from({ length: Math.min(args.limit, 100 - offset) }, () => [
+      b(String(offset++)),
+      b('value'),
+    ]);
+    return reply(wire, { rows, done: offset === 100 });
+  });
+  const iterator = remote.leveldown._iterator({ limit: 5, keyAsBuffer: false });
+  expect((await invoke(iterator, '_next'))[0]).toBe('0');
+  expect((await invoke(iterator, '_next'))[0]).toBe('1');
+  iterator._seek(Buffer.from('50'));
+  expect((await invoke(iterator, '_next'))[0]).toBe('50');
+  expect((await invoke(iterator, '_next'))[0]).toBe('51');
+  expect((await invoke(iterator, '_next'))[0]).toBe('52');
+  expect(await invoke(iterator, '_next')).toEqual([]);
+  await invoke(iterator, '_end');
+  expect(send.mock.calls.filter(([wire]) => JSON.parse(wire).method === 'nextMany')).toHaveLength(
+    2
+  );
+});
+test.each([
+  { rows: [], done: false },
+  { rows: [[null, '!']], done: true },
+  { rows: [], done: true, extra: true },
+  { rows: Array(129).fill([null, null]), done: false },
+])('refuses malformed multirow replies %j', async (value) => {
+  send.mockImplementation(async (wire) =>
+    reply(wire, JSON.parse(wire).method === 'open' ? 1 : value)
+  );
+  const iterator = remote.leveldown._iterator({});
+  await expect(invoke(iterator, '_next')).rejects.toThrow();
+  expect(remote.signal.aborted).toBe(true);
 });
 test('a large read burst queues in FIFO order with at most eight requests in flight', async () => {
   let inflight = 0,

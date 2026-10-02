@@ -6,6 +6,8 @@ const { createHash } = require('crypto');
 const { app } = require('electron');
 const { createPrivacyScope } = require('../src/main/networks/privacy-context');
 const { createRailgunStore } = require('../src/main/wallet/railgun-store');
+const { createRailgunPagedStore } = require('../src/main/wallet/railgun-paged-store');
+const paged = process.argv[3] === '--paged';
 const { startRailgunProcess } = require('../src/main/wallet/railgun-process');
 const sources = [
   'scripts/qualify-railgun-electron.js',
@@ -18,6 +20,8 @@ const sources = [
   'src/main/wallet/railgun-frontier.js',
   'src/main/wallet/railgun-remote.js',
   'src/main/wallet/railgun-store.js',
+  'src/main/wallet/railgun-paged-store.js',
+  'src/main/wallet/railgun-store-cursor.js',
   'src/main/networks/railgun-host-provider.js',
   'src/main/networks/privacy-context.js',
   'scripts/fixtures/railgun-engine/runtime-integrity.json',
@@ -91,6 +95,7 @@ async function main() {
         ],
       }),
       storage: {
+        format: paged ? 'paged-v2' : undefined,
         filename: path.join(directory, actualEngine ? 'engine.sqlite' : mode + '.sqlite'),
         key: Buffer.alloc(32, 23),
         binding: 'd'.repeat(64),
@@ -202,7 +207,7 @@ async function main() {
           chainId: 11155111,
           role: 'storage',
         });
-        const store = createRailgunStore({
+        const store = (paged ? createRailgunPagedStore : createRailgunStore)({
           ...options.storage,
           handle: storageHandle,
           create: false,
@@ -233,6 +238,7 @@ async function main() {
     architecture: process.arch,
     sourceSha256,
     runs,
+    storageFormat: paged ? 'paged-v2' : 'legacy-v1',
     noLiveRpc: true,
     publicTestKeysOnly: true,
     productEnabled: false,
