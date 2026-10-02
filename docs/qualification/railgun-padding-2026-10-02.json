@@ -1,0 +1,429 @@
+{
+  "observedAt": "2026-10-02T16:35:52.414Z",
+  "passed": true,
+  "sourceSha256": "2a47a9179f5b5bcf690bfd1376fdbddc7b7e0c6b018ec2600cde01342f6d8e36",
+  "guards": {
+    "hooks": [
+      "global.fetch",
+      "global.WebSocket",
+      "http.request",
+      "http.get",
+      "https.request",
+      "https.get",
+      "net.connect",
+      "net.createConnection",
+      "tls.connect",
+      "http2.connect",
+      "dgram.createSocket",
+      "worker_threads.Worker",
+      "child_process.spawn",
+      "child_process.spawnSync",
+      "child_process.exec",
+      "child_process.execSync",
+      "child_process.execFile",
+      "child_process.execFileSync",
+      "child_process.fork",
+      "net.Socket.connect",
+      "dgram.Socket.send",
+      "dgram.Socket.connect",
+      "dgram.Socket.bind",
+      "dns.lookup",
+      "dns.lookupService",
+      "dns.resolve",
+      "dns.resolve4",
+      "dns.resolve6",
+      "dns.resolveAny",
+      "dns.resolveCaa",
+      "dns.resolveCname",
+      "dns.resolveMx",
+      "dns.resolveNaptr",
+      "dns.resolveNs",
+      "dns.resolvePtr",
+      "dns.resolveSoa",
+      "dns.resolveSrv",
+      "dns.resolveTlsa",
+      "dns.resolveTxt",
+      "dns.reverse",
+      "dns.Resolver.resolveAny",
+      "dns.Resolver.resolve4",
+      "dns.Resolver.resolve6",
+      "dns.Resolver.resolveCaa",
+      "dns.Resolver.resolveCname",
+      "dns.Resolver.resolveMx",
+      "dns.Resolver.resolveNs",
+      "dns.Resolver.resolveTlsa",
+      "dns.Resolver.resolveTxt",
+      "dns.Resolver.resolveSrv",
+      "dns.Resolver.resolvePtr",
+      "dns.Resolver.resolveNaptr",
+      "dns.Resolver.resolveSoa",
+      "dns.Resolver.reverse",
+      "dns.Resolver.resolve",
+      "dns.promises.lookup",
+      "dns.promises.lookupService",
+      "dns.promises.resolve",
+      "dns.promises.resolve4",
+      "dns.promises.resolve6",
+      "dns.promises.resolveAny",
+      "dns.promises.resolveCaa",
+      "dns.promises.resolveCname",
+      "dns.promises.resolveMx",
+      "dns.promises.resolveNaptr",
+      "dns.promises.resolveNs",
+      "dns.promises.resolvePtr",
+      "dns.promises.resolveSoa",
+      "dns.promises.resolveSrv",
+      "dns.promises.resolveTlsa",
+      "dns.promises.resolveTxt",
+      "dns.promises.reverse",
+      "dns.promises.Resolver.resolveAny",
+      "dns.promises.Resolver.resolve4",
+      "dns.promises.Resolver.resolve6",
+      "dns.promises.Resolver.resolveCaa",
+      "dns.promises.Resolver.resolveCname",
+      "dns.promises.Resolver.resolveMx",
+      "dns.promises.Resolver.resolveNs",
+      "dns.promises.Resolver.resolveTlsa",
+      "dns.promises.Resolver.resolveTxt",
+      "dns.promises.Resolver.resolveSrv",
+      "dns.promises.Resolver.resolvePtr",
+      "dns.promises.Resolver.resolveNaptr",
+      "dns.promises.Resolver.resolveSoa",
+      "dns.promises.Resolver.reverse",
+      "dns.promises.Resolver.resolve"
+    ],
+    "canaries": 87,
+    "attempts": 0
+  },
+  "scope": "actual engine hash-write groups; no storage, wallet or chain qualification",
+  "reports": [
+    {
+      "method": "insertLeaves",
+      "batchSize": 4096,
+      "root": "2eebeebad88cdf1907e053d07c91c4c7fe8ffa97928b207577295df383bda770",
+      "padding": [
+        {
+          "level": 1,
+          "index": 32768,
+          "hash": "01c405064436affeae1fc8e30b2e417b4243bbb819adca3b55bb32efc3e43a4f"
+        },
+        {
+          "level": 2,
+          "index": 16384,
+          "hash": "0888d37652d10d1781db54b70af87b42a2916e87118f507218f9a42a58e85ed2"
+        },
+        {
+          "level": 3,
+          "index": 8192,
+          "hash": "183f531ead7217ebc316b4c02a2aad5ad87a1d56d4fb9ed81bf84f644549eaf5"
+        },
+        {
+          "level": 4,
+          "index": 4096,
+          "hash": "093c48f1ecedf2baec231f0af848a57a76c6cf05b290a396707972e1defd17df"
+        },
+        {
+          "level": 5,
+          "index": 2048,
+          "hash": "1437bb465994e0453357c17a676b9fdba554e215795ebc17ea5012770dfb77c7"
+        },
+        {
+          "level": 6,
+          "index": 1024,
+          "hash": "12359ef9572912b49f44556b8bbbfa69318955352f54cfa35cb0f41309ed445a"
+        },
+        {
+          "level": 7,
+          "index": 512,
+          "hash": "2dc656dadc82cf7a4707786f4d682b0f130b6515f7927bde48214d37ec25a46c"
+        },
+        {
+          "level": 8,
+          "index": 256,
+          "hash": "2500bdfc1592791583acefd050bc439a87f1d8e8697eb773e8e69b44973e6fdc"
+        },
+        {
+          "level": 9,
+          "index": 128,
+          "hash": "244ae3b19397e842778b254cd15c037ed49190141b288ff10eb1390b34dc2c31"
+        },
+        {
+          "level": 10,
+          "index": 64,
+          "hash": "0ca2b107491c8ca6e5f7e22403ea8529c1e349a1057b8713e09ca9f5b9294d46"
+        },
+        {
+          "level": 11,
+          "index": 32,
+          "hash": "18593c75a9e42af27b5e5b56b99c4c6a5d7e7d6e362f00c8e3f69aeebce52313"
+        },
+        {
+          "level": 12,
+          "index": 16,
+          "hash": "17aca915b237b04f873518947a1f440f0c1477a6ac79299b3be46858137d4bfb"
+        },
+        {
+          "level": 13,
+          "index": 8,
+          "hash": "2726c22ad3d9e23414887e8233ee83cc51603f58c48a9c9e33cb1f306d4365c0"
+        },
+        {
+          "level": 14,
+          "index": 4,
+          "hash": "08c5bd0f85cef2f8c3c1412a2b69ee943c6925ecf79798bb2b84e1b76d26871f"
+        },
+        {
+          "level": 15,
+          "index": 2,
+          "hash": "27f7c465045e0a4d8bec7c13e41d793734c50006ca08920732ce8c3096261435"
+        },
+        {
+          "level": 16,
+          "index": 1,
+          "hash": "14fceeac99eb8419a2796d1958fc2050d489bf5a3eb170ef16a667060344ba90"
+        }
+      ]
+    },
+    {
+      "method": "insertLeaves",
+      "batchSize": 65536,
+      "root": "2eebeebad88cdf1907e053d07c91c4c7fe8ffa97928b207577295df383bda770",
+      "padding": [
+        {
+          "level": 1,
+          "index": 32768,
+          "hash": "01c405064436affeae1fc8e30b2e417b4243bbb819adca3b55bb32efc3e43a4f"
+        },
+        {
+          "level": 2,
+          "index": 16384,
+          "hash": "0888d37652d10d1781db54b70af87b42a2916e87118f507218f9a42a58e85ed2"
+        },
+        {
+          "level": 3,
+          "index": 8192,
+          "hash": "183f531ead7217ebc316b4c02a2aad5ad87a1d56d4fb9ed81bf84f644549eaf5"
+        },
+        {
+          "level": 4,
+          "index": 4096,
+          "hash": "093c48f1ecedf2baec231f0af848a57a76c6cf05b290a396707972e1defd17df"
+        },
+        {
+          "level": 5,
+          "index": 2048,
+          "hash": "1437bb465994e0453357c17a676b9fdba554e215795ebc17ea5012770dfb77c7"
+        },
+        {
+          "level": 6,
+          "index": 1024,
+          "hash": "12359ef9572912b49f44556b8bbbfa69318955352f54cfa35cb0f41309ed445a"
+        },
+        {
+          "level": 7,
+          "index": 512,
+          "hash": "2dc656dadc82cf7a4707786f4d682b0f130b6515f7927bde48214d37ec25a46c"
+        },
+        {
+          "level": 8,
+          "index": 256,
+          "hash": "2500bdfc1592791583acefd050bc439a87f1d8e8697eb773e8e69b44973e6fdc"
+        },
+        {
+          "level": 9,
+          "index": 128,
+          "hash": "244ae3b19397e842778b254cd15c037ed49190141b288ff10eb1390b34dc2c31"
+        },
+        {
+          "level": 10,
+          "index": 64,
+          "hash": "0ca2b107491c8ca6e5f7e22403ea8529c1e349a1057b8713e09ca9f5b9294d46"
+        },
+        {
+          "level": 11,
+          "index": 32,
+          "hash": "18593c75a9e42af27b5e5b56b99c4c6a5d7e7d6e362f00c8e3f69aeebce52313"
+        },
+        {
+          "level": 12,
+          "index": 16,
+          "hash": "17aca915b237b04f873518947a1f440f0c1477a6ac79299b3be46858137d4bfb"
+        },
+        {
+          "level": 13,
+          "index": 8,
+          "hash": "2726c22ad3d9e23414887e8233ee83cc51603f58c48a9c9e33cb1f306d4365c0"
+        },
+        {
+          "level": 14,
+          "index": 4,
+          "hash": "08c5bd0f85cef2f8c3c1412a2b69ee943c6925ecf79798bb2b84e1b76d26871f"
+        },
+        {
+          "level": 15,
+          "index": 2,
+          "hash": "27f7c465045e0a4d8bec7c13e41d793734c50006ca08920732ce8c3096261435"
+        },
+        {
+          "level": 16,
+          "index": 1,
+          "hash": "14fceeac99eb8419a2796d1958fc2050d489bf5a3eb170ef16a667060344ba90"
+        }
+      ]
+    },
+    {
+      "method": "rebuild-inclusive-helper",
+      "batchSize": 4096,
+      "root": "2eebeebad88cdf1907e053d07c91c4c7fe8ffa97928b207577295df383bda770",
+      "padding": [
+        {
+          "level": 1,
+          "index": 32768,
+          "hash": "01c405064436affeae1fc8e30b2e417b4243bbb819adca3b55bb32efc3e43a4f"
+        },
+        {
+          "level": 2,
+          "index": 16384,
+          "hash": "0888d37652d10d1781db54b70af87b42a2916e87118f507218f9a42a58e85ed2"
+        },
+        {
+          "level": 3,
+          "index": 8192,
+          "hash": "183f531ead7217ebc316b4c02a2aad5ad87a1d56d4fb9ed81bf84f644549eaf5"
+        },
+        {
+          "level": 4,
+          "index": 4096,
+          "hash": "093c48f1ecedf2baec231f0af848a57a76c6cf05b290a396707972e1defd17df"
+        },
+        {
+          "level": 5,
+          "index": 2048,
+          "hash": "1437bb465994e0453357c17a676b9fdba554e215795ebc17ea5012770dfb77c7"
+        },
+        {
+          "level": 6,
+          "index": 1024,
+          "hash": "12359ef9572912b49f44556b8bbbfa69318955352f54cfa35cb0f41309ed445a"
+        },
+        {
+          "level": 7,
+          "index": 512,
+          "hash": "2dc656dadc82cf7a4707786f4d682b0f130b6515f7927bde48214d37ec25a46c"
+        },
+        {
+          "level": 8,
+          "index": 256,
+          "hash": "2500bdfc1592791583acefd050bc439a87f1d8e8697eb773e8e69b44973e6fdc"
+        },
+        {
+          "level": 9,
+          "index": 128,
+          "hash": "244ae3b19397e842778b254cd15c037ed49190141b288ff10eb1390b34dc2c31"
+        },
+        {
+          "level": 10,
+          "index": 64,
+          "hash": "0ca2b107491c8ca6e5f7e22403ea8529c1e349a1057b8713e09ca9f5b9294d46"
+        },
+        {
+          "level": 11,
+          "index": 32,
+          "hash": "18593c75a9e42af27b5e5b56b99c4c6a5d7e7d6e362f00c8e3f69aeebce52313"
+        },
+        {
+          "level": 12,
+          "index": 16,
+          "hash": "17aca915b237b04f873518947a1f440f0c1477a6ac79299b3be46858137d4bfb"
+        }
+      ]
+    },
+    {
+      "method": "rebuild-inclusive-helper",
+      "batchSize": 65536,
+      "root": "2eebeebad88cdf1907e053d07c91c4c7fe8ffa97928b207577295df383bda770",
+      "padding": [
+        {
+          "level": 1,
+          "index": 32768,
+          "hash": "01c405064436affeae1fc8e30b2e417b4243bbb819adca3b55bb32efc3e43a4f"
+        },
+        {
+          "level": 2,
+          "index": 16384,
+          "hash": "0888d37652d10d1781db54b70af87b42a2916e87118f507218f9a42a58e85ed2"
+        },
+        {
+          "level": 3,
+          "index": 8192,
+          "hash": "183f531ead7217ebc316b4c02a2aad5ad87a1d56d4fb9ed81bf84f644549eaf5"
+        },
+        {
+          "level": 4,
+          "index": 4096,
+          "hash": "093c48f1ecedf2baec231f0af848a57a76c6cf05b290a396707972e1defd17df"
+        },
+        {
+          "level": 5,
+          "index": 2048,
+          "hash": "1437bb465994e0453357c17a676b9fdba554e215795ebc17ea5012770dfb77c7"
+        },
+        {
+          "level": 6,
+          "index": 1024,
+          "hash": "12359ef9572912b49f44556b8bbbfa69318955352f54cfa35cb0f41309ed445a"
+        },
+        {
+          "level": 7,
+          "index": 512,
+          "hash": "2dc656dadc82cf7a4707786f4d682b0f130b6515f7927bde48214d37ec25a46c"
+        },
+        {
+          "level": 8,
+          "index": 256,
+          "hash": "2500bdfc1592791583acefd050bc439a87f1d8e8697eb773e8e69b44973e6fdc"
+        },
+        {
+          "level": 9,
+          "index": 128,
+          "hash": "244ae3b19397e842778b254cd15c037ed49190141b288ff10eb1390b34dc2c31"
+        },
+        {
+          "level": 10,
+          "index": 64,
+          "hash": "0ca2b107491c8ca6e5f7e22403ea8529c1e349a1057b8713e09ca9f5b9294d46"
+        },
+        {
+          "level": 11,
+          "index": 32,
+          "hash": "18593c75a9e42af27b5e5b56b99c4c6a5d7e7d6e362f00c8e3f69aeebce52313"
+        },
+        {
+          "level": 12,
+          "index": 16,
+          "hash": "17aca915b237b04f873518947a1f440f0c1477a6ac79299b3be46858137d4bfb"
+        },
+        {
+          "level": 13,
+          "index": 8,
+          "hash": "2726c22ad3d9e23414887e8233ee83cc51603f58c48a9c9e33cb1f306d4365c0"
+        },
+        {
+          "level": 14,
+          "index": 4,
+          "hash": "08c5bd0f85cef2f8c3c1412a2b69ee943c6925ecf79798bb2b84e1b76d26871f"
+        },
+        {
+          "level": 15,
+          "index": 2,
+          "hash": "27f7c465045e0a4d8bec7c13e41d793734c50006ca08920732ce8c3096261435"
+        },
+        {
+          "level": 16,
+          "index": 1,
+          "hash": "14fceeac99eb8419a2796d1958fc2050d489bf5a3eb170ef16a667060344ba90"
+        }
+      ]
+    }
+  ]
+}

@@ -2,8 +2,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
-const { createPrivacyScope } = require('../networks/privacy-context');
+const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createRailgunPagedStore } = require('./railgun-paged-store');
 let scope, options, store;
 const key = (n) => {
@@ -43,6 +44,94 @@ afterEach(() => {
   store.close();
   scope.close();
 });
+test('authenticated instance identity survives writes, collection and reopen, and differs for new stores', () => {
+  const id = store.getInstanceId();
+  expect(id).toMatch(/^[0-9a-f]{64}$/);
+  store.batch([put(1)]);
+  store.clear({});
+  expect(store.getInstanceId()).toBe(id);
+  store.close();
+  store = createRailgunPagedStore(options);
+  expect(store.getInstanceId()).toBe(id);
+  const other = createRailgunPagedStore({
+    ...options,
+    filename: options.filename + '.other',
+    create: true,
+  });
+  try {
+    expect(other.getInstanceId()).not.toBe(id);
+  } finally {
+    other.close();
+  }
+});
+function editManifest(change) {
+  store.close();
+  const context = getPrivacyContext(options.handle),
+    subject = context.subject;
+  const aad = Buffer.concat([
+    Buffer.from(
+      JSON.stringify([
+        'railgun-paged-store-v2',
+        context.profileId,
+        subject.kind,
+        subject.principal,
+        subject.chainId,
+        subject.protocol,
+        subject.deployment,
+        subject.role,
+        options.binding,
+      ])
+    ),
+    Buffer.from('manifest'),
+  ]);
+  const db = new Database(options.filename);
+  try {
+    const bytes = db
+      .prepare("SELECT ciphertext FROM records WHERE id = 'manifest'")
+      .get().ciphertext;
+    const decipher = crypto.createDecipheriv('aes-256-gcm', options.key, bytes.subarray(0, 12));
+    decipher.setAAD(aad);
+    decipher.setAuthTag(bytes.subarray(-16));
+    const parsed = JSON.parse(
+      Buffer.concat([decipher.update(bytes.subarray(12, -16)), decipher.final()])
+    );
+    change(parsed);
+    const iv = crypto.randomBytes(12),
+      cipher = crypto.createCipheriv('aes-256-gcm', options.key, iv);
+    cipher.setAAD(aad);
+    const sealed = Buffer.concat([
+      iv,
+      cipher.update(JSON.stringify(parsed)),
+      cipher.final(),
+      cipher.getAuthTag(),
+    ]);
+    db.prepare("UPDATE records SET ciphertext = ? WHERE id = 'manifest'").run(sealed);
+  } finally {
+    db.close();
+  }
+}
+test('legacy five-field manifests stay readable and never silently acquire an identity', () => {
+  store.batch([put(1)]);
+  editManifest((value) => {
+    value.pop();
+  });
+  store = createRailgunPagedStore(options);
+  expect(store.getInstanceId()).toBeNull();
+  expect(store.get(key(1)).toString()).toBe('value-1');
+  store.batch([put(2)]);
+  store.close();
+  store = createRailgunPagedStore(options);
+  expect(store.getInstanceId()).toBeNull();
+});
+test.each([null, '', 'a'.repeat(63), 'A'.repeat(64), 1])(
+  'refuses malformed authenticated instance identity %j',
+  (id) => {
+    editManifest((value) => {
+      value[5] = id;
+    });
+    expect(() => createRailgunPagedStore(options)).toThrow();
+  }
+);
 test('encrypts exact binary keys and values, including an empty value; reopens without shared buffers', () => {
   store.batch([put(0, Buffer.alloc(0)), put(1, Buffer.from('private-value-do-not-publish'))]);
   const result = store.get(key(1));

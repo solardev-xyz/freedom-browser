@@ -318,6 +318,8 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     assertFresh(value);
     return value;
   }
+  const inspectPublicState = () => inspect({ method: 'publicState' });
+  const inspectStoreIdentity = () => inspect({ method: 'storeIdentity' });
   const inspectFrontier = () => inspect({ method: 'frontier' });
   function inspectPosition(frontier, position) {
     assertFresh(frontier);
@@ -332,6 +334,8 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     close,
     signal: scope.signal,
     inspectFrontier,
+    inspectStoreIdentity,
+    inspectPublicState,
     inspectPosition,
     assertFresh,
   });

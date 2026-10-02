@@ -6,6 +6,7 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const { createRailgunStore } = require('./railgun-store');
 const { createRailgunPagedStore } = require('./railgun-paged-store');
 const { createRailgunStoreCursor, clearRailgunStore } = require('./railgun-store-cursor');
+const { inspectPublicRecords } = require('./railgun-public-records');
 const { readRailgunFrontier, readRailgunPosition } = require('./railgun-frontier');
 const MAX_MESSAGE = 2 * 1024 * 1024;
 const READS = new Set([
@@ -415,6 +416,31 @@ function createRailgunSession({ handle, storage, createProvider, onClose, onRevi
       throw unavailable('RAILGUN_FRONTIER_INVALID');
     }
   };
+  const inspectPublicState = () => {
+    active();
+    if (transaction || cursors.size) throw unavailable('RAILGUN_FRONTIER_BUSY');
+    try {
+      const result = inspectPublicRecords(
+        store,
+        readRailgunFrontier((key) => store.get(key))
+      );
+      observations.set(result, revision);
+      return result;
+    } catch {
+      close();
+      throw unavailable('RAILGUN_FRONTIER_INVALID');
+    }
+  };
+  const inspectStoreIdentity = () => {
+    active();
+    if (transaction) throw unavailable('RAILGUN_FRONTIER_BUSY');
+    const result = Object.freeze({
+      format: storage.format === 'paged-v2' ? 'paged-v2' : 'legacy-v1',
+      instanceId: store.getInstanceId?.() ?? null,
+    });
+    observations.set(result, revision);
+    return result;
+  };
   const inspectPosition = (frontier, { tree, index } = {}) => {
     active();
     if (transaction || frontiers.get(frontier) !== revision)
@@ -441,6 +467,8 @@ function createRailgunSession({ handle, storage, createProvider, onClose, onRevi
     close,
     signal: scope.signal,
     inspectFrontier,
+    inspectStoreIdentity,
+    inspectPublicState,
     inspectPosition,
     assertFresh,
   });

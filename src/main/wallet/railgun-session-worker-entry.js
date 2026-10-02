@@ -64,7 +64,9 @@ parentPort.on('message', (message) => {
     try {
       const request = JSON.parse(message.wire);
       let value;
-      if (request.method === 'frontier') value = session.inspectFrontier();
+      if (request.method === 'publicState') value = session.inspectPublicState();
+      else if (request.method === 'storeIdentity') value = session.inspectStoreIdentity();
+      else if (request.method === 'frontier') value = session.inspectFrontier();
       else if (request.method === 'position' && observations.has(request.observation))
         value = session.inspectPosition(observations.get(request.observation), request.position);
       else throw Object.assign(new Error(), { code: 'RAILGUN_FRONTIER_STALE' });

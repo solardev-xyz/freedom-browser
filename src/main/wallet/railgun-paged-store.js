@@ -104,7 +104,8 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     manifestBytes = 0,
     persistedPages = new Map(),
     writtenPages = new Map(),
-    writtenBytes = 0;
+    writtenBytes = 0,
+    instanceId = create ? crypto.randomBytes(32).toString('hex') : null;
   const active = () => {
     if (closed) throw refused('RAILGUN_STORE_REVOKED');
     getPrivacyContext(handle);
@@ -267,7 +268,11 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
       encoded.push(item);
       previous = p.last;
     }
-    const plain = Buffer.from(JSON.stringify([2, keys, bytes, encoded, retired]));
+    // Legacy v2 manifests remain readable but never acquire an identity by
+    // inference. Only explicit creation installs this authenticated instance id.
+    const manifest = [2, keys, bytes, encoded, retired];
+    if (instanceId !== null) manifest.push(instanceId);
+    const plain = Buffer.from(JSON.stringify(manifest));
     try {
       if (plain.length > MAX_DIRECTORY) throw refused('RAILGUN_STORE_LIMIT');
       return { ciphertext: seal(plain, 'manifest'), keys, bytes };
@@ -455,7 +460,9 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     }
     if (
       !Array.isArray(parsed) ||
-      parsed.length !== 5 ||
+      ![5, 6].includes(parsed.length) ||
+      (parsed.length === 6 &&
+        (typeof parsed[5] !== 'string' || !/^[0-9a-f]{64}$/.test(parsed[5]))) ||
       parsed[0] !== 2 ||
       !integer(parsed[1], MAX_KEYS) ||
       !integer(parsed[2], MAX_BYTES) ||
@@ -465,6 +472,7 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
       parsed[4].length > MAX_PAGES * 2
     )
       throw refused();
+    instanceId = parsed.length === 6 ? parsed[5] : null;
     const ids = new Set();
     let directoryKeys = 0,
       previous = Buffer.alloc(0);
@@ -666,6 +674,7 @@ function createRailgunPagedStore({ handle, filename, key, binding, onFatal, crea
     close,
     assertActive: active,
     openSnapshot,
+    getInstanceId: () => guarded(() => instanceId),
     stats: () =>
       guarded(() => ({
         keys: totalKeys,

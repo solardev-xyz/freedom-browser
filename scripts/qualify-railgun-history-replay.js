@@ -6,6 +6,66 @@ const crypto = require('crypto');
 const { readRailgunLogCapture } = require('./railgun-log-capture-data');
 const { createPrivacyScope } = require('../src/main/networks/privacy-context');
 const { startRailgunSessionWorker } = require('../src/main/wallet/railgun-session-worker');
+let expectedPublicStates;
+async function planHistory(input) {
+  const { fork } = require('child_process');
+  const child = fork(__filename, ['--plan'], {
+    env: {},
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    execArgv: ['--max-old-space-size=256'],
+  });
+  let result,
+    diagnostic = '',
+    timer;
+  try {
+    const closed = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.stderr.on('data', (chunk) => {
+        diagnostic = (diagnostic + chunk).slice(-2000);
+      });
+      child.on('message', (message) => {
+        if (
+          message?.type !== 'plan' ||
+          result ||
+          Buffer.byteLength(JSON.stringify(message)) > 256 * 1024
+        ) {
+          child.kill('SIGKILL');
+          return;
+        }
+        result = message.value;
+        child.kill('SIGTERM');
+      });
+      child.once('close', (code, signal) => resolve({ code, signal }));
+      timer = setTimeout(() => child.kill('SIGKILL'), 60000);
+      child.send(input);
+    });
+    await closed;
+    assert.ok(result, diagnostic || 'Public planner did not finish');
+    assert.equal(result.logSetSha256, input.logSetSha256);
+    assert.equal(result.guards.attempts, 0);
+    return result;
+  } finally {
+    clearTimeout(timer);
+    child.kill('SIGTERM');
+  }
+}
+async function plannerMain(input) {
+  const guards = require('../src/main/wallet/railgun-process-guards').installRailgunProcessGuards({
+    onRefusal: () => process.exit(2),
+  });
+  const { preparePublicHistory } = require('./prepare-railgun-public-history');
+  const { capture, expectedStates, inventory } = await preparePublicHistory(input, true);
+  const report = {
+    logSetSha256: capture.logSetSha256,
+    captureReportSha256: capture.reportSha256,
+    expectedStates,
+    inventory: inventory.sha256,
+    guards: guards.report(),
+    computedBeforeStoreCreation: true,
+  };
+  assert.equal(report.guards.attempts, 0);
+  process.send({ type: 'plan', value: report });
+}
 async function childMain(input) {
   const guards = require('../src/main/wallet/railgun-process-guards').installRailgunProcessGuards({
     onRefusal: () => process.exit(2),
@@ -150,7 +210,42 @@ async function run(directory, name, input, create = false) {
     assert.deepEqual(frontier.trees, [
       { tree: 0, length: expected.length, root: '0x' + expected.root, invalidRoot: false },
     ]);
+    const inspectionStarted = performance.now();
+    const publicState = input.inspectPublicState ? await session.inspectPublicState() : null;
+    const publicInspectionMs = publicState ? performance.now() - inspectionStarted : null;
+    if (publicState && result) {
+      for (const [kind, name] of [
+        ['commitments', 'leaves'],
+        ['nullifiers', 'nullifiers'],
+        ['unshields', 'unshields'],
+      ])
+        assert.equal(publicState[kind].count, result.checks[name]);
+      assert.deepEqual(
+        publicState.trees,
+        frontier.trees.map(({ tree, length, root }) => ({ tree, length, root }))
+      );
+    }
+    if (publicState) {
+      const identity = await session.inspectStoreIdentity();
+      assert.equal(publicState.storeId, identity.instanceId);
+      session.assertFresh(publicState);
+      const index = result ? result.completedChunks - 1 : input.crashChunk;
+      const expected = { ...expectedPublicStates[index], storeId: identity.instanceId };
+      if (!result) {
+        if (input.crashPhase === 'commitments')
+          expected.nullifiers = expectedPublicStates[index - 1].nullifiers;
+        if (['commitments', 'nullifiers'].includes(input.crashPhase))
+          expected.unshields = expectedPublicStates[index - 1].unshields;
+      }
+      assert.deepEqual(
+        publicState,
+        expected,
+        'Host public state must match precomputed source, including partial crash phase'
+      );
+    }
     const observation = {
+      publicInspectionMs,
+      publicState,
       name,
       passed: true,
       result: result ?? null,
@@ -191,6 +286,7 @@ async function main() {
   fs.mkdirSync(directory, { mode: 0o700 });
   const sources = [
     'scripts/qualify-railgun-history-replay.js',
+    'scripts/prepare-railgun-public-history.js',
     'scripts/fixtures/railgun-history-job.js',
     'scripts/railgun-log-capture-data.js',
     'scripts/capture-railgun-sepolia-logs.js',
@@ -203,6 +299,7 @@ async function main() {
     'src/main/wallet/railgun-paged-store.js',
     'src/main/wallet/railgun-store-cursor.js',
     'src/main/wallet/railgun-frontier.js',
+    'src/main/wallet/railgun-public-records.js',
     'src/main/wallet/railgun-process-guards.js',
   ];
   const sourceSha256 = Object.fromEntries(
@@ -214,7 +311,13 @@ async function main() {
         .digest('hex'),
     ])
   );
-  const input = { captureDirectory, logSetSha256: capture.logSetSha256 };
+  const input = {
+    captureDirectory,
+    logSetSha256: capture.logSetSha256,
+    inspectPublicState: process.argv[4] === '--inspect-public-state',
+  };
+  const sourcePlan = input.inspectPublicState ? await planHistory(input) : null;
+  expectedPublicStates = sourcePlan?.expectedStates;
   const baseline = path.join(directory, 'baseline');
   fs.mkdirSync(baseline);
   const runs = [await run(baseline, 'baseline-two-chunks', { ...input, limit: 2 }, true)];
@@ -254,11 +357,13 @@ async function main() {
     assert.deepEqual(restored.result.checks, reference.result.checks);
     assert.deepEqual(restored.result.digests, reference.result.digests);
     assert.deepEqual(restored.frontier, reference.frontier);
+    assert.deepEqual(restored.publicState, reference.publicState);
     runs.push(restored);
     const cold = await run(target, 'cold-' + phase, { ...input, limit: 3 });
     assert.equal(cold.result.validations, 0);
     assert.deepEqual(cold.result.digests, restored.result.digests);
     assert.deepEqual(cold.result.checks, restored.result.checks);
+    assert.deepEqual(cold.publicState, restored.publicState);
     runs.push(cold);
   }
   const complete = await run(baseline, 'complete-public-history', input);
@@ -267,6 +372,7 @@ async function main() {
   const cold = await run(baseline, 'cold-complete-public-history', input);
   assert.deepEqual(cold.result.digests, complete.result.digests);
   assert.deepEqual(cold.frontier, complete.frontier);
+  assert.deepEqual(cold.publicState, complete.publicState);
   assert.equal(cold.result.validations, 0);
   runs.push(cold);
   const report = {
@@ -283,6 +389,8 @@ async function main() {
     crashesAtAcknowledgedPhaseBoundaries: true,
     liveRpcDuringReplay: false,
     wholeChunkAtomic: false,
+    hostPublicStateCompared: input.inspectPublicState,
+    sourcePlan,
     hostCoverageGranted: false,
     walletScanned: false,
     signingEnabled: false,
@@ -294,7 +402,15 @@ async function main() {
     mode: 0o600,
   });
 }
-if (process.argv[2] === '--child') {
+if (process.argv[2] === '--plan') {
+  process.on('disconnect', () => process.exit(1));
+  process.once('message', (input) =>
+    plannerMain(input).catch((error) => {
+      console.error(error.stack);
+      process.exit(1);
+    })
+  );
+} else if (process.argv[2] === '--child') {
   process.on('disconnect', () => process.exit(1));
   process.once('message', (input) =>
     childMain(input).catch((error) => process.send({ type: 'failure', error: String(error.stack) }))

@@ -327,6 +327,28 @@ test('worker inspections retain synchronous host freshness and refuse queued wri
   await worker.ready;
   expect(() => worker.assertFresh(last)).toThrow();
 });
+test('store identity is host-only, stable across reopen, and uses revocable observation freshness', async () => {
+  start();
+  await worker.ready;
+  const identity = await worker.inspectStoreIdentity();
+  expect(identity.format).toBe('paged-v2');
+  expect(identity.instanceId).toMatch(/^[0-9a-f]{64}$/);
+  worker.assertFresh(identity);
+  expect(() => worker.assertFresh({ ...identity })).toThrow();
+  expect(() => worker.inspectPosition(identity, { tree: 0, index: 0 })).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_FRONTIER_NOT_ELIGIBLE' })
+  );
+  await call(1, 'batch', { operations: [put('a', 'value')] });
+  expect(() => worker.assertFresh(identity)).toThrow();
+  worker.close();
+  await worker.closed;
+  start({ storage: { ...options.storage, create: false } });
+  await worker.ready;
+  expect((await worker.inspectStoreIdentity()).instanceId).toBe(identity.instanceId);
+  await expect(call(1, 'storeIdentity', {})).rejects.toMatchObject({
+    code: 'RAILGUN_SESSION_REVOKED',
+  });
+});
 test('a heap-exhausted worker revokes pending work and releases ownership after observed exit', async () => {
   mockWorkerOutOfMemory = true;
   start();
