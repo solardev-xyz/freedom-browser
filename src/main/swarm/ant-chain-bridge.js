@@ -23,9 +23,10 @@ const MAX_ERROR_MESSAGE = 500;
 // an answer, as far as the bridge's overall deadline allows.
 const LOG_SCAN_DIRECT_TIMEOUT_MS = 60000;
 
-// Ant v0.5.45 `is_range_limit_error` (crates/ant-chain/src/discover.rs): its
-// eth_getLogs scan shrinks the window only when the error message contains
-// one of these needles, and aborts owned-batch/chequebook recovery otherwise.
+// Ant v0.5.52 `is_range_limit_error` (crates/ant-chain/src/discover.rs,
+// unchanged since v0.5.45): its eth_getLogs scan shrinks the window only when
+// the error message contains one of these needles, and aborts
+// owned-batch/chequebook recovery otherwise.
 const ANT_LOG_SCAN_SHRINK_NEEDLES = Object.freeze([
   'block range',
   'range',

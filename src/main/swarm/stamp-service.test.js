@@ -240,6 +240,25 @@ describe('stamp-service', () => {
       );
     });
 
+    test('swarm:buy-storage leaves the chequebook deposit to the node', async () => {
+      mockBuyStorage.mockResolvedValue({ toHex: () => 'abc' });
+      mockGetStorageCost.mockResolvedValue({
+        toPLURBigInt: () => 1000n,
+        toSignificantDigits: () => '0.001',
+      });
+      mockGetWalletBalance.mockResolvedValue({
+        bzzBalance: { toPLURBigInt: () => 99999999999999999n },
+      });
+      mockGetChequebookBalance.mockResolvedValue({
+        availableBalance: { toPLURBigInt: () => 0n },
+      });
+
+      const result = await invokeIpc('swarm:buy-storage', 1, 30);
+      expect(result.success).toBe(true);
+      expect(mockGetChequebookBalance).not.toHaveBeenCalled();
+      expect(mockDepositTokens).not.toHaveBeenCalled();
+    });
+
     test('swarm:buy-storage rejects when xBZZ balance is insufficient', async () => {
       mockGetStorageCost.mockResolvedValue({
         toPLURBigInt: () => 50000000000000000n, // 0.5 BZZ in PLUR

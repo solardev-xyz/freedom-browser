@@ -1,0 +1,1 @@
+- The Swarm node no longer dials other peers' private network addresses, which could look like a network scan to your provider ([#456](https://github.com/solardev-xyz/freedom-browser/pull/456))
