@@ -50,7 +50,9 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
   )
     throw fail();
   const filename = path.resolve(storage.filename);
-  if (owners.size >= 2 || owners.has(filename)) throw fail();
+  // One coordinated wallet uses source ledger, public engine and derived-note
+  // workers. Keep the total bounded; each worker retains its own memory limit.
+  if (owners.size >= 3 || owners.has(filename)) throw fail();
   owners.add(filename);
   const scope = createPrivacyScope({
     profileId: context.profileId,

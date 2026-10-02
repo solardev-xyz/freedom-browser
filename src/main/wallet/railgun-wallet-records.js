@@ -173,7 +173,8 @@ async function inspectRailgunTransact({
 }) {
   assert.equal(leaf.commitmentType, 'TransactCommitmentV2');
   const bundle = leaf.ciphertext;
-  let authenticated = false,
+  let receiveAuthenticated = false,
+    sentAuthenticated = false,
     receive = false,
     sentMatch = false;
   for (const sent of [false, true]) {
@@ -201,7 +202,8 @@ async function inspectRailgunTransact({
     } finally {
       key.fill(0);
     }
-    authenticated = true;
+    if (sent) sentAuthenticated = true;
+    else receiveAuthenticated = true;
     assert.ok(plaintext.length >= 3);
     const encoded = BigInt('0x' + bare(plaintext[0]));
     const tokenHash = bare(plaintext[1]),
@@ -233,7 +235,13 @@ async function inspectRailgunTransact({
     else receive = true;
   }
   return classification(
-    receive || sentMatch ? 'matched' : authenticated ? 'commitment-mismatch' : 'not-addressed',
+    receive || sentMatch
+      ? 'matched'
+      : receiveAuthenticated
+        ? 'commitment-mismatch'
+        : sentAuthenticated
+          ? 'sent-note-unrecoverable'
+          : 'not-addressed',
     receive,
     sentMatch
   );

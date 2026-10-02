@@ -128,7 +128,7 @@ test('shield commitment mismatch is quarantined before unavailable NFT metadata 
   expect(() => tokenResolver.assertComplete()).toThrow();
 });
 
-test.each(['matched', 'mismatch', 'noncanonical-token', 'foreign'])(
+test.each(['matched', 'mismatch', 'noncanonical-token', 'foreign', 'sent-unrecoverable'])(
   'Transact preflight handles %s before token resolution',
   async (mode) => {
     const { inspectRailgunTransact } = require('./railgun-wallet-records');
@@ -152,12 +152,12 @@ test.each(['matched', 'mismatch', 'noncanonical-token', 'foreign'])(
       wallet: { viewingKeyPair: { privateKey: Buffer.alloc(32) }, masterPublicKey: 1n },
       ShieldNote: { getNotePublicKey: () => 8n },
       TransactNote: {
-        getHash: () => (mode === 'mismatch' ? 9n : 1n),
+        getHash: () => (['mismatch', 'sent-unrecoverable'].includes(mode) ? 9n : 1n),
         getDecodedMasterPublicKey: () => 1n,
       },
       AES: {
-        decryptGCM: () => {
-          if (mode === 'foreign')
+        decryptGCM: (_cipher, key) => {
+          if (mode === 'foreign' || (mode === 'sent-unrecoverable' && key[0] === 2))
             throw new Error('Unable to decrypt ciphertext.', {
               cause: new Error('Unsupported state or unable to authenticate data'),
             });
@@ -166,15 +166,21 @@ test.each(['matched', 'mismatch', 'noncanonical-token', 'foreign'])(
       },
       Memo: { decryptNoteAnnotationData: () => undefined },
       ByteUtils: { hexlify: (value) => value },
-      getSharedSymmetricKey: async () => {
-        const key = Buffer.alloc(32, 8);
+      getSharedSymmetricKey: async (_privateKey, point) => {
+        const key = Buffer.alloc(32, point[31]);
         keys.push(key);
         return key;
       },
       tokenResolver: resolver,
     });
     expect(result.status).toBe(
-      mode === 'matched' ? 'matched' : mode === 'foreign' ? 'not-addressed' : 'commitment-mismatch'
+      mode === 'matched'
+        ? 'matched'
+        : mode === 'foreign'
+          ? 'not-addressed'
+          : mode === 'sent-unrecoverable'
+            ? 'sent-note-unrecoverable'
+            : 'commitment-mismatch'
     );
     resolver.assertComplete();
     expect(keys.every((key) => key.equals(Buffer.alloc(32)))).toBe(true);

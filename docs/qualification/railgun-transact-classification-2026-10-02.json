@@ -1,0 +1,1518 @@
+{
+  "observedAt": "2026-10-02T20:10:10.170Z",
+  "sourceSha256": {
+    "scripts/qualify-railgun-transact-classification.js": "18cbda73f744db508f0c42c216f74df5fbcda806453bb1032af13b144cda8504",
+    "scripts/fixtures/railgun-wallet-snapshot-job.js": "a397ed535400ac14c8c20511387cfe3af4b6f15677fb8028b311858aeff89886",
+    "scripts/railgun-fixture-integrity.js": "ecb3bdd30ed61572ac14444c9579f978f222c35fd203274c25428d5fb313aa93",
+    "scripts/railgun-log-capture-data.js": "8b1e5d1eb62378f9df347605711a2d315153593d325784094049c7ece0de12ba",
+    "src/main/wallet/railgun-wallet-records.js": "99e80f8ae04e096fb3671a02e6d13953999715ad08d5f0ffb24e2eeb7e218cb2",
+    "src/main/wallet/railgun-process-guards.js": "5e64b24a8081c5e0d4b6e0b1553fc033d2f377138ba8ed20ef53a7c6f3f8d71d"
+  },
+  "walletReportSha256": "74ba44cf2b32195f756c0b51d246da5903d769e2a65077e271b229df0e56e5da",
+  "logSetSha256": "5ea1a7c8f307dcae2f8bbec85200410392b14d1db356f8b2b7d396e656c9d10c",
+  "node": "v24.18.1",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "publicViewingVector": true,
+  "directEngineScan": true,
+  "inMemoryBatchSink": true,
+  "submissions": 0,
+  "count": 70,
+  "rawWrites": 0,
+  "authenticatedDirections": 70,
+  "guards": {
+    "hooks": [
+      "global.fetch",
+      "global.WebSocket",
+      "http.request",
+      "http.get",
+      "https.request",
+      "https.get",
+      "net.connect",
+      "net.createConnection",
+      "tls.connect",
+      "http2.connect",
+      "dgram.createSocket",
+      "worker_threads.Worker",
+      "child_process.spawn",
+      "child_process.spawnSync",
+      "child_process.exec",
+      "child_process.execSync",
+      "child_process.execFile",
+      "child_process.execFileSync",
+      "child_process.fork",
+      "net.Socket.connect",
+      "dgram.Socket.send",
+      "dgram.Socket.connect",
+      "dgram.Socket.bind",
+      "dns.lookup",
+      "dns.lookupService",
+      "dns.resolve",
+      "dns.resolve4",
+      "dns.resolve6",
+      "dns.resolveAny",
+      "dns.resolveCaa",
+      "dns.resolveCname",
+      "dns.resolveMx",
+      "dns.resolveNaptr",
+      "dns.resolveNs",
+      "dns.resolvePtr",
+      "dns.resolveSoa",
+      "dns.resolveSrv",
+      "dns.resolveTlsa",
+      "dns.resolveTxt",
+      "dns.reverse",
+      "dns.Resolver.resolveAny",
+      "dns.Resolver.resolve4",
+      "dns.Resolver.resolve6",
+      "dns.Resolver.resolveCaa",
+      "dns.Resolver.resolveCname",
+      "dns.Resolver.resolveMx",
+      "dns.Resolver.resolveNs",
+      "dns.Resolver.resolveTlsa",
+      "dns.Resolver.resolveTxt",
+      "dns.Resolver.resolveSrv",
+      "dns.Resolver.resolvePtr",
+      "dns.Resolver.resolveNaptr",
+      "dns.Resolver.resolveSoa",
+      "dns.Resolver.reverse",
+      "dns.Resolver.resolve",
+      "dns.promises.lookup",
+      "dns.promises.lookupService",
+      "dns.promises.resolve",
+      "dns.promises.resolve4",
+      "dns.promises.resolve6",
+      "dns.promises.resolveAny",
+      "dns.promises.resolveCaa",
+      "dns.promises.resolveCname",
+      "dns.promises.resolveMx",
+      "dns.promises.resolveNaptr",
+      "dns.promises.resolveNs",
+      "dns.promises.resolvePtr",
+      "dns.promises.resolveSoa",
+      "dns.promises.resolveSrv",
+      "dns.promises.resolveTlsa",
+      "dns.promises.resolveTxt",
+      "dns.promises.reverse",
+      "dns.promises.Resolver.resolveAny",
+      "dns.promises.Resolver.resolve4",
+      "dns.promises.Resolver.resolve6",
+      "dns.promises.Resolver.resolveCaa",
+      "dns.promises.Resolver.resolveCname",
+      "dns.promises.Resolver.resolveMx",
+      "dns.promises.Resolver.resolveNs",
+      "dns.promises.Resolver.resolveTlsa",
+      "dns.promises.Resolver.resolveTxt",
+      "dns.promises.Resolver.resolveSrv",
+      "dns.promises.Resolver.resolvePtr",
+      "dns.promises.Resolver.resolveNaptr",
+      "dns.promises.Resolver.resolveSoa",
+      "dns.promises.Resolver.reverse",
+      "dns.promises.Resolver.resolve"
+    ],
+    "canaries": 87,
+    "attempts": 0
+  },
+  "rows": [
+    {
+      "tree": 0,
+      "position": 6649,
+      "txid": "8b17018f364b7ed865a4674399690a8f98cc0e7c039e9c4cdffafb444546027d",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 6659,
+      "txid": "58071b869bbd551ea53938b39801a87531b4a2a7a0aa2d620add25b75349952a",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 6688,
+      "txid": "5e91cd655c0c4c6d63736e099ce31299e4c325e1998233fdb42674399434b2a9",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 6691,
+      "txid": "bde55b5cd54482e7ee7dc7a27470ed5b4f22563f289d5ed347b6ec40c05653e9",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 6694,
+      "txid": "5e306f34f1a899d48a82d2dc29f136323665c8965a9bb80f28883dd7ed790f69",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 6733,
+      "txid": "eaff2f8356a032b86cd444214db87b0c65b2998481780c13b45a46bd4320c7b0",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 6763,
+      "txid": "7078896e1c11c13ab9d2415630c744907d40134f680e0a89f2c959567d3b60a0",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 6769,
+      "txid": "3ab4f062be2587923e5dc099046bc5e83037655c49af5af6ac13b50fa6f3da87",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 7532,
+      "txid": "86211661ab2efea545508ed3b82eb992c235dfb8a9fae304de2c257d591c8d00",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9052,
+      "txid": "66a5b58c036a31cc1b7098180edb3058ef8e7ff599718ef10eca42fadb81222a",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9079,
+      "txid": "2066ef80ee9995d1a803f541225f2e234ba46c169be99c343319d8e6e573e793",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9082,
+      "txid": "8ac7916113a84e795008d524b273ab3f83e3a1d8ec8309d155ec5831bf8a3189",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9219,
+      "txid": "cea27cbe1db3ab2d905129523c082f4402419081cf12682e8136c4335b35d7cd",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9221,
+      "txid": "b7d43d6f55dbb48037b3d3e133191875d044201a5ce79e4726fcfcc044ddd4c1",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9236,
+      "txid": "1b53eee72f5d0c6406c256743d4ee2a7b166d351929b01c678897fe1ee4d6a49",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9266,
+      "txid": "b3b6c1756eebb218ab635c27409038f65146b0aaf930d17bb0dd17b6cade78d6",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9307,
+      "txid": "d044a69379a03cbc52fda7f0284c31d549d74e92539e6bed55a859eb5d530c04",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9310,
+      "txid": "bdd0f106f0c9ac22c16fb39bdc4d4739a6078fc4b3d4a0c8efb65a836bddec49",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9315,
+      "txid": "d7941b48ba4b7ae4dffa6a80e1c4d035484ff7ca6091d0ec7dfa37d9bb397376",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9326,
+      "txid": "4fb5e04bfdd804a122e5d02e36aeb168acc160727babf37952d7b2d36d50e045",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9328,
+      "txid": "b4fb8be0881d8de222b8605205f15b03fb7cd7226f282d7d4667b1399be52d1f",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9330,
+      "txid": "af99ed6b47408901db0084e2ba0ebf56d62634accde61aa3f303c77f736c2f72",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9332,
+      "txid": "4a1452993c913458f14598023a4380214c5bd3fbd4bd6489d333ff83ae16887a",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9334,
+      "txid": "d8c418d090fe8eb25d2e0bdec5897bc8a606cfb2c39b1eb016ea03e0d2e9d023",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9371,
+      "txid": "15851fd48f6891cae67b82f229caf264acbc12a72f9706b0d9a3630aea87e9a0",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": true,
+          "senderRandomPresent": true,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9376,
+      "txid": "81b105f9d1c4f98be06c318bef83816443c048facbae2b82526cf253e4b65bc7",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9385,
+      "txid": "b146e11ffa1fa9acd634b5de7d50929df5fdf69b068bae2a1136e2fd6698d247",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9391,
+      "txid": "d91258714ce99e84724325f359a1518ae09070056dcf9251daa31565092ad998",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9400,
+      "txid": "85eb41b64e7e01c5c3683cbd9593d9306747fc3664fa53b7e07e8c3388afbc2a",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9404,
+      "txid": "5fa1d7da7072bb9a2fb88b65af7a8b8da90e944c4241044c29b9a67fdc0922e4",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9406,
+      "txid": "ff5deed18676584a6ea83bc5739a02b8604547540256fdbfd626b8bb84febf0b",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9412,
+      "txid": "e19cca6d014e59595d35fd9a5c95363e590bed7fddd40369f322458044d6f953",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9418,
+      "txid": "1a6cfda5913e830ce93d7142e3e4aa8bd5f0f3778dd9b4015adfd6a8d447864e",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9425,
+      "txid": "aaf0b7b41763b906b546d2b84bd85c907f8bc93f38d9c8cd8c984afc96e7ef21",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9438,
+      "txid": "3c9352ab530142823545ab78a881e81ccdce942991d1e63eaf1260c43c420698",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9455,
+      "txid": "cb3efd788caa442550298f0f8507e685108806510f603aceb6c941eefaee1961",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9461,
+      "txid": "20f71c86d06416284a01ccb7c5e9abdd5930aa825ba5b8e151e11b6e422762e4",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9476,
+      "txid": "a5664fc2e0b288a4a2f8ae1d06f227475e0b7eba23150a394f48c3ac6a9bf094",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9479,
+      "txid": "017c72510d685b4bc50a28ab21b8f3a0ddb20cb4420f9e3b686b80b1c718c5c3",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9483,
+      "txid": "a95fc0266aceae28a47ad77a14c7217bf3d10bad468e25a055349a1ea147e71e",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9495,
+      "txid": "3bf321a6a8aa9b3e4c0c73fd9a50dbfa644eb552afcbad7367cdb959e8191413",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9498,
+      "txid": "5007408a25a9c38982f71908a203d1830424ac851b2a845b55464269443df33d",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9502,
+      "txid": "a75e9f124fe65882dbb28653dc58289287ad22225fd9b7a7dd9929990caaf1dd",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9512,
+      "txid": "f462c770c3600d68c578f040024e96507dacf04633b6d2fce0e1161b36073f5e",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9517,
+      "txid": "fe0223a0cf5788359b7c5ded2e6ae086ffda4a5ea526dc17f6303f1afbc5013e",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9523,
+      "txid": "d11189e7f119eae1ab50901db24a3c7b655fdf8aa2097e112e2123211f11679b",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9532,
+      "txid": "2ea56c52ed92b8a181c7e9233d897ec8d68c421d5741399c6555de5aa5f20f15",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9535,
+      "txid": "8beb88dacf299e5facd371aa03430507ec3e90babeb5f72de223d1dc7cc6c227",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9540,
+      "txid": "5160094910512f6feba20ce9ed714ac3d798c5c005fdd4bf18fa36f4cc6a5f7d",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9543,
+      "txid": "9c12cec068ac3fdcfa654101f6e87860ab20d70c641d2a767f8455de2c252fc5",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9548,
+      "txid": "5e3b88399138db50c8cdceafe19a68a08ca1441363c93b63253811d5d4296fb6",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9564,
+      "txid": "2bbace498fb0b4d52ddf34e379e919851d2ad91dc674c6b84879a809eba4136b",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9566,
+      "txid": "5e0a6b42f7a692c7e211281ba8de17d63a8c3024f96a21496de4748e84e5459e",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9571,
+      "txid": "0febed893546c70a38ae68c4bf0fde1cd3bddc6ecb968ab30ba9180a742b6890",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9582,
+      "txid": "b20b95f4140871595b41690c7c2f61d3cfa21268e7a388674357f69b5e458bc3",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9585,
+      "txid": "887b567f27daec280644da717d7895ad812de92d5edc276b299defc6cb8ec674",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9591,
+      "txid": "2ca445e68fe31b17a9e30a90de059827d0567218ad673784a275fb25416fa62f",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9595,
+      "txid": "678eea0661be4d33a34282e7cf29c31f6f5082e85bd8868001d8ec5d06e53540",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9597,
+      "txid": "e51eb8cf00be326252b7eb80586e890fdf52ff7f6efc92336a2a29a712567876",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9605,
+      "txid": "64805b766a9fd5bfcf92d0b4a54ee0f89dc1c040023e71452d6aeba2cb558478",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9609,
+      "txid": "2a22339ca414eae54eb65425ea58684417885e08136a03d600e49c249a0053ab",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9613,
+      "txid": "d5b2e0b0f0b0ac1a2b5c426d110af61424746026c0c0630feccd433ea11050a6",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9622,
+      "txid": "9f065ae120dcbc281164e2dc0c64ed2a8b5799a31ecfd4993c57e1f9132bb910",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9628,
+      "txid": "965e23cad0346317c784a9b60795faae9705b481bd5c4c9570025d5836474d43",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9865,
+      "txid": "23d1821bc480522a79f84e22edb1ce3be0629dda884976181f3d8ee715ed85a6",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9890,
+      "txid": "ee56b92aa6d003d82b1f0dd30ac837ed0fd4696cbc6561f94f69124468367f06",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 9903,
+      "txid": "11a72d12e9a2d4c84f7497fd2d2c48680ca7e4d9e6aa5ad02315defbfd5c901c",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 10048,
+      "txid": "3e3adfe6a008c3dc0b5eb32e7ac79581623a69ab5ba1859a6e1edce220b57b6f",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 10138,
+      "txid": "4b78372a9f06a8ab7ccb8a02373d279fc385515139c6ef157d2fe79ee147e932",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    },
+    {
+      "tree": 0,
+      "position": 10175,
+      "txid": "764c96cd1a448716a2651f4659a0e0a2d3a5e714a1aca5021e1696d31e6ae02e",
+      "directions": [
+        {
+          "sent": false,
+          "authenticated": false
+        },
+        {
+          "sent": true,
+          "authenticated": true,
+          "annotationDecoded": false,
+          "senderRandomPresent": false,
+          "sdkMatchesPreflight": true,
+          "commitmentMatches": false
+        }
+      ],
+      "rawWrites": 0
+    }
+  ]
+}

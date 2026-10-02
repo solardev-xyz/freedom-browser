@@ -467,3 +467,43 @@ test('a session already used by another dispatcher cannot be claimed', async () 
   await call(1, 'get', { key: Buffer.from('missing').toString('base64') });
   expect(() => worker.claimDispatch()).toThrow();
 });
+test('permits the three isolated scan stores and refuses a fourth or duplicate owner', async () => {
+  const entries = [];
+  for (const name of ['source', 'public', 'wallet']) {
+    entries.push(
+      start({
+        storage: {
+          ...options.storage,
+          filename: path.join(path.dirname(options.storage.filename), name + '.sqlite'),
+        },
+      })
+    );
+  }
+  await Promise.all(entries.map((entry) => entry.ready));
+  expect(() =>
+    start({
+      storage: {
+        ...options.storage,
+        filename: path.join(path.dirname(options.storage.filename), 'fourth.sqlite'),
+      },
+    })
+  ).toThrow();
+  expect(() =>
+    start({
+      storage: {
+        ...options.storage,
+        filename: path.join(path.dirname(options.storage.filename), 'wallet.sqlite'),
+      },
+    })
+  ).toThrow();
+  entries[2].close();
+  await entries[2].closed;
+  const reopened = start({
+    storage: {
+      ...options.storage,
+      filename: path.join(path.dirname(options.storage.filename), 'wallet.sqlite'),
+      create: false,
+    },
+  });
+  await reopened.ready;
+});

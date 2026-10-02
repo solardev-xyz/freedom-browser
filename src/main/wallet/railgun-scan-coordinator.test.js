@@ -10,7 +10,7 @@ const { createRailgunScanSource } = require('./railgun-scan-source');
 const { createRailgunScanCoordinator } = require('./railgun-scan-coordinator');
 const { emptyPublicState } = require('./railgun-public-records');
 const hash = (n) => '0x' + n.toString(16).padStart(64, '0');
-let scope, directory, instances, providerHost;
+let scope, directory, instances, providerHost, sourceUnavailable;
 const subject = {
   kind: 'private-account',
   principal: 'fixture',
@@ -97,6 +97,7 @@ beforeEach(() => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-scan-coordinator-'));
   instances = [];
   providerHost = 'first.example';
+  sourceUnavailable = false;
   createPrivateRpc.mockImplementation((handle, _role, { signal }) => {
     const lifetime = AbortSignal.any([getPrivacyContext(handle).signal, signal]);
     return {
@@ -107,6 +108,7 @@ beforeEach(() => {
         if (lifetime.aborted) throw Error('closed');
       },
       request: async (method, params) => {
+        if (sourceUnavailable) throw Error('source unavailable');
         if (method === 'eth_getLogs') return { result: [] };
         const number = params[0] === 'finalized' ? 100 : Number(BigInt(params[0]));
         return {
@@ -231,4 +233,118 @@ test('a retained raw store-session reference cannot bypass the coordinator', asy
   await entry.coordinator.advance(next(10));
   await expect(entry.storeSession.dispatch(request(1))).rejects.toThrow();
   expect(() => entry.coordinator.inspect()).toThrow();
+});
+const readRequest = (id, method, args) => JSON.stringify({ id, method, args });
+const b64 = (value) => Buffer.from(value).toString('base64');
+test('read-only snapshots support bounded cursors, local IDs and current opaque evidence', async () => {
+  const entry = await open(true, async (_range, { dispatch }) => dispatch(request(1)));
+  await entry.coordinator.advance(next(10));
+  let windowSignal;
+  const result = await entry.coordinator.withPublicSnapshot(
+    async ({ checkpoint, dispatch, signal }) => {
+      windowSignal = signal;
+      expect(checkpoint.to.number).toBe(10);
+      expect(Object.isFrozen(checkpoint.state)).toBe(true);
+      expect(Object.isFrozen(checkpoint.to)).toBe(true);
+      expect(() => entry.coordinator.inspect()).toThrow();
+      const call = async (id, method, args) => {
+        const reply = JSON.parse(await dispatch(readRequest(id, method, args)));
+        expect(reply.id).toBe(id);
+        return reply.value;
+      };
+      expect(await call(1, 'get', { key: b64('fixture-cursor') })).toBe(b64('applied'));
+      expect(await call(2, 'getMany', { keys: [b64('fixture-cursor'), b64('absent')] })).toEqual([
+        b64('applied'),
+        null,
+      ]);
+      const cursor = await call(3, 'open', { options: {} });
+      await call(4, 'seek', { cursor, target: b64('fixture-cursor') });
+      expect(await call(5, 'nextMany', { cursor, limit: 2 })).toEqual({
+        rows: [[b64('fixture-cursor'), b64('applied')]],
+        done: true,
+      });
+      await call(6, 'end', { cursor });
+      return 'observed';
+    }
+  );
+  expect(result.value).toBe('observed');
+  expect(windowSignal.aborted).toBe(true);
+  expect(entry.coordinator.assertSnapshot(result.evidence).to.number).toBe(10);
+  expect(() => entry.coordinator.assertSnapshot({})).toThrow();
+  const newer = await entry.coordinator.withPublicSnapshot(async () => 'new');
+  expect(() => entry.coordinator.assertSnapshot(result.evidence)).toThrow();
+  expect(entry.coordinator.assertSnapshot(newer.evidence).to.number).toBe(10);
+  await entry.coordinator.advance(next(20));
+  expect(() => entry.coordinator.assertSnapshot(newer.evidence)).toThrow();
+});
+test.each(['batch', 'txBegin', 'txStage', 'txCommit', 'txAbort', 'clear', 'rpc'])(
+  'snapshot rejects %s before exposing a completed result',
+  async (method) => {
+    const entry = await open(true);
+    await entry.coordinator.advance(next(10));
+    await expect(
+      entry.coordinator.withPublicSnapshot(async ({ dispatch }) => {
+        await dispatch(readRequest(1, method, {})).catch(() => {});
+        return 'ignored rejection';
+      })
+    ).rejects.toThrow();
+    expect(entry.coordinator.signal.aborted).toBe(true);
+  }
+);
+test('snapshot refuses a leaked cursor and subsequent lifetime reuse', async () => {
+  const entry = await open(true);
+  await entry.coordinator.advance(next(10));
+  let dispatch;
+  await expect(
+    entry.coordinator.withPublicSnapshot(async (window) => {
+      dispatch = window.dispatch;
+      await dispatch(readRequest(1, 'open', { options: {} }));
+    })
+  ).rejects.toThrow();
+  await expect(dispatch(readRequest(2, 'get', { key: b64('absent') }))).rejects.toThrow();
+});
+test('a completed snapshot cannot leave an active read capability', async () => {
+  const entry = await open(true);
+  await entry.coordinator.advance(next(10));
+  let dispatch;
+  const result = await entry.coordinator.withPublicSnapshot(async (window) => {
+    dispatch = window.dispatch;
+  });
+  expect(entry.coordinator.assertSnapshot(result.evidence).to.number).toBe(10);
+  await expect(dispatch(readRequest(1, 'get', { key: b64('absent') }))).rejects.toThrow();
+  expect(() => entry.coordinator.assertSnapshot(result.evidence)).toThrow();
+});
+test('profile lock revokes a silent read-only job and refuses overlap', async () => {
+  const entry = await open(true);
+  await entry.coordinator.advance(next(10));
+  let entered, windowSignal;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const running = entry.coordinator.withPublicSnapshot(async ({ signal }) => {
+    windowSignal = signal;
+    entered();
+    await new Promise(() => {});
+  });
+  await started;
+  await expect(entry.coordinator.advance(next(20))).rejects.toThrow();
+  scope.close();
+  await expect(running).rejects.toThrow();
+  expect(windowSignal.aborted).toBe(true);
+});
+test('snapshot requires a scanned checkpoint and does not claim coverage for an empty store', async () => {
+  const entry = await open(true),
+    run = jest.fn();
+  await expect(entry.coordinator.withPublicSnapshot(run)).rejects.toThrow();
+  expect(run).not.toHaveBeenCalled();
+});
+test('snapshot rechecks source headers after its read callback', async () => {
+  const entry = await open(true);
+  await entry.coordinator.advance(next(10));
+  await expect(
+    entry.coordinator.withPublicSnapshot(async () => {
+      sourceUnavailable = true;
+      return 'must not publish';
+    })
+  ).rejects.toThrow();
 });

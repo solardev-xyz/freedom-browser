@@ -1,10 +1,19 @@
 /** Main-owned exclusive public scan scheduling. The engine can access storage
- * only inside an acknowledged apply window, after a durable journal prepare.
+ * only inside an acknowledged apply window, after a durable journal prepare,
+ * or an exclusive read-only window over a completed public checkpoint.
  * Readiness here means a source-matched unverified public state, never spend/POI.
  */
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createRailgunScanJournal, sameRangeContent } = require('./railgun-scan-journal');
 const owners = new WeakSet();
+const snapshotReads = new Set(['get', 'getMany', 'open', 'next', 'nextMany', 'seek', 'end']);
+const freeze = (value) => {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  }
+  return value;
+};
 const fail = () =>
   Object.assign(new Error('Railgun scan coordinator unavailable'), {
     code: 'RAILGUN_SCAN_COORDINATOR_REFUSED',
@@ -49,6 +58,7 @@ async function createRailgunScanCoordinator({
   });
   const storageSubject = { ...subject, role: 'storage', operation: 'railgun-scan-v1' };
   let dispatchGrant;
+  const snapshots = new WeakMap();
   let journal,
     closed = false,
     busy = false,
@@ -235,8 +245,105 @@ async function createRailgunScanCoordinator({
       return apply(result);
     });
   }
+  async function withPublicSnapshot(run) {
+    return exclusive(async () => {
+      check(typeof run === 'function');
+      if (!ready) await recover();
+      check(ready.plan); // An empty, never-scanned store is not wallet coverage.
+      const plan = ready.plan;
+      storeSession.assertFresh(ready.state);
+      const evidence = await source.refresh(plan, ready.evidence);
+      await journal.revalidate({ source: evidence, state: ready.state });
+      const checkpoint = freeze(structuredClone(plan));
+      ready = null; // Invalidate previous snapshot evidence before the first read.
+      const window = new AbortController(),
+        signal = AbortSignal.any([scope.signal, window.signal]),
+        pending = new Set();
+      let accepting = true,
+        localId = 0,
+        failed = false,
+        timer,
+        abort;
+      const dispatch = (wire) => {
+        let promise;
+        try {
+          active();
+          check(accepting && !signal.aborted && typeof wire === 'string');
+          check(Buffer.byteLength(wire) <= 2 * 1024 * 1024);
+          const message = JSON.parse(wire);
+          check(message && message.id === localId + 1 && snapshotReads.has(message.method));
+          localId++;
+          const globalId = ++wireId;
+          promise = dispatchGrant
+            .dispatch(JSON.stringify({ ...message, id: globalId }))
+            .then((reply) => {
+              const value = JSON.parse(reply);
+              check(value.id === globalId);
+              return JSON.stringify({ ...value, id: message.id });
+            });
+        } catch (error) {
+          close();
+          return Promise.reject(error);
+        }
+        pending.add(promise);
+        promise.then(
+          () => pending.delete(promise),
+          () => {
+            failed = true;
+            pending.delete(promise);
+          }
+        );
+        return promise;
+      };
+      const cancelled = new Promise((_, reject) => {
+        abort = () => reject(fail());
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+        timer = setTimeout(() => {
+          close();
+          reject(fail());
+        }, 180000);
+      });
+      let value;
+      try {
+        // The trusted runner must observe its utility process exit before it
+        // resolves. Returning also revokes its broker; leaked cursors prevent
+        // the whole-store observation below from completing.
+        value = await Promise.race([
+          Promise.resolve().then(() => run({ checkpoint, dispatch, signal })),
+          cancelled,
+        ]);
+        accepting = false;
+        await Promise.race([Promise.allSettled([...pending]), cancelled]);
+        check(!failed);
+      } finally {
+        accepting = false;
+        clearTimeout(timer);
+        signal.removeEventListener('abort', abort);
+        window.abort();
+      }
+      active();
+      const refreshed = await source.refresh(plan, evidence),
+        state = await storeSession.inspectPublicState();
+      await journal.revalidate({ source: refreshed, state });
+      ready = { plan, evidence: refreshed, state };
+      const token = Object.freeze({});
+      snapshots.set(token, { ready, checkpoint });
+      return Object.freeze({ value, evidence: token });
+    });
+  }
+  function assertSnapshot(token) {
+    active();
+    const snapshot = snapshots.get(token);
+    check(!busy && snapshot && snapshot.ready === ready);
+    diagnostic();
+    // Public source consistency only; never a wallet, chain-trust or POI grant.
+    return snapshot.checkpoint;
+  }
   return Object.freeze({
     advance,
+    withPublicSnapshot,
+    assertSnapshot,
     recover: () => exclusive(recover),
     inspect: diagnostic,
     close,
