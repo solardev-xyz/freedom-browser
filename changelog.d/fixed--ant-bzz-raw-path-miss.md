@@ -1,0 +1,1 @@
+- A `bzz://` address with a path below raw uploaded data fails at once instead of after nearly a minute of retries ([#482](https://github.com/solardev-xyz/freedom-browser/pull/482))

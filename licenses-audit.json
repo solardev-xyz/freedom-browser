@@ -50,7 +50,7 @@
     },
     {
       "name": "ant (Swarm)",
-      "version": "v0.5.53",
+      "version": "v0.5.54",
       "type": "binary",
       "scope": "runtime",
       "source": { "ecosystem": "github", "url": "https://github.com/freedom-hq/ant" },
