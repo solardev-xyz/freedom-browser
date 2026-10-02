@@ -5,7 +5,7 @@ const { ethers } = require('ethers');
 const { ccipReadFetch } = require('./ccip-fetch');
 // Never require the package directly — colibri-runtime pins the WASM runtime
 // (see the comment there; the 2.0.5+ native addon crashes Electron).
-const { Colibri, Strategy } = require('./colibri-runtime');
+const { Colibri, Strategy, setRuntimeResetListener } = require('./colibri-runtime');
 const log = require('../logger');
 const registry = require('../networks/network-registry');
 const { universalResolverCall, universalResolverReverse, hostOf } = require('../ens-resolver');
@@ -15,6 +15,16 @@ const { universalResolverCall, universalResolverReverse, hostOf } = require('../
 // threat model legible.
 const PRIVACY_MODE = 'basic';
 const MAX_LATEST_AGE_SECONDS = 60;
+
+// A WASM trap (e.g. a receipt lookup for a hash the prover has not seen) fails
+// only the request that hit it; colibri-runtime swaps in a fresh instance for
+// the next one. Say so, since the failed read itself is logged by the caller.
+setRuntimeResetListener((err) => {
+  log.warn(
+    `[colibri] WASM verifier trapped (${sanitizeColibriErrorDetail(err?.message)}); ` +
+    'replaced the runtime instance'
+  );
+});
 
 const clients = new Map();
 const inFlightBuilds = new Map();

@@ -292,6 +292,79 @@ describe('shortcuts IPC', () => {
     expect(ctx.saveSettings).not.toHaveBeenCalled();
   });
 
+  // #205: the recorder stores a code-based chord, but the runtime matcher
+  // also accepts the layout-produced key — on German, Ctrl+Shift+Digit0
+  // reports key '=', so it would fire Zoom In's fixed Ctrl+Shift+= alias
+  // alongside whatever the user bound. The conflict check must see that.
+  test('a German Ctrl+Shift+0 is reported as colliding with Zoom In', async () => {
+    for (const [platform, mod] of [
+      ['linux', { ctrlKey: true }],
+      ['win32', { ctrlKey: true }],
+      ['darwin', { metaKey: true }],
+    ]) {
+      ctx?.restorePlatform();
+      ctx = loadShortcutsIpc({ platform });
+      const germanPress = recordedKey('=', 'Digit0', { shiftKey: true, ...mod });
+
+      const preview = await ctx.ipcMain.invoke(IPC.SHORTCUTS_PREVIEW_BINDING, {
+        id: 'view.focusAddressBar',
+        event: germanPress,
+      });
+      expect(preview).toMatchObject({ ok: true });
+      expect(preview.conflict).toMatchObject({ id: 'page.zoomIn', fixed: true });
+
+      const refused = await ctx.ipcMain.invoke(IPC.SHORTCUTS_SET_OVERRIDE, {
+        id: 'view.focusAddressBar',
+        accelerator: preview.accelerator,
+        swapWithConflict: true,
+      });
+      expect(refused).toMatchObject({ ok: false, reason: 'conflict' });
+      expect(refused.conflict).toMatchObject({ id: 'page.zoomIn', fixed: true });
+      expect(ctx.saveSettings).not.toHaveBeenCalled();
+    }
+  });
+
+  test('set-override refuses a swap whose handed-over binding would collide', async () => {
+    // Swapping would give Reopen Closed Tab Ctrl+Alt+Shift+0, which shares a
+    // German press with tab.new's new Ctrl+Alt+Shift+= — the save-time
+    // sanitize would then silently drop the remap just made.
+    ctx = loadShortcutsIpc({
+      initialOverrides: {
+        'tab.new': 'Ctrl+Alt+Shift+0',
+        'tab.reopenClosed': 'Ctrl+Alt+Shift+Plus',
+      },
+    });
+    const preview = await ctx.ipcMain.invoke(IPC.SHORTCUTS_PREVIEW_BINDING, {
+      id: 'tab.new',
+      event: recordedKey('=', 'Equal', { ctrlKey: true, altKey: true, shiftKey: true }),
+    });
+    expect(preview.conflict).toMatchObject({ id: 'tab.reopenClosed', fixed: true });
+    const refused = await ctx.ipcMain.invoke(IPC.SHORTCUTS_SET_OVERRIDE, {
+      id: 'tab.new',
+      accelerator: 'Ctrl+Alt+Shift+=',
+      swapWithConflict: true,
+    });
+    expect(refused).toMatchObject({ ok: false, reason: 'conflict' });
+    expect(ctx.saveSettings).not.toHaveBeenCalled();
+  });
+
+  test('putting a shortcut back on its own default is never refused', async () => {
+    // Zoom Out's Ctrl+- shares a Nordic press with Zoom In's Ctrl+Plus alias
+    // (a registry-shipped ambiguity resolved by dispatch order), so it must
+    // not read as a conflict when the user re-records the default.
+    ctx = loadShortcutsIpc({ initialOverrides: { 'page.zoomOut': 'Ctrl+Shift+U' } });
+    const preview = await ctx.ipcMain.invoke(IPC.SHORTCUTS_PREVIEW_BINDING, {
+      id: 'page.zoomOut',
+      event: recordedKey('-', 'Minus', { ctrlKey: true }),
+    });
+    expect(preview).toMatchObject({ ok: true, accelerator: 'Ctrl+-', conflict: null });
+    const result = await ctx.ipcMain.invoke(IPC.SHORTCUTS_SET_OVERRIDE, {
+      id: 'page.zoomOut',
+      accelerator: 'Ctrl+-',
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
   test('reset clears one override or all of them', async () => {
     ctx = loadShortcutsIpc({
       initialOverrides: { 'tab.new': 'Ctrl+Shift+U', 'page.reload': 'Ctrl+Shift+Y' },

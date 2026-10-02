@@ -2,6 +2,7 @@ const {
   SHORTCUTS,
   parseAccelerator,
   eventMatchesAccelerator,
+  acceleratorsCollide,
   getShortcutById,
   getDefaultAccelerator,
   getAliasAccelerators,
@@ -475,7 +476,9 @@ describe('override resolution', () => {
         {
           id: 'view.focusAddressBar',
           accelerator: 'Ctrl+0',
-          conflict: { id: 'page.zoomReset', settingsLabel: 'Actual size', fixed: false },
+          // fixed: keypad 0 with NumLock on reports { key: '0', code:
+          // 'Numpad0' }, which also matches the Ctrl+num0 alias (#205).
+          conflict: { id: 'page.zoomReset', settingsLabel: 'Actual size', fixed: true },
         },
       ]);
       // The other two chords this PR's zoom entries took, same story.
@@ -573,7 +576,9 @@ describe('override resolution', () => {
         {
           id: 'view.focusAddressBar',
           accelerator: 'Ctrl+0',
-          conflict: { id: 'page.zoomReset', settingsLabel: 'Actual size', fixed: false },
+          // fixed: keypad 0 with NumLock on reports { key: '0', code:
+          // 'Numpad0' }, which also matches the Ctrl+num0 alias (#205).
+          conflict: { id: 'page.zoomReset', settingsLabel: 'Actual size', fixed: true },
         },
         {
           id: 'tab.new',
@@ -938,5 +943,193 @@ describe('zoom binding reachability across layouts and the keypad', () => {
       'CmdOrCtrl+Plus',
       'CmdOrCtrl+numadd',
     ]);
+  });
+});
+
+describe('conflicts are judged per keypress, like the matcher (#205)', () => {
+  // Every registry entry a single keypress would fire, primaries and fixed
+  // aliases alike.
+  const matchingIds = (event, overrides, platform) =>
+    SHORTCUTS.filter((entry) =>
+      [
+        getEffectiveAccelerator(entry, overrides, platform),
+        ...getAliasAccelerators(entry, platform),
+      ].some((accelerator) => eventMatchesAccelerator(event, accelerator, platform))
+    ).map((entry) => entry.id);
+
+  const primary = { linux: 'ctrlKey', win32: 'ctrlKey', darwin: 'metaKey' };
+  // German: Shift+Digit0 types '=', so the browser reports key '='.
+  const germanShift0 = (platform) =>
+    keyEvent({ key: '=', code: 'Digit0', shiftKey: true, [primary[platform]]: true });
+
+  test('the German press really does match both string-distinct bindings', () => {
+    // The premise of the bug, asserted against the matcher itself.
+    for (const platform of PLATFORMS) {
+      const mod = platform === 'darwin' ? 'Cmd' : 'Ctrl';
+      expect(eventMatchesAccelerator(germanShift0(platform), `${mod}+Shift+0`, platform)).toBe(
+        true
+      );
+      expect(eventMatchesAccelerator(germanShift0(platform), 'CmdOrCtrl+Shift+=', platform)).toBe(
+        true
+      );
+      expect(acceleratorsCollide(`${mod}+Shift+0`, 'CmdOrCtrl+Shift+=', platform)).toBe(true);
+      expect(acceleratorsCollide('CmdOrCtrl+Shift+=', `${mod}+Shift+0`, platform)).toBe(true);
+    }
+  });
+
+  test('acceleratorsCollide keeps modifiers and Shift level strict', () => {
+    // Same keys, different modifiers: no single press matches both.
+    expect(acceleratorsCollide('Ctrl+Shift+0', 'Ctrl+Alt+Shift+=', 'linux')).toBe(false);
+    // Unshifted Digit0 types '0' (German/US) or 'à' (French) — never '='.
+    expect(acceleratorsCollide('Ctrl+0', 'Ctrl+=', 'linux')).toBe(false);
+    // Identical after normalization.
+    expect(acceleratorsCollide('CmdOrCtrl+T', 'Ctrl+T', 'linux')).toBe(true);
+    expect(acceleratorsCollide('CmdOrCtrl+T', 'Ctrl+T', 'darwin')).toBe(false);
+    // Unrelated keys.
+    expect(acceleratorsCollide('Ctrl+Shift+U', 'Ctrl+Shift+Y', 'linux')).toBe(false);
+    expect(acceleratorsCollide('Ctrl+Shift+U', 'garbage++', 'linux')).toBe(false);
+  });
+
+  test('other layout swaps the matcher accepts are modelled too', () => {
+    // French AZERTY: KeyA types 'q', KeyM types ','.
+    expect(
+      eventMatchesAccelerator(
+        keyEvent({ key: 'q', code: 'KeyA', ctrlKey: true }),
+        'Ctrl+Q',
+        'linux'
+      )
+    ).toBe(true);
+    expect(
+      eventMatchesAccelerator(
+        keyEvent({ key: 'q', code: 'KeyA', ctrlKey: true }),
+        'Ctrl+A',
+        'linux'
+      )
+    ).toBe(true);
+    expect(acceleratorsCollide('Ctrl+Q', 'Ctrl+A', 'linux')).toBe(true);
+    expect(acceleratorsCollide('Ctrl+M', 'Ctrl+,', 'linux')).toBe(true);
+    // German QWERTZ swaps Y and Z, and only German types 'ß' on Minus —
+    // pins that the German table itself is present, not just a layout
+    // that shares its Shift+0 = '='.
+    expect(acceleratorsCollide('Ctrl+ß', 'Ctrl+-', 'linux')).toBe(true);
+    expect(acceleratorsCollide('Ctrl+Y', 'Ctrl+Z', 'linux')).toBe(true);
+    // Keypad with NumLock on/off.
+    expect(acceleratorsCollide('Ctrl+0', 'Ctrl+num0', 'linux')).toBe(true);
+    expect(acceleratorsCollide('Ctrl+Insert', 'Ctrl+num0', 'linux')).toBe(true);
+  });
+
+  test('findConflict refuses the German chord as a fixed Zoom In collision', () => {
+    for (const platform of PLATFORMS) {
+      const mod = platform === 'darwin' ? 'Cmd' : 'Ctrl';
+      expect(findConflict('view.focusAddressBar', `${mod}+Shift+0`, {}, platform)).toEqual({
+        id: 'page.zoomIn',
+        settingsLabel: 'Zoom in',
+        fixed: true,
+      });
+    }
+  });
+
+  test('sanitizeOverrides drops a stored German-colliding override', () => {
+    for (const platform of PLATFORMS) {
+      const mod = platform === 'darwin' ? 'Cmd' : 'Ctrl';
+      const stored = { 'view.focusAddressBar': `${mod}+Shift+0` };
+      // Before: one press, two actions — the bug.
+      expect(matchingIds(germanShift0(platform), stored, platform)).toEqual([
+        'page.zoomIn',
+        'view.focusAddressBar',
+      ]);
+      const drops = [];
+      const cleaned = sanitizeOverrides(stored, platform, { onDrop: (d) => drops.push(d) });
+      expect(cleaned).toEqual({});
+      expect(drops).toEqual([
+        {
+          id: 'view.focusAddressBar',
+          accelerator: normalizeAccelerator(`${mod}+Shift+0`, platform),
+          conflict: { id: 'page.zoomIn', settingsLabel: 'Zoom in', fixed: true },
+        },
+      ]);
+      // After: the press fires exactly one action.
+      expect(matchingIds(germanShift0(platform), cleaned, platform)).toEqual(['page.zoomIn']);
+    }
+  });
+
+  test('a swap is only offered when exactly one swappable binding collides', () => {
+    // Keypad minus: Zoom Out's main-row default (swappable) and its fixed
+    // numsub alias both fire on it — swapping could not clear the alias.
+    expect(findConflict('tab.new', 'Ctrl+numsub', {}, 'linux')).toMatchObject({
+      id: 'page.zoomOut',
+      fixed: true,
+    });
+    // Two editable primaries on one German press (Ctrl+Shift+7 types '/'):
+    // one swap hands only one of them a new chord.
+    const overrides = { 'tab.new': 'Ctrl+Shift+7', 'page.reload': 'Ctrl+Shift+/' };
+    expect(findConflict('page.findInPage', 'Ctrl+Shift+7', overrides, 'linux')).toMatchObject({
+      id: 'tab.new',
+      fixed: true,
+    });
+    // A single swappable collision stays swappable.
+    expect(
+      findConflict('page.findInPage', 'Ctrl+Shift+7', { 'tab.new': 'Ctrl+Shift+7' }, 'linux')
+    ).toMatchObject({ id: 'tab.new', fixed: false });
+  });
+
+  test('no swap is offered when the handed-over binding collides with the new one', () => {
+    // tab.new sits on Ctrl+Alt+Shift+0; recording Ctrl+Alt+Shift+= hits only
+    // Reopen Closed Tab's Ctrl+Alt+Shift+Plus (US Shift+= types '+'). A swap
+    // would give Reopen Closed Tab Ctrl+Alt+Shift+0 — one German press with
+    // the new Ctrl+Alt+Shift+= — so sanitizeOverrides would then drop the
+    // user's own new remap. Report it as not swappable instead.
+    const overrides = {
+      'tab.new': 'Ctrl+Alt+Shift+0',
+      'tab.reopenClosed': 'Ctrl+Alt+Shift+Plus',
+    };
+    expect(sanitizeOverrides(overrides, 'linux')).toEqual(overrides);
+    expect(findConflict('tab.new', 'Ctrl+Alt+Shift+=', overrides, 'linux')).toEqual({
+      id: 'tab.reopenClosed',
+      settingsLabel: 'Reopen closed tab',
+      fixed: true,
+    });
+    // The premise: applying that swap anyway loses the new remap.
+    expect(
+      sanitizeOverrides(
+        { 'tab.reopenClosed': 'Ctrl+Alt+Shift+0', 'tab.new': 'Ctrl+Alt+Shift+=' },
+        'linux'
+      )
+    ).not.toHaveProperty('tab.new');
+    // Control: from an unrelated previous binding the same swap stands.
+    const plain = { 'tab.new': 'Ctrl+Alt+Shift+U', 'tab.reopenClosed': 'Ctrl+Alt+Shift+Plus' };
+    expect(findConflict('tab.new', 'Ctrl+Alt+Shift+=', plain, 'linux')).toMatchObject({
+      id: 'tab.reopenClosed',
+      fixed: false,
+    });
+    const swapped = { 'tab.reopenClosed': 'Ctrl+Alt+Shift+U', 'tab.new': 'Ctrl+Alt+Shift+=' };
+    expect(sanitizeOverrides(swapped, 'linux')).toEqual(swapped);
+  });
+
+  test('the registry ships exactly the known built-in collisions', () => {
+    // Collisions between two entries' own defaults/aliases are resolved by
+    // dispatch order, and findConflict lets an entry return to its default
+    // over one. Pin the list so a new default that silently shares a press
+    // with an existing binding fails here instead of double-firing.
+    for (const platform of PLATFORMS) {
+      const bindings = SHORTCUTS.flatMap((entry) =>
+        [getDefaultAccelerator(entry, platform), ...getAliasAccelerators(entry, platform)].map(
+          (accelerator) => [entry.id, accelerator]
+        )
+      );
+      const collisions = [];
+      for (let i = 0; i < bindings.length; i += 1) {
+        for (let j = i + 1; j < bindings.length; j += 1) {
+          const [idA, a] = bindings[i];
+          const [idB, b] = bindings[j];
+          if (idA !== idB && acceleratorsCollide(a, b, platform)) {
+            collisions.push(`${idA} ${a} ~ ${idB} ${b}`);
+          }
+        }
+      }
+      // The Nordic Ctrl++ press (key '+', code 'Minus'); see the zoom
+      // reachability tests above.
+      expect(collisions).toEqual(['page.zoomIn CmdOrCtrl+Plus ~ page.zoomOut CmdOrCtrl+-']);
+    }
   });
 });

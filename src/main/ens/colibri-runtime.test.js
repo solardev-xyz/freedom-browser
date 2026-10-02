@@ -91,6 +91,27 @@ describe('colibri-runtime disables the native addon before the package loads', (
     expect(loadWithEnvProbe()).toBe('1');
   });
 
+  test('enforces explicit WASM bounds checks before the package loads (#453)', () => {
+    // Electron's main process does not route V8's guard-page SIGSEGV back to
+    // the WASM trap handler, so an out-of-bounds access in c4w.wasm kills the
+    // browser unless explicit checks are compiled in. The flag is read at
+    // compile time, so it has to be set before anything can load the module.
+    const flags = [];
+    const seen = { flags: 'never-loaded' };
+    jest.resetModules();
+    jest.doMock('node:v8', () => ({ setFlagsFromString: (flag) => flags.push(flag) }));
+    jest.doMock('@corpus-core/colibri-stateless', () => {
+      seen.flags = [...flags];
+      return { __esModule: true, default: class {}, Strategy: {} };
+    });
+    try {
+      require('./colibri-runtime');
+      expect(seen.flags).toEqual(['--wasm-enforce-bounds-checks']);
+    } finally {
+      jest.dontMock('node:v8');
+    }
+  });
+
   test('colibri-resolver reaches the package only through colibri-runtime', () => {
     const source = fs.readFileSync(path.join(__dirname, 'colibri-resolver.js'), 'utf8');
     expect(source).toContain("require('./colibri-runtime')");
@@ -216,5 +237,164 @@ describe('colibri runtime selection in a real process', () => {
     } finally {
       try { fs.unlinkSync(probe); } catch { /* best-effort cleanup */ }
     }
+  }, 120_000);
+});
+
+// The real hosts, not mocks: the crash only exists in Electron's full main
+// process, and recovery depends on the installed package's internals
+// (`cjs/runtime.js`'s `setRuntimeProvider`, `cjs/runtime_wasm.js`'s module-level
+// cache), so a bump that moves either has to fail here.
+describe('a Colibri WASM trap fails one request instead of the process (#453)', () => {
+  function electronBinary() {
+    try {
+      const dir = path.dirname(require.resolve('electron/package.json'));
+      const rel = fs.readFileSync(path.join(dir, 'path.txt'), 'utf8').trim();
+      const full = path.join(dir, 'dist', rel);
+      if (rel && fs.existsSync(full)) return full;
+    } catch { /* electron not installed / dist not downloaded */ }
+    return null;
+  }
+
+  function runProbe(source, { exe, args = [], env }) {
+    const probe = path.join(os.tmpdir(), `colibri-trap-probe-${process.pid}-${Date.now()}.js`);
+    fs.writeFileSync(probe, source);
+    try {
+      const stdout = execFileSync(exe, [...args, probe], {
+        env,
+        encoding: 'utf8',
+        timeout: 60_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const line = stdout.split('\n').find((l) => l.startsWith('{"probe"'));
+      return JSON.parse(line);
+    } finally {
+      try { fs.unlinkSync(probe); } catch { /* best-effort cleanup */ }
+    }
+  }
+
+  const RUNTIME = JSON.stringify(path.join(__dirname, 'colibri-runtime.js'));
+  const UPSTREAM_RUNTIME = JSON.stringify(path.join(PKG_DIR, 'cjs', 'runtime.js'));
+  // 0x7ffffff0 is far past c4w.wasm's linear memory, so treating it as a
+  // context pointer is a guaranteed out-of-bounds load: the same trap an
+  // unknown-receipt lookup ends in, without needing a prover on the network.
+  const BAD_CTX = '0x7ffffff0';
+
+  test('the trap is a catchable RuntimeError in Electron\'s full main process', () => {
+    const exe = electronBinary();
+    if (!exe && process.env.FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED === '1') {
+      // The CI `test` job never downloads Electron, so this would skip there;
+      // `e2e-safe` (which has the binary) sets this to make a skip a failure.
+      throw new Error('FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED=1 but no Electron binary is installed');
+    }
+    if (!exe) {
+      console.warn(
+        '[colibri-runtime.test] skipped: no Electron binary in node_modules; the ' +
+        'main-process SIGSEGV this guards cannot be reproduced under node.'
+      );
+      return;
+    }
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    // A bare module doing one out-of-bounds i32.load: whatever V8 does with it
+    // here, it does to every WASM module in the main process.
+    const result = runProbe(`
+      const { app } = require('electron');
+      const rt = require(${RUNTIME});
+      const { getRuntime } = require(${UPSTREAM_RUNTIME});
+      const out = { probe: true };
+      const tiny = new Uint8Array([0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,127,3,2,1,0,5,3,1,0,1,7,8,1,4,108,111,97,100,0,0,10,9,1,7,0,32,0,40,2,0,11]);
+      try {
+        new WebAssembly.Instance(new WebAssembly.Module(tiny)).exports.load(0x7ffffff0);
+        out.tiny = 'no trap';
+      } catch (err) { out.tiny = err.constructor.name; }
+      rt.Colibri.register_storage({ get: () => null, set() {}, del() {} })
+        .then(() => getRuntime())
+        .then((runtime) => {
+          try { runtime.executeRpcCtx(${BAD_CTX}); out.colibri = 'no trap'; }
+          catch (err) { out.colibri = err.constructor.name; }
+          out.resets = rt.runtimeResetCount();
+        })
+        .catch((err) => { out.error = String(err && err.message || err); })
+        .finally(() => { console.log(JSON.stringify(out)); app.exit(0); });
+    `, { exe, args: ['--no-sandbox', '--ozone-platform=headless'], env });
+    expect(result).toEqual({ probe: true, tiny: 'RuntimeError', colibri: 'RuntimeError', resets: 1 });
+  }, 120_000);
+
+  test('a trap swaps in a fresh WASM instance with the host storage re-attached', () => {
+    const exe = electronBinary();
+    const env = exe ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : { ...process.env };
+    const result = runProbe(`
+      const rt = require(${RUNTIME});
+      const { getRuntime } = require(${UPSTREAM_RUNTIME});
+      const out = { probe: true, resets: [] };
+      rt.setRuntimeResetListener((err) => out.resets.push(err.constructor.name));
+      const reads = [];
+      const storage = { get: (key) => { reads.push(key); return null; }, set() {}, del() {} };
+      (async () => {
+        await rt.Colibri.register_storage(storage);
+        const first = await getRuntime();
+        try { first.executeRpcCtx(${BAD_CTX}); } catch (err) { out.trap = err.constructor.name; }
+        // A request still draining on the retired instance repeats the call
+        // that trapped; it is refused before reaching WASM, so it must not
+        // throw away the replacement a second time (see \`count\`).
+        try { first.executeRpcCtx(${BAD_CTX}); out.retiredRetry = 'ran'; }
+        catch (err) { out.retiredRetry = err instanceof WebAssembly.RuntimeError ? 'trap' : 'refused'; }
+        // Nothing keeps running on the trapped instance: a request that
+        // captured it before the trap gets a refusal, not a working call...
+        try { first.getMethodType(1n, 'eth_blockNumber', null, 0); out.retiredCall = 'ran'; }
+        catch (err) { out.retiredCall = err instanceof WebAssembly.RuntimeError ? 'trap' : 'refused'; }
+        // ...but its cleanup in upstream's \`finally\` must not replace that error.
+        try { out.retiredFree = first.freeRpcCtx(1) === undefined ? 'noop' : 'ran'; }
+        catch { out.retiredFree = 'threw'; }
+        const second = await getRuntime();
+        out.fresh = first !== second;
+        out.kind = second.kind;
+        out.works = second.getMethodType(1n, 'eth_blockNumber', null, 0);
+        out.count = rt.runtimeResetCount();
+        // The verifier loads its chain state through the storage adapter; the
+        // replacement must read the host's adapter, not upstream's cwd default.
+        reads.length = 0;
+        const client = new rt.Colibri({
+          chainId: 1,
+          prover: ['http://127.0.0.1:9'],
+          rpcs: ['http://127.0.0.1:9'],
+          beacon_apis: ['http://127.0.0.1:9'],
+          proofStrategy: rt.Strategy.VerifiedOnly,
+        });
+        await client.request({ method: 'eth_blockNumber', params: [] }).catch(() => {});
+        out.storageReads = reads.includes('states_1');
+        // Retired instances must become unreachable. Node lists every module a
+        // file requires in its \`module.children\`, so a retired
+        // runtime_wasm.js left there pins its Emscripten instance (memory plus
+        // the c4w.wasm bytes, ~1.7 MB) for the life of the process.
+        for (let i = 0; i < 5; i += 1) {
+          const rt2 = await getRuntime();
+          try { rt2.executeRpcCtx(${BAD_CTX}); } catch { /* expected */ }
+        }
+        await getRuntime();
+        out.resetsAfterLoop = rt.runtimeResetCount();
+        out.retainedWasmRuntimes = require.cache[require.resolve(${RUNTIME})].children
+          .filter((child) => child.id.endsWith('runtime_wasm.js')).length;
+      })()
+        .catch((err) => { out.error = String(err && err.message || err); })
+        .finally(() => { console.log(JSON.stringify(out)); process.exit(0); });
+    `, { exe: exe || process.execPath, env });
+    expect(result).toEqual({
+      probe: true,
+      // One for the first trap (the refused draining retry changes nothing,
+      // see \`count\`), then one per loop iteration below.
+      resets: Array(6).fill('RuntimeError'),
+      trap: 'RuntimeError',
+      fresh: true,
+      kind: 'wasm',
+      works: 1,
+      count: 1,
+      storageReads: true,
+      retiredRetry: 'refused',
+      retiredCall: 'refused',
+      retiredFree: 'noop',
+      resetsAfterLoop: 6,
+      retainedWasmRuntimes: 1,
+    });
   }, 120_000);
 });

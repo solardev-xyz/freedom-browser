@@ -597,9 +597,7 @@ jobs:
   # e2e-not-in-ci: ppv2-relay.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
   # e2e-not-in-ci: ppv2-token-deposit.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
   # e2e-not-in-ci: ppv2-withdrawal.spec.js — requires the locally authenticated experimental SDK/runtime fixture; distribution into CI is not yet qualified
-  # e2e-not-in-ci: safe-accounts.spec.js — crashes the main process (SIGSEGV on the colibri read path) against the anvil Gnosis fork, #453
-  # e2e-not-in-ci: safe-dapp.spec.js — same main-process SIGSEGV as safe-accounts, #453
-  # e2e-not-in-ci: safe-phone.spec.js — same SIGSEGV (#453), and the freedom-bridge page it pairs through still speaks openlv 0.0.3 (#452)
+  # e2e-not-in-ci: safe-phone.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the co-signature never arrives, #452
   # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
 
   # Settings navigation, persistence, and chain policy are shipped control
@@ -934,8 +932,8 @@ jobs:
   # and the sidebar chrome above them (`sidebar-in-flight-chrome`).
   # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
   # is deployed on, and `publisher-identity-selector.spec.js` renders
-  # unusable publisher identities as inert. The anvil-backed Safe specs are
-  # on the not-in-CI list above, not here.
+  # unusable publisher identities as inert. The anvil-backed Safe specs run
+  # in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -976,6 +974,99 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-wallet-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Safe (multi-owner account) lifecycle through the real UI against an anvil
+  # fork of Gnosis: create → fund → activate (a real canonical-factory
+  # deployment) → send, plus a dApp connecting the Safe for an EIP-1271
+  # signature and a send through the board. These used to kill the main
+  # process with SIGSEGV on the first receipt lookup after a broadcast (#453:
+  # a Colibri WASM trap Electron's main process could not catch).
+  #
+  # anvil comes from foundry's own release tarball, checked against a sha256
+  # recorded here (re-derived from upstream's `foundry_v1.8.3_linux_amd64.sha256`
+  # asset, not trusted from it at run time). The fork itself still reads
+  # https://rpc.gnosischain.com, a public endpoint this job cannot pin; the
+  # harness project's CI retries absorb a blip, and
+  # FREEDOM_SAFE_E2E_REQUIRED=1 turns an outage into a failure rather than a
+  # green skip. `safe-phone.spec.js` stays on the not-in-CI list for #452.
+  #
+  # The fixtures read Gnosis from the fork only (a proof source verifies the
+  # live chain), so the specs no longer pass through Colibri on chain 100; the
+  # crash itself is pinned by the jest step below, which needs this job's
+  # Electron binary.
+  e2e-safe:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Install foundry (anvil)
+        env:
+          FOUNDRY_VERSION: v1.8.3
+          FOUNDRY_SHA256: 7ca48e6ca3cac1bce1403ca67e5bc1dc3bc1fd818199c9957c7165079c228568
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/foundry"
+          mkdir -p "$dir"
+          cd "$dir"
+          archive="foundry_${FOUNDRY_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-all-errors -o "$archive" \
+            "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_VERSION}/${archive}"
+          echo "${FOUNDRY_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" anvil
+          rm "$archive"
+          ./anvil --version
+          echo "$dir" >> "$GITHUB_PATH"
+
+      # The jest guard for the fix itself (#453): a Colibri WASM trap must be
+      # a catchable error in Electron's *full* main process, and must swap in
+      # a fresh instance. The `test` job runs it too but has no Electron
+      # binary, so there it skips; here the binary is fetched first (the
+      # `electron` package downloads it on first require) and a skip fails.
+      - name: Colibri WASM trap guard under Electron's main process
+        env:
+          FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED: '1'
+        run: |
+          node -e "require('electron')"
+          npx jest src/main/ens/colibri-runtime.test.js
+
+      - name: Run Safe E2E
+        env:
+          FREEDOM_SAFE_E2E_REQUIRED: '1'
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/safe-accounts.spec.js \
+            test-e2e/safe-dapp.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-safe-traces
           path: |
             test-results/
             playwright-report/
@@ -1669,6 +1760,7 @@ jobs:
         e2e-onboarding-identity,
         e2e-profiles,
         e2e-renderer-screenshots,
+        e2e-safe,
         e2e-settings,
         e2e-shortcuts-zoom,
         e2e-tabs,

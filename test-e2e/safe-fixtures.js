@@ -27,15 +27,30 @@ const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
 // live chain (keyed sources resolve to nothing without API keys).
 const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-ankr', 'gno-publicnode', 'gno-drpc-public'];
 
-/** anvil present + fork RPC reachable — mirrors the jest fork-test gate. */
+/**
+ * anvil present + fork RPC reachable — mirrors the jest fork-test gate.
+ *
+ * With FREEDOM_SAFE_E2E_REQUIRED=1 (the `e2e-safe` CI job) a missing
+ * prerequisite throws instead of skipping: a skipped spec reports green, so a
+ * broken foundry install or an unreachable fork RPC would otherwise turn the
+ * job into a silent no-op.
+ */
 function safeE2eAvailable() {
-  if (spawnSync('anvil', ['--version']).status !== 0) return false;
-  const probe = spawnSync('curl', [
-    '-sf', '-m', '10', '-X', 'POST', GNOSIS_FORK_URL,
-    '-H', 'Content-Type: application/json',
-    '-d', '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}',
-  ]);
-  return probe.status === 0;
+  let missing = null;
+  if (spawnSync('anvil', ['--version']).status !== 0) {
+    missing = 'anvil (foundry) is not on PATH';
+  } else {
+    const probe = spawnSync('curl', [
+      '-sf', '-m', '10', '-X', 'POST', GNOSIS_FORK_URL,
+      '-H', 'Content-Type: application/json',
+      '-d', '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}',
+    ]);
+    if (probe.status !== 0) missing = `the fork RPC ${GNOSIS_FORK_URL} is unreachable`;
+  }
+  if (missing && process.env.FREEDOM_SAFE_E2E_REQUIRED === '1') {
+    throw new Error(`Safe E2E required but ${missing}`);
+  }
+  return !missing;
 }
 
 async function rpc(method, params = []) {
@@ -113,6 +128,16 @@ const test = base.extend({
           'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.url } },
         },
         removedSources: BUILTIN_GNOSIS_SOURCES,
+        // Read Gnosis from the fork only. Myotis and Colibri verify against
+        // the *live* chain: their answers are correct there and wrong here
+        // (the fork-funded Safe reads a verified balance of 0), so a
+        // verifying source can never serve a fork. This keeps the
+        // "nothing escapes to the live chain" promise above; it is not
+        // what kept these specs alive — the SIGSEGV they used to hit (#453,
+        // a Colibri receipt lookup trapping in WASM) is fixed in
+        // colibri-runtime.js and pinned by colibri-runtime.test.js under
+        // Electron's full main process.
+        networks: { 100: { access: { readOrder: ['direct'] } } },
       }),
       'utf-8'
     );
