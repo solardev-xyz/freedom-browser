@@ -231,3 +231,137 @@ test('multi-get uses one request and rejects a partial response', async () => {
   await expect(invoke(remote.leveldown, '_getMany', [Buffer.from('a')], {})).rejects.toThrow();
   expect(remote.signal.aborted).toBe(true);
 });
+
+test('a tagged write group streams bounded frames and commits only after all writes', async () => {
+  const commands = [];
+  send.mockImplementation(async (wire) => {
+    const command = JSON.parse(wire);
+    commands.push(command);
+    expect(Buffer.byteLength(wire)).toBeLessThanOrEqual(2 * 1024 * 1024);
+    return reply(wire, command.method === 'txBegin' ? 1 : null);
+  });
+  const operations = Array.from({ length: 2500 }, (_, i) => ({
+    type: 'put',
+    key: Buffer.from(String(i)),
+    value: Buffer.from('value'),
+  }));
+  await remote.withTransaction(async () => {
+    await Promise.all([
+      invoke(remote.leveldown, '_batch', operations, {}),
+      invoke(remote.leveldown, '_put', Buffer.from('metadata'), Buffer.from('done'), {}),
+    ]);
+  });
+  expect(commands[0].method).toBe('txBegin');
+  expect(commands.at(-1).method).toBe('txCommit');
+  const stages = commands.filter((c) => c.method === 'txStage');
+  expect(stages.reduce((n, c) => n + c.args.operations.length, 0)).toBe(2501);
+  expect(stages.every((c) => c.args.transaction === 1 && c.args.operations.length <= 1024)).toBe(
+    true
+  );
+});
+test('callback failure aborts rather than commits its staged group', async () => {
+  const commands = [];
+  send.mockImplementation(async (wire) => {
+    const c = JSON.parse(wire);
+    commands.push(c.method);
+    return reply(wire, c.method === 'txBegin' ? 1 : null);
+  });
+  await expect(
+    remote.withTransaction(async () => {
+      await invoke(remote.leveldown, '_put', Buffer.from('a'), Buffer.from('b'), {});
+      throw new Error('group failed');
+    })
+  ).rejects.toThrow();
+  expect(commands).toEqual(['txBegin', 'txStage', 'txAbort']);
+  expect(remote.signal.aborted).toBe(true);
+});
+test('large values split on frame bytes as well as operation count', async () => {
+  const stages = [];
+  send.mockImplementation(async (wire) => {
+    const c = JSON.parse(wire);
+    if (c.method === 'txStage') stages.push(wire);
+    return reply(wire, c.method === 'txBegin' ? 1 : null);
+  });
+  await remote.withTransaction(() =>
+    invoke(
+      remote.leveldown,
+      '_batch',
+      [0, 1].map((i) => ({
+        type: 'put',
+        key: Buffer.from(String(i)),
+        value: Buffer.alloc(1024 * 1024),
+      })),
+      {}
+    )
+  );
+  expect(stages).toHaveLength(2);
+  expect(stages.every((wire) => Buffer.byteLength(wire) <= 2 * 1024 * 1024)).toBe(true);
+});
+
+test('an unrelated read during a write scope fails instead of seeing provisional state', async () => {
+  let entered, release;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const hold = new Promise((resolve) => {
+    release = resolve;
+  });
+  send.mockImplementation(async (wire) =>
+    reply(wire, JSON.parse(wire).method === 'txBegin' ? 1 : null)
+  );
+  const group = remote.withTransaction(async () => {
+    await invoke(remote.leveldown, '_put', Buffer.from('node'), Buffer.from('new'), {});
+    entered();
+    await hold;
+  });
+  const rejected = expect(group).rejects.toThrow();
+  await started;
+  await expect(invoke(remote.leveldown, '_get', Buffer.from('node'), {})).rejects.toThrow();
+  release();
+  await rejected;
+  expect(send.mock.calls.map(([wire]) => JSON.parse(wire).method)).not.toContain('txCommit');
+});
+test('tagged reads capture their group before entering the FIFO', async () => {
+  const methods = [];
+  send.mockImplementation(async (wire) => {
+    const c = JSON.parse(wire);
+    methods.push(c);
+    return reply(wire, c.method === 'txBegin' ? 1 : null);
+  });
+  await remote.withTransaction(async () => {
+    await invoke(remote.leveldown, '_put', Buffer.from('node'), Buffer.from('new'), {});
+    await expect(invoke(remote.leveldown, '_get', Buffer.from('metadata'), {})).rejects.toThrow(
+      'NotFound'
+    );
+  });
+  expect(methods.find((c) => c.method === 'txRead').args).toEqual({
+    transaction: 1,
+    method: 'get',
+    args: { key: Buffer.from('metadata').toString('base64') },
+  });
+  expect(methods.at(-1).method).toBe('txCommit');
+});
+
+test('polling remains available while a write scope holds storage', async () => {
+  let entered, release;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const hold = new Promise((resolve) => {
+    release = resolve;
+  });
+  send.mockImplementation(async (wire) => {
+    const m = JSON.parse(wire).method;
+    return reply(wire, m === 'txBegin' ? 1 : m === 'rpc' ? '0x1' : null);
+  });
+  const group = remote.withTransaction(async () => {
+    await invoke(remote.leveldown, '_put', Buffer.from('a'), Buffer.from('b'), {});
+    entered();
+    await hold;
+  });
+  await started;
+  expect(await remote.provider.request({ method: 'eth_blockNumber', params: [] })).toBe('0x1');
+  release();
+  await group;
+  expect(remote.signal.aborted).toBe(false);
+});

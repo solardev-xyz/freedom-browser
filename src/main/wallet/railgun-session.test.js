@@ -213,3 +213,131 @@ test('multi-get sees one snapshot and refuses an oversized aggregate without ret
   await expect(request('getMany', { keys: [b('big'), b('big')] })).rejects.toThrow();
   expect(session.signal.aborted).toBe(true);
 });
+
+test('staged frames publish together; reads and existing snapshots see committed state', async () => {
+  await request('batch', { operations: [put('old', 'before'), put('untouched', 'stable')] });
+  const cursor = await request('open', { options: {} });
+  const transaction = await request('txBegin', {});
+  await request('txStage', { transaction, operations: [put('old', 'after')] });
+  await request('txStage', { transaction, operations: [put('new', 'value')] });
+  expect(
+    await request('txRead', { transaction, method: 'get', args: { key: b('untouched') } })
+  ).toBe(b('stable'));
+  await request('txCommit', { transaction });
+  expect(await request('get', { key: b('old') })).toBe(b('after'));
+  expect(await request('next', { cursor })).toEqual([b('old'), b('before')]);
+  await request('end', { cursor });
+  session.close();
+  session = createRailgunSession({ ...options, storage: { ...options.storage, create: false } });
+  id = 0;
+  expect(await request('get', { key: b('new') })).toBe(b('value'));
+});
+test.each(['txAbort', 'close', 'deadline', 'fault'])(
+  '%s discards every staged frame and preserves durable old state',
+  async (mode) => {
+    await request('batch', { operations: [put('old', 'before')] });
+    const transaction = await request('txBegin', {});
+    await request('txStage', {
+      transaction,
+      operations: [put('old', 'after'), put('new', 'value')],
+    });
+    if (mode === 'txAbort') await request(mode, { transaction });
+    else if (mode === 'close') session.close();
+    else if (mode === 'deadline') {
+      // Start the timed group under fake timers; the first staged group is aborted.
+      await request('txAbort', { transaction });
+      jest.useFakeTimers();
+      const timed = await request('txBegin', {});
+      await request('txStage', { transaction: timed, operations: [put('new', 'value')] });
+      jest.advanceTimersByTime(30001);
+      jest.useRealTimers();
+      expect(session.signal.aborted).toBe(true);
+    } else {
+      const original = Database.prototype.prepare;
+      jest.spyOn(Database.prototype, 'prepare').mockImplementation(function (sql) {
+        const stmt = original.call(this, sql);
+        if (sql === 'UPDATE records SET ciphertext = ? WHERE id = ?')
+          stmt.run = () => {
+            throw new Error('manifest fault');
+          };
+        return stmt;
+      });
+      await expect(request('txCommit', { transaction })).rejects.toMatchObject({
+        code: 'RAILGUN_SESSION_REVOKED',
+      });
+      jest.restoreAllMocks();
+    }
+    session.close();
+    session = createRailgunSession({ ...options, storage: { ...options.storage, create: false } });
+    id = 0;
+    expect(await request('get', { key: b('old') })).toBe(b('before'));
+    expect(await request('get', { key: b('new') })).toBeNull();
+  }
+);
+test.each([
+  'nested',
+  'wrong-id',
+  'outside-write',
+  'outside-clear',
+  'too-many-ops',
+  'too-many-bytes',
+])('transaction %s misuse revokes the host', async (mode) => {
+  const transaction = await request('txBegin', {});
+  let attempt;
+  if (mode === 'nested') attempt = request('txBegin', {});
+  else if (mode === 'wrong-id') attempt = request('txCommit', { transaction: transaction + 1 });
+  else if (mode === 'outside-write') attempt = request('batch', { operations: [put('a', 'b')] });
+  else if (mode === 'outside-clear') attempt = request('clear', { options: {} });
+  else if (mode === 'too-many-ops') {
+    for (let i = 0; i < 32; i++)
+      await request('txStage', {
+        transaction,
+        operations: Array.from({ length: 1024 }, (_, j) => put(String(i * 1024 + j), 'b')),
+      });
+    attempt = request('txStage', { transaction, operations: [put('a', 'b')] });
+  } else {
+    for (let i = 0; i < 15; i++)
+      await request('txStage', {
+        transaction,
+        operations: [put(String(i), 'b'.repeat(1024 * 1024))],
+      });
+    attempt = request('txStage', {
+      transaction,
+      operations: [put('overflow', 'b'.repeat(1024 * 1024))],
+    });
+  }
+  await expect(attempt).rejects.toMatchObject({ code: 'RAILGUN_SESSION_REVOKED' });
+  expect(session.signal.aborted).toBe(true);
+});
+
+test.each(['untagged', 'staged-key'])(
+  '%s read cannot observe a provisional tree update',
+  async (mode) => {
+    const transaction = await request('txBegin', {});
+    await request('txStage', { transaction, operations: [put('node', 'new')] });
+    await expect(
+      mode === 'untagged'
+        ? request('get', { key: b('node') })
+        : request('txRead', { transaction, method: 'get', args: { key: b('node') } })
+    ).rejects.toMatchObject({ code: 'RAILGUN_SESSION_REVOKED' });
+  }
+);
+
+test('polling RPC continues during an exclusive staged storage group', async () => {
+  const transaction = await request('txBegin', {});
+  await request('txStage', { transaction, operations: [put('node', 'value')] });
+  expect(await request('rpc', { method: 'eth_chainId', params: [] })).toBe('0xaa36a7');
+  await request('txCommit', { transaction });
+  expect(await request('get', { key: b('node') })).toBe(b('value'));
+});
+test.each(['same-frame', 'later-frame'])('duplicate staged key in %s is refused', async (mode) => {
+  const transaction = await request('txBegin', {});
+  if (mode === 'later-frame')
+    await request('txStage', { transaction, operations: [put('a', 'one')] });
+  await expect(
+    request('txStage', {
+      transaction,
+      operations: mode === 'same-frame' ? [put('a', 'one'), put('a', 'two')] : [put('a', 'two')],
+    })
+  ).rejects.toMatchObject({ code: 'RAILGUN_SESSION_REVOKED' });
+});

@@ -86,8 +86,19 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
     closed = false,
     lastId = 0,
     pending = 0,
-    nextCursor = 0;
+    nextCursor = 0,
+    nextTransaction = 0,
+    transaction;
   const cursors = new Map();
+  const discardTransaction = () => {
+    if (!transaction) return;
+    clearTimeout(transaction.timer);
+    for (const op of transaction.operations) {
+      op.key.fill(0);
+      op.value?.fill(0);
+    }
+    transaction = undefined;
+  };
   const wipe = (rows) => {
     for (const [key, value] of rows) {
       key.fill(0);
@@ -99,6 +110,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
     closed = true;
     scope.signal.removeEventListener('abort', close);
     scope.close();
+    discardTransaction();
     for (const cursor of cursors.values()) wipe(cursor.rows);
     cursors.clear();
     try {
@@ -130,6 +142,51 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
   }
   async function execute(method, args) {
     active();
+    if (transaction && !['txStage', 'txCommit', 'txAbort', 'txRead', 'rpc'].includes(method))
+      throw fail();
+    if (method === 'txRead') {
+      if (
+        !shape(args, ['transaction', 'method', 'args']) ||
+        !transaction ||
+        args.transaction !== transaction.id ||
+        !['get', 'getMany'].includes(args.method)
+      )
+        throw fail();
+      method = args.method;
+      args = args.args;
+      const keys =
+        method === 'get' && shape(args, ['key'])
+          ? [args.key]
+          : method === 'getMany' &&
+              shape(args, ['keys']) &&
+              Array.isArray(args.keys) &&
+              args.keys.length <= 1024
+            ? args.keys
+            : null;
+      if (!keys || keys.some((key) => transaction.keys.has(decode(key, 4096).toString('hex'))))
+        throw fail();
+    }
+    if (method === 'txBegin' && shape(args, [])) {
+      if (transaction) throw fail();
+      transaction = {
+        id: ++nextTransaction,
+        operations: [],
+        keys: new Set(),
+        bytes: 0,
+        timer: setTimeout(close, 30000),
+      };
+      return transaction.id;
+    }
+    if (['txCommit', 'txAbort'].includes(method) && shape(args, ['transaction'])) {
+      if (!transaction || args.transaction !== transaction.id) throw fail();
+      try {
+        if (method === 'txCommit' && transaction.operations.length)
+          store.batch(transaction.operations);
+      } finally {
+        discardTransaction();
+      }
+      return null;
+    }
     if (method === 'rpc') {
       if (
         !shape(args, ['method', 'params']) ||
@@ -159,7 +216,15 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
         return value;
       });
     }
-    if (method === 'batch' && shape(args, ['operations'])) {
+    if (
+      (method === 'batch' && shape(args, ['operations'])) ||
+      (method === 'txStage' && shape(args, ['transaction', 'operations']))
+    ) {
+      const staging = method === 'txStage';
+      // This initial protocol grants exclusive writes to one group. Unrelated
+      // writes/clear cannot interleave; reads and snapshots see committed state.
+      // Concurrent scanner/wallet write scheduling needs separate qualification.
+      if (staging ? !transaction || args.transaction !== transaction.id : transaction) throw fail();
       if (
         !Array.isArray(args.operations) ||
         !args.operations.length ||
@@ -178,7 +243,27 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
           operations.push({ type: op.type, key });
           if (op.type === 'put') operations.at(-1).value = decode(op.value, 1024 * 1024, true);
         }
-        store.batch(operations);
+        if (staging) {
+          const frameKeys = new Set();
+          for (const op of operations) {
+            const key = op.key.toString('hex');
+            if (transaction.keys.has(key) || frameKeys.has(key)) throw fail();
+            frameKeys.add(key);
+          }
+          const bytes = operations.reduce(
+            (n, op) => n + op.key.length + (op.value?.length ?? 0),
+            0
+          );
+          if (
+            transaction.operations.length + operations.length > 32768 ||
+            transaction.bytes + bytes > 16 * 1024 * 1024
+          )
+            throw fail();
+          transaction.operations.push(...operations);
+          for (const op of operations) transaction.keys.add(op.key.toString('hex'));
+          transaction.bytes += bytes;
+          operations.length = 0; // Ownership transfers to the transaction until commit/abort.
+        } else store.batch(operations);
         return null;
       } finally {
         for (const op of operations) {
@@ -188,6 +273,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
       }
     }
     if ((method === 'open' || method === 'clear') && shape(args, ['options'])) {
+      if (method === 'clear' && transaction) throw fail();
       const options = range(args.options);
       if (method === 'open' && cursors.size >= 2) throw fail();
       const rows = store.snapshot(options, method === 'clear' || options.values === false);
