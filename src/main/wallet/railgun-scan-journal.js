@@ -9,6 +9,13 @@ const { createPrivacyStorage, getPrivacyStoragePath } = require('./privacy-stora
 const { randomBytes } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const owners = new Set();
+const retentions = new WeakMap();
+function readRailgunSourceRetention(token, ledgerId) {
+  const entry = retentions.get(token);
+  check(entry && entry.value.ledgerId === ledgerId);
+  entry.assertFresh();
+  return entry.value;
+}
 const RECORD_KEY = 'freedom-railgun-host-scan-v1';
 const MAX_RECORD = 128 * 1024;
 const fail = (code = 'RAILGUN_SCAN_REFUSED') =>
@@ -67,7 +74,14 @@ function scanState(value) {
   return { schema: value.schema, storeId: value.storeId, trees, ...namespaces };
 }
 function plan(value) {
-  check(exact(value, ['from', 'previousHash', 'to', 'anchor', 'logs', 'state']));
+  check(exact(value, ['from', 'previousHash', 'to', 'anchor', 'logs', 'source', 'state']));
+  check(exact(value.source, ['level', 'providersSha256', 'ledgerId', 'ledgerSha256']));
+  check(
+    value.source.level === 'unverified-rpc' &&
+      digest(value.source.providersSha256) &&
+      digest(value.source.ledgerId) &&
+      digest(value.source.ledgerSha256)
+  );
   check(integer(value.from) && hash(value.previousHash));
   const to = block(value.to),
     anchor = block(value.anchor);
@@ -84,10 +98,20 @@ function plan(value) {
     to,
     anchor,
     logs: { count: value.logs.count, sha256: value.logs.sha256 },
+    source: { ...value.source },
     state: scanState(value.state),
   };
 }
-function unpack(text, binding, storeId) {
+// Provider provenance can be renewed only when every content field is identical.
+function sameRangeContent(left, right) {
+  const normalize = (value) => {
+    const result = plan(value);
+    delete result.source.providersSha256;
+    return JSON.stringify(result);
+  };
+  return normalize(left) === normalize(right);
+}
+function unpack(text, binding, storeId, ledgerId) {
   check(typeof text === 'string' && Buffer.byteLength(text) <= MAX_RECORD);
   let value;
   try {
@@ -100,6 +124,7 @@ function unpack(text, binding, storeId) {
       'version',
       'binding',
       'storeId',
+      'ledgerId',
       'generation',
       'lease',
       'sequence',
@@ -107,16 +132,23 @@ function unpack(text, binding, storeId) {
       'pending',
     ])
   );
-  check(value.version === 1 && value.binding === binding && value.storeId === storeId);
+  check(
+    value.version === 2 &&
+      value.binding === binding &&
+      value.storeId === storeId &&
+      value.ledgerId === ledgerId
+  );
   check(integer(value.generation) && digest(value.lease) && integer(value.sequence));
   const checkpoint = value.checkpoint === null ? null : plan(value.checkpoint);
   const pending = value.pending === null ? null : plan(value.pending);
-  for (const item of [checkpoint, pending]) if (item) check(item.state.storeId === storeId);
+  for (const item of [checkpoint, pending])
+    if (item) check(item.state.storeId === storeId && item.source.ledgerId === ledgerId);
   if (pending) contiguous(checkpoint, pending);
   return {
-    version: 1,
+    version: 2,
     binding,
     storeId,
+    ledgerId,
     generation: value.generation,
     lease: value.lease,
     sequence: value.sequence,
@@ -131,6 +163,7 @@ function contiguous(checkpoint, next) {
   check(next.anchor.number >= checkpoint.anchor.number);
   if (next.anchor.number === checkpoint.anchor.number)
     check(next.anchor.hash === checkpoint.anchor.hash);
+  check(next.source.ledgerId === checkpoint.source.ledgerId);
   check(next.state.trees.length >= checkpoint.state.trees.length);
   for (let i = 0; i < checkpoint.state.trees.length; i++) {
     const previous = checkpoint.state.trees[i],
@@ -148,6 +181,7 @@ async function createRailgunScanJournal({
   key,
   profileGuard,
   binding,
+  ledgerId,
   storeSession,
   assertSource,
 }) {
@@ -164,6 +198,7 @@ async function createRailgunScanJournal({
     typeof directory === 'string' &&
       path.isAbsolute(directory) &&
       digest(binding) &&
+      digest(ledgerId) &&
       Buffer.isBuffer(key) &&
       key.length === 32
   );
@@ -188,6 +223,7 @@ async function createRailgunScanJournal({
     current,
     closed = false,
     busy = false,
+    retaining = false,
     baselineEvidence = null;
   const active = () => {
     if (closed || storeSession.signal.aborted) throw fail();
@@ -237,16 +273,17 @@ async function createRailgunScanJournal({
       const old =
         text === null
           ? {
-              version: 1,
+              version: 2,
               binding,
               storeId,
+              ledgerId,
               generation: 0,
               lease,
               sequence: 0,
               checkpoint: null,
               pending: null,
             }
-          : unpack(text, binding, storeId);
+          : unpack(text, binding, storeId, ledgerId);
       current = { ...old, generation: old.generation + 1, lease, sequence: old.sequence + 1 };
       return encode(current);
     });
@@ -258,12 +295,12 @@ async function createRailgunScanJournal({
   }
   async function update(change) {
     active();
-    if (busy) throw fail('RAILGUN_SCAN_BUSY');
+    if (busy || retaining) throw fail('RAILGUN_SCAN_BUSY');
     busy = true;
     try {
       await storage.update(RECORD_KEY, (text) => {
         active();
-        const old = unpack(text, binding, storeId);
+        const old = unpack(text, binding, storeId, ledgerId);
         check(
           old.lease === lease &&
             old.generation === current.generation &&
@@ -283,10 +320,10 @@ async function createRailgunScanJournal({
   }
   async function readState() {
     active();
-    if (busy) throw fail('RAILGUN_SCAN_BUSY');
+    if (busy || retaining) throw fail('RAILGUN_SCAN_BUSY');
     const text = await storage.get(RECORD_KEY);
     active();
-    const value = unpack(text, binding, storeId);
+    const value = unpack(text, binding, storeId, ledgerId);
     check(
       value.lease === lease &&
         value.sequence === current.sequence &&
@@ -300,7 +337,7 @@ async function createRailgunScanJournal({
   }
   async function prepare(input, sourceEvidence) {
     const next = plan(input);
-    check(next.state.storeId === storeId);
+    check(next.state.storeId === storeId && next.source.ledgerId === ledgerId);
     await update((old) => {
       if (!old.pending) {
         check(baselineEvidence);
@@ -308,7 +345,7 @@ async function createRailgunScanJournal({
       }
       synchronous(assertSource, next, sourceEvidence);
       contiguous(old.checkpoint, next);
-      if (old.pending) check(JSON.stringify(old.pending) === JSON.stringify(next));
+      if (old.pending) check(sameRangeContent(old.pending, next));
       return { ...old, pending: next };
     });
     const token = Object.freeze({});
@@ -335,24 +372,80 @@ async function createRailgunScanJournal({
       });
     }
   }
-  async function revalidate({ source: sourceEvidence, state: stateEvidence }) {
+  async function revalidate({ source: sourceEvidence, state: stateEvidence, plan: input }) {
     baselineEvidence = null;
     try {
       const value = await readState();
       check(!value.pending);
-      if (value.checkpoint) synchronous(assertSource, value.checkpoint, sourceEvidence);
-      assertState(value.checkpoint?.state ?? emptyPublicState(storeId), stateEvidence);
+      const checkpoint = input ? plan(input) : value.checkpoint;
+      if (input) check(value.checkpoint && sameRangeContent(value.checkpoint, checkpoint));
+      if (checkpoint) synchronous(assertSource, checkpoint, sourceEvidence);
+      assertState(checkpoint?.state ?? emptyPublicState(storeId), stateEvidence);
+      if (input && JSON.stringify(checkpoint) !== JSON.stringify(value.checkpoint)) {
+        await update((old) => {
+          check(!old.pending && sameRangeContent(old.checkpoint, checkpoint));
+          synchronous(assertSource, checkpoint, sourceEvidence);
+          assertState(checkpoint.state, stateEvidence);
+          return { ...old, checkpoint };
+        });
+        assertState(checkpoint.state, stateEvidence);
+      }
       baselineEvidence = stateEvidence;
       // Diagnostic only: the journal does not establish chain trust or POI.
       return Object.freeze({
         status: value.checkpoint ? 'applied-unverified' : 'unscanned',
-        sequence: value.sequence,
+        sequence: current.sequence,
       });
     } catch (error) {
       baselineEvidence = null;
       throw error;
     }
   }
-  return Object.freeze({ prepare, complete, readState, revalidate, close });
+  async function authorizeSourceRetention() {
+    const value = await readState(),
+      token = Object.freeze({});
+    retentions.set(token, {
+      value: Object.freeze({
+        ledgerId,
+        checkpoint: value.checkpoint?.source.ledgerSha256 ?? null,
+        pending: value.pending?.source.ledgerSha256 ?? null,
+      }),
+      assertFresh: () => {
+        active();
+        check(!busy && current.sequence === value.sequence);
+      },
+    });
+    return token;
+  }
+  async function withSourceRetention(action) {
+    check(typeof action === 'function');
+    const token = await authorizeSourceRetention();
+    let locked = false;
+    try {
+      readRailgunSourceRetention(token, ledgerId);
+      check(!retaining);
+      retaining = true;
+      locked = true;
+      return await action(token);
+    } finally {
+      if (locked) retaining = false;
+      retentions.delete(token);
+    }
+  }
+  return Object.freeze({
+    prepare,
+    complete,
+    readState,
+    revalidate,
+    withSourceRetention,
+    close,
+  });
 }
-module.exports = { createRailgunScanJournal, RECORD_KEY, scanState, plan };
+module.exports = {
+  createRailgunScanJournal,
+  RECORD_KEY,
+  scanState,
+  plan,
+  sameRangeContent,
+  readRailgunSourceRetention,
+};

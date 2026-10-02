@@ -27,6 +27,12 @@ function range(from = 0, to = 10, count = 1) {
     to: { number: to, hash: hash(to) },
     anchor: { number: 100, hash: hash(100) },
     logs: { count, sha256: digest },
+    source: {
+      level: 'unverified-rpc',
+      providersSha256: digest,
+      ledgerId: digest,
+      ledgerSha256: digest,
+    },
     state: {
       schema: 'public-records-v1',
       storeId,
@@ -77,6 +83,7 @@ beforeEach(() => {
     key: Buffer.alloc(32, 47),
     filename: getPrivacyStoragePath(handle, directory),
     binding: 'a'.repeat(64),
+    ledgerId: digest,
     storeId,
     storeSession: {
       signal: scope.signal,
@@ -190,7 +197,7 @@ test('unknown schema and oversized persisted data are refused without reset', as
   const journal = await open();
   journal.close();
   const record = JSON.parse(await options.storage.get(RECORD_KEY));
-  await options.storage.set(RECORD_KEY, JSON.stringify({ ...record, version: 2 }));
+  await options.storage.set(RECORD_KEY, JSON.stringify({ ...record, version: 99 }));
   await expect(open()).rejects.toThrow();
   await options.storage.set(RECORD_KEY, ' '.repeat(128 * 1024 + 1));
   await expect(open()).rejects.toThrow();
@@ -396,4 +403,60 @@ test('reopening a completed checkpoint requires revalidation before preparing it
   const fresh = await open();
   await fresh.revalidate({ source, state: observation });
   await expect(fresh.prepare(range(11, 20, 2), source)).resolves.toBeDefined();
+});
+
+test('refuses provenance-free legacy journal records rather than silently migrating', async () => {
+  const journal = await open();
+  const record = await journal.readState();
+  journal.close();
+  await options.storage.set(RECORD_KEY, JSON.stringify({ ...record, version: 1 }));
+  await expect(open()).rejects.toThrow();
+});
+test('cannot change the source ledger identity across checkpoints', async () => {
+  const journal = await open(),
+    first = range(),
+    token = await journal.prepare(first, source);
+  await journal.complete(token, { source, state: first.state });
+  const next = range(11, 20, 2);
+  next.source.ledgerId = 'd'.repeat(64);
+  await expect(journal.prepare(next, source)).rejects.toThrow();
+});
+test('renews provider provenance without permitting a content change', async () => {
+  const journal = await open(),
+    first = range(),
+    token = await journal.prepare(first, source);
+  await journal.complete(token, { source, state: first.state });
+  const renewed = structuredClone(first);
+  renewed.source.providersSha256 = 'f'.repeat(64);
+  await journal.revalidate({ source, state: first.state, plan: renewed });
+  expect((await journal.readState()).checkpoint.source.providersSha256).toBe('f'.repeat(64));
+  const altered = structuredClone(renewed);
+  altered.logs.sha256 = 'e'.repeat(64);
+  await expect(journal.revalidate({ source, state: first.state, plan: altered })).rejects.toThrow();
+});
+test('source retention is opaque, ledger-bound, exclusive and limited to the callback lifetime', async () => {
+  const { readRailgunSourceRetention } = require('./railgun-scan-journal');
+  const journal = await open();
+  let saved;
+  await journal.withSourceRetention(async (token) => {
+    saved = token;
+    expect(readRailgunSourceRetention(token, digest)).toEqual({
+      ledgerId: digest,
+      checkpoint: null,
+      pending: null,
+    });
+    expect(() => readRailgunSourceRetention({ ...token }, digest)).toThrow();
+    expect(() => readRailgunSourceRetention(token, 'a'.repeat(64))).toThrow();
+    await expect(journal.prepare(range(), source)).rejects.toMatchObject({
+      code: 'RAILGUN_SCAN_BUSY',
+    });
+    await expect(journal.withSourceRetention(() => {})).rejects.toThrow();
+  });
+  expect(() => readRailgunSourceRetention(saved, digest)).toThrow();
+  await journal.prepare(range(), source);
+  await journal.withSourceRetention((token) => {
+    expect(readRailgunSourceRetention(token, digest).pending).toBe(digest);
+    journal.close();
+    expect(() => readRailgunSourceRetention(token, digest)).toThrow();
+  });
 });

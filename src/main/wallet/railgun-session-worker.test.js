@@ -439,3 +439,31 @@ test('earlier writes precede worker inspection and pending RPC prevents freshnes
   worker.close();
   await late;
 });
+test('a coordinator claims exclusive dispatch before use; old dispatch holders cannot bypass it', async () => {
+  start();
+  await worker.ready;
+  const grant = worker.claimDispatch();
+  expect(() => worker.claimDispatch()).toThrow();
+  const wire = JSON.stringify({
+    id: 1,
+    method: 'get',
+    args: { key: Buffer.from('missing').toString('base64') },
+  });
+  expect(JSON.parse(await grant.dispatch(wire)).value).toBeNull();
+  await expect(
+    worker.dispatch(
+      JSON.stringify({
+        id: 2,
+        method: 'get',
+        args: { key: Buffer.from('missing').toString('base64') },
+      })
+    )
+  ).rejects.toThrow();
+  expect(worker.signal.aborted).toBe(true);
+});
+test('a session already used by another dispatcher cannot be claimed', async () => {
+  start();
+  await worker.ready;
+  await call(1, 'get', { key: Buffer.from('missing').toString('base64') });
+  expect(() => worker.claimDispatch()).toThrow();
+});

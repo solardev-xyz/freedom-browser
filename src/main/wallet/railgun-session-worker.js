@@ -66,7 +66,8 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
   // Closed flag and monotonic store revision; this allocation is never reused
   // by another session. Main's own dispatch serial covers queued mutations too.
   const revoked = new Int32Array(new SharedArrayBuffer(8));
-  let dispatchSerial = 0;
+  let dispatchSerial = 0,
+    dispatchAuthority = null;
   const observations = new WeakMap();
   let worker,
     provider,
@@ -258,7 +259,17 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
       return Promise.reject(fail());
     }
   }
-  function dispatch(wire) {
+  function claimDispatch() {
+    active();
+    if (dispatchAuthority || dispatchSerial || pending.size) throw fail();
+    dispatchAuthority = Object.freeze({});
+    return Object.freeze({ dispatch: (wire) => dispatch(wire, dispatchAuthority) });
+  }
+  function dispatch(wire, authority) {
+    if (dispatchAuthority && authority !== dispatchAuthority) {
+      close();
+      return Promise.reject(fail());
+    }
     dispatchSerial++;
     return enqueue('dispatch', wire);
   }
@@ -331,6 +342,7 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     ready,
     closed,
     dispatch,
+    claimDispatch,
     close,
     signal: scope.signal,
     inspectFrontier,
