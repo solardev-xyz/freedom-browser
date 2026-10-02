@@ -1,0 +1,244 @@
+{
+  "observedAt": "2026-10-02T15:24:43.528Z",
+  "node": "v24.18.1",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "chainId": 11155111,
+  "anchor": {
+    "number": 11829346,
+    "hash": "0xbac192ba1a044d54ba19764c6e48eadb0b6a46e0a7631d32fa3c3236cbcc7065"
+  },
+  "captureReportSha256": "21235a03e7374020b97c0253a71653b99cc99e4712758fb83666865d2eb078bd",
+  "logSetSha256": "5ea1a7c8f307dcae2f8bbec85200410392b14d1db356f8b2b7d396e656c9d10c",
+  "trust": "two-rpc-agreement-unverified",
+  "providerIndependenceAssumed": true,
+  "canonicalEventHeadersCompared": true,
+  "headerReportSha256": "402b3d3005a241c5c58d463c3f1efbfd2530fecbc82cd944140b15f621475b4b",
+  "receiptProofsVerified": false,
+  "nullifierCompletenessProven": false,
+  "privateNullifierQueries": 0,
+  "events": {
+    "ProxyUpgrade": {
+      "count": 1,
+      "firstBlock": 5784776,
+      "lastBlock": 5784776
+    },
+    "ProxyUnpause": {
+      "count": 1,
+      "firstBlock": 5784777,
+      "lastBlock": 5784777
+    },
+    "OwnershipTransferred": {
+      "count": 3,
+      "firstBlock": 5784782,
+      "lastBlock": 5784864
+    },
+    "TreasuryChange": {
+      "count": 1,
+      "firstBlock": 5784782,
+      "lastBlock": 5784782
+    },
+    "FeeChange": {
+      "count": 1,
+      "firstBlock": 5784782,
+      "lastBlock": 5784782
+    },
+    "Initialized": {
+      "count": 1,
+      "firstBlock": 5784782,
+      "lastBlock": 5784782
+    },
+    "VerifyingKeySet": {
+      "count": 145,
+      "firstBlock": 5784788,
+      "lastBlock": 10028826
+    },
+    "Shield": {
+      "count": 4333,
+      "firstBlock": 5944769,
+      "lastBlock": 11828037
+    },
+    "Nullified": {
+      "count": 4215,
+      "firstBlock": 5963806,
+      "lastBlock": 11828978
+    },
+    "Unshield": {
+      "count": 2546,
+      "firstBlock": 5963806,
+      "lastBlock": 11828978
+    },
+    "Transact": {
+      "count": 3575,
+      "firstBlock": 5963806,
+      "lastBlock": 11828978
+    }
+  },
+  "shieldLeaves": 4525,
+  "transactLeaves": 5669,
+  "roots": [
+    {
+      "tree": 0,
+      "leaves": 10194,
+      "root": "0x23bbe9f01d6f06e47cffa08b31836ea8ee26c48cb7f959ffd70a5840c7910098"
+    }
+  ],
+  "shieldTokenTypes": {
+    "erc20": 4314,
+    "erc721": 211,
+    "erc1155": 0
+  },
+  "uniqueNullifiers": 5614,
+  "unshieldEvents": 2546,
+  "privateTransactionEventCategoryPresenceChecked": true,
+  "individualNullifierEventCompletenessProven": false,
+  "governanceFieldsMatchingAnchor": [
+    "implementation",
+    "paused",
+    "owner",
+    "treasury",
+    "shieldFee",
+    "unshieldFee"
+  ],
+  "proxyAdminSource": "anchor-storage-slot-only-no-transfer-events",
+  "nftFeeCompared": false,
+  "distinctVerificationKeyShapes": 91,
+  "verificationKeyShapesCompared": [
+    [
+      1,
+      1
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      2,
+      2
+    ]
+  ],
+  "verificationKeyEventsMatchAnchor": true,
+  "independentLeafAndTreeRules": true,
+  "poseidonSharedWithEngine": true,
+  "circuitArtifactsMatched": false,
+  "engineFormattingMatches": true,
+  "engineInventory": "d46dbb16c9161c25baffe12701b2efdb844cb788f7e083d610729973d009e420",
+  "guards": {
+    "hooks": [
+      "global.fetch",
+      "global.WebSocket",
+      "http.request",
+      "http.get",
+      "https.request",
+      "https.get",
+      "net.connect",
+      "net.createConnection",
+      "tls.connect",
+      "http2.connect",
+      "dgram.createSocket",
+      "worker_threads.Worker",
+      "child_process.spawn",
+      "child_process.spawnSync",
+      "child_process.exec",
+      "child_process.execSync",
+      "child_process.execFile",
+      "child_process.execFileSync",
+      "child_process.fork",
+      "net.Socket.connect",
+      "dgram.Socket.send",
+      "dgram.Socket.connect",
+      "dgram.Socket.bind",
+      "dns.lookup",
+      "dns.lookupService",
+      "dns.resolve",
+      "dns.resolve4",
+      "dns.resolve6",
+      "dns.resolveAny",
+      "dns.resolveCaa",
+      "dns.resolveCname",
+      "dns.resolveMx",
+      "dns.resolveNaptr",
+      "dns.resolveNs",
+      "dns.resolvePtr",
+      "dns.resolveSoa",
+      "dns.resolveSrv",
+      "dns.resolveTlsa",
+      "dns.resolveTxt",
+      "dns.reverse",
+      "dns.Resolver.resolveAny",
+      "dns.Resolver.resolve4",
+      "dns.Resolver.resolve6",
+      "dns.Resolver.resolveCaa",
+      "dns.Resolver.resolveCname",
+      "dns.Resolver.resolveMx",
+      "dns.Resolver.resolveNs",
+      "dns.Resolver.resolveTlsa",
+      "dns.Resolver.resolveTxt",
+      "dns.Resolver.resolveSrv",
+      "dns.Resolver.resolvePtr",
+      "dns.Resolver.resolveNaptr",
+      "dns.Resolver.resolveSoa",
+      "dns.Resolver.reverse",
+      "dns.Resolver.resolve",
+      "dns.promises.lookup",
+      "dns.promises.lookupService",
+      "dns.promises.resolve",
+      "dns.promises.resolve4",
+      "dns.promises.resolve6",
+      "dns.promises.resolveAny",
+      "dns.promises.resolveCaa",
+      "dns.promises.resolveCname",
+      "dns.promises.resolveMx",
+      "dns.promises.resolveNaptr",
+      "dns.promises.resolveNs",
+      "dns.promises.resolvePtr",
+      "dns.promises.resolveSoa",
+      "dns.promises.resolveSrv",
+      "dns.promises.resolveTlsa",
+      "dns.promises.resolveTxt",
+      "dns.promises.reverse",
+      "dns.promises.Resolver.resolveAny",
+      "dns.promises.Resolver.resolve4",
+      "dns.promises.Resolver.resolve6",
+      "dns.promises.Resolver.resolveCaa",
+      "dns.promises.Resolver.resolveCname",
+      "dns.promises.Resolver.resolveMx",
+      "dns.promises.Resolver.resolveNs",
+      "dns.promises.Resolver.resolveTlsa",
+      "dns.promises.Resolver.resolveTxt",
+      "dns.promises.Resolver.resolveSrv",
+      "dns.promises.Resolver.resolvePtr",
+      "dns.promises.Resolver.resolveNaptr",
+      "dns.promises.Resolver.resolveSoa",
+      "dns.promises.Resolver.reverse",
+      "dns.promises.Resolver.resolve"
+    ],
+    "canaries": 87,
+    "attempts": 0
+  },
+  "walletScanned": false,
+  "signingEnabled": false,
+  "submissions": 0,
+  "sourceSha256": {
+    "scripts/verify-railgun-sepolia-history.js": "32a1a1842b70d16e5f9ff028b335b864060d04697af64cd8dfee51c74ad0817e",
+    "scripts/railgun-log-capture-data.js": "8b1e5d1eb62378f9df347605711a2d315153593d325784094049c7ece0de12ba",
+    "scripts/capture-railgun-sepolia-logs.js": "077a6ae0ef84a7df7a45de0e20d915463ba538878b901741278c87e8c7b9ec84",
+    "scripts/railgun-fixture-integrity.js": "ecb3bdd30ed61572ac14444c9579f978f222c35fd203274c25428d5fb313aa93",
+    "src/main/wallet/railgun-process-guards.js": "5e64b24a8081c5e0d4b6e0b1553fc033d2f377138ba8ed20ef53a7c6f3f8d71d"
+  },
+  "abiSha256": "da365b9cdf4468a7f19d9c568be8015413f04d13cd1e7f8585f0b3774fff2a2f",
+  "contractRulesSources": {
+    "RailgunLogic.sol": {
+      "url": "https://github.com/Railgun-Privacy/contract/blob/36bcf5ed7cf94bfafb6e1a303e1832c769c16780/contracts/logic/RailgunLogic.sol",
+      "sha256": "e3c3218ee77f0984dd43837d4cb9f33c5a15cb35018be6396824c14d0ac4b11d"
+    },
+    "Commitments.sol": {
+      "url": "https://github.com/Railgun-Privacy/contract/blob/36bcf5ed7cf94bfafb6e1a303e1832c769c16780/contracts/logic/Commitments.sol",
+      "sha256": "fe56adcc9aa04fcbe2bb7346207f8eed58dd1e13ba6eb2aa7661329c2c4b5d1b"
+    },
+    "RailgunSmartWallet.sol": {
+      "url": "https://github.com/Railgun-Privacy/contract/blob/36bcf5ed7cf94bfafb6e1a303e1832c769c16780/contracts/logic/RailgunSmartWallet.sol",
+      "sha256": "b926c2ee7a4fae03f1326e2c4bf6e232cab32bfae0f452aed3dc76e8fb7e70d8"
+    }
+  }
+}
