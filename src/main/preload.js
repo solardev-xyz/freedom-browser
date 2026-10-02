@@ -231,6 +231,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openAgentProcessPreview: (processId) =>
     ipcRenderer.invoke('agent:process:preview-open', { processId }),
   openAgentPublication: (bzzUrl) => ipcRenderer.invoke('agent:publication:open', { bzzUrl }),
+  agentMcpConnections: (action, input = {}) => ipcRenderer.invoke('agent:mcp:connections', { action, ...input }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
   getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),
   refreshAgentProviderModels: (providerId, apiKey) =>

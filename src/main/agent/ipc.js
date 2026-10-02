@@ -1039,6 +1039,22 @@ function registerFreedomAgentIpc(options = {}) {
     }
   };
 
+  const handleMcpConnections = (event, payload) => handleProviderRequest(event, async () => {
+    const manager = options.mcpConnections;
+    if (!manager) return { connections: [] };
+    const actions = {
+      list: () => manager.list(),
+      add: () => manager.add({ name: payload.name, url: payload.url }),
+      reconnect: () => manager.reconnect(payload.id),
+      signin: () => manager.signIn(payload.id),
+      cancel: () => manager.cancelSignIn(payload.id),
+      remove: () => manager.remove(payload.id),
+    };
+    if (!Object.hasOwn(actions, payload?.action)) return { error: { message: 'Unknown connection action.' }, ok: false };
+    try { return { connections: await actions[payload.action]() }; }
+    catch { return { ok: false, error: { message: 'Connection action failed. Check the URL, try signing in or reconnect, and ensure the system keyring is available.' } }; }
+  });
+
   const handleProviderStatus = (event) =>
     handleProviderRequest(event, () => ({ status: providerResolver.getStatus() }));
   const handleProviderCatalog = (event) =>
@@ -1376,6 +1392,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_PROCESS_STOP, handleProcessStop);
   ipcMain.handle(IPC.AGENT_PROCESS_PREVIEW_OPEN, handleProcessPreviewOpen);
   ipcMain.handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
+  ipcMain.handle(IPC.AGENT_MCP_CONNECTIONS, handleMcpConnections);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
   ipcMain.handle(IPC.AGENT_PROVIDER_REFRESH_MODELS, handleRefreshModels);
@@ -1391,6 +1408,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_PROVIDER_CLEAR, handleClearProvider);
 
   return async () => {
+    ipcMain.removeHandler?.(IPC.AGENT_MCP_CONNECTIONS);
     ipcMain.removeHandler?.(IPC.AGENT_START);
     ipcMain.removeHandler?.(IPC.AGENT_STEER);
     ipcMain.removeHandler?.(IPC.AGENT_PAUSE);

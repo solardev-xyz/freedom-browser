@@ -214,6 +214,7 @@ module.exports = {
   AGENT_PROCESS_PREVIEW_OPEN: 'agent:process:preview-open',
   AGENT_PUBLICATION_OPEN: 'agent:publication:open',
   AGENT_EVENT: 'agent:event',
+  AGENT_MCP_CONNECTIONS: 'agent:mcp:connections',
   AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',
   AGENT_PROVIDER_GET_CATALOG: 'agent:provider:get-catalog',
   AGENT_PROVIDER_REFRESH_MODELS: 'agent:provider:refresh-models',

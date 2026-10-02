@@ -1,5 +1,7 @@
 'use strict';
 
+const { McpConnectionManager } = require('./mcp-connections');
+
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc, registerUnavailableAgentIpc } = require('./ipc');
 const log = require('../logger');
@@ -99,7 +101,10 @@ function createFreedomAgentRuntime(options = {}) {
   options.controller.setNodeLifecycleController(nodeLifecycleController);
   options.controller.setDiagnosticsController(diagnosticsController);
   options.controller.setPublicationController(publicationController);
+  const mcpConnections = new McpConnectionManager({ dataDir: options.dataDir,
+    safeStorage: options.safeStorage, openExternal: options.openExternal });
   const service = new FreedomAgentService({
+    mcpConnections,
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
     historyStore,
@@ -113,6 +118,7 @@ function createFreedomAgentRuntime(options = {}) {
   });
   const unregisterIpc = registerFreedomAgentIpc({
     ipcMain: options.ipcMain,
+    mcpConnections,
     service,
     providerResolver,
     resolveModel: () => providerResolver.resolveModel(),
@@ -146,6 +152,7 @@ function createFreedomAgentRuntime(options = {}) {
     service,
     async dispose() {
       await unregisterIpc();
+      await mcpConnections.dispose();
       await service.dispose();
       await nodeRequestController.dispose();
       publicationController.dispose();

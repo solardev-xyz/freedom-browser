@@ -515,6 +515,27 @@ describe('FreedomAgentService', () => {
     }
   });
 
+  test.each(['every_interaction', 'sensitive_actions', 'allow_website_interactions'])('MCP retains explicit approval in %s', async approvalMode => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe(event => events.push(event));
+    await service.start(startOptions({ approvalMode }));
+    fake.emit({ type: 'tool_execution_start', toolName: 'mcp_request', toolCallId: 'nested-mcp', parentToolCallId: 'code', args: {} });
+    const request = { action: 'mcp', operation: 'mcp_request', origin: 'https://notes.example/mcp',
+      mcp: { server: 'Notes', name: 'create_note', argumentsJSON: '{"text":"exact"}' } };
+    const pending = dependencies.createControllerScope.mock.calls[0][0].requestApproval(request);
+    const approval = events.at(-1);
+    expect(approval).toMatchObject({ type: 'approval_requested', action: 'mcp', operation: 'mcp_request',
+      toolCallId: 'nested-mcp', mcp: request.mcp });
+    expect(dependencies.accessReviewer.review).not.toHaveBeenCalled();
+    await service.decideApproval('run_test', approval.approvalId, false);
+    expect(await pending).toBe('declined');
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    await service.dispose();
+  });
+
   test('builds one isolated run and emits normalized lifecycle events', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
@@ -553,6 +574,7 @@ describe('FreedomAgentService', () => {
       thinkingLevel: 'low',
       customTools: [{ name: 'browser_snapshot' }, expect.objectContaining({ name: 'delegate_task' }), expect.objectContaining({ name: 'helper_task' }), expect.objectContaining({ name: 'helper_reports' })],
       enableBuiltInSkills: true,
+      enableCodemode: true,
       systemPrompt: expect.stringContaining('You are Freedom Agent inside Freedom Browser'),
     });
     expect(service.getWorkspaceState()).toEqual({

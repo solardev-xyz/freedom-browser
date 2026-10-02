@@ -1,5 +1,7 @@
 'use strict';
 
+const { createMcpTools } = require('./pi-mcp-tools');
+
 const crypto = require('crypto');
 const {
   AGENT_APPROVAL_MODES,
@@ -431,6 +433,7 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       operation: String(event.toolName),
       status: failed ? 'failed' : 'succeeded',
       ...progress,
+      ...(['codemode', 'mcp_request'].includes(operation) && failed && { label: operation === 'codemode' ? 'Tool script failed; earlier actions may remain' : 'Connected service request did not complete' }),
       ...(toolOutcome?.artifact && { artifact: toolOutcome.artifact }),
       ...(toolOutcome?.upload && { upload: toolOutcome.upload }),
       ...(toolOutcome?.wallet && { wallet: toolOutcome.wallet }),
@@ -669,6 +672,12 @@ function normalizeWorkspacePermissionApproval(value) {
 }
 
 function normalizeApprovalRequest(request, recipient) {
+  const mcp = request?.operation === 'mcp_request' && request?.action === 'mcp' &&
+    typeof request.mcp?.server === 'string' && request.mcp.server.length <= 80 &&
+    typeof request.mcp.name === 'string' && request.mcp.name.length <= 128 &&
+    typeof request.mcp.argumentsJSON === 'string' && request.mcp.argumentsJSON.length <= 8192
+    ? Object.freeze({ server: request.mcp.server, name: request.mcp.name, argumentsJSON: request.mcp.argumentsJSON }) : null;
+  if (request?.operation === 'mcp_request' && !mcp) throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid MCP approval');
   const pageTool = request?.operation === 'browser_call_page_tool' &&
     typeof request?.pageTool?.name === 'string' && request.pageTool.name.length <= 128 &&
     typeof request.pageTool.argumentsJSON === 'string' && request.pageTool.argumentsJSON.length <= 8192
@@ -702,7 +711,7 @@ function normalizeApprovalRequest(request, recipient) {
     ? getPermissionKey(request?.origin) || ''
     : originScopeForUrl(request?.origin) || '';
   return Object.freeze({
-    action: projectAccess ? 'project_write' : workspacePermission
+    action: mcp ? 'mcp' : projectAccess ? 'project_write' : workspacePermission
       ? 'workspace_permission'
       : workspace
         ? 'workspace_execution'
@@ -737,6 +746,7 @@ function normalizeApprovalRequest(request, recipient) {
     ...(interaction && { interaction }),
     ...(typeof request.pageMessage === 'string' && { pageMessage: request.pageMessage.slice(0, 8192) }),
     ...(typeof request.inputPreview === 'string' && { inputPreview: request.inputPreview }),
+    ...(mcp && { mcp }),
     ...(pageTool && { pageTool }),
     ...(wallet && { wallet }),
     ...(diagnostic && { diagnostic }),
@@ -978,6 +988,7 @@ class FreedomAgentService {
       throw new TypeError('FreedomAgentService requires a valid Agent wallet controller');
     }
     this.walletController = options.walletController || null;
+    this.mcpConnections = options.mcpConnections || null;
     this.workspaceController = options.workspaceController || null;
     this.workspaceInspectionCount = 0;
     this.workspaceHistoryMutation = null;
@@ -1789,7 +1800,13 @@ class FreedomAgentService {
             });
           },
         });
-        const customTools = [...browserTools, ...attachmentTools, ...workspaceTools, delegationTool, ...delegationTool.controlTools];
+        const mcpTools = this.mcpConnections ? createMcpTools({ sdk, manager: this.mcpConnections,
+          requestApproval: (request, signal) => {
+            const active = activeConversationRun();
+            return active ? this.#requestApproval(active, request, null, signal) : 'declined';
+          },
+        }) : [];
+        const customTools = [...mcpTools, ...browserTools, ...attachmentTools, ...workspaceTools, delegationTool, ...delegationTool.controlTools];
         let systemPrompt = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}\n\n${buildDelegationSystemPrompt(options.model?.provider)}`;
         if (this.attachmentStore) {
           systemPrompt = `${systemPrompt}\n\n${ATTACHMENT_SYSTEM_PROMPT}`;
@@ -1822,6 +1839,7 @@ class FreedomAgentService {
           thinkingLevel: options.thinkingLevel,
           customTools,
           enableBuiltInSkills: true,
+          enableCodemode: true,
           ...(existingConversation?.restored && {
             restoredTranscript: existingConversation.turns.map((turn) => ({
               runId: turn.runId,

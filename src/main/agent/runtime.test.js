@@ -231,6 +231,7 @@ describe('Freedom agent runtime', () => {
     });
     expect(options.controller.setPublicationController).toHaveBeenCalledWith(publicationController);
     expect(FreedomAgentService).toHaveBeenCalledWith({
+      mcpConnections: expect.any(Object),
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,
       historyStore,
@@ -243,6 +244,7 @@ describe('Freedom agent runtime', () => {
       workspacePreviewController,
     });
     expect(registerFreedomAgentIpc).toHaveBeenCalledWith({
+      mcpConnections: expect.any(Object),
       ipcMain: options.ipcMain,
       service,
       providerResolver,

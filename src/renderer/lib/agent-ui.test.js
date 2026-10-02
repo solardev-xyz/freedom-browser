@@ -65,6 +65,7 @@ function createAgentElements() {
     'agent-process-compact-popover',
     'agent-process-compact-count',
     'agent-process-compact-list',
+    'agent-mcp-open', 'agent-mcp-back', 'agent-mcp-panel',
     'agent-provider-home',
     'agent-provider-browser',
     'agent-provider-detail',
@@ -202,6 +203,10 @@ function createAgentElements() {
   elements['agent-workspace-address-host'] = createElement('div');
   elements['agent-sidebar-back'] = createElement('button');
   elements['agent-setup-view'].hidden = true;
+  const mcpForm = createElement('form');
+  const mcpList = createElement('div');
+  const mcpMessage = createElement('p');
+  elements['agent-mcp-panel'].querySelector = selector => ({ form: mcpForm, '[data-mcp-list]': mcpList, '[data-mcp-message]': mcpMessage })[selector];
   elements['agent-workspace-view'].hidden = true;
   elements['agent-process-panel'].hidden = true;
   elements['agent-process-compact'].hidden = true;
@@ -1245,6 +1250,23 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('submit the form yourself');
     expect(ctx.elements['agent-page-tool-details'].hidden).toBe(false);
     expect(ctx.elements['agent-page-tool-arguments'].textContent).toBe(argumentsJSON);
+  });
+
+  test('shows the MCP service, destination and exact arguments without treating them as markup', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Use my notes';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    const argumentsJSON = '{"note":"<script>untrusted()</script>"}';
+    ctx.emit({ type: 'approval_requested', runId: 'run_test', approvalId: 'mcp_approval',
+      action: 'mcp', operation: 'mcp_request', origin: 'https://notes.example/',
+      mcp: { server: 'My notes', name: 'create_note', argumentsJSON } });
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “create_note” on My notes?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('notes.example');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('not verified');
+    expect(ctx.elements['agent-page-tool-arguments'].textContent).toBe(argumentsJSON);
+    expect(ctx.elements['agent-page-tool-details'].hidden).toBe(false);
   });
 
   test('makes invisible approval controls visible without changing request bytes or international text', async () => {

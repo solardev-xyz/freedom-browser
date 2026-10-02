@@ -10,6 +10,18 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-10-02
 
+### Codemode and connected MCP services — experimental, 2026-10-02
+
+Implemented on `experiment/agent-codemode-mcp` (branched from `6de3fa57`):
+
+- Pi's native QuickJS codemode tool on the main agent, alongside ordinary tools. Nested calls retain Freedom approvals, cancellation and activity. Known project/attachment readers can overlap; browser calls and writes execute in order. Background helpers provide isolated parallel browser work. Native classifier/image globals remain disabled.
+- Profile-owned remote MCP connections under **Models & providers → Connect services**: Streamable HTTP, tool/schema discovery, resource listing/reading, browser OAuth with encrypted credentials, reconnect and disconnect.
+- Every MCP invocation or resource request receives an explicit approval for the service and arguments. Server annotations do not grant authority; MCP servers cannot request local files, shell commands, model sampling, or ambient credentials.
+- No filesystem extension/config discovery, no new dependencies, and no requirement for another model account. Website WebMCP remains separate and unchanged.
+- Validation: **8,178 unit tests passed / 129 skipped**, lint clean; native Pi/HTTP/OAuth integration (including cancellation, refusal, non-replayed failures and partial script effects); Electron UI in both themes; native worker plus WebAssembly execution from an ASAR archive. Full packaged-app and third-party authenticated-service qualification remain pending.
+
+Follow-ups, deliberately outside this first slice: local stdio servers; API-key/custom-header authentication and pre-registered OAuth clients; richer MCP resource/media UI; service-specific read-only approval policies; delegated MCP access; broader concurrency beyond the verified read-only tool set; durable codemode store recovery; Jev/model routing. Freedom acting as an external MCP **server** and CLI packaging remain deferred—the implemented feature is an MCP **client**.
+
 ### Mainline refresh and node startup — 2026-10-02
 
 Merged `origin/main` at `495aa3d8`, retaining the agent runtime/profile isolation,

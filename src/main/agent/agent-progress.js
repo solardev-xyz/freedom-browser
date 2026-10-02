@@ -38,6 +38,9 @@ const WORKSPACE_OPERATIONS = Object.freeze({
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
 const OPERATION_PROGRESS = Object.freeze({
+  codemode: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Running tool script', completed: 'Ran tool script' },
+  mcp_discover: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Discovering connected services', completed: 'Discovered connected services' },
+  mcp_request: { effect: ACTIVITY_EFFECTS.MANAGED, intent: 'Using connected service', completed: 'Connected service returned' },
   helper_reports: {
     effect: ACTIVITY_EFFECTS.MANAGED,
     intent: 'Reading saved helper reports',

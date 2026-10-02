@@ -1524,6 +1524,7 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
   font-size: 11px;
 }
 
+.agent-mcp-form input,
 .agent-field input,
 .agent-field select,
 .agent-field textarea {
@@ -3794,3 +3795,21 @@ body.workspace-viewer-active #agent-workspace-nav { display: none; }
 .workspace-tree-chevron.collapsed::before, .workspace-tree-chevron.expanded::before { content: ''; display: block; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
 .workspace-tree-chevron.expanded::before { transform: rotate(45deg); }
 .workspace-markdown .workspace-code-text { display: inline; padding: 0; }
+
+.agent-mcp-card,
+.agent-mcp-form {
+  padding: 16px;
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--toolbar);
+}
+.agent-mcp-card h4,
+.agent-mcp-form h4 { margin: 0 0 10px; }
+.agent-mcp-url { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.agent-mcp-form { display: grid; gap: 10px; }
+.agent-mcp-tools { max-height: 240px; overflow: auto; padding-left: 20px; }
+.agent-mcp-tools li { margin: 10px 0; overflow-wrap: anywhere; }
+.agent-mcp-tools p { color: var(--muted); margin: 4px 0; font-size: 12px; }
+
+.agent-mcp-form label { color: var(--muted); font-size: 11px; }

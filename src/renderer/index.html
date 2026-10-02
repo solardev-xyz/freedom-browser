@@ -1597,7 +1597,23 @@
                 <div id="agent-connected-provider-list" class="agent-connected-provider-list"></div>
               </div>
               <button id="agent-provider-add" class="agent-button secondary" type="button">＋ Add provider</button>
+              <button id="agent-mcp-open" class="agent-button secondary" type="button">Connect services</button>
             </div>
+            <section id="agent-mcp-panel" hidden aria-labelledby="agent-mcp-heading">
+              <button id="agent-mcp-back" class="agent-text-button" type="button">‹ Providers</button>
+              <div class="agent-setup-intro"><h3 id="agent-mcp-heading">Connected services</h3><p>Give Freedom Agent access to tools from your services using MCP.</p></div>
+              <div data-mcp-list></div>
+              <form class="agent-mcp-form">
+                <h4>Add a service</h4>
+                <label for="agent-mcp-name">Name</label>
+                <input id="agent-mcp-name" name="connectionName" type="text" maxlength="80" placeholder="My service" required />
+                <label for="agent-mcp-url">MCP server URL</label>
+                <input id="agent-mcp-url" name="connectionUrl" type="url" maxlength="2048" placeholder="https://example.com/mcp" required />
+                <p class="agent-catalog-status">Connections go directly to the service. You’ll approve each tool or resource request before it runs. Services that need an account offer browser sign-in.</p>
+                <button class="agent-button primary" type="submit">Connect service</button>
+              </form>
+              <p data-mcp-message class="agent-inline-message" role="status"></p>
+            </section>
             <div id="agent-provider-browser" hidden>
               <button id="agent-provider-list-back" class="agent-text-button" type="button">‹ Providers</button>
               <h3>Add a provider</h3>

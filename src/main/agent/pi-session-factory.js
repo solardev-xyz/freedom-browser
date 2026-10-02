@@ -1,6 +1,7 @@
 'use strict';
 const { withToolErrorRecovery, isRecoveredToolResult } = require('./tool-error-recovery');
 
+const { createFreedomCodemode, serializeSessionTools, CODEMODE_PROMPT } = require('./pi-codemode');
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 const { createBuiltInSkillReadTool, getBuiltInSkills } = require('./builtin-skills');
 const { isTrustedBuiltInToolOverride } = require('./pi-trusted-tools');
@@ -285,9 +286,9 @@ When asked which model or provider you are using, report these configured identi
   );
   const builtInSkillTools =
     enableBuiltInSkills && !hasTrustedReadOverride ? [createBuiltInSkillReadTool(sdk)] : [];
-  const sessionTools = [...customTools, ...builtInSkillTools].map(withToolErrorRecovery);
+  let sessionTools = [...customTools, ...builtInSkillTools].map(withToolErrorRecovery);
   if (enableBuiltInSkills && !hasTrustedReadOverride) toolNames.push('read');
-  const resourceLoader = createNoDiscoveryResourceLoader(sdk, systemPrompt, {
+  const resourceLoader = createNoDiscoveryResourceLoader(sdk, systemPrompt + (options.enableCodemode ? `\n\n${CODEMODE_PROMPT}` : ''), {
     enableBuiltInSkills,
   });
   const settingsManager = sdk.SettingsManager.inMemory({
@@ -308,6 +309,12 @@ When asked which model or provider you are using, report these configured identi
     () => currentTimeContext(options.now ? options.now() : Date.now())
   );
 
+  let liveSession;
+  if (options.enableCodemode) {
+    sessionTools = serializeSessionTools(sessionTools);
+    sessionTools.push(createFreedomCodemode(sdk, sessionManager, () => liveSession));
+    toolNames.push('codemode');
+  }
   const result = await sdk.createAgentSession({
     cwd: VIRTUAL_AGENT_CWD,
     agentDir: VIRTUAL_AGENT_CWD,
@@ -321,6 +328,8 @@ When asked which model or provider you are using, report these configured identi
     sessionManager,
     settingsManager,
   });
+
+  liveSession = result.session;
 
   // Pi marks returned results successful unless its after-tool hook says otherwise.
   // Preserve Pi's hook and carry only our adapter-owned failure marker through it.

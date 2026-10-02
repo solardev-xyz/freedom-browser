@@ -1,3 +1,4 @@
+import { createMcpConnectionsPanel } from './agent-mcp-connections.js';
 import { createPageActions, pageActionPrompt } from './agent-page-actions.js';
 import { createWorkspaceInspector } from './agent-workspace-panel.js';
 import { isPrivateWindow } from './private-mode.js';
@@ -1503,6 +1504,7 @@ function uiModelAllowed(model, policy = 'standard') {
 }
 
 function showProviderScreen(screen) {
+  elements.mcpPanel.hidden = screen !== 'mcp';
   elements.providerHome.hidden = screen !== 'home';
   elements.providerBrowser.hidden = screen !== 'browser';
   elements.providerDetail.hidden = screen !== 'detail';
@@ -2746,6 +2748,7 @@ function renderApproval(request) {
   const nodeLifecycle = request.nodeLifecycle;
   const interaction = request.interaction;
   const pageTool = request.pageTool;
+  const mcp = request.mcp;
   const publication = request.publication;
   const workspace = request.workspace;
   const workspacePermission = request.workspacePermission;
@@ -2765,7 +2768,9 @@ function renderApproval(request) {
     'myotis-ethereum': 'Myotis Ethereum',
     'myotis-gnosis': 'Myotis Gnosis',
   };
-  elements.approvalAction.textContent = projectAccess
+  elements.approvalAction.textContent = mcp
+    ? `Run “${mcp.name}” on ${mcp.server}?`
+    : projectAccess
     ? `Allow editing “${projectAccess.name}”?`
     : pageTool
     ? `Run website tool “${pageTool.name}”?`
@@ -2806,7 +2811,9 @@ function renderApproval(request) {
                                 : `${interaction.summary.replace(/[.?!]+$/, '')}?`
                               : interactionCopy[request.operation] ||
                                 `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = projectAccess
+  elements.approvalOrigin.textContent = mcp
+    ? `${approvalOriginSummary(request)} · This sends the arguments below to the connected service. Its claimed behavior is not verified.`
+    : projectAccess
     ? `Agent can modify files and create local Git commits in this project. Access lasts for this conversation until you revoke it or restart Freedom. Change it anytime in the project menu.${request.label ? `\n\nAgent request: ${request.label}` : ''}`
     : pageTool
     ? `${approvalOriginSummary(request)} · This website tool runs using your current site session. Its claimed behavior is not verified.${pageTool.manualSubmit ? ' You will still need to submit the form yourself.' : ''}`
@@ -2842,9 +2849,9 @@ function renderApproval(request) {
   if (request.pageMessage) elements.approvalOrigin.textContent += `\n\nPage says: ${JSON.stringify(request.pageMessage)}`;
   if (request.inputPreview) elements.approvalOrigin.textContent += `\n\n${request.inputPreview.replace(/\r\n?|\n/g, ' ⏎ ')}`;
   if (interaction?.uncertainties?.length) elements.approvalOrigin.textContent += `\n\n${interaction.uncertainties.join('\n')}`;
-  elements.pageToolDetails.hidden = !pageTool;
-  elements.pageToolDetails.open = Boolean(pageTool);
-  elements.pageToolArguments.textContent = pageTool?.argumentsJSON || '';
+  elements.pageToolDetails.hidden = !pageTool && !mcp;
+  elements.pageToolDetails.open = Boolean(pageTool || mcp);
+  elements.pageToolArguments.textContent = mcp?.argumentsJSON || pageTool?.argumentsJSON || '';
   elements.approvalApprove.textContent = projectAccess
     ? 'Allow editing'
     : workspacePermission
@@ -4494,6 +4501,7 @@ export function initAgentUi(options = {}) {
     processCompactPopover: byId('agent-process-compact-popover'),
     processCompactCount: byId('agent-process-compact-count'),
     processCompactList: byId('agent-process-compact-list'),
+    mcpPanel: byId('agent-mcp-panel'),
     providerHome: byId('agent-provider-home'),
     providerBrowser: byId('agent-provider-browser'),
     providerDetail: byId('agent-provider-detail'),
@@ -4737,6 +4745,9 @@ export function initAgentUi(options = {}) {
     renderProviderFields();
     setMessage(elements.providerMessage, '');
   });
+  const mcpPanel = createMcpConnectionsPanel(elements.mcpPanel, window.electronAPI);
+  byId('agent-mcp-open').addEventListener('click', () => { showProviderScreen('mcp'); mcpPanel.refresh(); });
+  byId('agent-mcp-back').addEventListener('click', () => showProviderScreen('home'));
   elements.providerAdd.addEventListener('click', () => { renderProviderOptions(); showProviderScreen('browser'); });
   elements.providerListBack.addEventListener('click', () => showProviderScreen('home'));
   elements.providerDetailBack.addEventListener('click', () => { if (!providerLoginPending) showProviderScreen('home'); });

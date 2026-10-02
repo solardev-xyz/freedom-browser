@@ -195,6 +195,20 @@ function register(overrides = {}) {
 }
 
 describe('Freedom agent IPC', () => {
+  test('MCP configuration is chrome-only and accepts only explicit connection actions', async () => {
+    const mcpConnections = { list: jest.fn(() => []), add: jest.fn(async () => []), remove: jest.fn(async () => []) };
+    const ctx = register({ mcpConnections });
+    const handler = ctx.ipcMain.handlers.get(IPC.AGENT_MCP_CONNECTIONS);
+    expect((await handler({ sender: ctx.otherSender }, { action: 'add', url: 'https://example.com/mcp' })).ok).toBe(false);
+    expect(mcpConnections.add).not.toHaveBeenCalled();
+    expect(await handler({ sender: ctx.sender }, { action: 'list' })).toEqual({ ok: true, connections: [] });
+    expect((await handler({ sender: ctx.sender }, { action: '__proto__' })).ok).toBe(false);
+    await handler({ sender: ctx.sender }, { action: 'add', name: 'Notes', url: 'https://example.com/mcp', command: 'malicious', headers: { Authorization: 'private' } });
+    expect(mcpConnections.add).toHaveBeenCalledWith({ name: 'Notes', url: 'https://example.com/mcp' });
+    await ctx.dispose();
+    expect(ctx.ipcMain.handlers.has(IPC.AGENT_MCP_CONNECTIONS)).toBe(false);
+  });
+
   test('project access trusts the native picker, not a caller-provided path', async () => {
     const dialog = { showOpenDialog: jest.fn(async () => ({ canceled: false, filePaths: ['/native/project'] })) };
     const service = createService();
