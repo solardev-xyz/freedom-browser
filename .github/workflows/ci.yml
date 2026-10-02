@@ -240,7 +240,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
           - os: ubuntu-latest
             target: linux-x64
@@ -304,7 +304,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: mac-arm64
             flags: --mac --arm64
           - os: macos-15-intel
@@ -360,7 +360,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
             addon: myotis-bin/mac-arm64/myotis-node.node
           - os: macos-15-intel
@@ -431,7 +431,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
             addon: myotis-bin/mac-arm64/myotis-node.node
           - os: ubuntu-latest

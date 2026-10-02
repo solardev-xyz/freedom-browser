@@ -1581,11 +1581,16 @@ async function handleSendPss(params, origin) {
 
   const { targets } = params;
   const targetByteLen = typeof targets === 'string' ? targets.length / 2 : NaN;
+  // Bound the length before any regexp sees the page-supplied string: a
+  // grouped-loop pattern on megabytes of input can overflow V8's regexp
+  // backtrack stack once the isolate stops optimising regexps (#478), which
+  // would surface as an internal error instead of invalid_target.
   const targetBytesValid =
     typeof targets === 'string' &&
-    /^([0-9a-fA-F]{2})+$/.test(targets) &&
+    Number.isInteger(targetByteLen) &&
     targetByteLen >= LIMITS.minTargetDepth &&
-    targetByteLen <= LIMITS.maxTargetDepth;
+    targetByteLen <= LIMITS.maxTargetDepth &&
+    !/[^0-9a-fA-F]/.test(targets);
   if (!targetBytesValid) {
     // Floor is the storability depth (a 1-byte target is too shallow to
     // be retained by any storer); cap is the mining-cost ceiling.

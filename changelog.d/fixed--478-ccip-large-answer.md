@@ -1,0 +1,2 @@
+- A name whose offchain (CCIP-Read) answer is close to the 4 MB size limit no longer fails to resolve after Freedom has been running for a while ([#478](https://github.com/solardev-xyz/freedom-browser/issues/478))
+  - Checking the answer could run out of stack once the app had compiled enough regular expressions, and the valid answer was silently dropped

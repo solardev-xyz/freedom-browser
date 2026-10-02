@@ -226,11 +226,11 @@ What `.github/workflows/release.yml` then does:
 
 | Job                 | Runner             | Output                                                                                                                        |
 | ------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `mac-arm64`         | `macos-14`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                                                      |
+| `mac-arm64`         | `macos-15`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                                                      |
 | `linux-x64`         | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `freedom-browser-<v>.pacman`, `latest-linux.yml`                     |
 | `linux-arm64`       | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `freedom-browser-<v>-aarch64.pacman`, `latest-linux-arm64.yml` |
 | `windows-x64`       | `windows-latest`   | `Freedom-Setup-<v>.exe`, `Freedom-<v>-win.zip`, `latest-win-x64.yml` (unsigned)                                               |
-| `smoke-mac-arm64`   | `macos-14`         | §6 steps 1/2/6 + site permissions + the signed app's media entitlements, against the app from the `.dmg` and the `-mac.zip`   |
+| `smoke-mac-arm64`   | `macos-15`         | §6 steps 1/2/6 + site permissions + the signed app's media entitlements, against the app from the `.dmg` and the `-mac.zip`   |
 | `smoke-linux-x64`   | `ubuntu-latest`    | §6 steps 1/2/6 + site permissions against the installed `.deb` and the extracted AppImage                                     |
 | `smoke-linux-arm64` | `ubuntu-24.04-arm` | the same two legs on arm64 hardware                                                                                           |
 | `smoke-windows-x64` | `windows-latest`   | §6 steps 1/2/6 + site permissions against the silently installed NSIS package and the portable zip                            |

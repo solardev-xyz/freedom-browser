@@ -2067,9 +2067,24 @@ describe('swarm-provider-ipc', () => {
       test('requires targets (2-3 whole bytes of hex)', async () => {
         // undefined/empty, odd hex, 1-byte (below the storability floor),
         // and 4-byte (over the mining cap) are all invalid_target.
-        for (const targets of [undefined, '', 'a', 'aa', 'aabbccdd']) {
+        for (const targets of [undefined, '', 'a', 'aa', 'aabbc', 'aazz', 'aa bb', 'aabbccdd']) {
           const result = await invokeProvider('swarm_sendPss', { ...validParams, targets }, ORIGIN);
           expect(result.error.data.reason).toBe('invalid_target');
+        }
+      });
+
+      test('refuses an oversize targets string before any regexp scans it', async () => {
+        // A grouped-loop hex pattern on megabytes of input overflows V8's
+        // regexp backtrack stack once the isolate stops optimising regexps
+        // (#478): the page would get an internal error, not invalid_target.
+        const targets = 'ab'.repeat(1.5 * 1024 * 1024); // 3 MB of valid hex
+        const testSpy = jest.spyOn(RegExp.prototype, 'test');
+        try {
+          const result = await invokeProvider('swarm_sendPss', { ...validParams, targets }, ORIGIN);
+          expect(result.error.data.reason).toBe('invalid_target');
+          expect(testSpy.mock.calls.some(([input]) => input === targets)).toBe(false);
+        } finally {
+          testSpy.mockRestore();
         }
       });
 
