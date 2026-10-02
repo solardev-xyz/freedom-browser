@@ -1,0 +1,3919 @@
+'use strict';
+
+const { ERROR_CODES } = require('../automation/contract/errors');
+const { OPERATIONS } = require('../automation/contract/operations');
+const {
+  AGENT_ERROR_CODES,
+  AGENT_EVENT_VERSION,
+  MAX_AGENT_PROMPT_LENGTH,
+  FreedomAgentError,
+  FreedomAgentService,
+  normalizePiEvent,
+  providerFailureFromPiMessage,
+  reasoningProgressFromPiText,
+} = require('./freedom-agent-service');
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function createFakeSession() {
+  const prompt = createDeferred();
+  const prompts = [];
+  let listener;
+  const unsubscribe = jest.fn();
+  const session = {
+    subscribe: jest.fn((nextListener) => {
+      listener = nextListener;
+      return unsubscribe;
+    }),
+    prompt: jest.fn(() => {
+      const turn = prompts.length === 0 ? prompt : createDeferred();
+      prompts.push(turn);
+      return turn.promise;
+    }),
+    steer: jest.fn(async () => {}),
+    sendCustomMessage: jest.fn(async () => {}),
+    clearQueue: jest.fn(() => ({ steering: [], followUp: [] })),
+    abort: jest.fn(async () => prompts.at(-1)?.resolve()),
+    dispose: jest.fn(),
+  };
+  return {
+    session,
+    prompt,
+    prompts,
+    unsubscribe,
+    emit: (event) => listener?.(event),
+  };
+}
+
+function createService(fakeSession, overrides = {}) {
+  const dependencies = {
+    controller: { execute: jest.fn() },
+    loadSdk: jest.fn(async () => ({ kind: 'sdk' })),
+    createControllerScope: jest.fn(async ({ controller }) => ({
+      ...controller,
+      getWorkspaceState: jest.fn(() => ({
+        tabIds: ['tab_assigned', 'tab_research'],
+        activeTabId: 'tab_research',
+      })),
+      setApprovalMode: jest.fn(),
+      prepareResume: jest.fn(async () => ({ ok: true })),
+    })),
+    createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
+    createSession: jest.fn(async () => ({ session: fakeSession.session })),
+    effectClassifier: { classify: jest.fn(async () => ({ effect: 'read', confidence: 1 })) },
+    accessReviewer: { review: jest.fn(async () => ({ decision: 'ask_user' })) },
+    interactionClassifier: {
+      classify: jest.fn(async () => ({
+        kind: 'ordinary',
+        confidence: 1,
+        summary: 'Open details.',
+        uncertainties: [],
+      })),
+    },
+    runIdFactory: jest.fn(() => 'run_test'),
+    conversationIdFactory: jest.fn(() => 'conversation_test'),
+    now: jest.fn(() => 1_000),
+    ...overrides,
+  };
+  return { service: new FreedomAgentService(dependencies), dependencies };
+}
+
+function startOptions(overrides = {}) {
+  return {
+    prompt: 'Summarize this page',
+    tabId: 'tab_assigned',
+    model: { id: 'model_test', provider: 'test' },
+    modelRuntime: { kind: 'model-runtime' },
+    createWorkspacePage: jest.fn(async () => 'tab_fresh'),
+    ...overrides,
+  };
+}
+
+function createHistoryStore(overrides = {}) {
+  return {
+    createSession: jest.fn(),
+    startTurn: jest.fn(),
+    finishTurn: jest.fn(),
+    updateTurnActivity: jest.fn(),
+    updateTurnGuidance: jest.fn(),
+    listSessions: jest.fn(() => []),
+    getSession: jest.fn(() => null),
+    updateApprovalMode: jest.fn((_conversationId, approvalMode) => ({ approvalMode })),
+    renameSession: jest.fn(() => null),
+    deleteSession: jest.fn(() => false),
+    ...overrides,
+  };
+}
+
+describe('delegated task ownership', () => {
+  const flushHelpers = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  async function backgroundService() {
+    const parent = createFakeSession(); const child = createFakeSession();
+    const historyStore = createHistoryStore();
+    const ctx = createService(parent, { historyStore, createSubagentSession: jest.fn(async () => ({ session: child.session })) });
+    await ctx.service.start(startOptions());
+    const tool = ctx.dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+    parent.emit({ type: 'tool_execution_start', toolName: tool.name, toolCallId: 'background', args: { title: 'Inspect' } });
+    const result = await tool.execute('background', { title: 'Inspect', task: 'Review', background: true });
+    parent.emit({ type: 'tool_execution_end', toolName: tool.name, toolCallId: 'background', result });
+    await flushHelpers();
+    const finishChild = () => {
+      child.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Helper findings' }] } });
+      child.prompt.resolve();
+    };
+    return { ...ctx, parent, child, historyStore, finishChild };
+  }
+
+  test('parent can continue while a helper runs; reports persist immediately and resume the parent as untrusted evidence', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.session.sendCustomMessage.mockImplementation(async () => {
+        ctx.parent.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Synthesis.' } });
+      });
+      ctx.parent.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Independent parent work.' } });
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      ctx.finishChild(); await flushHelpers();
+      expect(ctx.historyStore.updateTurnActivity).toHaveBeenLastCalledWith(expect.objectContaining({ activity: [expect.objectContaining({ subagent: expect.objectContaining({ report: 'Helper findings' }) })] }));
+      expect(ctx.historyStore.finishTurn).not.toHaveBeenCalled();
+      ctx.parent.prompt.resolve(); await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'freedom_helper_reports', display: false, content: expect.stringMatching(/not user instructions or authorization.*use the helper reports and their source links directly/s) }), { triggerTurn: true });
+      expect(ctx.historyStore.finishTurn.mock.calls[0][0]).toMatchObject({ status: 'completed', assistantText: 'Independent parent work.\n\nSynthesis.' });
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('an idle parent waits for its helpers before ending the user turn', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      expect(ctx.historyStore.finishTurn).not.toHaveBeenCalled();
+      ctx.finishChild(); await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('parent failure cancels background work and saves no misleading running helper', async () => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'Provider unavailable' } });
+      ctx.parent.prompt.resolve(); await ctx.service.waitForIdle(); await flushHelpers();
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', activity: [expect.objectContaining({ subagent: expect.objectContaining({ state: 'cancelled' }) })] }));
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test.each(['stop', 'pause'])('%s interrupts background collection without waking the parent with stale reports', async action => {
+    const ctx = await backgroundService();
+    try {
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      await ctx.service[action]('run_test');
+      ctx.finishChild(); await flushHelpers();
+      expect(ctx.parent.session.sendCustomMessage).not.toHaveBeenCalled();
+      expect(ctx.child.session.abort).toHaveBeenCalled();
+      expect(ctx.child.session.dispose).toHaveBeenCalled();
+      if (action === 'stop') expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
+      else expect(ctx.service.getState().status).toBe('paused');
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('steering while waiting wakes the parent for the new guidance without delivering cancelled findings', async () => {
+    const ctx = await backgroundService();
+    const guidance = 'Instead explain what you have done so far';
+    try {
+      ctx.parent.session.sendCustomMessage.mockImplementation(async () => {
+        ctx.parent.emit({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: guidance }] } });
+        ctx.parent.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+      });
+      ctx.parent.prompt.resolve(); await flushHelpers();
+      await ctx.service.steer('run_test', guidance);
+      await ctx.service.waitForIdle();
+      expect(ctx.parent.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+      expect(ctx.parent.session.sendCustomMessage.mock.calls[0][0].content).toContain('new guidance');
+      expect(ctx.parent.session.sendCustomMessage.mock.calls[0][0].content).not.toContain('Helper findings');
+      expect(ctx.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed', guidance: [expect.objectContaining({ status: 'applied', text: guidance })] }));
+    } finally { await ctx.service.dispose(); }
+  });
+
+  test('keeps child messages out of the parent transcript and persists attributable reports', async () => {
+    const parent = createFakeSession();
+    const child = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service, dependencies } = createService(parent, {
+      historyStore, createSubagentSession: jest.fn(async () => ({ session: child.session })),
+    });
+    try {
+      await service.start(startOptions());
+      const tool = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+      parent.emit({ type: 'tool_execution_start', toolName: tool.name, toolCallId: 'child', args: { title: 'Review' } });
+      const pending = tool.execute('child', { title: 'Review', task: 'Review supplied evidence' });
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      child.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'private child draft' } });
+      child.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Bounded report' }] } });
+      child.prompt.resolve();
+      const result = await pending;
+      parent.emit({ type: 'tool_execution_end', toolName: tool.name, toolCallId: 'child', result });
+      parent.prompt.resolve();
+      await service.waitForIdle();
+      const turn = historyStore.finishTurn.mock.calls[0][0];
+      expect(turn.assistantText).not.toContain('private child draft');
+      expect(turn.activity).toEqual([expect.objectContaining({ operation: 'delegate_task', status: 'succeeded',
+        subagent: expect.objectContaining({ state: 'completed', report: 'Bounded report' }) })]);
+      expect(historyStore.updateTurnActivity).toHaveBeenCalled();
+    } finally { await service.dispose(); }
+  });
+
+  test.each(['stop', 'pause', 'steer'].flatMap(action => [1, 2].map(count => [action, count])))('%s cancels %s owned helpers even when providers are unresponsive', async (action, count) => {
+    const parent = createFakeSession();
+    const children = Array.from({ length: count }, () => createFakeSession());
+    children.forEach(child => child.session.abort.mockImplementation(() => new Promise(() => {})));
+    let index = 0;
+    const { service, dependencies } = createService(parent, {
+      createSubagentSession: jest.fn(async () => ({ session: children[index++].session })),
+    });
+    try {
+      await service.start(startOptions());
+      const tool = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+      const task = { title: 'Review', task: 'Inspect' };
+      const pending = tool.execute('child', count === 2 ? { tasks: [task, task] } : task);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      await service[action]('run_test', ...(action === 'steer' ? ['Stop reviewing; explain the plan instead'] : []));
+      const result = await pending;
+      const receipts = result.details.subagents || [result.details.subagent];
+      expect(receipts.map(item => item.state)).toEqual(Array(count).fill('cancelled'));
+      for (const child of children) {
+        expect(child.session.abort).toHaveBeenCalled();
+        expect(child.session.dispose).toHaveBeenCalled();
+      }
+    } finally { await service.dispose(); }
+  });
+});
+
+describe('independent command access review', () => {
+  const permissionRequest = () => ({ action: 'workspace_permission', operation: 'request_permissions', label: 'Run the task',
+    workspacePermission: { kind: 'command_access', command: 'node --version', workingDirectory: '.',
+      commands: [{ name: 'node', status: 'requires_permission', executablePath: '/private/tools/node/bin/node', rootPath: '/private/tools/node' }],
+      network: { posture: 'full', publicInternet: true, hostLoopback: true, privateLan: true, hostAbstractUnixSockets: 'reachable' } } });
+  async function setup(mode = 'sensitive_actions', review = async () => ({ decision: 'approve_once' }), prompt = 'Check the installed Node version') {
+    const fake = createFakeSession();
+    const workspaceController = { getWorkspace: jest.fn(() => ({ enabled: true })), disclosure: jest.fn(),
+      enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(), deleteConversation: jest.fn(), dispose: jest.fn(),
+      clearTurnPermissions: jest.fn() };
+    const accessReviewer = { review: jest.fn(review) };
+    const ctx = createService(fake, { accessReviewer, workspaceController, createWorkspaceTools: jest.fn(async () => []), historyStore: createHistoryStore() });
+    const events = [];
+    ctx.service.subscribe(event => events.push(event));
+    await ctx.service.start(startOptions({ prompt, approvalMode: mode }));
+    return { ...ctx, fake, events, accessReviewer, workspaceController,
+      request: ctx.dependencies.createWorkspaceTools.mock.calls[0][0].requestApproval };
+  }
+  async function stop(ctx) { await ctx.service.stop('run_test'); await ctx.service.waitForIdle(); }
+
+  const workspaceRequest = () => ({ action: 'workspace_execution', operation: 'write', workspace: {
+    available: true, backend: 'macos-seatbelt', network: 'disabled', filesystem: 'managed_workspace_only',
+  } });
+
+  test('Ask when needed allows a private workspace without a sheet or model review', async () => {
+    const ctx = await setup();
+    ctx.workspaceController.getWorkspace.mockReturnValue(null);
+    const decision = await ctx.request(workspaceRequest());
+    expect(decision.status).toBe('approved');
+    expect(decision.isCurrent()).toBe(true);
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
+    await ctx.service.steer('run_test', 'Never mind, just answer my question');
+    expect(decision.isCurrent()).toBe(false);
+    await stop(ctx);
+  });
+
+  test.each(['every_interaction', 'allow_website_interactions', 'external', 'network', 'filesystem', 'browser'])(
+    'workspace automatic approval does not apply to %s', async scenario => {
+      const ctx = await setup(['every_interaction', 'allow_website_interactions'].includes(scenario) ? scenario : 'sensitive_actions');
+      ctx.workspaceController.getWorkspace.mockReturnValue(scenario === 'external' ? { project: { connected: true } } : null);
+      const request = workspaceRequest();
+      if (scenario === 'network') request.workspace.network = 'full';
+      if (scenario === 'filesystem') request.workspace.filesystem = 'external_project';
+      const pending = scenario === 'browser'
+        ? ctx.dependencies.createControllerScope.mock.calls[0][0].requestApproval(request) : ctx.request(request);
+      expect(ctx.events.at(-1).type).toBe('approval_requested');
+      expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+      await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+      expect(await pending).toBe('declined'); await stop(ctx);
+    });
+
+  test('reviews exact access without host paths and records reviewer provenance instead of user approval', async () => {
+    const ctx = await setup();
+    ctx.fake.emit({ type: 'tool_execution_start', toolCallId: 'access', toolName: 'request_permissions', args: {} });
+    const result = await ctx.request(permissionRequest());
+    expect(result).toMatchObject({ status: 'approved', workspacePermissionScope: 'once' });
+    expect(result.isCurrent()).toBe(true);
+    const [input, runtime] = ctx.accessReviewer.review.mock.calls[0];
+    expect(input.proposedAccess).toMatchObject({ command: 'node --version', workingDirectory: '.', scope: 'once',
+      network: { privateLan: true, hostAbstractUnixSockets: 'reachable' } });
+    expect(JSON.stringify(input)).not.toContain('/private/tools');
+    expect(runtime.model.id).toBe('model_test');
+    expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
+    ctx.fake.emit({ type: 'tool_execution_end', toolCallId: 'access', toolName: 'request_permissions', isError: false });
+    expect(ctx.events.at(-1)).toMatchObject({ type: 'tool_finished', approval: 'reviewer_approved' });
+    await stop(ctx);
+    expect(result.isCurrent()).toBe(false);
+    expect(ctx.dependencies.historyStore.finishTurn).toHaveBeenCalledWith(expect.objectContaining({
+      activity: expect.arrayContaining([expect.objectContaining({ approval: 'reviewer_approved' })]),
+    }));
+  });
+
+  test('main-owned project evidence reaches the reviewer and changed evidence falls back to a sheet', async () => {
+    const ctx = await setup();
+    ctx.workspaceController.collectCommandReviewEvidence = jest.fn()
+      .mockResolvedValueOnce({ data: { status: 'collected', records: [{ path: 'package.json', content: { scripts: { dev: 'next dev' } } }] }, fingerprint: 'before' })
+      .mockResolvedValueOnce({ data: {}, fingerprint: 'after' });
+    const pending = ctx.request(permissionRequest());
+    await new Promise(setImmediate);
+    expect(ctx.accessReviewer.review.mock.calls[0][0].projectEvidence.records[0].path).toBe('package.json');
+    expect(ctx.events.at(-1).type).toBe('approval_requested');
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    expect(await pending).toBe('declined'); await stop(ctx);
+  });
+
+  test('unchanged evidence is bound to the one-shot command grant', async () => {
+    const ctx = await setup();
+    ctx.workspaceController.collectCommandReviewEvidence = jest.fn().mockResolvedValue({ data: { status: 'collected' }, fingerprint: 'same' });
+    expect(await ctx.request(permissionRequest())).toMatchObject({ status: 'approved', reviewEvidence: 'same', workspacePermissionScope: 'once' });
+    await stop(ctx);
+  });
+
+  test.each(['every_interaction', 'allow_website_interactions'])('%s retains human command approvals', async mode => {
+    const ctx = await setup(mode);
+    const pending = ctx.request(permissionRequest());
+    const event = ctx.events.at(-1);
+    expect(event.type).toBe('approval_requested');
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    await ctx.service.decideApproval('run_test', event.approvalId, false);
+    expect(await pending).toBe('declined'); await stop(ctx);
+  });
+
+  test.each(['uncertain', 'error'])('review %s falls back to the original human approval and a decline cannot be auto-overridden', async failure => {
+    const ctx = await setup('sensitive_actions', async () => {
+      if (failure === 'error') throw new Error('provider failed');
+      return { decision: 'ask_user' };
+    });
+    const pending = ctx.request(permissionRequest());
+    await new Promise(setImmediate);
+    const event = ctx.events.at(-1);
+    expect(event).toMatchObject({ type: 'approval_requested', workspacePermission: permissionRequest().workspacePermission });
+    await ctx.service.decideApproval('run_test', event.approvalId, false);
+    expect(await pending).toBe('declined');
+    ctx.accessReviewer.review.mockResolvedValue({ decision: 'approve_once' });
+    const second = ctx.request({ ...permissionRequest(), label: 'A better excuse' });
+    expect(ctx.accessReviewer.review).toHaveBeenCalledTimes(1);
+    expect(await second).toBe('declined');
+    const changed = permissionRequest(); changed.workspacePermission.command += ' ';
+    const changedDecision = ctx.request(changed);
+    expect(ctx.accessReviewer.review).toHaveBeenCalledTimes(1);
+    expect(ctx.events.at(-1).type).toBe('approval_requested');
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await changedDecision; await stop(ctx);
+  });
+
+  test.each(['stop', 'pause', 'steer', 'mutate'])('%s invalidates an in-flight review and cannot leave a new human prompt', async change => {
+    const deferred = createDeferred();
+    const ctx = await setup('sensitive_actions', () => deferred.promise);
+    const request = permissionRequest();
+    const pending = ctx.request(request);
+    if (change === 'stop') await stop(ctx);
+    if (change === 'pause') await ctx.service.pause('run_test');
+    if (change === 'steer') await ctx.service.steer('run_test', 'Stop installing; inspect files only');
+    if (change === 'mutate') request.workspacePermission.command = 'node other.js';
+    else expect(await pending).toBe('withdrawn'); // Do not wait for an unresponsive reviewer.
+    deferred.resolve({ decision: 'approve_once' });
+    expect(await pending).toBe(change === 'mutate' ? 'declined' : 'withdrawn');
+    expect(ctx.events.some(event => event.type === 'approval_requested')).toBe(false);
+    if (change !== 'stop') await stop(ctx);
+  });
+
+  test('new instructions clear unused single-use grants and invalidate returned decisions', async () => {
+    const ctx = await setup();
+    const decision = await ctx.request(permissionRequest());
+    await ctx.service.steer('run_test', 'Only read files now');
+    expect(decision.isCurrent()).toBe(false);
+    expect(ctx.workspaceController.clearTurnPermissions).toHaveBeenCalledWith('conversation_test');
+    await stop(ctx);
+  });
+
+  test('later turns retain the original model runtime and earlier user constraints in the independent review', async () => {
+    const ctx = await setup('sensitive_actions', undefined, 'Keep this project offline. Do not grant networking.');
+    ctx.fake.prompt.resolve(); await ctx.service.waitForIdle();
+    await ctx.service.start({ prompt: 'Now check the installed Node version', approvalMode: 'sensitive_actions' });
+    await ctx.request(permissionRequest());
+    const [input, runtime] = ctx.accessReviewer.review.mock.calls[0];
+    expect(input.priorUserRequests).toEqual([{ text: 'Keep this project offline. Do not grant networking.', guidance: [] }]);
+    expect(input.userRequest).toBe('Now check the installed Node version');
+    expect(runtime.model.id).toBe('model_test');
+    await stop(ctx);
+  });
+
+  test.each([
+    { action: 'project_write', operation: 'request_permissions', projectAccess: { name: 'Project', mode: 'write', scope: 'conversation' } },
+    { action: 'wallet_signature', operation: 'wallet_action' },
+    { action: 'form_submission', operation: 'browser_click' },
+    { action: 'file_upload', operation: 'browser_upload' },
+    { action: 'browser_interaction', operation: 'browser_call_page_tool', pageTool: { name: 'publish', argumentsJSON: '{}' } },
+  ])('$action keeps human consent even when the reviewer would approve', async request => {
+    const ctx = await setup();
+    const pending = ctx.request(request);
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    expect(ctx.events.at(-1).type).toBe('approval_requested');
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await pending; await stop(ctx);
+  });
+
+  test('a request from a browser producer cannot opt into automatic command review', async () => {
+    const ctx = await setup();
+    const pending = ctx.dependencies.createControllerScope.mock.calls[0][0].requestApproval(permissionRequest());
+    expect(ctx.accessReviewer.review).not.toHaveBeenCalled();
+    await ctx.service.decideApproval('run_test', ctx.events.at(-1).approvalId, false);
+    await pending; await stop(ctx);
+  });
+});
+
+describe('FreedomAgentService', () => {
+  test('opening a project creates a ready project-bound chat without a model request', async () => {
+    let stored;
+    const workspace = { workspaceId: 'workspace_test', enabled: true, project: { name: 'My project', mode: 'read', connected: true } };
+    const workspaceController = {
+      store: { attachProject: jest.fn(async () => workspace), deleteConversation: jest.fn(async () => true) },
+      getWorkspace: jest.fn(() => workspace),
+      disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(), dispose: jest.fn(),
+    };
+    const historyStore = createHistoryStore({
+      createSession: jest.fn((entry) => { stored = { ...entry, transcript: [] }; }),
+      getSession: jest.fn(() => stored),
+    });
+    const { service, dependencies } = createService(createFakeSession(), { historyStore, workspaceController });
+    const state = await service.openProject('/native/project');
+    expect(state).toMatchObject({ status: 'ready', title: 'My project', workspace, transcript: [] });
+    expect(historyStore.createSession).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready', approvalMode: 'sensitive_actions' }));
+    expect(dependencies.createSession).not.toHaveBeenCalled();
+  });
+  test('traces approval continuation without logging tool arguments or assistant content', async () => {
+    const log = require('../logger');
+    const logging = jest.spyOn(log, 'info').mockImplementation(() => {});
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    try {
+      await service.start(startOptions({ prompt: 'private-prompt' }));
+      fake.emit({ type: 'tool_execution_start', toolCallId: 'permission_test',
+        toolName: 'request_permissions', args: { reason: 'private-reason' } });
+      const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+      const decision = requestApproval({
+        action: 'browser_interaction', operation: 'browser_click', label: 'private-label',
+        origin: 'https://private-origin.test',
+      });
+      await service.decideApproval('run_test', events.at(-1).approvalId, true);
+      await decision;
+      fake.emit({ type: 'tool_execution_end', toolCallId: 'permission_test',
+        toolName: 'request_permissions', result: { content: 'private-result' }, isError: false });
+      const diagnostic = dependencies.createSession.mock.calls[0][0].createModelDiagnostic();
+      diagnostic({ phase: 'model_request_started', requestSequenceId: 1 });
+      fake.emit({ type: 'message_start', message: { role: 'assistant' } });
+      fake.emit({ type: 'message_update', assistantMessageEvent: {
+        type: 'thinking_delta', delta: 'private-reasoning',
+      } });
+      fake.emit({ type: 'message_update', assistantMessageEvent: {
+        type: 'thinking_delta', delta: 'private-reasoning-again',
+      } });
+      fake.emit({ type: 'message_end', message: {
+        role: 'assistant', content: [{ type: 'text', text: 'private-answer' }], stopReason: 'stop',
+      } });
+      fake.prompt.resolve();
+      await service.waitForIdle();
+      const records = logging.mock.calls.filter(([tag]) => tag === '[AgentLifecycle]')
+        .map(([, record]) => record);
+      expect(records.map((record) => record.event)).toEqual([
+        'prompt_started', 'permission_tool_started', 'approval_resolved',
+        'permission_tool_returned', 'model_transport', 'first_assistant_event',
+        'assistant_response_finished', 'prompt_resolved', 'run_finished',
+      ]);
+      expect(JSON.stringify(records)).not.toContain('private-');
+      expect(records.every((record) => record.runId === 'run_test')).toBe(true);
+    } finally {
+      await service.dispose();
+      logging.mockRestore();
+    }
+  });
+
+  test('builds one isolated run and emits normalized lifecycle events', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await expect(service.start(startOptions({ thinkingLevel: 'low' }))).resolves.toEqual({
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+    });
+    expect(dependencies.createControllerScope).toHaveBeenCalledWith({
+      controller: dependencies.controller,
+      tabId: 'tab_assigned',
+      navigationScope: 'workspace',
+      approvalMode: 'every_interaction',
+      createWorkspacePage: expect.any(Function),
+      onWorkspaceTabCreated: expect.any(Function),
+      requestApproval: expect.any(Function),
+      classifyEffect: expect.any(Function),
+      classifyInteraction: expect.any(Function),
+      transferOwnerId: 'conversation_test',
+    });
+    expect(dependencies.createTools).toHaveBeenCalledWith({
+      sdk: { kind: 'sdk' },
+      controller: expect.objectContaining({ execute: dependencies.controller.execute }),
+      tabId: 'tab_assigned',
+      visionEnabled: false,
+      onToolOutcome: expect.any(Function),
+      onToolProgress: expect.any(Function),
+    });
+    expect(dependencies.createSession).toHaveBeenCalledWith({
+      sdk: { kind: 'sdk' },
+      createModelDiagnostic: expect.any(Function),
+      model: { id: 'model_test', provider: 'test' },
+      modelRuntime: { kind: 'model-runtime' },
+      thinkingLevel: 'low',
+      customTools: [{ name: 'browser_snapshot' }, expect.objectContaining({ name: 'delegate_task' }), expect.objectContaining({ name: 'helper_task' }), expect.objectContaining({ name: 'helper_reports' })],
+      enableBuiltInSkills: true,
+      systemPrompt: expect.stringContaining('You are Freedom Agent inside Freedom Browser'),
+    });
+    expect(service.getWorkspaceState()).toEqual({
+      tabIds: ['tab_assigned', 'tab_research'],
+      activeTabId: 'tab_research',
+    });
+    expect(fake.session.prompt).toHaveBeenCalledWith(
+      expect.stringContaining('Summarize this page'),
+      {
+        expandPromptTemplates: false,
+        source: 'interactive',
+      }
+    );
+    expect(fake.session.prompt.mock.calls[0][0]).toContain('Freedom approval policy for this turn');
+
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Summary' },
+    });
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'browser_snapshot',
+      args: { untrusted: 'not forwarded' },
+    });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'call_1',
+      toolName: 'browser_snapshot',
+      result: { content: [{ type: 'text', text: '{"large":"result"}' }] },
+      isError: false,
+    });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events).toEqual([
+      {
+        version: AGENT_EVENT_VERSION,
+        sequence: 1,
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        type: 'run_started',
+        tabId: 'tab_assigned',
+        approvalMode: 'every_interaction',
+        userText: 'Summarize this page',
+      },
+      {
+        version: AGENT_EVENT_VERSION,
+        sequence: 2,
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        type: 'assistant_text_delta',
+        text: 'Summary',
+      },
+      {
+        version: AGENT_EVENT_VERSION,
+        sequence: 3,
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        type: 'tool_started',
+        toolCallId: 'call_1',
+        operation: 'browser_snapshot',
+        intent: 'Reading the current page',
+        label: 'Read the current page',
+        effect: 'observed',
+      },
+      {
+        version: AGENT_EVENT_VERSION,
+        sequence: 4,
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        type: 'tool_finished',
+        toolCallId: 'call_1',
+        operation: 'browser_snapshot',
+        status: 'succeeded',
+        intent: 'Reading the current page',
+        label: 'Read the current page',
+        effect: 'observed',
+      },
+      {
+        version: AGENT_EVENT_VERSION,
+        sequence: 5,
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        type: 'run_finished',
+        status: 'completed',
+        durationMs: 0,
+        actionCount: 1,
+        failedActionCount: 0,
+        outcome: {
+          kind: 'completed',
+          verification: 'browser_observed',
+          tone: 'success',
+          headline: 'Browser state inspected',
+          detail: 'Freedom recorded 1 successful browser action. No browser change was made.',
+          destinations: [],
+          counts: {
+            successful: 1,
+            failed: 0,
+            changed: 0,
+            observed: 1,
+            pages: 0,
+            approvals: { requested: 0, approved: 0, reviewerApproved: 0, declined: 0, withdrawn: 0 },
+          },
+        },
+      },
+    ]);
+    expect(fake.unsubscribe).not.toHaveBeenCalled();
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+    expect(service.getState()).toMatchObject({
+      status: 'ready',
+      conversationId: 'conversation_test',
+      transcript: [
+        {
+          runId: 'run_test',
+          userText: 'Summarize this page',
+          assistantText: 'Summary',
+          status: 'completed',
+          durationMs: 0,
+        },
+      ],
+    });
+  });
+
+  test('tells Pi about the allow-interaction policy for the current turn', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+
+    await service.start(startOptions({ approvalMode: 'allow_website_interactions' }));
+
+    expect(dependencies.createControllerScope).toHaveBeenCalledWith({
+      controller: dependencies.controller,
+      tabId: 'tab_assigned',
+      navigationScope: 'workspace',
+      approvalMode: 'allow_website_interactions',
+      createWorkspacePage: expect.any(Function),
+      onWorkspaceTabCreated: expect.any(Function),
+      requestApproval: expect.any(Function),
+      classifyEffect: expect.any(Function),
+      classifyInteraction: expect.any(Function),
+      transferOwnerId: 'conversation_test',
+    });
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toEqual(
+      expect.stringContaining('You are Freedom Agent inside Freedom Browser')
+    );
+    expect(fake.session.prompt.mock.calls[0][0]).toContain(
+      'Freedom allows ordinary website interactions without asking each time'
+    );
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('binds consequential-action classification to the current turn and model runtime', async () => {
+    const fake = createFakeSession();
+    const interactionClassifier = {
+      classify: jest.fn(async () => ({
+        kind: 'consequential',
+        confidence: 0.98,
+        summary: 'Publish the comment.',
+        uncertainties: [],
+      })),
+    };
+    const { service, dependencies } = createService(fake, { interactionClassifier });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    const options = startOptions({
+      prompt: 'Publish my response',
+      approvalMode: 'sensitive_actions',
+      model: { id: 'gpt-test', provider: 'openai' },
+      modelRuntime: { kind: 'isolated-runtime' },
+    });
+
+    await service.start(options);
+    expect(fake.session.prompt.mock.calls[0][0]).toContain(
+      'Freedom will independently classify the intended consequence'
+    );
+    expect(fake.session.prompt.mock.calls[0][0]).toContain('include a brief literal intent');
+
+    const classifyInteraction =
+      dependencies.createControllerScope.mock.calls[0][0].classifyInteraction;
+    const proposed = {
+      action: { operation: 'browser_click', intent: 'Publish the comment' },
+      trustedContext: { origin: 'https://community.example' },
+      untrustedContext: { label: 'Publish' },
+    };
+    await expect(classifyInteraction(proposed)).resolves.toMatchObject({
+      kind: 'consequential',
+    });
+    expect(interactionClassifier.classify).toHaveBeenCalledWith(
+      {
+        ...proposed,
+        userRequest: 'Publish my response',
+        guidance: [],
+      },
+      { model: options.model, modelRuntime: options.modelRuntime, signal: expect.any(AbortSignal) }
+    );
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'browser_interaction',
+      operation: 'browser_click',
+      origin: 'https://community.example/post/1',
+      label: 'Publish',
+      interaction: await interactionClassifier.classify.mock.results[0].value,
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'approval_requested',
+      action: 'browser_interaction',
+      interaction: {
+        kind: 'consequential',
+        confidence: 0.98,
+        summary: 'Publish the comment.',
+        uncertainties: [],
+      },
+    });
+    await service.decideApproval('run_test', events.at(-1).approvalId, true);
+    await expect(decision).resolves.toBe('approved');
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('enables visual page observation only for a model declaring image input', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+
+    await service.start(
+      startOptions({ model: { id: 'vision_model', provider: 'test', input: ['text', 'image'] } })
+    );
+
+    expect(dependencies.createTools).toHaveBeenCalledWith(
+      expect.objectContaining({ visionEnabled: true })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('consumes opaque attachment selections and exposes scoped tools without model-visible paths', async () => {
+    const fake = createFakeSession();
+    const attachmentStore = {
+      consume: jest.fn(async () => [
+        {
+          resourceId: 'attachment_aaaaaaaaaaaaaaaaaaaa',
+          kind: 'file',
+          name: 'notes.txt',
+          category: 'text',
+          bytes: 12,
+          available: true,
+        },
+      ]),
+      listResources: jest.fn(async () => []),
+      read: jest.fn(),
+      renderPdfPage: jest.fn(),
+      revokeFolder: jest.fn(async () => true),
+      deleteConversation: jest.fn(async () => {}),
+    };
+    const createAttachmentTools = jest.fn(async () => [
+      { name: 'attachment_list' },
+      { name: 'attachment_read' },
+    ]);
+    const { service, dependencies } = createService(fake, {
+      attachmentStore,
+      createAttachmentTools,
+    });
+
+    await service.start(
+      startOptions({
+        attachmentIds: ['selection_aaaaaaaaaaaaaaaaaaaa'],
+        attachmentOwnerId: '41',
+      })
+    );
+
+    expect(attachmentStore.consume).toHaveBeenCalledWith(
+      '41',
+      ['selection_aaaaaaaaaaaaaaaaaaaa'],
+      'conversation_test'
+    );
+    expect(createAttachmentTools).toHaveBeenCalledWith({
+      sdk: { kind: 'sdk' },
+      store: attachmentStore,
+      conversationId: 'conversation_test',
+      visionEnabled: false,
+    });
+    expect(dependencies.createSession.mock.calls[0][0].customTools).toEqual([
+      { name: 'browser_snapshot' },
+      { name: 'attachment_list' },
+      { name: 'attachment_read' },
+      expect.objectContaining({ name: 'delegate_task' }),
+      expect.objectContaining({ name: 'helper_task' }), expect.objectContaining({ name: 'helper_reports' }),
+    ]);
+    expect(fake.session.prompt.mock.calls[0][0]).toContain('attachment_aaaaaaaaaaaaaaaaaaaa');
+    expect(fake.session.prompt.mock.calls[0][0]).not.toContain('/Users/');
+    expect(service.getState().resources).toEqual([
+      expect.objectContaining({ name: 'notes.txt', category: 'text' }),
+    ]);
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('keeps persistent workspace tools bound to the active conversation turn without a host path', async () => {
+    const fake = createFakeSession();
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        enabled: true,
+        backend: 'linux-bubblewrap',
+        commands: [],
+      })),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      accessFile: jest.fn(),
+      readFile: jest.fn(),
+      createDirectory: jest.fn(),
+      writeFile: jest.fn(),
+      listDirectory: jest.fn(),
+      findFiles: jest.fn(),
+      grepFiles: jest.fn(),
+      cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const createWorkspaceTools = jest.fn(async () => [
+      { name: 'bash' },
+      { name: 'read' },
+      { name: 'write' },
+      { name: 'edit' },
+      { name: 'grep' },
+      { name: 'find' },
+      { name: 'ls' },
+    ]);
+    const runIdFactory = jest
+      .fn()
+      .mockReturnValueOnce('run_workspace_first')
+      .mockReturnValueOnce('run_workspace_second');
+    const { service, dependencies } = createService(fake, {
+      workspaceController,
+      createWorkspaceTools,
+      runIdFactory,
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions());
+
+    expect(createWorkspaceTools).toHaveBeenCalledWith({
+      sdk: { kind: 'sdk' },
+      controller: workspaceController,
+      previewController: null,
+      scopedController: expect.objectContaining({ execute: expect.any(Function) }),
+      conversationId: 'conversation_test',
+      requestApproval: expect.any(Function),
+      getRunSignal: expect.any(Function),
+      onToolOutcome: expect.any(Function),
+      onToolPhase: expect.any(Function),
+      onProcessTerminal: expect.any(Function),
+    });
+    expect(dependencies.createSession.mock.calls[0][0]).toMatchObject({
+      customTools: [
+        { name: 'browser_snapshot' },
+        { name: 'bash' },
+        { name: 'read' },
+        { name: 'write' },
+        { name: 'edit' },
+        { name: 'grep' },
+        { name: 'find' },
+        { name: 'ls' },
+        { name: 'delegate_task' },
+        { name: 'helper_task' }, { name: 'helper_reports' },
+      ],
+      systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
+    });
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
+      'FREEDOM_JAVASCRIPT_RUNTIME'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
+      'grant direct networking'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain('previewPort');
+    expect(service.getState().workspace).toEqual(
+      expect.objectContaining({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' })
+    );
+    expect(JSON.stringify(service.getState())).not.toContain('/Users/');
+
+    const workspaceOptions = createWorkspaceTools.mock.calls[0][0];
+    const firstRunSignal = workspaceOptions.getRunSignal();
+    workspaceOptions.onToolPhase({
+      toolCallId: 'write_one',
+      operation: 'write',
+      phase: 'creating_workspace',
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'workspace_phase',
+      operation: 'write',
+      phase: 'creating_workspace',
+      message: 'Creating the project workspace…',
+    });
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    await service.start(startOptions({ prompt: 'Create a Node.js script' }));
+    const secondRunSignal = workspaceOptions.getRunSignal();
+    expect(secondRunSignal).toEqual(expect.any(AbortSignal));
+    expect(secondRunSignal).not.toBe(firstRunSignal);
+    workspaceOptions.onToolPhase({
+      toolCallId: 'write_two',
+      operation: 'write',
+      phase: 'waiting_for_approval',
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'workspace_phase',
+      runId: 'run_workspace_second',
+      phase: 'waiting_for_approval',
+    });
+    const approvalDecision = workspaceOptions.requestApproval({
+      action: 'workspace_execution',
+      operation: 'write',
+      workspace: {
+        available: true,
+        backend: 'macos-seatbelt',
+        cancellationGuarantee: 'best_effort',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
+      },
+    });
+    const approval = events.at(-1);
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      runId: 'run_workspace_second',
+      action: 'workspace_execution',
+    });
+    await service.decideApproval('run_workspace_second', approval.approvalId, true);
+    await expect(approvalDecision).resolves.toBe('approved');
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+  });
+
+  test('explains attached repository commits and their editing-access requirement', async () => {
+    const fake = createFakeSession();
+    const workspaceController = {
+      getWorkspace: () => ({ enabled: true, project: { mode: 'read' } }),
+      disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(),
+      cancelConversation: jest.fn(), deleteConversation: jest.fn(), dispose: jest.fn(),
+    };
+    const { service, dependencies } = createService(fake, { workspaceController, createWorkspaceTools: jest.fn(async () => []) });
+    await service.start(startOptions());
+    const prompt = dependencies.createSession.mock.calls[0][0].systemPrompt;
+    expect(prompt).toContain('Both file edits and Git commits require editing access');
+    expect(prompt).toContain('If a tool reports PROJECT_READ_ONLY and the task needs editing, commits or shell execution, call request_permissions');
+    expect(prompt).toContain('use workspace_history status and diff with a project-relative path');
+    expect(prompt).toContain('Do not request editing or use shell Git merely to inspect changes');
+    expect(prompt).toContain('authorized commits in the project repository itself');
+    expect(prompt).not.toContain('Freedom checkpoints are separate');
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('instructs reviewed managed milestones without unconditional turn-boundary snapshots', async () => {
+    const fake = createFakeSession();
+    const workspaceController = {
+      getWorkspace: () => ({ enabled: true }), disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(),
+      cancelConversation: jest.fn(), deleteConversation: jest.fn(), dispose: jest.fn(),
+      prepareWorkspaceHistory: jest.fn(), checkpointWorkspace: jest.fn(), markWorkspaceHistoryUnreviewed: jest.fn(),
+    };
+    const { service, dependencies } = createService(fake, { workspaceController, createWorkspaceTools: jest.fn(async () => []) });
+    await service.start(startOptions());
+    const prompt = dependencies.createSession.mock.calls[0][0].systemPrompt;
+    expect(prompt).toContain('workspace-history skill');
+    expect(prompt).toContain('In a managed workspace, proactively review selected file revisions and save a checkpoint at meaningful milestones');
+    expect(prompt).toContain('In an external repository, commit selected review tokens only when requested or authorized');
+    expect(prompt).toContain('unless the user asked not to save history');
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(workspaceController.prepareWorkspaceHistory).not.toHaveBeenCalled();
+    expect(workspaceController.checkpointWorkspace).not.toHaveBeenCalled();
+    expect(workspaceController.markWorkspaceHistoryUnreviewed).toHaveBeenCalledWith('conversation_test');
+  });
+
+  test('blocks turn start and conversation switching during a version mutation and rejects foreign history', async () => {
+    const { service } = createService(createFakeSession(), { historyStore: createHistoryStore() });
+    const pending = createDeferred();
+    service.workspaceController = { workspaceHistory: jest.fn(() => pending.promise) };
+    service.conversation = { conversationId: 'conversation_one' };
+    await expect(service.workspaceHistory('other', { action: 'list' })).rejects.toThrow();
+    const mutation = service.workspaceHistory('conversation_one', { action: 'save', label: 'Version' });
+    await expect(service.start(startOptions())).rejects.toMatchObject({ code: AGENT_ERROR_CODES.BUSY });
+    expect(await service.clearConversation()).toBe(false);
+    expect(await service.openConversation('other')).toBeNull();
+    pending.resolve({ saved: true });
+    await expect(mutation).resolves.toEqual({ saved: true });
+  });
+
+  test('inspects only the selected conversation and drops results after switching conversations', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const inspectWorkspace = jest.fn(async () => ({ text: 'workspace source' }));
+    service.workspaceController = { inspectWorkspace };
+    service.conversation = { conversationId: 'conversation_one' };
+    await expect(service.inspectWorkspace('conversation_other', { kind: 'file', path: 'source.js' })).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+    expect(inspectWorkspace).not.toHaveBeenCalled();
+    await expect(service.inspectWorkspace('conversation_one', { kind: 'file', path: 'source.js' })).resolves.toEqual({ text: 'workspace source' });
+    let resolve;
+    inspectWorkspace.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const pending = service.inspectWorkspace('conversation_one', { kind: 'file', path: 'source.js' });
+    service.conversation = { conversationId: 'conversation_two' };
+    resolve({ text: 'old source' });
+    await expect(pending).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+  });
+
+  test('stops and reopens a conversation-owned managed server from trusted chrome controls', async () => {
+    const fake = createFakeSession();
+    const processId = 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa';
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        enabled: true,
+        backend: 'linux-bubblewrap',
+        processes: [],
+        commands: [],
+      })),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      terminateProcess: jest.fn(async () => ({ processId, state: 'cancelled' })),
+      cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const workspacePreviewController = {
+      createPreview: jest.fn(),
+      createProcessPreview: jest.fn(() => ({
+        kind: 'server',
+        url: 'freedom-preview://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/',
+        processId,
+        port: 4_173,
+      })),
+      revokeConversation: jest.fn(),
+    };
+    const openWorkspacePreview = jest.fn(async () => ({
+      ok: true,
+      result: { tab: { tabId: 'tab_preview' } },
+    }));
+    const { service } = createService(fake, {
+      workspaceController,
+      workspacePreviewController,
+    });
+    service.conversation = {
+      conversationId: 'conversation_test',
+      scopedController: { openWorkspacePreview },
+      turns: [],
+    };
+
+    await expect(service.stopWorkspaceProcess(processId)).resolves.toMatchObject({
+      state: 'cancelled',
+    });
+    expect(workspaceController.terminateProcess).toHaveBeenCalledWith(
+      'conversation_test',
+      processId,
+      { waitMs: 30_000 }
+    );
+
+    await expect(service.openWorkspaceProcessPreview(processId)).resolves.toEqual({
+      processId,
+      port: 4_173,
+      tabId: 'tab_preview',
+    });
+    expect(workspacePreviewController.createProcessPreview).toHaveBeenCalledWith(
+      'conversation_test',
+      processId
+    );
+    expect(openWorkspacePreview).toHaveBeenCalledWith(
+      'freedom-preview://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/'
+    );
+    expect(service.listAgentTabs()).toEqual([
+      expect.objectContaining({ tabId: 'tab_preview', conversationId: 'conversation_test' }),
+    ]);
+  });
+
+  test('advertises direct networking to Pi when the workspace capability is available', async () => {
+    const fake = createFakeSession();
+    const workspaceController = {
+      getWorkspace: jest.fn(() => null),
+      fullNetworkPermissionsEnabled: jest.fn(() => true),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const { service, dependencies } = createService(fake, {
+      workspaceController,
+      createWorkspaceTools: jest.fn(async () => []),
+    });
+
+    await service.start(startOptions());
+
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'For a new project, use these tools directly'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
+      'using only the provided Freedom browser tools'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'grant direct networking to an exact workspace command'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'public internet, host localhost, and private/LAN addresses'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'run that same command through bash with previewPort set to the TCP port'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'pass that processId to workspace_preview'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'On macOS, configure polling explicitly in the project development server'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'server.watch: { usePolling: true, interval: 250 }'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'without replacing unrelated settings'
+    );
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('passes selected images natively only to a vision-capable Pi session', async () => {
+    const fake = createFakeSession();
+    const attachmentStore = {
+      consume: jest.fn(async () => [
+        {
+          resourceId: 'attachment_bbbbbbbbbbbbbbbbbbbb',
+          kind: 'file',
+          name: 'diagram.png',
+          category: 'image',
+          mimeType: 'image/png',
+          bytes: 3,
+          available: true,
+        },
+      ]),
+      listResources: jest.fn(async () => []),
+      read: jest.fn(async () => ({
+        kind: 'image',
+        name: 'diagram.png',
+        mimeType: 'image/png',
+        data: Buffer.from('png'),
+      })),
+      renderPdfPage: jest.fn(),
+      revokeFolder: jest.fn(async () => true),
+      deleteConversation: jest.fn(async () => {}),
+    };
+    const { service } = createService(fake, {
+      attachmentStore,
+      createAttachmentTools: jest.fn(async () => []),
+    });
+
+    await service.start(
+      startOptions({
+        model: { id: 'vision_model', provider: 'test', input: ['text', 'image'] },
+        attachmentIds: ['selection_bbbbbbbbbbbbbbbbbbbb'],
+        attachmentOwnerId: '41',
+      })
+    );
+
+    expect(fake.session.prompt).toHaveBeenCalledWith(
+      expect.stringContaining('attachment_bbbbbbbbbbbbbbbbbbbb'),
+      expect.objectContaining({
+        images: [
+          { type: 'image', data: Buffer.from('png').toString('base64'), mimeType: 'image/png' },
+        ],
+      })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('revokes a live folder resource and broadcasts the remaining conversation sources', async () => {
+    const fake = createFakeSession();
+    const folderId = `folder_${'d'.repeat(20)}`;
+    const attachmentStore = {
+      consume: jest.fn(async () => [
+        {
+          resourceId: folderId,
+          kind: 'folder',
+          name: 'Bug reports',
+          category: 'folder',
+          available: true,
+        },
+      ]),
+      listResources: jest.fn(async () => []),
+      read: jest.fn(),
+      renderPdfPage: jest.fn(),
+      revokeFolder: jest.fn(async () => true),
+      deleteConversation: jest.fn(async () => {}),
+    };
+    const { service } = createService(fake, {
+      attachmentStore,
+      createAttachmentTools: jest.fn(async () => []),
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    const started = await service.start(
+      startOptions({
+        attachmentIds: ['selection_dddddddddddddddddddd'],
+        attachmentOwnerId: '41',
+      })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    await expect(service.revokeAttachment(started.conversationId, folderId)).resolves.toMatchObject(
+      {
+        resource: { resourceId: folderId, available: false },
+        resources: [],
+      }
+    );
+    expect(attachmentStore.revokeFolder).toHaveBeenCalledWith(started.conversationId, folderId);
+    expect(service.getState().resources).toEqual([]);
+    expect(events.at(-1)).toMatchObject({
+      type: 'conversation_resources_changed',
+      conversationId: started.conversationId,
+      resources: [],
+    });
+  });
+
+  test('cleans attachment snapshots if startup fails before a conversation exists', async () => {
+    const fake = createFakeSession();
+    const attachmentStore = {
+      consume: jest.fn(async () => [
+        {
+          resourceId: 'attachment_cccccccccccccccccccc',
+          kind: 'file',
+          name: 'notes.txt',
+          category: 'text',
+          bytes: 12,
+          available: true,
+        },
+      ]),
+      listResources: jest.fn(async () => []),
+      read: jest.fn(),
+      renderPdfPage: jest.fn(),
+      revokeFolder: jest.fn(async () => true),
+      deleteConversation: jest.fn(async () => {}),
+    };
+    const { service } = createService(fake, {
+      attachmentStore,
+      loadSdk: jest.fn(async () => {
+        throw new Error('SDK unavailable');
+      }),
+    });
+
+    await expect(
+      service.start(
+        startOptions({
+          attachmentIds: ['selection_cccccccccccccccccccc'],
+          attachmentOwnerId: '41',
+        })
+      )
+    ).rejects.toMatchObject({ code: 'SESSION_START_FAILED' });
+    expect(attachmentStore.deleteConversation).toHaveBeenCalledWith('conversation_test');
+  });
+
+  test('starts with an empty workspace when no user page is shared', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+
+    await service.start(startOptions({ tabId: null }));
+
+    expect(dependencies.createControllerScope).toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: null })
+    );
+    expect(dependencies.createTools).toHaveBeenCalledWith(expect.objectContaining({ tabId: null }));
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'No existing browser page was shared with this conversation'
+    );
+    expect(service.getState()).toMatchObject({ tabId: null });
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('reuses one Pi session and task workspace across conversational turns', async () => {
+    const fake = createFakeSession();
+    const runIdFactory = jest
+      .fn()
+      .mockReturnValueOnce('run_first')
+      .mockReturnValueOnce('run_follow_up');
+    const { service, dependencies } = createService(fake, { runIdFactory });
+
+    await service.start(startOptions({ prompt: 'Find the project name' }));
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'The project is Freedom.' },
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    const scopedController = dependencies.createTools.mock.calls[0][0].controller;
+    await expect(
+      service.start(startOptions({ prompt: 'Now put that project name into the form' }))
+    ).resolves.toEqual({
+      runId: 'run_follow_up',
+      conversationId: 'conversation_test',
+    });
+
+    expect(dependencies.loadSdk).toHaveBeenCalledTimes(1);
+    expect(dependencies.createSession).toHaveBeenCalledTimes(1);
+    expect(dependencies.createControllerScope).toHaveBeenCalledTimes(1);
+    expect(scopedController.prepareResume).toHaveBeenCalledTimes(1);
+    expect(fake.session.prompt).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('Now put that project name into the form'),
+      {
+        expandPromptTemplates: false,
+        source: 'interactive',
+      }
+    );
+
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Done.' },
+    });
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+
+    expect(service.getState()).toMatchObject({
+      status: 'ready',
+      conversationId: 'conversation_test',
+      transcript: [
+        {
+          runId: 'run_first',
+          userText: 'Find the project name',
+          assistantText: 'The project is Freedom.',
+          status: 'completed',
+        },
+        {
+          runId: 'run_follow_up',
+          userText: 'Now put that project name into the form',
+          assistantText: 'Done.',
+          status: 'completed',
+        },
+      ],
+    });
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('rebuilds a failed provider session while preserving its browser workspace', async () => {
+    const failed = createFakeSession();
+    const recovered = createFakeSession();
+    const runIdFactory = jest
+      .fn()
+      .mockReturnValueOnce('run_failed')
+      .mockReturnValueOnce('run_retry');
+    const createSession = jest
+      .fn()
+      .mockResolvedValueOnce({ session: failed.session })
+      .mockResolvedValueOnce({ session: recovered.session });
+    const { service, dependencies } = createService(failed, { createSession, runIdFactory });
+
+    await service.start(startOptions({ prompt: 'Publish this text' }));
+    failed.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '503 service unavailable',
+      },
+    });
+    failed.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(failed.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(failed.session.dispose).toHaveBeenCalledTimes(1);
+    expect(service.getState()).toMatchObject({
+      status: 'ready',
+      runtimeAvailable: false,
+      transcript: [{ runId: 'run_failed', status: 'failed' }],
+    });
+
+    await expect(service.start(startOptions({ prompt: 'Publish this text' }))).resolves.toEqual({
+      runId: 'run_retry',
+      conversationId: 'conversation_test',
+    });
+
+    expect(dependencies.createControllerScope).toHaveBeenCalledTimes(1);
+    const scopedController = dependencies.createTools.mock.calls[0][0].controller;
+    expect(scopedController.prepareResume).toHaveBeenCalledTimes(1);
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(createSession.mock.calls[1][0]).toMatchObject({
+      restoredTranscript: [expect.objectContaining({ runId: 'run_failed', status: 'failed' })],
+    });
+    expect(recovered.session.prompt).toHaveBeenCalledWith(
+      expect.stringContaining('Publish this text'),
+      {
+        expandPromptTemplates: false,
+        source: 'interactive',
+      }
+    );
+
+    recovered.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({ status: 'ready', runtimeAvailable: true });
+  });
+
+  test('changes approval policy only between turns and records the policy used by each turn', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const runIdFactory = jest
+      .fn()
+      .mockReturnValueOnce('run_first')
+      .mockReturnValueOnce('run_second');
+    const { service, dependencies } = createService(fake, { historyStore, runIdFactory });
+
+    await service.start(startOptions({ prompt: 'Inspect the page' }));
+    expect(() =>
+      service.updateApprovalMode('conversation_test', 'allow_website_interactions')
+    ).toThrow(
+      expect.objectContaining({
+        code: AGENT_ERROR_CODES.BUSY,
+        message: 'Finish the current Agent turn before changing its approval setting',
+      })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    const scopedController = dependencies.createTools.mock.calls[0][0].controller;
+    expect(service.updateApprovalMode('conversation_test', 'allow_website_interactions')).toEqual({
+      conversationId: 'conversation_test',
+      approvalMode: 'allow_website_interactions',
+    });
+    expect(scopedController.setApprovalMode).toHaveBeenCalledWith('allow_website_interactions');
+    expect(historyStore.updateApprovalMode).toHaveBeenCalledWith(
+      'conversation_test',
+      'allow_website_interactions'
+    );
+
+    await service.start(
+      startOptions({
+        prompt: 'Submit the form',
+        approvalMode: 'allow_website_interactions',
+      })
+    );
+    expect(fake.session.prompt.mock.calls[1][0]).toContain(
+      'Freedom allows ordinary website interactions without asking each time'
+    );
+    expect(historyStore.startTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        runId: 'run_second',
+        approvalMode: 'allow_website_interactions',
+      })
+    );
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+
+    expect(service.getState()).toMatchObject({
+      approvalMode: 'allow_website_interactions',
+      transcript: [
+        { runId: 'run_first', approvalMode: 'every_interaction' },
+        { runId: 'run_second', approvalMode: 'allow_website_interactions' },
+      ],
+    });
+  });
+
+  test('accepts a follow-up after the originally adopted tab closes', async () => {
+    const fake = createFakeSession();
+    let lifecycleListener;
+    const handleTabLifecycle = jest.fn();
+    const prepareResume = jest.fn(async () => ({
+      ok: true,
+      activeTabId: 'tab_remaining',
+      workspaceEmpty: false,
+    }));
+    const { service } = createService(fake, {
+      subscribeTabLifecycle: (listener) => {
+        lifecycleListener = listener;
+        return jest.fn();
+      },
+      createControllerScope: jest.fn(async ({ controller }) => ({
+        ...controller,
+        handleTabLifecycle,
+        prepareResume,
+      })),
+    });
+
+    await service.start(startOptions({ prompt: 'Open five articles' }));
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    lifecycleListener({ type: 'tab_closed', tabId: 'tab_assigned', kind: 'desktop' });
+
+    await expect(
+      service.start({ prompt: 'Compare the remaining articles', approvalMode: 'every_interaction' })
+    ).resolves.toMatchObject({ conversationId: 'conversation_test' });
+    expect(handleTabLifecycle).toHaveBeenCalledWith({
+      type: 'tab_closed',
+      tabId: 'tab_assigned',
+      kind: 'desktop',
+    });
+    expect(prepareResume).toHaveBeenCalledTimes(1);
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({ status: 'ready' });
+  });
+
+  test('New chat deselects an idle live conversation without disposing it', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, { historyStore });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions());
+    await expect(service.clearConversation()).resolves.toBe(false);
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    await expect(service.clearConversation()).resolves.toBe(true);
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+    expect(service.getState()).toEqual({ status: 'idle' });
+    expect(events.at(-1)).toMatchObject({
+      type: 'conversation_cleared',
+      conversationId: 'conversation_test',
+    });
+    await expect(service.openConversation('conversation_test')).resolves.toMatchObject({
+      status: 'ready',
+      conversationId: 'conversation_test',
+      runtimeAvailable: true,
+    });
+    expect(historyStore.getSession).not.toHaveBeenCalled();
+  });
+
+  test('retains live session workspaces across switches and transfers claimed tabs to the user', async () => {
+    const first = createFakeSession();
+    const second = createFakeSession();
+    const scopes = new Map();
+    const createControllerScope = jest.fn(async ({ controller, tabId }) => {
+      const tabIds = [tabId];
+      const scope = {
+        ...controller,
+        getWorkspaceState: jest.fn(() => ({
+          tabIds: [...tabIds],
+          activeTabId: tabIds.at(-1) || null,
+        })),
+        prepareResume: jest.fn(async () => ({ ok: true })),
+        releaseTab: jest.fn((candidate) => {
+          const index = tabIds.indexOf(candidate);
+          if (index === -1) return false;
+          tabIds.splice(index, 1);
+          return true;
+        }),
+        addTab: (candidate) => tabIds.push(candidate),
+      };
+      scopes.set(tabId, scope);
+      return scope;
+    });
+    const historyStore = createHistoryStore({ deleteSession: jest.fn(() => true) });
+    const { service, dependencies } = createService(first, {
+      historyStore,
+      createControllerScope,
+      createSession: jest
+        .fn()
+        .mockResolvedValueOnce({ session: first.session })
+        .mockResolvedValueOnce({ session: second.session }),
+      conversationIdFactory: jest
+        .fn()
+        .mockReturnValueOnce('conversation_first')
+        .mockReturnValueOnce('conversation_second'),
+      runIdFactory: jest.fn().mockReturnValueOnce('run_first').mockReturnValueOnce('run_second'),
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions({ tabId: 'tab_user_first' }));
+    const firstCreated = dependencies.createControllerScope.mock.calls[0][0].onWorkspaceTabCreated;
+    scopes.get('tab_user_first').addTab('tab_agent_first');
+    firstCreated('tab_agent_first');
+    first.prompt.resolve();
+    await service.waitForIdle();
+    await service.clearConversation();
+
+    await service.start(startOptions({ tabId: 'tab_user_second' }));
+    const secondCreated = dependencies.createControllerScope.mock.calls[1][0].onWorkspaceTabCreated;
+    scopes.get('tab_user_second').addTab('tab_agent_second');
+    secondCreated('tab_agent_second');
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'workspace_changed', runId: 'run_first' }),
+        expect.objectContaining({ type: 'workspace_changed', runId: 'run_second' }),
+      ])
+    );
+    second.prompt.resolve();
+    await service.waitForIdle();
+
+    await expect(service.openConversation('conversation_first')).resolves.toMatchObject({
+      conversationId: 'conversation_first',
+      runtimeAvailable: true,
+    });
+    expect(service.getWorkspaceState()).toEqual({
+      tabIds: ['tab_user_first', 'tab_agent_first'],
+      activeTabId: 'tab_agent_first',
+    });
+    expect(first.session.dispose).not.toHaveBeenCalled();
+    expect(service.listAgentTabs()).toEqual([
+      {
+        tabId: 'tab_agent_first',
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_first',
+      },
+      {
+        tabId: 'tab_agent_second',
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_second',
+      },
+    ]);
+
+    await expect(service.claimTab('tab_agent_first')).resolves.toBe(true);
+    expect(scopes.get('tab_user_first').releaseTab).toHaveBeenCalledWith('tab_agent_first');
+    expect(service.getWorkspaceState()).toEqual({
+      tabIds: ['tab_user_first'],
+      activeTabId: 'tab_user_first',
+    });
+    expect(service.listAgentTabs().map((record) => record.tabId)).toEqual(['tab_agent_second']);
+
+    await service.openConversation('conversation_second');
+    expect(service.getWorkspaceState()).toEqual({
+      tabIds: ['tab_user_second', 'tab_agent_second'],
+      activeTabId: 'tab_agent_second',
+    });
+    await expect(service.deleteConversation('conversation_first')).resolves.toBe(true);
+    expect(first.session.dispose).toHaveBeenCalledTimes(1);
+    expect(second.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('persists the visible conversation lifecycle without raw Pi events', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, { historyStore });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions({ prompt: 'Research this page' }));
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'thinking_start' },
+    });
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'thinking_delta',
+        delta: '**Planning ephemeral work that must not be persisted**',
+      },
+    });
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'thinking_end', content: 'private complete content' },
+    });
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'browser_snapshot',
+      args: { pageContents: 'not persisted' },
+    });
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Finished.' },
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(historyStore.createSession).toHaveBeenCalledWith({
+      conversationId: 'conversation_test',
+      title: 'Research this page',
+      approvalMode: 'every_interaction',
+      providerId: 'test',
+      modelId: 'model_test',
+      thinkingLevel: undefined,
+      createdAt: 1_000,
+    });
+    expect(historyStore.startTurn).toHaveBeenCalledWith({
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      position: 0,
+      userText: 'Research this page',
+      approvalMode: 'every_interaction',
+      startedAt: 1_000,
+    });
+    expect(historyStore.finishTurn).toHaveBeenCalledWith({
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      assistantText: 'Finished.',
+      status: 'completed',
+      durationMs: 0,
+      activity: [
+        {
+          toolCallId: 'call_1',
+          operation: 'browser_snapshot',
+          status: 'running',
+          label: 'Read the current page',
+          intent: 'Reading the current page',
+          effect: 'observed',
+        },
+      ],
+      guidance: [],
+      error: undefined,
+    });
+    expect(JSON.stringify(historyStore.finishTurn.mock.calls)).not.toContain('pageContents');
+    expect(JSON.stringify(historyStore.finishTurn.mock.calls)).not.toContain(
+      'Planning ephemeral work that must not be persisted'
+    );
+    expect(events.filter((event) => event.type === 'run_progress')).toEqual([
+      expect.objectContaining({
+        type: 'run_progress',
+        source: 'reasoning_heading',
+        message: 'Planning ephemeral work that must not be persisted…',
+      }),
+    ]);
+  });
+
+  test('opens a stored conversation dormant and rebuilds safe Pi context on follow-up', async () => {
+    const fake = createFakeSession();
+    const stored = {
+      conversationId: 'conversation_saved',
+      title: 'Saved research',
+      approvalMode: 'every_interaction',
+      transcript: [
+        {
+          runId: 'run_saved',
+          userText: 'Research this topic',
+          assistantText: 'I found three sources.',
+          status: 'completed',
+          startedAt: 500,
+          durationMs: 200,
+          activity: [],
+        },
+      ],
+    };
+    const historyStore = createHistoryStore({
+      getSession: jest.fn(() => stored),
+    });
+    const { service, dependencies } = createService(fake, {
+      historyStore,
+      runIdFactory: jest.fn(() => 'run_followup'),
+    });
+
+    await expect(service.openConversation('conversation_saved')).resolves.toMatchObject({
+      status: 'ready',
+      conversationId: 'conversation_saved',
+      title: 'Saved research',
+      runtimeAvailable: false,
+      transcript: [expect.objectContaining({ runId: 'run_saved' })],
+    });
+    expect(service.getWorkspaceState()).toEqual({ tabIds: [], activeTabId: null });
+
+    await service.start(startOptions({ prompt: 'Continue from there', tabId: 'tab_new' }));
+    expect(dependencies.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        restoredTranscript: [
+          expect.objectContaining({
+            runId: 'run_saved',
+            userText: 'Research this topic',
+            assistantText: 'I found three sources.',
+          }),
+        ],
+        systemPrompt: expect.stringContaining("restored from Freedom's saved session history"),
+      })
+    );
+    expect(historyStore.createSession).not.toHaveBeenCalled();
+    expect(historyStore.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation_saved',
+        runId: 'run_followup',
+        position: 1,
+      })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({ runtimeAvailable: true });
+  });
+
+  test('lists, renames, and deletes stored conversations while idle', async () => {
+    const fake = createFakeSession();
+    const summary = { conversationId: 'conversation_saved', title: 'Saved' };
+    const historyStore = createHistoryStore({
+      listSessions: jest.fn(() => [summary]),
+      renameSession: jest.fn(() => ({ ...summary, title: 'Renamed' })),
+      deleteSession: jest.fn(() => true),
+    });
+    const { service } = createService(fake, { historyStore });
+
+    expect(service.listConversations()).toEqual([summary]);
+    expect(service.renameConversation('conversation_saved', 'Renamed')).toMatchObject({
+      title: 'Renamed',
+    });
+    await expect(service.deleteConversation('conversation_saved')).resolves.toBe(true);
+  });
+
+  test('pauses a run for a bounded approval and accepts only its exact decision', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_approval',
+      toolName: 'browser_click',
+      args: { ref: 'snapshot_ref' },
+    });
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'form_submission',
+      operation: 'browser_click',
+      origin: 'https://trusted.example',
+      destinationOrigin: 'https://submit.example/path?private=yes',
+      label: 'Submit registration',
+      toolCallId: 'call_approval',
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'form_submission',
+      operation: 'browser_click',
+      origin: 'https://trusted.example',
+      destinationOrigin: 'https://submit.example',
+      label: 'Submit registration',
+      toolCallId: 'call_approval',
+    });
+    expect(service.getState()).toMatchObject({
+      pendingApproval: { approvalId: approval.approvalId },
+    });
+    await expect(service.steer('run_test', 'Do not submit until I confirm')).resolves.toMatchObject(
+      {
+        text: 'Do not submit until I confirm',
+        status: 'queued',
+      }
+    );
+    expect(fake.session.steer).toHaveBeenCalledWith('Do not submit until I confirm');
+    expect(service.getState()).toMatchObject({
+      pendingApproval: { approvalId: approval.approvalId },
+      transcript: [
+        expect.objectContaining({
+          guidance: [expect.objectContaining({ status: 'queued' })],
+        }),
+      ],
+    });
+    await expect(service.decideApproval('run_other', approval.approvalId, true)).resolves.toBe(
+      false
+    );
+    await expect(service.decideApproval('run_test', approval.approvalId, true)).resolves.toBe(true);
+    await expect(decision).resolves.toBe('approved');
+    expect(events.at(-1)).toMatchObject({
+      type: 'approval_resolved',
+      approvalId: approval.approvalId,
+      decision: 'approved',
+      toolCallId: 'call_approval',
+    });
+    expect(service.getState()).toMatchObject({
+      transcript: [
+        expect.objectContaining({
+          activity: [
+            expect.objectContaining({
+              approval: 'approved',
+              destinationOrigin: 'https://submit.example',
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('discloses raw diagnostics to the selected provider and returns a conversation grant', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(
+      startOptions({ model: { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', provider: 'openai' } })
+    );
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'diagnostic_data',
+      operation: OPERATIONS.NODE_DIAGNOSTICS,
+      label: 'Share recent ipfs diagnostics',
+      diagnostic: { scope: 'node', service: 'ipfs', maxLines: 50, maxBytes: 8192 },
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'diagnostic_data',
+      operation: OPERATIONS.NODE_DIAGNOSTICS,
+      diagnostic: {
+        scope: 'node',
+        service: 'ipfs',
+        maxLines: 50,
+        maxBytes: 8192,
+        providerId: 'openai',
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+        local: false,
+      },
+    });
+    await expect(
+      service.decideApproval('run_test', approval.approvalId, {
+        approved: true,
+        diagnosticScope: 'conversation',
+      })
+    ).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({
+      status: 'approved',
+      diagnosticScope: 'conversation',
+    });
+    expect(JSON.stringify(approval)).not.toMatch(/entries|logs|runtime|statusSnapshot/);
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('projects exact page-tool approval arguments without exposing internal document tokens', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const pageTool = { name: 'echo', argumentsJSON: '{"value":"test"}', manualSubmit: false, internalToken: 'must not leak' };
+    const decision = requestApproval({ action: 'browser_interaction', operation: 'browser_call_page_tool',
+      origin: 'https://example.test/', pageTool });
+    const approval = events.at(-1);
+    expect(approval).toMatchObject({ type: 'approval_requested', pageTool: {
+      name: 'echo', argumentsJSON: pageTool.argumentsJSON, manualSubmit: false,
+    } });
+    expect(approval.pageTool).not.toHaveProperty('internalToken');
+    await service.decideApproval('run_test', approval.approvalId, { approved: true });
+    expect(await decision).toEqual({ status: 'approved' });
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('shows a project-editing approval with bounded metadata and explicit user decision', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({ action: 'project_write', operation: 'request_permissions', label: 'Commit changes',
+      projectAccess: { name: 'Cookbook', mode: 'write', scope: 'conversation', root: '/private/project', grant: 'private-token' } });
+    const event = events.at(-1);
+    expect(event).toMatchObject({ type: 'approval_requested', action: 'project_write', projectAccess: { name: 'Cookbook', mode: 'write', scope: 'conversation' } });
+    expect(JSON.stringify(event)).not.toMatch(/private|grant/);
+    await expect(service.decideApproval('wrong_run', event.approvalId, true)).resolves.toBe(false);
+    await service.decideApproval('run_test', event.approvalId, true);
+    expect(await decision).toBe('approved');
+    await service.stop('run_test'); await service.waitForIdle();
+  });
+
+  test('projects exact executable authority and returns a conversation-scoped grant', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Run the project tests',
+      workspacePermission: {
+        kind: 'command_access',
+        command: 'npm test',
+        workingDirectory: 'site',
+        commands: [
+          {
+            name: 'node',
+            status: 'requires_permission',
+            executablePath: '/opt/homebrew/Cellar/node/24/bin/node',
+            rootPath: '/opt/homebrew/Cellar/node/24',
+          },
+        ],
+      },
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Run the project tests',
+      workspacePermission: {
+        kind: 'command_access',
+        command: 'npm test',
+        workingDirectory: 'site',
+        commands: [expect.objectContaining({ name: 'node', status: 'requires_permission' })],
+      },
+    });
+    await service.decideApproval('run_test', approval.approvalId, {
+      approved: true,
+      workspacePermissionScope: 'conversation',
+    });
+    await expect(decision).resolves.toEqual({
+      status: 'approved',
+      workspacePermissionScope: 'conversation',
+    });
+
+    await expect(
+      requestApproval({
+        action: 'workspace_permission',
+        operation: 'request_permissions',
+        label: 'Escape the project',
+        workspacePermission: {
+          kind: 'command_access',
+          command: 'node validate.js',
+          workingDirectory: '../outside',
+          commands: [
+            {
+              name: 'node',
+              status: 'requires_permission',
+              executablePath: '/opt/homebrew/Cellar/node/24/bin/node',
+              rootPath: '/opt/homebrew/Cellar/node/24',
+            },
+          ],
+        },
+      })
+    ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('projects only allowlisted executable discovery reasons', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'workspace_permission', operation: 'request_permissions', label: 'Check installed tools',
+      workspacePermission: {
+        kind: 'command_access', command: 'node validate.js', workingDirectory: '.',
+        commands: [
+          { name: 'node', status: 'requires_permission', executablePath: '/opt/node/bin/node', rootPath: '/opt/node' },
+          { name: 'missing', status: 'unavailable', resolution: 'not_found' },
+          { name: 'alias', status: 'unavailable', resolution: 'unsupported_entry_point' },
+          { name: 'unknown', status: 'unavailable', resolution: '/private/untrusted-detail' },
+        ],
+      },
+    });
+    const approval = events.at(-1);
+    expect(approval.workspacePermission.commands.slice(1)).toEqual([
+      { name: 'missing', status: 'unavailable', resolution: 'not_found' },
+      { name: 'alias', status: 'unavailable', resolution: 'unsupported_entry_point' },
+      { name: 'unknown', status: 'unavailable' },
+    ]);
+    await service.decideApproval('run_test', approval.approvalId, false);
+    await decision;
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('projects the exact full-network bundle and rejects incomplete network claims', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const workspacePermission = {
+      kind: 'command_access',
+      command: 'curl https://example.com',
+      workingDirectory: '.',
+      commands: [],
+      network: {
+        posture: 'full',
+        publicInternet: true,
+        hostLoopback: true,
+        privateLan: true,
+        hostAbstractUnixSockets: 'reachable',
+      },
+    };
+    const decision = requestApproval({
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Download project dependencies',
+      workspacePermission,
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      workspacePermission,
+    });
+    await service.decideApproval('run_test', approval.approvalId, {
+      approved: true,
+      workspacePermissionScope: 'once',
+    });
+    await expect(decision).resolves.toEqual({ status: 'approved' });
+
+    await expect(
+      requestApproval({
+        action: 'workspace_permission',
+        operation: 'request_permissions',
+        label: 'Incomplete authority',
+        workspacePermission: {
+          ...workspacePermission,
+          network: { ...workspacePermission.network, privateLan: false },
+        },
+      })
+    ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('projects a path-free Agent-native approval for public Swarm publishing', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'swarm_publish',
+      operation: OPERATIONS.SWARM_PUBLISH,
+      label: 'website',
+      publication: {
+        kind: 'folder',
+        name: 'website',
+        public: true,
+        workspacePath: 'dist/site',
+        indexDocument: 'index.html',
+        sourcePath: '/Users/private/website',
+      },
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'swarm_publish',
+      operation: OPERATIONS.SWARM_PUBLISH,
+      publication: {
+        kind: 'folder',
+        name: 'website',
+        public: true,
+        workspacePath: 'dist/site',
+        indexDocument: 'index.html',
+      },
+    });
+    expect(JSON.stringify(approval)).not.toContain('/Users/private');
+    await service.decideApproval('run_test', approval.approvalId, true);
+    await expect(decision).resolves.toBe('approved');
+
+    const invalidDecision = requestApproval({
+      action: 'swarm_publish',
+      operation: OPERATIONS.SWARM_PUBLISH,
+      label: 'private',
+      publication: {
+        kind: 'folder',
+        name: 'private',
+        public: true,
+        workspacePath: '/Users/private/website',
+      },
+    });
+    const invalidApproval = events.at(-1);
+    expect(invalidApproval.publication).not.toHaveProperty('workspacePath');
+    await service.decideApproval('run_test', invalidApproval.approvalId, false);
+    await expect(invalidDecision).resolves.toBe('declined');
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('classifies an exact node request in the isolated model context and exposes a bounded approval', async () => {
+    const fake = createFakeSession();
+    const effectClassifier = {
+      classify: jest.fn(async () => ({
+        effect: 'persistent_change',
+        confidence: 0.96,
+        summary: 'Creates a durable postage batch.',
+        resources: ['postage batch'],
+        uncertainties: [],
+      })),
+    };
+    const { service, dependencies } = createService(fake, { effectClassifier });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    const options = startOptions({
+      model: { id: 'gpt-5.6-sol', provider: 'openai' },
+      modelRuntime: { kind: 'isolated-runtime' },
+    });
+    await service.start(options);
+
+    const classifyEffect = dependencies.createControllerScope.mock.calls[0][0].classifyEffect;
+    const proposed = {
+      domain: 'node',
+      action: {
+        service: 'ant',
+        request: { method: 'POST', path: '/stamps/100/20' },
+      },
+    };
+    await expect(classifyEffect(proposed)).resolves.toMatchObject({
+      effect: 'persistent_change',
+    });
+    expect(effectClassifier.classify).toHaveBeenCalledWith(proposed, {
+      model: options.model,
+      modelRuntime: options.modelRuntime,
+      signal: expect.any(AbortSignal),
+    });
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'node_request',
+      operation: OPERATIONS.NODE_REQUEST,
+      label: 'POST /stamps/100/20',
+      nodeRequest: {
+        service: 'ant',
+        transport: 'http',
+        request: {
+          method: 'POST',
+          path: '/stamps/100/20',
+          headers: { 'content-type': 'application/json' },
+          body: '{"immutable":false}',
+        },
+        effect: 'persistent_change',
+        classification: await effectClassifier.classify.mock.results[0].value,
+      },
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'node_request',
+      operation: OPERATIONS.NODE_REQUEST,
+      nodeRequest: {
+        service: 'ant',
+        transport: 'http',
+        request: {
+          method: 'POST',
+          path: '/stamps/100/20',
+          headers: { 'content-type': 'application/json' },
+          body: '{"immutable":false}',
+        },
+        effect: 'persistent_change',
+        classification: {
+          summary: 'Creates a durable postage batch.',
+          confidence: 0.96,
+          uncertainties: [],
+        },
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+      },
+    });
+    await service.decideApproval('run_test', approval.approvalId, true);
+    await expect(decision).resolves.toBe('approved');
+
+    const lifecycleDecision = requestApproval({
+      action: 'node_lifecycle',
+      operation: OPERATIONS.NODE_LIFECYCLE,
+      label: 'restart ipfs',
+      nodeLifecycle: {
+        service: 'ipfs',
+        action: 'restart',
+        beforeState: 'running',
+        effect: 'reversible_admin',
+        classification: {
+          effect: 'reversible_admin',
+          summary: 'Restarts one Freedom-managed node.',
+          confidence: 0.99,
+          uncertainties: [],
+        },
+      },
+    });
+    const lifecycleApproval = events.at(-1);
+    expect(lifecycleApproval).toMatchObject({
+      type: 'approval_requested',
+      action: 'node_lifecycle',
+      operation: OPERATIONS.NODE_LIFECYCLE,
+      nodeLifecycle: {
+        service: 'ipfs',
+        action: 'restart',
+        beforeState: 'running',
+        effect: 'reversible_admin',
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+      },
+    });
+    await service.decideApproval('run_test', lifecycleApproval.approvalId, true);
+    await expect(lifecycleDecision).resolves.toBe('approved');
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('delivers native Pi steering in the retained run and projects its lifecycle', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, {
+      historyStore,
+      guidanceIdFactory: jest.fn(() => 'guidance_test'),
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    await expect(service.steer('run_test', 'Focus on primary sources')).resolves.toEqual({
+      guidanceId: 'guidance_test',
+      text: 'Focus on primary sources',
+      status: 'queued',
+      createdAt: 1_000,
+    });
+    expect(fake.session.steer).toHaveBeenCalledWith('Focus on primary sources');
+    expect(events.at(-1)).toMatchObject({
+      type: 'guidance_queued',
+      guidance: { guidanceId: 'guidance_test', status: 'queued' },
+    });
+
+    fake.emit({
+      type: 'message_start',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Focus on primary sources' }],
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'guidance_applying',
+      guidanceId: 'guidance_test',
+    });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    expect(events.at(-1)).toMatchObject({
+      type: 'guidance_applied',
+      guidanceId: 'guidance_test',
+    });
+    expect(historyStore.updateTurnGuidance).toHaveBeenLastCalledWith({
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      guidance: [
+        {
+          guidanceId: 'guidance_test',
+          text: 'Focus on primary sources',
+          status: 'applied',
+          createdAt: 1_000,
+        },
+      ],
+    });
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({
+      transcript: [
+        expect.objectContaining({
+          guidance: [expect.objectContaining({ status: 'applied' })],
+        }),
+      ],
+    });
+  });
+
+  test('holds a provider request from the actively controlled tab in Agent-native approval', async () => {
+    const fake = createFakeSession();
+    const externalBarriers = [];
+    const scopedController = {
+      execute: jest.fn(),
+      prepareResume: jest.fn(async () => ({ ok: true })),
+      getActiveTabId: jest.fn(() => 'tab_assigned'),
+      getWorkspaceState: jest.fn(() => ({
+        tabIds: ['tab_assigned'],
+        activeTabId: 'tab_assigned',
+      })),
+      setExternalApprovalBarrier: jest.fn((promise) => externalBarriers.push(promise)),
+    };
+    const walletController = {
+      handleRequest: jest.fn(async (context, payload) => {
+        const decision = await context.requestApproval({
+          action: 'wallet_connection',
+          operation: OPERATIONS.WALLET_ACTION,
+          tabId: context.tabId,
+          origin: payload.permissionKey,
+          destinationOrigin: payload.permissionKey,
+          label: 'Connect a wallet account',
+          wallet: {
+            kind: 'connection',
+            chainId: 100,
+            chainName: 'Gnosis',
+            wallets: [
+              {
+                index: 0,
+                name: 'Main Wallet',
+                address: '0x1111111111111111111111111111111111111111',
+                type: 'mnemonic',
+              },
+            ],
+            defaultWalletIndex: 0,
+            requiresUnlock: false,
+          },
+        });
+        expect(decision).toEqual({ status: 'approved', walletIndex: 0 });
+        return {
+          handled: true,
+          result: ['0x1111111111111111111111111111111111111111'],
+          receipt: {
+            wallet: {
+              action: 'connected',
+              origin: payload.permissionKey,
+              chainId: 100,
+              account: '0x1111111111111111111111111111111111111111',
+            },
+          },
+        };
+      }),
+    };
+    const { service } = createService(fake, {
+      controller: {
+        execute: jest.fn(),
+        getPageState: jest.fn(() => ({
+          tabId: 'tab_assigned',
+          url: 'https://app.example/swap',
+          navigationId: 4,
+        })),
+      },
+      createControllerScope: jest.fn(async () => scopedController),
+      walletController,
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const providerResponse = service.handleWalletRequest('tab_assigned', {
+      method: 'eth_requestAccounts',
+      params: [],
+      displayUrl: 'https://app.example/swap',
+      permissionKey: 'https://app.example',
+      chainId: 100,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const approval = events.find((event) => event.type === 'approval_requested');
+    expect(approval).toMatchObject({
+      action: 'wallet_connection',
+      operation: OPERATIONS.WALLET_ACTION,
+      origin: 'https://app.example',
+    });
+    expect(externalBarriers).toHaveLength(1);
+    await service.decideApproval('run_test', approval.approvalId, {
+      approved: true,
+      walletIndex: 0,
+    });
+    await expect(providerResponse).resolves.toEqual({
+      handled: true,
+      result: ['0x1111111111111111111111111111111111111111'],
+    });
+    expect(fake.session.steer).toHaveBeenCalledWith(
+      expect.stringContaining('Freedom wallet event (trusted browser result)')
+    );
+    expect(events.filter((event) => event.type === 'tool_started').at(-1)).toMatchObject({
+      operation: OPERATIONS.WALLET_ACTION,
+    });
+    expect(events.filter((event) => event.type === 'tool_finished').at(-1)).toMatchObject({
+      operation: OPERATIONS.WALLET_ACTION,
+      status: 'succeeded',
+    });
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('leaves wallet requests from inactive or unrelated tabs to the human wallet flow', async () => {
+    const fake = createFakeSession();
+    const walletController = { handleRequest: jest.fn() };
+    const { service } = createService(fake, { walletController });
+
+    await expect(
+      service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })
+    ).resolves.toEqual({ handled: false });
+    await service.start(startOptions());
+    await expect(
+      service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })
+    ).resolves.toEqual({ handled: false });
+    expect(walletController.handleRequest).not.toHaveBeenCalled();
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('withdraws a pending approval when the user takes over', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({ action: 'form_submission' });
+
+    await service.stop('run_test');
+
+    await expect(decision).resolves.toBe('withdrawn');
+    await service.waitForIdle();
+  });
+
+  test('pauses and resumes the same Pi session with a mandatory recovery prompt', async () => {
+    const fake = createFakeSession();
+    const cancelAgentDownloads = jest.fn();
+    const { service, dependencies } = createService(fake, { cancelAgentDownloads });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const scopedController = dependencies.createTools.mock.calls[0][0].controller;
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    scopedController.suspendPageControl = jest.fn();
+    const approvalDecision = requestApproval({ action: 'form_submission' });
+
+    await expect(service.pause('run_other')).resolves.toBe(false);
+    await expect(service.pause('run_test')).resolves.toBe(true);
+
+    await expect(approvalDecision).resolves.toBe('withdrawn');
+    expect(events.map((event) => event.type)).toContain('run_pausing');
+    expect(events.at(-1)).toMatchObject({ type: 'run_paused' });
+    expect(events.find((event) => event.type === 'approval_resolved')).toMatchObject({
+      decision: 'withdrawn',
+    });
+    expect(service.getState()).toMatchObject({ status: 'paused', runId: 'run_test' });
+    expect(scopedController.suspendPageControl).toHaveBeenCalledTimes(1);
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+    expect(cancelAgentDownloads).not.toHaveBeenCalled();
+
+    await expect(service.resume('run_test')).resolves.toBe(true);
+
+    expect(scopedController.prepareResume).toHaveBeenCalledTimes(1);
+    expect(fake.session.prompt).toHaveBeenCalledTimes(2);
+    expect(fake.session.prompt.mock.calls[1][0]).toContain('browser workspace');
+    expect(fake.session.prompt.mock.calls[1][0]).toContain('If no task tab remains');
+    expect(events.slice(-2).map((event) => event.type)).toEqual(['run_resuming', 'run_resumed']);
+    expect(service.getState()).toMatchObject({ status: 'running' });
+
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'completed' });
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('retains queued steering across Pause and resumes with additional guidance', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake, {
+      guidanceIdFactory: jest
+        .fn()
+        .mockReturnValueOnce('guidance_running')
+        .mockReturnValueOnce('guidance_resume'),
+    });
+    await service.start(startOptions());
+    await service.steer('run_test', 'Do not submit yet');
+    fake.emit({
+      type: 'message_start',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Do not submit yet' }],
+      },
+    });
+    expect(service.getState().transcript[0].guidance[0].status).toBe('applying');
+
+    await expect(service.pause('run_test')).resolves.toBe(true);
+    expect(fake.session.clearQueue).toHaveBeenCalledTimes(1);
+    expect(service.getState().transcript[0].guidance[0].status).toBe('queued');
+    await expect(service.resume('run_test', 'I have logged in; continue')).resolves.toBe(true);
+
+    const resumePrompt = fake.session.prompt.mock.calls[1][0];
+    expect(resumePrompt).toContain('browser workspace');
+    expect(resumePrompt).toContain('Do not submit yet');
+    expect(resumePrompt).toContain('I have logged in; continue');
+    expect(service.getState()).toMatchObject({
+      transcript: [
+        expect.objectContaining({
+          guidance: [
+            expect.objectContaining({ guidanceId: 'guidance_running', status: 'applying' }),
+            expect.objectContaining({ guidanceId: 'guidance_resume', status: 'applying' }),
+          ],
+        }),
+      ],
+    });
+
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+  });
+
+  test('refuses resume after the controlled tab leaves its starting site', async () => {
+    const fake = createFakeSession();
+    const prepareResume = jest.fn(async () => ({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED },
+    }));
+    const { service } = createService(fake, {
+      createControllerScope: jest.fn(async ({ controller }) => ({
+        ...controller,
+        prepareResume,
+      })),
+    });
+    await service.start(startOptions());
+    await service.pause('run_test');
+
+    await expect(service.resume('run_test')).rejects.toMatchObject({
+      code: AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED,
+    });
+    expect(service.getState()).toMatchObject({ status: 'paused' });
+    expect(fake.session.prompt).toHaveBeenCalledTimes(1);
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('take over remains terminal while paused', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    await service.pause('run_test');
+
+    await expect(service.stop('run_test')).resolves.toBe(true);
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('enforces single-run ownership', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    await service.start(startOptions());
+
+    await expect(service.start(startOptions())).rejects.toMatchObject({
+      name: 'FreedomAgentError',
+      code: AGENT_ERROR_CODES.BUSY,
+    });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('stops the matching run and reports cancellation', async () => {
+    const fake = createFakeSession();
+    const cancelAgentDownloads = jest.fn(() => 1);
+    const { service } = createService(fake, { cancelAgentDownloads });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    await expect(service.stop('run_stale')).resolves.toBe(false);
+    await expect(service.stop('run_test')).resolves.toBe(true);
+    await service.waitForIdle();
+
+    expect(fake.session.abort).toHaveBeenCalledTimes(1);
+    expect(cancelAgentDownloads).toHaveBeenCalledWith('conversation_test');
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+  });
+
+  test('persists a late workspace cancellation receipt before finishing Stop', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    let workspaceOptions;
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        enabled: true,
+        backend: 'linux-bubblewrap',
+        commands: [],
+      })),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      cancelConversation: jest.fn(() => {
+        queueMicrotask(() => {
+          workspaceOptions.onToolOutcome({
+            toolCallId: 'call_workspace_stop',
+            operation: 'bash',
+            status: 'failed',
+            errorCode: 'WORKSPACE_COMMAND_CANCELLED',
+            workspace: {
+              workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+              commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+              kind: 'command',
+              command: 'node server.js',
+              workingDirectory: '.',
+              backend: 'linux-bubblewrap',
+              networkPosture: 'full',
+              state: 'cancelled',
+              durationMs: 20,
+              exitCode: null,
+              signal: 'SIGKILL',
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              terminationGuarantee: 'namespace_scoped',
+              terminationScope: 'pid_namespace',
+              sideEffects: 'unknown',
+              survivorsPossible: false,
+              completeDescendantTermination: true,
+            },
+          });
+        });
+        return 1;
+      }),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const createWorkspaceTools = jest.fn(async (options) => {
+      workspaceOptions = options;
+      return [{ name: 'bash' }];
+    });
+    const { service } = createService(fake, {
+      historyStore,
+      workspaceController,
+      createWorkspaceTools,
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_workspace_stop',
+      toolName: 'bash',
+      args: { command: 'node server.js' },
+    });
+
+    await expect(service.stop('run_test')).resolves.toBe(true);
+    await service.waitForIdle();
+
+    const finished = historyStore.finishTurn.mock.calls.at(-1)[0];
+    expect(finished).toMatchObject({
+      status: 'cancelled',
+      activity: [
+        {
+          toolCallId: 'call_workspace_stop',
+          operation: 'bash',
+          status: 'failed',
+          label: 'Command stopped — node server.js',
+          errorCode: 'WORKSPACE_COMMAND_CANCELLED',
+          workspace: {
+            state: 'cancelled',
+            networkPosture: 'full',
+            signal: 'SIGKILL',
+            terminationGuarantee: 'namespace_scoped',
+            terminationScope: 'pid_namespace',
+          },
+        },
+      ],
+    });
+    expect(events.at(-2)).toMatchObject({
+      type: 'tool_finished',
+      toolCallId: 'call_workspace_stop',
+      workspace: {
+        state: 'cancelled',
+        networkPosture: 'full',
+        terminationScope: 'pid_namespace',
+      },
+    });
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+  });
+
+  test.each([[false, 'bash'], [true, 'bash'], [false, 'workspace_server'], [true, 'workspace_server']])('reconciles a yielded process into its finished turn during shutdown=%s via %s', async (duringShutdown, toolName) => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    let workspaceOptions;
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        enabled: true,
+        backend: 'linux-bubblewrap',
+        commands: [],
+      })),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      cancelConversation: jest.fn(() => 0),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const createWorkspaceTools = jest.fn(async (options) => {
+      workspaceOptions = options;
+      return [{ name: toolName }];
+    });
+    const { service } = createService(fake, {
+      historyStore,
+      workspaceController,
+      createWorkspaceTools,
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_workspace_server',
+      toolName,
+      args: { command: 'node server.js' },
+    });
+    workspaceOptions.onToolOutcome({
+      toolCallId: 'call_workspace_server',
+      operation: 'bash',
+      status: 'succeeded',
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+        processId: 'workspace_process_cccccccccccccccccccccccc',
+        kind: 'command',
+        command: 'node server.js',
+        workingDirectory: '.',
+        backend: 'linux-bubblewrap',
+        networkPosture: 'none',
+        state: 'running',
+        terminationGuarantee: 'pending',
+        terminationScope: 'pending',
+        sideEffects: 'unknown',
+        survivorsPossible: false,
+        completeDescendantTermination: false,
+      },
+    });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'call_workspace_server',
+      toolName,
+      isError: false,
+    });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState().transcript[0].activity[0].workspace.state).toBe('running');
+
+    const drained = createDeferred();
+    let shutdown;
+    if (duringShutdown) {
+      workspaceController.dispose.mockReturnValue(drained.promise);
+      shutdown = service.dispose();
+      expect(service.dispose()).toBe(shutdown);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(workspaceController.dispose).toHaveBeenCalledTimes(1);
+    }
+    workspaceOptions.onProcessTerminal({
+      toolCallId: 'call_workspace_server',
+      operation: 'bash',
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+        processId: 'workspace_process_cccccccccccccccccccccccc',
+        kind: 'command',
+        command: 'node server.js',
+        workingDirectory: '.',
+        backend: 'linux-bubblewrap',
+        networkPosture: 'none',
+        state: 'completed',
+        durationMs: 2_000,
+        exitCode: 0,
+        stdout: 'private-process-output',
+        stderr: 'private-process-error',
+        hostPath: '/Users/example/private-workspace',
+        terminationGuarantee: 'namespace_scoped',
+        terminationScope: 'pid_namespace',
+        sideEffects: 'unknown',
+        survivorsPossible: false,
+        completeDescendantTermination: true,
+      },
+    });
+
+    expect(historyStore.updateTurnActivity).toHaveBeenCalledWith({
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      activity: [
+        expect.objectContaining({
+          toolCallId: 'call_workspace_server',
+          status: 'succeeded',
+          label: 'Ran node server.js',
+          workspace: expect.objectContaining({
+            state: 'completed',
+            terminationScope: 'pid_namespace',
+          }),
+        }),
+      ],
+    });
+    if (!duringShutdown) expect(service.getState().transcript[0].activity[0]).toMatchObject({
+      status: 'succeeded',
+      label: 'Ran node server.js',
+      workspace: { state: 'completed', terminationScope: 'pid_namespace' },
+    });
+    expect(events.at(-2)).toMatchObject({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'call_workspace_server',
+      status: 'succeeded',
+      workspace: { state: 'completed' },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'workspace_processes_changed',
+      conversationId: 'conversation_test',
+    });
+    expect(events.at(-3)).toMatchObject({ type: 'run_finished', status: 'completed' });
+    expect(JSON.stringify(historyStore.updateTurnActivity.mock.calls.at(-1)[0])).not.toMatch(
+      /private-process|\/Users\/example/
+    );
+    expect(JSON.stringify(events.slice(-2))).not.toMatch(/private-process|\/Users\/example/);
+    if (duringShutdown) {
+      drained.resolve({ drained: true });
+      await shutdown;
+      expect(service.getState()).toEqual({ status: 'disposed' });
+    }
+  });
+
+  test('keeps a restarted server terminal receipt that arrives before its initial running outcome', async () => {
+    const fake = createFakeSession();
+    let workspaceOptions;
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', enabled: true })),
+      disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(), dispose: jest.fn(),
+    };
+    const { service } = createService(fake, { workspaceController,
+      createWorkspaceTools: jest.fn(async options => { workspaceOptions = options; return [{ name: 'workspace_server' }]; }),
+    });
+    await service.start(startOptions());
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'restart_race', toolName: 'workspace_server', args: { action: 'restart' } });
+    const workspace = {
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      processId: 'workspace_process_cccccccccccccccccccccccc', kind: 'command', command: 'node server.js',
+      workingDirectory: '.', backend: 'linux-bubblewrap', networkPosture: 'full', state: 'completed',
+      exitCode: 0, terminationGuarantee: 'namespace_scoped', terminationScope: 'pid_namespace',
+      sideEffects: 'unknown', survivorsPossible: false, completeDescendantTermination: true,
+    };
+    workspaceOptions.onProcessTerminal({ toolCallId: 'restart_race', operation: 'bash', workspace });
+    workspaceOptions.onToolOutcome({ toolCallId: 'restart_race', operation: 'bash', status: 'succeeded',
+      workspace: { ...workspace, state: 'running', terminationGuarantee: 'pending', terminationScope: 'pending' },
+    });
+    fake.emit({ type: 'tool_execution_end', toolCallId: 'restart_race', toolName: 'workspace_server', isError: false });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve(); await service.waitForIdle();
+    expect(service.getState().transcript[0].activity[0]).toMatchObject({ operation: 'workspace_server',
+      label: 'Ran node server.js', workspace: { state: 'completed', processId: workspace.processId },
+    });
+    await service.dispose();
+  });
+
+  test('finishes Stop at its deadline when both Pi abort and execution remain wedged', async () => {
+    const fake = createFakeSession();
+    fake.session.abort.mockImplementation(() => new Promise(() => {}));
+    const { service } = createService(fake, { stopGraceMs: 10 });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    await expect(service.stop('run_test')).resolves.toBe(true);
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+    expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    expect(service.getState()).toMatchObject({ status: 'ready', runtimeAvailable: false });
+  });
+
+  test('returns a missing-tab tool failure to the model without killing the conversation', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({
+      toolCallId: 'call_1',
+      operation: 'browser_snapshot',
+      status: 'failed',
+      errorCode: ERROR_CODES.TAB_NOT_FOUND,
+    });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'call_1',
+      toolName: 'browser_snapshot',
+      result: {
+        content: [{ type: 'text', text: 'Pi may render this however it wants' }],
+      },
+      isError: true,
+    });
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({
+      type: 'tool_finished',
+      status: 'failed',
+      errorCode: ERROR_CODES.TAB_NOT_FOUND,
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({ status: 'ready' });
+  });
+
+  test('retains only the safe node summary for progress and completion evidence', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_nodes',
+      toolName: OPERATIONS.NODE_STATUS,
+      args: {},
+    });
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({
+      toolCallId: 'call_nodes',
+      operation: OPERATIONS.NODE_STATUS,
+      status: 'succeeded',
+      nodeStatus: { total: 6, ready: 2, active: 3, disabled: 1, attention: 1 },
+      nodes: [{ endpoint: 'http://private.test', error: 'secret' }],
+    });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'call_nodes',
+      toolName: OPERATIONS.NODE_STATUS,
+      result: { content: [{ type: 'text', text: 'node details for the model' }] },
+      isError: false,
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events.find((event) => event.type === 'tool_finished')).toMatchObject({
+      operation: OPERATIONS.NODE_STATUS,
+      status: 'succeeded',
+      label: 'Checked 6 services',
+      nodeStatus: { total: 6, ready: 2, active: 3, disabled: 1, attention: 1 },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      outcome: {
+        verification: 'nodes_inspected',
+        headline: 'Node status checked',
+        counts: { nodeChecks: 1 },
+      },
+    });
+    expect(JSON.stringify(events)).not.toMatch(/private\.test|secret/);
+  });
+
+  test('projects user-cancelled downloads without promoting an incomplete receipt', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_download',
+      toolName: OPERATIONS.DOWNLOAD,
+      args: { ref: 'ref_download' },
+    });
+    dependencies.createTools.mock.calls[0][0].onToolProgress({
+      toolCallId: 'call_download',
+      operation: OPERATIONS.DOWNLOAD,
+      progress: {
+        receivedBytes: 0,
+        totalBytes: 6_000_000_000,
+        state: 'cancelled',
+        receipt: {
+          artifactId: 'artifact_1234567890abcdef1234',
+          filename: 'large.iso',
+          bytes: 0,
+          state: 'cancelled',
+          location: 'downloads',
+          available: false,
+        },
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'tool_progress',
+      state: 'cancelled',
+    });
+    expect(events.at(-1)).not.toHaveProperty('artifact');
+
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({
+      toolCallId: 'call_download',
+      operation: OPERATIONS.DOWNLOAD,
+      status: 'failed',
+      errorCode: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+    });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'call_download',
+      toolName: OPERATIONS.DOWNLOAD,
+      result: { content: [{ type: 'text', text: 'cancelled' }] },
+      isError: true,
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events.find((event) => event.type === 'tool_finished')).toMatchObject({
+      status: 'failed',
+      errorCode: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+    });
+    expect(events.at(-1)).toMatchObject({
+      failedActionCount: 0,
+      cancelledActionCount: 1,
+      outcome: {
+        verification: 'download_cancelled',
+        headline: 'Download cancelled',
+      },
+    });
+  });
+
+  test('does not terminate the task when a created tab disappears', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    await service.start(startOptions());
+
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({
+      toolCallId: 'call_created_missing',
+      operation: 'browser_snapshot',
+      status: 'failed',
+      tabId: 'tab_created',
+      errorCode: ERROR_CODES.TAB_NOT_FOUND,
+    });
+
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    expect(service.getState()).toMatchObject({ status: 'running', tabId: 'tab_assigned' });
+    await service.stop('run_test');
+  });
+
+  test('keeps an active conversation running when its originally adopted tab closes', async () => {
+    const fake = createFakeSession();
+    let lifecycleListener;
+    const unsubscribeTabLifecycle = jest.fn();
+    const subscribeTabLifecycle = jest.fn((listener) => {
+      lifecycleListener = listener;
+      return unsubscribeTabLifecycle;
+    });
+    const { service } = createService(fake, { subscribeTabLifecycle });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    lifecycleListener({ type: 'tab_closed', tabId: 'tab_other', kind: 'desktop' });
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    lifecycleListener({ type: 'tab_closed', tabId: 'tab_assigned', kind: 'desktop' });
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      status: 'completed',
+    });
+
+    await service.dispose();
+    expect(unsubscribeTabLifecycle).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps a paused conversation resumable after its originally adopted tab closes', async () => {
+    const fake = createFakeSession();
+    let lifecycleListener;
+    const { service } = createService(fake, {
+      subscribeTabLifecycle: (listener) => {
+        lifecycleListener = listener;
+        return jest.fn();
+      },
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    await service.pause('run_test');
+
+    lifecycleListener({ type: 'tab_closed', tabId: 'tab_assigned', kind: 'desktop' });
+    expect(service.getState()).toMatchObject({ status: 'paused' });
+    await expect(service.resume('run_test')).resolves.toBe(true);
+    expect(fake.session.prompt.mock.calls[1][0]).toContain('If no task tab remains');
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+    await service.stop('run_test');
+  });
+
+  test('redacts provider failures from terminal events', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: 'Authorization failed for sk-secret-key',
+      },
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      status: 'failed',
+      error: {
+        code: AGENT_ERROR_CODES.PROVIDER_ERROR,
+        message:
+          'test using model_test rejected the saved credentials. Provider detail: “Authorization failed for [redacted credential]”',
+        providerFailure: {
+          category: 'authentication',
+          recovery: 'provider_setup',
+          cause: 'credentials_rejected',
+          phase: 'request',
+        },
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('reports sanitized transient retry progress and successful recovery', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 2_000,
+      errorMessage: '429 upstream exposed sk-secret-key',
+    });
+    fake.emit({ type: 'auto_retry_end', success: true, attempt: 1 });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'run_retrying',
+          attempt: 1,
+          maxAttempts: 2,
+          delayMs: 2_000,
+          message:
+            'test using model_test rate-limited the request. Provider detail: “429 upstream exposed [redacted credential]”',
+          providerFailure: expect.objectContaining({
+            category: 'rate_limited',
+            recovery: 'transient',
+            cause: 'rate_limited',
+            httpStatus: 429,
+          }),
+        }),
+        expect.objectContaining({ type: 'run_retry_recovered', attempt: 1 }),
+      ])
+    );
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'completed' });
+    expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('retains safe Pi WebSocket transport diagnostics without exposing diagnostic stacks', () => {
+    const failure = providerFailureFromPiMessage({
+      errorMessage: 'fetch failed',
+      diagnostics: [
+        {
+          type: 'provider_transport_failure',
+          error: {
+            message: 'WebSocket closed 1006 Authorization: Bearer private-provider-token',
+            stack: 'must-not-be-exposed',
+          },
+          details: {
+            phase: 'before_message_stream_start',
+            fallbackTransport: 'sse',
+            requestBytes: 123456,
+          },
+        },
+      ],
+    });
+
+    expect(failure).toMatchObject({ category: 'connection' });
+    expect(failure.detail).toContain('fell back to SSE');
+    expect(failure.detail).toContain('Authorization: [redacted]');
+    expect(JSON.stringify(failure)).not.toContain('private-provider-token');
+    expect(JSON.stringify(failure)).not.toContain('must-not-be-exposed');
+    expect(JSON.stringify(failure)).not.toContain('123456');
+  });
+
+  test('enumerates distinct sanitized provider reasons from every failed attempt', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: 'fetch failed',
+        diagnostics: [
+          {
+            type: 'provider_transport_failure',
+            error: { message: 'WebSocket closed 1006' },
+            details: { phase: 'after_message_stream_start' },
+          },
+        ],
+      },
+    });
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 2_000,
+      errorMessage: 'fetch failed',
+    });
+    fake.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: 'fetch failed · UND_ERR_CONNECT_TIMEOUT',
+      },
+    });
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 2,
+      maxAttempts: 2,
+      delayMs: 4_000,
+      errorMessage: 'fetch failed',
+    });
+    fake.emit({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'error', errorMessage: 'HTTP 503 overloaded' },
+    });
+    fake.emit({
+      type: 'auto_retry_end',
+      success: false,
+      attempt: 2,
+      finalError: 'HTTP 503 overloaded',
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    const error = events.at(-1).error;
+    expect(error.providerAttempts).toMatchObject({
+      total: 3,
+      observedFailures: 3,
+      sameReason: false,
+    });
+    expect(error.message).toContain('Attempt details:');
+    expect(error.message).toContain('WebSocket transport failed after response streaming started');
+    expect(error.message).toContain('UND_ERR_CONNECT_TIMEOUT');
+    expect(error.message).toContain('HTTP 503');
+  });
+
+  test('explains exhausted automatic retries with sanitized provider detail', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 2_000,
+      errorMessage: '503 upstream sk-secret-key',
+    });
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 2,
+      maxAttempts: 2,
+      delayMs: 4_000,
+      errorMessage: '503 upstream sk-secret-key',
+    });
+    fake.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '503 upstream sk-secret-key',
+      },
+    });
+    fake.emit({
+      type: 'auto_retry_end',
+      success: false,
+      attempt: 2,
+      finalError: '503 upstream sk-secret-key',
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      status: 'failed',
+      error: {
+        code: AGENT_ERROR_CODES.PROVIDER_ERROR,
+        message:
+          'test using model_test returned HTTP 503. Provider detail: “503 upstream [redacted credential]” Freedom made 3 attempts total: the initial request plus 2 automatic retries. Every attempt failed for the same reason.',
+        providerFailure: {
+          category: 'service_unavailable',
+          recovery: 'transient',
+          cause: 'http_error',
+          phase: 'response',
+          httpStatus: 503,
+        },
+        providerAttempts: {
+          total: 3,
+          automaticRetries: 2,
+          observedFailures: 3,
+          sameReason: true,
+        },
+        retryCount: 2,
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('states explicitly when repeated network failures include no status or code', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    for (const attempt of [1, 2]) {
+      fake.emit({
+        type: 'auto_retry_start',
+        attempt,
+        maxAttempts: 2,
+        delayMs: attempt * 2_000,
+        errorMessage: 'Network error',
+      });
+    }
+    fake.emit({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'error', errorMessage: 'Network error' },
+    });
+    fake.emit({
+      type: 'auto_retry_end',
+      success: false,
+      attempt: 2,
+      finalError: 'Network error',
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    const error = events.at(-1).error;
+    expect(error.message).toContain('Provider detail: “Network error”');
+    expect(error.message).toContain(
+      'No HTTP status, network error code, or more specific reason was supplied.'
+    );
+    expect(error.message).not.toContain('same reason');
+    expect(error.providerAttempts).toMatchObject({
+      total: 3,
+      observedFailures: 3,
+      sameReason: null,
+    });
+  });
+
+  test('redacts prompt rejection details', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.prompt.reject(new Error('Request header contained sk-secret-key'));
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      status: 'failed',
+      error: { code: AGENT_ERROR_CODES.PROVIDER_ERROR },
+    });
+    expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('reports and redacts session initialization failures', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake, {
+      createSession: jest.fn(async () => {
+        throw new Error('Failed while using sk-secret-key');
+      }),
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await expect(service.start(startOptions())).rejects.toEqual(
+      new FreedomAgentError(
+        AGENT_ERROR_CODES.SESSION_START_FAILED,
+        'The agent session could not be started'
+      )
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      status: 'failed',
+      error: { code: AGENT_ERROR_CODES.SESSION_START_FAILED },
+    });
+    expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('disposes an active run and rejects future work', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    await service.start(startOptions());
+
+    await service.dispose();
+
+    expect(service.getState()).toEqual({ status: 'disposed' });
+    expect(fake.session.abort).toHaveBeenCalledTimes(1);
+    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    await expect(service.start(startOptions())).rejects.toMatchObject({
+      code: AGENT_ERROR_CODES.DISPOSED,
+    });
+  });
+
+  test('validates bounded prompts before creating a run', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+
+    await expect(service.start(startOptions({ prompt: ' '.repeat(3) }))).rejects.toMatchObject({
+      code: AGENT_ERROR_CODES.INVALID_ARGUMENT,
+    });
+    await expect(
+      service.start(startOptions({ prompt: 'x'.repeat(MAX_AGENT_PROMPT_LENGTH + 1) }))
+    ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+    await expect(service.start(startOptions({ approvalMode: 'unsafe' }))).rejects.toMatchObject({
+      code: AGENT_ERROR_CODES.INVALID_ARGUMENT,
+    });
+    expect(dependencies.loadSdk).not.toHaveBeenCalled();
+  });
+
+  test('normalizes only the safe event subset and known tool errors', () => {
+    expect(normalizePiEvent({ type: 'turn_start' })).toEqual({ type: 'run_thinking' });
+    expect(
+      normalizePiEvent({ type: 'message_start', message: { role: 'assistant', secret: true } })
+    ).toEqual({ type: 'run_responding' });
+    expect(
+      normalizePiEvent({ type: 'message_start', message: { role: 'user', secret: true } })
+    ).toBeNull();
+    expect(
+      normalizePiEvent({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'thinking_delta', delta: 'private' },
+      })
+    ).toBeNull();
+    expect(
+      normalizePiEvent({
+        type: 'tool_execution_start',
+        toolCallId: 'call_skill',
+        toolName: 'read',
+        args: { path: '/freedom-agent/skills/swarm-postage/SKILL.md' },
+      })
+    ).toBeNull();
+    expect(
+      normalizePiEvent({
+        type: 'tool_execution_end',
+        toolCallId: 'call_skill',
+        toolName: 'read',
+        result: { content: [{ type: 'text', text: 'bundled skill contents' }] },
+      })
+    ).toBeNull();
+    expect(
+      normalizePiEvent({
+        type: 'auto_retry_start',
+        attempt: 1,
+        maxAttempts: 2,
+        delayMs: 500,
+        errorMessage: 'secret provider detail',
+      })
+    ).toEqual({
+      type: 'run_retrying',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 500,
+      message:
+        'The model provider reported: “secret provider detail” It supplied no recognized HTTP status or error code.',
+      providerFailure: {
+        category: 'unknown',
+        recovery: 'unknown',
+        cause: 'unknown',
+        phase: 'unknown',
+        detail: 'secret provider detail',
+      },
+    });
+    expect(normalizePiEvent({ type: 'auto_retry_end', success: true, attempt: 1 })).toEqual({
+      type: 'run_retry_recovered',
+      attempt: 1,
+    });
+    expect(
+      normalizePiEvent({
+        type: 'auto_retry_end',
+        success: false,
+        attempt: 2,
+        finalError: 'HTTP 503 overloaded_error',
+      })
+    ).toEqual({
+      type: 'run_retry_exhausted',
+      attempt: 2,
+      providerFailure: {
+        category: 'service_unavailable',
+        recovery: 'transient',
+        cause: 'http_error',
+        phase: 'response',
+        httpStatus: 503,
+        detail: 'HTTP 503 overloaded_error',
+      },
+    });
+    expect(normalizePiEvent({ type: 'message_end', message: { secret: true } })).toBeNull();
+    expect(normalizePiEvent({ type: 'compaction_start', reason: 'threshold' })).toEqual({
+      type: 'context_compaction_started',
+      reason: 'threshold',
+    });
+    expect(
+      normalizePiEvent({
+        type: 'compaction_end',
+        reason: 'threshold',
+        aborted: false,
+        result: { summary: 'private summary content' },
+      })
+    ).toEqual({
+      type: 'context_compaction_finished',
+      reason: 'threshold',
+      status: 'succeeded',
+    });
+    expect(
+      normalizePiEvent(
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'call_1',
+          toolName: 'browser_snapshot',
+          result: { content: [{ type: 'text', text: 'unstructured wording' }] },
+          isError: true,
+        },
+        { status: 'failed', errorCode: ERROR_CODES.POLICY_DENIED }
+      )
+    ).toMatchObject({ status: 'failed', errorCode: ERROR_CODES.POLICY_DENIED });
+    expect(
+      normalizePiEvent({
+        type: 'tool_execution_end',
+        toolCallId: 'call_attachment',
+        toolName: 'attachment_read',
+        result: {
+          content: [{ type: 'text', text: 'private attachment contents' }],
+          details: {
+            resourceId: `folder_${'a'.repeat(20)}`,
+            resourceKind: 'folder',
+            folderName: 'Bug reports',
+            name: 'ant-report.json',
+            relativePath: 'ant-report.json',
+            bytesRead: 100,
+            offset: 0,
+            truncated: false,
+            sourcePath: '/Users/private/ant-report.json',
+          },
+        },
+        isError: false,
+      })
+    ).toMatchObject({
+      operation: 'attachment_read',
+      status: 'succeeded',
+      label: 'Read ant-report.json',
+      effect: 'observed',
+      attachment: {
+        action: 'read',
+        name: 'ant-report.json',
+        folderName: 'Bug reports',
+        relativePath: 'ant-report.json',
+      },
+    });
+  });
+
+  test('extracts only explicit bounded reasoning headings for live progress', () => {
+    expect(reasoningProgressFromPiText('private free-form reasoning')).toBeNull();
+    expect(
+      reasoningProgressFromPiText('This merely emphasizes **one phrase** in prose.')
+    ).toBeNull();
+    expect(reasoningProgressFromPiText('**Planning the implementation**')).toBe(
+      'Planning the implementation…'
+    );
+    expect(
+      reasoningProgressFromPiText(
+        '**Planning the implementation**\nSome prose.\n### Verifying [the result](https://example.test)'
+      )
+    ).toBe('Verifying the result…');
+    expect(reasoningProgressFromPiText('**Checking\u202ethe result\u0000now**')).toBe(
+      'Checking the result now…'
+    );
+    expect(reasoningProgressFromPiText('**still streaming')).toBeNull();
+    expect(reasoningProgressFromPiText(`**${'x'.repeat(220)}**`)).toHaveLength(140);
+  });
+
+  test('isolates subscriber failures', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe(() => {
+      throw new Error('broken chrome subscriber');
+    });
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions());
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events.map((event) => event.type)).toEqual(['run_started', 'run_finished']);
+  });
+});
+
+describe('concurrent helper approvals', () => {
+  const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  test('queues exact requests instead of declining while another sheet is open', async () => {
+    const fake = createFakeSession(); const { service, dependencies } = createService(fake);
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const request = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const first = request({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'First helper' });
+    const second = request({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'Second helper' });
+    const prompts = () => events.filter(event => event.type === 'approval_requested');
+    expect(prompts()).toHaveLength(1);
+    await service.decideApproval('run_test', prompts()[0].approvalId, false);
+    expect(await first).toBe('declined'); await flush();
+    expect(prompts()).toHaveLength(2);
+    expect(prompts()[1].label).toBe('Second helper');
+    await service.decideApproval('run_test', prompts()[1].approvalId, true);
+    expect(await second).toBe('approved');
+    await service.stop('run_test'); await service.waitForIdle();
+  });
+
+  test('Stop withdraws queued requests without opening a later sheet', async () => {
+    const fake = createFakeSession(); const { service, dependencies } = createService(fake);
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const request = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const requests = [request({ action: 'form_submission', label: 'First' }), request({ action: 'form_submission', label: 'Second' })];
+    await service.stop('run_test');
+    expect(await Promise.all(requests)).toEqual(['withdrawn', 'withdrawn']);
+    expect(events.filter(event => event.type === 'approval_requested')).toHaveLength(1);
+    await service.waitForIdle();
+  });
+
+  test('browser helpers get scoped tools, route approval through the parent and withdraw their own sheet on cancellation', async () => {
+    const parent = createFakeSession(); const child = createFakeSession();
+    const browser = { controller: { execute: jest.fn() }, recordOutcome: jest.fn(), evidence: () => ({ tabIds: [], browserActions: [] }), release: jest.fn() };
+    const createBrowser = jest.fn(() => browser);
+    const { service, dependencies } = createService(parent, {
+      createControllerScope: jest.fn(async () => ({ execute: jest.fn(), prepareResume: async () => ({ ok: true }), createDelegatedBrowser: createBrowser })),
+      createSubagentSession: jest.fn(async () => ({ session: child.session })),
+    });
+    const events = []; service.subscribe(event => events.push(event));
+    await service.start(startOptions());
+    const delegate = dependencies.createSession.mock.calls[0][0].customTools.find(tool => tool.name === 'delegate_task');
+    const started = await delegate.execute('browser-helper', { title: 'Browse', task: 'Inspect a page', mode: 'browser', tabIds: ['tab_test'], background: true }); await flush();
+    expect(dependencies.createTools.mock.calls[1][0]).toMatchObject({ controller: browser.controller, tabId: null });
+    expect(createBrowser.mock.calls[0][0].tabIds).toEqual(['tab_test']);
+    const { signal, requestApproval } = createBrowser.mock.calls[0][0];
+    const decision = requestApproval({ action: 'browser_interaction', operation: OPERATIONS.CLICK, label: 'Helper click' });
+    expect(events.at(-1).label).toBe('Helper click');
+    const taskId = started.details.subagent.taskId;
+    expect(await service.stopHelper('run_stale', taskId)).toBe(false);
+    expect(await service.stopHelper('run_test', taskId)).toBe(true); await flush();
+    expect(parent.session.abort).not.toHaveBeenCalled();
+    expect(signal.aborted).toBe(true);
+    expect(await decision).toBe('withdrawn');
+    expect(browser.release).toHaveBeenCalled();
+    await service.stop('run_test'); await service.waitForIdle();
+  });
+});
+
+
+describe('provider-aware orchestration guidance', () => {
+  test.each(['ollama', 'openai', 'openai-codex', 'openrouter'])(
+    'guides the parent for %s while preserving delegation tools and the selected model', async provider => {
+      const fake = createFakeSession();
+      const { service, dependencies } = createService(fake);
+      const model = { id: 'selected-model', provider, baseUrl: 'http://private-endpoint', apiKey: 'private-credential' };
+      await service.start(startOptions({ model, prompt: 'Investigate this project and improve it' }));
+      const settings = dependencies.createSession.mock.calls[0][0];
+      expect(settings.model).toBe(model);
+      expect(settings.customTools.map(tool => tool.name)).toEqual(expect.arrayContaining(['delegate_task', 'helper_task', 'helper_reports']));
+      expect(settings.systemPrompt).toContain('For each substantial task, identify independent subtasks');
+      expect(settings.systemPrompt).toContain('use the helper reports and their source links directly');
+      expect(settings.systemPrompt).toContain('For code changes, inspect changedFiles/attemptedFiles and the diff');
+      expect(settings.systemPrompt).toContain('without rereading the three articles yourself');
+      expect(settings.systemPrompt).toContain('have a reviewer inspect the actual code');
+      expect(settings.systemPrompt).toContain('Multiple editing helpers and the parent may write disjoint files concurrently');
+      expect(settings.systemPrompt).toContain('handle simple requests directly');
+      expect(settings.systemPrompt).toContain('do not wait for the user to mention helpers');
+      expect(settings.systemPrompt).toContain('start three browser helpers in one batch');
+      expect(settings.customTools.find(tool => tool.name === 'delegate_task').parameters.properties.tasks.maxItems).toBe(6);
+      expect(settings.systemPrompt).not.toContain('private-endpoint');
+      expect(settings.systemPrompt).not.toContain('private-credential');
+      if (provider === 'ollama') {
+        expect(settings.systemPrompt).toContain('Prefer sequential delegation: start one foreground helper');
+        expect(settings.systemPrompt).toContain('Honor explicit user requests for helpers, including parallel helpers');
+        expect(settings.systemPrompt).not.toContain('this conversation uses a hosted model connection');
+      } else {
+        expect(settings.systemPrompt).toContain('use parallel helpers as the normal approach');
+        expect(settings.systemPrompt).not.toContain('this conversation uses an Ollama connection');
+      }
+      fake.prompt.resolve();
+      await service.waitForIdle();
+    }
+  );
+});
+
+describe('publication continuation', () => {
+  const id = `swarm_pub_${'a'.repeat(24)}`;
+  const initial = { publicationId: id, state: 'uploading', applicationState: 'possibly_applied', kind: 'folder', name: 'dist', public: true };
+  async function fixture() {
+    const fake = createFakeSession();
+    const waiting = createDeferred();
+    const publicationController = { waitForPublications: jest.fn((_owner, _ids, signal) => {
+      signal.addEventListener('abort', () => waiting.resolve([]), { once: true });
+      return waiting.promise;
+    }) };
+    const { service, dependencies } = createService(fake, { publicationController });
+    await service.start(startOptions());
+    fake.emit({ type: 'tool_execution_start', toolName: 'swarm_publish', toolCallId: 'publish', args: { workspacePath: 'dist' } });
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({ toolCallId: 'publish', operation: 'swarm_publish', status: 'succeeded', publication: initial });
+    fake.emit({ type: 'tool_execution_end', toolName: 'swarm_publish', toolCallId: 'publish', result: {} });
+    fake.prompt.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    return { service, fake, waiting, publicationController };
+  }
+
+  test('keeps the turn alive and resumes the parent exactly once with the terminal receipt', async () => {
+    const { service, fake, waiting, publicationController } = await fixture();
+    expect(service.activeRun).not.toBeNull();
+    expect(publicationController.waitForPublications).toHaveBeenCalledWith('conversation_test', [id], expect.any(AbortSignal));
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+    waiting.resolve([{ ...initial, state: 'completed', applicationState: 'applied', reference: 'b'.repeat(64), bzzUrl: `bzz://${'b'.repeat(64)}` }]);
+    await service.waitForIdle();
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'freedom_publication_results', content: expect.stringContaining('completed') }), { triggerTurn: true });
+    await service.dispose();
+  });
+
+  test('Stop cancels the wait without delivering a stale completion to the model', async () => {
+    const { service, fake } = await fixture();
+    await service.stop('run_test');
+    await service.waitForIdle();
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  test('separates distinct assistant messages without splitting streamed chunks', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, { historyStore });
+    await service.start(startOptions());
+    const start = () => fake.emit({ type: 'message_start', message: { role: 'assistant' } });
+    const text = delta => fake.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } });
+    start(); text('Uploading'); text(' now.'); start(); text('Published.');
+    fake.prompt.resolve(); await service.waitForIdle();
+    expect(historyStore.finishTurn.mock.calls[0][0].assistantText).toBe('Uploading now.\n\nPublished.');
+    await service.dispose();
+  });
+});

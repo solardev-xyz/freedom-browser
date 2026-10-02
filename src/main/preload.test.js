@@ -80,6 +80,14 @@ describe('preload', () => {
     jest.restoreAllMocks();
   });
 
+  test('reads saved helper report pages through the narrow history bridge', async () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    await exposures.electronAPI.readAgentHelperReport('conversation', 'report_' + 'a'.repeat(64), 16000);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.AGENT_HELPER_REPORTS, {
+      conversationId: 'conversation', reportId: 'report_' + 'a'.repeat(64), offset: 16000,
+    });
+  });
+
   test('exposes the preload bridges and routes direct wrappers to ipcRenderer', async () => {
     const { contextBridge, exposures, internalPages, ipcRenderer } = loadPreloadModule({
       antApiEnv: null,
@@ -128,7 +136,13 @@ describe('preload', () => {
     expect(exposures.electronAPI.platform).toBe(process.platform);
 
     const invokeCases = [
-      [exposures.electronAPI, 'setBzzBase', [11, 'http://127.0.0.1:1633/bzz/hash/'], IPC.BZZ_SET_BASE, [{ webContentsId: 11, baseUrl: 'http://127.0.0.1:1633/bzz/hash/' }]],
+      [
+        exposures.electronAPI,
+        'setBzzBase',
+        [11, 'http://127.0.0.1:1633/bzz/hash/'],
+        IPC.BZZ_SET_BASE,
+        [{ webContentsId: 11, baseUrl: 'http://127.0.0.1:1633/bzz/hash/' }],
+      ],
       [exposures.electronAPI, 'clearBzzBase', [11], IPC.BZZ_CLEAR_BASE, [{ webContentsId: 11 }]],
       [exposures.electronAPI, 'startSwarmProbe', ['a'.repeat(64), '/index.html'], IPC.BZZ_START_PROBE, [{ hash: 'a'.repeat(64), path: '/index.html' }]],
       [exposures.electronAPI, 'awaitSwarmProbe', ['probe-1'], IPC.BZZ_AWAIT_PROBE, [{ id: 'probe-1' }]],
@@ -136,10 +150,22 @@ describe('preload', () => {
       [exposures.electronAPI, 'getPlatform', [], IPC.WINDOW_GET_PLATFORM, []],
       [exposures.electronAPI, 'getActiveProfile', [], IPC.PROFILE_GET_ACTIVE, []],
       [exposures.electronAPI, 'listProfiles', [], IPC.PROFILE_LIST, []],
-      [exposures.electronAPI, 'createProfile', [{ displayName: 'Work' }], IPC.PROFILE_CREATE, [{ displayName: 'Work' }]],
+      [
+        exposures.electronAPI,
+        'createProfile',
+        [{ displayName: 'Work' }],
+        IPC.PROFILE_CREATE,
+        [{ displayName: 'Work' }],
+      ],
       [exposures.electronAPI, 'openProfile', ['work'], IPC.PROFILE_OPEN, [{ id: 'work' }]],
       [exposures.electronAPI, 'getSettings', [], IPC.SETTINGS_GET, []],
-      [exposures.electronAPI, 'saveSettings', [{ theme: 'dark' }], IPC.SETTINGS_SAVE, [{ theme: 'dark' }]],
+      [
+        exposures.electronAPI,
+        'saveSettings',
+        [{ theme: 'dark' }],
+        IPC.SETTINGS_SAVE,
+        [{ theme: 'dark' }],
+      ],
       [exposures.electronAPI, 'getBookmarks', [], IPC.BOOKMARKS_GET, []],
       [exposures.electronAPI, 'addBookmark', [{ label: 'Example', target: 'https://example.com' }], IPC.BOOKMARKS_ADD, [{ label: 'Example', target: 'https://example.com' }]],
       [exposures.electronAPI, 'updateBookmark', ['https://old.example', { label: 'New', target: 'https://new.example' }], IPC.BOOKMARKS_UPDATE, [{ originalTarget: 'https://old.example', bookmark: { label: 'New', target: 'https://new.example' } }]],
@@ -149,11 +175,225 @@ describe('preload', () => {
       [exposures.electronAPI, 'resolveEnsAddress', ['vitalik.eth'], IPC.ENS_RESOLVE_ADDRESS, [{ name: 'vitalik.eth', chainId: 1 }]],
       [exposures.electronAPI, 'resolveEnsReverse', ['0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'], IPC.ENS_RESOLVE_REVERSE, [{ address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', chainId: 1 }]],
       [exposures.electronAPI, 'getHistory', [{ limit: 10 }], IPC.HISTORY_GET, [{ limit: 10 }]],
-      [exposures.electronAPI, 'addHistory', [{ url: 'https://example.com' }], IPC.HISTORY_ADD, [{ url: 'https://example.com' }]],
+      [
+        exposures.electronAPI,
+        'addHistory',
+        [{ url: 'https://example.com' }],
+        IPC.HISTORY_ADD,
+        [{ url: 'https://example.com' }],
+      ],
       [exposures.electronAPI, 'removeHistory', [7], IPC.HISTORY_REMOVE, [7]],
       [exposures.electronAPI, 'clearHistory', [], IPC.HISTORY_CLEAR, []],
       [exposures.electronAPI, 'getWebviewPreloadPath', [], IPC.GET_WEBVIEW_PRELOAD_PATH, []],
-      [exposures.electronAPI, 'saveImage', ['https://example.com/image.png'], IPC.CONTEXT_MENU_SAVE_IMAGE, ['https://example.com/image.png']],
+      [
+        exposures.electronAPI,
+        'startAgent',
+        [7, 'Summarize', 'allow_website_interactions'],
+        IPC.AGENT_START,
+        [
+          {
+            rendererTabId: 7,
+            prompt: 'Summarize',
+            approvalMode: 'allow_website_interactions',
+          },
+        ],
+      ],
+      [
+        exposures.electronAPI,
+        'startAgent',
+        [null, 'Research independently'],
+        IPC.AGENT_START,
+        [
+          {
+            rendererTabId: null,
+            prompt: 'Research independently',
+            approvalMode: 'every_interaction',
+          },
+        ],
+      ],
+      [
+        exposures.electronAPI,
+        'startAgent',
+        [7, 'Review this', 'every_interaction', ['selection_123']],
+        IPC.AGENT_START,
+        [
+          {
+            rendererTabId: 7,
+            prompt: 'Review this',
+            approvalMode: 'every_interaction',
+            attachmentIds: ['selection_123'],
+          },
+        ],
+      ],
+      [
+        exposures.electronAPI,
+        'steerAgent',
+        ['run_test', 'Focus on sources'],
+        IPC.AGENT_STEER,
+        [{ runId: 'run_test', prompt: 'Focus on sources' }],
+      ],
+      [exposures.electronAPI, 'pauseAgent', ['run_test'], IPC.AGENT_PAUSE, [{ runId: 'run_test' }]],
+      [
+        exposures.electronAPI,
+        'resumeAgent',
+        ['run_test'],
+        IPC.AGENT_RESUME,
+        [{ runId: 'run_test' }],
+      ],
+      [
+        exposures.electronAPI,
+        'resumeAgent',
+        ['run_test', 'I logged in'],
+        IPC.AGENT_RESUME,
+        [{ runId: 'run_test', prompt: 'I logged in' }],
+      ],
+      [exposures.electronAPI, 'stopAgentHelper', ['run_1', 'delegate_1'], IPC.AGENT_STOP, [{ runId: 'run_1', taskId: 'delegate_1' }]],
+      [exposures.electronAPI, 'stopAgent', ['run_1'], IPC.AGENT_STOP, [{ runId: 'run_1' }]],
+      [
+        exposures.electronAPI,
+        'decideAgentApproval',
+        ['run_1', 'approval_1', true, { walletIndex: 2 }],
+        IPC.AGENT_APPROVAL_DECIDE,
+        [{ runId: 'run_1', approvalId: 'approval_1', approved: true, walletIndex: 2 }],
+      ],
+      [
+        exposures.electronAPI,
+        'decideAgentApproval',
+        ['run_1', 'approval_2', true, { diagnosticScope: 'conversation' }],
+        IPC.AGENT_APPROVAL_DECIDE,
+        [
+          {
+            runId: 'run_1',
+            approvalId: 'approval_2',
+            approved: true,
+            diagnosticScope: 'conversation',
+          },
+        ],
+      ],
+      [
+        exposures.electronAPI,
+        'decideAgentApproval',
+        ['run_1', 'approval_3', true, { workspacePermissionScope: 'conversation' }],
+        IPC.AGENT_APPROVAL_DECIDE,
+        [
+          {
+            runId: 'run_1',
+            approvalId: 'approval_3',
+            approved: true,
+            workspacePermissionScope: 'conversation',
+          },
+        ],
+      ],
+      [
+        exposures.electronAPI,
+        'handleAgentWalletRequest',
+        [7, { method: 'eth_requestAccounts' }],
+        IPC.AGENT_WALLET_REQUEST,
+        [{ rendererTabId: 7, request: { method: 'eth_requestAccounts' } }],
+      ],
+      [exposures.electronAPI, 'getAgentState', [], IPC.AGENT_GET_STATE, []],
+      [exposures.electronAPI, 'pickAgentFiles', [], IPC.AGENT_ATTACHMENTS_PICK_FILES, []],
+      [exposures.electronAPI, 'pickAgentFolder', [], IPC.AGENT_ATTACHMENTS_PICK_FOLDER, []],
+      [
+        exposures.electronAPI,
+        'removeAgentAttachment',
+        ['selection_123'],
+        IPC.AGENT_ATTACHMENTS_REMOVE,
+        [{ selectionId: 'selection_123' }],
+      ],
+      [
+        exposures.electronAPI,
+        'revokeAgentAttachment',
+        ['conversation_123', 'folder_123'],
+        IPC.AGENT_ATTACHMENTS_REVOKE,
+        [{ conversationId: 'conversation_123', resourceId: 'folder_123' }],
+      ],
+      [
+        exposures.electronAPI,
+        'getAgentAttachmentPreview',
+        ['conversation_123', 'attachment_123'],
+        IPC.AGENT_ATTACHMENTS_PREVIEW,
+        [{ conversationId: 'conversation_123', resourceId: 'attachment_123' }],
+      ],
+      [
+        exposures.electronAPI,
+        'setAgentApprovalMode',
+        ['conversation_123', 'allow_website_interactions'],
+        IPC.AGENT_APPROVAL_MODE_SET,
+        [{ conversationId: 'conversation_123', approvalMode: 'allow_website_interactions' }],
+      ],
+      [exposures.electronAPI, 'claimAgentTab', [7], IPC.AGENT_TAB_CLAIM, [{ rendererTabId: 7 }]],
+      [exposures.electronAPI, 'agentWorkspaceHistory', ['conversation_one', 'exclude', { path: 'customer.csv', reason: 'Private input' }], IPC.AGENT_WORKSPACE_HISTORY,
+        [{ conversationId: 'conversation_one', action: 'exclude', path: 'customer.csv', reason: 'Private input' }]],
+      [exposures.electronAPI, 'agentWorkspaceHistory', ['conversation_one', 'save', { label: 'Working' }], IPC.AGENT_WORKSPACE_HISTORY,
+        [{ conversationId: 'conversation_one', action: 'save', label: 'Working', versionId: undefined, path: undefined, token: undefined }]],
+      [exposures.electronAPI, 'inspectAgentWorkspace', ['conversation_one', 'tree'], IPC.AGENT_WORKSPACE_INSPECT,
+        [{ conversationId: 'conversation_one', kind: 'tree', path: '.', showGenerated: false }]],
+      [exposures.electronAPI, 'agentProjectAccess', ['reconnect', 'conversation_one'], IPC.AGENT_PROJECT_ACCESS,
+        [{ action: 'reconnect', conversationId: 'conversation_one' }]],
+      [
+        exposures.electronAPI,
+        'stopAgentProcess',
+        ['workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa'],
+        IPC.AGENT_PROCESS_STOP,
+        [{ processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa' }],
+      ],
+      [
+        exposures.electronAPI,
+        'openAgentProcessPreview',
+        ['workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa'],
+        IPC.AGENT_PROCESS_PREVIEW_OPEN,
+        [{ processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa' }],
+      ],
+      [exposures.electronAPI, 'getAgentProviderStatus', [], IPC.AGENT_PROVIDER_GET_STATUS, []],
+      [exposures.electronAPI, 'getAgentProviderCatalog', [], IPC.AGENT_PROVIDER_GET_CATALOG, []],
+      [exposures.electronAPI, 'refreshAgentProviderModels', ['venice', 'test-key'], IPC.AGENT_PROVIDER_REFRESH_MODELS, [{ providerId: 'venice', apiKey: 'test-key' }]],
+      [exposures.electronAPI, 'setAgentProviderPreferences', ['openrouter', { privacyPolicy: 'zdr' }], IPC.AGENT_PROVIDER_SET_PREFERENCES, [{ providerId: 'openrouter', privacyPolicy: 'zdr' }]],
+      [exposures.electronAPI, 'testAgentProviderConnection', ['meta', 'muse-spark-1.3'], IPC.AGENT_PROVIDER_TEST_CONNECTION, [{ providerId: 'meta', modelId: 'muse-spark-1.3' }]],
+      [
+        exposures.electronAPI,
+        'configureHostedAgentProvider',
+        ['openai', 'gpt-test', 'sk-test'],
+        IPC.AGENT_PROVIDER_CONFIGURE_HOSTED,
+        [{ providerId: 'openai', modelId: 'gpt-test', apiKey: 'sk-test' }],
+      ],
+      [
+        exposures.electronAPI,
+        'configureOllamaAgentProvider',
+        ['qwen:7b', 'http://127.0.0.1:11434/v1'],
+        IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA,
+        [{ modelId: 'qwen:7b', baseUrl: 'http://127.0.0.1:11434/v1' }],
+      ],
+      [
+        exposures.electronAPI,
+        'loginSubscriptionAgentProvider',
+        ['openai-codex', 'codex-model'],
+        IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION,
+        [{ providerId: 'openai-codex', modelId: 'codex-model' }],
+      ],
+      [exposures.electronAPI, 'cancelAgentProviderLogin', [], IPC.AGENT_PROVIDER_CANCEL_LOGIN, []],
+      [
+        exposures.electronAPI,
+        'selectAgentModel',
+        ['openai', 'gpt-test'],
+        IPC.AGENT_PROVIDER_SELECT_MODEL,
+        [{ providerId: 'openai', modelId: 'gpt-test' }],
+      ],
+      [
+        exposures.electronAPI,
+        'removeAgentProvider',
+        ['openai'],
+        IPC.AGENT_PROVIDER_REMOVE,
+        [{ providerId: 'openai' }],
+      ],
+      [exposures.electronAPI, 'clearAgentProvider', [], IPC.AGENT_PROVIDER_CLEAR, []],
+      [
+        exposures.electronAPI,
+        'saveImage',
+        ['https://example.com/image.png'],
+        IPC.CONTEXT_MENU_SAVE_IMAGE,
+        ['https://example.com/image.png'],
+      ],
       [exposures.electronAPI, 'copyText', ['hello'], 'clipboard:copy-text', ['hello']],
       [exposures.electronAPI, 'readClipboardText', [], 'clipboard:read-text', []],
       [exposures.electronAPI, 'copyImageFromUrl', ['https://example.com/image.png'], 'clipboard:copy-image', ['https://example.com/image.png']],
@@ -190,15 +430,51 @@ describe('preload', () => {
       [exposures.tor, 'getStatus', [], IPC.TOR_GET_STATUS, []],
       [exposures.tor, 'checkBinary', [], IPC.TOR_CHECK_BINARY, []],
       [exposures.tor, 'getVersion', [], IPC.TOR_GET_VERSION, []],
-      [exposures.githubBridge, 'import', ['https://github.com/openai/project'], IPC.GITHUB_BRIDGE_IMPORT, ['https://github.com/openai/project']],
+      [
+        exposures.githubBridge,
+        'import',
+        ['https://github.com/openai/project'],
+        IPC.GITHUB_BRIDGE_IMPORT,
+        ['https://github.com/openai/project'],
+      ],
       [exposures.githubBridge, 'checkGit', [], IPC.GITHUB_BRIDGE_CHECK_GIT, []],
       [exposures.githubBridge, 'checkPrerequisites', [], IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES, []],
-      [exposures.githubBridge, 'validateUrl', ['https://github.com/openai/project'], IPC.GITHUB_BRIDGE_VALIDATE_URL, ['https://github.com/openai/project']],
-      [exposures.githubBridge, 'checkExisting', ['https://github.com/openai/project'], IPC.GITHUB_BRIDGE_CHECK_EXISTING, ['https://github.com/openai/project']],
+      [
+        exposures.githubBridge,
+        'validateUrl',
+        ['https://github.com/openai/project'],
+        IPC.GITHUB_BRIDGE_VALIDATE_URL,
+        ['https://github.com/openai/project'],
+      ],
+      [
+        exposures.githubBridge,
+        'checkExisting',
+        ['https://github.com/openai/project'],
+        IPC.GITHUB_BRIDGE_CHECK_EXISTING,
+        ['https://github.com/openai/project'],
+      ],
       [exposures.serviceRegistry, 'getRegistry', [], IPC.SERVICE_REGISTRY_GET, []],
-      [exposures.swarmPermissions, 'revokeMessaging', ['origin.eth'], IPC.SWARM_REVOKE_MESSAGING, ['origin.eth']],
-      [exposures.swarmManifest, 'check', [{ origin: 'origin.eth', committedUrl: 'bzz://origin.eth/' }], IPC.SWARM_MANIFEST_CHECK, [{ origin: 'origin.eth', committedUrl: 'bzz://origin.eth/' }]],
-      [exposures.swarmManifest, 'decide', ['token', 'allow'], IPC.SWARM_MANIFEST_DECIDE, [{ token: 'token', outcome: 'allow' }]],
+      [
+        exposures.swarmPermissions,
+        'revokeMessaging',
+        ['origin.eth'],
+        IPC.SWARM_REVOKE_MESSAGING,
+        ['origin.eth'],
+      ],
+      [
+        exposures.swarmManifest,
+        'check',
+        [{ origin: 'origin.eth', committedUrl: 'bzz://origin.eth/' }],
+        IPC.SWARM_MANIFEST_CHECK,
+        [{ origin: 'origin.eth', committedUrl: 'bzz://origin.eth/' }],
+      ],
+      [
+        exposures.swarmManifest,
+        'decide',
+        ['token', 'allow'],
+        IPC.SWARM_MANIFEST_DECIDE,
+        [{ token: 'token', outcome: 'allow' }],
+      ],
       [exposures.swarmManifest, 'get', ['origin.eth'], IPC.SWARM_MANIFEST_GET, ['origin.eth']],
       [exposures.swarmManifest, 'useIndividual', ['origin.eth', 'feeds'], IPC.SWARM_MANIFEST_USE_INDIVIDUAL, [{ origin: 'origin.eth', capability: 'feeds' }]],
       [exposures.swarmManifest, 'disconnect', ['origin.eth'], IPC.SWARM_MANIFEST_DISCONNECT, ['origin.eth']],
@@ -213,7 +489,20 @@ describe('preload', () => {
       [exposures.externalProtocol, 'openFromAddressBar', ['magnet:?xt=a'], IPC.EXTERNAL_PROTOCOL_OPEN_FROM_ADDRESS_BAR, ['magnet:?xt=a']],
       [exposures.payments, 'getRecent', [{ limit: 10 }], IPC.PAYMENTS_GET_RECENT, [{ limit: 10 }]],
       [exposures.payments, 'getById', [7], IPC.PAYMENTS_GET_BY_ID, [7]],
-      [exposures.payments, 'getCount', [{ kind: 'x402' }], IPC.PAYMENTS_GET_COUNT, [{ kind: 'x402' }]],
+      [
+        exposures.payments,
+        'getCount',
+        [{ kind: 'x402' }],
+        IPC.PAYMENTS_GET_COUNT,
+        [{ kind: 'x402' }],
+      ],
+      [
+        exposures.electronAPI,
+        'openAgentPublication',
+        [`bzz://${'a'.repeat(64)}`],
+        IPC.AGENT_PUBLICATION_OPEN,
+        [{ bzzUrl: `bzz://${'a'.repeat(64)}` }],
+      ],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of invokeCases) {
@@ -230,12 +519,49 @@ describe('preload', () => {
       [exposures.electronAPI, 'maximizeWindow', [], IPC.WINDOW_MAXIMIZE, []],
       [exposures.electronAPI, 'toggleFullscreen', [], IPC.WINDOW_TOGGLE_FULLSCREEN, []],
       [exposures.electronAPI, 'newWindow', [], IPC.WINDOW_NEW, []],
-      [exposures.electronAPI, 'openUrlInNewWindow', ['https://example.com'], IPC.WINDOW_NEW_WITH_URL, ['https://example.com']],
+      [
+        exposures.electronAPI,
+        'openUrlInNewWindow',
+        ['https://example.com'],
+        IPC.WINDOW_NEW_WITH_URL,
+        ['https://example.com'],
+      ],
       [exposures.electronAPI, 'showAbout', [], IPC.APP_SHOW_ABOUT, []],
-      [exposures.electronAPI, 'updateTabMenuState', [{ canGoBack: true }], 'menu:update-tab-state', [{ canGoBack: true }]],
-      [exposures.electronAPI, 'setBookmarkBarToggleEnabled', [true], 'menu:set-bookmark-bar-toggle-enabled', [true]],
-      [exposures.electronAPI, 'setBookmarkBarChecked', [false], 'menu:set-bookmark-bar-checked', [false]],
-      [exposures.electronAPI, 'resolveExternalNodeCandidates', [{ requestId: 'req-1', choices: { bee: 'managed' } }], IPC.PROFILE_EXTERNAL_CANDIDATES_DECISION, [{ requestId: 'req-1', choices: { bee: 'managed' } }]],
+      [
+        exposures.electronAPI,
+        'bindAutomationTab',
+        [7, 41],
+        IPC.AUTOMATION_BIND_TAB,
+        [{ rendererTabId: 7, guestWebContentsId: 41 }],
+      ],
+      [
+        exposures.electronAPI,
+        'updateTabMenuState',
+        [{ canGoBack: true }],
+        'menu:update-tab-state',
+        [{ canGoBack: true }],
+      ],
+      [
+        exposures.electronAPI,
+        'setBookmarkBarToggleEnabled',
+        [true],
+        'menu:set-bookmark-bar-toggle-enabled',
+        [true],
+      ],
+      [
+        exposures.electronAPI,
+        'setBookmarkBarChecked',
+        [false],
+        'menu:set-bookmark-bar-checked',
+        [false],
+      ],
+      [
+        exposures.electronAPI,
+        'resolveExternalNodeCandidates',
+        [{ requestId: 'req-1', choices: { bee: 'managed' } }],
+        IPC.PROFILE_EXTERNAL_CANDIDATES_DECISION,
+        [{ requestId: 'req-1', choices: { bee: 'managed' } }],
+      ],
       [exposures.electronAPI, 'restartAndInstallUpdate', [], 'update:restart-and-install', []],
       [exposures.electronAPI, 'checkForUpdates', [], 'update:check', []],
     ];
@@ -272,7 +598,13 @@ describe('preload', () => {
       [exposures.electronAPI, 'onProfileUpdated', IPC.PROFILE_UPDATED, [{ id: 'work', displayName: 'Work' }], [{ id: 'work', displayName: 'Work' }]],
       [exposures.electronAPI, 'onExternalNodeCandidates', IPC.PROFILE_EXTERNAL_CANDIDATES, [{ requestId: 'req-1' }], [{ requestId: 'req-1' }]],
       [exposures.electronAPI, 'onNavigateToUrl', 'navigate-to-url', ['bzz://hash'], ['bzz://hash']],
-      [exposures.electronAPI, 'onLoadUrl', 'tab:load-url', ['https://load.example'], ['https://load.example']],
+      [
+        exposures.electronAPI,
+        'onLoadUrl',
+        'tab:load-url',
+        ['https://load.example'],
+        ['https://load.example'],
+      ],
       [exposures.electronAPI, 'onToggleDevTools', 'devtools:toggle', [], []],
       [exposures.electronAPI, 'onCloseDevTools', 'devtools:close', [], []],
       [exposures.electronAPI, 'onCloseAllDevTools', 'devtools:close-all', [], []],
@@ -287,10 +619,48 @@ describe('preload', () => {
       [exposures.electronAPI, 'onReopenClosedTab', 'tab:reopen-closed', [], []],
       [exposures.electronAPI, 'onOpenFindBar', IPC.FIND_IN_PAGE_OPEN, [], []],
       [exposures.electronAPI, 'onToggleBookmarkBar', IPC.BOOKMARKS_TOGGLE_BAR, [], []],
-      [exposures.electronAPI, 'onUpdateNotification', 'show-update-notification', [{ version: '1.2.3' }], [{ version: '1.2.3' }]],
-      [exposures.sitePermissions, 'onPromptRequest', IPC.PERMISSIONS_PROMPT_REQUEST, [{ id: 1, origin: 'https://example.com', keys: ['camera'], guestId: 7 }], [{ id: 1, origin: 'https://example.com', keys: ['camera'], guestId: 7 }]],
-      [exposures.sitePermissions, 'onPromptCancel', IPC.PERMISSIONS_PROMPT_CANCEL, [{ id: 1 }], [{ id: 1 }]],
-      [exposures.sitePermissions, 'onOsDenied', IPC.PERMISSIONS_OS_DENIED, [{ origin: 'https://example.com', permissions: ['camera'] }], [{ origin: 'https://example.com', permissions: ['camera'] }]],
+      [
+        exposures.electronAPI,
+        'onAgentEvent',
+        IPC.AGENT_EVENT,
+        [{ type: 'assistant_text_delta', text: 'Hi' }],
+        [{ type: 'assistant_text_delta', text: 'Hi' }],
+      ],
+      [
+        exposures.electronAPI,
+        'onAgentProviderAuthEvent',
+        IPC.AGENT_PROVIDER_AUTH_EVENT,
+        [{ type: 'device_code', userCode: 'ABCD-1234' }],
+        [{ type: 'device_code', userCode: 'ABCD-1234' }],
+      ],
+      [
+        exposures.electronAPI,
+        'onUpdateNotification',
+        'show-update-notification',
+        [{ version: '1.2.3' }],
+        [{ version: '1.2.3' }],
+      ],
+      [
+        exposures.sitePermissions,
+        'onPromptRequest',
+        IPC.PERMISSIONS_PROMPT_REQUEST,
+        [{ id: 1, origin: 'https://example.com', keys: ['camera'], guestId: 7 }],
+        [{ id: 1, origin: 'https://example.com', keys: ['camera'], guestId: 7 }],
+      ],
+      [
+        exposures.sitePermissions,
+        'onPromptCancel',
+        IPC.PERMISSIONS_PROMPT_CANCEL,
+        [{ id: 1 }],
+        [{ id: 1 }],
+      ],
+      [
+        exposures.sitePermissions,
+        'onOsDenied',
+        IPC.PERMISSIONS_OS_DENIED,
+        [{ origin: 'https://example.com', permissions: ['camera'] }],
+        [{ origin: 'https://example.com', permissions: ['camera'] }],
+      ],
       [exposures.sitePermissions, 'onChanged', IPC.PERMISSIONS_CHANGED, [{}], [{}]],
       [exposures.githubBridge, 'onProgress', IPC.GITHUB_BRIDGE_PROGRESS, [{ step: 'cloning' }], [{ step: 'cloning' }]],
       [exposures.serviceRegistry, 'onUpdate', IPC.SERVICE_REGISTRY_UPDATE, [{ ant: { mode: 'bundled' } }], [{ ant: { mode: 'bundled' } }]],
@@ -310,6 +680,114 @@ describe('preload', () => {
     }
   });
 
+  test('acknowledges only validated controlled-navigation requests', async () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    const callback = jest.fn(() => true);
+    const cleanup = exposures.electronAPI.onAutomationNavigate(callback);
+    const handler = ipcRenderer.listeners.get(IPC.AUTOMATION_NAVIGATE)[0];
+
+    ipcRenderer.emit(IPC.AUTOMATION_NAVIGATE, {
+      requestId: 'nav_test',
+      rendererTabId: 7,
+      url: 'https://example.test/',
+    });
+    await flushMicrotasks();
+
+    expect(callback).toHaveBeenCalledWith({
+      rendererTabId: 7,
+      url: 'https://example.test/',
+    });
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_NAVIGATE_RESULT, {
+      requestId: 'nav_test',
+      ok: true,
+    });
+
+    callback.mockClear();
+    ipcRenderer.emit(IPC.AUTOMATION_NAVIGATE, {
+      requestId: '',
+      rendererTabId: { value: 7 },
+      url: 'https://ignored.test/',
+    });
+    expect(callback).not.toHaveBeenCalled();
+
+    callback.mockImplementationOnce(() => {
+      throw new Error('renderer navigation failed');
+    });
+    ipcRenderer.emit(IPC.AUTOMATION_NAVIGATE, {
+      requestId: 'nav_failed',
+      rendererTabId: 7,
+      url: 'https://failed.example.test/',
+    });
+    await flushMicrotasks();
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_NAVIGATE_RESULT, {
+      requestId: 'nav_failed',
+      ok: false,
+    });
+
+    cleanup();
+    expect(ipcRenderer.removeListener).toHaveBeenCalledWith(IPC.AUTOMATION_NAVIGATE, handler);
+  });
+
+  test('routes validated controlled stop requests to the chrome renderer', () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    const callback = jest.fn();
+    const cleanup = exposures.electronAPI.onAutomationStopLoading(callback);
+    const handler = ipcRenderer.listeners.get(IPC.AUTOMATION_STOP_LOADING)[0];
+
+    ipcRenderer.emit(IPC.AUTOMATION_STOP_LOADING, { rendererTabId: 7 });
+    ipcRenderer.emit(IPC.AUTOMATION_STOP_LOADING, { rendererTabId: '7' });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledWith({ rendererTabId: 7 });
+    cleanup();
+    expect(ipcRenderer.removeListener).toHaveBeenCalledWith(IPC.AUTOMATION_STOP_LOADING, handler);
+  });
+
+  test('acknowledges validated controlled tab lifecycle requests', async () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    const create = jest.fn(() => 12);
+    const close = jest.fn(() => true);
+    const focus = jest.fn(() => true);
+    const cleanups = [
+      exposures.electronAPI.onAutomationCreateTab(create),
+      exposures.electronAPI.onAutomationCloseTab(close),
+      exposures.electronAPI.onAutomationFocusTab(focus),
+    ];
+
+    ipcRenderer.emit(IPC.AUTOMATION_CREATE_TAB, {
+      requestId: 'create_test',
+      url: 'https://example.test/research',
+    });
+    ipcRenderer.emit(IPC.AUTOMATION_CLOSE_TAB, {
+      requestId: 'close_test',
+      rendererTabId: 12,
+    });
+    ipcRenderer.emit(IPC.AUTOMATION_FOCUS_TAB, {
+      requestId: 'focus_test',
+      rendererTabId: 7,
+    });
+    await flushMicrotasks();
+
+    expect(create).toHaveBeenCalledWith({ url: 'https://example.test/research' });
+    expect(close).toHaveBeenCalledWith({ rendererTabId: 12 });
+    expect(focus).toHaveBeenCalledWith({ rendererTabId: 7 });
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_CREATE_TAB_RESULT, {
+      requestId: 'create_test',
+      ok: true,
+      rendererTabId: 12,
+    });
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_CLOSE_TAB_RESULT, {
+      requestId: 'close_test',
+      ok: true,
+    });
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_FOCUS_TAB_RESULT, {
+      requestId: 'focus_test',
+      ok: true,
+    });
+
+    for (const cleanup of cleanups) cleanup();
+  });
+
   test('status update wrappers subscribe, fetch current state immediately, and clean up', async () => {
     const beeStatus = { status: 'running', error: null };
     const ipfsStatus = { status: 'stopped', error: null };
@@ -327,14 +805,50 @@ describe('preload', () => {
     });
 
     const statusCases = [
-      [exposures.ant, IPC.ANT_STATUS_UPDATE, IPC.ANT_GET_STATUS, beeStatus, { status: 'starting', error: null }],
-      [exposures.ipfs, IPC.IPFS_STATUS_UPDATE, IPC.IPFS_GET_STATUS, ipfsStatus, { status: 'running', error: null }],
-      [exposures.myotis, IPC.MYOTIS_STATUS_UPDATE, IPC.MYOTIS_GET_STATUS, myotisStatus, { state: 'ready', running: true }],
-      [exposures.radicle, IPC.RADICLE_STATUS_UPDATE, IPC.RADICLE_GET_STATUS, radicleStatus, { status: 'running', error: null }],
-      [exposures.tor, IPC.TOR_STATUS_UPDATE, IPC.TOR_GET_STATUS, torStatus, { status: 'running', error: null }],
+      [
+        exposures.ant,
+        IPC.ANT_STATUS_UPDATE,
+        IPC.ANT_GET_STATUS,
+        beeStatus,
+        { status: 'starting', error: null },
+      ],
+      [
+        exposures.ipfs,
+        IPC.IPFS_STATUS_UPDATE,
+        IPC.IPFS_GET_STATUS,
+        ipfsStatus,
+        { status: 'running', error: null },
+      ],
+      [
+        exposures.myotis,
+        IPC.MYOTIS_STATUS_UPDATE,
+        IPC.MYOTIS_GET_STATUS,
+        myotisStatus,
+        { state: 'ready', running: true },
+      ],
+      [
+        exposures.radicle,
+        IPC.RADICLE_STATUS_UPDATE,
+        IPC.RADICLE_GET_STATUS,
+        radicleStatus,
+        { status: 'running', error: null },
+      ],
+      [
+        exposures.tor,
+        IPC.TOR_STATUS_UPDATE,
+        IPC.TOR_GET_STATUS,
+        torStatus,
+        { status: 'running', error: null },
+      ],
     ];
 
-    for (const [target, updateChannel, getStatusChannel, initialStatus, pushedStatus] of statusCases) {
+    for (const [
+      target,
+      updateChannel,
+      getStatusChannel,
+      initialStatus,
+      pushedStatus,
+    ] of statusCases) {
       const callback = jest.fn();
       ipcRenderer.invoke.mockClear();
       ipcRenderer.removeListener.mockClear();

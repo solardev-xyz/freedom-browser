@@ -55,3 +55,10 @@ select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
+
+/* The Agent composer is one rounded control, including its footer. Its
+   focus-within shadow supplies the focus treatment; a ring on the inner
+   textarea slices that control into a rectangle. Keep other fields unchanged. */
+.agent-composer textarea:focus-visible {
+  outline: none;
+}

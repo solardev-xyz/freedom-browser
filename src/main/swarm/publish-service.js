@@ -9,6 +9,7 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
+const { File } = require('buffer');
 const { ipcMain, dialog, BrowserWindow } = require('electron');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { addEntry, updateEntry } = require('./publish-history');
@@ -50,13 +51,16 @@ function normalizeTag(tag) {
 
   return {
     tagUid: tag.uid,
+    ...(/^[a-f0-9]{64}$/i.test(tag.address || '') && { reference: tag.address.toLowerCase() }),
     split,
     seen,
     stored,
     sent,
     synced,
     progress: Math.round(progressRatio * 100),
-    done: split > 0 && sent >= split,
+    // Dispatched chunks are not necessarily acknowledged. Already-seen chunks
+    // need no new receipt; newly sent chunks must be synced.
+    done: split > 0 && synced + seen >= split,
   };
 }
 
@@ -66,7 +70,7 @@ function normalizeTag(tag) {
 async function publishData(data, options = {}) {
   const bee = getBee();
   const sizeEstimate = Buffer.byteLength(data);
-  const batchId = options.batchId || await selectBestBatch(sizeEstimate);
+  const batchId = options.batchId || (await selectBestBatch(sizeEstimate, { requireCapacity: true }));
 
   if (!batchId) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
@@ -89,14 +93,14 @@ async function publishData(data, options = {}) {
 async function publishFile(filePath, options = {}) {
   const bee = getBee();
   const stat = fs.statSync(filePath);
-  const batchId = options.batchId || await selectBestBatch(stat.size);
+  const batchId = options.batchId || (await selectBestBatch(stat.size, { requireCapacity: true }));
 
   if (!batchId) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
   }
 
   const stream = fs.createReadStream(filePath);
-  const name = path.basename(filePath);
+  const name = options.name || path.basename(filePath);
   const contentType = options.contentType || undefined;
 
   const result = await bee.file.upload(batchId, stream, name, {
@@ -120,17 +124,54 @@ async function publishDirectory(dirPath, options = {}) {
   // Estimate total size (async to avoid blocking the event loop)
   const totalSize = await estimateDirSize(dirPath);
 
-  const batchId = options.batchId || await selectBestBatch(totalSize);
+  const batchId = options.batchId || (await selectBestBatch(totalSize, { requireCapacity: true }));
 
   if (!batchId) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
   }
 
   // Use explicit indexDocument if provided, otherwise auto-detect index.html
-  const indexDocument = options.indexDocument ||
+  const indexDocument =
+    options.indexDocument ||
     (fs.existsSync(path.join(dirPath, 'index.html')) ? 'index.html' : undefined);
 
   const result = await bee.collection.uploadFromDirectory(batchId, dirPath, {
+    pin: true,
+    deferred: true,
+    indexDocument,
+    ...options.uploadOptions,
+  });
+
+  return normalizeUploadResult(result, batchId, totalSize);
+}
+
+/**
+ * Publish an explicitly assembled collection without exposing filesystem paths
+ * to bee-js or writing a staging directory.
+ *
+ * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files
+ * @param {{ indexDocument?: string }} options
+ */
+async function publishCollection(files, options = {}) {
+  const bee = getBee();
+  const totalSize = files.reduce((total, item) => total + item.bytes.byteLength, 0);
+  const batchId = options.batchId || (await selectBestBatch(totalSize, { requireCapacity: true }));
+
+  if (!batchId) {
+    throw new Error('No usable postage batch available. Purchase stamps first.');
+  }
+
+  const indexDocument =
+    options.indexDocument ||
+    (files.some((item) => item.path === 'index.html') ? 'index.html' : undefined);
+  const collection = files.map((item) => ({
+    path: item.path,
+    size: item.bytes.byteLength,
+    file: new File([item.bytes], path.posix.basename(item.path), {
+      ...(item.contentType && { type: item.contentType }),
+    }),
+  }));
+  const result = await bee.collection.upload(batchId, collection, {
     pin: true,
     deferred: true,
     indexDocument,
@@ -197,7 +238,7 @@ async function estimateDirSize(dirPath) {
  */
 async function getUploadStatus(tagUid) {
   const bee = getBee();
-  const tag = await bee.tag.get(tagUid);
+  const tag = await bee.tag.get(tagUid, { timeout: 10_000 });
   return normalizeTag(tag);
 }
 
@@ -255,7 +296,12 @@ function registerPublishIpc() {
     try {
       const result = await publishData(data);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
+      return {
+        success: true,
+        reference: result.reference,
+        bzzUrl: result.bzzUrl,
+        tagUid: result.tagUid,
+      };
     } catch (err) {
       log.error('[PublishService] Failed to publish data:', err.message);
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
@@ -281,7 +327,12 @@ function registerPublishIpc() {
     try {
       const result = await publishFile(filePath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
+      return {
+        success: true,
+        reference: result.reference,
+        bzzUrl: result.bzzUrl,
+        tagUid: result.tagUid,
+      };
     } catch (err) {
       log.error('[PublishService] Failed to publish file:', err.message);
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
@@ -307,7 +358,12 @@ function registerPublishIpc() {
     try {
       const result = await publishDirectory(dirPath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
+      return {
+        success: true,
+        reference: result.reference,
+        bzzUrl: result.bzzUrl,
+        tagUid: result.tagUid,
+      };
     } catch (err) {
       log.error('[PublishService] Failed to publish directory:', err.message);
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
@@ -371,6 +427,7 @@ module.exports = {
   publishData,
   publishFile,
   publishDirectory,
+  publishCollection,
   publishFilesFromContent,
   getUploadStatus,
   registerPublishIpc,

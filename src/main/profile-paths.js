@@ -154,6 +154,10 @@ function getQuickUnlockCredentialPath() {
   return path.join(getIdentityDataDir(), 'quick-unlock.dat');
 }
 
+function getAgentDataDir() {
+  return ensureDir(path.join(app.getPath('userData'), 'agent'));
+}
+
 function getProfileCrashDir() {
   return ensureDir(path.join(app.getPath('userData'), 'crash-reports'));
 }
@@ -171,6 +175,7 @@ function createProfileTempDir(prefix) {
 
 module.exports = {
   createProfileTempDir,
+  getAgentDataDir,
   getAntDataDir,
   getBeeDataDir,
   getIdentityDataDir,

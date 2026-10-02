@@ -14,6 +14,19 @@ require('./ipc-sender-policy').installIpcSenderPolicy(ipcMain, {
 // Must run before Chromium starts its DevTools handler; logged further down,
 // once the logger may initialise.
 const removedDebugSwitches = require('./remote-debugging-gate').applyRemoteDebuggingGate({ app });
+const RUNTIME_MODE = process.argv.includes('--runtime');
+const { RUNTIME_PROCESS_EXIT_CODES } = require('../shared/automation-runtime-contract');
+const { createRuntimeServer, inspectRuntimeDiscovery } = require('./automation/runtime-server');
+
+function reportRuntimeLaunchError(code, message, details = {}) {
+  console.error(
+    JSON.stringify({
+      type: 'freedom.runtime.error',
+      error: { code, message },
+      ...details,
+    })
+  );
+}
 
 const appName = app.isPackaged
   ? process.platform === 'linux'
@@ -41,10 +54,7 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
   app.setPath('userData', process.env.FREEDOM_TEST_USER_DATA);
   // Keep E2E download artifacts inside the per-run temp dir instead of
   // polluting the real ~/Downloads folder.
-  app.setPath(
-    'downloads',
-    require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
-  );
+  app.setPath('downloads', require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads'));
 }
 // Honoured in a packaged build only when the launch also kept a CDP debug port
 // on a scratch profile, i.e. the packaged E2E launcher
@@ -59,12 +69,20 @@ let activeProfile = null;
 try {
   activeProfile = initializeProfile(app);
 } catch (error) {
-  dialog.showErrorBox(
-    'Freedom profile could not open',
-    `Freedom could not initialize the selected profile.\n\n${error?.message || error}`
-  );
-  app.exit(1);
-  process.exit(1);
+  if (RUNTIME_MODE) {
+    reportRuntimeLaunchError(
+      'PROFILE_INITIALIZATION_FAILED',
+      `Freedom runtime could not initialize its profile: ${error?.message || error}`
+    );
+  } else {
+    dialog.showErrorBox(
+      'Freedom profile could not open',
+      `Freedom could not initialize the selected profile.\n\n${error?.message || error}`
+    );
+  }
+  const exitCode = RUNTIME_MODE ? RUNTIME_PROCESS_EXIT_CODES.PROFILE_INITIALIZATION_FAILED : 1;
+  app.exit(exitCode);
+  process.exit(exitCode);
 }
 const {
   acquireProfileLock,
@@ -80,16 +98,29 @@ try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
 } catch (error) {
   if (isLockUnavailableError(error)) {
-    const profileName = activeProfile.displayName || activeProfile.id || 'selected';
-    const focusResult = requestProfileFocusSync(activeProfile);
-    if (!focusResult.ok) {
-      dialog.showErrorBox(
-        'Freedom profile is already open',
-        `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or launch a different profile.`
-      );
+    if (RUNTIME_MODE) {
+      const discovery = inspectRuntimeDiscovery(activeProfile);
+      reportRuntimeLaunchError('PROFILE_LOCKED', 'The selected Freedom profile is already open', {
+        profile: { id: activeProfile.id, displayName: activeProfile.displayName },
+        discovery: {
+          state: discovery.state,
+          path: discovery.discoveryPath,
+          ...(discovery.advertisedState && { advertisedState: discovery.advertisedState }),
+        },
+      });
+    } else {
+      const profileName = activeProfile.displayName || activeProfile.id || 'selected';
+      const focusResult = requestProfileFocusSync(activeProfile);
+      if (!focusResult.ok) {
+        dialog.showErrorBox(
+          'Freedom profile is already open',
+          `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or launch a different profile.`
+        );
+      }
     }
-    app.exit(0);
-    process.exit(0);
+    const exitCode = RUNTIME_MODE ? RUNTIME_PROCESS_EXIT_CODES.PROFILE_LOCKED : 0;
+    app.exit(exitCode);
+    process.exit(exitCode);
   }
   throw error;
 }
@@ -152,9 +183,14 @@ process.on('unhandledRejection', (reason, _promise) => {
   log.error('Unhandled rejection:', reason);
 });
 
-const { registerShutdownSignalHandlers } = require('./shutdown-signals');
-const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({ app, logger: log });
-const { BrowserWindow, protocol, session } = require('electron');
+const { createShutdownDiagnostics, registerShutdownSignalHandlers } = require('./shutdown-signals');
+const shutdownDiagnostics = createShutdownDiagnostics({ app, logger: log });
+const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({
+  app,
+  logger: log,
+  onSignal: shutdownDiagnostics.signal,
+});
+const { BrowserWindow, protocol, safeStorage, session, shell } = require('electron');
 const { registerBaseIpcHandlers, broadcastProfileUpdated } = require('./ipc-handlers');
 const { watchProfileRegistry } = require('./profile-registry-watcher');
 const { installRequestRewriter } = require('./request-rewriter');
@@ -188,6 +224,15 @@ const DWEB_PROTOCOL_PRIVILEGES = {
   allowServiceWorkers: true,
 };
 protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'freedom-preview',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+    },
+  },
   { scheme: 'bzz', privileges: DWEB_PROTOCOL_PRIVILEGES },
   { scheme: 'ipfs', privileges: DWEB_PROTOCOL_PRIVILEGES },
   { scheme: 'ipns', privileges: DWEB_PROTOCOL_PRIVILEGES },
@@ -230,8 +275,16 @@ const {
   registerDownloadsIpc,
   attachDownloadsManager,
   cancelPartitionDownloads: cancelPrivateDownloads,
+  cancelAgentDownloads,
+  getActiveDownloadCount,
+  listAgentDownloads,
+  onDownloadActivity,
+  runControlledDownload,
+  setControlledPage,
+  takeBlockedDownload,
 } = require('./downloads/downloads-manager');
 const { closeDb: closeDownloadsDb } = require('./downloads/downloads-store');
+const { createAgentFileUploadController } = require('./agent/file-upload-controller');
 const { dropPartition: dropPrivateDownloads } = require('./downloads/private-downloads-store');
 const { registerFaviconsIpc } = require('./favicons');
 const { registerEnsIpc } = require('./ens-resolver');
@@ -242,12 +295,14 @@ const {
   createAntLifecycle,
   stopAnt,
   startAnt,
+  getStatus: getAntStatus,
   setUseInjectedIdentity: setAntInjectedIdentity,
 } = require('./ant-manager');
 const {
   registerIpfsIpc,
   stopIpfs,
   startIpfs,
+  getStatus: getIpfsStatus,
   syncProfileMode: syncIpfsProfileMode,
   setUseInjectedIdentity: setIpfsInjectedIdentity,
 } = require('./ipfs-manager');
@@ -255,6 +310,7 @@ const {
   registerRadicleIpc,
   stopRadicle,
   startRadicle,
+  getCurrentStatus: getRadicleStatus,
   syncProfileMode: syncRadicleProfileMode,
   setUseInjectedIdentity: setRadicleInjectedIdentity,
 } = require('./radicle-manager');
@@ -262,6 +318,7 @@ const {
   registerTorIpc,
   stopTor,
   startTor,
+  getStatus: getTorStatus,
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
 } = require('./tor-manager');
@@ -307,6 +364,7 @@ const {
 focusCurrentProfileWindow = focusOrCreateMainWindow;
 const {
   createPrivateWindow,
+  isPrivateWebContents,
   setPrivateSessionConfigurator,
   registerPrivateCleanup,
 } = require('./private/private-windows');
@@ -314,8 +372,47 @@ const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { registerClientCertificateHandler } = require('./client-certificate');
-const { installTestHarness, registerStubProtocols } = require('./test-harness');
+const {
+  createAgentNodeLifecycleTestOptions,
+  createAgentNodeRequestTestOptions,
+  createAgentWalletTestOptions,
+  installTestHarness,
+  registerStubProtocols,
+} = require('./test-harness');
+const {
+  automationController,
+  automationTabIdForRenderer,
+  desktopBindingForAutomationTab,
+  registerAutomationWebContents,
+  subscribeAutomationTabLifecycle,
+  createDesktopAutomationPage,
+  createDesktopAutomationPageForHost,
+  closeDesktopAutomationPage,
+  focusDesktopAutomationPage,
+} = require('./automation/runtime');
+const { createFreedomAgentRuntime } = require('./agent/runtime');
+const { getAgentDataDir } = require('./profile-paths');
+const { createHiddenPageManager } = require('./automation/hidden-page-manager');
+const {
+  DEFAULT_RUNTIME_IDLE_TIMEOUT_MS,
+  createRuntimeIdleController,
+} = require('./automation/runtime-idle-controller');
 
+let runtimeServer = null;
+let hiddenPageManager = null;
+let runtimeIdleController = null;
+let unregisterRuntimeDownloadActivity = null;
+let agentRuntime = null;
+const RUNTIME_BUSY_NODE_STATES = new Set(['starting', 'stopping']);
+
+function hasRuntimeNodeTransition() {
+  return [getAntStatus(), getIpfsStatus(), getRadicleStatus(), getTorStatus()].some((entry) =>
+    RUNTIME_BUSY_NODE_STATES.has(entry?.status)
+  );
+}
+
+// Native WebMCP is experimental in the pinned Electron runtime.
+app.commandLine.appendSwitch('enable-blink-features', 'WebMCP,WebMCPTesting');
 log.info('[profile] Active profile:', {
   id: activeProfile.id,
   source: activeProfile.source,
@@ -351,6 +448,27 @@ async function bootstrap() {
   registerBookmarksIpc();
   registerHistoryIpc();
   registerDownloadsIpc();
+  automationController.setDownloadController({
+    setControlledPage,
+    takeBlockedDownload,
+    download: async ({ pageAdapter, ref, conversationId, signal, onProgress }) =>
+      runControlledDownload({
+        expectedUrl: (await pageAdapter.inspectAction(ref)).navigationTarget,
+        pageAdapter,
+        conversationId,
+        signal,
+        onProgress,
+        trigger: () => pageAdapter.download(ref),
+      }),
+    list: listAgentDownloads,
+  });
+  automationController.setUploadController(
+    createAgentFileUploadController({
+      dialog,
+      getOwnerWindow: (webContents) =>
+        webContents.getOwnerBrowserWindow?.() || BrowserWindow.fromWebContents(webContents),
+    })
+  );
   registerFaviconsIpc();
   registerEnsIpc();
   registerTezosDomainsIpc();
@@ -390,6 +508,41 @@ async function bootstrap() {
   registerRadicleProviderIpc();
   registerFeedStoreIpc();
   registerPermissionManifestIpc();
+
+  if (!RUNTIME_MODE) {
+    automationController.setPageLifecycle({
+      createPage: createDesktopAutomationPage,
+      closePage: closeDesktopAutomationPage,
+      focusPage: focusDesktopAutomationPage,
+    });
+    agentRuntime = createFreedomAgentRuntime({
+      BrowserWindow,
+      ipcMain,
+      safeStorage,
+      profile: activeProfile,
+      protocolSession: defaultSession,
+      dataDir: getAgentDataDir(),
+      workspaceRuntimeOptions: {
+        packaged: app.isPackaged === true,
+        freedomVersion: app.getVersion(),
+      },
+      controller: automationController,
+      automationTabIdForRenderer,
+      createAutomationPageForHost: createDesktopAutomationPageForHost,
+      desktopBindingForAutomationTab,
+      subscribeTabLifecycle: subscribeAutomationTabLifecycle,
+      cancelAgentDownloads,
+      dialog,
+      getOwnerWindow: (webContents) => BrowserWindow.fromWebContents(webContents),
+      isTrustedSender: (sender) =>
+        !isPrivateWebContents(sender) &&
+        getMainWindows().some((window) => window.webContents === sender),
+      openExternal: (url) => shell.openExternal(url),
+      walletControllerOptions: createAgentWalletTestOptions(),
+      nodeRequestControllerOptions: createAgentNodeRequestTestOptions(),
+      nodeLifecycleControllerOptions: createAgentNodeLifecycleTestOptions(),
+    });
+  }
 
   // Resolve any pending broadcast txs that didn't get a final receipt
   // before the previous run exited. Fire-and-forget — the wallet stack
@@ -486,15 +639,20 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => clearPrivatePermissionDecisions(partition));
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
 
-  registerWebContentsHandlers();
+  registerWebContentsHandlers({ isManagedPage: contents => hiddenPageManager?.ownsWebContents(contents) === true });
   registerClientCertificateHandler();
-  setupApplicationMenu();
+  if (!RUNTIME_MODE) setupApplicationMenu();
 
   // Profiles are shared across processes (one process per profile). When any
   // process renames / creates / deletes a profile, the registry file changes;
   // pick that up here so this process rebuilds its native Profiles menu and
   // refreshes its renderers, keeping every window's profile list in sync.
-  if (!TEST_MODE && activeProfile?.source === 'catalog' && activeProfile?.appRoot) {
+  if (
+    !RUNTIME_MODE &&
+    !TEST_MODE &&
+    activeProfile?.source === 'catalog' &&
+    activeProfile?.appRoot
+  ) {
     watchProfileRegistry(activeProfile.appRoot, () => {
       setupApplicationMenu();
       broadcastProfileUpdated();
@@ -506,7 +664,7 @@ async function bootstrap() {
   // the channels it needs to stub — ENS resolution, the bzz: probe,
   // and bee/ipfs/radicle start/stop. No-op when FREEDOM_TEST_MODE is
   // unset, so the production path is unaffected.
-  installTestHarness({ defaultSession });
+  installTestHarness({ defaultSession, agentRuntime });
 
   // If a vault exists, flag the node managers so bee/ipfs/radicle start with
   // the user's derived keys. Without a vault, nodes start with their own
@@ -526,10 +684,15 @@ async function bootstrap() {
   const settings = loadSettings();
   // A profile cold-started from another window's "edit" button (Profiles
   // manager) carries --open-settings; land its first tab on Profile settings.
-  const coldStartUrl = process.argv.includes('--open-settings') ? PROFILE_SETTINGS_DEEPLINK : null;
-  const mainWindow = createMainWindow(coldStartUrl);
+  let mainWindow = null;
+  if (!RUNTIME_MODE) {
+    const coldStartUrl = process.argv.includes('--open-settings')
+      ? PROFILE_SETTINGS_DEEPLINK
+      : null;
+    mainWindow = createMainWindow(coldStartUrl);
+  }
 
-  if (!TEST_MODE) {
+  if (!RUNTIME_MODE && !TEST_MODE) {
     await promptForDefaultExternalCandidates(activeProfile, {
       window: mainWindow,
       enabledProtocols: {
@@ -587,10 +750,49 @@ async function bootstrap() {
     }
   }
 
+  if (RUNTIME_MODE) {
+    const idleTimeoutMs = process.argv.includes('--persistent')
+      ? 0
+      : DEFAULT_RUNTIME_IDLE_TIMEOUT_MS;
+    runtimeIdleController = createRuntimeIdleController({
+      timeoutMs: idleTimeoutMs,
+      logger: log,
+      onIdle: () => {
+        log.info('[automation-runtime] Idle timeout reached; shutting down...');
+        app.quit();
+      },
+    });
+    runtimeIdleController.registerProbe('downloads', () => getActiveDownloadCount() > 0);
+    runtimeIdleController.registerProbe('node-transition', hasRuntimeNodeTransition);
+    unregisterRuntimeDownloadActivity = onDownloadActivity(() =>
+      runtimeIdleController?.touch('download-state-changed')
+    );
+    runtimeIdleController.start();
+    hiddenPageManager = createHiddenPageManager({
+      BrowserWindow,
+      registerWebContents: registerAutomationWebContents,
+      logger: log,
+      onActivity: (reason) => runtimeIdleController?.touch(reason),
+    });
+    automationController.setPageLifecycle(hiddenPageManager);
+    runtimeServer = createRuntimeServer({
+      profile: activeProfile,
+      controller: automationController,
+      activityTracker: runtimeIdleController,
+      appVersion: version,
+      logger: log,
+      onShutdown: () => app.quit(),
+    });
+    const discovery = await runtimeServer.start();
+    log.info(
+      `[automation-runtime] Ready (${discovery.endpoint.kind}, protocol v${discovery.protocolVersion})`
+    );
+  }
+
   // Initialize auto-updater (pass menu update callback). Skipped in
   // test mode so specs don't trigger background network checks against
   // freedom.baby.
-  if (!TEST_MODE) {
+  if (!RUNTIME_MODE && !TEST_MODE) {
     initUpdater(mainWindow, setupApplicationMenu, { profile: activeProfile });
     // Schedule Swarm filter-list update checks. No-op until a feed trust
     // anchor is compiled in (WP5); safe to install unconditionally.
@@ -598,6 +800,7 @@ async function bootstrap() {
   }
 
   app.on('activate', () => {
+    if (RUNTIME_MODE) return;
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
     }
@@ -608,6 +811,7 @@ app.whenReady().then(bootstrap);
 
 app.on('window-all-closed', () => {
   updateTabMenuItems();
+  if (RUNTIME_MODE) return;
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -639,6 +843,29 @@ const SHUTDOWN_WATCHDOG_MS = 20_000;
 async function windDown() {
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
 
+  runtimeIdleController?.stop();
+  unregisterRuntimeDownloadActivity?.();
+  unregisterRuntimeDownloadActivity = null;
+  if (runtimeServer) {
+    log.info('[automation-runtime] Stopping control endpoint...');
+    await runtimeServer.stop();
+    runtimeServer = null;
+  }
+  if (hiddenPageManager) {
+    hiddenPageManager.closeAll();
+    hiddenPageManager = null;
+    automationController.setPageLifecycle(null);
+  }
+  runtimeIdleController = null;
+
+  if (agentRuntime) {
+    shutdownDiagnostics.phase('agent_dispose_started');
+    await agentRuntime.dispose();
+    shutdownDiagnostics.phase('agent_dispose_finished');
+    agentRuntime = null;
+    automationController.setPageLifecycle(null);
+  }
+
   // Close all DevTools first to prevent crashes during cleanup
   log.info('[App] Closing all DevTools...');
   for (const win of getMainWindows()) {
@@ -654,6 +881,7 @@ async function windDown() {
 
   // Close all windows first, before winding down peers
   log.info('[App] Closing all windows...');
+  shutdownDiagnostics.phase('windows_close_started');
   const allWindows = BrowserWindow.getAllWindows();
   if (allWindows.length > 0) {
     await Promise.all(
@@ -670,6 +898,7 @@ async function windDown() {
     );
   }
   log.info('[App] All windows closed');
+  shutdownDiagnostics.phase('windows_close_finished');
 
   // Close history databases
   log.info('[App] Closing history databases...');
@@ -682,6 +911,7 @@ async function windDown() {
   cleanupTempDirs();
 
   log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, and Tor to stop...');
+  shutdownDiagnostics.phase('nodes_stop_started');
   // allSettled, not all: Promise.all settles on the *first* rejection, so one
   // manager throwing would release the quit while the other legs are still in
   // flight — notably stopIpfs(), whose dispatcher ack is the very window this
@@ -750,7 +980,9 @@ app.on('before-quit', async (event) => {
     shutdownSettled = true;
   }
 
+  shutdownDiagnostics.phase('final_quit_requested');
   app.quit();
+  shutdownDiagnostics.phase('final_quit_returned');
 });
 
 app.on('browser-window-created', () => {

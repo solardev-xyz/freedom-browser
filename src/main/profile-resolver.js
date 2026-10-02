@@ -37,6 +37,7 @@ const LEGACY_DEV_DATA_DIRS = [
   'tor-data',
 ];
 const LEGACY_DEV_DATA_WARNING_FILE = 'legacy-dev-data-warning.json';
+const AUTOMATION_PROFILE_ID = 'automation';
 
 let activeProfile = null;
 
@@ -152,7 +153,7 @@ function resolveProfile(app, options = {}) {
   const profileInput =
     getArgValue(argv, 'profile') ||
     env.FREEDOM_PROFILE ||
-    resolveLastOpenedProfileId(appRoot) ||
+    (argv.includes('--runtime') ? AUTOMATION_PROFILE_ID : resolveLastOpenedProfileId(appRoot)) ||
     DEFAULT_PROFILE_ID;
   const profileId = sanitizeProfileId(profileInput);
   const defaultProfileDir = isDev
@@ -407,6 +408,7 @@ function deleteProfileForActiveApp(profileId, expectedDisplayName) {
 }
 
 module.exports = {
+  AUTOMATION_PROFILE_ID,
   LEGACY_DEV_DATA_DIRS,
   LEGACY_DEV_DATA_WARNING_FILE,
   applyProfile,

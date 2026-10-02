@@ -21,6 +21,7 @@ const createElectronApi = () => {
     handlers,
     api: {
       setWindowTitle: jest.fn(),
+      bindAutomationTab: jest.fn(),
       updateTabMenuState: jest.fn(),
       closeWindow: jest.fn(),
       getWebviewPreloadPath: jest.fn().mockResolvedValue('/tmp/webview-preload.js'),
@@ -60,6 +61,7 @@ const createWebview = (createdWebviews) => {
     removeEventListener(event, handler);
   });
   webview._devToolsOpen = false;
+  webview.getWebContentsId = jest.fn(() => createdWebviews.length + 41);
   webview.getURL = jest.fn(() => webview.src || 'about:blank');
   webview.canGoBack = jest.fn(() => false);
   webview.canGoForward = jest.fn(() => false);
@@ -83,7 +85,7 @@ const buildTabContextMenu = () => {
   const tabContextMenu = createElement('div', { classes: ['hidden'] });
   const actions = {};
 
-  ['close', 'close-others', 'close-right', 'pin'].forEach((action) => {
+  ['close', 'close-others', 'close-right', 'pin', 'claim-agent-tab'].forEach((action) => {
     const button = createElement('button');
     button.dataset.action = action;
     tabContextMenu.appendChild(button);
@@ -101,7 +103,9 @@ const loadTabsModule = async (options = {}) => {
 
   const createdWebviews = [];
   const { api: electronAPI, handlers: electronHandlers } = createElectronApi();
+  const tabBarHome = createElement('div');
   const tabBar = createElement('div');
+  tabBarHome.appendChild(tabBar);
   const newTabBtn = createElement('button');
   const webviewContainer = createElement('div');
   const bzzWebview = createElement('webview');
@@ -215,6 +219,7 @@ const loadTabsModule = async (options = {}) => {
     createdWebviews,
     elements: {
       tabBar,
+      tabBarHome,
       newTabBtn,
       webviewContainer,
       tabContextMenu,
@@ -240,6 +245,58 @@ const findTabElement = (tabBar, tabId) =>
   tabBar.children.find((child) => child.dataset.tabId === tabId) || null;
 
 describe('tabs ui behavior', () => {
+  test('viewer tabs create no guest or automation binding and survive tab-strip projection', async () => {
+    const ctx = await loadTabsModule();
+    await ctx.mod.initTabs();
+    const page = ctx.mod.getActiveTab();
+    const count = ctx.createdWebviews.length;
+    const content = createElement('section');
+    const onClose = jest.fn();
+    const viewer = ctx.mod.createWorkspaceViewerTab({ key: 'changes', conversationId: 'one', title: 'Changes', content, onClose });
+    expect(viewer.webview).toBeNull();
+    expect(ctx.mod.getActiveWebview()).toBeNull();
+    expect(ctx.createdWebviews).toHaveLength(count);
+    expect(ctx.electronAPI.bindAutomationTab).not.toHaveBeenCalled();
+    expect(ctx.mod.getOpenTabs().some((tab) => tab.id === viewer.id)).toBe(false);
+    expect(ctx.mod.getTabPresentation().find((tab) => tab.id === viewer.id)).toMatchObject({ kind: 'workspace-viewer', conversationId: 'one', isActive: true, url: '' });
+    const right = createElement('div');
+    ctx.mod.setTabStripProjection({ container: right, tabIds: [page.id, viewer.id] });
+    expect(ctx.mod.getActiveTab().id).toBe(viewer.id);
+    expect(content.parentNode).toBe(ctx.elements.webviewContainer);
+    ctx.mod.setTabStripProjection();
+    expect(ctx.mod.getActiveTab().id).toBe(viewer.id);
+    ctx.mod.switchTab(page.id);
+    expect(content.classList.contains('hidden')).toBe(true);
+    ctx.mod.switchTab(viewer.id);
+    expect(content.classList.contains('hidden')).toBe(false);
+    expect(page.webview.classList.contains('hidden')).toBe(true);
+    ctx.mod.closeTab(viewer.id);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(content.parentNode).toBeNull();
+    expect(ctx.mod.getActiveTab().id).toBe(page.id);
+    ctx.mod.reopenLastClosedTab();
+    expect(ctx.mod.getTabs()).toHaveLength(1);
+  });
+
+  test('viewer identity is conversation-specific and address-bar focus creates a page', async () => {
+    const ctx = await loadTabsModule();
+    await ctx.mod.initTabs();
+    const args = { key: 'changes', conversationId: 'one', title: 'Changes', content: createElement('section') };
+    const first = ctx.mod.createWorkspaceViewerTab(args);
+    expect(ctx.mod.createWorkspaceViewerTab(args)).toBe(first);
+    const second = ctx.mod.createWorkspaceViewerTab({ ...args, conversationId: 'two', content: createElement('section') });
+    expect(second.id).not.toBe(first.id);
+    ctx.electronHandlers.focusAddressBar();
+    expect(ctx.mod.getActiveWebview()).not.toBeNull();
+    expect(ctx.mod.getTabs()).toHaveLength(4);
+    ctx.mod.switchTab(first.id);
+    const shortcuts = await import('./shortcuts.js');
+    shortcuts.configureShortcuts({ platform: 'linux', overrides: {} });
+    ctx.windowHandlers.keydown({ ctrlKey: true, metaKey: false, key: 'l', preventDefault: jest.fn() });
+    expect(ctx.mod.getActiveWebview()).not.toBeNull();
+    expect(ctx.mod.getTabs()).toHaveLength(5);
+  });
+
   afterEach(() => {
     global.window = originalWindow;
     global.document = originalDocument;
@@ -248,7 +305,8 @@ describe('tabs ui behavior', () => {
   });
 
   test('initializes tabs and supports tab lifecycle helpers', async () => {
-    const { mod, electronAPI, createdWebviews, pageContextMenuMocks } = await loadTabsModule();
+    const { mod, electronAPI, createdWebviews, elements, pageContextMenuMocks } =
+      await loadTabsModule();
     const onWebviewEvent = jest.fn();
 
     mod.setWebviewEventHandler(onWebviewEvent);
@@ -280,6 +338,41 @@ describe('tabs ui behavior', () => {
       expect.objectContaining({ tabId: secondTab.id, isNewTab: false })
     );
 
+    mod.setAgentControlledTab(secondTab.id);
+    const controlledTabElement = findTabElement(elements.tabBar, secondTab.id);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(true);
+    expect(controlledTabElement.querySelector('.tab-agent-badge').textContent).toBe('Agent');
+    mod.switchTab(initialTab.id);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(true);
+    mod.setAgentControlledTab(null);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(false);
+
+    const claimAgentTab = jest.fn();
+    const custodyListener = jest.fn();
+    mod.setAgentTabClaimHandler(claimAgentTab);
+    mod.subscribeAgentTabCustody(custodyListener);
+    mod.setAgentTabCustody([
+      {
+        rendererTabId: secondTab.id,
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_test',
+      },
+    ]);
+    expect(mod.isTabAgentOwned(secondTab.id)).toBe(true);
+    expect(controlledTabElement.classList.contains('agent-owned')).toBe(true);
+    controlledTabElement
+      .querySelector('.tab-agent-badge')
+      .dispatch('click', { stopPropagation: jest.fn() });
+    expect(claimAgentTab).toHaveBeenCalledWith(secondTab.id);
+    expect(custodyListener).toHaveBeenLastCalledWith([
+      expect.objectContaining({ rendererTabId: secondTab.id, custody: 'agent' }),
+    ]);
+    mod.setAgentTabCustody([]);
+    expect(mod.isTabAgentOwned(secondTab.id)).toBe(false);
+    expect(controlledTabElement.classList.contains('agent-owned')).toBe(false);
+    mod.switchTab(secondTab.id);
+
     mod.moveTab('left');
     expect(mod.getTabs().map((tab) => tab.id)).toEqual([secondTab.id, initialTab.id, thirdTab.id]);
 
@@ -290,10 +383,54 @@ describe('tabs ui behavior', () => {
     expect(mod.getActiveTab().id).toBe(secondTab.id);
 
     expect(mod.getOpenTabs()).toEqual([
-      { id: secondTab.id, url: secondTab.url, title: secondTab.title, isActive: true },
-      { id: initialTab.id, url: initialTab.url, title: initialTab.title, isActive: false },
-      { id: thirdTab.id, url: thirdTab.url, title: thirdTab.title, isActive: false },
+      {
+        id: secondTab.id,
+        url: secondTab.url,
+        title: secondTab.title,
+        favicon: '',
+        isLoading: true,
+        isActive: true,
+      },
+      {
+        id: initialTab.id,
+        url: initialTab.url,
+        title: initialTab.title,
+        favicon: '',
+        isLoading: false,
+        isActive: false,
+      },
+      {
+        id: thirdTab.id,
+        url: thirdTab.url,
+        title: thirdTab.title,
+        favicon: '',
+        isLoading: false,
+        isActive: false,
+      },
     ]);
+  });
+
+  test('projects the canonical tab strip into Agent-first and restores it', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+    const initialTab = mod.getActiveTab();
+    const taskTab = mod.createTab('https://task.example');
+    const workspaceStripHost = createElement('div');
+
+    mod.setTabStripProjection({
+      container: workspaceStripHost,
+      tabIds: [taskTab.id],
+    });
+
+    expect(workspaceStripHost.children).toContain(elements.tabBar);
+    expect(findTabElement(elements.tabBar, initialTab.id).hidden).toBe(true);
+    expect(findTabElement(elements.tabBar, taskTab.id).hidden).toBe(false);
+
+    mod.setTabStripProjection();
+
+    expect(elements.tabBarHome.children[0]).toBe(elements.tabBar);
+    expect(findTabElement(elements.tabBar, initialTab.id).hidden).toBe(false);
+    expect(findTabElement(elements.tabBar, taskTab.id).hidden).toBe(false);
   });
 
   test('createTab loads file:// homeUrl directly without going through onLoadTarget', async () => {
@@ -326,6 +463,26 @@ describe('tabs ui behavior', () => {
       expect(createdWebviews[1].getAttribute('src')).toBe(productionHomeUrl);
 
       // No deferred onLoadTarget dispatch for direct URLs.
+      jest.runAllTimers();
+      expect(onLoadTarget).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('createTab loads only well-formed isolated preview URLs directly', async () => {
+    const { mod, createdWebviews } = await loadTabsModule({
+      homeUrl: 'file:///app/pages/home.html',
+    });
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    const previewUrl = `freedom-preview://${'a'.repeat(40)}/index.html`;
+
+    jest.useFakeTimers();
+    try {
+      await mod.initTabs();
+      mod.createTab(previewUrl);
+      expect(createdWebviews.at(-1).getAttribute('src')).toBe(previewUrl);
       jest.runAllTimers();
       expect(onLoadTarget).not.toHaveBeenCalled();
     } finally {
@@ -491,6 +648,10 @@ describe('tabs ui behavior', () => {
     webview.dispatch('did-fail-load', { errorCode: -1 });
     webview.dispatch('did-navigate-in-page', { url: 'https://loaded.example#hash' });
     webview.dispatch('dom-ready');
+    expect(electronAPI.bindAutomationTab).toHaveBeenCalledWith(
+      activeTab.id,
+      webview.getWebContentsId()
+    );
 
     activeTab.favicon = 'data:favicon';
     activeTab.title = 'Old Title';

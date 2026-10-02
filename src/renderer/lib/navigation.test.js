@@ -127,6 +127,7 @@ const loadNavigationModule = async (options = {}) => {
   const tabsRef = { list: [] };
   const tabsMocks = {
     webviewEventHandler: null,
+    custodyListener: null,
     createTab: jest.fn(),
     openInNewTabWithTarget: jest.fn(),
     // "This tab is the right place to land" is the default answer, i.e. the
@@ -160,6 +161,11 @@ const loadNavigationModule = async (options = {}) => {
     isActiveTab: jest.fn(
       (tabId) => tabId !== null && tabId !== undefined && tabId === activeRef.tab?.id
     ),
+    isTabAgentOwned: jest.fn((tabId) => options.agentOwnedTabIds?.includes(tabId) === true),
+    subscribeAgentTabCustody: jest.fn((listener) => {
+      tabsMocks.custodyListener = listener;
+      return jest.fn();
+    }),
   };
   const navigationUtilsMocks = {
     applyEnsSuffix: jest.fn((targetUri, suffix = '') => `${targetUri}${suffix}`),
@@ -430,6 +436,7 @@ const loadNavigationModule = async (options = {}) => {
 
   const addressInput = createElement('input');
   const navForm = createElement('form');
+  const addressBarContainer = createElement('div', { classes: ['address-bar-container'] });
   const backBtn = createElement('button');
   const forwardBtn = createElement('button');
   const reloadBtn = createElement('button');
@@ -445,6 +452,16 @@ const loadNavigationModule = async (options = {}) => {
   const trustPopoverContentTitle = createElement('div');
   const trustPopoverContentFields = createElement('div');
   const trustPopoverTooltip = createElement('div');
+  const agentNavForm = createElement('form');
+  const agentAddressHost = createElement('div');
+  const agentBackBtn = createElement('button');
+  const agentForwardBtn = createElement('button');
+  const agentReloadBtn = createElement('button');
+  addressBarContainer.appendChild(trustShield);
+  addressBarContainer.appendChild(trustPopover);
+  addressBarContainer.appendChild(protocolIcon);
+  addressBarContainer.appendChild(addressInput);
+  navForm.appendChild(addressBarContainer);
   const document = createDocument({
     elementsById: {
       'address-input': addressInput,
@@ -463,6 +480,11 @@ const loadNavigationModule = async (options = {}) => {
       'trust-popover-content-title': trustPopoverContentTitle,
       'trust-popover-content-fields': trustPopoverContentFields,
       'trust-popover-tooltip': trustPopoverTooltip,
+      'agent-workspace-nav': agentNavForm,
+      'agent-workspace-address-host': agentAddressHost,
+      'agent-workspace-back': agentBackBtn,
+      'agent-workspace-forward': agentForwardBtn,
+      'agent-workspace-reload': agentReloadBtn,
     },
   });
 
@@ -554,6 +576,7 @@ const loadNavigationModule = async (options = {}) => {
     swarmProbeState,
     elements: {
       addressInput,
+      addressBarContainer,
       navForm,
       backBtn,
       forwardBtn,
@@ -564,11 +587,43 @@ const loadNavigationModule = async (options = {}) => {
       trustShield,
       trustPopover,
       trustPopoverContent,
+      agentNavForm,
+      agentAddressHost,
+      agentBackBtn,
+      agentForwardBtn,
+      agentReloadBtn,
     },
   };
 };
 
 describe('navigation', () => {
+  test('keeps viewer navigation read-only and ignores delayed page continuations', async () => {
+    const page = createTab(1, 'https://example.com/');
+    const viewer = createTab(2, '');
+    viewer.kind = 'workspace-viewer';
+    viewer.webview = null;
+    const ctx = await loadNavigationModule({ tabs: [page, viewer], activeTab: page });
+    await ctx.mod.initNavigation();
+    ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: page.id, tab: page });
+    ctx.activeRef.tab = viewer;
+    ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: viewer.id, tab: viewer });
+    expect(ctx.elements.addressInput.readOnly).toBe(true);
+    expect(ctx.elements.addressInput.value).toBe('');
+    expect(ctx.elements.reloadBtn.disabled).toBe(true);
+    ctx.tabsMocks.createTab.mockClear();
+    for (const options of [{ pageInitiated: true }, { continuesNavigation: true }, { keepsAddressBarEdit: true }]) {
+      ctx.mod.loadTarget('https://delayed.example/', null, null, options);
+    }
+    expect(ctx.tabsMocks.createTab).not.toHaveBeenCalled();
+    ctx.mod.loadTarget('https://requested.example/');
+    expect(ctx.tabsMocks.createTab).toHaveBeenCalledWith('https://requested.example/');
+    // Closing the viewer removes it before the next tab-switched event.
+    ctx.tabsRef.list = [page];
+    ctx.activeRef.tab = page;
+    ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: page.id, tab: page });
+    expect(ctx.elements.addressInput.readOnly).toBe(false);
+  });
+
   afterEach(() => {
     global.window = originalWindow;
     global.document = originalDocument;
@@ -601,12 +656,17 @@ describe('navigation', () => {
       })
     );
     expect(ctx.elements.protocolIcon.getAttribute('data-protocol')).toBe('swarm');
+    ctx.mod.setAgentWorkspaceNavigationProjection(ctx.elements.agentAddressHost);
+    expect(ctx.elements.agentAddressHost.children).toContain(ctx.elements.addressBarContainer);
+    expect(ctx.elements.addressBarContainer.children).toContain(ctx.elements.addressInput);
 
     ctx.elements.backBtn.dispatch('click');
     ctx.elements.forwardBtn.dispatch('click');
+    ctx.elements.agentBackBtn.dispatch('click');
+    ctx.elements.agentForwardBtn.dispatch('click');
 
-    expect(ctx.activeRef.tab.webview.goBack).toHaveBeenCalled();
-    expect(ctx.activeRef.tab.webview.goForward).toHaveBeenCalled();
+    expect(ctx.activeRef.tab.webview.goBack).toHaveBeenCalledTimes(2);
+    expect(ctx.activeRef.tab.webview.goForward).toHaveBeenCalledTimes(2);
 
     ctx.elements.homeBtn.dispatch('click');
 
@@ -614,6 +674,7 @@ describe('navigation', () => {
     expect(ctx.tabsMocks.updateActiveTabTitle).toHaveBeenCalledWith('New Tab');
     expect(ctx.electronAPI.setWindowTitle).toHaveBeenCalledWith('');
     expect(ctx.tabsMocks.updateTabFavicon).toHaveBeenCalledWith(ctx.activeRef.tab.id, null);
+    expect(ctx.elements.addressInput.value).toBe('');
 
     await ctx.mod.toggleBookmarkBar();
     expect(ctx.electronAPI.setBookmarkBarChecked).toHaveBeenLastCalledWith(false);
@@ -688,6 +749,96 @@ describe('navigation', () => {
     ctx.elements.addressInput.value = 'rad://zrepo123';
     ctx.mod.onSettingsChanged();
     expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledTimes(1);
+  });
+
+  test('makes the shared address bar read-only only while Agent-first owns it', async () => {
+    const ctx = await loadNavigationModule();
+    await ctx.mod.initNavigation();
+
+    ctx.mod.setAgentWorkspaceNavigationProjection(ctx.elements.agentAddressHost);
+    ctx.mod.setAgentWorkspaceNavigationEditable(false);
+
+    expect(ctx.elements.addressInput.readOnly).toBe(true);
+    expect(ctx.elements.addressInput.getAttribute('aria-readonly')).toBe('true');
+
+    ctx.mod.setAgentWorkspaceNavigationEditable(true);
+    expect(ctx.elements.addressInput.readOnly).toBe(false);
+
+    ctx.mod.setAgentWorkspaceNavigationEditable(false);
+    ctx.mod.setAgentWorkspaceNavigationProjection();
+    expect(ctx.elements.navForm.children).toContain(ctx.elements.addressBarContainer);
+    expect(ctx.elements.addressInput.readOnly).toBe(false);
+  });
+
+  test('locks canonical navigation while the active tab is Agent-owned', async () => {
+    const ctx = await loadNavigationModule({ agentOwnedTabIds: [1] });
+    await ctx.mod.initNavigation();
+    ctx.tabsMocks.custodyListener([]);
+
+    expect(ctx.elements.addressInput.readOnly).toBe(true);
+    expect(ctx.elements.addressInput.title).toContain('Claim this Agent-owned tab');
+    expect(ctx.elements.backBtn.disabled).toBe(true);
+    expect(ctx.elements.forwardBtn.disabled).toBe(true);
+    expect(ctx.elements.reloadBtn.disabled).toBe(true);
+    expect(ctx.elements.homeBtn.disabled).toBe(true);
+
+    ctx.tabsMocks.isTabAgentOwned.mockReturnValue(false);
+    ctx.tabsMocks.custodyListener([]);
+    expect(ctx.elements.addressInput.readOnly).toBe(false);
+    expect(ctx.elements.backBtn.disabled).toBe(false);
+    expect(ctx.elements.forwardBtn.disabled).toBe(false);
+    expect(ctx.elements.reloadBtn.disabled).toBe(false);
+    expect(ctx.elements.homeBtn.disabled).toBe(false);
+  });
+
+  test('Agent custody discards an uncommitted manual address edit', async () => {
+    const ctx = await loadNavigationModule();
+    await ctx.mod.initNavigation();
+    ctx.elements.addressInput.value = 'unfinished manual query';
+    ctx.elements.addressInput.dispatch('input');
+    expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('unfinished manual query');
+
+    ctx.tabsMocks.isTabAgentOwned.mockReturnValue(true);
+    ctx.tabsMocks.custodyListener([]);
+
+    expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+    expect(ctx.elements.addressInput.readOnly).toBe(true);
+    expect(ctx.elements.addressInput.value).not.toBe('unfinished manual query');
+  });
+
+  test('automation stop updates a background snapshot without disturbing the active edit', async () => {
+    const foreground = createTab(1, 'https://foreground.example');
+    const background = createTab(2, 'https://background.example', {
+      navigationState: { isWebviewLoading: true },
+    });
+    const ctx = await loadNavigationModule({ firstTab: foreground, tabs: [foreground, background] });
+    await ctx.mod.initNavigation();
+    ctx.elements.addressInput.value = 'unfinished manual query';
+    ctx.elements.addressInput.dispatch('input');
+    ctx.elements.reloadBtn.dataset.state = 'stop';
+
+    expect(ctx.mod.stopPageLoading(background.webview)).toBe(true);
+
+    expect(background.webview.stop).toHaveBeenCalledTimes(1);
+    expect(background.navigationState.addressBarSnapshot).toBe('display:https://background.example');
+    expect(foreground.webview.stop).not.toHaveBeenCalled();
+    expect(ctx.elements.addressInput.value).toBe('unfinished manual query');
+    expect(ctx.elements.reloadBtn.dataset.state).toBe('stop');
+  });
+
+  test('stopping the active load updates its snapshot while preserving a manual edit', async () => {
+    const ctx = await loadNavigationModule();
+    await ctx.mod.initNavigation();
+    const tab = ctx.activeRef.tab;
+    tab.navigationState.isWebviewLoading = true;
+    tab.navigationState.currentPageUrl = 'https://settled.example';
+    ctx.elements.addressInput.value = 'unfinished manual query';
+    ctx.elements.addressInput.dispatch('input');
+
+    expect(ctx.mod.stopPageLoading()).toBe(true);
+    expect(ctx.elements.addressInput.value).toBe('unfinished manual query');
+    expect(tab.navigationState.addressBarSnapshot).toBe('display:https://settled.example');
+    expect(ctx.elements.reloadBtn.dataset.state).toBe('reload');
   });
 
   // #306: Escape means "close the innermost open surface" first and
@@ -3502,6 +3653,22 @@ describe('navigation', () => {
       expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
       expect(ctx.elements.trustShield.getAttribute('aria-label')).toContain('verified');
       expect(ctx.elements.trustShield.hidden).toBe(false);
+    });
+
+    test('opens the same trust details from Agent-first chrome', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.mod.setAgentWorkspaceNavigationProjection(ctx.elements.agentAddressHost);
+      ctx.elements.trustPopover.hidden = true;
+      ctx.state.ensTrustByName.set('vitalik.eth', { level: 'verified' });
+      ctx.elements.addressInput.value = 'ens://vitalik.eth';
+      ctx.elements.addressInput.dispatch('input');
+
+      ctx.elements.trustShield.dispatch('click');
+
+      expect(ctx.elements.trustPopover.hidden).toBe(false);
+      expect(ctx.elements.trustShield.getAttribute('aria-expanded')).toBe('true');
+      expect(ctx.elements.agentAddressHost.contains(ctx.elements.trustPopover)).toBe(true);
     });
 
     test('hides for non-ENS URLs', async () => {

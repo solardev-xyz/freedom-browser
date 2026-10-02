@@ -14,6 +14,7 @@ coverage/
 tmp/
 *.swp
 .env
+.env.agent-tests.local
 ant-bin/
 myotis-bin/
 ant-data/

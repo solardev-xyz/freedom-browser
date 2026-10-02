@@ -1,0 +1,3 @@
+- Freedom Agent — browsing and project work with your connected AI model ([#457](https://github.com/solardev-xyz/freedom-browser/pull/457)):
+  - Website actions, parallel helpers, and permission controls
+  - Local projects, file comparisons, Git history, app previews, and Swarm publishing

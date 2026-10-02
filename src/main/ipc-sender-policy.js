@@ -233,6 +233,13 @@ function internalPageFileOf(event) {
  */
 function isSenderAllowed(channel, event) {
   if (isChromeSender(event)) return true;
+  // The isolated PDF worker is a separate BrowserWindow, not chrome or a tab.
+  // Only its result channel crosses this boundary; PdfProcessor additionally
+  // matches the live window and job ID before accepting a result.
+  if (channel === 'agent:pdf-processor:result') {
+    return senderType(event) === 'window' &&
+      topFrameFilePath(event) === path.join(PAGES_DIR, 'pdf-processor.html');
+  }
   const tier = WEBVIEW_CHANNEL_TIERS.get(channel);
   if (!tier) return false;
   // Read-only bootstrap answers, safe for anyone. Not narrowed to webviews:

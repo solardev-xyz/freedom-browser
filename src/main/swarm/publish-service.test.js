@@ -11,6 +11,7 @@ jest.mock('electron', () => ({
 const mockUploadData = jest.fn();
 const mockUploadFile = jest.fn();
 const mockUploadFilesFromDirectory = jest.fn();
+const mockUploadCollection = jest.fn();
 const mockRetrieveTag = jest.fn();
 const mockGetPostageBatches = jest.fn();
 
@@ -23,6 +24,7 @@ jest.mock('@ethersphere/bee-js', () => ({
       upload: mockUploadFile,
     },
     collection: {
+      upload: mockUploadCollection,
       uploadFromDirectory: mockUploadFilesFromDirectory,
     },
     tag: {
@@ -67,7 +69,13 @@ jest.mock('fs/promises', () => ({
 
 const fs = require('fs');
 const fsp = require('fs/promises');
-const { normalizeUploadResult, normalizeTag, registerPublishIpc, USER_ORIGIN } = require('./publish-service');
+const {
+  normalizeUploadResult,
+  normalizeTag,
+  publishCollection,
+  registerPublishIpc,
+  USER_ORIGIN,
+} = require('./publish-service');
 
 registerPublishIpc();
 
@@ -117,10 +125,12 @@ describe('publish-service', () => {
 
   describe('normalizeTag', () => {
     test('computes progress from sent count and done flag', () => {
-      expect(normalizeTag({ uid: 1, split: 100, synced: 75, seen: 80, stored: 90, sent: 85 })).toEqual({
+      expect(
+        normalizeTag({ uid: 1, split: 100, synced: 75, seen: 10, stored: 90, sent: 85 })
+      ).toEqual({
         tagUid: 1,
         split: 100,
-        seen: 80,
+        seen: 10,
         stored: 90,
         sent: 85,
         synced: 75,
@@ -129,7 +139,7 @@ describe('publish-service', () => {
       });
     });
 
-    test('marks done when sent >= split', () => {
+    test('marks done when acknowledged and already-seen chunks cover split', () => {
       const tag = normalizeTag({ uid: 2, split: 10, synced: 5, seen: 10, stored: 10, sent: 10 });
       expect(tag.done).toBe(true);
       expect(tag.progress).toBe(100);
@@ -139,6 +149,49 @@ describe('publish-service', () => {
       const tag = normalizeTag({ uid: 3, split: 0, synced: 0 });
       expect(tag.progress).toBe(0);
       expect(tag.done).toBe(false);
+    });
+  });
+
+  describe('publishCollection', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    test('uploads exact in-memory files without a staging directory', async () => {
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch4', 1000000000, 86400)]);
+      mockUploadCollection.mockResolvedValue({
+        reference: makeRef('collectionref'),
+        tagUid: 40,
+      });
+      const files = [
+        { path: 'index.html', bytes: Buffer.from('<main>Hello</main>') },
+        { path: 'assets/app.js', bytes: Buffer.from('ready();') },
+      ];
+
+      const result = await publishCollection(files, {});
+
+      expect(result).toEqual({
+        reference: 'collectionref',
+        bzzUrl: 'bzz://collectionref',
+        tagUid: 40,
+        batchIdUsed: 'batch4',
+        bytesSize: Buffer.byteLength('<main>Hello</main>ready();'),
+      });
+      expect(mockUploadCollection).toHaveBeenCalledWith(
+        'batch4',
+        [
+          expect.objectContaining({ path: 'index.html', size: 18, file: expect.any(Object) }),
+          expect.objectContaining({ path: 'assets/app.js', size: 8, file: expect.any(Object) }),
+        ],
+        expect.objectContaining({ pin: true, deferred: true, indexDocument: 'index.html' })
+      );
+      const uploaded = mockUploadCollection.mock.calls[0][1];
+      await expect(uploaded[0].file.arrayBuffer()).resolves.toEqual(
+        Uint8Array.from(files[0].bytes).buffer
+      );
+      await expect(uploaded[1].file.arrayBuffer()).resolves.toEqual(
+        Uint8Array.from(files[1].bytes).buffer
+      );
     });
   });
 
@@ -175,9 +228,7 @@ describe('publish-service', () => {
 
     test('swarm:publish-data marks history entry as failed on upload error', async () => {
       const { addEntry, updateEntry } = require('./publish-history');
-      mockGetPostageBatches.mockResolvedValue([
-        makeBatch('batch1', 1000000000, 86400),
-      ]);
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch1', 1000000000, 86400)]);
       mockUploadFile.mockRejectedValue(new Error('Bee upload failed'));
 
       const result = await invokeIpc('swarm:publish-data', 'test');
@@ -209,9 +260,7 @@ describe('publish-service', () => {
       fs.existsSync.mockReturnValue(true);
       fs.statSync.mockReturnValue({ size: 5000, isDirectory: () => false });
       fs.createReadStream.mockReturnValue(mockStream);
-      mockGetPostageBatches.mockResolvedValue([
-        makeBatch('batch2', 1000000000, 86400),
-      ]);
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch2', 1000000000, 86400)]);
       mockUploadFile.mockResolvedValue({
         reference: makeRef('fileref456'),
         tagUid: 20,
@@ -252,9 +301,7 @@ describe('publish-service', () => {
         { name: 'style.css', isDirectory: () => false, isFile: () => true },
       ]);
       fsp.stat.mockResolvedValue({ size: 1000 });
-      mockGetPostageBatches.mockResolvedValue([
-        makeBatch('batch3', 1000000000, 86400),
-      ]);
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch3', 1000000000, 86400)]);
       mockUploadFilesFromDirectory.mockResolvedValue({
         reference: makeRef('dirref789'),
         tagUid: 30,
@@ -279,7 +326,7 @@ describe('publish-service', () => {
         uid: 42,
         split: 200,
         synced: 150,
-        seen: 180,
+        seen: 10,
         stored: 190,
         sent: 170,
       });

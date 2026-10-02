@@ -9,6 +9,21 @@
   --modal-bg: #1a1a1a;
   --menu-bg: #1a1a1a;
   --danger: #f28b82;
+  --agent-hover-1: rgba(255, 255, 255, 0.1);
+  --agent-hover-09: rgba(255, 255, 255, 0.09);
+  --agent-hover-075: rgba(255, 255, 255, 0.075);
+  --agent-hover-05: rgba(255, 255, 255, 0.05);
+  --agent-hover-08: rgba(255, 255, 255, 0.08);
+  --agent-hover-07: rgba(255, 255, 255, 0.07);
+  --agent-danger-soft: #ff9b9b;
+  --agent-danger: #ff8b8b;
+  --agent-danger-border: rgba(255, 95, 95, 0.45);
+  --agent-document-mark: #e3ad51;
+  --agent-pdf-mark: #ef726d;
+  --agent-image-mark: #8f8ce7;
+  --agent-caution: #d6a85f;
+  --agent-on-accent: #ffffff;
+  --agent-interlock-overlay: rgba(0, 0, 0, 0.18);
   /* "This is safe" green — HTTPS globe, address-bar trust shield's
      verified state, autocomplete row verified badge, wallet review
      verified checkmark. One token, all surfaces. */
@@ -30,4 +45,19 @@
   --modal-bg: #ffffff;
   --menu-bg: #ffffff;
   --danger: #d93025;
+  --agent-hover-1: rgba(0, 0, 0, 0.1);
+  --agent-hover-09: rgba(0, 0, 0, 0.09);
+  --agent-hover-075: rgba(0, 0, 0, 0.075);
+  --agent-hover-05: rgba(0, 0, 0, 0.05);
+  --agent-hover-08: rgba(0, 0, 0, 0.08);
+  --agent-hover-07: rgba(0, 0, 0, 0.07);
+  --agent-danger-soft: #d93025;
+  --agent-danger: #d93025;
+  --agent-danger-border: rgba(217, 48, 37, 0.45);
+  --agent-document-mark: #946000;
+  --agent-pdf-mark: #b73530;
+  --agent-image-mark: #6259b4;
+  --agent-caution: #946000;
+  --agent-on-accent: #ffffff;
+  --agent-interlock-overlay: rgba(0, 0, 0, 0.18);
 }

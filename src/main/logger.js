@@ -1,5 +1,9 @@
 const log = require('electron-log');
 const path = require('path');
+const {
+  diagnosticLogBuffer,
+  installDiagnosticLogTransport,
+} = require('./diagnostic-log-buffer');
 
 // Detect environment safely (app.isPackaged is unavailable in test runners)
 let isPackaged = false;
@@ -37,5 +41,7 @@ if (isTestEnv) {
     log.transports.console.level = process.env.DEBUG ? 'verbose' : 'info';
   }
 }
+
+installDiagnosticLogTransport(log, diagnosticLogBuffer);
 
 module.exports = log;

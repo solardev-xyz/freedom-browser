@@ -57,7 +57,7 @@ const SIZE_SAFETY_MARGIN = 1.5;
  */
 async function selectBestBatch(estimatedSizeBytes, options = {}) {
   const bee = getBee();
-  const batches = await bee.stamp.getAll();
+  const batches = await bee.stamp.getAll(options.requestOptions);
 
   const requiredBytes = estimatedSizeBytes * SIZE_SAFETY_MARGIN;
 
@@ -65,14 +65,18 @@ async function selectBestBatch(estimatedSizeBytes, options = {}) {
   let bestTtl = -1;
   let fullMutable = null;
   let fullMutableTtl = -1;
+  let usableCount = 0;
+  let largestRemaining = 0;
 
   for (const batch of batches) {
     if (!batch.usable) continue;
+    usableCount++;
 
     const remaining = batch.remainingSize && typeof batch.remainingSize.toBytes === 'function'
       ? batch.remainingSize.toBytes()
       : 0;
 
+    if (Number.isFinite(remaining)) largestRemaining = Math.max(largestRemaining, remaining);
     const ttl = batch.duration && typeof batch.duration.toSeconds === 'function'
       ? batch.duration.toSeconds()
       : 0;
@@ -95,6 +99,12 @@ async function selectBestBatch(estimatedSizeBytes, options = {}) {
     );
   }
 
+  if (!best && options.requireCapacity) {
+    const message = usableCount
+      ? 'No postage batch has enough capacity for this upload. Select or purchase a suitable batch.'
+      : 'No usable postage batch is available. Check your stamps before publishing.';
+    throw Object.assign(new Error(message), { code: usableCount ? 'POSTAGE_CAPACITY_INSUFFICIENT' : 'POSTAGE_UNAVAILABLE', capacity: { uploadBytes: estimatedSizeBytes, requiredBytes: Math.ceil(requiredBytes), largestRemainingBytes: largestRemaining } });
+  }
   if (!best) return null;
 
   const id = best.batchID;

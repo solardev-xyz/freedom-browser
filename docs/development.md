@@ -38,8 +38,14 @@ Linux, or an **x64 MSVC developer shell** on Windows. No compiler is downloaded
 by the helper build. `npm run build` and `npm run dist` build it before binary
 checks, including each requested macOS architecture. Foreign targets require
 helpers built on the target host and placed in `myotis-bin/<os>-<arch>/`.
-Windows helper compilation/runtime remains unqualified for this candidate;
-missing tooling is a build blocker, not authorization to omit the helper.
+The standalone Windows Node-only supervisor checks passed at `fa14433f`;
+that is not Electron or packaged-app qualification for this merged branch.
+Missing tooling is a build blocker, not authorization to omit the helper.
+On the Agent branch, macOS `npm start` prepares both native supervisors through
+`scripts/prepare-native-supervisors.js`; Linux/Windows development retains the
+explicit Myotis build command. The same hook prepares both packaging inputs,
+and `scripts/sign-native-supervisors.js` composes workspace manifest sealing
+with the Myotis helper's restricted entitlements.
 See [Myotis isolation and qualification](myotis-process-isolation.md).
 
 ## Repository layout

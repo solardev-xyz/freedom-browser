@@ -1,0 +1,1859 @@
+'use strict';
+
+const { OPERATIONS } = require('../automation/contract/operations');
+const { ERROR_CODES } = require('../automation/contract/errors');
+const { originScopeForUrl } = require('../automation/origin-scoped-controller');
+const { SUBAGENT_TOOL_NAME, normalizeSubagentReceipt, normalizeSubagentReceipts, summarizeSubagents } = require('./subagent-receipt');
+const {
+  classifyProviderFailure,
+  providerFailurePresentation,
+  providerRetryCount,
+} = require('./provider-failure');
+
+const ACTIVITY_EFFECTS = Object.freeze({
+  OBSERVED: 'observed',
+  CHANGED: 'changed',
+  MANAGED: 'managed',
+});
+
+const ATTACHMENT_OPERATIONS = Object.freeze({
+  LIST: 'attachment_list',
+  READ: 'attachment_read',
+  RENDER_PAGE: 'attachment_render_page',
+});
+const WORKSPACE_OPERATIONS = Object.freeze({
+  BASH: 'bash',
+  READ: 'read',
+  WRITE: 'write',
+  EDIT: 'edit',
+  GREP: 'grep',
+  FIND: 'find',
+  LS: 'ls',
+  PROCESS: 'write_stdin',
+  PREVIEW: 'workspace_preview',
+  SERVER: 'workspace_server',
+  PERMISSIONS: 'request_permissions',
+  HISTORY: 'workspace_history',
+});
+const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
+
+const OPERATION_PROGRESS = Object.freeze({
+  helper_reports: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Reading saved helper reports',
+    completed: 'Read saved helper reports',
+  },
+  helper_task: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Checking or messaging a helper',
+    completed: 'Checked helper task',
+  },
+  [SUBAGENT_TOOL_NAME]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Delegating a read-only task',
+    completed: 'Received helper report',
+  },
+  [WORKSPACE_OPERATIONS.HISTORY]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Checking project history',
+    completed: 'Checked project history',
+  },
+  [OPERATIONS.LIST_TABS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking Agent tabs',
+    completed: 'Checked Agent tabs',
+  },
+  [OPERATIONS.CREATE_TAB]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Opening a new page',
+    completed: 'Opened a new page',
+  },
+  [OPERATIONS.GET_TAB]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking the current page',
+    completed: 'Checked the current page',
+  },
+  [OPERATIONS.FOCUS_TAB]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Switching pages',
+    completed: 'Switched pages',
+  },
+  [OPERATIONS.CLOSE_TAB]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Closing a page',
+    completed: 'Closed a page',
+  },
+  [OPERATIONS.SNAPSHOT]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Reading the current page',
+    completed: 'Read the current page',
+  },
+  [OPERATIONS.TARGET_POINT]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Identifying a visual target',
+    completed: 'Identified a visual target',
+  },
+  [OPERATIONS.SCREENSHOT]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Looking at the current page',
+    completed: 'Looked at the current page',
+  },
+  [OPERATIONS.NAVIGATE]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Navigating to another page',
+    completed: 'Navigated to another page',
+  },
+  [OPERATIONS.CLICK]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Clicking on the current page',
+    completed: 'Clicked on the current page',
+  },
+  [OPERATIONS.TYPE]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Entering information on the current page',
+    completed: 'Entered information on the current page',
+  },
+  [OPERATIONS.LIST_PAGE_TOOLS]: { effect: ACTIVITY_EFFECTS.OBSERVED, intent: 'Discovering page tools', completed: 'Discovered page tools' },
+  [OPERATIONS.CALL_PAGE_TOOL]: { effect: ACTIVITY_EFFECTS.CHANGED, intent: 'Invoking a page tool', completed: 'Invoked a page tool' },
+  [OPERATIONS.GET_DIALOG]: { effect: ACTIVITY_EFFECTS.OBSERVED, intent: 'Checking a native dialog', completed: 'Checked a native dialog' },
+  [OPERATIONS.HANDLE_DIALOG]: { effect: ACTIVITY_EFFECTS.CHANGED, intent: 'Responding to a native dialog', completed: 'Responded to a native dialog' },
+  [OPERATIONS.SELECT]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Changing a selection on the current page',
+    completed: 'Changed a selection on the current page',
+  },
+  [OPERATIONS.LIST_FRAMES]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking embedded frames',
+    completed: 'Checked embedded frames',
+  },
+  [OPERATIONS.READ_FRAME]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Reading an embedded frame',
+    completed: 'Read an embedded frame',
+  },
+  [OPERATIONS.SCROLL]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Scrolling the current page',
+    completed: 'Scrolled the current page',
+  },
+  [OPERATIONS.PRESS]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Using the keyboard on the current page',
+    completed: 'Used the keyboard on the current page',
+  },
+  [OPERATIONS.DOWNLOAD]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Downloading a file',
+    completed: 'Downloaded a file',
+  },
+  [OPERATIONS.UPLOAD]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Choosing a file to share',
+    completed: 'Attached a file to the page',
+  },
+  [OPERATIONS.WALLET_ACTION]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Waiting for a wallet request',
+    completed: 'Completed a wallet request',
+  },
+  [OPERATIONS.WALLET_TRANSFER]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Preparing a wallet transfer',
+    completed: 'Sent wallet funds',
+  },
+  [OPERATIONS.NODE_STATUS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking Freedom nodes',
+    completed: 'Checked Freedom nodes',
+  },
+  [OPERATIONS.NODE_REQUEST]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Requesting a Freedom node',
+    completed: 'Requested a Freedom node',
+  },
+  [OPERATIONS.NODE_OPERATION_STATUS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking a node operation',
+    completed: 'Checked a node operation',
+  },
+  [OPERATIONS.NODE_LIFECYCLE]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Changing a Freedom node',
+    completed: 'Changed a Freedom node',
+  },
+  [OPERATIONS.NODE_DIAGNOSTICS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Inspecting node diagnostics',
+    completed: 'Inspected node diagnostics',
+  },
+  [OPERATIONS.APP_DIAGNOSTICS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Inspecting Freedom diagnostics',
+    completed: 'Inspected Freedom diagnostics',
+  },
+  [OPERATIONS.SWARM_PUBLISH]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Publishing to Swarm',
+    completed: 'Published to Swarm',
+  },
+  [OPERATIONS.SWARM_PUBLICATION_STATUS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking a Swarm publication',
+    completed: 'Checked a Swarm publication',
+  },
+  [OPERATIONS.LIST_DOWNLOADS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking task downloads',
+    completed: 'Checked task downloads',
+  },
+  [OPERATIONS.WAIT]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Waiting for the current page',
+    completed: 'Waited for the current page',
+  },
+  [OPERATIONS.STOP_LOADING]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Stopping page loading',
+    completed: 'Stopped page loading',
+  },
+  [ATTACHMENT_OPERATIONS.LIST]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Inspecting attached sources',
+    completed: 'Inspected attached sources',
+  },
+  [ATTACHMENT_OPERATIONS.READ]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Reading an attached source',
+    completed: 'Read an attached source',
+  },
+  [ATTACHMENT_OPERATIONS.RENDER_PAGE]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Looking at an attached PDF page',
+    completed: 'Looked at an attached PDF page',
+  },
+  [WORKSPACE_OPERATIONS.BASH]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Running a project command',
+    completed: 'Ran a project command',
+  },
+  [WORKSPACE_OPERATIONS.READ]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Reading a project file',
+    completed: 'Read a project file',
+  },
+  [WORKSPACE_OPERATIONS.WRITE]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Writing a project file',
+    completed: 'Wrote a project file',
+  },
+  [WORKSPACE_OPERATIONS.EDIT]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Editing a project file',
+    completed: 'Edited a project file',
+  },
+  [WORKSPACE_OPERATIONS.GREP]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Searching project files',
+    completed: 'Searched project files',
+  },
+  [WORKSPACE_OPERATIONS.FIND]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Finding project files',
+    completed: 'Found project files',
+  },
+  [WORKSPACE_OPERATIONS.LS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Listing a project directory',
+    completed: 'Listed a project directory',
+  },
+  [WORKSPACE_OPERATIONS.PROCESS]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Checking a workspace process',
+    completed: 'Checked a workspace process',
+  },
+  [WORKSPACE_OPERATIONS.PERMISSIONS]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Requesting project permissions',
+    completed: 'Checked project permissions',
+  },
+  [WORKSPACE_OPERATIONS.PREVIEW]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Opening a static preview',
+    completed: 'Opened a static preview',
+  },
+  [WORKSPACE_OPERATIONS.SERVER]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Managing project servers',
+    completed: 'Managed project servers',
+  },
+});
+
+const ERROR_LABELS = Object.freeze({
+  [ERROR_CODES.INVALID_ARGUMENT]: 'The browser action was not valid.',
+  [ERROR_CODES.TAB_NOT_FOUND]: 'The page is no longer open.',
+  [ERROR_CODES.NAVIGATION_FAILED]: 'The page could not be opened.',
+  [ERROR_CODES.WAIT_TIMEOUT]: 'The expected page state did not appear in time.',
+  [ERROR_CODES.STALE_ELEMENT_REFERENCE]: 'The page changed before the action could run.',
+  [ERROR_CODES.ELEMENT_NOT_FOUND]: 'The page element is no longer available.',
+  [ERROR_CODES.ELEMENT_NOT_INTERACTABLE]: 'The page element could not be used.',
+  [ERROR_CODES.APPROVAL_REQUIRED]: 'This action still needs approval.',
+  [ERROR_CODES.OBSERVATION_REQUIRED]: 'A fresh page observation is needed before this action.',
+  [ERROR_CODES.TAB_BUSY]: 'A helper is currently using this tab.',
+  [ERROR_CODES.POLICY_DENIED]: 'Freedom blocked this browser action.',
+  [ERROR_CODES.USER_CANCELLED]: 'The browser action was cancelled. Effects from an action already started may remain.',
+  [ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER]: 'The user cancelled file selection.',
+  [ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER]: 'The user cancelled the download.',
+  [ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER]: 'The user declined the wallet request.',
+  [ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER]: 'The user declined the Swarm publication.',
+  [ERROR_CODES.POSTAGE_CAPACITY_INSUFFICIENT]: 'The postage batch is too small for this upload.',
+  [ERROR_CODES.POSTAGE_UNAVAILABLE]: 'No usable postage batch is available.',
+  [ERROR_CODES.CAPABILITY_UNAVAILABLE]: 'This browser capability is unavailable.',
+  [ERROR_CODES.INTERNAL_ERROR]: 'The browser action failed unexpectedly.',
+  SESSION_START_FAILED: 'The agent session could not start.',
+  PROVIDER_ERROR: 'The model connection failed.',
+  MODEL_OUTPUT_LIMIT: 'The model reached its output limit.',
+  AGENT_RESUME_SCOPE_CHANGED: 'The browser workspace changed before Agent could continue.',
+  TAB_UNAVAILABLE: 'The browser workspace is unavailable.',
+  RUN_FAILED: 'The agent run ended unexpectedly.',
+});
+const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
+  ERROR_CODES.INVALID_ARGUMENT,
+  ERROR_CODES.TAB_NOT_FOUND,
+  ERROR_CODES.STALE_ELEMENT_REFERENCE,
+  ERROR_CODES.ELEMENT_NOT_FOUND,
+  ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
+  ERROR_CODES.APPROVAL_REQUIRED,
+  ERROR_CODES.OBSERVATION_REQUIRED,
+  ERROR_CODES.TAB_BUSY,
+  ERROR_CODES.POLICY_DENIED,
+  ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER,
+  ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+  ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
+  ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER,
+  ERROR_CODES.POSTAGE_CAPACITY_INSUFFICIENT,
+  ERROR_CODES.POSTAGE_UNAVAILABLE,
+  ERROR_CODES.CAPABILITY_UNAVAILABLE,
+]);
+
+function boundedString(value, maxLength) {
+  return typeof value === 'string' && value ? value.slice(0, maxLength) : '';
+}
+
+function normalizeArtifact(value) {
+  if (!value || typeof value !== 'object') return null;
+  const artifactId = boundedString(value.artifactId, 80);
+  // eslint-disable-next-line no-control-regex
+  const filename = boundedString(value.filename, 255).replace(/[\u0000-\u001f\u007f]/g, '');
+  if (!/^artifact_[a-f0-9]{20}$/.test(artifactId) || !filename) return null;
+  const bytes = Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : 0;
+  const state = ['in_progress', 'completed', 'cancelled', 'interrupted'].includes(value.state)
+    ? value.state
+    : 'interrupted';
+  const sourceOrigin = originScopeForUrl(value.sourceOrigin) || '';
+  return Object.freeze({
+    artifactId,
+    filename,
+    ...(boundedString(value.mimeType, 200) && { mimeType: value.mimeType.slice(0, 200) }),
+    bytes,
+    state,
+    ...(sourceOrigin && { sourceOrigin }),
+    location: value.location === 'chosen_location' ? 'chosen_location' : 'downloads',
+    available: value.available === true,
+  });
+}
+
+function availableArtifact(value) {
+  const artifact = normalizeArtifact(value);
+  return artifact?.state === 'completed' && artifact.available ? artifact : null;
+}
+
+function normalizeUpload(value) {
+  if (!value || typeof value !== 'object') return null;
+  // eslint-disable-next-line no-control-regex
+  const filename = boundedString(value.filename, 255).replace(/[\u0000-\u001f\u007f]/g, '');
+  if (!filename || value.state !== 'attached') return null;
+  const bytes = Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : 0;
+  return Object.freeze({
+    filename,
+    bytes,
+    ...(boundedString(value.mimeType, 200) && { mimeType: value.mimeType.slice(0, 200) }),
+    state: 'attached',
+  });
+}
+
+function normalizeWalletReceipt(value) {
+  if (value?.action !== 'broadcast') return null;
+  const transactionHash = boundedString(value.transactionHash, 100);
+  if (!transactionHash) return null;
+  return Object.freeze({
+    action: 'broadcast',
+    transactionHash,
+    ...(boundedString(value.paymentId, 100) && { paymentId: value.paymentId.slice(0, 100) }),
+    ...(Number.isSafeInteger(value.chainId) && value.chainId > 0 ? { chainId: value.chainId } : {}),
+    ...(boundedString(value.recipient, 80) && { recipient: value.recipient.slice(0, 80) }),
+    ...(boundedString(value.amount, 100) && { amount: value.amount.slice(0, 100) }),
+    ...(boundedString(value.asset, 80) && { asset: value.asset.slice(0, 80) }),
+  });
+}
+
+function normalizeNodeStatusReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const fields = ['total', 'ready', 'active', 'disabled', 'attention'];
+  const normalized = {};
+  for (const field of fields) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0 || value[field] > 100) return null;
+    normalized[field] = value[field];
+  }
+  if (
+    normalized.ready > normalized.total ||
+    normalized.active > normalized.total ||
+    normalized.disabled > normalized.total ||
+    normalized.attention > normalized.total
+  ) {
+    return null;
+  }
+  return Object.freeze(normalized);
+}
+
+function normalizeDiagnosticReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const scope = value.scope === 'node' ? 'node' : value.scope === 'app' ? 'app' : null;
+  if (!scope) return null;
+  if (
+    !Number.isSafeInteger(value.lineCount) ||
+    value.lineCount < 0 ||
+    value.lineCount > 400 ||
+    !Number.isSafeInteger(value.bytes) ||
+    value.bytes < 0 ||
+    value.bytes > 65_536
+  ) {
+    return null;
+  }
+  const service = boundedString(value.service, 40);
+  if (scope === 'node' && !service) return null;
+  return Object.freeze({
+    scope,
+    ...(service && { service }),
+    lineCount: value.lineCount,
+    bytes: value.bytes,
+    truncated: value.truncated === true,
+  });
+}
+
+function normalizeNodeRequestReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const service = boundedString(value.service, 40);
+  const method = boundedString(value.method, 12);
+  const path = boundedString(value.path, 2_048);
+  const effects = new Set([
+    'read',
+    'reversible_admin',
+    'persistent_change',
+    'financial',
+    'destructive',
+    'unknown',
+  ]);
+  const states = new Set(['not_dispatched', 'in_flight', 'responded', 'delivery_uncertain']);
+  const operationId = boundedString(value.operationId, 160);
+  const state = boundedString(value.state, 40);
+  const retrySafety = value.retrySafety === 'safe' ? 'safe' : 'unsafe';
+  if (
+    !['ant', 'radicle', 'ipfs'].includes(service) ||
+    !method ||
+    !path ||
+    !effects.has(value.effect) ||
+    !/^node_op_[a-f0-9]{24}$/.test(operationId) ||
+    !states.has(state)
+  ) {
+    return null;
+  }
+  if (
+    state === 'responded' &&
+    (!Number.isInteger(value.status) ||
+      value.status < 100 ||
+      value.status > 599 ||
+      !Number.isSafeInteger(value.bytes) ||
+      value.bytes < 0 ||
+      value.bytes > 65_536)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    operationId,
+    state,
+    retrySafety,
+    service,
+    method,
+    path,
+    effect: value.effect,
+    ...(state === 'responded' && { status: value.status, bytes: value.bytes }),
+  });
+}
+
+function normalizeNodeLifecycleReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const service = boundedString(value.service, 40);
+  const action = boundedString(value.action, 12);
+  const beforeState = boundedString(value.beforeState, 40);
+  const afterState = boundedString(value.afterState, 40);
+  if (
+    !['ant', 'ipfs', 'radicle', 'tor', 'myotis-ethereum', 'myotis-gnosis'].includes(service) ||
+    !['start', 'stop', 'restart'].includes(action) ||
+    !beforeState ||
+    !afterState ||
+    value.verified !== true
+  ) {
+    return null;
+  }
+  return Object.freeze({ service, action, beforeState, afterState, verified: true });
+}
+
+function normalizePublicationReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const publicationId = boundedString(value.publicationId, 160);
+  const states = new Set(['waiting_postage', 'uploading', 'confirming', 'verifying', 'completed', 'failed', 'outcome_unknown']);
+  const applicationStates = new Set(['not_applied', 'possibly_applied', 'applied']);
+  const kind = ['file', 'folder', 'text'].includes(value.kind) ? value.kind : null;
+  // eslint-disable-next-line no-control-regex
+  const name = boundedString(value.name, 240).replace(/[\u0000-\u001f\u007f]/g, '');
+  if (
+    !/^swarm_pub_[a-f0-9]{24}$/.test(publicationId) ||
+    !states.has(value.state) ||
+    !applicationStates.has(value.applicationState) ||
+    !kind ||
+    !name ||
+    value.public !== true
+  ) {
+    return null;
+  }
+  const reference = boundedString(value.reference, 128).toLowerCase();
+  const validReference = /^[a-f0-9]{64}$/.test(reference);
+  const bzzUrl = validReference && value.bzzUrl === `bzz://${reference}` ? value.bzzUrl : '';
+  const progress =
+    Number.isSafeInteger(value.progress) && value.progress >= 0 && value.progress <= 100
+      ? value.progress
+      : null;
+  const bytes = Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : null;
+  const indexDocument = boundedString(value.indexDocument, 1_024);
+  const error = boundedString(value.error, 500);
+  if (value.state === 'completed' && (!validReference || !bzzUrl)) return null;
+  return Object.freeze({
+    publicationId,
+    state: value.state,
+    applicationState: value.applicationState,
+    kind,
+    name,
+    public: true,
+    ...(bytes !== null && { bytes }),
+    ...(progress !== null && { progress }),
+    ...(indexDocument && { indexDocument }),
+    ...(validReference && { reference }),
+    ...(bzzUrl && { bzzUrl }),
+    ...(typeof value.verified === 'boolean' && { verified: value.verified }),
+    ...(error && { error }),
+    ...(typeof value.message === 'string' && { message: boundedString(value.message, 500) }),
+  });
+}
+
+function normalizeWorkspaceReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const states = new Set([
+    'running',
+    'completed',
+    'failed',
+    'cancelled',
+    'timed_out',
+    'sandbox_denied',
+    'interrupted',
+  ]);
+  const workspaceId = boundedString(value.workspaceId, 160);
+  const commandId = boundedString(value.commandId, 160);
+  const processId = boundedString(value.processId, 160);
+  const command = boundedString(
+    // eslint-disable-next-line no-control-regex
+    typeof value.command === 'string' ? value.command.replace(/[\u0000-\u001f\u007f]+/g, ' ') : '',
+    160
+  );
+  const workingDirectory = boundedString(value.workingDirectory, 1_024);
+  const backend = boundedString(value.backend, 80);
+  const networkPosture = ['none', 'full'].includes(value.networkPosture)
+    ? value.networkPosture
+    : '';
+  const terminationScope = [
+    'pid_namespace',
+    'original_process_group',
+    'not_applicable',
+    'pending',
+    'unknown',
+  ].includes(value.terminationScope)
+    ? value.terminationScope
+    : '';
+  const state = boundedString(value.state, 40);
+  const kind = boundedString(value.kind, 40);
+  const entryCount =
+    Number.isSafeInteger(value.entryCount) && value.entryCount >= 0
+      ? Math.min(value.entryCount, 500)
+      : null;
+  const resultCount =
+    Number.isSafeInteger(value.resultCount) && value.resultCount >= 0
+      ? Math.min(value.resultCount, 1_000)
+      : null;
+  const matchCount =
+    Number.isSafeInteger(value.matchCount) && value.matchCount >= 0
+      ? Math.min(value.matchCount, 200)
+      : null;
+  const previewPort =
+    Number.isSafeInteger(value.previewPort) &&
+    value.previewPort >= 1_024 &&
+    value.previewPort <= 65_535
+      ? value.previewPort
+      : null;
+  if (
+    (workspaceId && !/^workspace_[a-f0-9]{20}$/.test(workspaceId)) ||
+    (commandId && !/^workspace_cmd_[a-f0-9]{24}$/.test(commandId)) ||
+    (processId && !/^workspace_process_[a-f0-9]{24}$/.test(processId)) ||
+    !command ||
+    !workingDirectory ||
+    !backend ||
+    !states.has(state)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    ...(workspaceId && { workspaceId }),
+    ...(commandId && { commandId }),
+    ...(processId && { processId }),
+    kind: [
+      'command',
+      'file_read',
+      'file_write',
+      'file_edit',
+      'file_search',
+      'file_find',
+      'directory_list',
+      'static_preview',
+      'server_preview',
+      'history',
+      'process',
+    ].includes(kind)
+      ? kind
+      : 'command',
+    ...(kind === 'history' && ['status', 'diff', 'review', 'exclude', 'include', 'commit', 'checkpoint', 'recovery', 'recover'].includes(value.history?.action) && {
+      history: Object.freeze({
+        action: value.history.action,
+        ...(state === 'completed' && ['finalized', 'not_applied', 'already_completed', 'kept_current'].includes(value.history.recoveryOutcome) && { recoveryOutcome: value.history.recoveryOutcome }),
+        ...(value.history.source === 'repository' && { source: 'repository' }),
+        ...(state === 'completed' && ['commit', 'checkpoint'].includes(value.history.action) &&
+          typeof value.history.saved === 'boolean' && /^[a-f0-9]{40}$/.test(value.history.checkpointId) && {
+          saved: value.history.saved, checkpointId: value.history.checkpointId,
+        }),
+      }),
+    }),
+    command,
+    workingDirectory,
+    backend,
+    ...(networkPosture && { networkPosture }),
+    state,
+    ...(Number.isSafeInteger(value.durationMs) && value.durationMs >= 0
+      ? { durationMs: value.durationMs }
+      : {}),
+    ...(Number.isInteger(value.exitCode) ? { exitCode: value.exitCode } : {}),
+    ...(boundedString(value.signal, 40) && { signal: value.signal.slice(0, 40) }),
+    stdoutTruncated: value.stdoutTruncated === true,
+    stderrTruncated: value.stderrTruncated === true,
+    terminationGuarantee: boundedString(value.terminationGuarantee, 80) || 'not_applicable',
+    ...(terminationScope && { terminationScope }),
+    ...(previewPort !== null && { previewPort }),
+    sideEffects: value.sideEffects === 'none' ? 'none' : 'unknown',
+    survivorsPossible: value.survivorsPossible === true,
+    completeDescendantTermination: value.completeDescendantTermination === true,
+    ...(entryCount !== null && { entryCount }),
+    ...(resultCount !== null && { resultCount }),
+    ...(matchCount !== null && { matchCount }),
+  });
+}
+
+function checkpointProgress(workspace) {
+  const repository = workspace?.history?.source === 'repository' || workspace?.history?.action === 'commit';
+  const copy = {
+    recovery: ['Inspecting interrupted commit', 'Inspected interrupted commit', 'Freedom compared its recovery record with current Git state. No repository changes were made.'],
+    recover: ['Resolving interrupted commit', 'Resolved interrupted commit', 'Freedom resolved its pending commit recovery record.'],
+    status: ['Checking checkpoints', 'Checked checkpoints', 'Freedom checked project changes and checkpoint exclusions.'],
+    diff: ['Reading file changes', 'Read file changes', 'Freedom returned a bounded diff against HEAD. This does not change files or create a commit.'],
+    review: ['Reviewing file changes', 'Reviewed file changes', 'Freedom returned a file revision for review. This does not save a checkpoint.'],
+    exclude: ['Updating checkpoint exclusions', 'Updated checkpoint exclusions', 'Freedom excluded the selected file from future checkpoints.'],
+    include: ['Updating checkpoint exclusions', 'Updated checkpoint exclusions', 'Freedom removed the selected file from checkpoint exclusions. Its contents still require review.'],
+    checkpoint: ['Saving checkpoint', 'Checked project history', 'Freedom recorded a checkpoint operation, but no confirmed save result is available.'],
+    commit: ['Creating commit', 'Checked project history', 'Freedom recorded a Git operation, but no confirmed commit result is available.'],
+  }[workspace?.history?.action] || ['Checking project history', 'Checked project history', 'Freedom recorded a project history operation.'];
+  let [intent, label, detail] = copy;
+  if (repository) {
+    [intent, label, detail] = copy.map(text => text.replaceAll('checkpoints', 'commits').replaceAll('checkpoint', 'commit'));
+    if (workspace.history.action === 'status') detail = 'Freedom checked project changes and Git history.';
+    if (workspace?.state === 'failed' || workspace?.state === 'cancelled') return {
+      intent, label: workspace.state === 'failed' ? 'Git operation failed' : 'Git operation stopped',
+      detail: 'The Git operation did not return a confirmed result. Inspect repository state before retrying.',
+    };
+    if (workspace.history.action === 'recover') {
+      const outcomes = { finalized: 'Freedom finished the interrupted commit. Working files were not changed.', not_applied: 'The commit was not applied. Freedom cleared its own interrupted operation; no new commit was made.', already_completed: 'The changes were already committed. Freedom archived its old record without changing repository files, staging or history.', kept_current: 'Freedom kept the current repository state and archived its old recovery record. No repository files, staging or history were changed.' };
+      return { intent, label: outcomes[workspace.history.recoveryOutcome] ? 'Resolved interrupted commit' : 'Checked commit recovery', detail: outcomes[workspace.history.recoveryOutcome] || 'No confirmed recovery result was recorded.' };
+    }
+    if (workspace?.history?.saved !== undefined) return {
+      intent, label: workspace.history.saved ? 'Created commit' : 'No new commit needed',
+      detail: workspace.history.saved
+        ? `Freedom created commit ${workspace.history.checkpointId.slice(0, 7)} in the project repository from selected reviewed revisions. Other changes may remain uncommitted.`
+        : `Selected revisions already match commit ${workspace.history.checkpointId.slice(0, 7)}. No new commit was created; other changes may remain uncommitted.`,
+    };
+  }
+  if (workspace?.state === 'failed') return { intent, label: 'Checkpoint operation failed', detail: 'Freedom could not complete the checkpoint operation. No successful result was recorded.' };
+  if (workspace?.state === 'cancelled') return { intent, label: 'Checkpoint operation stopped', detail: 'The checkpoint operation was stopped. Its outcome is not confirmed.' };
+  if (workspace?.history?.saved !== undefined) {
+    const id = workspace.history.checkpointId.slice(0, 7);
+    return { intent, label: workspace.history.saved ? 'Saved checkpoint' : 'Checkpoint already up to date',
+      detail: workspace.history.saved
+        ? `Freedom saved selected reviewed file revisions in local checkpoint ${id}. Other changes may remain uncheckpointed. This is not a project Git commit.`
+        : `No new checkpoint was created; the selected revisions already match local checkpoint ${id}. Other changes may remain uncheckpointed. This is not a project Git commit.` };
+  }
+  return { intent, label, detail };
+}
+
+function publicationSubject(publication) {
+  return publication?.kind === 'text' ? 'text' : publication?.name || 'content';
+}
+
+function publicationObject(publication) {
+  return publication?.kind === 'text' ? 'the text' : `“${publication?.name || 'content'}”`;
+}
+
+function normalizeAttachmentReceipt(value, operation) {
+  if (!value || typeof value !== 'object') return null;
+  if (
+    ![
+      ATTACHMENT_OPERATIONS.LIST,
+      ATTACHMENT_OPERATIONS.READ,
+      ATTACHMENT_OPERATIONS.RENDER_PAGE,
+    ].includes(operation)
+  ) {
+    return null;
+  }
+  const action = operation === ATTACHMENT_OPERATIONS.LIST ? 'list' : 'read';
+  const resourceId = boundedString(value.resourceId, 160);
+  const validResourceId = /^(?:attachment|folder)_[a-f0-9]{20}$/.test(resourceId);
+  const resourceKind =
+    value.resourceKind === 'folder' ? 'folder' : value.resourceKind === 'file' ? 'file' : null;
+  const safeName = (candidate) => {
+    const name = boundedString(candidate, 240);
+    return name && !name.includes('/') && !name.includes('\\') ? name : '';
+  };
+  const name = safeName(value.name);
+  const folderName = safeName(value.folderName);
+  const candidatePath = boundedString(value.relativePath, 512);
+  const pathParts = candidatePath.split(/[\\/]+/);
+  const relativePath =
+    candidatePath && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(candidatePath) && !pathParts.includes('..')
+      ? candidatePath
+      : '';
+  const resourceCount =
+    Number.isSafeInteger(value.resourceCount) && value.resourceCount >= 0
+      ? Math.min(value.resourceCount, 10)
+      : null;
+  const entryCount =
+    Number.isSafeInteger(value.entryCount) && value.entryCount >= 0
+      ? Math.min(value.entryCount, 200)
+      : null;
+  const bytesRead =
+    Number.isSafeInteger(value.bytesRead) && value.bytesRead >= 0
+      ? Math.min(value.bytesRead, 8 * 1024 * 1024)
+      : null;
+  const offset = Number.isSafeInteger(value.offset) && value.offset >= 0 ? value.offset : null;
+  const page =
+    Number.isSafeInteger(value.page) && value.page >= 1 ? Math.min(value.page, 500) : null;
+  const pagesRead =
+    Number.isSafeInteger(value.pagesRead) && value.pagesRead >= 1
+      ? Math.min(value.pagesRead, 4)
+      : null;
+  const pdfPageCount =
+    Number.isSafeInteger(value.pageCount) && value.pageCount >= 1
+      ? Math.min(value.pageCount, 500)
+      : null;
+  if (action === 'read' && (!validResourceId || !resourceKind || !name || bytesRead === null)) {
+    return null;
+  }
+  if (action === 'list' && resourceId && (!validResourceId || resourceKind !== 'folder')) {
+    return null;
+  }
+  if (action === 'list' && !resourceId && resourceCount === null) return null;
+  return Object.freeze({
+    action,
+    ...(validResourceId && { resourceId }),
+    ...(resourceKind && { resourceKind }),
+    ...(name && { name }),
+    ...(folderName && { folderName }),
+    ...(relativePath && { relativePath }),
+    ...(resourceCount !== null && { resourceCount }),
+    ...(entryCount !== null && { entryCount }),
+    ...(bytesRead !== null && { bytesRead }),
+    ...(offset !== null && { offset }),
+    ...(page !== null && { page }),
+    ...(pagesRead !== null && { pagesRead }),
+    ...(pdfPageCount !== null && { pageCount: pdfPageCount }),
+    truncated: value.truncated === true,
+  });
+}
+
+function activityProgress(operation, receipt = {}) {
+  const pageTool = [OPERATIONS.CALL_PAGE_TOOL, OPERATIONS.LIST_PAGE_TOOLS].includes(operation) && receipt.pageTool;
+  const copy = OPERATION_PROGRESS[operation] || {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Working in the browser',
+    completed: 'Used the browser',
+  };
+  const scopedOrigin = originScopeForUrl(receipt.origin) || '';
+  const origin = scopedOrigin.startsWith('freedom-preview://') ? 'workspace preview' : scopedOrigin;
+  const pageCount =
+    Number.isSafeInteger(receipt.pageCount) && receipt.pageCount >= 0 ? receipt.pageCount : null;
+  let intent = copy.intent;
+  let label = copy.completed;
+  if (pageTool && operation === OPERATIONS.CALL_PAGE_TOOL) {
+    const outcome = {
+      completed: 'Website tool returned', awaiting_user: 'Waiting for manual form submission',
+      failed: 'Website tool failed', cancelled: 'Website tool cancelled; effects may remain',
+      timed_out: 'Website tool timed out; outcome unknown', outcome_unknown: 'Website tool outcome unknown',
+    }[pageTool.status];
+    if (outcome) label = outcome;
+  }
+  const artifact = availableArtifact(receipt.artifact);
+  const upload = normalizeUpload(receipt.upload);
+  const wallet = normalizeWalletReceipt(receipt.wallet);
+  const nodeStatus = normalizeNodeStatusReceipt(receipt.nodeStatus);
+  const nodeRequest = normalizeNodeRequestReceipt(receipt.nodeRequest);
+  const nodeLifecycle = normalizeNodeLifecycleReceipt(receipt.nodeLifecycle);
+  const diagnostic = normalizeDiagnosticReceipt(receipt.diagnostic);
+  const attachment = normalizeAttachmentReceipt(receipt.attachment, operation);
+  const publication = normalizePublicationReceipt(receipt.publication);
+  const workspace = normalizeWorkspaceReceipt(receipt.workspace);
+  const subagent = normalizeSubagentReceipt(receipt.subagent);
+  const subagents = normalizeSubagentReceipts(receipt.subagents);
+
+  if (operation === SUBAGENT_TOOL_NAME) {
+    const title = subagent?.title || boundedString(receipt.title, 100);
+    intent = title ? `Delegating: ${title}` : copy.intent;
+    label = subagent && subagent.state !== 'completed'
+      ? ({ running: 'Helper working', cancelled: 'Helper stopped', timed_out: 'Helper timed out', limited: 'Helper reached its limit', failed: 'Helper could not finish' }[subagent.state])
+      : copy.completed;
+    if (title) label += ` — ${title}`;
+    if (subagents) { intent = subagents.some(item => item.mode === 'browser') ? 'Delegating browser tasks' : subagents.some(item => item.mode === 'edit') ? 'Delegating editing and review' : 'Delegating two read-only tasks'; label = summarizeSubagents(subagents).detail; }
+  }
+  if (operation === 'helper_task') {
+    const labels = { status: ['Checking helper status', 'Checked helper status'], wait: ['Waiting for a helper', 'Received helper result'], message: ['Messaging a helper', 'Sent helper message'] };
+    if (labels[receipt.helperAction]) [intent, label] = labels[receipt.helperAction];
+  }
+
+  if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
+    const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
+    intent = `Checking ${pages}`;
+    label = `Checked ${pages}`;
+  } else if (operation === OPERATIONS.DOWNLOAD && artifact) {
+    intent = `Downloading ${artifact.filename}`;
+    label = `Downloaded ${artifact.filename}`;
+  } else if (operation === OPERATIONS.UPLOAD && upload) {
+    intent = `Choosing ${upload.filename}`;
+    label = `Attached ${upload.filename}`;
+  } else if (operation === OPERATIONS.WALLET_TRANSFER && wallet) {
+    intent = `Sending ${wallet.amount || 'funds'}${wallet.asset ? ` ${wallet.asset}` : ''}`;
+    label = `Sent ${wallet.amount || 'funds'}${wallet.asset ? ` ${wallet.asset}` : ''}`;
+  } else if (operation === OPERATIONS.NODE_STATUS && nodeStatus) {
+    const services = `${nodeStatus.total} ${nodeStatus.total === 1 ? 'service' : 'services'}`;
+    intent = `Checking ${services}`;
+    label = `Checked ${services}`;
+  } else if (
+    (operation === OPERATIONS.NODE_REQUEST || operation === OPERATIONS.NODE_OPERATION_STATUS) &&
+    nodeRequest
+  ) {
+    intent =
+      operation === OPERATIONS.NODE_REQUEST
+        ? `Requesting ${nodeRequest.method} ${nodeRequest.path}`
+        : `Checking ${nodeRequest.method} ${nodeRequest.path}`;
+    label =
+      nodeRequest.state === 'responded'
+        ? `Requested ${nodeRequest.method} ${nodeRequest.path} — ${nodeRequest.status}`
+        : nodeRequest.state === 'in_flight'
+          ? `Requested ${nodeRequest.method} ${nodeRequest.path} — still running`
+          : `Requested ${nodeRequest.method} ${nodeRequest.path} — outcome uncertain`;
+  } else if (operation === OPERATIONS.NODE_LIFECYCLE && nodeLifecycle) {
+    intent = `${nodeLifecycle.action === 'restart' ? 'Restarting' : nodeLifecycle.action === 'start' ? 'Starting' : 'Stopping'} ${nodeLifecycle.service}`;
+    label = `${nodeLifecycle.action === 'restart' ? 'Restarted' : nodeLifecycle.action === 'start' ? 'Started' : 'Stopped'} ${nodeLifecycle.service} — ${nodeLifecycle.afterState}`;
+  } else if (
+    (operation === OPERATIONS.NODE_DIAGNOSTICS || operation === OPERATIONS.APP_DIAGNOSTICS) &&
+    diagnostic
+  ) {
+    const subject = diagnostic.scope === 'node' ? diagnostic.service : 'Freedom';
+    intent = `Inspecting ${subject} diagnostics`;
+    label = `Inspected ${diagnostic.lineCount} diagnostic ${diagnostic.lineCount === 1 ? 'line' : 'lines'}`;
+  } else if (
+    (operation === OPERATIONS.SWARM_PUBLISH || operation === OPERATIONS.SWARM_PUBLICATION_STATUS) &&
+    publication
+  ) {
+    const subject = publicationSubject(publication);
+    intent =
+      publication.state === 'verifying'
+        ? `Verifying ${subject}`
+        : publication.state === 'completed'
+          ? `Checking ${subject}`
+          : `Publishing ${subject}`;
+    label =
+      publication.state === 'completed'
+        ? `Published ${subject} to Swarm`
+        : publication.state === 'failed'
+          ? `Publication failed for ${subject}`
+          : publication.state === 'outcome_unknown'
+            ? `Publication outcome uncertain for ${subject}`
+            : `Publishing ${subject}${Number.isSafeInteger(publication.progress) ? ` — ${publication.progress}%` : ''}`;
+  } else if (operation === ATTACHMENT_OPERATIONS.LIST && attachment) {
+    if (attachment.resourceId) {
+      const folder = attachment.folderName || attachment.name || 'attached folder';
+      intent = `Inspecting ${folder}`;
+      label = `Inspected ${folder}`;
+    } else {
+      const resources = `${attachment.resourceCount} attached ${attachment.resourceCount === 1 ? 'source' : 'sources'}`;
+      intent = `Checking ${resources}`;
+      label = `Checked ${resources}`;
+    }
+  } else if (operation === ATTACHMENT_OPERATIONS.READ && attachment) {
+    const source = attachment.relativePath || attachment.name;
+    const pages =
+      attachment.page && attachment.pageCount
+        ? ` — ${attachment.pagesRead > 1 ? `pages ${attachment.page}–${attachment.page + attachment.pagesRead - 1}` : `page ${attachment.page}`} of ${attachment.pageCount}`
+        : '';
+    intent = `Reading ${source}${pages}`;
+    label = `Read ${source}${pages}`;
+  } else if (operation === ATTACHMENT_OPERATIONS.RENDER_PAGE && attachment) {
+    const source = attachment.relativePath || attachment.name;
+    const page =
+      attachment.page && attachment.pageCount
+        ? ` — page ${attachment.page} of ${attachment.pageCount}`
+        : '';
+    intent = `Looking at ${source}${page}`;
+    label = `Looked at ${source}${page}`;
+  } else if (operation === WORKSPACE_OPERATIONS.PERMISSIONS) {
+    intent = 'Requesting project permissions';
+    label =
+      workspace?.state === 'cancelled'
+        ? 'Project permission request stopped'
+        : receipt.status === 'failed' || ['failed', 'sandbox_denied', 'timed_out'].includes(workspace?.state)
+          ? 'Project permission request failed'
+          : 'Checked project permissions';
+  } else if (operation === WORKSPACE_OPERATIONS.HISTORY) {
+    ({ intent, label } = checkpointProgress(workspace));
+  } else if (WORKSPACE_OPERATION_SET.has(operation) && workspace) {
+    const action = workspace.command;
+    const activeLabels = {
+      [WORKSPACE_OPERATIONS.BASH]: `Running ${action}`,
+      [WORKSPACE_OPERATIONS.READ]: `Reading ${action.replace(/^Read /, '')}`,
+      [WORKSPACE_OPERATIONS.WRITE]: `Writing ${action.replace(/^Write /, '')}`,
+      [WORKSPACE_OPERATIONS.EDIT]: `Editing ${action.replace(/^Edit /, '')}`,
+      [WORKSPACE_OPERATIONS.GREP]: `Searching ${action.replace(/^Search /, '')}`,
+      [WORKSPACE_OPERATIONS.FIND]: `Finding ${action.replace(/^Find /, '')}`,
+      [WORKSPACE_OPERATIONS.LS]: `Listing ${action.replace(/^List /, '')}`,
+      [WORKSPACE_OPERATIONS.PROCESS]: action.startsWith('Stop ')
+        ? action
+        : `Checking ${action.replace(/^Check /, '')}`,
+      [WORKSPACE_OPERATIONS.PREVIEW]: `Opening ${action.replace(/^Preview /, '')}`,
+      [WORKSPACE_OPERATIONS.SERVER]: action.startsWith('List ') ? 'Checking saved project servers' : action,
+    };
+    const completedLabels = {
+      [WORKSPACE_OPERATIONS.BASH]: `Ran ${action}`,
+      [WORKSPACE_OPERATIONS.READ]: action,
+      [WORKSPACE_OPERATIONS.WRITE]: action,
+      [WORKSPACE_OPERATIONS.EDIT]: action,
+      [WORKSPACE_OPERATIONS.GREP]:
+        workspace.matchCount === 0
+          ? action.replace(/^Search for /, 'No matches for ')
+          : action.replace(/^Search /, 'Searched '),
+      [WORKSPACE_OPERATIONS.FIND]:
+        workspace.resultCount === 0
+          ? action.replace(/^Find /, 'No files matched ')
+          : action.replace(/^Find /, 'Found '),
+      [WORKSPACE_OPERATIONS.LS]:
+        workspace.entryCount === 0
+          ? `${action.replace(/^List /, 'Listed ')} — empty`
+          : action.replace(/^List /, 'Listed '),
+      [WORKSPACE_OPERATIONS.PREVIEW]: action.replace(/^Preview /, 'Opened preview for '),
+      [WORKSPACE_OPERATIONS.SERVER]: action.startsWith('List ') ? 'Checked saved project servers' : action,
+      [WORKSPACE_OPERATIONS.PROCESS]: `Process finished — ${action.replace(/^(?:Check|Stop) /, '')}`,
+    };
+    intent = activeLabels[operation];
+    const processName = action.replace(/^(?:Check|Stop) /, '');
+    label =
+      workspace.state === 'running'
+        ? `Process still running — ${processName}`
+        : workspace.state === 'completed'
+          ? completedLabels[operation]
+          : workspace.state === 'timed_out'
+            ? operation === WORKSPACE_OPERATIONS.PROCESS
+              ? `Process timed out — ${processName}`
+              : `Command timed out — ${action}`
+            : workspace.state === 'cancelled'
+              ? operation === WORKSPACE_OPERATIONS.PROCESS
+                ? `Process stopped — ${processName}`
+                : `Command stopped — ${action}`
+              : workspace.state === 'sandbox_denied'
+                ? `Workspace operation blocked — ${action}`
+                : receipt.errorCode === 'WORKSPACE_AUDIT_FINDINGS'
+                  ? 'Dependency audit found vulnerabilities'
+                  : `Workspace operation failed — ${action}`;
+  } else if (origin) {
+    const originCopy = {
+      [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
+      [OPERATIONS.GET_TAB]: ['Checking', 'Checked'],
+      [OPERATIONS.FOCUS_TAB]: ['Switching to', 'Switched to'],
+      [OPERATIONS.CLOSE_TAB]: ['Closing', 'Closed'],
+      [OPERATIONS.SNAPSHOT]: ['Reading', 'Read'],
+      [OPERATIONS.SCREENSHOT]: ['Looking at', 'Looked at'],
+      [OPERATIONS.NAVIGATE]: ['Navigating to', 'Navigated to'],
+      [OPERATIONS.CLICK]: ['Clicking on', 'Clicked on'],
+      [OPERATIONS.TYPE]: ['Entering information on', 'Entered information on'],
+      [OPERATIONS.SELECT]: ['Changing a selection on', 'Changed a selection on'],
+      [OPERATIONS.SCROLL]: ['Scrolling', 'Scrolled'],
+      [OPERATIONS.PRESS]: ['Using the keyboard on', 'Used the keyboard on'],
+      [OPERATIONS.UPLOAD]: ['Choosing a file for', 'Attached a file on'],
+      [OPERATIONS.WAIT]: ['Waiting for', 'Waited for'],
+      [OPERATIONS.STOP_LOADING]: ['Stopping page loading on', 'Stopped page loading on'],
+    }[operation];
+    if (originCopy) {
+      intent = `${originCopy[0]} ${origin}`;
+      label = `${originCopy[1]} ${origin}`;
+    }
+  }
+
+  if (operation === OPERATIONS.SCROLL) {
+    if (receipt.scrollOutcome === 'boundary') label = 'Scroll boundary reached';
+    if (receipt.scrollOutcome === 'no_movement') label = 'Scroll did not move the page or container';
+  }
+  const effect =
+    operation === OPERATIONS.SCROLL && receipt.scrollOutcome === 'boundary'
+      ? ACTIVITY_EFFECTS.OBSERVED
+      : (operation === OPERATIONS.NODE_REQUEST || operation === OPERATIONS.NODE_OPERATION_STATUS) &&
+          nodeRequest
+        ? nodeRequest.effect === 'read'
+          ? ACTIVITY_EFFECTS.OBSERVED
+          : ACTIVITY_EFFECTS.CHANGED
+        : copy.effect;
+  return Object.freeze({
+    intent,
+    label,
+    effect,
+    ...(pageTool && { pageTool }),
+    ...(origin && { origin }),
+    ...(boundedString(receipt.pageTitle, 240) && { pageTitle: boundedString(receipt.pageTitle, 240) }),
+    ...(boundedString(receipt.pageId, 160) && { pageId: receipt.pageId.slice(0, 160) }),
+    ...(pageCount !== null && { pageCount }),
+    ...(artifact && { artifact }),
+    ...(upload && { upload }),
+    ...(wallet && { wallet }),
+    ...(nodeStatus && { nodeStatus }),
+    ...(nodeRequest && { nodeRequest }),
+    ...(nodeLifecycle && { nodeLifecycle }),
+    ...(diagnostic && { diagnostic }),
+    ...(attachment && { attachment }),
+    ...(publication && { publication }),
+    ...(workspace && { workspace }),
+    ...(subagent && { subagent }),
+    ...(subagents && { subagents }),
+  });
+}
+
+function createToolReceipt(operation, options = {}) {
+  const envelope = options.envelope;
+  const result = envelope?.result;
+  const resultTab = result?.tab;
+  const pageToolResult = operation === OPERATIONS.CALL_PAGE_TOOL ? result
+    : operation === OPERATIONS.LIST_PAGE_TOOLS ? result?.execution : null;
+  const rawTitle = resultTab?.title ?? result?.title ?? options.pageTitle;
+  const pageTitle = typeof rawTitle === 'string'
+    ? rawTitle.replace(/\p{Cc}/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 240)
+    : '';
+  const pageId = boundedString(
+    resultTab?.tabId || envelope?.tabId || result?.activeTabId || options.pageId,
+    160
+  );
+  const origin =
+    originScopeForUrl(resultTab?.url) ||
+    originScopeForUrl(result?.url) ||
+    originScopeForUrl(options.origin) ||
+    (operation === OPERATIONS.CREATE_TAB || operation === OPERATIONS.NAVIGATE
+      ? originScopeForUrl(options.requestedUrl)
+      : null);
+  const pageCount =
+    operation === OPERATIONS.LIST_TABS && Array.isArray(result?.tabs) ? result.tabs.length : null;
+  const artifact = availableArtifact(result?.artifact);
+  const upload = normalizeUpload(result?.upload);
+  const wallet = normalizeWalletReceipt(result?.wallet);
+  const nodeStatus = normalizeNodeStatusReceipt(result?.summary);
+  const nodeRequest = normalizeNodeRequestReceipt(result?.summary);
+  const nodeLifecycle = normalizeNodeLifecycleReceipt(result?.summary);
+  const diagnostic = normalizeDiagnosticReceipt(result?.summary);
+  const publication = normalizePublicationReceipt(
+    result?.summary?.publication ||
+      result?.publication ||
+      result?.summary?.publications?.[0] ||
+      result?.publications?.[0]
+  );
+  const artifacts = Array.isArray(result?.artifacts)
+    ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
+    : [];
+
+  return Object.freeze({
+    ...(['completed', 'awaiting_user', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(pageToolResult?.status) &&
+      { pageTool: { status: pageToolResult.status, executionRef: boundedString(pageToolResult.executionRef, 80) } }),
+    ...(operation === OPERATIONS.SCROLL &&
+      ['moved', 'boundary', 'no_movement'].includes(result?.outcome) && { scrollOutcome: result.outcome }),
+    ...(pageId && { pageId }),
+    ...(pageTitle && { pageTitle }),
+    ...(origin && { origin }),
+    ...(pageCount !== null && { pageCount }),
+    ...(artifact && { artifact }),
+    ...(upload && { upload }),
+    ...(wallet && { wallet }),
+    ...(nodeStatus && { nodeStatus }),
+    ...(nodeRequest && { nodeRequest }),
+    ...(nodeLifecycle && { nodeLifecycle }),
+    ...(diagnostic && { diagnostic }),
+    ...(publication && { publication }),
+    ...(artifacts.length && { artifacts }),
+  });
+}
+
+function normalizedEffect(item) {
+  if (Object.values(ACTIVITY_EFFECTS).includes(item?.effect)) return item.effect;
+  return OPERATION_PROGRESS[item?.operation]?.effect || ACTIVITY_EFFECTS.MANAGED;
+}
+
+function errorExplanation(code) {
+  return ERROR_LABELS[code] || 'The agent stopped before it could finish.';
+}
+
+function buildAgentOutcome(activity, status, error) {
+  const items = Array.isArray(activity) ? activity : [];
+  const helpers = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .filter(receipt => receipt?.mode === 'browser');
+  const actions = helpers.flatMap(receipt => receipt.browserActions);
+  const outcome = buildAgentOutcomeFromReceipts([...items, ...actions], status, error);
+  const browserItems = items.flatMap(item => item?.operation === SUBAGENT_TOOL_NAME
+    ? [item, ...(normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+      .filter(receipt => receipt?.mode === 'browser').flatMap(receipt => receipt.browserActions)] : [item]);
+  const uncertainBrowserAction = browserItems.some((item, index) => {
+    if (!item?.operation?.startsWith('browser_') || normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED ||
+        !['failed', 'running'].includes(item.status) || CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode)) return false;
+    const later = browserItems.slice(index + 1);
+    if (item.pageTool?.executionRef) return !later.some(next =>
+      next.pageTool?.executionRef === item.pageTool.executionRef && next.pageTool.status === 'completed');
+    // A failed action followed by a fresh read can be reconciled by the agent.
+    // A read of another page or metadata alone does not check its effects.
+    return !later.some(next => next.status === 'succeeded' &&
+      [OPERATIONS.SNAPSHOT, OPERATIONS.SCREENSHOT, OPERATIONS.READ_FRAME].includes(next.operation) &&
+      item.pageId && next.pageId === item.pageId);
+  });
+  const unfinishedEdits = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .some(receipt => receipt?.mode === 'edit' && (receipt.writesPending ||
+      (receipt.state !== 'completed' && receipt.attemptedFiles.length > 0)));
+  const notice = uncertainBrowserAction || helpers.some(receipt => receipt.browserPending)
+    ? { tone: 'caution', headline: 'Browser action outcome uncertain',
+      detail: 'An action may have taken effect without a confirmed result. Check the page before repeating it.' }
+    : unfinishedEdits ? { tone: 'caution', headline: 'Helper stopped during editing',
+      detail: 'The helper may have left partial changes. Review its file changes before continuing.' } : null;
+  return Object.freeze({ ...outcome, ...(notice && { notice }),
+    ...(helpers.length && { detail: `${outcome.detail || ''} Browser helpers recorded ${actions.length} page ${actions.length === 1 ? 'operation' : 'operations'} in their own tabs. Review their model-generated reports and returned tabs.${helpers.some(receipt => receipt.browserPending) ? ' A browser operation was still settling; its effects need review.' : ''}`.trim() }),
+  });
+}
+
+function buildAgentOutcomeFromReceipts(activity, status, error) {
+  const items = Array.isArray(activity) ? activity : [];
+  const editingHelpers = items.filter(item => item?.operation === SUBAGENT_TOOL_NAME)
+    .flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)])
+    .filter(receipt => receipt?.mode === 'edit');
+  const helperChangedFiles = new Set(editingHelpers.flatMap(receipt => receipt.changedFiles));
+  const helperEditNote = editingHelpers.length
+    ? ` Editing helpers recorded ${helperChangedFiles.size} changed ${helperChangedFiles.size === 1 ? 'file' : 'files'}. Review current changes before testing or committing; stopped tasks can leave partial edits.` : '';
+  const succeeded = items.filter((item) => item?.status === 'succeeded');
+  const cancelledDownloads = items.filter(
+    (item) => item?.errorCode === ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+  );
+  const cancelledUploads = items.filter(
+    (item) => item?.errorCode === ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER
+  );
+  const declinedWalletRequests = items.filter(
+    (item) => item?.errorCode === ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
+  );
+  const declinedPublications = items.filter(
+    (item) => item?.errorCode === ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER
+  );
+  const failed = items.filter(
+    (item) =>
+      item?.status === 'failed' &&
+      item?.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER &&
+      item?.errorCode !== ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER &&
+      item?.errorCode !== ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER &&
+      item?.errorCode !== ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER
+  );
+  const changed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED);
+  const observed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.OBSERVED);
+  const pageIds = new Set(succeeded.map((item) => item?.pageId || item?.origin).filter(Boolean));
+  const artifacts = succeeded.map((item) => availableArtifact(item?.artifact)).filter(Boolean);
+  const walletTransfers = succeeded
+    .map((item) => normalizeWalletReceipt(item?.wallet))
+    .filter(Boolean);
+  const nodeChecks = succeeded
+    .filter((item) => item?.operation === OPERATIONS.NODE_STATUS)
+    .map((item) => normalizeNodeStatusReceipt(item?.nodeStatus))
+    .filter(Boolean);
+  const nodeRequests = succeeded
+    .filter((item) =>
+      [OPERATIONS.NODE_REQUEST, OPERATIONS.NODE_OPERATION_STATUS].includes(item?.operation)
+    )
+    .map((item) => normalizeNodeRequestReceipt(item?.nodeRequest))
+    .filter(Boolean);
+  const nodeLifecycles = succeeded
+    .filter((item) => item?.operation === OPERATIONS.NODE_LIFECYCLE)
+    .map((item) => normalizeNodeLifecycleReceipt(item?.nodeLifecycle))
+    .filter(Boolean);
+  const diagnostics = succeeded
+    .filter((item) =>
+      [OPERATIONS.NODE_DIAGNOSTICS, OPERATIONS.APP_DIAGNOSTICS].includes(item?.operation)
+    )
+    .map((item) => normalizeDiagnosticReceipt(item?.diagnostic))
+    .filter(Boolean);
+  const attachmentObservations = succeeded
+    .filter((item) =>
+      [
+        ATTACHMENT_OPERATIONS.LIST,
+        ATTACHMENT_OPERATIONS.READ,
+        ATTACHMENT_OPERATIONS.RENDER_PAGE,
+      ].includes(item?.operation)
+    )
+    .map((item) => normalizeAttachmentReceipt(item?.attachment, item.operation))
+    .filter(Boolean);
+  const attachmentReads = [
+    ...new Map(
+      attachmentObservations
+        .filter((item) => item.action === 'read')
+        .map((item) => [`${item.resourceId}:${item.relativePath || item.name}`, item])
+    ).values(),
+  ];
+  const publications = succeeded
+    .filter((item) =>
+      [OPERATIONS.SWARM_PUBLISH, OPERATIONS.SWARM_PUBLICATION_STATUS].includes(item?.operation)
+    )
+    .map((item) => normalizePublicationReceipt(item?.publication))
+    .filter(Boolean);
+  const workspaceCommands = items
+    .filter((item) => WORKSPACE_OPERATION_SET.has(item?.operation))
+    .map((item) => normalizeWorkspaceReceipt(item?.workspace))
+    .filter(Boolean);
+  const workspaceShellCommands = items
+    .filter((item) =>
+      [WORKSPACE_OPERATIONS.BASH, WORKSPACE_OPERATIONS.PROCESS].includes(item?.operation)
+    )
+    .map((item) => normalizeWorkspaceReceipt(item?.workspace))
+    .filter(Boolean);
+  const nonBrowserObservations = new Set([
+    'helper_reports',
+    SUBAGENT_TOOL_NAME,
+    OPERATIONS.NODE_STATUS,
+    OPERATIONS.NODE_REQUEST,
+    OPERATIONS.NODE_OPERATION_STATUS,
+    OPERATIONS.NODE_LIFECYCLE,
+    OPERATIONS.NODE_DIAGNOSTICS,
+    OPERATIONS.APP_DIAGNOSTICS,
+    OPERATIONS.SWARM_PUBLISH,
+    OPERATIONS.SWARM_PUBLICATION_STATUS,
+    ATTACHMENT_OPERATIONS.LIST,
+    ATTACHMENT_OPERATIONS.READ,
+    ATTACHMENT_OPERATIONS.RENDER_PAGE,
+    ...WORKSPACE_OPERATION_SET,
+  ]);
+  const browserSucceeded = succeeded.filter((item) => !nonBrowserObservations.has(item?.operation));
+  const browserObserved = observed.filter((item) => !nonBrowserObservations.has(item?.operation));
+  const uncertainChanges = items.filter((item) => {
+    if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
+      return false;
+    }
+    if (item.errorCode === ERROR_CODES.USER_CANCELLED && ['declined', 'withdrawn'].includes(item.approval)) return false;
+    return item.status === 'running' || !CONFIRMED_NOT_APPLIED_ERRORS.has(item.errorCode);
+  });
+  const approvals = Object.freeze({
+    requested: items.filter((item) => item?.approval).length,
+    approved: items.filter((item) => item?.approval === 'approved').length,
+    reviewerApproved: items.filter((item) => item?.approval === 'reviewer_approved').length,
+    declined: items.filter((item) => item?.approval === 'declined').length,
+    withdrawn: items.filter((item) => item?.approval === 'withdrawn').length,
+  });
+  const destinations = [
+    ...new Set(
+      items
+        .filter((item) => item?.approval === 'approved')
+        .map((item) => originScopeForUrl(item?.destinationOrigin))
+        .filter(Boolean)
+    ),
+  ].slice(0, 20);
+  const lastChangeIndex = items.findLastIndex(
+    (item) => item?.status === 'succeeded' && normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED
+  );
+  const changedPageId =
+    lastChangeIndex >= 0 ? items[lastChangeIndex]?.pageId || items[lastChangeIndex]?.origin : null;
+  const resultObserved =
+    lastChangeIndex >= 0 &&
+    items.slice(lastChangeIndex + 1).some((item) => {
+      if (item?.status !== 'succeeded' || normalizedEffect(item) !== ACTIVITY_EFFECTS.OBSERVED) {
+        return false;
+      }
+      if (item.operation === OPERATIONS.LIST_PAGE_TOOLS) return false;
+      if (item.operation === OPERATIONS.LIST_TABS || !changedPageId) return true;
+      return (item.pageId || item.origin) === changedPageId;
+    });
+  const counts = Object.freeze({
+    successful: succeeded.length,
+    failed: failed.length,
+    changed: changed.length,
+    observed: observed.length,
+    pages: pageIds.size,
+    ...(artifacts.length && { artifacts: artifacts.length }),
+    ...(cancelledDownloads.length && { cancelledDownloads: cancelledDownloads.length }),
+    ...(cancelledUploads.length && { cancelledUploads: cancelledUploads.length }),
+    ...(declinedWalletRequests.length && {
+      declinedWalletRequests: declinedWalletRequests.length,
+    }),
+    ...(declinedPublications.length && { declinedPublications: declinedPublications.length }),
+    ...(walletTransfers.length && { walletTransfers: walletTransfers.length }),
+    ...(nodeChecks.length && { nodeChecks: nodeChecks.length }),
+    ...(nodeRequests.length && { nodeRequests: nodeRequests.length }),
+    ...(nodeLifecycles.length && { nodeLifecycles: nodeLifecycles.length }),
+    ...(diagnostics.length && { diagnostics: diagnostics.length }),
+    ...(attachmentReads.length && { attachmentReads: attachmentReads.length }),
+    ...(attachmentObservations.length && {
+      attachmentObservations: attachmentObservations.length,
+    }),
+    ...(publications.length && { publications: publications.length }),
+    ...(workspaceCommands.length && { workspaceCommands: workspaceCommands.length }),
+    approvals,
+  });
+  const browserActionCopy = `${browserSucceeded.length} successful browser ${browserSucceeded.length === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
+  const browserFailures = failed.filter(item => !nonBrowserObservations.has(item.operation)).length;
+  const recoveryNote = browserFailures
+    ? ` ${browserFailures} browser ${browserFailures === 1 ? 'action did' : 'actions did'} not complete successfully.`
+    : '';
+  const approvalNote = approvals.approved
+    ? ` ${approvals.approved} browser ${approvals.approved === 1 ? 'action was' : 'actions were'} approved by the user.`
+    : approvals.declined
+      ? ` ${approvals.declined} browser ${approvals.declined === 1 ? 'action was' : 'actions were'} declined by the user.`
+      : '';
+  const destinationNote = destinations.length
+    ? ` Approved ${destinations.length === 1 ? 'destination' : 'destinations'}: ${destinations.join(', ')}.`
+    : '';
+
+  if (status === 'completed') {
+    if (artifacts.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'artifact_available',
+        tone: 'success',
+        headline: artifacts.length === 1 ? 'File downloaded' : 'Files downloaded',
+        detail: `Freedom verified ${artifacts.length} downloaded ${artifacts.length === 1 ? 'file' : 'files'} and recorded ${browserActionCopy}.${approvalNote}${recoveryNote}`,
+        artifacts,
+        destinations,
+        counts,
+      });
+    }
+    if (cancelledDownloads.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'download_cancelled',
+        tone: 'neutral',
+        headline: cancelledDownloads.length === 1 ? 'Download cancelled' : 'Downloads cancelled',
+        detail:
+          cancelledDownloads.length === 1
+            ? 'You stopped the transfer. Freedom did not record a completed file.'
+            : `You stopped ${cancelledDownloads.length} transfers. Freedom did not record completed files for them.`,
+        destinations,
+        counts,
+      });
+    }
+    if (cancelledUploads.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'file_selection_cancelled',
+        tone: 'neutral',
+        headline: 'File selection cancelled',
+        detail:
+          cancelledUploads.length === 1
+            ? 'You closed the file picker. Freedom did not attach a file.'
+            : `You cancelled ${cancelledUploads.length} file selections. Freedom did not attach files for them.`,
+        destinations,
+        counts,
+      });
+    }
+    if (declinedWalletRequests.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'wallet_declined',
+        tone: 'neutral',
+        headline: 'Wallet request declined',
+        detail:
+          declinedWalletRequests.length === 1
+            ? 'You declined the wallet request. Freedom did not sign or broadcast it.'
+            : `You declined ${declinedWalletRequests.length} wallet requests. Freedom did not sign or broadcast them.`,
+        destinations,
+        counts,
+      });
+    }
+    if (walletTransfers.length) {
+      const wallet = walletTransfers.at(-1);
+      const transfer = `${wallet.amount || 'Funds'}${wallet.asset ? ` ${wallet.asset}` : ''}`;
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'wallet_broadcast',
+        tone: 'success',
+        headline: 'Wallet transfer broadcast',
+        detail: `${transfer} was sent through Freedom Wallet on chain ${wallet.chainId}. Transaction: ${wallet.transactionHash}.`,
+        wallet,
+        destinations,
+        counts,
+      });
+    }
+    if (declinedPublications.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'swarm_publication_declined',
+        tone: 'neutral',
+        headline: 'Swarm publication declined',
+        detail: 'You declined the publication. Freedom did not dispatch it to Swarm.',
+        destinations,
+        counts,
+      });
+    }
+    if (publications.length && !browserObserved.length) {
+      const publication = publications.at(-1);
+      if (publication.state === 'completed') {
+        return Object.freeze({
+          kind: 'completed',
+          verification: publication.verified
+            ? 'swarm_publication_verified'
+            : 'swarm_publication_completed',
+          tone: publication.verified ? 'success' : 'caution',
+          headline: publication.verified ? 'Published and verified on Swarm' : 'Published to Swarm',
+          detail: publication.verified
+            ? `Freedom published ${publicationObject(publication)} and verified retrieval at ${publication.bzzUrl}.`
+            : `Freedom published ${publicationObject(publication)} at ${publication.bzzUrl}, but retrieval was not verified yet.`,
+          publication,
+          destinations,
+          counts,
+        });
+      }
+      if (['waiting_postage', 'uploading', 'confirming', 'verifying'].includes(publication.state)) {
+        return Object.freeze({
+          kind: 'completed',
+          verification: 'swarm_publication_in_flight',
+          tone: 'caution',
+          headline: 'Swarm publication still running',
+          detail: publication.message || `Freedom is still publishing ${publicationObject(publication)}. Check this upload before starting another.`,
+          publication,
+          destinations,
+          counts,
+        });
+      }
+      return Object.freeze({
+        kind: 'completed',
+        verification:
+          publication.state === 'failed'
+            ? 'swarm_publication_failed'
+            : 'swarm_publication_outcome_unknown',
+        tone: 'caution',
+        headline:
+          publication.state === 'failed'
+            ? 'Swarm publication failed'
+            : 'Swarm publication outcome uncertain',
+        detail:
+          publication.message || 'Check the existing publication before starting another upload.',
+        technicalDetails: publication.error || '',
+        publication,
+        destinations,
+        counts,
+      });
+    }
+    if (diagnostics.length && !changed.length && !browserObserved.length) {
+      const diagnostic = diagnostics.at(-1);
+      const subject = diagnostic.scope === 'node' ? diagnostic.service : 'Freedom';
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'diagnostics_inspected',
+        tone: 'success',
+        headline: 'Diagnostics inspected',
+        detail: `Agent inspected ${diagnostic.lineCount} bounded raw diagnostic ${diagnostic.lineCount === 1 ? 'line' : 'lines'} from ${subject}${diagnostic.truncated ? '; the requested evidence was truncated at Freedom’s limit' : ''}.`,
+        diagnostic,
+        destinations,
+        counts,
+      });
+    }
+    if (nodeChecks.length && !changed.length && !browserObserved.length) {
+      const nodeStatus = nodeChecks.at(-1);
+      const readiness = `${nodeStatus.ready} ready, ${nodeStatus.disabled} disabled`;
+      const attention = nodeStatus.attention
+        ? `, ${nodeStatus.attention} ${nodeStatus.attention === 1 ? 'needs' : 'need'} attention`
+        : '';
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'nodes_inspected',
+        tone: nodeStatus.attention ? 'caution' : 'success',
+        headline: 'Node status checked',
+        detail: `Freedom checked ${nodeStatus.total} integrated services: ${readiness}${attention}.`,
+        nodeStatus,
+        destinations,
+        counts,
+      });
+    }
+    if (nodeRequests.length && !browserObserved.length) {
+      const nodeRequest = nodeRequests.at(-1);
+      if (nodeRequest.state === 'in_flight') {
+        return Object.freeze({
+          kind: 'completed',
+          verification: 'node_request_in_flight',
+          tone: 'caution',
+          headline: 'Node request still running',
+          detail: `${nodeRequest.service} is still processing ${nodeRequest.method} ${nodeRequest.path}. Freedom operation ${nodeRequest.operationId} remains in flight; unsafe requests must not be repeated.`,
+          nodeRequest,
+          destinations,
+          counts,
+        });
+      }
+      if (nodeRequest.state === 'delivery_uncertain') {
+        const detail =
+          nodeRequest.retrySafety === 'safe'
+            ? `Freedom did not receive a complete response for ${nodeRequest.method} ${nodeRequest.path}. Operation ${nodeRequest.operationId} is safe to retry because it was classified as read-only.`
+            : `Freedom attempted ${nodeRequest.method} ${nodeRequest.path} but lost observability before receiving a response. Operation ${nodeRequest.operationId} may have reached ${nodeRequest.service}; do not retry it without reconciliation.`;
+        return Object.freeze({
+          kind: 'completed',
+          verification: 'node_delivery_uncertain',
+          tone: 'caution',
+          headline: 'Node outcome uncertain',
+          detail,
+          nodeRequest,
+          destinations,
+          counts,
+        });
+      }
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'node_response_received',
+        tone: nodeRequest.status >= 400 ? 'caution' : 'success',
+        headline: 'Node request completed',
+        detail: `${nodeRequest.service} returned ${nodeRequest.status} for ${nodeRequest.method} ${nodeRequest.path}. Freedom classified its effect as ${nodeRequest.effect.replaceAll('_', ' ')}.`,
+        nodeRequest,
+        destinations,
+        counts,
+      });
+    }
+    if (nodeLifecycles.length && !browserObserved.length) {
+      const lifecycle = nodeLifecycles.at(-1);
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'node_lifecycle_verified',
+        tone: 'success',
+        headline: 'Node state verified',
+        detail: `Freedom verified ${lifecycle.service} changed from ${lifecycle.beforeState} to ${lifecycle.afterState} after ${lifecycle.action}.`,
+        nodeLifecycle: lifecycle,
+        destinations,
+        counts,
+      });
+    }
+    if (attachmentObservations.length && !changed.length && !browserObserved.length) {
+      const folderNames = [
+        ...new Set(attachmentObservations.map((item) => item.folderName).filter(Boolean)),
+      ];
+      const detail = attachmentReads.length
+        ? `Freedom recorded reads from ${attachmentReads.length} attached ${attachmentReads.length === 1 ? 'file' : 'files'}${folderNames.length === 1 ? ` in the shared folder “${folderNames[0]}”` : ''}. This confirms the sources were accessed, not that every model conclusion is correct.`
+        : 'Freedom inspected the user-shared attachment inventory. This confirms the sources were accessed, not that every model conclusion is correct.';
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'attachments_inspected',
+        tone: 'success',
+        headline: 'Attached sources inspected',
+        detail,
+        destinations,
+        counts,
+      });
+    }
+    if (workspaceCommands.length) {
+      const completedOperations = workspaceCommands.filter((item) => item.state === 'completed');
+      const changedFiles = workspaceCommands.filter(
+        (item) => ['file_write', 'file_edit'].includes(item.kind) && item.state === 'completed'
+      );
+      const shellCommands = workspaceShellCommands;
+      const lastOperation = workspaceCommands.at(-1);
+      const historyOperations = workspaceCommands.filter((item) => item.kind === 'history');
+      const lastHistory = historyOperations.at(-1);
+      const lastCheckpoint = historyOperations.findLast((item) => ['commit', 'checkpoint'].includes(item.history?.action));
+      const historyCopy = lastHistory && checkpointProgress(
+        lastHistory.state === 'completed' && lastCheckpoint?.state === 'completed' ? lastCheckpoint : lastHistory
+      );
+      const historyOnly = historyOperations.length === workspaceCommands.length;
+      const previewOpened =
+        ['static_preview', 'server_preview'].includes(lastOperation.kind) &&
+        lastOperation.state === 'completed';
+      const serverPreviewOpened = previewOpened && lastOperation.kind === 'server_preview';
+      return Object.freeze({
+        kind: 'completed',
+        verification: previewOpened ? 'workspace_preview_opened' : 'workspace_execution_recorded',
+        tone: ['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(lastOperation.state) ? 'caution'
+          : completedOperations.length ? 'success' : 'neutral',
+        headline: ['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(lastOperation.state)
+          ? historyOnly ? historyCopy.label : 'Project operation did not complete'
+          : historyOnly ? historyCopy.label : previewOpened
+          ? serverPreviewOpened
+            ? 'Server preview opened'
+            : 'Static preview opened'
+          : changedFiles.length || helperChangedFiles.size
+            ? changedFiles.length + helperChangedFiles.size === 1
+              ? 'Project file updated'
+              : 'Project files updated'
+            : shellCommands.length
+              ? shellCommands.length === 1
+                ? 'Project command completed'
+                : 'Project commands completed'
+              : 'Project files inspected',
+        detail: (historyOnly ? historyCopy.detail : previewOpened
+          ? `Freedom opened ${serverPreviewOpened ? 'a managed workspace server' : 'the current workspace HTML'} in an isolated Agent tab${serverPreviewOpened ? ' through its approved localhost port' : ' without network access'}.${workspaceCommands.length > 1 ? ` ${workspaceCommands.length - 1} earlier project ${workspaceCommands.length === 2 ? 'operation was' : 'operations were'} also recorded.` : ''}`
+          : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}${historyCopy ? ` ${historyCopy.detail}` : ''}`) + helperEditNote,
+        workspace: lastOperation,
+        destinations,
+        counts,
+      });
+    }
+    const unresolvedPageTool = items.filter((item) => item.operation === OPERATIONS.CALL_PAGE_TOOL && item.pageTool)
+      .map((item) => item.pageTool.executionRef
+        ? items.findLast((later) => later.pageTool?.executionRef === item.pageTool.executionRef) : item)
+      .findLast((item) => item.pageTool.status !== 'completed');
+    if (unresolvedPageTool) return Object.freeze({
+      kind: 'completed', verification: 'page_tool_unresolved', tone: 'caution',
+      headline: unresolvedPageTool.pageTool.status === 'awaiting_user'
+        ? 'Form waiting for you' : 'Website tool outcome needs checking',
+      detail: unresolvedPageTool.pageTool.status === 'awaiting_user'
+        ? 'The website form still requires manual submission. Agent has not submitted it.'
+        : 'The website tool did not return a confirmed result. Effects may remain; inspect the page before retrying.',
+      destinations, counts,
+    });
+    if (resultObserved) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'result_observed',
+        tone: 'success',
+        headline: 'Result checked in the browser',
+        detail: `Freedom recorded ${browserActionCopy} and observed the page after the last change.${approvalNote}${destinationNote}${recoveryNote}`,
+        destinations,
+        counts,
+      });
+    }
+    if (changed.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'actions_recorded',
+        tone: 'caution',
+        headline: 'Browser actions recorded',
+        detail: `Freedom recorded ${browserActionCopy}, but Agent did not recheck the page after its last change.${approvalNote}${destinationNote}${recoveryNote}`,
+        destinations,
+        counts,
+      });
+    }
+    if (browserObserved.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'browser_observed',
+        tone: 'success',
+        headline: 'Browser state inspected',
+        detail: `Freedom recorded ${browserActionCopy}. No browser change was made.${approvalNote}${destinationNote}${recoveryNote}`,
+        destinations,
+        counts,
+      });
+    }
+    const delegated = items.filter(item => item.operation === SUBAGENT_TOOL_NAME);
+    if (delegated.length) {
+      const receipts = delegated.flatMap(item => normalizeSubagentReceipts(item.subagents) || [normalizeSubagentReceipt(item.subagent)]);
+      const summary = summarizeSubagents(receipts);
+      return Object.freeze({
+        kind: 'completed', verification: 'delegated_report', ...summary,
+        detail: `${summary.detail}.${helperEditNote || (receipts.some(receipt => receipt?.mode === 'browser') ? ' Model-generated findings.' : ' Read-only, model-generated findings.')}`,
+        destinations, counts,
+      });
+    }
+    if (succeeded.some(item => item.operation === 'helper_reports') && !failed.length) {
+      return Object.freeze({ kind: 'completed', verification: 'historical_report', tone: 'neutral',
+        headline: 'Read saved helper reports', detail: 'Freedom retrieved historical helper findings. They do not verify the current state of files or pages.', destinations, counts });
+    }
+    if (!items.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'not_applicable',
+        tone: 'neutral',
+        destinations,
+        counts,
+      });
+    }
+    return Object.freeze({
+      kind: 'completed',
+      verification: 'model_only',
+      tone: 'caution',
+      headline: 'Agent-reported result',
+      detail: 'Freedom did not record browser evidence for this response.',
+      destinations,
+      counts,
+    });
+  }
+
+  let browserState = 'Freedom did not verify any browser changes.';
+  const uncertainBrowserChanges = uncertainChanges.filter(
+    (item) => !nonBrowserObservations.has(item?.operation)
+  );
+  const changedBrowserCount = browserSucceeded.filter(
+    (item) => normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED
+  ).length;
+  if (uncertainBrowserChanges.length) {
+    browserState = 'Freedom cannot confirm whether the interrupted browser action was applied.';
+  } else if (changedBrowserCount) {
+    browserState = `${changedBrowserCount} earlier browser ${changedBrowserCount === 1 ? 'change remains' : 'changes remain'} in place.`;
+  }
+  if (workspaceCommands.length) {
+    const hasBrowserActivity = items.some((item) => !nonBrowserObservations.has(item?.operation));
+    const completedFileChanges = workspaceCommands.some((receipt) =>
+      ['file_write', 'file_edit'].includes(receipt.kind) && receipt.state === 'completed'
+    );
+    const projectState = `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded.${completedFileChanges ? ' Completed project changes were not rolled back.' : ''}${workspaceShellCommands.some((receipt) => receipt.sideEffects === 'unknown') ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`;
+    browserState = `${hasBrowserActivity ? `${browserState} ` : ''}${projectState}`;
+  }
+  if (helperEditNote) browserState += helperEditNote;
+  const retryNeedsReview = counts.changed > 0 || uncertainChanges.length > 0 || editingHelpers.some(receipt => receipt.attemptedFiles.length || receipt.writesPending);
+  if (status === 'cancelled') {
+    return Object.freeze({
+      kind: 'interrupted',
+      verification: counts.successful ? 'partial' : 'none',
+      tone: 'neutral',
+      headline: 'Run stopped',
+      detail: `${browserState}${destinationNote}`,
+      destinations,
+      counts,
+    });
+  }
+  if (status === 'interrupted') {
+    const interruptionDetail = uncertainChanges.length
+      ? `${browserState}${destinationNote}`
+      : `${browserState}${destinationNote} Freedom cannot confirm where the task stopped.`;
+    return Object.freeze({
+      kind: 'recovery',
+      verification: counts.successful ? 'partial' : 'none',
+      tone: 'caution',
+      headline: 'Previous run was interrupted',
+      detail: interruptionDetail,
+      destinations,
+      nextStep: workspaceCommands.length
+        ? 'Review the recorded project operations, then ask Agent to continue.'
+        : 'Review the Agent tabs, then ask Agent to continue.',
+      retrySafety: retryNeedsReview ? 'review' : 'safe',
+      counts,
+    });
+  }
+
+  const lastFailed = failed.at(-1);
+  const failureCode = error?.code || lastFailed?.errorCode;
+  const providerPresentation =
+    failureCode === 'PROVIDER_ERROR'
+      ? providerFailurePresentation(
+          classifyProviderFailure(error?.providerFailure || error?.message),
+          {
+            retryCount: error?.retryCount || providerRetryCount(error?.message),
+            attempts: error?.providerAttempts,
+            providerLabel: error?.provider?.label,
+            modelId: error?.provider?.modelId,
+          }
+        )
+      : null;
+  const pendingNodeRequest = nodeRequests.findLast((request) => request.state === 'in_flight');
+  const uncertainNodeRequest = nodeRequests.findLast(
+    (request) => request.state === 'delivery_uncertain'
+  );
+  const unresolvedNodeRequest = pendingNodeRequest || uncertainNodeRequest;
+  const unresolvedPublication = publications.findLast((publication) =>
+    ['uploading', 'verifying', 'outcome_unknown'].includes(publication.state)
+  );
+  if (providerPresentation && unresolvedPublication) {
+    return Object.freeze({
+      kind: 'recovery',
+      verification: 'swarm_publication_unresolved',
+      tone: 'caution',
+      headline: 'Model disconnected; publication still needs reconciliation',
+      detail: `${providerPresentation.summaryMessage} Publication ${unresolvedPublication.publicationId} for ${publicationObject(unresolvedPublication)} is ${unresolvedPublication.state.replaceAll('_', ' ')} and must be checked before any repeat.`,
+      technicalDetails: providerPresentation.technicalDetails,
+      publication: unresolvedPublication,
+      destinations,
+      nextStep: 'Continue this conversation so Agent can check the existing Swarm publication.',
+      retrySafety: 'review',
+      counts,
+    });
+  }
+  if (providerPresentation && unresolvedNodeRequest) {
+    const stillRunning = unresolvedNodeRequest.state === 'in_flight';
+    return Object.freeze({
+      kind: 'recovery',
+      verification: 'node_operation_unresolved',
+      tone: 'caution',
+      headline: stillRunning
+        ? 'Model disconnected; node request still running'
+        : 'Model disconnected; node outcome uncertain',
+      detail: `${providerPresentation.summaryMessage} ${unresolvedNodeRequest.service} ${stillRunning ? 'is still processing' : 'may have received'} ${unresolvedNodeRequest.method} ${unresolvedNodeRequest.path}. Freedom operation ${unresolvedNodeRequest.operationId} must be reconciled before any repeat.`,
+      technicalDetails: providerPresentation.technicalDetails,
+      nodeRequest: unresolvedNodeRequest,
+      destinations,
+      nextStep: 'Continue this conversation so Agent can check the existing node operation.',
+      retrySafety: 'review',
+      counts,
+    });
+  }
+  const failureExplanation = providerPresentation?.summaryMessage || errorExplanation(failureCode);
+  return Object.freeze({
+    kind: 'recovery',
+    verification: counts.successful ? 'partial' : 'none',
+    tone: 'danger',
+    headline: providerPresentation ? 'Model connection failed' : 'Agent stopped before completion',
+    detail: `${failureExplanation} ${browserState}${destinationNote}`,
+    ...(providerPresentation?.technicalDetails && {
+      technicalDetails: providerPresentation.technicalDetails,
+    }),
+    destinations,
+    nextStep: retryNeedsReview
+      ? `Review the Agent tabs, then tell Agent what to continue or redo. ${providerPresentation?.nextStep || ''}`.trim()
+      : providerPresentation?.nextStep || 'You can safely try the task again.',
+    retrySafety: retryNeedsReview ? 'review' : 'safe',
+    canRetry: !retryNeedsReview && providerPresentation?.recovery === 'transient',
+    counts,
+  });
+}
+
+module.exports = {
+  ACTIVITY_EFFECTS,
+  ATTACHMENT_OPERATIONS,
+  WORKSPACE_OPERATIONS,
+  activityProgress,
+  buildAgentOutcome,
+  createToolReceipt,
+  errorExplanation,
+  normalizeArtifact,
+  normalizeAttachmentReceipt,
+  normalizeDiagnosticReceipt,
+  normalizeNodeRequestReceipt,
+  normalizeNodeLifecycleReceipt,
+  normalizeNodeStatusReceipt,
+  normalizePublicationReceipt,
+  normalizeUpload,
+  normalizeWalletReceipt,
+  normalizeWorkspaceReceipt,
+};
