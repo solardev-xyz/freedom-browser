@@ -1,5 +1,7 @@
 # Freedom Browser — Privacy Roadmap (synthesis)
 
+**October 2 live verifier continuation:** [Read-only compatibility checks](../docs/ppv2-live-verifiers-2026-10-02.md) pass 9/9 synthetic-proof controls through each of Sentio and PublicNode over Tor, using accepted runtime `eacc3247…` and matching pinned verifier code. Tenderly failed its initial read and supplied no verifier evidence. Calls and verifier bytecode checks use explicit canonical block hashes; observations remain unverified RPC data, and static key-constant/source identity remains open. No funds or funded profile were used.
+
 **October 2 single-thread verifier continuation:** [The fresh public-proof verifier](../docs/ppv2-single-thread-verification-2026-10-02.md) uses a narrowly pinned, locally modified snarkjs build, refuses worker creation and requires an empty shared curve cache. The accepted runtime is `eacc3247…`; earlier runtime pins below are historical. Deposit’s original SDK-side verification remains unchanged, so broader proving/core-count/platform qualification is still open.
 
 **October 2 egress qualification:** [Main-process tripwires](../docs/ppv2-main-egress-2026-10-02.md) observe zero direct attempts in eight fresh instances spanning native/token controlled lifecycles, with positive refusal canaries for all 92 hooks. The main-only fixture suspends unrelated chrome polling and retains denial through shutdown. This is bounded JavaScript/Electron API evidence, not native/renderer/OS-sandbox or exhaustive SDK coverage.

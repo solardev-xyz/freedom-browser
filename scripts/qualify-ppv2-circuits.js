@@ -1,12 +1,13 @@
 /** Read-only live verifier qualification with public synthetic witnesses.
- * Run with source Electron, followed by the pinned runtime ASAR and output dir.
+ * Run with source Electron, followed by the pinned runtime ASAR, output dir
+ * and optional explicit RPC source from qualify-ppv2-live's fixed allowlist.
  * Never imports a wallet or exposes this test entrypoint through application IPC.
  */
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert/strict');
 const { app } = require('electron');
-const { Interface } = require('ethers');
+const { Interface, keccak256 } = require('ethers');
 const { loadPPv2Runtime } = require('../src/main/wallet/ppv2-runtime');
 const { runPrivacyProcess } = require('../src/main/wallet/privacy-process');
 const { createPrivacyScope } = require('../src/main/networks/privacy-context');
@@ -20,7 +21,7 @@ const { inspectSepoliaDeployment } = require('../src/main/wallet/ppv2-sepolia-pr
 const { openLiveTransport } = require('./qualify-ppv2-live');
 
 async function main() {
-  const [archive, output] = process.argv.slice(2);
+  const [archive, output, rpcSource = 'publicnode'] = process.argv.slice(2);
   assert.ok(archive && output && path.isAbsolute(output));
   fs.mkdirSync(output, { recursive: true, mode: 0o700 });
   app.setPath('userData', path.join(output, 'electron'));
@@ -96,13 +97,31 @@ async function main() {
         syntheticFixtureJob: circuit !== 'deposit',
       };
     }
-    client = await openLiveTransport(output, console.log);
-    const deployment = await inspectSepoliaDeployment({ ...client, onStep: console.log });
+    client = await openLiveTransport(output, console.log, rpcSource);
+    // Pure verifier calls need pinned chain/contracts, not ASP eligibility or
+    // a relayer quote. The exit preflight checks those common chain invariants.
+    const deployment = await inspectSepoliaDeployment({
+      ...client,
+      purpose: 'exit',
+      onStep: console.log,
+    });
+    fs.writeFileSync(
+      path.join(output, 'deployment.json'),
+      JSON.stringify(deployment, null, 2) + '\n'
+    );
+    assert.equal(
+      deployment.observationsConsistent,
+      true,
+      'Reviewed deployment checks must pass before verifier calls'
+    );
     assert.ok(deployment.anchor && Object.keys(deployment.verifiers).length === 3);
     const checks = [];
+    const blockReference = { blockHash: deployment.anchor.hash, requireCanonical: true };
     for (const circuit of Object.keys(proofs)) {
       const proof = proofs[circuit],
         target = deployment.verifiers[circuit].address;
+      const code = await client.rpc('eth_getCode', [target, blockReference]);
+      assert.equal(keccak256(code), deployment.verifiers[circuit].codeHash);
       const abi = new Interface([
         `function verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[${proof.pubSignals.length}]) view returns (bool)`,
       ]);
@@ -124,7 +143,7 @@ async function main() {
           value.pubSignals,
         ]);
         // Reverts, malformed results and transport failures are NOT negative-control passes.
-        const raw = await client.rpc('eth_call', [{ to: target, data }, deployment.anchor.number]);
+        const raw = await client.rpc('eth_call', [{ to: target, data }, blockReference]);
         const decoded = abi.decodeFunctionResult('verifyProof', raw);
         assert.equal(raw.toLowerCase(), abi.encodeFunctionResult('verifyProof', decoded));
         checks.push({ circuit, name, result: decoded[0], passed: decoded[0] === expected });
@@ -142,6 +161,9 @@ async function main() {
           signingEnabled: false,
           broadcastEnabled: false,
           chainStateVerified: false,
+          observationTrust: 'unverified-rpc',
+          blockReference,
+          rpcSource,
           runtimeSha256: require('../src/main/wallet/ppv2-runtime-manifest').sha256,
           metrics,
           checks,
