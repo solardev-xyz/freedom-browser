@@ -12,6 +12,12 @@
 // Settings are seeded so only Ant auto-starts (the node relevant to issue #90).
 // IPFS reports ephemeral native identity mode and does not need a binary
 // or running daemon for this regression.
+//
+// Unlike the safe/remote-signing fixtures, this one always SHOWS the window and
+// ignores FREEDOM_E2E_HEADED: a hidden window starves Playwright's actionability
+// checks of frames (#479, see the launch env below). A local run therefore pops
+// up a window; on Linux use `xvfb-run -a npm run test:e2e:onboarding` to keep it
+// on a virtual display.
 
 const { test: base, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -73,10 +79,21 @@ const test = base.extend({
         FREEDOM_IPFS_DATA: ipfsDataDir,
         FREEDOM_RADICLE_DATA: radicleDataDir,
         FREEDOM_IDENTITY_DATA: identityDataDir,
-        // Run headless by default so a local run doesn't pop up or steal focus
-        // (the renderer still loads and is fully driveable). Set
-        // FREEDOM_E2E_HEADED=1 to watch the window for a run.
-        FREEDOM_TEST_HIDE_WINDOW: process.env.FREEDOM_E2E_HEADED === '1' ? '0' : '1',
+        // The window is shown, like the harness fixtures' (on Linux, run under
+        // `xvfb-run -a` so it lands on a virtual display). This spec used to set
+        // FREEDOM_TEST_HIDE_WINDOW=1, and a never-shown window has no reliable
+        // frame clock: probed 2026-10 under xvfb (Electron 44.4.5), the hidden
+        // window ran requestAnimationFrame at ~1 fps against ~60 fps shown, and
+        // on CI it intermittently stopped entirely. Every Playwright click/check
+        // first waits for the target to be "stable" — two rAF callbacks with
+        // the same bounding box — so with no frames the wizard's Continue
+        // (spec:72) and #backup-confirmed (spec:92) sat at "waiting for element
+        // to be visible, enabled and stable" for the full 30s with no
+        // re-check logged, even though both were on screen and enabled (#479).
+        // Set to '0' explicitly rather than left unset, so an inherited =1 from
+        // the caller's environment (ci.yml's Myotis step exports one) can't
+        // re-hide it.
+        FREEDOM_TEST_HIDE_WINDOW: '0',
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
       },
@@ -101,6 +118,16 @@ const test = base.extend({
     const win = await electronApp.firstWindow();
     await win.waitForLoadState('domcontentloaded');
     await win.waitForSelector('[data-test="address-input"]', { state: 'visible' });
+    // Pin the precondition above: if the window ever goes back to hidden, fail
+    // here with the reason instead of as a 30s actionability timeout mid-wizard.
+    // Check the BrowserWindow behind the page under test, not "any window", so
+    // a second visible window can't mask a hidden main one.
+    const browserWindow = await electronApp.browserWindow(win);
+    const shown = await browserWindow.evaluate((w) => w.isVisible());
+    expect(
+      shown,
+      'main window must be shown: Playwright actionability needs its frames (#479)'
+    ).toBe(true);
     await use(win);
   },
 });
