@@ -7,27 +7,17 @@
  * API responses (docs/security-audit-electron.md, O-1; #428). The chrome now
  * asks the main process instead, so the node allows no browser origin at all.
  *
- * GET only, and only the endpoints the chrome's node-status, wallet and
- * publish-setup screens read. The channel is chrome-only: it has no webview
- * tier in ipc-sender-policy.js, so a tab cannot call it.
+ * GET only, and only the endpoints the chrome's Nodes menu reads
+ * (ant-ui.js). The wallet sidebar's node card, publish setup and storage
+ * screens read the node through the main process's publish setup service
+ * instead (publish-setup-service.js). The channel is chrome-only: it has no
+ * webview tier in ipc-sender-policy.js, so a tab cannot call it.
  */
 
 const log = require('../logger');
 const { getAntApiUrl } = require('../service-registry');
 
-const CHROME_ANT_ENDPOINTS = new Set([
-  '/addresses',
-  '/chequebook/address',
-  '/chequebook/balance',
-  '/health',
-  '/node',
-  '/peers',
-  '/readiness',
-  '/stamps',
-  '/status',
-  '/topology',
-  '/wallet',
-]);
+const CHROME_ANT_ENDPOINTS = new Set(['/health', '/peers', '/topology']);
 
 const REQUEST_TIMEOUT_MS = 15_000;
 

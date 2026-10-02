@@ -231,7 +231,12 @@ async function detectExternalGatewayVersion(gatewayUrl, { timeoutMs = 2000 } = {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await gatewayFetch(url, { method: 'POST', signal: controller.signal });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Nothing reads an error body: cancel it so the request is closed now
+      // rather than left paused behind an unread stream.
+      res.body?.cancel?.().catch(() => {});
+      return null;
+    }
     const data = await res.json();
     const version = typeof data?.Version === 'string' ? data.Version.trim() : '';
     return version ? `Kubo ${version}` : null;

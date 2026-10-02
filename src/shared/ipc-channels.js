@@ -354,6 +354,18 @@ module.exports = {
   SWARM_PROVIDER_EXECUTE: 'swarm:provider-execute',
   SWARM_PROVIDER_EVENT: 'swarm:provider-event',
 
+  // Swarm publish setup (src/main/swarm/publish-setup-service.js). Chrome
+  // only, except the state read and push, which the internal pages also use.
+  SWARM_SETUP_GET_STATE: 'swarm:setup-get-state',
+  SWARM_SETUP_STATE: 'swarm:setup-state',
+  SWARM_SETUP_WATCH: 'swarm:setup-watch',
+  SWARM_SETUP_GET_PLANS: 'swarm:setup-get-plans',
+  SWARM_SETUP_GET_EXTEND_OPTIONS: 'swarm:setup-get-extend-options',
+  SWARM_SETUP_ARM: 'swarm:setup-arm',
+  SWARM_SETUP_CANCEL: 'swarm:setup-cancel',
+  SWARM_SETUP_TRACK_FUNDING_TX: 'swarm:setup-track-funding-tx',
+  SWARM_SETUP_RESTART_NODE: 'swarm:setup-restart-node',
+
   // Swarm Feed Store
   SWARM_GET_ALL_ORIGINS: 'swarm:get-all-origins',
   SWARM_HAS_FEED_IDENTITY: 'swarm:has-feed-identity',

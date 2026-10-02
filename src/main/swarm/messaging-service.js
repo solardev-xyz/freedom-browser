@@ -31,6 +31,7 @@
 
 const { Topic, Identifier, Bytes } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
+const { noUsableBatchError } = require('./batch-errors');
 const log = require('electron-log');
 
 // GSOC topic → address derivation (Freedom profile v1).
@@ -138,10 +139,13 @@ async function getMessagingIdentity() {
 
 async function selectMessageBatch() {
   // Messages are ephemeral: a full mutable batch (rolling stamp window)
-  // is an acceptable fallback here, unlike for content publishes.
+  // is an acceptable fallback here, unlike for content publishes. Freedom
+  // buys immutable batches, so once those are full, messaging needs more
+  // storage like any other upload; only a mutable batch bought elsewhere
+  // still rolls.
   const batchId = await selectBestBatch(4096, { allowFullMutable: true });
   if (!batchId) {
-    throw new Error('No usable postage batch available. Purchase stamps first.');
+    throw noUsableBatchError();
   }
   return batchId;
 }

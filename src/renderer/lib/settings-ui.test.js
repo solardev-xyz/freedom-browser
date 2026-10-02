@@ -38,11 +38,8 @@ const loadSettingsModule = async (options = {}) => {
   const {
     initialSettings = {
       theme: 'system',
-      antNodeMode: 'ultraLight',
     },
     prefersDark = true,
-    beeStatusResult = { status: 'running', error: null },
-    registryResult = { ant: { mode: 'bundled' } },
   } = options;
 
   const mediaQueryList = {
@@ -53,13 +50,10 @@ const loadSettingsModule = async (options = {}) => {
   const electronAPI = {
     getSettings: jest.fn().mockResolvedValue(initialSettings),
   };
-  const beeApi = {
-    getStatus: jest.fn().mockResolvedValue(beeStatusResult),
+  const antApi = {
+    getStatus: jest.fn().mockResolvedValue({ status: 'running', error: null }),
     stop: jest.fn().mockResolvedValue({ status: 'stopped', error: null }),
     start: jest.fn().mockResolvedValue({ status: 'running', error: null }),
-  };
-  const serviceRegistry = {
-    getRegistry: jest.fn().mockResolvedValue(registryResult),
   };
   const debugMocks = { pushDebug: jest.fn() };
 
@@ -71,8 +65,7 @@ const loadSettingsModule = async (options = {}) => {
   global.window = {
     ...eventTarget,
     electronAPI,
-    ant: beeApi,
-    serviceRegistry,
+    ant: antApi,
     matchMedia: jest.fn(() => mediaQueryList),
   };
   global.document = { documentElement };
@@ -85,8 +78,7 @@ const loadSettingsModule = async (options = {}) => {
     mod,
     eventTarget,
     electronAPI,
-    beeApi,
-    serviceRegistry,
+    antApi,
     debugMocks,
     mediaQueryList,
     documentElement,
@@ -112,7 +104,7 @@ describe('settings-ui', () => {
 
   test('initTheme loads settings and reacts to system theme changes', async () => {
     const { mod, mediaQueryList, documentElement, electronAPI } = await loadSettingsModule({
-      initialSettings: { theme: 'system', antNodeMode: 'ultraLight' },
+      initialSettings: { theme: 'system' },
       prefersDark: true,
     });
 
@@ -128,75 +120,42 @@ describe('settings-ui', () => {
     expect(documentElement.setAttribute).toHaveBeenCalledWith('data-theme', 'light');
   });
 
-  test('initSettingsEffects restarts bundled Bee when bee mode flips', async () => {
-    const { mod, eventTarget, beeApi, serviceRegistry, debugMocks, documentElement } =
-      await loadSettingsModule({
-        initialSettings: { theme: 'dark', antNodeMode: 'ultraLight' },
-        beeStatusResult: { status: 'running', error: null },
-        registryResult: { ant: { mode: 'bundled' } },
-      });
+  test('initSettingsEffects applies a theme change and forwards the update', async () => {
+    const { mod, eventTarget, documentElement, debugMocks } = await loadSettingsModule({
+      initialSettings: { theme: 'dark' },
+    });
 
     await mod.initTheme();
     const onSettingsChanged = jest.fn();
     mod.initSettingsEffects(onSettingsChanged);
 
-    await emitSettingsUpdated(eventTarget, {
-      theme: 'light',
-      antNodeMode: 'light',
-    });
+    await emitSettingsUpdated(eventTarget, { theme: 'light' });
     await flushMicrotasks();
 
     expect(documentElement.setAttribute).toHaveBeenCalledWith('data-theme', 'light');
-    expect(serviceRegistry.getRegistry).toHaveBeenCalled();
-    expect(beeApi.getStatus).toHaveBeenCalled();
-    expect(beeApi.stop).toHaveBeenCalled();
-    expect(beeApi.start).toHaveBeenCalled();
-    expect(debugMocks.pushDebug).toHaveBeenCalledWith(
-      'Restarting Swarm node to apply light mode'
+    expect(debugMocks.pushDebug).toHaveBeenCalledWith('Settings updated');
+    expect(onSettingsChanged).toHaveBeenCalledWith(
+      { theme: 'light' },
+      { theme: 'dark', enableTorIntegration: false }
     );
-    expect(onSettingsChanged).toHaveBeenCalled();
   });
 
-  test('initSettingsEffects does not restart Bee when using a reused node', async () => {
-    const { mod, eventTarget, beeApi, serviceRegistry, debugMocks } = await loadSettingsModule({
-      initialSettings: { theme: 'system', antNodeMode: 'ultraLight' },
-      registryResult: { ant: { mode: 'reused' } },
-    });
+  // The ultra-light/light switch is gone, and with it the per-window restart
+  // it triggered: each open chrome window used to stop and start the node on
+  // the same broadcast. Even a stale payload that still carries the mode
+  // leaves the node alone.
+  test('a settings broadcast never restarts the Swarm node', async () => {
+    const { mod, eventTarget, antApi } = await loadSettingsModule();
 
     await mod.initTheme();
     mod.initSettingsEffects();
 
-    await emitSettingsUpdated(eventTarget, {
-      theme: 'system',
-      antNodeMode: 'light',
-    });
+    await emitSettingsUpdated(eventTarget, { theme: 'system', antNodeMode: 'light' });
+    await emitSettingsUpdated(eventTarget, { theme: 'system', antNodeMode: 'ultraLight' });
     await flushMicrotasks();
 
-    expect(serviceRegistry.getRegistry).toHaveBeenCalled();
-    expect(beeApi.getStatus).not.toHaveBeenCalled();
-    expect(beeApi.stop).not.toHaveBeenCalled();
-    expect(beeApi.start).not.toHaveBeenCalled();
-    expect(debugMocks.pushDebug).toHaveBeenCalledWith(
-      'Swarm light mode setting saved. Using an existing Swarm node, so the change only applies to bundled nodes.'
-    );
-  });
-
-  test('initSettingsEffects does not restart Bee when bee mode is unchanged', async () => {
-    const { mod, eventTarget, beeApi } = await loadSettingsModule({
-      initialSettings: { theme: 'system', antNodeMode: 'light' },
-    });
-
-    await mod.initTheme();
-    mod.initSettingsEffects();
-
-    await emitSettingsUpdated(eventTarget, {
-      theme: 'system',
-      antNodeMode: 'light',
-    });
-    await flushMicrotasks();
-
-    expect(beeApi.getStatus).not.toHaveBeenCalled();
-    expect(beeApi.stop).not.toHaveBeenCalled();
-    expect(beeApi.start).not.toHaveBeenCalled();
+    expect(antApi.getStatus).not.toHaveBeenCalled();
+    expect(antApi.stop).not.toHaveBeenCalled();
+    expect(antApi.start).not.toHaveBeenCalled();
   });
 });

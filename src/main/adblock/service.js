@@ -37,6 +37,7 @@ const log = require('../logger');
 const { FiltersEngine, Request, Resources, ENGINE_VERSION } = require('@ghostery/adblocker');
 const ADBLOCKER_VERSION = require('@ghostery/adblocker/package.json').version;
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
+const { isGatewayTransportRequest } = require('../ipfs/gateway-transport');
 const { loadSettings } = require('../settings-store');
 const IPC = require('../../shared/ipc-channels');
 const {
@@ -462,6 +463,11 @@ function adblockRequestForDispatch(details) {
 
   if (!engine || loadSettings().adblockEnabled === false) return null;
   if (!isInterceptableUrl(url)) return null;
+  // The app's own dials — ENS CCIP-Read gateways, the external IPFS gateway —
+  // share this session's webRequest chain (`ipfs/gateway-transport.js`), but
+  // they are not page subresources: a filter list must not be able to break
+  // name resolution or an `ipfs://` load. undici-era dials never reached here.
+  if (isGatewayTransportRequest(details)) return null;
 
   // Each URL is parsed exactly once; the hostnames are handed to the
   // engine so it skips its own URL parse.

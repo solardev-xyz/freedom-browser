@@ -769,13 +769,19 @@ contextBridge.exposeInMainWorld('freedomAPI', {
       : ipcRenderer.invoke('myotis:getStatus', chainId)
   ),
 
-  // Opens the sidebar publish-setup checklist in the host window.
-  openPublishSetup: guardInternal('openPublishSetup', () =>
-    ipcRenderer.invoke('sidebar:open-publish-setup')
+  // Opens the sidebar's publish setup (`target` 'setup', the default) or
+  // storage screen ('storage') in the host window.
+  openPublishSetup: guardInternal('openPublishSetup', (target) =>
+    ipcRenderer.invoke('sidebar:open-publish-setup', target === 'storage' ? 'storage' : 'setup')
+  ),
+  // Swarm publish readiness and setup state (publish-setup-service.js).
+  getPublishSetupState: guardInternal('getPublishSetupState', () =>
+    ipcRenderer.invoke('swarm:setup-get-state')
   ),
 
   // Auto-unsubscribed on pagehide.
   onSettingsUpdated: guardInternalSubscription('onSettingsUpdated', 'settings:updated'),
+  onPublishSetupState: guardInternalSubscription('onPublishSetupState', 'swarm:setup-state'),
   // freedom://downloads uses this for live progress — the row is already
   // written when it fires, so the page just re-queries.
   onDownloadsChanged: guardInternalSubscription('onDownloadsChanged', 'downloads:changed'),

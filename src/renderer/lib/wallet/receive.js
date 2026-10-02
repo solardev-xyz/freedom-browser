@@ -57,7 +57,19 @@ export async function openReceive() {
     receiveAddress.textContent = walletState.fullAddresses.wallet;
   }
 
-  // Detect theme
+  const dataUrl = await generateThemedQr(walletState.fullAddresses.wallet);
+  if (dataUrl && receiveQrImage) {
+    receiveQrImage.src = dataUrl;
+    receiveQrImage.alt = `QR Code for ${walletState.fullAddresses.wallet}`;
+  }
+}
+
+/**
+ * A QR code for `text` in the sidebar's colours: dark modules on white in the
+ * light theme, light modules on the toolbar grey in the dark one. Resolves the
+ * image's data URL, or null when generation fails.
+ */
+export async function generateThemedQr(text) {
   const isLightMode = document.documentElement.getAttribute('data-theme') === 'light';
 
   const toolbarColor = getComputedStyle(document.documentElement)
@@ -68,7 +80,7 @@ export async function openReceive() {
     : { dark: '#ffffff', light: toolbarColor };
 
   try {
-    const result = await window.wallet.generateQR(walletState.fullAddresses.wallet, {
+    const result = await window.wallet.generateQR(text, {
       width: 200,
       margin: 2,
       dark: qrColors.dark,
@@ -76,15 +88,12 @@ export async function openReceive() {
       errorCorrectionLevel: 'M',
     });
 
-    if (result.success && receiveQrImage) {
-      receiveQrImage.src = result.dataUrl;
-      receiveQrImage.alt = `QR Code for ${walletState.fullAddresses.wallet}`;
-    } else {
-      console.error('[WalletUI] Failed to generate QR code:', result.error);
-    }
+    if (result.success) return result.dataUrl;
+    console.error('[WalletUI] Failed to generate QR code:', result.error);
   } catch (err) {
     console.error('[WalletUI] QR generation error:', err);
   }
+  return null;
 }
 
 export function closeReceive() {

@@ -15,8 +15,10 @@
  * `require('electron')` download failed or was blocked. Note that
  * `--ignore-scripts` does not keep the binary away: the `electron` package has
  * no postinstall, so the `requireActual` below is itself what downloads it on
- * a machine that has none (observed in the `test` CI job, which installs with
- * `--ignore-scripts` and still runs this suite after a ~100 MB fetch). The
+ * a machine that has none. Both CI jobs that run this suite (`test` and
+ * `ipfs-gateway-proxy`) pull the binary in a step before jest instead: with
+ * `ens-ccip-proxy.test.js` doing the same in a parallel worker, two first-use
+ * downloads race and one spawns a half-written binary (`spawn ETXTBSY`). The
  * `ipfs-gateway-proxy` CI job sets `FREEDOM_ELECTRON_NET_TEST=1`, which turns
  * a missing binary into a failure instead, so the coverage cannot silently
  * disappear there.

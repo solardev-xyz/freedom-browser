@@ -134,6 +134,7 @@ const INTERNAL_CHANNELS = [
   'swarm:publish-data',
   'swarm:publish-directory',
   'swarm:publish-file',
+  'swarm:setup-get-state',
   'tokens:get-tokens',
   'window:get-platform',
 ];

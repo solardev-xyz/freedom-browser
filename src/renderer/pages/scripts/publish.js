@@ -30,6 +30,7 @@ const publishAnotherBtn = document.getElementById('publish-another');
 const errorSection = document.getElementById('publish-error');
 const errorText = document.getElementById('publish-error-text');
 const errorRetryBtn = document.getElementById('publish-error-retry');
+const errorSetupBtn = document.getElementById('publish-error-setup');
 const historyList = document.getElementById('publish-history-list');
 const historyClearBtn = document.getElementById('publish-history-clear');
 
@@ -54,6 +55,9 @@ function init() {
   textCancelBtn?.addEventListener('click', resetToActions);
   publishAnotherBtn?.addEventListener('click', resetToActions);
   errorRetryBtn?.addEventListener('click', resetToActions);
+  errorSetupBtn?.addEventListener('click', () => {
+    window.freedomAPI?.openPublishSetup?.('setup').catch(() => {});
+  });
   copyUrlBtn?.addEventListener('click', () => copyToClipboard(lastResult?.bzzUrl));
   copyRefBtn?.addEventListener('click', () => copyToClipboard(lastResult?.reference));
   openUrlBtn?.addEventListener('click', () => {
@@ -120,17 +124,21 @@ function disableActions() {
 }
 
 // ============================================
-// Stamp check (deferred to publish time)
+// Readiness check (deferred to publish time)
 // ============================================
 
-async function ensureStampsAvailable() {
+// Asks the main process's publish setup (publish-setup-service.js) whether
+// the node can publish, and when it cannot, says why and offers the setup.
+async function ensurePublishReady() {
   try {
-    const result = await swarm.getStamps();
-    if (!result?.success || !result.stamps?.some((s) => s.usable)) {
-      showError('No usable postage stamps. Purchase stamps before publishing.');
-      return false;
-    }
-    return true;
+    const state = await window.freedomAPI?.getPublishSetupState?.();
+    const readiness = state?.readiness;
+    if (!readiness || readiness.ok) return true;
+    // Storage that is still reaching the network needs a moment, not setup.
+    showError(readiness.message || 'Publishing is not set up.', {
+      offerSetup: readiness.key !== 'storage-pending',
+    });
+    return false;
   } catch {
     // Can't check — let the publish attempt proceed and fail if needed
     return true;
@@ -147,7 +155,7 @@ async function handlePublishFile() {
     if (!picked?.success && picked?.error) { showError(picked.error); return; }
     if (!picked?.path) return; // User cancelled
 
-    if (!(await ensureStampsAvailable())) return;
+    if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Uploading file\u2026', 0);
@@ -155,7 +163,7 @@ async function handlePublishFile() {
     const result = await swarm.publishFilePath(picked.path);
 
     if (!result?.success) {
-      showError(result?.error || 'Upload failed.');
+      showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
       return;
     }
 
@@ -175,7 +183,7 @@ async function handlePublishFolder() {
     if (!picked?.success && picked?.error) { showError(picked.error); return; }
     if (!picked?.path) return; // User cancelled
 
-    if (!(await ensureStampsAvailable())) return;
+    if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Uploading folder\u2026', 0);
@@ -183,7 +191,7 @@ async function handlePublishFolder() {
     const result = await swarm.publishDirectoryPath(picked.path);
 
     if (!result?.success) {
-      showError(result?.error || 'Upload failed.');
+      showError(result?.error || 'Upload failed.', { offerSetup: result?.needsStorage === true });
       return;
     }
 
@@ -202,7 +210,7 @@ async function handlePublishText() {
   if (!text) return;
 
   try {
-    if (!(await ensureStampsAvailable())) return;
+    if (!(await ensurePublishReady())) return;
 
     showView('progress');
     setProgress('Publishing text\u2026', 0);
@@ -210,7 +218,7 @@ async function handlePublishText() {
     const result = await swarm.publishData(text);
 
     if (!result?.success) {
-      showError(result?.error || 'Publish failed.');
+      showError(result?.error || 'Publish failed.', { offerSetup: result?.needsStorage === true });
       return;
     }
 
@@ -284,9 +292,10 @@ function showResult(result) {
   }
 }
 
-function showError(message) {
+function showError(message, { offerSetup = false } = {}) {
   showView('error');
   if (errorText) errorText.textContent = message;
+  errorSetupBtn?.classList.toggle('hidden', !offerSetup);
 }
 
 async function copyToClipboard(text) {

@@ -23,15 +23,16 @@ const SETTINGS_FILE = 'settings.json';
 // load (for users upgrading from a bee-based build): the value is copied to the
 // new key and the old key is dropped from the live file.
 const RENAMED_KEYS = {
-  beeNodeMode: 'antNodeMode',
   startBeeAtLaunch: 'startAntAtLaunch',
 };
-const REMOVED_KEYS = new Set(['enableRadicleIntegration']);
+// Settings that no longer exist, dropped from the live file on load.
+// `antNodeMode` (Bee-era `beeNodeMode`) was the ultra-light/light switch: the
+// Swarm node now always starts able to publish, so there is nothing to pick.
+const REMOVED_KEYS = new Set(['enableRadicleIntegration', 'antNodeMode', 'beeNodeMode']);
 
 const DEFAULT_SETTINGS = {
   theme: 'system',
   enableIdentityWallet: true,
-  antNodeMode: 'ultraLight',
   startAntAtLaunch: true,
   startIpfsAtLaunch: true,
   startRadicleAtLaunch: false,

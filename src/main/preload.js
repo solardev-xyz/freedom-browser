@@ -207,7 +207,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('popups:blocked', handler);
   },
   onOpenPublishSetup: (callback) => {
-    const handler = () => callback();
+    const handler = (_event, target) => callback(target);
     ipcRenderer.on('sidebar:open-publish-setup', handler);
     return () => ipcRenderer.removeListener('sidebar:open-publish-setup', handler);
   },
@@ -592,24 +592,34 @@ contextBridge.exposeInMainWorld('remoteSigner', {
 
 contextBridge.exposeInMainWorld('swarmNode', {
   getStamps: () => ipcRenderer.invoke('swarm:get-stamps'),
-  getStorageCost: (sizeGB, durationDays) =>
-    ipcRenderer.invoke('swarm:get-storage-cost', sizeGB, durationDays),
-  buyStorage: (sizeGB, durationDays) =>
-    ipcRenderer.invoke('swarm:buy-storage', sizeGB, durationDays),
-  getDurationExtensionCost: (batchId, additionalDays) =>
-    ipcRenderer.invoke('swarm:get-duration-extension-cost', batchId, additionalDays),
-  getSizeExtensionCost: (batchId, newSizeGB) =>
-    ipcRenderer.invoke('swarm:get-size-extension-cost', batchId, newSizeGB),
-  extendStorageDuration: (batchId, additionalDays) =>
-    ipcRenderer.invoke('swarm:extend-storage-duration', batchId, additionalDays),
-  extendStorageSize: (batchId, newSizeGB) =>
-    ipcRenderer.invoke('swarm:extend-storage-size', batchId, newSizeGB),
-  getChequebookBalance: () => ipcRenderer.invoke('swarm:get-chequebook-balance'),
-  depositChequebook: (amountBzz) => ipcRenderer.invoke('swarm:deposit-chequebook', amountBzz),
   publishData: (data) => ipcRenderer.invoke('swarm:publish-data', data),
   publishFile: (filePath) => ipcRenderer.invoke('swarm:publish-file', filePath),
   publishDirectory: (dirPath) => ipcRenderer.invoke('swarm:publish-directory', dirPath),
   getUploadStatus: (tagUid) => ipcRenderer.invoke('swarm:get-upload-status', tagUid),
+});
+
+// Swarm publish setup: the main process owns readiness and the armed storage
+// purchase (src/main/swarm/publish-setup-service.js); the chrome renders it.
+contextBridge.exposeInMainWorld('publishSetup', {
+  getState: () => ipcRenderer.invoke('swarm:setup-get-state'),
+  // `surface` names what is on screen; the service polls chain-backed data
+  // only while at least one surface watches.
+  watch: (surface, on) => ipcRenderer.invoke('swarm:setup-watch', surface, on),
+  getPlans: () => ipcRenderer.invoke('swarm:setup-get-plans'),
+  getExtendOptions: (batchId, depth) =>
+    ipcRenderer.invoke('swarm:setup-get-extend-options', batchId, depth),
+  arm: (request) => ipcRenderer.invoke('swarm:setup-arm', request),
+  cancel: (opId) => ipcRenderer.invoke('swarm:setup-cancel', opId),
+  // Leave a finished result this window showed; another window's screen may
+  // still have it up, so main drops it only once none does.
+  dismiss: (opId) => ipcRenderer.invoke('swarm:setup-cancel', opId, { dismiss: true }),
+  trackFundingTx: (hash) => ipcRenderer.invoke('swarm:setup-track-funding-tx', hash),
+  restartNode: () => ipcRenderer.invoke('swarm:setup-restart-node'),
+  onState: (callback) => {
+    const handler = (_event, state) => callback(state);
+    ipcRenderer.on('swarm:setup-state', handler);
+    return () => ipcRenderer.removeListener('swarm:setup-state', handler);
+  },
 });
 
 contextBridge.exposeInMainWorld('networks', {

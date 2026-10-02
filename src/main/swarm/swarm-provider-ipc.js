@@ -50,6 +50,9 @@ const { addEntry, updateEntry } = require('./publish-history');
 const messagingService = require('./messaging-service');
 const subscriptionRegistry = require('./subscription-registry');
 const { getAntApiUrl } = require('../service-registry');
+const { getPublishReadiness } = require('./publish-setup-service');
+const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
+const { isNoUsableBatchError } = require('./batch-errors');
 const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const log = require('electron-log');
@@ -73,6 +76,9 @@ const LIMITS = {
 
 const SPEC_VERSION = '1.0';
 const MAX_U64 = (1n << 64n) - 1n;
+// A read's reachability probe: a node that stopped answering must not hang
+// the page's request.
+const REACHABLE_TIMEOUT_MS = 5_000;
 
 const READ_BUDGETS = {
   connected: {
@@ -95,6 +101,36 @@ const ERRORS = {
   INVALID_PARAMS: { code: -32602, message: 'Invalid parameters' },
   INTERNAL_ERROR: { code: -32603, message: 'Internal error' },
 };
+
+/**
+ * The error for a write the node took but could not complete. A batch bought
+ * moments ago that storer peers have not synced yet is "node not ready", with
+ * the pre-flight's own reason, so an app can retry shortly. No batch with
+ * room for the write (the pre-flight cannot know an upload's size) is the
+ * pre-flight's `no-usable-stamps`, so the page routes the user to the setup.
+ * Anything else is an internal error carrying the node's message.
+ */
+function nodeWriteError(err) {
+  if (isNoUsableBatchError(err)) {
+    return {
+      error: {
+        ...ERRORS.NODE_UNAVAILABLE,
+        message: err.message,
+        data: { reason: 'no-usable-stamps' },
+      },
+    };
+  }
+  if (isBatchNotYetKnownError(err?.message)) {
+    return {
+      error: {
+        ...ERRORS.NODE_UNAVAILABLE,
+        message: BATCH_NOT_YET_KNOWN_MESSAGE,
+        data: { reason: 'node-not-ready' },
+      },
+    };
+  }
+  return { error: { ...ERRORS.INTERNAL_ERROR, message: err?.message } };
+}
 
 const KNOWN_METHODS = [
   'swarm_requestAccess',
@@ -522,7 +558,7 @@ async function handlePublishData(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishData failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -675,7 +711,7 @@ async function handlePublishFiles(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishFiles failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -763,7 +799,7 @@ async function handlePublishChunk(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishChunk failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -867,7 +903,7 @@ async function handleWriteSingleOwnerChunk(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] writeSingleOwnerChunk failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1140,7 +1176,7 @@ async function handleCreateFeed(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] createFeed failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1214,7 +1250,7 @@ async function handleUpdateFeed(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] updateFeed failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1307,7 +1343,7 @@ async function handleWriteFeedEntry(params, origin) {
     }
 
     log.error(`[SwarmProvider] writeFeedEntry failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1583,7 +1619,7 @@ async function handleSendPss(params, origin) {
     return { result: { sent: true } };
   } catch (err) {
     log.error(`[SwarmProvider] sendPss failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1634,7 +1670,7 @@ async function handleSendGsoc(params, origin) {
     return { result: { sent: true, address: result.address } };
   } catch (err) {
     log.error(`[SwarmProvider] sendGsoc failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    return nodeWriteError(err);
   }
 }
 
@@ -1929,8 +1965,14 @@ async function checkBeeReachable() {
   const beeUrl = getAntApiUrl();
   if (!beeUrl) return { ok: false, reason: 'node-stopped' };
   try {
-    const res = await fetch(`${beeUrl}/node`);
-    if (!res.ok) return { ok: false, reason: 'node-stopped' };
+    const res = await fetch(`${beeUrl}/node`, {
+      signal: AbortSignal.timeout(REACHABLE_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      // Nobody reads this body: release the stream instead of leaving it to GC.
+      res.body?.cancel?.().catch(() => {});
+      return { ok: false, reason: 'node-stopped' };
+    }
     await res.json(); // consume response body
     return { ok: true };
   } catch {
@@ -1939,46 +1981,16 @@ async function checkBeeReachable() {
 }
 
 /**
- * Pre-flight check: is Bee running, in light mode, with usable stamps?
- * @returns {{ ok: boolean, reason?: string }}
+ * Pre-flight for writes: can the node publish right now? Asks the publish
+ * setup service, the one place that reads the node's chain init, mode, peer
+ * readiness and usable stamps (publish-setup-service.js). `reason` is one of
+ * `node-stopped`, `node-not-ready`, `ultra-light-mode`, `no-usable-stamps`.
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
 async function checkSwarmPreFlight() {
   try {
-    const beeUrl = getAntApiUrl();
-    if (!beeUrl) {
-      return { ok: false, reason: 'node-stopped' };
-    }
-
-    // Check node mode
-    const nodeRes = await fetch(`${beeUrl}/node`);
-    if (!nodeRes.ok) {
-      return { ok: false, reason: 'node-stopped' };
-    }
-    const nodeData = await nodeRes.json();
-    const beeMode = nodeData.beeMode || '';
-    if (beeMode === 'ultra-light' || beeMode === 'ultralight') {
-      return { ok: false, reason: 'ultra-light-mode' };
-    }
-
-    // Check readiness
-    const readinessRes = await fetch(`${beeUrl}/readiness`);
-    if (!readinessRes.ok) {
-      return { ok: false, reason: 'node-not-ready' };
-    }
-
-    // Check for usable stamps
-    const stampsRes = await fetch(`${beeUrl}/stamps`);
-    if (!stampsRes.ok) {
-      return { ok: false, reason: 'no-usable-stamps' };
-    }
-    const stampsData = await stampsRes.json();
-    const stamps = Array.isArray(stampsData.stamps) ? stampsData.stamps : [];
-    const usable = stamps.filter((s) => s.usable === true);
-    if (usable.length === 0) {
-      return { ok: false, reason: 'no-usable-stamps' };
-    }
-
-    return { ok: true };
+    const readiness = await getPublishReadiness();
+    return readiness.ok ? { ok: true } : { ok: false, reason: readiness.reason };
   } catch (err) {
     log.error('[SwarmProvider] Pre-flight check failed:', err.message);
     return { ok: false, reason: 'node-stopped' };

@@ -64,6 +64,13 @@ jest.mock('../service-registry', () => ({
   getAntApiUrl: mockGetBeeApiUrl,
 }));
 
+// The write pre-flight is the publish setup service's readiness, tested in
+// publish-setup-service.test.js. Each test here says what it answers.
+const mockGetPublishReadiness = jest.fn();
+jest.mock('./publish-setup-service', () => ({
+  getPublishReadiness: (...args) => mockGetPublishReadiness(...args),
+}));
+
 const mockPublishData = jest.fn();
 const mockPublishFilesFromContent = jest.fn();
 const mockGetUploadStatus = jest.fn();
@@ -140,7 +147,7 @@ jest.mock('./publish-history', () => ({
   updateEntry: mockUpdateEntry,
 }));
 
-// Mock global fetch for pre-flight checks
+// Mock global fetch for the read reachability check
 global.fetch = jest.fn();
 
 const {
@@ -211,6 +218,7 @@ describe('swarm-provider-ipc', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     clearPermissionFreeReadBudgets();
+    mockGetPublishReadiness.mockReset().mockResolvedValue({ ok: false, reason: 'node-stopped' });
   });
 
   test('registers swarm:provider-execute handler', () => {
@@ -263,10 +271,7 @@ describe('swarm-provider-ipc', () => {
     test('returns full capabilities when node is ready', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })      // /node
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })         // /readiness
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) }); // /stamps
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
 
       const result = await invokeProvider('swarm_getCapabilities', {}, 'myapp.eth');
       expect(result.result).toEqual({
@@ -304,7 +309,7 @@ describe('swarm-provider-ipc', () => {
     test('returns canPublish false in ultra-light mode', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'ultra-light' }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: false, reason: 'ultra-light-mode' });
 
       const result = await invokeProvider('swarm_getCapabilities', {}, 'myapp.eth');
       expect(result.result.canPublish).toBe(false);
@@ -314,10 +319,7 @@ describe('swarm-provider-ipc', () => {
     test('returns canPublish false with no usable stamps', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: false, reason: 'no-usable-stamps' });
 
       const result = await invokeProvider('swarm_getCapabilities', {}, 'myapp.eth');
       expect(result.result.canPublish).toBe(false);
@@ -327,10 +329,7 @@ describe('swarm-provider-ipc', () => {
     test('returns not-connected when origin has no permission', async () => {
       mockGetPermission.mockReturnValue(null);
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
 
       const result = await invokeProvider('swarm_getCapabilities', {}, 'unknown.eth');
       expect(result.result.canPublish).toBe(false);
@@ -359,11 +358,52 @@ describe('swarm-provider-ipc', () => {
   describe('swarm_publishData', () => {
     function mockPreFlightOk() {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
+
+    test('a batch the network does not know yet is node-not-ready, not an internal error', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      mockPublishData.mockRejectedValue(new Error("Unprocessable Entity: {\"code\":422,\"message\":\"push chunk failed: pushsync: postage batch 0xb8be73e4475fe3166d58a935d31bcfae417e6265143ba037cd271e89430b6ab1 rejected by 2 peer(s) as not found on-chain (peer said: invalid stamp: batchstore get: get batch b8be73e4475fe3166d58a935d31bcfae417e6265143ba037cd271e89430b6ab1: storage: not found, not found)\"}"));
+
+      const result = await invokeProvider(
+        'swarm_publishData',
+        { data: 'Hello world', contentType: 'text/plain' },
+        'myapp.eth'
+      );
+      expect(result.error).toEqual({
+        code: 4900,
+        message: 'Your storage is still reaching the Swarm network. Try again in a minute.',
+        data: { reason: 'node-not-ready' },
+      });
+
+      mockPreFlightOk();
+      mockPublishData.mockRejectedValue(new Error('disk full'));
+      const other = await invokeProvider(
+        'swarm_publishData',
+        { data: 'Hello world', contentType: 'text/plain' },
+        'myapp.eth'
+      );
+      expect(other.error).toMatchObject({ code: -32603, message: 'disk full' });
+    });
+
+    test('no batch with room for the upload is no-usable-stamps, so the page routes to setup', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      const { noUsableBatchError, NO_USABLE_BATCH_MESSAGE } = jest.requireActual('./batch-errors');
+      mockPublishData.mockRejectedValue(noUsableBatchError());
+
+      const result = await invokeProvider(
+        'swarm_publishData',
+        { data: 'Hello world', contentType: 'text/plain' },
+        'myapp.eth'
+      );
+      expect(result.error).toEqual({
+        code: 4900,
+        message: NO_USABLE_BATCH_MESSAGE,
+        data: { reason: 'no-usable-stamps' },
+      });
+    });
 
     test('publishes data and returns reference + bzzUrl', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
@@ -539,10 +579,7 @@ describe('swarm-provider-ipc', () => {
   describe('swarm_publishFiles', () => {
     function mockPreFlightOk() {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
     function makeFiles(paths) {
@@ -698,10 +735,7 @@ describe('swarm-provider-ipc', () => {
   describe('normalizeBytes via publishFiles', () => {
     function mockPreFlightOk() {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
     test('normalizes JSON-serialized Buffer bytes', async () => {
@@ -729,10 +763,7 @@ describe('swarm-provider-ipc', () => {
     test('returns status for owned tag', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
       mockPublishFilesFromContent.mockResolvedValue({
         reference: 'ref1', bzzUrl: 'bzz://ref1', tagUid: 99, batchIdUsed: 'b1',
       });
@@ -778,10 +809,7 @@ describe('swarm-provider-ipc', () => {
 
     function mockPreFlightOk() {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
     function mockReachable() {
@@ -1057,28 +1085,22 @@ describe('swarm-provider-ipc', () => {
   });
 
   describe('checkSwarmPreFlight', () => {
-    test('returns ok when all checks pass', async () => {
-      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
-
-      const result = await checkSwarmPreFlight();
-      expect(result).toEqual({ ok: true });
+    test('returns ok when the publish setup says the node can publish', async () => {
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true, reason: null, message: 'Ready' });
+      await expect(checkSwarmPreFlight()).resolves.toEqual({ ok: true });
     });
 
-    test('returns node-stopped when no Bee URL', async () => {
-      mockGetBeeApiUrl.mockReturnValue(null);
-      const result = await checkSwarmPreFlight();
-      expect(result).toEqual({ ok: false, reason: 'node-stopped' });
-    });
+    test.each(['node-stopped', 'node-not-ready', 'ultra-light-mode', 'no-usable-stamps'])(
+      'passes the %s reason through unchanged',
+      async (reason) => {
+        mockGetPublishReadiness.mockResolvedValueOnce({ ok: false, reason, message: 'Not yet' });
+        await expect(checkSwarmPreFlight()).resolves.toEqual({ ok: false, reason });
+      }
+    );
 
-    test('handles fetch errors gracefully', async () => {
-      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch.mockRejectedValue(new Error('ECONNREFUSED'));
-      const result = await checkSwarmPreFlight();
-      expect(result).toEqual({ ok: false, reason: 'node-stopped' });
+    test('reports node-stopped when the readiness check itself fails', async () => {
+      mockGetPublishReadiness.mockRejectedValueOnce(new Error('boom'));
+      await expect(checkSwarmPreFlight()).resolves.toEqual({ ok: false, reason: 'node-stopped' });
     });
   });
 
@@ -1116,10 +1138,7 @@ describe('swarm-provider-ipc', () => {
   describe('swarm_createFeed', () => {
     function mockPreFlightOk() {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
     function mockFeedCapability(origin, mode = 'app-scoped', keyIndex = 0) {
@@ -1303,10 +1322,7 @@ describe('swarm-provider-ipc', () => {
 
     function mockPreFlightOk() {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
     function mockFeedCapability(origin, mode = 'app-scoped', keyIndex = 0) {
@@ -1428,10 +1444,7 @@ describe('swarm-provider-ipc', () => {
   describe('swarm_writeFeedEntry', () => {
     function mockPreFlightOk() {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
     function mockFeedCapability(origin, mode = 'app-scoped', keyIndex = 0) {
@@ -1853,6 +1866,10 @@ describe('swarm-provider-ipc', () => {
 
       const result = await checkBeeReachable();
       expect(result).toEqual({ ok: true });
+      // A node that stops answering must not hang the page's read.
+      expect(global.fetch).toHaveBeenCalledWith('http://127.0.0.1:1633/node', {
+        signal: expect.any(AbortSignal),
+      });
     });
 
     test('returns not-ok when no Bee URL', async () => {
@@ -1864,10 +1881,13 @@ describe('swarm-provider-ipc', () => {
 
     test('returns not-ok when /node returns error', async () => {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch.mockResolvedValueOnce({ ok: false });
+      const cancel = jest.fn().mockResolvedValue();
+      global.fetch.mockResolvedValueOnce({ ok: false, body: { cancel } });
 
       const result = await checkBeeReachable();
       expect(result).toEqual({ ok: false, reason: 'node-stopped' });
+      // The unread body is released, not left streaming until GC.
+      expect(cancel).toHaveBeenCalledTimes(1);
     });
 
     test('returns not-ok when fetch throws', async () => {
@@ -1990,10 +2010,7 @@ describe('swarm-provider-ipc', () => {
 
     function mockSendPreFlightOk() {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
-      global.fetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
     describe('capabilities', () => {

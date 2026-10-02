@@ -86,7 +86,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(29);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(30);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -104,6 +104,7 @@ describe('preload', () => {
       'ledger',
       'remoteSigner',
       'swarmNode',
+      'publishSetup',
       'networks',
       'payments',
       'tokens',
@@ -214,6 +215,15 @@ describe('preload', () => {
       [exposures.payments, 'getRecent', [{ limit: 10 }], IPC.PAYMENTS_GET_RECENT, [{ limit: 10 }]],
       [exposures.payments, 'getById', [7], IPC.PAYMENTS_GET_BY_ID, [7]],
       [exposures.payments, 'getCount', [{ kind: 'x402' }], IPC.PAYMENTS_GET_COUNT, [{ kind: 'x402' }]],
+      [exposures.publishSetup, 'getState', [], IPC.SWARM_SETUP_GET_STATE, []],
+      [exposures.publishSetup, 'watch', ['node-card', true], IPC.SWARM_SETUP_WATCH, ['node-card', true]],
+      [exposures.publishSetup, 'getPlans', [], IPC.SWARM_SETUP_GET_PLANS, []],
+      [exposures.publishSetup, 'getExtendOptions', ['ab'.repeat(32), 20], IPC.SWARM_SETUP_GET_EXTEND_OPTIONS, ['ab'.repeat(32), 20]],
+      [exposures.publishSetup, 'arm', [{ kind: 'buy', planId: 'starter' }], IPC.SWARM_SETUP_ARM, [{ kind: 'buy', planId: 'starter' }]],
+      [exposures.publishSetup, 'cancel', [7], IPC.SWARM_SETUP_CANCEL, [7]],
+      [exposures.publishSetup, 'dismiss', [7], IPC.SWARM_SETUP_CANCEL, [7, { dismiss: true }]],
+      [exposures.publishSetup, 'trackFundingTx', ['0x' + '1'.repeat(64)], IPC.SWARM_SETUP_TRACK_FUNDING_TX, ['0x' + '1'.repeat(64)]],
+      [exposures.publishSetup, 'restartNode', [], IPC.SWARM_SETUP_RESTART_NODE, []],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of invokeCases) {
@@ -294,6 +304,9 @@ describe('preload', () => {
       [exposures.sitePermissions, 'onChanged', IPC.PERMISSIONS_CHANGED, [{}], [{}]],
       [exposures.githubBridge, 'onProgress', IPC.GITHUB_BRIDGE_PROGRESS, [{ step: 'cloning' }], [{ step: 'cloning' }]],
       [exposures.serviceRegistry, 'onUpdate', IPC.SERVICE_REGISTRY_UPDATE, [{ ant: { mode: 'bundled' } }], [{ ant: { mode: 'bundled' } }]],
+      [exposures.publishSetup, 'onState', IPC.SWARM_SETUP_STATE, [{ readiness: { ok: true } }], [{ readiness: { ok: true } }]],
+      // The settings and publish-page deep links say which screen to open.
+      [exposures.electronAPI, 'onOpenPublishSetup', IPC.SIDEBAR_OPEN_PUBLISH_SETUP, ['storage'], ['storage']],
       [exposures.radicleProvider, 'onEvent', IPC.RADICLE_PROVIDER_EVENT, [{ event: 'seedStatus', origin: 'rad://repo', data: { state: 'fetching' } }], [{ event: 'seedStatus', origin: 'rad://repo', data: { state: 'fetching' } }]],
     ];
 

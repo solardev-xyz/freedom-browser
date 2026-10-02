@@ -13,7 +13,7 @@
 import { getPermissionKey } from './dapp-provider.js';
 import { getDisplayUrlForWebview, getNavigationKeyForWebview } from './tabs.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
-import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock, showPermissionManifest } from './wallet-ui.js';
+import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock, showPermissionManifest, routeToPublishSetup } from './wallet-ui.js';
 
 const ERRORS = {
   USER_REJECTED: { code: 4001, message: 'User rejected the request' },
@@ -35,6 +35,27 @@ const manifestChecks = new WeakMap();
 const navigationGenerations = new WeakMap();
 
 const getNavigationGeneration = (webview) => navigationGenerations.get(webview) ?? 0;
+// Writes the node refuses with 4900 when publishing is not set up
+// (swarm-provider-ipc.js checkSwarmPreFlight). A failure for one of these
+// reasons takes the user to the setup screen, where it can be fixed.
+const SETUP_ROUTED_METHODS = new Set([
+  'swarm_publishData',
+  'swarm_publishFiles',
+  'swarm_publishChunk',
+  'swarm_createFeed',
+  'swarm_updateFeed',
+  'swarm_writeFeedEntry',
+  'swarm_writeSingleOwnerChunk',
+  'swarm_sendPss',
+  'swarm_sendGsoc',
+]);
+const SETUP_REASONS = new Set([
+  'node-stopped',
+  'node-not-ready',
+  'ultra-light-mode',
+  'no-usable-stamps',
+]);
+
 const PUBLIC_METHODS = new Set([
   'swarm_getCapabilities',
   'swarm_readFeedEntry',
@@ -155,6 +176,13 @@ async function handleSwarmRequest(webview, request) {
     // Never deliver a stale response (success or error) into a replacement
     // document — request ids can be reused across navigations.
     if (getNavigationGeneration(webview) !== generation) return;
+    if (
+      error?.code === ERRORS.DISCONNECTED.code &&
+      SETUP_ROUTED_METHODS.has(method) &&
+      SETUP_REASONS.has(error.data?.reason)
+    ) {
+      routeToPublishSetup(permissionKey, error.data.reason);
+    }
     sendSwarmResponse(webview, id, null, {
       code: error.code || ERRORS.INTERNAL_ERROR.code,
       message: error.message || ERRORS.INTERNAL_ERROR.message,

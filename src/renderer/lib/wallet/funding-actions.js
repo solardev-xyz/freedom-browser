@@ -1,19 +1,17 @@
 /**
- * Shared funding action helpers.
+ * Shared funding helpers for the Swarm node wallet.
  *
- * Used by both the node card click handlers and the publish setup
- * checklist to handle xDAI, xBZZ, and chequebook funding flows.
+ * The node wallet only ever needs xDAI: the node swaps what it needs into
+ * xBZZ itself when it buys storage (publish-setup-service.js).
  */
 
 import { walletState } from './wallet-state.js';
 import { openSend } from './send.js';
 import { openReceive } from './receive.js';
-import { createTab } from '../tabs.js';
 import { GNOSIS_CHAIN_ID } from './wallet-utils.js';
 
 export { GNOSIS_CHAIN_ID };
 export const XDAI_TOKEN_KEY = '100:native';
-export const XBZZ_TOKEN_KEY = normalizeTokenKey('100:0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da');
 
 // Keep in sync with normalizeTokenKey in src/main/token-registry.js.
 export function normalizeTokenKey(rawKey) {
@@ -43,8 +41,8 @@ export function hasPositiveTokenBalance(balances, tokenKey) {
 }
 
 /**
- * Top up the Bee wallet with xDAI.
- * - Main wallet has xDAI → open send flow pre-filled to Bee wallet
+ * Top up the Swarm node wallet with xDAI.
+ * - Main wallet has xDAI → open send flow pre-filled to the node wallet
  * - Main wallet empty → open receive screen (QR + address)
  */
 export function topUpXdai(antWalletAddress) {
@@ -67,42 +65,4 @@ export function topUpXdai(antWalletAddress) {
     tokenSymbol: 'xDAI',
   });
   return { action: 'send' };
-}
-
-/**
- * Top up the Bee wallet with xBZZ.
- * - Main wallet has xBZZ → open send flow pre-filled to Bee wallet
- * - Main wallet has xDAI but no xBZZ → open CowSwap
- * - Main wallet empty → open receive screen
- */
-export function topUpXbzz(antWalletAddress) {
-  const recipient = antWalletAddress || walletState.fullAddresses.swarm;
-  if (!recipient) {
-    return { error: 'Ant wallet address not available.' };
-  }
-
-  const hasMainXbzz = hasPositiveTokenBalance(walletState.currentBalances, XBZZ_TOKEN_KEY);
-
-  if (hasMainXbzz) {
-    openSend({
-      recipient,
-      chainId: GNOSIS_CHAIN_ID,
-      tokenKey: XBZZ_TOKEN_KEY,
-      tokenSymbol: 'xBZZ',
-    });
-    return { action: 'send' };
-  }
-
-  const hasMainXdai = hasPositiveTokenBalance(walletState.currentBalances, XDAI_TOKEN_KEY);
-
-  if (hasMainXdai) {
-    const swapUrl = getTokenMapEntry(walletState.registeredTokens, XBZZ_TOKEN_KEY)?.swapUrl;
-    if (swapUrl) {
-      createTab(swapUrl);
-      return { action: 'swap' };
-    }
-  }
-
-  openReceive();
-  return { action: 'receive' };
 }

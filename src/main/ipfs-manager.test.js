@@ -1513,6 +1513,45 @@ describe('ipfs-manager', () => {
     }
   });
 
+  // R2-M1 on #462: a non-ok version answer's body is never read, so it has to
+  // be cancelled — otherwise the gateway transport's request stays open,
+  // paused behind a stream nobody pulls.
+  test('a non-ok version answer has its unread body cancelled', async () => {
+    const realFetch = global.fetch;
+    const cancel = jest.fn();
+    global.fetch = mockGatewayFetch(async (url) => {
+      if (String(url).includes('/api/v0/version')) {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('first chunk'));
+            // …and never closed: only a cancel ends it.
+          },
+          cancel,
+        });
+        return new Response(body, { status: 500 });
+      }
+      return new Response('external-body', { status: 200 });
+    });
+    try {
+      const ctx = loadIpfsManagerModule({
+        nativeAvailable: false,
+        activeProfile: {
+          metadata: {
+            nodes: { ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' } },
+          },
+        },
+      });
+      await ctx.mod.startIpfs();
+      for (let i = 0; i < 5; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(ctx.mod.getNativeDiagnostics().externalVersion).toBeNull();
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
   // R1-M2: the activation guard's own stale-landing case, the sibling of the
   // health probe's. A stop and a restart onto the same endpoint leaves mode and
   // endpoint identical, so only the generation counter separates the previous

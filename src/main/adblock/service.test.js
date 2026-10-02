@@ -31,6 +31,8 @@ jest.mock('electron', () => ({
 }));
 
 const dispatcherMock = require('../webrequest-dispatcher');
+const { netGatewayFetch } = require('../ipfs/gateway-transport');
+const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
 const { loadSettings } = require('../settings-store');
 const {
   installAdblockInterception,
@@ -164,6 +166,31 @@ describe('adblockRequestForDispatch', () => {
     expect(
       adblockRequestForDispatch(makeDetails({ url: 'https://ads.tracker.test/acceptable/x.js' }))
     ).toBe(null);
+  });
+
+  // R1-M2 on #462: CCIP-Read gateways (and the external IPFS gateway) are
+  // dialled with `net.request`, so they reach this handler with no
+  // webContents. They are the app's own requests, not page subresources — a
+  // filter list must not be able to break ENS resolution.
+  test("never cancels the app's own gateway dial, even to a listed URL", async () => {
+    const url = 'https://telemetry.test/0xresolver/0xdata.json';
+    const own = { url, resourceType: 'other', webContentsId: undefined, referrer: '' };
+    // Control: the same unattributed request is blocked when nothing dialled it.
+    expect(adblockRequestForDispatch(own)).toEqual({ cancel: true });
+    let request;
+    const pending = netGatewayFetch(
+      url,
+      {},
+      {
+        requestImpl: (options) => (request = new FakeClientRequest(options)),
+      }
+    );
+    expect(adblockRequestForDispatch(own)).toBe(null);
+    // A tab's own request for that URL is still filtered meanwhile.
+    expect(adblockRequestForDispatch(makeDetails({ url }))).toEqual({ cancel: true });
+    request.emit('error', new Error('net::ERR_FAILED'));
+    await pending.catch(() => {});
+    expect(adblockRequestForDispatch(own)).toEqual({ cancel: true });
   });
 
   test('never cancels main-frame navigation, even to a listed host', () => {

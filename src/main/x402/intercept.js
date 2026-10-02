@@ -38,6 +38,7 @@ const crypto = require('crypto');
 const log = require('../logger');
 const { parsePaymentRequired } = require('@x402/core/schemas');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
+const { isGatewayTransportRequest } = require('../ipfs/gateway-transport');
 const paymentHistory = require('../payment-history');
 const { KINDS: PAYMENT_KINDS, STATUSES: PAYMENT_STATUSES } = paymentHistory;
 const { findCoveringPermission } = require('./payment-utils');
@@ -767,6 +768,11 @@ function requestVaultUnlockForAutoPay(webContentsId, detection, url) {
  */
 async function detectPaymentRequiredHandler(details) {
   if (!isStatus402(details.statusLine)) return null;
+
+  // The app's own gateway / CCIP-Read dials (`ipfs/gateway-transport.js`) are
+  // not page traffic: nothing to pay for and — for a CCIP GET, whose path is
+  // `{sender}/{data}`, the name being resolved — nothing we may log.
+  if (isGatewayTransportRequest(details)) return null;
 
   // Electron sets `webContentsId` undefined (or -1) for requests not tied
   // to a renderer — service workers, favicon discovery, Chromium-internal

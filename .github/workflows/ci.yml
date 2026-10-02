@@ -177,6 +177,14 @@ jobs:
       - name: Run lint
         run: npm run lint
 
+      # Two suites spawn a real Electron (`ipfs-gateway-proxy`, `ens-ccip-proxy`)
+      # and electron 44 downloads its binary on the first `require('electron')`.
+      # Left to the tests, parallel jest workers both start that download and
+      # one spawns the binary while the other is still writing it
+      # (`spawn ETXTBSY`). Pull it once, here, before any worker starts.
+      - name: Warm the Electron binary download
+        run: node -e "require('electron')"
+
       - name: Run test coverage
         run: npm run test:coverage
 
@@ -709,10 +717,11 @@ jobs:
   # `src/main/tor-proxy.js` — is decided by Chromium's network stack, which no
   # jest mock can stand in for (that is exactly how #355 happened: the external
   # IPFS gateway proxy used undici, whose sockets never see the session). This
-  # runs the one suite that spawns a real Electron process to check it. The
-  # suite self-skips wherever the Electron binary cannot be resolved;
-  # `FREEDOM_ELECTRON_NET_TEST=1` makes a missing binary a failure here rather
-  # than a silent skip. (`--ignore-scripts` is not what decides that: the
+  # runs the suites that spawn a real Electron process to check it — the IPFS
+  # gateway transport and, since #359, ENS CCIP-Read gateway fetches over the
+  # same transport. The suites self-skip wherever the Electron binary cannot be
+  # resolved; `FREEDOM_ELECTRON_NET_TEST=1` makes a missing binary a failure
+  # here rather than a silent skip. (`--ignore-scripts` is not what decides that: the
   # `electron` package has no postinstall, so `require('electron')` downloads
   # the binary on first use in whichever job asks for it — including the
   # `test` job, where it lands uncached.)
@@ -741,10 +750,19 @@ jobs:
       - name: Install Electron system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run the external gateway proxy integration test
+      # Before jest: both suites below resolve the binary through
+      # `require('electron')`, and two workers racing that first-use download
+      # fail with `spawn ETXTBSY` (seen on this job when #359 added the second
+      # suite).
+      - name: Warm the Electron binary download
+        run: node -e "require('electron')"
+
+      - name: Run the external gateway and ENS CCIP-Read proxy integration tests
         env:
           FREEDOM_ELECTRON_NET_TEST: '1'
-        run: npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
+        run: >-
+          npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
+          src/main/__tests__/integration/ens-ccip-proxy.test.js
 
   # Tab activation, link dispositions and menu dismissal are all about *focus*
   # — which of the shell and the guest `<webview>` owns the keyboard — and no

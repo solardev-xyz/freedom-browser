@@ -7,7 +7,6 @@ const http = require('http');
 const https = require('https');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
-const { loadSettings } = require('./settings-store');
 const registry = require('./networks/network-registry');
 const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
@@ -45,6 +44,7 @@ let pendingStart = false;
 let forceKillTimeout = null;
 let chainBridge = null;
 let startGeneration = 0;
+const statusListeners = new Set();
 
 function closeChainBridge(bridge = chainBridge) {
   if (chainBridge === bridge) chainBridge = null;
@@ -52,12 +52,7 @@ function closeChainBridge(bridge = chainBridge) {
 }
 
 const CONFIG_FILE = 'config.yaml';
-const ANT_NODE_MODE = {
-  ULTRA_LIGHT: 'ultraLight',
-  LIGHT: 'light',
-};
 const ETHEREUM_CHAIN_ID = 1;
-const GNOSIS_CHAIN_ID = 100;
 const DEFAULT_ANT_RESOLVER_RPC_URL = 'https://ethereum.publicnode.com';
 
 // Identity injection flag - when true, require pre-injected keys before start.
@@ -182,13 +177,6 @@ function persistManagedAntPorts(updates) {
   }
 }
 
-function getConfiguredAntNodeMode() {
-  const settings = loadSettings();
-  return settings?.antNodeMode === ANT_NODE_MODE.LIGHT
-    ? ANT_NODE_MODE.LIGHT
-    : ANT_NODE_MODE.ULTRA_LIGHT;
-}
-
 function getPrimaryKeylessRpcUrl(chainId) {
   // Ant config accepts one RPC URL per setting. A keyed commercial provider
   // can have a valid key while a specific chain is disabled for that app, so
@@ -202,10 +190,6 @@ function getPrimaryKeylessRpcUrl(chainId) {
   return typeof primaryUrl === 'string' && primaryUrl.trim() ? primaryUrl.trim() : null;
 }
 
-function getPrimaryGnosisRpcUrl() {
-  return getPrimaryKeylessRpcUrl(GNOSIS_CHAIN_ID);
-}
-
 function getPrimaryEthereumRpcUrl() {
   return getPrimaryKeylessRpcUrl(ETHEREUM_CHAIN_ID) || DEFAULT_ANT_RESOLVER_RPC_URL;
 }
@@ -215,18 +199,18 @@ function getPrimaryEthereumRpcUrl() {
 // over Node's fetch, neither of which is subject to CORS. The old `"null"`
 // entry, there for the chrome's `file:` origin, also let every `data:` frame
 // and sandboxed iframe read API responses (security audit O-1, #428).
-function buildAntConfigContent({
-  dataDir, apiPort, p2pPort, password, nodeMode, blockchainRpcEndpoint, resolverRpcEndpoint,
-}) {
-  const isLightNode = nodeMode === ANT_NODE_MODE.LIGHT;
-
+//
+// No `blockchain-rpc-endpoint` and no `swap-enable` either. The node reaches
+// Gnosis Chain only through the chain bridge, whose URL startAnt passes as
+// `--gnosis-rpc-url` (antd lets the flag win over the YAML key), so no RPC
+// URL, keyed or not, lands on disk. antd ignores `swap-enable`: settlement
+// follows from having a chequebook.
+function buildAntConfigContent({ dataDir, apiPort, p2pPort, password, resolverRpcEndpoint }) {
   return `# Ant node configuration (bee-compatible keys)
 api-addr: 127.0.0.1:${apiPort}
 p2p-addr: :${p2pPort}
-swap-enable: ${isLightNode ? 'true' : 'false'}
 mainnet: true
 full-node: false
-blockchain-rpc-endpoint: ${isLightNode ? `"${blockchainRpcEndpoint}"` : '""'}
 skip-postage-snapshot: true
 resolver-options: "${resolverRpcEndpoint}"
 storage-incentives-enable: false
@@ -235,12 +219,7 @@ password: ${password}
 `;
 }
 
-function ensureConfig(
-  dataDir,
-  apiPort,
-  nodeMode = ANT_NODE_MODE.ULTRA_LIGHT,
-  p2pPort = DEFAULTS.ant.p2pPort
-) {
+function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
   const configPath = path.join(dataDir, CONFIG_FILE);
   const crypto = require('crypto');
 
@@ -275,11 +254,7 @@ function ensureConfig(
     password = crypto.randomBytes(32).toString('hex');
   }
 
-  const blockchainRpcEndpoint = nodeMode === ANT_NODE_MODE.LIGHT ? getPrimaryGnosisRpcUrl() : null;
   const resolverRpcEndpoint = getPrimaryEthereumRpcUrl();
-  if (nodeMode === ANT_NODE_MODE.LIGHT && !blockchainRpcEndpoint) {
-    throw new Error('No primary Gnosis RPC endpoint configured for Ant light mode');
-  }
 
   // Always write config with current port
   // Note: Newer Ant versions don't have separate debug-api-addr, debug endpoints are on main API
@@ -288,17 +263,11 @@ function ensureConfig(
     apiPort,
     p2pPort,
     password,
-    nodeMode,
-    blockchainRpcEndpoint,
     resolverRpcEndpoint,
   });
 
   fs.writeFileSync(configPath, configContent);
-  log.info(
-    `[Ant] Config written at ${configPath} with API:${apiPort} P2P:${p2pPort} mode:${nodeMode}${
-      blockchainRpcEndpoint ? ` rpc:${blockchainRpcEndpoint}` : ''
-    }`
-  );
+  log.info(`[Ant] Config written at ${configPath} with API:${apiPort} P2P:${p2pPort}`);
 
   // Identity handling. Unlike bee, antd has no `init` subcommand: when an
   // injected Web3 v3 keystore exists at `keys/swarm.key` antd loads its
@@ -324,6 +293,22 @@ function updateState(newState, error = null) {
   for (const win of windows) {
     win.webContents.send(IPC.ANT_STATUS_UPDATE, { status: currentState, error: lastError });
   }
+  for (const listener of statusListeners) {
+    try {
+      listener({ status: currentState, error: lastError });
+    } catch (err) {
+      log.error('[Ant] Status listener failed:', err);
+    }
+  }
+}
+
+/**
+ * Main-process subscribers to node status changes (the publish setup
+ * service). Returns an unsubscribe function.
+ */
+function onStatusChange(listener) {
+  statusListeners.add(listener);
+  return () => statusListeners.delete(listener);
 }
 
 /**
@@ -681,10 +666,9 @@ async function startAnt() {
   noteAntApiUrl(currentApiUrl);
   currentMode = MODE.BUNDLED;
 
-  const configuredNodeMode = getConfiguredAntNodeMode();
   let configPath;
   try {
-    configPath = ensureConfig(dataDir, apiPort, configuredNodeMode, p2pPort);
+    configPath = ensureConfig(dataDir, apiPort, p2pPort);
   } catch (err) {
     log.error('[Ant] Failed to prepare config:', err.message);
     updateState(STATUS.ERROR, err.message);
@@ -707,10 +691,15 @@ async function startAnt() {
    * the node through the HTTP API, not antctl, so the managed desktop node does
    * not need a control socket at all. Keeping the socket disabled avoids adding
    * a second profile-owned short-home exception like Radicle's.
+   *
+   * The node always gets a write-capable chain transport: there is no
+   * browse-only mode to switch out of before publishing. The bridge's URL
+   * carries a capability path only this spawn knows, and the only
+   * transactions it forwards are signed ones for Gnosis Chain (chain 100).
    */
   let bridge;
   try {
-    bridge = await startAntChainBridge({ allowBroadcast: configuredNodeMode === ANT_NODE_MODE.LIGHT });
+    bridge = await startAntChainBridge({ allowBroadcast: true });
     if (generation !== startGeneration) {
       await bridge.close();
       return;
@@ -725,8 +714,7 @@ async function startAnt() {
   const args = [`--config=${configPath}`, '--no-control-socket'];
 
   log.info(`[Ant] Starting: ${binPath} ${args.join(' ')} (private chain transport)`);
-  args.push(`--gnosis-logs-rpc-url=${bridge.url}`);
-  if (configuredNodeMode === ANT_NODE_MODE.LIGHT) args.push(`--gnosis-rpc-url=${bridge.url}`);
+  args.push(`--gnosis-logs-rpc-url=${bridge.url}`, `--gnosis-rpc-url=${bridge.url}`);
 
   try {
     antProcess = spawn(binPath, args);
@@ -1003,12 +991,10 @@ module.exports = {
   stopAnt,
   getActivePort,
   getStatus,
+  onStatusChange,
   getAntDataPath,
   setUseInjectedIdentity,
   hasInjectedKeys,
-  ANT_NODE_MODE,
-  getConfiguredAntNodeMode,
-  getPrimaryGnosisRpcUrl,
   getPrimaryEthereumRpcUrl,
   STATUS,
 };

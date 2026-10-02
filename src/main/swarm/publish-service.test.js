@@ -191,12 +191,33 @@ describe('publish-service', () => {
       });
     });
 
+    // A batch bought moments ago that storer peers have not synced: the page
+    // reads "try again shortly", the history keeps the node's own words.
+    test('swarm:publish-data explains a batch the network does not know yet', async () => {
+      const { updateEntry } = require('./publish-history');
+      const nodeError = "Unprocessable Entity: {\"code\":422,\"message\":\"push chunk failed: pushsync: postage batch 0xb8be73e4475fe3166d58a935d31bcfae417e6265143ba037cd271e89430b6ab1 rejected by 2 peer(s) as not found on-chain (peer said: invalid stamp: batchstore get: get batch b8be73e4475fe3166d58a935d31bcfae417e6265143ba037cd271e89430b6ab1: storage: not found, not found)\"}";
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch1', 1000000000, 86400)]);
+      mockUploadFile.mockRejectedValue(new Error(nodeError));
+
+      const result = await invokeIpc('swarm:publish-data', 'test');
+      expect(result).toEqual({
+        success: false,
+        error: 'Your storage is still reaching the Swarm network. Try again in a minute.',
+      });
+      expect(updateEntry).toHaveBeenCalledWith('test-history-id', {
+        status: 'failed',
+        errorMessage: nodeError,
+      });
+    });
+
     test('swarm:publish-data fails when no usable batch', async () => {
       mockGetPostageBatches.mockResolvedValue([]);
 
       const result = await invokeIpc('swarm:publish-data', 'test');
       expect(result.success).toBe(false);
       expect(result.error).toContain('No usable postage batch');
+      // freedom://publish offers the setup on this one.
+      expect(result.needsStorage).toBe(true);
     });
 
     test('swarm:publish-data rejects empty input', async () => {

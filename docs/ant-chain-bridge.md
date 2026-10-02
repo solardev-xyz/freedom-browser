@@ -9,12 +9,12 @@ upgrade, renderer capability, or public IPC channel is needed.
 ## Routing and authority
 
 Every bundled daemon start receives a fresh `127.0.0.1` ephemeral port and a
-256-bit random URL capability. `--gnosis-logs-rpc-url` points at that endpoint
-for startup discovery and ultra-light fallback reads. Light mode also sets
-`--gnosis-rpc-url` to it for normal reads and transaction broadcasts. CLI flags
-override the existing config URLs; the capability is never persisted in YAML.
-Ultra-light still has no explicit write RPC and the bridge refuses broadcasts.
-External, disabled and reused nodes are not reconfigured.
+256-bit random URL capability. Both `--gnosis-logs-rpc-url` (startup discovery)
+and `--gnosis-rpc-url` (normal reads and transaction broadcasts) point at that
+endpoint: there is no browse-only mode, so the node can always buy storage and
+settle, and the bridge always forwards its signed Gnosis transactions. Freedom
+writes no chain RPC URL into the YAML config at all; the capability is never
+persisted. External, disabled and reused nodes are not reconfigured.
 
 The bridge fixes the chain to Gnosis (100), accepts the eight methods Ant's
 chain module issues, and forwards the original params and JSON-RPC id. Reads
@@ -160,8 +160,9 @@ and accidental local access, not hostile software running as the same user.
 `ant-chain-bridge.test.js` exercises the HTTP boundary with real loopback sockets:
 authorization/Origin/Host checks, request limits, exact forwarding, source
 reporting, error/revert propagation, broadcast restrictions, cancellation,
-capacity and split-log redaction. Manager tests cover mode selection, close,
-bind/spawn failure and stop during startup. Router tests ensure cancellation
+capacity and split-log redaction. Manager tests cover starting the daemon with
+its write-capable chain transport, close, bind/spawn failure and stop during
+startup. Router tests ensure cancellation
 prevents later fallback or a second direct broadcaster.
 `ant-log-scan-routing.test.js` pins the ranking rule as a matrix over the
 real router with the bridge's own options and error mapping, under fake

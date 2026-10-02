@@ -279,6 +279,7 @@ const {
 const { registerExternalProtocolIpc } = require('./external-protocol');
 const { registerPopupBlockerIpc } = require('./popup-blocker');
 const { registerSwarmIpc } = require('./swarm/stamp-service');
+const { registerPublishSetupIpc } = require('./swarm/publish-setup-service');
 const { registerPublishIpc } = require('./swarm/publish-service');
 const {
   registerPublishHistoryIpc,
@@ -379,6 +380,7 @@ async function bootstrap() {
   registerOnchainProvenanceIpc();
   paymentHistory.registerPaymentHistoryIpc();
   registerSwarmIpc();
+  registerPublishSetupIpc();
   registerPublishIpc();
   registerPublishHistoryIpc();
   registerSwarmPermissionsIpc();

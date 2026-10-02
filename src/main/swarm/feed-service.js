@@ -10,6 +10,7 @@
 
 const { PrivateKey, Topic, EthAddress, BeeResponseError, Bytes, Identifier, FeedIndex } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
+const { noUsableBatchError } = require('./batch-errors');
 const log = require('electron-log');
 
 // ---------------------------------------------------------------------------
@@ -172,7 +173,7 @@ async function createFeed(signerPrivateKey, topicString, batchId) {
 
   const resolvedBatchId = batchId || await selectBestBatch(4096);
   if (!resolvedBatchId) {
-    throw new Error('No usable postage batch available. Purchase stamps first.');
+    throw noUsableBatchError();
   }
 
   const manifest = await bee.feed.createManifest(resolvedBatchId, topic, owner);
@@ -205,7 +206,7 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
 
   const resolvedBatchId = batchId || await selectBestBatch(4096);
   if (!resolvedBatchId) {
-    throw new Error('No usable postage batch available. Purchase stamps first.');
+    throw noUsableBatchError();
   }
 
   const topicHex = topic.toHex();
@@ -248,7 +249,7 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
   const dataSize = typeof data === 'string' ? Buffer.byteLength(data, 'utf-8') : data.length;
   const resolvedBatchId = batchId || await selectBestBatch(Math.max(dataSize, 4096));
   if (!resolvedBatchId) {
-    throw new Error('No usable postage batch available. Purchase stamps first.');
+    throw noUsableBatchError();
   }
 
   const topicHex = topic.toHex();

@@ -1,246 +1,182 @@
-describe('swarm-readiness', () => {
-  test('treats ultra-light nodes as browsing only and suggests upgrade for bundled Bee', async () => {
-    const mod = await import('./swarm-readiness.js');
+const PLANS = [
+  { id: 'starter', title: 'Starter', depth: 20, days: 30, safeLimitBytes: 100_000_000 },
+  { id: 'advanced', title: 'Advanced', depth: 21, days: 180, safeLimitBytes: 1_000_000_000 },
+  { id: 'plus', title: 'Plus', depth: 22, days: 365, safeLimitBytes: 5_000_000_000 },
+];
 
+const ADDRESS = '0x1234567890abcdef1234567890abcdef12345678';
+
+function stateWith(overrides = {}) {
+  return {
+    node: { status: 'running', error: null, registryMode: 'bundled' },
+    readiness: { ok: false, key: 'needs-storage', reason: 'no-usable-stamps', message: '' },
+    operation: null,
+    plans: PLANS,
+    ...overrides,
+  };
+}
+
+describe('swarm-readiness view helpers', () => {
+  let mod;
+  beforeAll(async () => {
+    mod = await import('./swarm-readiness.js');
+  });
+
+  test('formats node modes and leaves an unknown one blank', () => {
+    expect(mod.formatSwarmMode('light')).toBe('Light');
+    expect(mod.formatSwarmMode('ultraLight')).toBe('Ultra-light');
+    expect(mod.formatSwarmMode('full')).toBe('Full');
+    expect(mod.formatSwarmMode(null)).toBeNull();
+    expect(mod.formatSwarmMode('ultra-light')).toBeNull();
+  });
+
+  test('formats plan sizes in decimal units, like the effective-volume table', () => {
+    expect(mod.formatStorageSize(100_000_000)).toBe('100 MB');
+    expect(mod.formatStorageSize(1_000_000_000)).toBe('1 GB');
+    expect(mod.formatStorageSize(5_000_000_000)).toBe('5 GB');
+    expect(mod.formatStorageSize(2_600_000_000)).toBe('2.6 GB');
+    expect(mod.formatStorageSize(0)).toBe('--');
+  });
+
+  test('formats durations the way the plans and extend options name them', () => {
+    expect(mod.formatDays(30)).toBe('1 month');
+    expect(mod.formatDays(90)).toBe('3 months');
+    expect(mod.formatDays(180)).toBe('6 months');
+    expect(mod.formatDays(365)).toBe('1 year');
+    expect(mod.formatDays(730)).toBe('2 years');
+    expect(mod.formatDays(7)).toBe('7 days');
+    expect(mod.formatDays(1)).toBe('1 day');
+  });
+
+  test('describes plans and the armed operation', () => {
+    expect(mod.describePlan(PLANS[0])).toBe('Up to 100 MB for 1 month');
     expect(
-      mod.classifySwarmPublishState({
-        beeStatus: 'running',
-        desiredMode: 'ultraLight',
-        actualMode: 'ultraLight',
-        registryMode: 'bundled',
-      })
-    ).toEqual({
-      key: 'browsing-only',
-      label: 'Browsing only',
-      detail: 'Uploads require light mode, node funding, and usable stamps.',
-      action: {
-        key: 'upgrade',
-        label: 'Upgrade to Light Node',
-        hint: 'Enable uploads and publishing',
-      },
-    });
-  });
-
-  test('normalizes Bee API ultra-light mode strings', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(mod.normalizeSwarmMode('ultra-light')).toBe('ultraLight');
-    expect(mod.normalizeSwarmMode('UltraLight')).toBe('ultraLight');
-    expect(mod.normalizeSwarmMode('full-node')).toBe('full');
-  });
-
-  test('treats Bee API ultra-light mode strings as browsing only', async () => {
-    const mod = await import('./swarm-readiness.js');
-
+      mod.describeOperationTarget({ request: { kind: 'buy', planId: 'advanced' } }, PLANS)
+    ).toBe('Advanced: up to 1 GB for 6 months');
     expect(
-      mod.classifySwarmPublishState({
-        beeStatus: 'running',
-        desiredMode: 'light',
-        actualMode: 'ultra-light',
-        registryMode: 'bundled',
-      })
-    ).toEqual({
-      key: 'browsing-only',
-      label: 'Browsing only',
-      detail: 'Uploads require light mode, node funding, and usable stamps.',
-      action: {
-        key: 'upgrade',
-        label: 'Upgrade to Light Node',
-        hint: 'Enable uploads and publishing',
-      },
-    });
-  });
-
-  test('treats light nodes with readiness not OK as initializing', async () => {
-    const mod = await import('./swarm-readiness.js');
-
+      mod.describeOperationTarget({ request: { kind: 'extend', batchId: 'ab', days: 90 } }, PLANS)
+    ).toBe('Keep your storage 3 months longer');
     expect(
-      mod.classifySwarmPublishState({
-        beeStatus: 'running',
-        desiredMode: 'light',
-        actualMode: 'light',
-        registryMode: 'bundled',
-        readiness: { ok: false },
-        stampsKnown: false,
-      })
-    ).toEqual({
-      key: 'initializing',
-      label: 'Initializing',
-      detail: 'Ant is finishing light-node setup.',
-      action: null,
-    });
+      mod.describeOperationTarget(
+        { request: { kind: 'extend', batchId: 'ab', days: 0, depth: 22 } },
+        PLANS
+      )
+    ).toBe('Grow your storage to 5 GB');
+    expect(mod.describeOperationTarget({ request: { kind: 'deposit' } }, PLANS)).toBe(
+      'Top up the chequebook deposit'
+    );
   });
 
-  test('treats readiness-ok light nodes with no usable stamps as not publish-ready', async () => {
-    const mod = await import('./swarm-readiness.js');
+  test('titles and copy follow the operation kind', () => {
+    expect(mod.describeOperationTitle(null)).toBe('Publish Setup');
+    expect(mod.describeOperationTitle({ request: { kind: 'extend' } })).toBe('Extend Storage');
+    expect(mod.describeExecuting({ request: { kind: 'buy' } }).title).toBe(
+      'Activating Your Storage'
+    );
+    expect(mod.describeDone({ request: { kind: 'deposit' }, result: { alreadyFull: true } })).toBe(
+      'The chequebook deposit is already full.'
+    );
+  });
 
+  test('a bought batch still reaching the network is not called ready yet', () => {
+    const confirming = { phase: 'confirming', request: { kind: 'buy', planId: 'starter' } };
+    expect(mod.describeExecuting(confirming).title).toBe('Almost Ready');
+    expect(mod.describeDone({ request: { kind: 'buy' }, result: { slow: true } })).toMatch(
+      /still catching up/
+    );
+    expect(mod.describeDone({ request: { kind: 'buy' }, result: {} })).toBe(
+      'Your storage is ready. You can publish on Swarm now.'
+    );
+    expect(mod.describePublishCta(stateWith({ operation: confirming }))).toMatchObject({
+      label: 'Confirming Storage…',
+      target: 'setup',
+    });
     expect(
-      mod.classifySwarmPublishState({
-        beeStatus: 'running',
-        desiredMode: 'light',
-        actualMode: 'light',
-        registryMode: 'bundled',
-        readiness: { ok: true },
-        stampsKnown: true,
-        stamps: [{ batchID: 'a', usable: false }],
-      })
-    ).toEqual({
-      key: 'no-usable-stamps',
-      label: 'No usable stamps',
-      detail: 'Publishing needs at least one usable postage batch.',
-      action: null,
-    });
+      mod.describePublishCta(stateWith({ readiness: { ok: false, key: 'storage-pending' } }))
+    ).toMatchObject({ label: 'Manage Storage', target: 'storage' });
   });
 
-  test('treats readiness-ok light nodes with a usable stamp as ready to publish', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(
-      mod.classifySwarmPublishState({
-        beeStatus: 'running',
-        desiredMode: 'light',
-        actualMode: 'light',
-        registryMode: 'bundled',
-        readiness: { ok: true },
-        stampsKnown: true,
-        stamps: [
-          { batchID: 'a', usable: true },
-          { batchID: 'b', usable: false },
-        ],
-      })
-    ).toEqual({
-      key: 'ready',
-      label: 'Ready to publish',
-      detail: '1 usable batch available.',
-      action: null,
-    });
+  test('builds an EIP-681 payment request for a plain xDAI transfer on Gnosis', () => {
+    expect(mod.buildPaymentUri(ADDRESS, '460000000000000000')).toBe(
+      `ethereum:${ADDRESS}@100?value=460000000000000000`
+    );
   });
 
-  test('marks external Bee nodes as inspect-only by appending note and removing actions', async () => {
-    const mod = await import('./swarm-readiness.js');
+  test('pre-fills fund.ethswarm.org with the node address and the xDAI to deliver', () => {
+    const url = new URL(mod.buildFundUrl(ADDRESS, '0.46'));
+    expect(url.origin).toBe('https://fund.ethswarm.org');
+    expect(url.searchParams.get('destination')).toBe(ADDRESS);
+    expect(url.searchParams.get('dai')).toBe('0.46');
+    expect(url.searchParams.get('bzz')).toBe('0');
+  });
 
-    const result = mod.classifySwarmPublishState({
-      beeStatus: 'running',
-      desiredMode: 'light',
-      actualMode: 'ultra-light',
-      registryMode: 'reused',
+  describe('describePublishCta', () => {
+    test('is hidden without state, for a stopped node and for nodes Freedom does not fund', () => {
+      expect(mod.describePublishCta(null).visible).toBe(false);
+      expect(
+        mod.describePublishCta(stateWith({ node: { status: 'stopped', registryMode: 'none' } }))
+          .visible
+      ).toBe(false);
+      expect(
+        mod.describePublishCta(stateWith({ node: { status: 'running', registryMode: 'reused' } }))
+          .visible
+      ).toBe(false);
     });
 
-    expect(result.key).toBe('browsing-only');
-    expect(result.detail).toContain('Managed outside Freedom.');
-    expect(result.action).toBeNull();
-  });
-
-  test('shows initializing for light node with readiness OK but stamps not yet known', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(
-      mod.classifySwarmPublishState({
-        beeStatus: 'running',
-        desiredMode: 'light',
-        actualMode: 'light',
-        registryMode: 'bundled',
-        readiness: { ok: true },
-        stampsKnown: false,
-      })
-    ).toEqual({
-      key: 'initializing',
-      label: 'Initializing',
-      detail: 'Checking postage-batch availability.',
-      action: null,
-    });
-  });
-
-  test('shows error state when bee status is error', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(
-      mod.classifySwarmPublishState({
-        beeStatus: 'error',
-        desiredMode: 'light',
-        actualMode: 'light',
-        registryMode: 'bundled',
-      })
-    ).toEqual({
-      key: 'error',
-      label: 'Error',
-      detail: 'Swarm reported a startup or health-check error.',
-      action: null,
-    });
-  });
-
-  test('summarizes usable and total stamp counts conservatively', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(mod.summarizeSwarmStamps([], false)).toEqual({
-      count: '--',
-      summary: 'Checking stamp availability\u2026',
+    test('offers setup when storage is missing and storage management when ready', () => {
+      expect(mod.describePublishCta(stateWith())).toMatchObject({
+        visible: true,
+        disabled: false,
+        label: 'Set Up Publishing',
+        target: 'setup',
+      });
+      expect(
+        mod.describePublishCta(stateWith({ readiness: { ok: true, key: 'ready' } }))
+      ).toMatchObject({ label: 'Manage Storage', target: 'storage' });
     });
 
-    expect(
-      mod.summarizeSwarmStamps([
-        { batchID: 'a', usable: true },
-        { batchID: 'b', usable: false },
-        { batchID: 'c', usable: true },
-      ])
-    ).toEqual({
-      count: '2',
-      summary: '2 usable of 3 total batches',
+    test('shows the payment it is waiting for, and a purchase in flight', () => {
+      const awaiting = stateWith({
+        operation: { phase: 'awaiting-funds', quote: { send: { display: '0.46' } } },
+      });
+      expect(mod.describePublishCta(awaiting)).toMatchObject({
+        label: 'Waiting for Payment',
+        hint: 'Send 0.46 xDAI to your node',
+        target: 'setup',
+      });
+      expect(
+        mod.describePublishCta(stateWith({ operation: { phase: 'executing' } }))
+      ).toMatchObject({ label: 'Buying Storage…', disabled: false });
     });
-  });
 
-  test('checkLightModePrerequisites returns funded when chequebook is deployed', async () => {
-    const mod = await import('./swarm-readiness.js');
+    test('an attempt that did not finish yields to storage that works', () => {
+      const failed = { phase: 'failed', uncertain: true };
+      expect(mod.describePublishCta(stateWith({ operation: failed }))).toMatchObject({
+        hint: 'The last purchase did not finish',
+        target: 'setup',
+      });
+      expect(
+        mod.describePublishCta(
+          stateWith({ operation: failed, readiness: { ok: true, key: 'ready' } })
+        )
+      ).toMatchObject({ label: 'Manage Storage', target: 'storage' });
+    });
 
-    expect(
-      mod.checkLightModePrerequisites({
-        chequebookAddress: '0xabc123def456abc123def456abc123def456abc1',
-        xdaiBalance: '0.0',
-      })
-    ).toEqual({ funded: true });
-  });
-
-  test('checkLightModePrerequisites returns funded when chequebook is deployed even with zero xDAI', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(
-      mod.checkLightModePrerequisites({
-        chequebookAddress: '0xabc123def456abc123def456abc123def456abc1',
-        xdaiBalance: '0',
-      })
-    ).toEqual({ funded: true });
-  });
-
-  test('checkLightModePrerequisites returns funded when no chequebook but wallet has xDAI', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(
-      mod.checkLightModePrerequisites({
-        chequebookAddress: '0x0000000000000000000000000000000000000000',
-        xdaiBalance: '0.01',
-      })
-    ).toEqual({ funded: true });
-  });
-
-  test('checkLightModePrerequisites returns not funded when no chequebook and zero balance', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(
-      mod.checkLightModePrerequisites({
-        chequebookAddress: '0x0000000000000000000000000000000000000000',
-        xdaiBalance: '0',
-      })
-    ).toEqual({ funded: false });
-  });
-
-  test('checkLightModePrerequisites returns not funded when data is missing', async () => {
-    const mod = await import('./swarm-readiness.js');
-
-    expect(
-      mod.checkLightModePrerequisites({
-        chequebookAddress: null,
-        xdaiBalance: null,
-      })
-    ).toEqual({ funded: false });
+    test('stays reachable while the node connects or has failed, so setup can explain', () => {
+      expect(
+        mod.describePublishCta(stateWith({ readiness: { ok: false, key: 'chain-syncing' } }))
+      ).toMatchObject({ disabled: false, hint: 'Connecting to Gnosis Chain…' });
+      expect(
+        mod.describePublishCta(
+          stateWith({
+            node: { status: 'error', error: 'Exited with code 1', registryMode: 'none' },
+            readiness: { ok: false, key: 'error' },
+          })
+        )
+      ).toMatchObject({ visible: true, disabled: false, target: 'setup' });
+      expect(
+        mod.describePublishCta(stateWith({ readiness: { ok: false, key: 'checking' } }))
+      ).toMatchObject({ disabled: true, target: 'setup' });
+    });
   });
 });

@@ -238,7 +238,11 @@ describe('webview-preload', () => {
       ['listProfiles', [], IPC.PROFILE_LIST, []],
       ['getServiceRegistry', [], IPC.SERVICE_REGISTRY_GET, []],
       ['getMyotisStatus', [], IPC.MYOTIS_GET_STATUS, []],
-      ['openPublishSetup', [], IPC.SIDEBAR_OPEN_PUBLISH_SETUP, []],
+      ['openPublishSetup', [], IPC.SIDEBAR_OPEN_PUBLISH_SETUP, ['setup']],
+      ['openPublishSetup', ['storage'], IPC.SIDEBAR_OPEN_PUBLISH_SETUP, ['storage']],
+      // Anything else a page passes falls back to the setup screen.
+      ['openPublishSetup', ['javascript:alert(1)'], IPC.SIDEBAR_OPEN_PUBLISH_SETUP, ['setup']],
+      ['getPublishSetupState', [], IPC.SWARM_SETUP_GET_STATE, []],
       ['getBookmarks', [], IPC.BOOKMARKS_GET, []],
       ['openInNewTab', ['https://example.com'], IPC.OPEN_URL_IN_NEW_TAB, ['https://example.com']],
       [
@@ -359,6 +363,20 @@ describe('webview-preload', () => {
     pagehideHandler();
     callback.mockClear();
     ipcRenderer.emit('settings:updated', { theme: 'light' });
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  test('onPublishSetupState forwards the setup state push', () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule();
+    const callback = jest.fn();
+
+    const unsubscribe = exposures.freedomAPI.onPublishSetupState(callback);
+    ipcRenderer.emit(IPC.SWARM_SETUP_STATE, { readiness: { ok: false, key: 'needs-storage' } });
+    expect(callback).toHaveBeenCalledWith({ readiness: { ok: false, key: 'needs-storage' } });
+
+    unsubscribe();
+    callback.mockClear();
+    ipcRenderer.emit(IPC.SWARM_SETUP_STATE, { readiness: { ok: true } });
     expect(callback).not.toHaveBeenCalled();
   });
 

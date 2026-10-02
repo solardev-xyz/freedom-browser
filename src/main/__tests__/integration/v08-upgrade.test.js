@@ -11,7 +11,8 @@
  *                                  creating the catalog + profile.json
  *   2. migrateBeeDataToAntData() — bee-data/ → ant-data/, Swarm identity +
  *                                  postage stamps preserved (Bee → Ant swap)
- *   3. loadSettings()            — beeNodeMode→antNodeMode key rename
+ *   3. loadSettings()            — startBeeAtLaunch→startAntAtLaunch key
+ *                                  rename; the retired beeNodeMode is dropped
  *   4. network-registry load()   — legacy ENS settings → network-config.json
  *   5. IPFS (Kubo → freedom-ipfs) — no Kubo repo carryover; native node uses
  *                                  an isolated freedom-ipfs/ subdir
@@ -194,18 +195,20 @@ describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
     writeLegacyInstall(userDataDir);
     runUpgrade(userDataDir);
 
-    // Bee-named settings keys are rewritten to their ant-named replacements.
+    // Bee-named settings keys are rewritten to their ant-named replacements;
+    // the node mode setting no longer exists (the node always starts able to
+    // publish), so it is dropped under either name.
     const settings = loadModule('../../settings-store', userDataDir);
     const loaded = settings.mod.loadSettings();
-    expect(loaded.antNodeMode).toBe('light');
     expect(loaded.startAntAtLaunch).toBe(false);
+    expect(loaded).not.toHaveProperty('antNodeMode');
     expect(loaded).not.toHaveProperty('beeNodeMode');
     expect(loaded).not.toHaveProperty('startBeeAtLaunch');
 
     const persisted = JSON.parse(
       fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8')
     );
-    expect(persisted.antNodeMode).toBe('light');
+    expect(persisted).not.toHaveProperty('antNodeMode');
     expect(persisted).not.toHaveProperty('beeNodeMode');
 
     // The legacy ENS custom-RPC policy produces a network-config.json with the

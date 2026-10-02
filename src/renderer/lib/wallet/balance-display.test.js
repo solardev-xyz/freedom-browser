@@ -97,3 +97,24 @@ test('experimental stale status stays visible and a later unavailable refresh cl
   await refreshBalances();
   expect(walletState.currentBalances['11155111:native']).toBeUndefined();
 });
+
+test('main merge keeps user balance guards while Swarm publishing owns its own balances', async () => {
+  global.document = { getElementById: () => null };
+  global.window = {
+    addEventListener: jest.fn(),
+    wallet: {
+      clearBalanceCache: jest.fn(async () => {}),
+      getBalances: jest.fn(async () => ({ success: true, balances: { user: true } })),
+      getBalancesCached: jest.fn(async () => ({ success: true, balances: { cached: true } })),
+    },
+  };
+  initBalanceDisplay();
+  walletState.fullAddresses = { wallet: '0xaaa', swarm: '0xbbb' };
+  await refreshBalances(true);
+  expect(window.wallet.clearBalanceCache.mock.calls).toEqual([['0xaaa']]);
+  expect(window.wallet.getBalances.mock.calls).toEqual([['0xaaa']]);
+  expect(walletState.currentBalances).toEqual({ user: true });
+  await loadCachedBalances();
+  expect(window.wallet.getBalancesCached.mock.calls).toEqual([['0xaaa']]);
+  expect(walletState.currentBalances).toEqual({ cached: true });
+});
