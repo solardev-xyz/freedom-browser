@@ -48,22 +48,19 @@ function normalizeSubscriptionAuthEvent(event, providerId = 'openai-codex') {
       return { type: 'auth_url', providerId, url: url.href };
     } catch { return null; }
   }
-  if (providerId !== 'openai-codex') return null;
-  if (event?.type !== 'device_code') return null;
-  if (
-    typeof event.userCode !== 'string' ||
-    event.userCode !== event.userCode.trim() ||
-    !/^[A-Za-z0-9._-]{4,64}$/.test(event.userCode) ||
-    event.verificationUri !== OPENAI_DEVICE_VERIFICATION_URL
-  ) {
-    return null;
-  }
-  return {
-    type: 'device_code',
-    providerId: 'openai-codex',
-    userCode: event.userCode,
-    verificationUri: OPENAI_DEVICE_VERIFICATION_URL,
-  };
+  if (!['openai-codex', 'meta-subscription'].includes(providerId) || event?.type !== 'device_code') return null;
+  if (typeof event.userCode !== 'string' || event.userCode !== event.userCode.trim() ||
+      !/^[A-Za-z0-9._-]{4,64}$/.test(event.userCode)) return null;
+  let verificationUri;
+  try {
+    const url = new URL(event.verificationUri);
+    if (url.username || url.password || url.hash) return null;
+    if (providerId === 'meta-subscription') {
+      if (url.origin !== 'https://auth.meta.com') return null;
+    } else if (event.verificationUri !== OPENAI_DEVICE_VERIFICATION_URL) return null;
+    verificationUri = url.href;
+  } catch { return null; }
+  return { type: 'device_code', providerId, userCode: event.userCode, verificationUri };
 }
 
 function errorEnvelope(code, message) {

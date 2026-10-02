@@ -1321,6 +1321,14 @@ describe('Freedom agent IPC', () => {
     });
   });
 
+  test('accepts Meta device codes only on its HTTPS authentication origin', () => {
+    const event = { type: 'device_code', userCode: 'ABCD-1234', verificationUri: 'https://auth.meta.com/device?user_code=ABCD-1234' };
+    expect(normalizeSubscriptionAuthEvent(event, 'meta-subscription')).toEqual({ ...event, providerId: 'meta-subscription' });
+    for (const verificationUri of ['https://auth.meta.com.evil.test/device', 'http://auth.meta.com/device', 'https://user@auth.meta.com/device', 'https://auth.meta.com/device#secret']) {
+      expect(normalizeSubscriptionAuthEvent({ ...event, verificationUri }, 'meta-subscription')).toBeNull();
+    }
+  });
+
   test('rejects spoofed subscription auth events', () => {
     expect(normalizeSubscriptionAuthEvent({ type: 'auth_url', url: 'https://auth.openai.com.evil.test/api/accounts/authorize' }, 'openai-chatgpt')).toBeNull();
     expect(normalizeSubscriptionAuthEvent({ type: 'auth_url', url: 'https://auth.openai.com/other' }, 'openai-chatgpt')).toBeNull();

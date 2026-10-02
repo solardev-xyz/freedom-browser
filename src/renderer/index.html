@@ -1600,7 +1600,7 @@
               <select id="agent-provider-select" hidden aria-label="Provider"></select>
               <div id="agent-provider-methods" hidden>
                 <p class="agent-catalog-status">How would you like to connect?</p>
-                <button id="agent-provider-chatgpt" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>ChatGPT subscription</strong><span>Use your ChatGPT account</span></span><span id="agent-provider-chatgpt-state" class="agent-provider-method-state">Connect</span></button>
+                <button id="agent-provider-chatgpt" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong id="agent-subscription-method-title">ChatGPT subscription</strong><span id="agent-subscription-method-help">Use your ChatGPT account</span></span><span id="agent-provider-chatgpt-state" class="agent-provider-method-state">Connect</span></button>
                 <button id="agent-provider-api" class="agent-provider-choice agent-provider-method" type="button"><span class="agent-provider-choice-copy"><strong>API key</strong><span>Billed to your API account</span></span><span id="agent-provider-api-state" class="agent-provider-method-state">Connect</span></button>
               </div>
               <div id="agent-provider-connection-fields">
@@ -1608,7 +1608,7 @@
                 <label id="agent-api-key-field" class="agent-field"><span>API key</span><input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Stored encrypted on this device" /></label>
                 <div id="agent-subscription-fields" class="hidden">
                   <p id="agent-subscription-note" class="agent-subscription-note">Connect with your ChatGPT subscription.</p>
-                  <div id="agent-auth-code" class="agent-auth-code" hidden><span>Enter this code in the OpenAI page</span><strong id="agent-auth-user-code"></strong></div>
+                  <div id="agent-auth-code" class="agent-auth-code" hidden><span id="agent-auth-code-instruction">Enter this code in the OpenAI page</span><strong id="agent-auth-user-code"></strong></div>
                   <details id="agent-auth-callback" class="agent-auth-callback" hidden><summary>Sign-in did not return?</summary><label class="agent-field"><span>Paste the final redirect URL from the sign-in browser</span><input id="agent-auth-callback-input" type="password" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:1455/auth/callback…" /></label><button id="agent-auth-callback-submit" class="agent-button secondary" type="button">Complete sign-in</button></details>
                   <div class="agent-config-actions"><button id="agent-provider-login" class="agent-button secondary" type="button">Continue with ChatGPT</button><button id="agent-provider-cancel-login" class="agent-text-button" type="button" hidden>Cancel sign-in</button></div>
                 </div>

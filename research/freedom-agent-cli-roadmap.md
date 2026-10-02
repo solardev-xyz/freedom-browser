@@ -28,16 +28,21 @@ extensions are not loaded by this upgrade.
   silently migrated to the new grant.
 - **Meta/Muse:** was already offered with an API key. It now uses Pi's native Meta
   Responses transport and bundled Muse catalog, replacing the single-model custom
-  Completions adapter. Meta subscription login is not exposed in Freedom yet.
-- **Validation:** full unit suite **7,903 passed / 129 skipped**, lint clean,
-  and three selected disposable Electron scenarios passed (provider setup, new
-  ChatGPT UI in both themes, and browser-helper approval/handoff/Stop). Native
-  SDK tests exercise OAuth exchange/refresh with fake HTTP,
-  stable device identity, independent credentials/disconnect, Responses tool calls,
-  and existing session/helper isolation. Disposable Electron checks cover provider
-  setup and ChatGPT cancellation/manual callback/disconnect in both themes. Live
-  ChatGPT authorization and a live Muse request remain user smoke tests; no account
-  credentials or paid inference were used for qualification.
+  Completions adapter. Sign in with Meta is now the first connection option,
+  using Pi's native device authorization and automatic API-key minting/renewal;
+  consumers never need to copy a key. Manually supplied API keys remain an
+  alternative, with independent encrypted credentials and conversation identity.
+  The browser opens only Meta's HTTPS authentication origin. Cancellation,
+  connection status and disconnect use the existing provider flow.
+- **Validation:** full unit suite **7,905 passed / 129 skipped**, lint clean.
+  Two disposable Electron authentication scenarios pass in both themes (ChatGPT
+  callback/cancellation and Meta device-code/cancellation/connection/disconnect).
+  The earlier provider-setup and browser-helper approval/handoff/Stop scenarios
+  also passed for the Pi upgrade. Real SDK tests exercise ChatGPT exchange/refresh
+  and Meta device authorization/key minting/renewal with fake HTTP, independent
+  credentials/disconnect, Responses tool calls, and saved connection identity.
+  Live ChatGPT and Meta authorization and live Muse inference remain user smoke
+  tests; no account credentials or paid inference were used for qualification.
 
 **Next discussion, separate from this upgrade:** evaluate codemode over only
 Freedom-owned tools (nested action receipts, cancellation and approvals); generic

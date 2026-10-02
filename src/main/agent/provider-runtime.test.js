@@ -180,7 +180,34 @@ test('native ChatGPT login, refresh and Meta Responses stay separate from API ke
       const meta = await resolver.resolveModel({ providerId: 'meta' });
       assert.equal(meta.model.api, 'openai-responses');
       assert((await resolver.getCatalog()).find(p => p.providerId === 'meta').models.length > 1);
-      for (const resolved of [chat, api, meta]) {
+      let mints = 0;
+      globalThis.fetch = async (url, init) => {
+        if (url === 'https://auth.meta.com/oidc/device/authorization/') {
+          return Response.json({ device_code: 'device-fixture', user_code: 'ABCD-1234', verification_uri: 'https://auth.meta.com/device', interval: 0.001, expires_in: 300 });
+        }
+        if (url === 'https://auth.meta.com/oidc/device/token/') {
+          assert.equal(new URLSearchParams(init.body).get('device_code'), 'device-fixture');
+          return Response.json({ access_token: 'meta-identity-fixture' });
+        }
+        assert.equal(url, 'https://api.meta.ai/muse-code/key');
+        assert.equal(init.headers.Authorization, 'Bearer meta-identity-fixture');
+        return Response.json({ api_key: 'meta-subscription-fixture-' + ++mints });
+      };
+      const notifications = [];
+      await resolver.loginSubscription({ providerId: 'meta-subscription', modelId: 'muse-spark-1.3' }, {
+        signal: new AbortController().signal, notify: event => notifications.push(event),
+        prompt: async () => { throw new Error('Meta should use device authorization'); },
+      });
+      assert.equal(notifications[0].type, 'device_code');
+      assert.equal(notifications[0].userCode, 'ABCD-1234');
+      assert.equal(store.getSelection('meta').apiKey, 'meta-test');
+      assert.equal((await credentials.read('meta-subscription')).refresh, 'meta-identity-fixture');
+      await credentials.modify('meta-subscription', async previous => ({ ...previous, expires: 1 }));
+      const metaSubscription = await resolver.resolveModel({ providerId: 'meta-subscription' });
+      assert.equal(metaSubscription.connectionProviderId, 'meta-subscription');
+      assert.equal(metaSubscription.model.provider, 'meta');
+      assert.equal((await metaSubscription.modelRuntime.getAuth('meta')).auth.apiKey, 'meta-subscription-fixture-2');
+      for (const resolved of [chat, api, meta, metaSubscription]) {
         const result = await resolved.modelRuntime.completeSimple(resolved.model, context, { fetch, maxRetries: 0 });
         assert.equal(result.stopReason, 'toolUse', result.errorMessage);
         assert.equal(result.content[0].name, 'inspect');
@@ -190,12 +217,16 @@ test('native ChatGPT login, refresh and Meta Responses stay separate from API ke
         ['https://api.openai.com/v1/responses', 'Bearer refreshed-test'],
         ['https://api.openai.com/v1/responses', 'Bearer sk-api-test'],
         ['https://api.meta.ai/v1/responses', 'Bearer meta-test'],
+        ['https://api.meta.ai/v1/responses', 'Bearer meta-subscription-fixture-2'],
       ]);
       assert(!JSON.stringify(store.getPublicStatus()).includes('refreshed-test'));
       store.remove('openai-chatgpt');
       assert.equal(await credentials.read('openai-chatgpt'), undefined);
       assert.equal(store.getSelection('openai').apiKey, 'sk-api-test');
       assert.equal((await credentials.read('openai-codex')).access, 'legacy-test');
+      store.remove('meta-subscription');
+      assert.equal(await credentials.read('meta-subscription'), undefined);
+      assert.equal(store.getSelection('meta').apiKey, 'meta-test');
       process.stdout.write('native auth and Responses verified');
     })().catch(error => { console.error(error); process.exitCode = 1; });
   `;

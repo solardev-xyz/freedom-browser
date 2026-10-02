@@ -19,9 +19,10 @@ const HOSTED_PROVIDERS = Object.freeze(
 );
 const SUBSCRIPTION_PROVIDERS = Object.freeze({
   'openai-chatgpt': 'OpenAI · ChatGPT',
+  'meta-subscription': 'Meta · Muse',
   'openai-codex': 'OpenAI · ChatGPT (legacy)',
 });
-const runtimeProviderId = id => id === 'openai-chatgpt' ? 'openai' : id;
+const runtimeProviderId = id => ({ 'openai-chatgpt': 'openai', 'meta-subscription': 'meta' })[id] || id;
 const OLLAMA_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
@@ -117,7 +118,7 @@ class AgentProviderResolver {
       providerId,
       name,
       authType,
-      defaultModelId: providerId === 'openai-chatgpt' ? 'gpt-6.1-sol' : providerId === 'meta' ? 'muse-spark-1.3' : undefined,
+      defaultModelId: providerId === 'openai-chatgpt' ? 'gpt-6.1-sol' : runtimeProviderId(providerId) === 'meta' ? 'muse-spark-1.3' : undefined,
       group: PROVIDER_DEFINITIONS[providerId].group,
       privacy: PROVIDER_DEFINITIONS[providerId].privacy,
       policies: PROVIDER_DEFINITIONS[providerId].policies || [],
@@ -499,7 +500,9 @@ class AgentProviderResolver {
           'The saved provider credential is unavailable'
         );
       }
-      await runtime.refresh({ allowNetwork: false, providers: [runtimeProviderId(selection.providerId)] });
+      // Provider registration also queues a full availability refresh. Finish a
+      // full pass here so a concurrent pass cannot invalidate a narrower check.
+      await runtime.refresh({ allowNetwork: false });
       if (!runtime.hasConfiguredAuth(runtimeProviderId(selection.providerId))) {
         throw new AgentProviderError(
           'AGENT_PROVIDER_AUTH_UNAVAILABLE',
@@ -519,20 +522,20 @@ class AgentProviderResolver {
     return {
       model,
       modelRuntime: runtime,
-      ...(selection.providerId === 'openai-chatgpt' && { connectionProviderId: selection.providerId }),
+      ...(runtimeProviderId(selection.providerId) !== selection.providerId && { connectionProviderId: selection.providerId }),
       thinkingLevel: selection.kind === 'subscription' || model.id === 'gpt-6-astra' ? 'medium' : 'off',
     };
   }
 
   async #createRuntime(connectionId) {
-    // Freedom keeps API-key and ChatGPT connections independent. Pi's new
-    // ChatGPT transport must retain the native "openai" provider identity.
-    const credentials = connectionId === 'openai-chatgpt' ? {
-      read: (id, options) => this.credentials.read(id === 'openai' ? connectionId : id, options),
+    // Keep subscription credentials separate while retaining native Pi transport identities.
+    const nativeId = runtimeProviderId(connectionId);
+    const credentials = nativeId !== connectionId ? {
+      read: (id, options) => this.credentials.read(id === nativeId ? connectionId : id, options),
       list: async options => (await this.credentials.list(options)).map(entry =>
-        ({ ...entry, providerId: entry.providerId === connectionId ? 'openai' : entry.providerId })),
-      modify: (id, update, options) => this.credentials.modify(id === 'openai' ? connectionId : id, update, options),
-      delete: (id, options) => this.credentials.delete(id === 'openai' ? connectionId : id, options),
+        ({ ...entry, providerId: entry.providerId === connectionId ? nativeId : entry.providerId })),
+      modify: (id, update, options) => this.credentials.modify(id === nativeId ? connectionId : id, update, options),
+      delete: (id, options) => this.credentials.delete(id === nativeId ? connectionId : id, options),
     } : this.credentials;
     const sdk = await this.loadSdk();
     const runtime = await sdk.ModelRuntime.create({

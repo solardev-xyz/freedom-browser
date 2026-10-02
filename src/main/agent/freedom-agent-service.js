@@ -103,6 +103,7 @@ const PROVIDER_LABELS = Object.freeze({
   'near-ai': 'NEAR AI',
   'openai-codex': 'ChatGPT (Codex)',
   'openai-chatgpt': 'OpenAI · ChatGPT',
+  'meta-subscription': 'Meta · Muse',
   ollama: 'Ollama',
 });
 

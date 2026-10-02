@@ -69,6 +69,12 @@ const PROVIDER_DEFINITIONS = Object.freeze({
       ['tee', 'TEE models only'],
     ],
   },
+  'meta-subscription': {
+    name: 'Meta · Muse',
+    group: 'Subscriptions',
+    authType: 'subscription',
+    privacy: 'Uses Sign in with Meta. Requests go to Meta through its Model API.',
+  },
   'openai-chatgpt': {
     name: 'OpenAI · ChatGPT',
     group: 'Subscriptions',

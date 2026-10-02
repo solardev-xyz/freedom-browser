@@ -25,7 +25,7 @@ function createRuntime() {
     getModel: jest.fn((providerId, modelId) => models.get(`${providerId}/${modelId}`)),
     setRuntimeApiKey: jest.fn(async () => {}),
     refresh: jest.fn(async ({ providers }) => {
-      if (providers?.includes('openai-codex')) configuredSubscription = true;
+      if (!providers || providers.includes('openai-codex')) configuredSubscription = true;
       return { aborted: false, errors: new Map() };
     }),
     hasConfiguredAuth: jest.fn((providerId) =>
@@ -370,7 +370,6 @@ describe('AgentProviderResolver', () => {
     });
     expect(ctx.runtime.refresh).toHaveBeenCalledWith({
       allowNetwork: false,
-      providers: ['openai-codex'],
     });
     expect(resolved.model).toMatchObject({ provider: 'openai-codex', id: 'codex-model' });
     expect(resolved.thinkingLevel).toBe('medium');
@@ -441,7 +440,6 @@ describe('AgentProviderResolver', () => {
     });
     expect(ctx.runtime.refresh).toHaveBeenCalledWith({
       allowNetwork: false,
-      providers: ['openai-codex'],
     });
   });
 
@@ -471,6 +469,7 @@ describe('AgentProviderResolver', () => {
       'venice',
       'near-ai',
       'openai-chatgpt',
+      'meta-subscription',
       'openai-codex',
     ]);
     expect(catalog.find((p) => p.providerId === 'anthropic').models).toEqual([

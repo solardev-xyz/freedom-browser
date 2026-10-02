@@ -78,8 +78,62 @@ test('ChatGPT browser sign-in supports cancellation and a private callback fallb
   expect((await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.configured).toBe(false);
   await window.locator('#agent-provider-add').click();
   await window.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
+  await window.locator('#agent-provider-api').click();
   await expect(window.locator('#agent-model-select')).toHaveValue('muse-spark-1.3');
   await expect(window.locator('#agent-provider-models-list')).toContainText('Muse Spark');
+});
+
+test('Meta subscription sign-in shows device codes, cancels and connects in both themes', async ({ electronApp, window }, testInfo) => {
+  await electronApp.evaluate(({ shell }, root) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const { AgentProviderResolver } = require(root + '/src/main/agent/provider-resolver');
+    shell.openExternal = async url => { globalThis.metaLoginUrl = url; };
+    AgentProviderResolver.prototype.loginSubscription = async function(input, interaction) {
+      interaction.notify({ type: 'device_code', userCode: 'TEST-1234', verificationUri: 'https://auth.meta.com/device' });
+      await new Promise((resolve, reject) => {
+        globalThis.completeMetaLogin = resolve;
+        interaction.signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true });
+      });
+      await this.credentials.modify(input.providerId, async () => ({ type: 'oauth', access: 'fixture-access', refresh: 'fixture-identity', expires: Date.now() + 3600000 }));
+      this.store.saveSubscription(input);
+      return this.getStatus();
+    };
+  }, repositoryRoot);
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
+  await expect(window.locator('#agent-provider-chatgpt')).toContainText('Meta subscription');
+  await window.locator('#agent-provider-chatgpt').click();
+  await expect(window.locator('#agent-provider-select')).toHaveValue('meta-subscription');
+  await expect(window.locator('#agent-api-key')).toBeHidden();
+  await expect(window.locator('#agent-provider-login')).toHaveText('Sign in with Meta');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await window.locator('#agent-provider-login').click();
+    await expect(window.locator('#agent-auth-code')).toContainText('TEST-1234');
+    await expect(window.locator('#agent-auth-code')).toContainText('Meta page');
+    await expect(window.locator('#agent-auth-callback')).toBeHidden();
+    await window.locator('#agent-setup-view').screenshot({ path: testInfo.outputPath(`meta-${theme}-login.png`) });
+    await window.locator('#agent-provider-cancel-login').click();
+    await expect(window.locator('#agent-provider-login')).toBeVisible();
+  }
+  expect(await electronApp.evaluate(() => globalThis.metaLoginUrl)).toBe('https://auth.meta.com/device');
+  await window.locator('#agent-provider-login').click();
+  await expect(window.locator('#agent-auth-code')).toBeVisible();
+  await electronApp.evaluate(() => globalThis.completeMetaLogin());
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await expect(window.locator('#agent-provider-login')).toBeHidden();
+  await window.locator('#agent-provider-detail-back').click();
+  await window.locator('#agent-provider-add').click();
+  await window.locator('#agent-provider-choices').getByRole('button', { name: 'Meta (Muse)', exact: true }).click();
+  await expect(window.locator('#agent-provider-status')).toHaveText('Connected');
+  await expect(window.locator('#agent-provider-chatgpt-state')).toHaveText('Connected');
+  await expect(window.locator('#agent-provider-api-state')).toHaveText('Connect');
+  await window.locator('#agent-provider-chatgpt').click();
+  window.once('dialog', dialog => dialog.accept());
+  await window.locator('#agent-provider-disconnect').click();
+  await expect(window.locator('#agent-provider-add')).toBeVisible();
+  expect((await window.evaluate(() => window.electronAPI.getAgentProviderStatus())).status.configured).toBe(false);
 });
 
 for (const database of ['agent-history.sqlite', 'agent-node-operations.sqlite', 'agent-workspaces.sqlite']) {

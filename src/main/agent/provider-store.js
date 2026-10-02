@@ -10,7 +10,7 @@ const LEGACY_PROVIDER_STORE_VERSION = 1;
 const PROVIDER_STORE_FILE = 'provider.json';
 const MAX_PROVIDER_STORE_BYTES = 256 * 1024;
 const MAX_STORED_OLLAMA_MODELS = 128;
-const SUBSCRIPTION_IDS = new Set(['openai-codex', 'openai-chatgpt']);
+const SUBSCRIPTION_IDS = new Set(['openai-codex', 'openai-chatgpt', 'meta-subscription']);
 
 class AgentProviderStoreError extends Error {
   constructor(code, message) {
