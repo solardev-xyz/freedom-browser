@@ -1,4 +1,4 @@
-/** Guarded Electron transaction/POI proofs using the existing pinned serial prover closure. */
+/** Guarded Electron transaction/POI proofs using the independent pinned serial prover closure. */
 const { app } = require('electron');
 const fs = require('fs'),
   path = require('path'),
@@ -22,8 +22,8 @@ async function main() {
     'src/main/wallet/railgun-process.js',
     'src/main/wallet/railgun-process-entry.js',
     'src/main/wallet/railgun-process-guards.js',
-    'src/main/wallet/ppv2-runtime.js',
-    'src/main/wallet/ppv2-runtime-manifest.js',
+    'src/main/wallet/railgun-prover-runtime.js',
+    'src/main/wallet/railgun-prover-manifest.json',
     'src/main/networks/privacy-context.js',
     'scripts/railgun-fixture-integrity.js',
     'scripts/fixtures/railgun-engine/runtime-integrity.json',

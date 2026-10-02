@@ -10,7 +10,10 @@ exports.run = async function run(inputText, { request, signal, guardReport }) {
   const engineDirectory = path.join(__dirname, 'railgun-engine/node_modules');
   const inventory = require('../railgun-fixture-integrity').assertRailgunFixture(engineDirectory);
   const engine = path.join(engineDirectory, '@railgun-community/engine/dist');
-  const archive = require('../../src/main/wallet/ppv2-runtime').verifyPPv2Runtime(input.archive);
+  const archive =
+    require('../../src/main/wallet/railgun-prover-runtime').verifyRailgunProverRuntime(
+      input.archive
+    );
   const serial = require(path.join(archive, 'serial-prover.cjs'));
   const bytes = fs.readFileSync(input.vectorFilename);
   assert.equal(createHash('sha256').update(bytes).digest('hex'), vectorSha256);
@@ -103,7 +106,11 @@ exports.run = async function run(inputText, { request, signal, guardReport }) {
       changedBoundParamsRejected,
       variant: input.variant,
       inventory: inventory.sha256,
-      proverArchiveSha256: require('../../src/main/wallet/ppv2-runtime-manifest').sha256,
+      proverArchiveSha256: require('../../src/main/wallet/railgun-prover-manifest.json').sha256,
+      proverInventorySha256: require('../../src/main/wallet/railgun-prover-manifest.json')
+        .inventorySha256,
+      proverBuilderSha256: require('../../src/main/wallet/railgun-prover-manifest.json')
+        .builderSha256,
       verified: true,
       changedRootRejected: true,
       elapsedMs: Math.round(performance.now() - start),

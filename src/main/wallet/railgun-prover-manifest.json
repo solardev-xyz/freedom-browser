@@ -1,0 +1,9 @@
+{
+  "sha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab",
+  "size": 1613882,
+  "inventorySha256": "b7a2b712b60d3550a5284b452e20cbdcacaaf9ffdfd2f36dc8b7f3ab89a52d34",
+  "builderSha256": "8d5dd3c15e20c255f8dfd4daeb8278df2f0b7da4fc37ee75a1d2888e6b00f554",
+  "snarkjs": "0.7.5",
+  "esbuild": "0.28.2",
+  "productionDistributionApproved": false
+}

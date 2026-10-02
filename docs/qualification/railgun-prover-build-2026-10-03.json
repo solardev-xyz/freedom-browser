@@ -1,0 +1,34 @@
+{
+  "observedAt": "2026-10-02T22:24:03.377Z",
+  "checkerSha256": "3756242ce22cb1c0efb0738ae1dae34045217cb29e3058d00ead6114225fe010",
+  "archiveSha256": "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab",
+  "size": 1613882,
+  "builderSha256": "8d5dd3c15e20c255f8dfd4daeb8278df2f0b7da4fc37ee75a1d2888e6b00f554",
+  "inventorySha256": "b7a2b712b60d3550a5284b452e20cbdcacaaf9ffdfd2f36dc8b7f3ab89a52d34",
+  "repeatedArchiveHashes": [
+    "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab",
+    "dd50a29f297867b3bf91cb425066e1d257ea02230a94b02e4cf34c5c70a0c7ab"
+  ],
+  "separateFiles": true,
+  "verifierBodyMatchesHistorical": true,
+  "verifierBodySha256": "3bc48b0cbfc4b85b4ed0c881da8c52ada20f49489c7162ae8fd3a3843036da9d",
+  "historicalArchiveSha256": "eacc32476b2fc3be0344e1c9b341a9964e405f59703604385b29307350bcca7a",
+  "snarkjs": "0.7.5",
+  "esbuild": "0.28.2",
+  "asar": "3.4.1",
+  "directBuildInputs": 73,
+  "directPackageMetadataSets": 16,
+  "licenseTextAbsent": [
+    {
+      "name": "@iden3/bigarray",
+      "version": "0.0.2",
+      "license": "GPL-3.0"
+    },
+    {
+      "name": "@iden3/binfileutils",
+      "version": "0.0.12",
+      "license": "GPL-3.0"
+    }
+  ],
+  "productionDistributionApproved": false
+}
