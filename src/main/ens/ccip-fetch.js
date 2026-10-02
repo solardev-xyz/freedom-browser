@@ -22,14 +22,42 @@
  * A gateway that fails any check is skipped and the next URL is tried, per
  * ERC-3668. Errors are swallowed without logging: the URL, the request
  * payload and the name being resolved are all private.
+ *
+ * TRANSPORT (#359)
+ *
+ * Gateways are dialled through `netGatewayFetch` (`ipfs/gateway-transport.js`),
+ * i.e. Chromium's network stack, not Node's global `fetch`. undici has its own
+ * sockets and never sees `session.setProxy`, so a resolver whose
+ * `OffchainLookup` named `https://<name>.onion/…` had its onion hostname handed
+ * to the system resolver (a DNS leak of which gateway the name uses) and the
+ * lookup then failed. Through Chromium the request follows the session's proxy
+ * policy — today the Tor PAC, which routes `.onion` via Arti and leaves every
+ * clearnet host DIRECT — and an onion gateway is refused, never resolved
+ * locally, while that PAC is not yet on the session. The transport also sends
+ * no cookies or stored credentials and neither reads nor writes Chromium's
+ * HTTP cache, which is what undici did too. Redirects are never followed:
+ * `redirect: 'error'` fails the gateway on any 3xx, same as before.
+ *
+ * There is no loopback carve-out here (unlike `gatewayFetch`): the URL checks
+ * below already refuse IP literals and loopback-ish names, so every URL that
+ * reaches the transport is remote by construction.
  */
 
 const { isIP } = require('node:net');
+const { netGatewayFetch } = require('../ipfs/gateway-transport');
 
 const CCIP_TIMEOUT_MS = 15_000;
 const CCIP_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
-async function ccipReadFetch(transaction, data, urls, signal) {
+/**
+ * @param {{to: string}} transaction
+ * @param {string} data
+ * @param {string[]} urls - ERC-3668 URL templates from the `OffchainLookup`
+ * @param {AbortSignal} [signal]
+ * @param {{requestImpl?: Function, resolveProxy?: Function}} [deps] - test seams
+ *   passed through to `netGatewayFetch` (`net.request`, `session.resolveProxy`)
+ */
+async function ccipReadFetch(transaction, data, urls, signal, deps = {}) {
   for (const template of urls) {
     if (signal?.aborted) break;
     const controller = new AbortController();
@@ -57,16 +85,20 @@ async function ccipReadFetch(transaction, data, urls, signal) {
       )
         continue;
       const get = template.includes('{data}');
-      const response = await fetch(url, {
-        method: get ? 'GET' : 'POST',
-        signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
-        redirect: 'error',
-        headers: {
-          Accept: 'application/json',
-          ...(get ? {} : { 'Content-Type': 'application/json' }),
+      const response = await netGatewayFetch(
+        url,
+        {
+          method: get ? 'GET' : 'POST',
+          signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+          redirect: 'error',
+          headers: {
+            Accept: 'application/json',
+            ...(get ? {} : { 'Content-Type': 'application/json' }),
+          },
+          body: get ? undefined : JSON.stringify({ sender, data }),
         },
-        body: get ? undefined : JSON.stringify({ sender, data }),
-      });
+        deps
+      );
       if (
         !response.ok ||
         Number(response.headers.get('content-length')) > CCIP_MAX_RESPONSE_BYTES

@@ -1,4 +1,5 @@
 const mockShowPermissionManifest = jest.fn();
+const mockRouteToPublishSetup = jest.fn();
 
 jest.mock('./dapp-provider.js', () => ({
   getPermissionKey: jest.fn(() => 'app.eth'),
@@ -17,6 +18,7 @@ jest.mock('./wallet-ui.js', () => ({
   showSwarmMessagingApproval: jest.fn(),
   showVaultUnlock: jest.fn(),
   showPermissionManifest: (...args) => mockShowPermissionManifest(...args),
+  routeToPublishSetup: (...args) => mockRouteToPublishSetup(...args),
 }));
 
 function flush() {
@@ -277,5 +279,75 @@ describe('renderer Swarm bridge binds responses to the requesting document', () 
     expect(responsesSentTo(webview)).toEqual([
       ['swarm:provider-response', { id: 22, result: { data: 'fresh' }, error: null }],
     ]);
+  });
+});
+
+describe('routing setup failures into the publish setup', () => {
+  let setupSwarmProvider;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({
+      origin: 'app.eth',
+      autoApprove: { publish: true },
+    });
+  });
+
+  const nodeUnavailable = (reason) => ({
+    error: { code: 4900, message: `Node not available: ${reason}`, data: { reason } },
+  });
+
+  test('a publish refused for missing storage opens the setup, naming the site', async () => {
+    window.swarmProvider.execute.mockResolvedValue(nodeUnavailable('no-usable-stamps'));
+    const webview = setUp(setupSwarmProvider);
+
+    sendRequest(webview, {
+      id: 1,
+      method: 'swarm_publishData',
+      params: { data: 'hi', contentType: 'text/plain' },
+    });
+    await flush();
+    await flush();
+
+    expect(mockRouteToPublishSetup).toHaveBeenCalledWith('app.eth', 'no-usable-stamps');
+    // The page still gets its error: routing is for the user, not the app.
+    const [, response] = responsesSentTo(webview).at(-1);
+    expect(response.error).toMatchObject({ code: 4900, data: { reason: 'no-usable-stamps' } });
+  });
+
+  test('a capability probe or a read never pulls the sidebar open', async () => {
+    window.swarmProvider.execute.mockResolvedValue(nodeUnavailable('node-stopped'));
+    const webview = setUp(setupSwarmProvider);
+
+    sendRequest(webview, { id: 1, method: 'swarm_getCapabilities', params: {} });
+    sendRequest(webview, { id: 2, method: 'swarm_readChunk', params: { reference: 'ab' } });
+    await flush();
+    await flush();
+
+    expect(responsesSentTo(webview)).toHaveLength(2);
+    expect(mockRouteToPublishSetup).not.toHaveBeenCalled();
+  });
+
+  test('other failures of a write do not route either', async () => {
+    window.swarmProvider.execute.mockResolvedValue({
+      error: { code: -32602, message: 'Invalid parameters', data: { reason: 'payload_too_large' } },
+    });
+    const webview = setUp(setupSwarmProvider);
+
+    sendRequest(webview, {
+      id: 1,
+      method: 'swarm_publishData',
+      params: { data: 'hi', contentType: 'text/plain' },
+    });
+    await flush();
+    await flush();
+
+    expect(mockRouteToPublishSetup).not.toHaveBeenCalled();
   });
 });

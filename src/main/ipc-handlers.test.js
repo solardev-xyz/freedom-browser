@@ -446,7 +446,14 @@ describe('ipc-handlers', () => {
     expect(hostWebContents.send).toHaveBeenCalledWith('tab:new-with-url', 'https://open.example');
 
     await ctx.ipcMain.handlers.get(IPC.SIDEBAR_OPEN_PUBLISH_SETUP)(event);
-    expect(hostWebContents.send).toHaveBeenCalledWith(IPC.SIDEBAR_OPEN_PUBLISH_SETUP);
+    expect(hostWebContents.send).toHaveBeenCalledWith(IPC.SIDEBAR_OPEN_PUBLISH_SETUP, 'setup');
+    await ctx.ipcMain.handlers.get(IPC.SIDEBAR_OPEN_PUBLISH_SETUP)(event, 'storage');
+    expect(hostWebContents.send).toHaveBeenLastCalledWith(
+      IPC.SIDEBAR_OPEN_PUBLISH_SETUP,
+      'storage'
+    );
+    await ctx.ipcMain.handlers.get(IPC.SIDEBAR_OPEN_PUBLISH_SETUP)(event, { evil: true });
+    expect(hostWebContents.send).toHaveBeenLastCalledWith(IPC.SIDEBAR_OPEN_PUBLISH_SETUP, 'setup');
   });
 
   test('returns active profile metadata without local paths', async () => {

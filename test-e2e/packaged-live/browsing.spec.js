@@ -164,12 +164,13 @@ test.describe('packaged browsing', () => {
       timeout: REMOTE_RENDER_TIMEOUT_MS,
     });
 
-    // A real TLS load, not an interstitial: the page's own <h1> is what the
-    // error page would not have.
-    expect(await evalInActiveWebview(window, 'document.querySelector("h1")?.textContent')).toMatch(
-      /Example Domain/i
-    );
-    expect(await evalInActiveWebview(window, 'location.protocol')).toBe('https:');
+    // A real TLS load, not an interstitial: Freedom's error page is a file://
+    // document, so the webview's own origin being https://example.com is what
+    // proves the page came over the network. Assert on the origin and title
+    // rather than body markup — example.com rewrites its page from time to
+    // time (it dropped its <h1> in September 2026).
+    expect(await evalInActiveWebview(window, 'location.origin')).toBe('https://example.com');
+    expect(await evalInActiveWebview(window, 'document.title')).toMatch(/Example Domain/i);
 
     await expect(window.locator('#protocol-icon')).toHaveAttribute('data-protocol', 'https');
     await expectShieldDefault(window);

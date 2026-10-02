@@ -1,6 +1,9 @@
 const mockGetPath = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: (...args) => mockGetPath(...args) },
+  // CCIP gateways are dialled through Electron `net` (#359); the automatic-CCIP
+  // tests below swap in a fake `request`.
+  net: { request: () => ({}) },
 }));
 
 const mockLogInfo = jest.fn();
@@ -125,8 +128,14 @@ describe('automatic CCIP through the Colibri provider', () => {
       const inherited = jest
         .spyOn(ethers.AbstractProvider.prototype, 'ccipReadFetch')
         .mockRejectedValue(new Error('unbounded inherited fetch must not run'));
-      const originalFetch = global.fetch;
-      global.fetch = jest.fn(async () => new Response(JSON.stringify({ data: '0xabcd' })));
+      // CCIP gateways are dialled through Electron `net` (#359).
+      const electron = require('electron');
+      const { createNetMock, emitResponse } = require('../../../test/helpers/fake-electron-net');
+      const originalNetRequest = electron.net.request;
+      const net = createNetMock((request) =>
+        emitResponse(request, { chunks: [JSON.stringify({ data: '0xabcd' })] })
+      );
+      electron.net.request = net.request;
       try {
         const result =
           direction === 'forward'
@@ -134,7 +143,7 @@ describe('automatic CCIP through the Colibri provider', () => {
             : await resolveReverseViaColibri(ethers.getBytes(ur), 2147492101n);
         expect(result).toBe('0xcafe');
         expect(inherited).not.toHaveBeenCalled();
-        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(net.request).toHaveBeenCalledTimes(1);
         expect(mockClientInstances[0].request).toHaveBeenCalledWith({
           method: 'eth_call',
           params: [
@@ -148,7 +157,7 @@ describe('automatic CCIP through the Colibri provider', () => {
       } finally {
         provider?.destroy();
         inherited.mockRestore();
-        global.fetch = originalFetch;
+        electron.net.request = originalNetRequest;
       }
     }
   );

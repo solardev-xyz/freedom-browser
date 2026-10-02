@@ -14,9 +14,10 @@
  *    message,
  *  - a request aborted mid-body emits nothing further on the response.
  *
- * Shared by `src/main/ipfs/gateway-transport.test.js` and
- * `src/main/ipfs-manager.test.js` so the two cannot drift apart about what
- * Electron's stack actually does.
+ * Shared by `src/main/ipfs/gateway-transport.test.js`,
+ * `src/main/ipfs-manager.test.js` and the ENS CCIP-Read suites
+ * (`src/main/ens/*.test.js`) so they cannot drift apart about what Electron's
+ * stack actually does.
  */
 
 const { EventEmitter } = require('events');
@@ -26,12 +27,17 @@ class FakeClientRequest extends EventEmitter {
     super();
     this.options = options;
     this.sentHeaders = {};
+    this.written = [];
     this.ended = false;
     this.aborted = false;
   }
 
   setHeader(name, value) {
     this.sentHeaders[name] = value;
+  }
+
+  write(chunk) {
+    this.written.push(Buffer.from(chunk));
   }
 
   end() {

@@ -1713,6 +1713,14 @@
   padding: 6px 0;
 }
 
+/* A clickable row keeps the hover inset from .node-balance-clickable without
+   shifting its text: the row's own padding would otherwise override the
+   inset's padding but not its negative margin, pulling the row 4px left of
+   its non-clickable siblings. */
+.node-balance-row.node-balance-clickable {
+  padding: 6px 4px;
+}
+
 .node-balance-symbol {
   font-size: 12px;
   color: var(--muted);
@@ -1726,7 +1734,7 @@
 }
 
 /* ============================================
-   Publish Setup Checklist
+   Publish Setup
    ============================================ */
 
 .publish-setup-intro {
@@ -1736,104 +1744,26 @@
   line-height: 1.5;
 }
 
-.publish-setup-checklist {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.publish-step {
-  display: flex;
-  gap: 12px;
-  padding: 12px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.publish-step:last-child {
-  border-bottom: none;
-}
-
-.publish-step-indicator {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.06);
-  transition: background-color 0.2s ease, color 0.2s ease;
-}
-
-.publish-step-number {
+.publish-pay-anywhere {
+  margin: 20px 0 12px 0;
   font-size: 12px;
-  font-weight: 600;
   color: var(--muted);
 }
 
-.publish-step-check {
-  display: none;
-  width: 14px;
-  height: 14px;
-}
-
-/* Step states */
-.publish-step[data-status="pending"] {
-  opacity: 0.45;
-}
-
-.publish-step[data-status="active"] .publish-step-indicator {
-  background: rgba(26, 115, 232, 0.15);
-}
-
-.publish-step[data-status="active"] .publish-step-number {
+/* An inline link in sidebar copy that opens a tab, styled as text. */
+.publish-link-btn {
+  padding: 0;
+  font: inherit;
   color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
-.publish-step[data-status="waiting"] .publish-step-indicator {
-  background: rgba(255, 152, 0, 0.15);
-}
-
-.publish-step[data-status="waiting"] .publish-step-number {
-  color: #ff9800;
-}
-
-.publish-step[data-status="complete"] .publish-step-indicator {
-  background: rgba(76, 175, 80, 0.15);
-}
-
-.publish-step[data-status="complete"] .publish-step-number {
-  display: none;
-}
-
-.publish-step[data-status="complete"] .publish-step-check {
-  display: block;
-  color: #4caf50;
-}
-
-.publish-step-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.publish-step-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-
-.publish-step-detail {
-  font-size: 12px;
+.publish-link-btn:disabled {
   color: var(--muted);
-  line-height: 1.4;
-}
-
-.publish-step-meta {
-  margin-top: 6px;
-  font-size: 11px;
-  color: var(--muted);
-  font-family: var(--font-mono, monospace);
+  cursor: default;
 }
 
 /* ============================================
@@ -1876,6 +1806,12 @@
 .stamp-batch-status[data-status="unusable"] {
   background: rgba(255, 152, 0, 0.15);
   color: #ff9800;
+}
+
+/* Bought, and the network is still confirming it: in progress, not a fault. */
+.stamp-batch-status[data-status="pending"] {
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .stamp-batch-row {
@@ -1971,6 +1907,7 @@
 
 .stamp-extend-presets {
   display: flex;
+  flex-direction: column;
   gap: 4px;
   margin-bottom: 8px;
 }
@@ -1991,52 +1928,15 @@
   background: rgba(255, 255, 255, 0.07);
 }
 
-.stamp-extend-preset-btn.selected {
-  color: var(--accent);
-  background: rgba(26, 115, 232, 0.1);
-  border-color: rgba(26, 115, 232, 0.35);
+.stamp-extend-preset-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .stamp-extend-cost {
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 8px;
-}
-
-.stamp-extend-confirm-btn {
-  width: 100%;
-  padding: 7px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #fff;
-  background: var(--accent);
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-}
-
-.stamp-extend-confirm-btn:hover:not(:disabled) {
-  opacity: 0.9;
-}
-
-.stamp-extend-confirm-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.stamp-extend-status {
-  margin-top: 6px;
-  font-size: 11px;
-  color: #ff9800;
-}
-
-.stamp-extend-status.success {
-  color: #4caf50;
-}
-
-.stamp-extend-status.error {
-  color: var(--danger);
 }
 
 .stamp-extend-cancel-btn {
@@ -2099,11 +1999,6 @@
   background: rgba(255, 255, 255, 0.07);
 }
 
-.stamp-preset-btn.selected {
-  background: rgba(26, 115, 232, 0.1);
-  border-color: rgba(26, 115, 232, 0.4);
-}
-
 .stamp-preset-btn:disabled {
   opacity: 0.5;
   cursor: default;
@@ -2143,12 +2038,6 @@
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
-}
-
-.stamp-cost-spinner {
-  font-size: 12px;
-  color: var(--muted);
-  font-style: italic;
 }
 
 .stamp-balance-row {
@@ -2193,6 +2082,15 @@
   line-height: 1.4;
 }
 
+.stamp-purchase-error + .stamp-purchase-btn {
+  margin-top: 12px;
+}
+
+/* Sits under the storage screen's deposit warning, above the batch list. */
+.stamp-retry-btn.stamp-deposit-topup {
+  margin: -8px 0 16px 0;
+}
+
 .stamp-purchase-error {
   margin-top: 12px;
   padding: 10px 12px;
@@ -2231,61 +2129,6 @@
 
 [data-theme="light"] .stamp-cost-section {
   background: rgba(0, 0, 0, 0.03);
-}
-
-.publish-step-btn {
-  margin-top: 8px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--accent);
-  background: rgba(26, 115, 232, 0.1);
-  border: 1px solid rgba(26, 115, 232, 0.25);
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-}
-
-.publish-step-btn:hover {
-  background: rgba(26, 115, 232, 0.18);
-}
-
-.publish-step-waiting {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #ff9800;
-  font-style: italic;
-}
-
-[data-theme="light"] .publish-step {
-  border-bottom-color: rgba(0, 0, 0, 0.06);
-}
-
-[data-theme="light"] .publish-step-indicator {
-  background: rgba(0, 0, 0, 0.05);
-}
-
-[data-theme="light"] .publish-step[data-status="active"] .publish-step-indicator {
-  background: rgba(26, 115, 232, 0.1);
-}
-
-/* Node stamps */
-.node-stamps-count {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  color: var(--text);
-}
-
-.node-stamps-summary {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.node-stamps-empty {
-  font-style: italic;
 }
 
 /* ============================================
@@ -4368,6 +4211,20 @@
 .receive-copy-btn svg {
   width: 18px;
   height: 18px;
+}
+
+/* Outlined, for a screen whose primary action is another button (the
+   publish setup's pay step). */
+.receive-copy-btn.secondary {
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+}
+
+.receive-copy-btn.secondary.copied {
+  color: var(--secure-fg);
+  background: transparent;
+  border-color: var(--secure-fg);
 }
 
 .receive-helper-text {

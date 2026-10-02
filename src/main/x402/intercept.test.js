@@ -42,6 +42,9 @@ jest.mock('./permissions', () => ({
 }));
 
 const { webContents } = require('electron');
+const log = require('../logger');
+const { netGatewayFetch } = require('../ipfs/gateway-transport');
+const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const {
   X402_HEADERS,
@@ -579,6 +582,30 @@ describe('detectPaymentRequiredHandler', () => {
     detectPaymentRequiredHandler(detail({ webContentsId: undefined }));
     detectPaymentRequiredHandler(detail({ webContentsId: -1 }));
     expect(mockHostSend).not.toHaveBeenCalled();
+  });
+
+  // R1-M1 on #462: a CCIP-Read GET's path is `{sender}/{data}` — the name
+  // being resolved — and it now reaches this listener (net.request, no
+  // webContents). An unattributed 402 is logged by URL; the app's own gateway
+  // dial must not be.
+  test("never logs (or acts on) a 402 answering the app's own gateway dial", async () => {
+    const url = 'https://gw.example/0xresolver/0x0a7365637265746e616d650365746800.json';
+    let request;
+    const pending = netGatewayFetch(
+      url,
+      {},
+      { requestImpl: (options) => (request = new FakeClientRequest(options)) }
+    );
+    log.info.mockClear();
+    await detectPaymentRequiredHandler(detail({ url, webContentsId: undefined }));
+    expect(log.info).not.toHaveBeenCalled();
+    expect(mockHostSend).not.toHaveBeenCalled();
+    request.emit('error', new Error('net::ERR_FAILED'));
+    await pending.catch(() => {});
+    // Control: once no dial of ours is in flight, the unattributed-402 line
+    // is back (so the assertion above isn't vacuous).
+    await detectPaymentRequiredHandler(detail({ url, webContentsId: undefined }));
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('not tied to a webContents'));
   });
 
   test('separates detections by webContentsId (different tabs)', () => {

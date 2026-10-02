@@ -22,7 +22,7 @@ describe('antApiGet (chrome → main Ant API reads, security audit O-1)', () => 
 
   test('passes non-OK statuses and non-JSON bodies through as data: null', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(new Response('nope', { status: 503 }));
-    await expect(antApiGet('/readiness', { fetchImpl })).resolves.toEqual({
+    await expect(antApiGet('/topology', { fetchImpl })).resolves.toEqual({
       ok: false,
       status: 503,
       data: null,
@@ -30,6 +30,9 @@ describe('antApiGet (chrome → main Ant API reads, security audit O-1)', () => 
   });
 
   test.each([
+    // Read by the main process's publish setup service now, not the chrome.
+    '/wallet',
+    '/stamps',
     '/stamps/1/17',
     '/wallet/withdraw',
     '/chequebook/deposit?amount=1',
@@ -57,7 +60,7 @@ describe('antApiGet (chrome → main Ant API reads, security audit O-1)', () => 
     });
   });
 
-  test('covers every endpoint the chrome reads', () => {
+  test('allows exactly the endpoints the chrome reads', () => {
     // Keep in sync with fetchAntJson / ant-ui.js callers in src/renderer.
     const fs = require('fs');
     const path = require('path');
@@ -75,7 +78,8 @@ describe('antApiGet (chrome → main Ant API reads, security audit O-1)', () => 
         used.add(m[1]);
       }
     }
-    expect(used.size).toBeGreaterThan(5);
-    for (const endpoint of used) expect(CHROME_ANT_ENDPOINTS.has(endpoint)).toBe(true);
+    // Both directions: an endpoint the chrome stops reading leaves the
+    // allowlist with it.
+    expect([...used].sort()).toEqual([...CHROME_ANT_ENDPOINTS].sort());
   });
 });

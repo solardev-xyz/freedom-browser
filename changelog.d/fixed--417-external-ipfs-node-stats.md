@@ -1,0 +1,2 @@
+- The Nodes menu shows peers and bandwidth again for an external IPFS node such as Kubo ([#417](https://github.com/solardev-xyz/freedom-browser/issues/417))
+  - It showed the built-in node's request and download counters instead, which say nothing about a node Freedom does not run

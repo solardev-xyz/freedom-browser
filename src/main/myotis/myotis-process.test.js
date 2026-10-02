@@ -54,6 +54,39 @@ describe('MyotisProcess', () => {
     expect(options.stdio).toEqual(['pipe', 'pipe', 'ignore', 'ipc']);
   });
 
+  test('starts the native timeout budget when ownership arrives', async () => {
+    jest.advanceTimersByTime(14999);
+    receipt('owned');
+    jest.advanceTimersByTime(14999);
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: true });
+    jest.advanceTimersByTime(2);
+    await expect(processClient.startPromise).resolves.toBe(true);
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
+  });
+
+  test('processes queued ownership and startup receipts before declaring a timeout', async () => {
+    jest.advanceTimersByTime(15000);
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
+    receipt('owned');
+    jest.advanceTimersByTime(1);
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(14999);
+    child.emit('message', { type: 'started', generation: processClient.generation, ok: true });
+    jest.advanceTimersByTime(1);
+    await expect(processClient.startPromise).resolves.toBe(true);
+    expect(callbacks.onUnavailable).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])('still times out an unresponsive startup (owned: %s)', async (owned) => {
+    if (owned) receipt('owned');
+    jest.advanceTimersByTime(15001);
+    await expect(processClient.startPromise).resolves.toBe(false);
+    expect(callbacks.onUnavailable).toHaveBeenCalledWith('Myotis startup timed out', undefined);
+    expect(processClient.stopping).toBe(true);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
   test.each(['win32', 'darwin', 'linux'])('supervisor detach is Windows-only and preserves observed pipes on %s', (platform) => {
     const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     try {

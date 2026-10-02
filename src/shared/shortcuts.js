@@ -473,6 +473,320 @@ function eventMatchesAccelerator(event, accelerator, platform) {
   return eventKeyCandidates(event).has(parsed.key);
 }
 
+// ── Physical-keypress model (conflict detection) ────────────────────────
+//
+// eventMatchesAccelerator accepts a press when the accelerator's key is in
+// eventKeyCandidates — the layout-produced key *or* the physical code's
+// base key. So two string-distinct accelerators can both fire on one press:
+// on a German layout Shift+0 produces '=', and Ctrl+Shift+0 arrives as
+// { key: '=', code: 'Digit0' }, matching both `Ctrl+Shift+0` and
+// `CmdOrCtrl+Shift+=` (#205). Conflict checks therefore have to ask "is
+// there a press both would match?", which needs to know what presses
+// exist: which character each physical key produces, per layout and
+// Shift state.
+//
+// US_LAYOUT is the base; LAYOUT_DIFFS lists only the keys each layout
+// changes, as [unshifted, shifted] with null for a dead key (the browser
+// reports key 'Dead'). Generated from the xkb symbol tables
+// (/usr/share/X11/xkb/symbols, `pc+<layout>` compiled with xkbcomp), levels
+// 1–2 of Group1 — not written from memory. Finnish is identical to Swedish
+// on these keys and so is covered by `se`. Deliberately out of scope: the
+// AltGr/Option levels (a Ctrl+Alt or macOS Option chord can produce yet
+// another character) and layouts outside this list; extend the table if a
+// new layout matters. Menu accelerators are matched by Electron's own
+// native code, not by this model.
+const US_SHIFTED_PUNCTUATION = {
+  Minus: '_',
+  Equal: '+',
+  BracketLeft: '{',
+  BracketRight: '}',
+  Semicolon: ':',
+  Quote: '"',
+  Backquote: '~',
+  Backslash: '|',
+  Comma: '<',
+  Period: '>',
+  Slash: '?',
+};
+const US_SHIFTED_DIGITS = ')!@#$%^&*(';
+
+const US_LAYOUT = {
+  ...Object.fromEntries(
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((l) => [`Key${l}`, [l.toLowerCase(), l]])
+  ),
+  ...Object.fromEntries(
+    US_SHIFTED_DIGITS.split('').map((shifted, digit) => [`Digit${digit}`, [String(digit), shifted]])
+  ),
+  ...Object.fromEntries(
+    Object.entries(US_SHIFTED_PUNCTUATION).map(([code, shifted]) => [
+      code,
+      [CODE_BASE_KEYS[code], shifted],
+    ])
+  ),
+};
+
+const LAYOUT_DIFFS = {
+  // UK (gb)
+  gb: {
+    Digit2: ['2', '"'],
+    Digit3: ['3', '£'],
+    Quote: ["'", '@'],
+    Backquote: ['`', '¬'],
+    Backslash: ['#', '~'],
+  },
+  // German (de)
+  de: {
+    Digit2: ['2', '"'],
+    Digit3: ['3', '§'],
+    Digit6: ['6', '&'],
+    Digit7: ['7', '/'],
+    Digit8: ['8', '('],
+    Digit9: ['9', ')'],
+    Digit0: ['0', '='],
+    Minus: ['ß', '?'],
+    Equal: [null, null],
+    KeyY: ['z', 'Z'],
+    BracketLeft: ['ü', 'Ü'],
+    BracketRight: ['+', '*'],
+    Semicolon: ['ö', 'Ö'],
+    Quote: ['ä', 'Ä'],
+    Backquote: [null, '°'],
+    Backslash: ['#', "'"],
+    KeyZ: ['y', 'Y'],
+    Comma: [',', ';'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
+  // Swiss German (ch)
+  ch: {
+    Digit1: ['1', '+'],
+    Digit2: ['2', '"'],
+    Digit3: ['3', '*'],
+    Digit4: ['4', 'ç'],
+    Digit6: ['6', '&'],
+    Digit7: ['7', '/'],
+    Digit8: ['8', '('],
+    Digit9: ['9', ')'],
+    Digit0: ['0', '='],
+    Minus: ["'", '?'],
+    Equal: [null, null],
+    KeyY: ['z', 'Z'],
+    BracketLeft: ['ü', 'è'],
+    BracketRight: [null, '!'],
+    Semicolon: ['ö', 'é'],
+    Quote: ['ä', 'à'],
+    Backquote: ['§', '°'],
+    Backslash: ['$', '£'],
+    KeyZ: ['y', 'Y'],
+    Comma: [',', ';'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
+  // French AZERTY (fr)
+  fr: {
+    Digit1: ['&', '1'],
+    Digit2: ['é', '2'],
+    Digit3: ['"', '3'],
+    Digit4: ["'", '4'],
+    Digit5: ['(', '5'],
+    Digit6: ['-', '6'],
+    Digit7: ['è', '7'],
+    Digit8: ['_', '8'],
+    Digit9: ['ç', '9'],
+    Digit0: ['à', '0'],
+    Minus: [')', '°'],
+    KeyQ: ['a', 'A'],
+    KeyW: ['z', 'Z'],
+    BracketLeft: [null, null],
+    BracketRight: ['$', '£'],
+    KeyA: ['q', 'Q'],
+    Semicolon: ['m', 'M'],
+    Quote: ['ù', '%'],
+    Backquote: ['²', '~'],
+    Backslash: ['*', 'µ'],
+    KeyZ: ['w', 'W'],
+    KeyM: [',', '?'],
+    Comma: [';', '.'],
+    Period: [':', '/'],
+    Slash: ['!', '§'],
+  },
+  // Spanish (es)
+  es: {
+    Digit2: ['2', '"'],
+    Digit3: ['3', '·'],
+    Digit6: ['6', '&'],
+    Digit7: ['7', '/'],
+    Digit8: ['8', '('],
+    Digit9: ['9', ')'],
+    Digit0: ['0', '='],
+    Minus: ["'", '?'],
+    Equal: ['¡', '¿'],
+    BracketLeft: [null, null],
+    BracketRight: ['+', '*'],
+    Semicolon: ['ñ', 'Ñ'],
+    Quote: [null, null],
+    Backquote: ['º', 'ª'],
+    Backslash: ['ç', 'Ç'],
+    Comma: [',', ';'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
+  // Italian (it)
+  it: {
+    Digit2: ['2', '"'],
+    Digit3: ['3', '£'],
+    Digit6: ['6', '&'],
+    Digit7: ['7', '/'],
+    Digit8: ['8', '('],
+    Digit9: ['9', ')'],
+    Digit0: ['0', '='],
+    Minus: ["'", '?'],
+    Equal: ['ì', '^'],
+    BracketLeft: ['è', 'é'],
+    BracketRight: ['+', '*'],
+    Semicolon: ['ò', 'ç'],
+    Quote: ['à', '°'],
+    Backquote: ['\\', '|'],
+    Backslash: ['ù', '§'],
+    Comma: [',', ';'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
+  // Swedish / Finnish (se)
+  se: {
+    Digit2: ['2', '"'],
+    Digit4: ['4', '¤'],
+    Digit6: ['6', '&'],
+    Digit7: ['7', '/'],
+    Digit8: ['8', '('],
+    Digit9: ['9', ')'],
+    Digit0: ['0', '='],
+    Minus: ['+', '?'],
+    Equal: [null, null],
+    BracketLeft: ['å', 'Å'],
+    BracketRight: [null, null],
+    Semicolon: ['ö', 'Ö'],
+    Quote: ['ä', 'Ä'],
+    Backquote: ['§', '½'],
+    Backslash: ["'", '*'],
+    Comma: [',', ';'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
+  // Norwegian (no)
+  no: {
+    Digit2: ['2', '"'],
+    Digit4: ['4', '¤'],
+    Digit6: ['6', '&'],
+    Digit7: ['7', '/'],
+    Digit8: ['8', '('],
+    Digit9: ['9', ')'],
+    Digit0: ['0', '='],
+    Minus: ['+', '?'],
+    Equal: ['\\', null],
+    BracketLeft: ['å', 'Å'],
+    BracketRight: [null, null],
+    Semicolon: ['ø', 'Ø'],
+    Quote: ['æ', 'Æ'],
+    Backquote: ['|', '§'],
+    Backslash: ["'", '*'],
+    Comma: [',', ';'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
+  // Danish (dk)
+  dk: {
+    Digit2: ['2', '"'],
+    Digit4: ['4', '¤'],
+    Digit6: ['6', '&'],
+    Digit7: ['7', '/'],
+    Digit8: ['8', '('],
+    Digit9: ['9', ')'],
+    Digit0: ['0', '='],
+    Minus: ['+', '?'],
+    Equal: [null, null],
+    BracketLeft: ['å', 'Å'],
+    BracketRight: [null, null],
+    Semicolon: ['æ', 'Æ'],
+    Quote: ['ø', 'Ø'],
+    Backquote: ['½', '§'],
+    Backslash: ["'", '*'],
+    Comma: [',', ';'],
+    Period: ['.', ':'],
+    Slash: ['-', '_'],
+  },
+};
+
+// Keypad keys produce their NumLock-on character or, NumLock off, a
+// navigation key — both states are live presses, in either Shift state.
+const NUMPAD_PRODUCED_KEYS = {
+  Numpad0: ['0', 'Insert'],
+  Numpad1: ['1', 'End'],
+  Numpad2: ['2', 'ArrowDown'],
+  Numpad3: ['3', 'PageDown'],
+  Numpad4: ['4', 'ArrowLeft'],
+  Numpad5: ['5', 'Clear'],
+  Numpad6: ['6', 'ArrowRight'],
+  Numpad7: ['7', 'Home'],
+  Numpad8: ['8', 'ArrowUp'],
+  Numpad9: ['9', 'PageUp'],
+  NumpadDecimal: ['.', ',', 'Delete'],
+  NumpadAdd: ['+'],
+  NumpadSubtract: ['-'],
+  NumpadMultiply: ['*'],
+  NumpadDivide: ['/'],
+};
+
+let keyCollisionCache = null;
+
+// For each Shift state, canonical key → every other canonical key that
+// some modelled press reports alongside it in eventKeyCandidates.
+function keyCollisions() {
+  if (keyCollisionCache) return keyCollisionCache;
+  const collisions = { false: new Map(), true: new Map() };
+  const addPress = (shift, key, code) => {
+    const candidates = [...eventKeyCandidates({ key: key ?? 'Dead', code })];
+    for (const a of candidates) {
+      for (const b of candidates) {
+        if (a === b) continue;
+        if (!collisions[shift].has(a)) collisions[shift].set(a, new Set());
+        collisions[shift].get(a).add(b);
+      }
+    }
+  };
+  for (const diffs of [{}, ...Object.values(LAYOUT_DIFFS)]) {
+    const layout = { ...US_LAYOUT, ...diffs };
+    for (const [code, [unshifted, shifted]] of Object.entries(layout)) {
+      addPress(false, unshifted, code);
+      addPress(true, shifted, code);
+    }
+  }
+  for (const [code, keys] of Object.entries(NUMPAD_PRODUCED_KEYS)) {
+    for (const key of keys) {
+      addPress(false, key, code);
+      addPress(true, key, code);
+    }
+  }
+  keyCollisionCache = collisions;
+  return collisions;
+}
+
+/**
+ * True when one physical keypress (on a modelled layout) would satisfy
+ * eventMatchesAccelerator for both accelerators — i.e. binding both would
+ * double-fire. Identical accelerators trivially collide.
+ */
+function acceleratorsCollide(a, b, platform) {
+  const pa = parseAccelerator(a, platform);
+  const pb = parseAccelerator(b, platform);
+  if (!pa || !pb) return false;
+  if (pa.ctrl !== pb.ctrl || pa.alt !== pb.alt || pa.shift !== pb.shift || pa.meta !== pb.meta) {
+    return false;
+  }
+  if (pa.key === pb.key) return true;
+  return Boolean(keyCollisions()[pa.shift].get(pa.key)?.has(pb.key));
+}
+
 // ── Registry lookups ────────────────────────────────────────────────────
 
 function getShortcutById(id) {
@@ -605,9 +919,7 @@ function acceleratorFromEvent(event, platform) {
 // at validation instead. Escape is excluded here on purpose: the recorder
 // cancels on Escape (with or without modifiers), so accepting it from any
 // other path would create bindings the recorder can never produce.
-const KNOWN_NAMED_KEYS = new Set(
-  Object.values(KEY_ALIASES).filter((key) => key !== 'Escape')
-);
+const KNOWN_NAMED_KEYS = new Set(Object.values(KEY_ALIASES).filter((key) => key !== 'Escape'));
 function isRecognizedKey(key) {
   if (typeof key !== 'string' || key.length === 0) return false;
   if (key.length === 1) return true;
@@ -655,10 +967,15 @@ function getEffectiveAccelerator(entryOrId, overrides, platform) {
 }
 
 /**
- * First shortcut whose effective binding collides with `accelerator`,
- * excluding `entryOrId` itself. Returns null or
- * { id, settingsLabel, fixed } — `fixed: true` means the collision is with
- * a fixed alias (or a non-editable entry) and cannot be swapped away.
+ * A shortcut whose effective binding or fixed alias collides with
+ * `accelerator`, excluding `entryOrId` itself. "Collides" means one physical
+ * keypress would fire both (acceleratorsCollide), not string equality — the
+ * keydown matcher accepts layout-produced keys, so string-distinct chords
+ * can double-fire (#205). Returns null or { id, settingsLabel, fixed } —
+ * `fixed: true` means a swap cannot clear it: the collision is with a fixed
+ * alias, a non-editable entry, or more than one binding at once, or the
+ * swapped state would itself collide (the binding handed over fires on the
+ * same press as the new one).
  *
  * Every consumer of this name is a Settings > Shortcuts surface (the
  * conflict banner, the reverted-remap row notice), which labels its rows
@@ -667,6 +984,10 @@ function getEffectiveAccelerator(entryOrId, overrides, platform) {
  * two casings at once (#277).
  */
 function findConflict(entryOrId, accelerator, overrides, platform) {
+  return collectConflict(entryOrId, accelerator, overrides, platform, true);
+}
+
+function collectConflict(entryOrId, accelerator, overrides, platform, checkSwap) {
   const self = typeof entryOrId === 'string' ? entryOrId : entryOrId?.id;
   const normalized = normalizeAccelerator(accelerator, platform);
   if (!normalized) return null;
@@ -677,19 +998,66 @@ function findConflict(entryOrId, accelerator, overrides, platform) {
     fixed,
   });
 
+  // Collect every colliding entry before answering: since conflicts are
+  // judged per keypress (acceleratorsCollide), one chord can collide with
+  // several bindings at once — e.g. keypad minus with Zoom Out's main-row
+  // default *and* its fixed `numsub` alias. A swap hands exactly one entry
+  // this shortcut's old binding, so it only resolves the conflict when a
+  // single swappable binding collides; anything else is reported as fixed.
+  //
+  // Collisions the registry itself ships between two entries' *built-in*
+  // bindings are not the user's doing and are resolved by dispatch order
+  // (the Nordic Ctrl++ press matching both Zoom In's `Plus` alias and Zoom
+  // Out's `-` default; see shortcuts.test.js, which pins that list). Putting
+  // a shortcut back on its own default must not be refused over one.
+  const selfEntry = getShortcutById(self);
+  const selfDefault = selfEntry ? getDefaultAccelerator(selfEntry, platform) : null;
+  const isOwnDefault =
+    Boolean(selfDefault) && normalizeAccelerator(selfDefault, platform) === normalized;
+  const collides = (binding) =>
+    Boolean(binding) && acceleratorsCollide(binding, normalized, platform);
+
+  const hits = [];
   for (const entry of SHORTCUTS) {
     if (entry.id === self) continue;
     const effective = getEffectiveAccelerator(entry, overrides, platform);
-    if (effective && normalizeAccelerator(effective, platform) === normalized) {
-      return conflict(entry, entry.editable === false);
-    }
-    for (const alias of getAliasAccelerators(entry, platform)) {
-      if (normalizeAccelerator(alias, platform) === normalized) {
-        return conflict(entry, true);
-      }
+    const effectiveIsDefault =
+      normalizeAccelerator(effective, platform) ===
+      normalizeAccelerator(getDefaultAccelerator(entry, platform), platform);
+    if (!isOwnDefault && getAliasAccelerators(entry, platform).some(collides)) {
+      hits.push({ entry, fixed: true });
+    } else if (!(isOwnDefault && effectiveIsDefault) && collides(effective)) {
+      hits.push({ entry, fixed: entry.editable === false });
     }
   }
-  return null;
+  if (hits.length === 0) return null;
+  const firstFixed = hits.find((hit) => hit.fixed);
+  if (firstFixed) return conflict(firstFixed.entry, true);
+  if (hits.length > 1) return conflict(hits[0].entry, true);
+
+  // One swappable binding collides. A swap hands it this shortcut's
+  // previous binding, which is only a resolution if the swapped state is
+  // itself conflict-free: per keypress, that previous binding can collide
+  // with the *new* one (Ctrl+Alt+Shift+0 and Ctrl+Alt+Shift+= are one German
+  // press), and sanitizeOverrides would then drop the remap the user just
+  // made. Simulate the swap exactly as setOverride applies it and offer it
+  // only when both sides stand.
+  const other = hits[0].entry;
+  if (checkSwap && selfEntry) {
+    const previous = normalizeAccelerator(
+      getEffectiveAccelerator(selfEntry, overrides, platform),
+      platform
+    );
+    const swapped = { ...(overrides || {}), [other.id]: previous, [self]: normalized };
+    if (
+      !previous ||
+      collectConflict(selfEntry, normalized, swapped, platform, false) ||
+      collectConflict(other, previous, swapped, platform, false)
+    ) {
+      return conflict(other, true);
+    }
+  }
+  return conflict(other, false);
 }
 
 /**
@@ -745,7 +1113,9 @@ function sanitizeOverrides(raw, platform, { onDrop } = {}) {
     for (const entry of SHORTCUTS) {
       const accelerator = clean[entry.id];
       if (!accelerator) continue;
-      const conflict = findConflict(entry, accelerator, clean, platform);
+      // No swap is offered here, so skip findConflict's swap simulation:
+      // only whether (and with what) the override collides matters.
+      const conflict = collectConflict(entry, accelerator, clean, platform, false);
       if (!conflict) continue;
       delete clean[entry.id];
       dropped = true;
@@ -816,6 +1186,7 @@ module.exports = {
   parseAccelerator,
   eventKeyCandidates,
   eventMatchesAccelerator,
+  acceleratorsCollide,
   getShortcutById,
   getDefaultAccelerator,
   getAliasAccelerators,

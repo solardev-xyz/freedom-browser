@@ -889,12 +889,33 @@ jobs:
           done
           test -x "$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/MacOS/Freedom"
 
+      # Run the rest of this job like a user's Mac, not a build machine. The
+      # 2026-09-29 nightly shipped an arti linked against Homebrew's liblzma,
+      # and every check here passed, Tor startup included, because this runner
+      # has the same Homebrew dylib (and does not enforce library validation
+      # the way a user's Mac does; `csrutil status` below records that). With
+      # /opt/homebrew moved away, any bundled binary that still depends on it
+      # fails to launch here too. Nothing below needs Homebrew: node comes
+      # from setup-node's tool cache, the rest ships with macOS.
+      - name: Hide Homebrew so the app runs like on a clean Mac
+        run: |
+          csrutil status || true
+          sudo mv /opt/homebrew /opt/homebrew-hidden
+          echo "Homebrew moved to /opt/homebrew-hidden for the rest of this job"
+
       # `packaged-live`'s Tor leg skips itself when a build bundles no Arti, so
       # on its own it cannot tell "Tor is bundled and starts" from "Tor was
       # never packaged". Assert the file the copied bundle actually carries: a
       # dropped `mac.extraResources` entry, or an Arti build that failed
       # without failing its step, fails here instead of shipping silently.
       # Same assertion as the Linux and Windows smoke jobs.
+      # Every Mach-O file in the app (Arti, antd, native addons, the Myotis
+      # supervisor, Electron) may link only macOS's own libraries or ones the
+      # app ships. See scripts/check-mac-bundle-dylibs.js for why the Tor
+      # smoke test alone did not catch a Homebrew dependency.
+      - name: Check every binary in the disk image links only macOS libraries
+        run: node scripts/check-mac-bundle-dylibs.js "$RUNNER_TEMP/apps-dmg/Freedom.app"
+
       - name: Assert the disk image bundles Arti (Tor)
         if: env.BUNDLE_TOR == 'true'
         run: |
@@ -905,6 +926,14 @@ jobs:
             exit 1
           fi
           echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
+          # Presence is not enough: the 2.6.0 nightly shipped an arti linked
+          # against Homebrew's liblzma, which this runner has, so only the
+          # link table shows it. Anything outside the OS fails here.
+          if otool -L "$arti" | tail -n +2 | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+            echo "The bundled arti links libraries that are not part of macOS (listed above)" >&2
+            exit 1
+          fi
+          "$arti" --version
 
       # What a user's first double-click asks Gatekeeper, on the copy rather
       # than on the build tree the mac-arm64 job assessed: an app whose ticket
@@ -971,6 +1000,13 @@ jobs:
 
       # Same assertion as for the disk image: the two artifacts are packed
       # separately, so a missing binary can appear in either one alone.
+      # Every Mach-O file in the app (Arti, antd, native addons, the Myotis
+      # supervisor, Electron) may link only macOS's own libraries or ones the
+      # app ships. See scripts/check-mac-bundle-dylibs.js for why the Tor
+      # smoke test alone did not catch a Homebrew dependency.
+      - name: Check every binary in the zip links only macOS libraries
+        run: node scripts/check-mac-bundle-dylibs.js "$RUNNER_TEMP/apps-zip/Freedom.app"
+
       - name: Assert the mac zip bundles Arti (Tor)
         if: env.BUNDLE_TOR == 'true'
         run: |
@@ -981,6 +1017,14 @@ jobs:
             exit 1
           fi
           echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
+          # Presence is not enough: the 2.6.0 nightly shipped an arti linked
+          # against Homebrew's liblzma, which this runner has, so only the
+          # link table shows it. Anything outside the OS fails here.
+          if otool -L "$arti" | tail -n +2 | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+            echo "The bundled arti links libraries that are not part of macOS (listed above)" >&2
+            exit 1
+          fi
+          "$arti" --version
 
       # Same assertion as for the disk image: the two artifacts are signed and
       # packed separately, and the `-mac.zip` is what electron-updater installs

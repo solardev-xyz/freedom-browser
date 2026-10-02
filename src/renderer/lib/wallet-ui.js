@@ -36,7 +36,7 @@ import { initSafePendingList, closeSafePendingList } from './wallet/safe-pending
 import { initRemoteSession } from './wallet/remote-session.js';
 import { initRemoteSigningPanel } from './wallet/remote-signing-panel.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
-import { initStampManager, closeStampManager } from './wallet/stamp-manager.js';
+import { initStampManager, openStampManager, closeStampManager } from './wallet/stamp-manager.js';
 import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
 import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval } from './wallet/swarm-connect.js';
 import { initVaultUnlock, showVaultUnlock } from './wallet/vault-unlock.js';
@@ -369,22 +369,49 @@ async function updateSecurityStatus() {
 // ============================================
 
 /**
- * Open the sidebar, switch to the Nodes tab, and surface the publish-setup
- * checklist. Single entry point used by the freedom://settings deep-link.
+ * Open the sidebar, switch to the Nodes tab, and surface the publish setup
+ * (`target` 'setup', the default) or the storage screen ('storage'). The
+ * entry point for the freedom://settings and freedom://publish deep links.
  *
  * Bails out when:
  *  - the Identity & Wallet feature is disabled (sidebar.open() would no-op
- *    silently while openPublishSetup() would still start its 5s polling
- *    interval against a hidden screen)
+ *    silently while the screen would still start watching the node state)
  *  - the user is in onboarding (switchTab no-ops in setup mode and we don't
  *    want publish-setup floating on top of the wizard)
  */
-export function openPublishSetupFlow() {
-  if (!isSidebarFeatureEnabled()) return;
-  if (walletState.viewMode !== 'identity') return;
+export function openPublishSetupFlow(target = 'setup', options = {}) {
+  if (!isSidebarFeatureEnabled()) return false;
+  if (walletState.viewMode !== 'identity') return false;
   openSidebarPanel();
   switchTab('nodes');
-  openPublishSetup();
+  if (target === 'storage') openStampManager();
+  else openPublishSetup(options);
+  return true;
+}
+
+// Per site, when its publish request was last routed into the setup screen:
+// an app that retries in a loop must not keep pulling the sidebar open.
+const PUBLISH_SETUP_ROUTE_INTERVAL_MS = 60_000;
+const publishSetupRoutedAt = new Map();
+
+/**
+ * A site's Swarm write failed because publishing is not set up (the swarm
+ * provider's 4900 reasons). Show the setup screen, naming the site, unless
+ * the user is busy in the sidebar or was sent there for this site a moment
+ * ago. Opening the setup switches tabs, which closes every sub-screen (a
+ * half-filled Send form included), so any open one wins over the site.
+ * `reason` is the 4900 reason, so the screen can say why when the node is
+ * otherwise ready (a write with no batch that has room for it).
+ */
+export function routeToPublishSetup(origin, reason = null) {
+  if (isSignatureInFlight()) return false;
+  if (document.querySelector('#sidebar .sidebar-subscreen:not(.hidden)')) return false;
+  const now = Date.now();
+  const last = publishSetupRoutedAt.get(origin);
+  if (last !== undefined && now - last < PUBLISH_SETUP_ROUTE_INTERVAL_MS) return false;
+  if (!openPublishSetupFlow('setup', { origin, reason })) return false;
+  publishSetupRoutedAt.set(origin, now);
+  return true;
 }
 
 // Open the wallet sidebar's Send screen with pre-filled recipient / chain /

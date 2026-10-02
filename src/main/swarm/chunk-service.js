@@ -7,6 +7,7 @@
 
 const { PrivateKey, BeeResponseError, Identifier, EthAddress } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
+const { noUsableBatchError } = require('./batch-errors');
 
 function spanToResult(span) {
   const value = span.toBigInt();
@@ -62,7 +63,7 @@ function normalizeReference(reference) {
 async function selectChunkBatch() {
   const batchId = await selectBestBatch(4096);
   if (!batchId) {
-    throw new Error('No usable postage batch available. Purchase stamps first.');
+    throw noUsableBatchError();
   }
   return batchId;
 }

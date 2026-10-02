@@ -1,159 +1,112 @@
 /**
  * Chequebook Deposit Module
  *
- * Sidebar sub-screen for depositing xBZZ from the Bee wallet into
- * the chequebook contract for bandwidth payments.
+ * Sidebar sub-screen for the node's chequebook deposit: the xBZZ its
+ * chequebook holds to pay other nodes for bandwidth. The node keeps it at
+ * its target by itself after each storage purchase; when it runs dry, the
+ * top-up is paid in xDAI through the publish setup's pay step.
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
 import { refuseSubscreenWhileInFlight } from './signature-flight.js';
-import { formatRawTokenBalance } from './wallet-utils.js';
-import { fetchAntJson } from './ant-api.js';
-
-const DEPOSIT_PRESETS = [
-  { label: '0.1 xBZZ', amount: 0.1 },
-  { label: '0.5 xBZZ', amount: 0.5 },
-  { label: '1.0 xBZZ', amount: 1.0 },
-];
+import { openPublishSetup } from './publish-setup.js';
 
 let depositScreen;
 let depositBackBtn;
-let walletBzzEl;
 let currentBzzEl;
-let presetContainer;
+let targetBzzEl;
+let depositText;
 let depositBtn;
-let depositStatus;
-let depositError;
 
-let selectedAmount = null;
+let isOpen = false;
+let setupState = null;
 
 export function initChequebookDeposit() {
   depositScreen = document.getElementById('sidebar-chequebook-deposit');
   depositBackBtn = document.getElementById('chequebook-deposit-back');
-  walletBzzEl = document.getElementById('chequebook-wallet-bzz');
   currentBzzEl = document.getElementById('chequebook-current-bzz');
-  presetContainer = document.getElementById('chequebook-deposit-presets');
+  targetBzzEl = document.getElementById('chequebook-target-bzz');
+  depositText = document.getElementById('chequebook-deposit-text');
   depositBtn = document.getElementById('chequebook-deposit-btn');
-  depositStatus = document.getElementById('chequebook-deposit-status');
-  depositError = document.getElementById('chequebook-deposit-error');
 
   registerScreenHider(() => closeChequebookDeposit());
 
   depositBackBtn?.addEventListener('click', () => closeChequebookDeposit());
-  depositBtn?.addEventListener('click', () => handleDeposit());
+  depositBtn?.addEventListener('click', () => handleTopUp());
 
-  buildPresets();
+  window.publishSetup?.onState((state) => {
+    setupState = state;
+    if (isOpen) render();
+  });
 }
 
-export function openChequebookDeposit() {
+export async function openChequebookDeposit() {
   if (refuseSubscreenWhileInFlight('Chequebook deposit screen')) return;
 
   walletState.identityView?.classList.add('hidden');
   depositScreen?.classList.remove('hidden');
+  isOpen = true;
+  void window.publishSetup?.watch('chequebook-deposit', true);
 
-  selectedAmount = null;
-  if (depositBtn) depositBtn.disabled = true;
-  if (depositStatus) depositStatus.classList.add('hidden');
-  if (depositError) depositError.classList.add('hidden');
-
-  presetContainer?.querySelectorAll('.stamp-preset-btn').forEach((btn) => {
-    btn.classList.remove('selected');
-  });
-
-  refreshBalances();
+  render();
+  try {
+    setupState = (await window.publishSetup?.getState()) || setupState;
+  } catch {
+    // The push subscription fills it in.
+  }
+  if (isOpen) render();
 }
 
 export function closeChequebookDeposit() {
+  if (isOpen) void window.publishSetup?.watch('chequebook-deposit', false);
+  isOpen = false;
   depositScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
 }
 
-function buildPresets() {
-  if (!presetContainer) return;
+function render() {
+  const account = setupState?.account;
+  const chequebook = account?.chequebook;
 
-  presetContainer.innerHTML = '';
-  DEPOSIT_PRESETS.forEach((preset) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'stamp-preset-btn';
-
-    const labelSpan = document.createElement('span');
-    labelSpan.className = 'stamp-preset-label';
-    labelSpan.textContent = preset.label;
-    btn.appendChild(labelSpan);
-
-    btn.addEventListener('click', () => {
-      presetContainer.querySelectorAll('.stamp-preset-btn').forEach((b) => {
-        b.classList.remove('selected');
-      });
-      btn.classList.add('selected');
-      selectedAmount = preset.amount;
-      if (depositBtn) depositBtn.disabled = false;
-      if (depositError) depositError.classList.add('hidden');
-    });
-
-    presetContainer.appendChild(btn);
-  });
-}
-
-async function refreshBalances() {
-  try {
-    const [walletResult, balResult] = await Promise.all([
-      fetchAntJson('/wallet'),
-      fetchAntJson('/chequebook/balance'),
-    ]);
-
-    if (walletResult.ok && walletResult.data?.bzzBalance) {
-      if (walletBzzEl) {
-        walletBzzEl.textContent = `${formatRawTokenBalance(walletResult.data.bzzBalance, 16)} xBZZ`;
-      }
-    }
-
-    if (balResult.ok && balResult.data) {
-      if (currentBzzEl) {
-        const available = balResult.data.availableBalance;
-        currentBzzEl.textContent = `${formatRawTokenBalance(typeof available === 'string' ? available : String(available || '0'), 16)} xBZZ`;
-      }
-    }
-  } catch {
-    // Non-critical
+  if (currentBzzEl) {
+    currentBzzEl.textContent = chequebook?.deposit ? `${chequebook.deposit} xBZZ` : '--';
   }
+  if (targetBzzEl) {
+    targetBzzEl.textContent = chequebook?.target ? `${chequebook.target} xBZZ` : '--';
+  }
+
+  let text;
+  if (!account) {
+    text = 'Checking the deposit…';
+  } else if (!chequebook) {
+    text =
+      'Your node does not have a chequebook yet. Your first storage purchase creates it and funds the deposit.';
+  } else if (chequebook.managed === false) {
+    text = 'This node manages its chequebook deposit through its own configuration.';
+  } else if (chequebook.needsTopUp) {
+    text =
+      'The deposit is used up, so uploads will stall. Top it up to keep publishing; you pay in xDAI, like for storage.';
+  } else {
+    text = 'The deposit is funded. Your node tops it up by itself when you buy storage.';
+  }
+  if (depositText) depositText.textContent = text;
+
+  const canTopUp =
+    Boolean(chequebook?.needsTopUp) && chequebook.managed !== false && setupState?.canBuy;
+  depositBtn?.classList.toggle('hidden', !canTopUp);
 }
 
-async function handleDeposit() {
-  if (!selectedAmount || !window.swarmNode?.depositChequebook) return;
-
+async function handleTopUp() {
   if (depositBtn) depositBtn.disabled = true;
-  if (depositStatus) {
-    depositStatus.textContent = 'Depositing\u2026';
-    depositStatus.classList.remove('hidden');
-  }
-  if (depositError) depositError.classList.add('hidden');
-
+  let error = null;
   try {
-    const result = await window.swarmNode.depositChequebook(selectedAmount);
-
-    if (!result?.success) {
-      showError(result?.error || 'Deposit failed.');
-      return;
-    }
-
-    if (depositStatus) {
-      depositStatus.textContent = 'Deposit successful.';
-    }
-
-    // Refresh balances to show updated amounts
-    setTimeout(() => refreshBalances(), 2000);
+    const result = await window.publishSetup?.arm({ kind: 'deposit' });
+    if (result && !result.ok) error = result.error || 'Could not start the top-up.';
   } catch (err) {
-    showError(err.message || 'Deposit failed.');
+    error = err?.message || 'Could not start the top-up.';
+  } finally {
+    if (depositBtn) depositBtn.disabled = false;
   }
-}
-
-function showError(message) {
-  if (depositError) {
-    depositError.textContent = message;
-    depositError.classList.remove('hidden');
-  }
-  if (depositBtn) depositBtn.disabled = false;
-  if (depositStatus) depositStatus.classList.add('hidden');
+  closeChequebookDeposit();
+  openPublishSetup({ error });
 }

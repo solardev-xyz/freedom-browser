@@ -446,3 +446,71 @@ test('delete: a failed delete restores the card and surfaces the error toast', a
     .toBe(true);
   expect(await findProfile(window, (p) => p.id === created.id)).not.toBeNull();
 });
+
+// --- delete the default profile (#124) -------------------------------------
+
+const hasTrash = (window, id) =>
+  managerEval(window, `!!document.querySelector('[data-profile-id="${id}"] [data-delete-profile]')`);
+
+test('delete: the active default profile offers no trash, a second profile does', async ({
+  window,
+}) => {
+  const created = await createProfileViaApi(window, 'QA Other');
+  await openManager(window);
+  await expect.poll(() => hasTrash(window, created.id)).toBe(true);
+  // `default` is the active profile here — switch away first to delete it.
+  expect(await hasTrash(window, 'default')).toBe(false);
+});
+
+test.describe('with another profile active', () => {
+  test.use({ launchProfile: 'work' });
+
+  test('delete: the default profile can be deleted from the manager and its data is removed', async ({
+    window,
+    devHome,
+  }) => {
+    const path = require('path');
+    const fs = require('fs');
+    const defaultDir = path.join(devHome, 'Profiles', 'default');
+
+    // First run as `work` still registered `default` alongside it.
+    expect(await findProfile(window, (p) => p.id === 'work' && p.isActive)).not.toBeNull();
+    expect(await findProfile(window, (p) => p.id === 'default' && !p.isActive)).not.toBeNull();
+    expect(fs.existsSync(defaultDir)).toBe(true);
+
+    await openManager(window);
+    await expect.poll(() => hasTrash(window, 'default')).toBe(true);
+    // The active profile never offers delete.
+    expect(await hasTrash(window, 'work')).toBe(false);
+
+    await managerEval(
+      window,
+      `document.querySelector('[data-profile-id="default"] [data-delete-profile]').click(); true`
+    );
+    await expect
+      .poll(() => managerEval(window, `document.getElementById('delete-modal').hidden === false`))
+      .toBe(true);
+    await expect
+      .poll(
+        () =>
+          managerEval(window, `document.querySelector('[data-delete-confirm]').disabled === false`),
+        { message: 'waiting for the delete-confirm button to arm', timeout: 5_000 }
+      )
+      .toBe(true);
+    await managerEval(window, `document.querySelector('[data-delete-confirm]').click(); true`);
+
+    // Gone from the catalog, the manager, and the disk.
+    await expect
+      .poll(async () => (await findProfile(window, (p) => p.id === 'default')) !== null)
+      .toBe(false);
+    await expect
+      .poll(() => managerEval(window, `!document.querySelector('[data-profile-id="default"]')`))
+      .toBe(true);
+    expect(fs.existsSync(defaultDir)).toBe(false);
+
+    // `work` is now the only profile: still active, still no trash — the app
+    // can never be left with zero profiles.
+    expect(await profileNames(window)).toEqual(['Work']);
+    expect(await hasTrash(window, 'work')).toBe(false);
+  });
+});

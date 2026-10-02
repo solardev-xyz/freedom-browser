@@ -41,6 +41,9 @@ if (!app.isPackaged) {
 
 app.name = appName;
 app.setName(appName);
+// Before any window exists: a source-tree run must not borrow the installed
+// app's WM_CLASS/app_id from package.json's desktopName (issue #142).
+require('./linux-desktop-name').applyLinuxDesktopName(app);
 
 // E2E test mode (Playwright). `FREEDOM_TEST_MODE=1` activates the
 // fixture-driven harness in src/main/test-harness.js (stubbed protocols,
@@ -339,6 +342,7 @@ const {
 const { registerExternalProtocolIpc } = require('./external-protocol');
 const { registerPopupBlockerIpc } = require('./popup-blocker');
 const { registerSwarmIpc } = require('./swarm/stamp-service');
+const { registerPublishSetupIpc } = require('./swarm/publish-setup-service');
 const { registerPublishIpc } = require('./swarm/publish-service');
 const {
   registerPublishHistoryIpc,
@@ -500,6 +504,7 @@ async function bootstrap() {
   registerOnchainProvenanceIpc();
   paymentHistory.registerPaymentHistoryIpc();
   registerSwarmIpc();
+  registerPublishSetupIpc();
   registerPublishIpc();
   registerPublishHistoryIpc();
   registerSwarmPermissionsIpc();

@@ -2,7 +2,9 @@
  * The one way this app dials a configured content-node endpoint: the external
  * IPFS gateway (`ipfs-manager.js`) and the speculative gateway warm-up
  * (`ens-prefetch.js`, for the Ant API too — it is configurable to a remote
- * host in exactly the same way).
+ * host in exactly the same way). ENS CCIP-Read gateways (`ens/ccip-fetch.js`)
+ * dial through `netGatewayFetch` too (#359): their URLs are named by the
+ * contract being resolved and can sit on a `.onion` host just the same.
  *
  * WHY THIS EXISTS
  *
@@ -160,6 +162,77 @@ async function assertOnionRoutable(url, deps) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Which requests on the session are this transport's own
+//
+// A `net.request` dial goes through the default session's `webRequest`
+// listeners like any page request (`webrequest-dispatcher.js`), so the
+// page-facing handlers there see gateway and CCIP-Read traffic too: adblock
+// would judge it as a third-party `other` request (an ENS name's offchain
+// resolution — or an `ipfs://` load — could then hinge on filter-list content)
+// and x402's detector logs the URL of any unattributed 402 (for a CCIP GET that
+// is `{sender}/{data}`, i.e. the DNS-encoded name being resolved, which
+// `ccip-fetch.js` promises never to log). undici never reached those listeners.
+//
+// Chromium hands the listeners no header we could tag and no request id we
+// know in advance, so the transport records the canonical URL of every dial it
+// has in flight; `isGatewayTransportRequest(details)` matches a listener's
+// `details` against that set. It only ever matches a request with no
+// `webContentsId` — a page's (or tab's) own request for the same URL at the
+// same moment still gets every page-level handler. A URL Chromium canonicalises
+// differently from WHATWG `URL` simply doesn't match, i.e. falls back to the
+// handlers seeing it, never the other way round.
+//
+// A dial is tracked from before the request exists until its response headers
+// are back (or it fails, redirects, or is aborted) — not until its body ends.
+// The only listeners that consult the set run on `onBeforeRequest` (adblock)
+// and `onHeadersReceived` (x402-detect/receipt), and Chromium runs both before
+// `net.request` emits `response`, so nothing after that point needs the match.
+// Holding it until the body ended would let a caller that abandons a body
+// without reading or cancelling it (`if (!res.ok) return null`) pin the URL in
+// the set forever, exempting every later unattributed request for it (a
+// service worker's, say) from adblock and x402-detect.
+// ---------------------------------------------------------------------------
+
+const inFlightDials = new Map(); // canonical href -> number of live dials
+
+function canonicalUrl(url) {
+  try {
+    return new URL(String(url)).href;
+  } catch {
+    return null;
+  }
+}
+
+// Returns an idempotent release, called once the dial is over.
+function trackInFlightDial(url) {
+  const key = canonicalUrl(url);
+  if (key == null) return () => {};
+  inFlightDials.set(key, (inFlightDials.get(key) || 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (inFlightDials.get(key) || 0) - 1;
+    if (left > 0) inFlightDials.set(key, left);
+    else inFlightDials.delete(key);
+  };
+}
+
+/**
+ * True when a `session.webRequest` listener's `details` belong to a dial this
+ * transport has in flight (the app's own gateway / CCIP-Read traffic), not to
+ * anything a page asked for.
+ *
+ * @param {{url?: string, webContentsId?: number}} details
+ */
+function isGatewayTransportRequest(details) {
+  if (!details || inFlightDials.size === 0) return false;
+  if (typeof details.webContentsId === 'number' && details.webContentsId >= 0) return false;
+  const key = canonicalUrl(details.url);
+  return key != null && inFlightDials.has(key);
+}
+
 // Statuses the fetch spec forbids a body on. Chromium delivers no body for
 // them either, and `new Response(body, { status })` throws if one is passed.
 // The spec's list also names the informational 101/103, but they are
@@ -229,23 +302,41 @@ function defaultNetRequest(options) {
  * `fetch`-shaped GET/HEAD over Chromium's network stack, so the request
  * follows the session's proxy configuration.
  *
- * Supports exactly what the external gateway path uses: `method`, `headers`,
- * `signal` and `redirect: 'manual'`. Any other redirect mode is rejected
- * outright — `follow` on this path is the SSRF hole `redirect: 'manual'` was
- * added to close (a gateway answering `302 Location: http://127.0.0.1:1633/…`
- * would have Freedom fetch the user's own loopback services and hand the body
- * back under the `ipfs://` origin), so it must not be reachable by accident.
+ * Supports exactly what its callers use: `method`, `headers`, `signal`, a
+ * string/Buffer `body` (CCIP-Read POSTs one; never on GET/HEAD), and
+ * `redirect: 'manual'` (the IPFS gateway paths) or `redirect: 'error'` (CCIP).
+ * `follow` is rejected outright — on the gateway path it is the SSRF hole
+ * `redirect: 'manual'` was added to close (a gateway answering `302 Location:
+ * http://127.0.0.1:1633/…` would have Freedom fetch the user's own loopback
+ * services and hand the body back under the `ipfs://` origin), and on the CCIP
+ * path it would let a resolver-named HTTPS URL bounce to HTTP or to a host
+ * `ccipReadFetch` refuses to dial — so it must not be reachable by accident.
+ *
+ * Both modes dial Chromium with `redirect: 'manual'`, so a hop is never taken
+ * in either; they differ only in what the caller gets back. `manual` answers
+ * with the 3xx itself, `error` rejects with a `TypeError` the way undici's
+ * `fetch(url, { redirect: 'error' })` does.
  *
  * @param {string} url
- * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string}} init
+ * @param {{method?: string, headers?: Headers, signal?: AbortSignal, redirect?: string, body?: string|Buffer}} init
  * @param {{requestImpl?: Function, resolveProxy?: Function}} deps - test seams for
  *   `net.request` and `session.resolveProxy`
  * @returns {Promise<Response>}
  */
 async function netGatewayFetch(url, init = {}, deps = {}) {
-  const { method = 'GET', headers, signal, redirect = 'manual' } = init;
-  if (redirect !== 'manual') {
-    throw new Error(`gateway transport supports redirect: 'manual' only (got '${redirect}')`);
+  const { method = 'GET', headers, signal, redirect = 'manual', body: requestBody } = init;
+  if (redirect !== 'manual' && redirect !== 'error') {
+    throw new Error(
+      `gateway transport supports redirect: 'manual' or 'error' only (got '${redirect}')`
+    );
+  }
+  if (requestBody != null) {
+    if (method === 'GET' || method === 'HEAD') {
+      throw new TypeError(`a ${method} request cannot carry a body`);
+    }
+    if (typeof requestBody !== 'string' && !Buffer.isBuffer(requestBody)) {
+      throw new TypeError('gateway transport accepts a string or Buffer body only');
+    }
   }
   if (signal?.aborted) throw abortError();
   // Refused before the request exists, so Chromium is never asked to resolve
@@ -270,35 +361,48 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       return;
     }
 
-    const request = requestImpl({
-      method,
-      url,
-      redirect: 'manual',
-      // Nothing from the session but its proxy policy: no cookies and no
-      // stored credentials travel to a third-party gateway, matching what
-      // undici sent (nothing) on this path.
-      credentials: 'omit',
-      useSessionCookies: false,
-      // Neither read from nor written to Chromium's HTTP cache — undici had no
-      // cache at all, and both halves of that matter here:
-      //  - Kubo serves every `/ipfs/<cid>` (the reachability probe's
-      //    `bafkqaaa` included) with `Cache-Control: public, max-age=29030400,
-      //    immutable`, so a cached 200 would answer `probeExternalGateway`
-      //    forever — a dead remote gateway would read healthy across restarts
-      //    and the unreachable-status/retry path (#351) would never arm.
-      //  - `ipfs://` loads from a private window come through this same
-      //    handler, so storing would write visited CIDs, gateway host and page
-      //    bytes into the *default* profile's on-disk cache — as would
-      //    `ens-prefetch.js`, for content the user only ever resolved.
-      cache: 'no-store',
-      // Straight to the network — never back into a registered `http(s)`
-      // protocol handler (the test harness registers one).
-      bypassCustomProtocolHandlers: true,
-    });
+    // Registered before the request exists, so its very first webRequest
+    // event (onBeforeRequest) already matches; released as soon as response
+    // headers arrive (see the tracking note above), and by `detach`, which
+    // every other terminal path (cancel, redirect, failure) runs.
+    const releaseDial = trackInFlightDial(url);
+    let request;
+    try {
+      request = requestImpl({
+        method,
+        url,
+        redirect: 'manual',
+        // Nothing from the session but its proxy policy: no cookies and no
+        // stored credentials travel to a third-party gateway, matching what
+        // undici sent (nothing) on this path.
+        credentials: 'omit',
+        useSessionCookies: false,
+        // Neither read from nor written to Chromium's HTTP cache — undici had no
+        // cache at all, and both halves of that matter here:
+        //  - Kubo serves every `/ipfs/<cid>` (the reachability probe's
+        //    `bafkqaaa` included) with `Cache-Control: public, max-age=29030400,
+        //    immutable`, so a cached 200 would answer `probeExternalGateway`
+        //    forever — a dead remote gateway would read healthy across restarts
+        //    and the unreachable-status/retry path (#351) would never arm.
+        //  - `ipfs://` loads from a private window come through this same
+        //    handler, so storing would write visited CIDs, gateway host and page
+        //    bytes into the *default* profile's on-disk cache — as would
+        //    `ens-prefetch.js`, for content the user only ever resolved.
+        cache: 'no-store',
+        // Straight to the network — never back into a registered `http(s)`
+        // protocol handler (the test harness registers one).
+        bypassCustomProtocolHandlers: true,
+      });
+    } catch (err) {
+      releaseDial();
+      reject(err);
+      return;
+    }
 
     const detach = () => {
       if (onAbort && signal) signal.removeEventListener('abort', onAbort);
       onAbort = null;
+      releaseDial();
     };
     const abortRequest = () => {
       try {
@@ -335,14 +439,19 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    // `redirect: 'manual'`: the hop is reported, never taken. Aborting here is
-    // what stops Chromium from following it (an unanswered `redirect` event
-    // leaves the request hanging), and the 3xx goes back to the caller with
-    // its headers so `Location` can be rewritten into the `ipfs://` space.
+    // The hop is reported, never taken. Aborting here is what stops Chromium
+    // from following it (an unanswered `redirect` event leaves the request
+    // hanging). Under `redirect: 'manual'` the 3xx goes back to the caller with
+    // its headers so `Location` can be rewritten into the `ipfs://` space;
+    // under `redirect: 'error'` the request fails, as undici's would.
     request.on('redirect', (status, _method, _redirectUrl, responseHeaders) => {
       abortRequest();
       detach();
       if (settled) return;
+      if (redirect === 'error') {
+        fail(new TypeError(`redirect refused (status ${status}) under redirect: 'error'`));
+        return;
+      }
       try {
         succeed(buildResponse(null, { status, headers: headersFromNetResponse(responseHeaders) }));
       } catch (err) {
@@ -351,6 +460,10 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
     });
 
     request.on('response', (response) => {
+      // onBeforeRequest and onHeadersReceived — the only listeners that ask
+      // `isGatewayTransportRequest` — have both run by now. Released here, not
+      // when the body ends, so an abandoned body cannot pin the URL.
+      releaseDial();
       // Every response this handler abandons (drained or destroyed) still needs
       // an 'error' listener: it is an EventEmitter, so a socket error emitted on
       // one with no listener is an uncaught main-process exception, not a failed
@@ -436,6 +549,7 @@ async function netGatewayFetch(url, init = {}, deps = {}) {
       for (const [name, value] of entries) {
         request.setHeader(name, value);
       }
+      if (requestBody != null) request.write(requestBody);
       request.end();
     } catch (err) {
       // The request exists but was never ended: settle it, or a rejected
@@ -473,4 +587,5 @@ module.exports = {
   isLoopbackGatewayUrl,
   isOnionHostname,
   isOnionGatewayUrl,
+  isGatewayTransportRequest,
 };

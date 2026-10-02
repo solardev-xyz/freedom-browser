@@ -235,6 +235,41 @@ test('conflicting combos warn with a swap offer instead of silently rebinding', 
   expect(await effectiveAccelerator(window, 'tab.close')).toBe('CmdOrCtrl+W');
 });
 
+// #205: on a German layout Shift+0 types '=', so the browser reports
+// { key: '=', code: 'Digit0' } for Cmd/Ctrl+Shift+0. The recorder stores the
+// code-based Ctrl+Shift+0, but the keydown matcher would also fire Zoom In's
+// fixed Cmd/Ctrl+Shift+= alias on that press — so the preview must name Zoom
+// In as a conflict, with no swap (an alias can't be swapped away).
+test('a German Cmd/Ctrl+Shift+0 is flagged as taken by Zoom In, with no swap', async ({
+  window,
+}) => {
+  await openShortcutsSettings(window);
+  await recordBinding(window, 'view.focusAddressBar', '=', 'Digit0');
+
+  const conflictBanner = () =>
+    inSettingsPage(
+      window,
+      `(() => {
+         const conflict = document.querySelector('.shortcut-conflict');
+         if (!conflict) return null;
+         return {
+           text: conflict.textContent.replace(/\\s+/g, ' ').trim(),
+           hasSwap: !!conflict.querySelector('[data-action="swap"]'),
+         };
+       })()`
+    );
+  await expect.poll(conflictBanner).not.toBeNull();
+  const banner = await conflictBanner();
+  expect(banner.text).toContain('Zoom in');
+  expect(banner.hasSwap).toBe(false);
+
+  await inSettingsPage(
+    window,
+    `(() => { document.querySelector('[data-action="cancel-conflict"]').click(); return true; })()`
+  );
+  expect(await effectiveAccelerator(window, 'view.focusAddressBar')).toBe('CmdOrCtrl+L');
+});
+
 test('search filters the shortcut list', async ({ window }) => {
   await openShortcutsSettings(window);
 

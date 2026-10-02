@@ -85,8 +85,9 @@ function artiBinaryName(platform = process.platform) {
  * 'sqlite3.lib'` (observed 2026-09-09 on `windows-latest`, MSVC 14.51, Arti
  * 2.6.0). Arti's own `static-sqlite` feature switches rusqlite to its bundled
  * amalgamation, which the MSVC toolchain compiles as part of the build. macOS
- * and Linux keep linking the system library they always have — changing what
- * they link is not this script's business.
+ * uses it too, so a pkg-config-discovered Homebrew SQLite can never end up
+ * linked into the shipped binary (see cargoEnv). Linux keeps linking the
+ * system library it always has.
  *
  * Re-check this list when bumping the pin: it is Arti's feature name, not a
  * dependency's, and a major version may rename or drop it.
@@ -94,7 +95,45 @@ function artiBinaryName(platform = process.platform) {
  * @returns {string[]}
  */
 function cargoFeatures(platform = process.platform) {
-  return platform === 'win32' ? ['static-sqlite'] : [];
+  return platform === 'win32' || platform === 'darwin' ? ['static-sqlite'] : [];
+}
+
+/**
+ * Extra environment for the cargo build on a given host.
+ *
+ * macOS: the shipped binary may link only libraries every Mac has (see
+ * nonSystemDylibs below). The release runners have Homebrew's xz installed,
+ * and `lzma-sys` links a pkg-config-discovered liblzma dynamically, so the
+ * 2.6.0 nightly shipped an `arti` that loaded
+ * `/opt/homebrew/opt/xz/lib/liblzma.5.dylib`. That fails on every Mac without
+ * Homebrew xz, and on Macs *with* it once library validation is on (O-11
+ * dropped `disable-library-validation`), because Homebrew's dylib carries a
+ * different Team ID. `LZMA_API_STATIC` makes lzma-sys build and link its
+ * bundled xz statically instead.
+ * @param {NodeJS.Platform} [platform]
+ * @returns {Record<string, string>}
+ */
+function cargoEnv(platform = process.platform) {
+  return platform === 'darwin' ? { LZMA_API_STATIC: '1' } : {};
+}
+
+// Where a dylib a shipped macOS binary links may live: the OS itself.
+const MAC_SYSTEM_DYLIB_PREFIXES = ['/usr/lib/', '/System/Library/'];
+
+/**
+ * Dylibs in `otool -L` output that are not part of macOS itself — anything
+ * under /opt/homebrew, /usr/local, a build tree, or an @rpath the app does not
+ * provide. The first line of `otool -L` names the file itself and is skipped.
+ * @param {string} otoolOutput
+ * @returns {string[]}
+ */
+function nonSystemDylibs(otoolOutput) {
+  return String(otoolOutput)
+    .split('\n')
+    .slice(1)
+    .map((line) => line.trim().replace(/\s+\(compatibility version.*$/, ''))
+    .filter(Boolean)
+    .filter((lib) => !MAC_SYSTEM_DYLIB_PREFIXES.some((prefix) => lib.startsWith(prefix)));
 }
 
 /**
@@ -221,7 +260,10 @@ const CARGO_STDERR_TAIL_BYTES = 64 * 1024;
 function runCargoInstall(args, options = {}) {
   const spawnFn = options.spawnFn || spawn;
   return new Promise((resolve, reject) => {
-    const child = spawnFn(CARGO_BIN, args, { stdio: ['inherit', 'inherit', 'pipe'] });
+    const child = spawnFn(CARGO_BIN, args, {
+      stdio: ['inherit', 'inherit', 'pipe'],
+      env: { ...process.env, ...cargoEnv() },
+    });
     let stderr = '';
     child.stderr.on('data', (chunk) => {
       process.stderr.write(chunk);
@@ -302,12 +344,25 @@ async function main() {
     if (!fs.existsSync(builtBin)) {
       console.error(`\nError: arti binary not found at ${builtBin} after build.`);
     } else {
-      fs.copyFileSync(builtBin, destBin);
-      if (process.platform !== 'win32') {
-        fs.chmodSync(destBin, 0o755);
+      const foreign =
+        process.platform === 'darwin'
+          ? nonSystemDylibs(execFileSync('otool', ['-L', builtBin], { encoding: 'utf8' }))
+          : [];
+      if (foreign.length > 0) {
+        console.error(
+          `\nError: the built arti links libraries that are not part of macOS:\n` +
+            foreign.map((lib) => `  ${lib}`).join('\n') +
+            '\nIt would fail to launch on Macs without them (and under library\n' +
+            'validation even with them). Link them statically; see cargoEnv().'
+        );
+      } else {
+        fs.copyFileSync(builtBin, destBin);
+        if (process.platform !== 'win32') {
+          fs.chmodSync(destBin, 0o755);
+        }
+        console.log(`\nInstalled arti for ${target} -> ${destBin}`);
+        ok = true;
       }
-      console.log(`\nInstalled arti for ${target} -> ${destBin}`);
-      ok = true;
     }
   } catch (err) {
     console.error(`\nError: cargo install arti failed: ${err.message}`);
@@ -340,6 +395,8 @@ module.exports = {
   platformKey,
   artiBinaryName,
   cargoFeatures,
+  cargoEnv,
+  nonSystemDylibs,
   installArgs,
   isRetryableCargoFailure,
   runCargoInstall,

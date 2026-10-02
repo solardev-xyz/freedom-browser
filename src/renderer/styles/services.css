@@ -284,8 +284,17 @@
   color: var(--muted);
 }
 
+/* The IPFS section shows the managed node's counters or an external node's
+   peers/bandwidth, never both (#417). */
+.ipfs-info.external .ipfs-managed-stat,
+.ipfs-info:not(.external) .ipfs-external-stat {
+  display: none;
+}
+
 #ipfs-active-requests-count,
 #ipfs-data-read,
+#ipfs-peers-count,
+#ipfs-bandwidth,
 #ipfs-version-text {
   text-align: right;
 }

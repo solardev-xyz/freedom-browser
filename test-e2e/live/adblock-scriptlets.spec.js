@@ -2,7 +2,8 @@
 // against the real, sha256-pinned uBlock Origin resources, the webview preload
 // fetches them synchronously and runs them in the page's main world before the
 // page's own scripts — in the main frame and in a cross-origin iframe (#410),
-// and in same-origin about:blank / srcdoc frames the page can reach into.
+// and in same-origin about:blank / srcdoc frames the page can reach into —
+// through contentWindow/contentDocument or as window[i] / frames[i] (#414).
 //
 // CI can't depend on youtube.com, so a local server plays it: a page shaped
 // like a watch page (a `ytInitialPlayerResponse` parsed from JSON, a fetch of
@@ -105,9 +106,79 @@ const sameOriginFramesScript = `
   var nested = blank.contentDocument.createElement('iframe');
   blank.contentDocument.documentElement.appendChild(nested);
   window.__page.blankNested = Object.keys(nested.contentWindow.JSON.parse(${PLAYER_JSON})).sort();
+  // No accessor at all (#414): a frame reached as window[i] / frames[i]
+  // straight after insertion — through appendChild, innerHTML, and one whose
+  // src is a cross-origin URL (until that navigation commits, the frame is a
+  // same-origin about:blank realm), plus a nested frame reached as frames[i]
+  // inside the first one.
+  var last = function () { return window[window.length - 1]; };
+  document.documentElement.appendChild(document.createElement('iframe'));
+  window.__page.framesIndex = Object.keys(last().JSON.parse(${PLAYER_JSON})).sort();
+  var holder = document.createElement('div');
+  document.documentElement.appendChild(holder);
+  holder.innerHTML = '<iframe></iframe>';
+  window.__page.framesInnerHTML = Object.keys(frames[frames.length - 1].JSON.parse(${PLAYER_JSON})).sort();
+  var pending = document.createElement('iframe');
+  pending.src = 'http://${EMBED_HOST}:' + location.port + '/embed?pending';
+  document.documentElement.appendChild(pending);
+  window.__page.framesPending = Object.keys(last().JSON.parse(${PLAYER_JSON})).sort();
+  var outer = last();
+  outer.document.body.appendChild(outer.document.createElement('iframe'));
+  window.__page.framesNested = Object.keys(outer[0].JSON.parse(${PLAYER_JSON})).sort();
+  // Insertion APIs outside Node/ParentNode (#466 R1-M1): a frame carried in
+  // by a table's caption setter, and by select.add inside an <option>.
+  var table = document.createElement('table');
+  document.documentElement.appendChild(table);
+  var caption = document.createElement('caption');
+  caption.appendChild(document.createElement('iframe'));
+  table.caption = caption;
+  window.__page.framesTable = Object.keys(last().JSON.parse(${PLAYER_JSON})).sort();
+  var select = document.createElement('select');
+  document.documentElement.appendChild(select);
+  var option = document.createElement('option');
+  option.appendChild(document.createElement('iframe'));
+  select.add(option);
+  window.__page.framesSelect = Object.keys(last().JSON.parse(${PLAYER_JSON})).sort();
+  // Page code running inside the insertion itself (#466 R2-M1): a custom
+  // element's connectedCallback fires at the end of appendChild, with the
+  // fragment's iframe already in the document.
+  customElements.define('x-frames-probe', class extends HTMLElement {
+    connectedCallback() {
+      window.__page.framesCustomElement = Object.keys(frames[frames.length - 1].JSON.parse(${PLAYER_JSON})).sort();
+    }
+  });
+  var fragment = document.createDocumentFragment();
+  fragment.append(document.createElement('iframe'), document.createElement('x-frames-probe'));
+  document.documentElement.appendChild(fragment);
+  // Form-associated reactions (#466 R3-M1): run in the same scope, when the
+  // fragment lands in a <form> / a disabled <fieldset>.
+  customElements.define('x-frames-form', class extends HTMLElement {
+    static formAssociated = true;
+    formAssociatedCallback(form) {
+      if (form) window.__page.framesFormAssociated = Object.keys(frames[frames.length - 1].JSON.parse(${PLAYER_JSON})).sort();
+    }
+    formDisabledCallback(disabled) {
+      if (disabled) window.__page.framesFormDisabled = Object.keys(frames[frames.length - 1].JSON.parse(${PLAYER_JSON})).sort();
+    }
+  });
+  var form = document.createElement('form');
+  document.documentElement.appendChild(form);
+  fragment = document.createDocumentFragment();
+  fragment.append(document.createElement('iframe'), document.createElement('x-frames-form'));
+  form.appendChild(fragment);
+  var fieldset = document.createElement('fieldset');
+  fieldset.disabled = true;
+  document.documentElement.appendChild(fieldset);
+  fragment = document.createDocumentFragment();
+  fragment.append(document.createElement('iframe'), document.createElement('x-frames-form'));
+  fieldset.appendChild(fragment);
   var blob = document.createElement('iframe');
   blob.src = URL.createObjectURL(new Blob([${JSON.stringify(blobHtml).replace(/</g, '\\u003c')}], { type: 'text/html' }));
   document.documentElement.appendChild(blob);
+`;
+// A frame the parser inserted, read as frames[i] by the next inline script.
+const parserFramesScript = `
+  window.__page.framesParser = Object.keys(frames[frames.length - 1].JSON.parse(${PLAYER_JSON})).sort();
 `;
 const escapeAttr = (html) => html.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 
@@ -145,6 +216,8 @@ test.beforeAll(async () => {
         ? `<iframe src="http://${EMBED_HOST}:${port}/embed"></iframe>
            <script>addEventListener('message', (e) => { window.__embed = e.data; });</script>
            <script>${sameOriginFramesScript}</script>
+           <iframe></iframe>
+           <script>${parserFramesScript}</script>
            <iframe srcdoc="${escapeAttr(srcdocHtml)}"></iframe>`
         : '';
     res.end(`<!doctype html><title>scriptlets e2e ${label}</title>
@@ -249,6 +322,16 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       blank: PRUNED,
       blankDoc: PRUNED,
       blankNested: PRUNED,
+      framesIndex: PRUNED,
+      framesInnerHTML: PRUNED,
+      framesPending: PRUNED,
+      framesNested: PRUNED,
+      framesTable: PRUNED,
+      framesSelect: PRUNED,
+      framesCustomElement: PRUNED,
+      framesFormAssociated: PRUNED,
+      framesFormDisabled: PRUNED,
+      framesParser: PRUNED,
     },
     embed: { initial: PRUNED, api: PRUNED, wallet: false },
     srcdoc: PRUNED,
@@ -273,6 +356,16 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       blank: UNTOUCHED,
       blankDoc: UNTOUCHED,
       blankNested: UNTOUCHED,
+      framesIndex: UNTOUCHED,
+      framesInnerHTML: UNTOUCHED,
+      framesPending: UNTOUCHED,
+      framesNested: UNTOUCHED,
+      framesTable: UNTOUCHED,
+      framesSelect: UNTOUCHED,
+      framesCustomElement: UNTOUCHED,
+      framesFormAssociated: UNTOUCHED,
+      framesFormDisabled: UNTOUCHED,
+      framesParser: UNTOUCHED,
     },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },
     srcdoc: UNTOUCHED,
@@ -301,6 +394,16 @@ test('prunes ad fields before page scripts read them; toggle and allowlist turn 
       blank: UNTOUCHED,
       blankDoc: UNTOUCHED,
       blankNested: UNTOUCHED,
+      framesIndex: UNTOUCHED,
+      framesInnerHTML: UNTOUCHED,
+      framesPending: UNTOUCHED,
+      framesNested: UNTOUCHED,
+      framesTable: UNTOUCHED,
+      framesSelect: UNTOUCHED,
+      framesCustomElement: UNTOUCHED,
+      framesFormAssociated: UNTOUCHED,
+      framesFormDisabled: UNTOUCHED,
+      framesParser: UNTOUCHED,
     },
     embed: { initial: UNTOUCHED, api: UNTOUCHED, wallet: false },
     srcdoc: UNTOUCHED,

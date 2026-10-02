@@ -1,201 +1,153 @@
 /**
  * Stamp Manager Module
  *
- * Sidebar sub-screen for purchasing and managing Swarm postage batches.
- * Shows existing batches when available, or the purchase form when empty.
- * Purchase state machine: idle → estimating → ready_to_buy →
- * purchasing → waiting_for_usable → usable.
+ * The sidebar "Storage" screen: the node's postage batches, each with extend
+ * and grow options priced in xDAI, and a warning when the chequebook deposit
+ * has run dry. Every purchase goes through the publish setup's pay step
+ * (publish-setup.js), which the main-process setup service drives.
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
 import { refuseSubscreenWhileInFlight } from './signature-flight.js';
-import { formatRawTokenBalance, formatBytes } from './wallet-utils.js';
-import { fetchAntJson } from './ant-api.js';
+import { formatBytes } from './wallet-utils.js';
+import { openPublishSetup } from './publish-setup.js';
+import { formatDays, formatStorageSize } from './swarm-readiness.js';
 
-const PRESETS = [
-  { label: 'Try it out', sizeGB: 1, durationDays: 7, description: '1 GB for 7 days' },
-  { label: 'Small project', sizeGB: 1, durationDays: 30, description: '1 GB for 30 days' },
-  { label: 'Standard', sizeGB: 5, durationDays: 30, description: '5 GB for 30 days' },
-];
-const DEFAULT_PRESET_INDEX = 1;
-const USABLE_POLL_MS = 5000;
-const USABLE_TIMEOUT_MS = 120000;
-
-const STATE = {
-  IDLE: 'idle',
-  ESTIMATING: 'estimating',
-  READY_TO_BUY: 'ready_to_buy',
-  PURCHASING: 'purchasing',
-  WAITING_FOR_USABLE: 'waiting_for_usable',
-  USABLE: 'usable',
-  FAILED: 'failed',
-};
+const TTL_WARN_SECONDS = 7 * 86400; // 7 days
+const TTL_CRITICAL_SECONDS = 86400; // 1 day
 
 // DOM references
 let stampManagerScreen;
 let stampManagerBackBtn;
-let listView;
 let batchListContainer;
-let buyAnotherBtn;
-let purchaseView;
-let presetContainer;
-let costDisplay;
-let costValue;
-let costSpinner;
-let balanceDisplay;
-let purchaseBtn;
-let purchaseStatus;
-let purchaseError;
-let retryBtn;
+let emptyText;
+let buyMoreBtn;
+let depositWarning;
+let depositTopUpBtn;
 
-let currentState = STATE.IDLE;
-let selectedPreset = null;
-let usablePollTimeout = null;
-let pendingBatchId = null;
-let usablePollStart = 0;
 let isOpen = false;
-let estimationId = 0;
+let setupState = null;
+let loadedKey = null;
+let loadRequestId = 0;
 
 export function initStampManager() {
   stampManagerScreen = document.getElementById('sidebar-stamp-manager');
   stampManagerBackBtn = document.getElementById('stamp-manager-back');
-  listView = document.getElementById('stamp-list-view');
   batchListContainer = document.getElementById('stamp-batch-list');
-  buyAnotherBtn = document.getElementById('stamp-buy-another-btn');
-  purchaseView = document.getElementById('stamp-purchase-view');
-  presetContainer = document.getElementById('stamp-presets');
-  costDisplay = document.getElementById('stamp-cost-display');
-  costValue = document.getElementById('stamp-cost-value');
-  costSpinner = document.getElementById('stamp-cost-spinner');
-  balanceDisplay = document.getElementById('stamp-balance');
-  purchaseBtn = document.getElementById('stamp-purchase-btn');
-  purchaseStatus = document.getElementById('stamp-purchase-status');
-  purchaseError = document.getElementById('stamp-purchase-error');
-  retryBtn = document.getElementById('stamp-retry-btn');
+  emptyText = document.getElementById('stamp-list-empty');
+  buyMoreBtn = document.getElementById('stamp-buy-another-btn');
+  depositWarning = document.getElementById('stamp-deposit-warning');
+  depositTopUpBtn = document.getElementById('stamp-deposit-topup');
 
   registerScreenHider(() => closeStampManager());
 
   stampManagerBackBtn?.addEventListener('click', () => closeStampManager());
-  purchaseBtn?.addEventListener('click', () => handlePurchase());
-  retryBtn?.addEventListener('click', () => transitionTo(STATE.IDLE));
-  buyAnotherBtn?.addEventListener('click', () => showPurchaseView());
+  buyMoreBtn?.addEventListener('click', () => {
+    closeStampManager();
+    openPublishSetup();
+  });
+  depositTopUpBtn?.addEventListener('click', () => startOperation({ kind: 'deposit' }));
 
-  buildPresetButtons();
+  window.publishSetup?.onState((state) => {
+    setupState = state;
+    if (!isOpen) return;
+    renderDepositWarning();
+    if (stampsKey(state) !== loadedKey) loadBatchList();
+  });
 }
 
-export function openStampManager() {
+export async function openStampManager() {
   if (refuseSubscreenWhileInFlight('Stamp manager screen')) return;
 
   walletState.identityView?.classList.add('hidden');
   stampManagerScreen?.classList.remove('hidden');
   isOpen = true;
-  pendingBatchId = null;
+  loadedKey = null;
+  void window.publishSetup?.watch('storage', true);
 
+  renderDepositWarning();
   loadBatchList();
+  try {
+    setupState = (await window.publishSetup?.getState()) || setupState;
+  } catch {
+    // The push subscription fills it in.
+  }
+  if (isOpen) renderDepositWarning();
 }
 
 export function closeStampManager() {
+  if (isOpen) void window.publishSetup?.watch('storage', false);
   isOpen = false;
-  stopUsablePoll();
   stampManagerScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
 }
 
-// ============================================
-// View switching
-// ============================================
-
-function showListView() {
-  listView?.classList.remove('hidden');
-  purchaseView?.classList.add('hidden');
+// A finished purchase or a change in the node's batches reloads the list.
+function stampsKey(state) {
+  const op = state?.operation;
+  return `${state?.stamps?.usable}/${state?.stamps?.total}/${op?.id}:${op?.phase}`;
 }
 
-function showPurchaseView() {
-  listView?.classList.add('hidden');
-  purchaseView?.classList.remove('hidden');
-
-  transitionTo(STATE.IDLE);
-  selectPreset(DEFAULT_PRESET_INDEX);
-  refreshBalance();
+function renderDepositWarning() {
+  const chequebook = setupState?.account?.chequebook;
+  const dry = Boolean(chequebook?.needsTopUp) && chequebook.managed !== false;
+  depositWarning?.classList.toggle('hidden', !dry);
+  depositTopUpBtn?.classList.toggle('hidden', !dry || !setupState?.canBuy);
 }
 
 async function loadBatchList() {
+  const requestId = ++loadRequestId;
+  loadedKey = stampsKey(setupState);
   try {
     const result = await window.swarmNode?.getStamps();
-    if (!isOpen) return;
-
-    if (result?.success && result.stamps.length > 0) {
-      renderBatchList(result.stamps);
-      showListView();
-    } else {
-      showPurchaseView();
-    }
+    if (!isOpen || requestId !== loadRequestId) return;
+    const stamps = result?.success ? result.stamps : [];
+    renderBatchList(stamps);
   } catch {
-    showPurchaseView();
+    if (!isOpen || requestId !== loadRequestId) return;
+    renderBatchList([]);
   }
+}
+
+async function startOperation(request) {
+  const result = await window.publishSetup?.arm(request);
+  // A refusal (another purchase still running, say) is shown on the setup
+  // screen, over the operation that is in the way.
+  const error = result && !result.ok ? result.error || 'Could not start.' : null;
+  closeStampManager();
+  openPublishSetup({ error });
 }
 
 // ============================================
 // Batch list rendering
 // ============================================
 
-const DURATION_PRESETS = [
-  { label: '+7 days', days: 7 },
-  { label: '+30 days', days: 30 },
-  { label: '+90 days', days: 90 },
-];
-
-/**
- * Generate size extension presets that are strictly larger than the
- * current batch size. bee-js treats size as ABSOLUTE (new total).
- */
-function getSizePresetsForBatch(currentSizeBytes) {
-  const currentGB = currentSizeBytes / (1000 * 1000 * 1000); // bee-js uses 1000-based units
-  const candidates = [1, 2, 5, 10, 20, 50, 100];
-  const presets = [];
-  for (const gb of candidates) {
-    if (gb > currentGB && presets.length < 3) {
-      presets.push({ label: `${gb} GB`, gb });
-    }
-  }
-  // Fallback if batch is already very large
-  if (presets.length === 0) {
-    const next = Math.ceil(currentGB / 10) * 10 + 10;
-    presets.push({ label: `${next} GB`, gb: next });
-  }
-  return presets;
-}
-
-const TTL_WARN_SECONDS = 7 * 86400; // 7 days
-const TTL_CRITICAL_SECONDS = 86400; // 1 day
-
 function renderBatchList(stamps) {
   if (!batchListContainer) return;
 
   batchListContainer.innerHTML = '';
+  emptyText?.classList.toggle('hidden', stamps.length > 0);
+  if (buyMoreBtn) buyMoreBtn.textContent = stamps.length > 0 ? 'Buy More Storage' : 'Buy Storage';
+  buyMoreBtn?.classList.toggle('hidden', setupState?.canBuy === false);
 
   stamps.forEach((batch) => {
     const card = document.createElement('div');
     card.className = 'stamp-batch-card';
-    if (!batch.usable) card.classList.add('unusable');
+    const status = batch.usable ? 'usable' : batch.pending ? 'pending' : 'unusable';
+    if (status === 'unusable') card.classList.add('unusable');
 
-    // Status badge
     const statusBadge = document.createElement('div');
     statusBadge.className = 'stamp-batch-status';
-    statusBadge.dataset.status = batch.usable ? 'usable' : 'unusable';
-    statusBadge.textContent = batch.usable ? 'Usable' : 'Not usable';
+    statusBadge.dataset.status = status;
+    statusBadge.textContent = { usable: 'Usable', pending: 'Confirming', unusable: 'Not usable' }[
+      status
+    ];
     card.appendChild(statusBadge);
 
-    // Size info
-    const sizeRow = createRow('Size', batch.sizeBytes > 0 ? formatBytes(batch.sizeBytes) : '--');
-    card.appendChild(sizeRow);
-
-    // Usage
+    card.appendChild(createRow('Size', batch.sizeBytes > 0 ? formatBytes(batch.sizeBytes) : '--'));
     card.appendChild(createRow('Used', `${batch.usagePercent}%`));
 
-    // TTL with expiry warning
-    const ttlText = formatDuration(batch.ttlSeconds);
-    const ttlRow = createRow('Time remaining', ttlText);
+    const ttlRow = createRow('Time remaining', formatDuration(batch.ttlSeconds));
     const ttlValueEl = ttlRow.querySelector('.stamp-batch-value');
     if (ttlValueEl && batch.ttlSeconds > 0) {
       if (batch.ttlSeconds < TTL_CRITICAL_SECONDS) {
@@ -206,39 +158,45 @@ function renderBatchList(stamps) {
     }
     card.appendChild(ttlRow);
 
-    // Batch ID
     const idRow = document.createElement('div');
     idRow.className = 'stamp-batch-id';
     idRow.textContent = batch.batchId
-      ? `${batch.batchId.slice(0, 8)}\u2026${batch.batchId.slice(-8)}`
+      ? `${batch.batchId.slice(0, 8)}…${batch.batchId.slice(-8)}`
       : '--';
     idRow.title = batch.batchId || '';
     card.appendChild(idRow);
 
-    // Action buttons (only for usable batches)
-    if (batch.usable && batch.batchId) {
+    if (batch.usable && batch.batchId && setupState?.canBuy !== false) {
       const actions = document.createElement('div');
       actions.className = 'stamp-batch-actions';
 
-      const extDurBtn = document.createElement('button');
-      extDurBtn.type = 'button';
-      extDurBtn.className = 'stamp-batch-action-btn';
-      extDurBtn.textContent = 'Extend Duration';
-      extDurBtn.addEventListener('click', () => showExtensionForm(card, batch, 'duration'));
-      actions.appendChild(extDurBtn);
+      const extendBtn = document.createElement('button');
+      extendBtn.type = 'button';
+      extendBtn.className = 'stamp-batch-action-btn';
+      extendBtn.textContent = 'Keep Longer';
+      extendBtn.addEventListener('click', () => showExtensionForm(card, batch, 'duration'));
+      actions.appendChild(extendBtn);
 
-      const extSizeBtn = document.createElement('button');
-      extSizeBtn.type = 'button';
-      extSizeBtn.className = 'stamp-batch-action-btn';
-      extSizeBtn.textContent = 'Extend Size';
-      extSizeBtn.addEventListener('click', () => showExtensionForm(card, batch, 'size'));
-      actions.appendChild(extSizeBtn);
+      if (largerSizes(batch).length > 0) {
+        const growBtn = document.createElement('button');
+        growBtn.type = 'button';
+        growBtn.className = 'stamp-batch-action-btn';
+        growBtn.textContent = 'Make Bigger';
+        growBtn.addEventListener('click', () => showExtensionForm(card, batch, 'size'));
+        actions.appendChild(growBtn);
+      }
 
       card.appendChild(actions);
     }
 
     batchListContainer.appendChild(card);
   });
+}
+
+// The plan sizes above this batch's depth: growing keeps its expiry date.
+function largerSizes(batch) {
+  if (!Number.isInteger(batch.depth)) return [];
+  return (setupState?.plans || []).filter((plan) => plan.depth > batch.depth);
 }
 
 function createRow(label, value) {
@@ -260,65 +218,24 @@ function createRow(label, value) {
 // ============================================
 
 function showExtensionForm(card, batch, type) {
-  // Remove any existing extension form in this card
-  const existing = card.querySelector('.stamp-extend-form');
-  if (existing) existing.remove();
+  card.querySelector('.stamp-extend-form')?.remove();
 
   const form = document.createElement('div');
   form.className = 'stamp-extend-form';
 
-  const presets = type === 'duration' ? DURATION_PRESETS : getSizePresetsForBatch(batch.sizeBytes);
-  const title = type === 'duration' ? 'Extend Duration' : 'Extend Size';
-
   const heading = document.createElement('div');
   heading.className = 'stamp-extend-heading';
-  heading.textContent = title;
+  heading.textContent =
+    type === 'duration' ? 'Keep your storage longer' : 'Make it bigger, same expiry date';
   form.appendChild(heading);
 
   const presetRow = document.createElement('div');
   presetRow.className = 'stamp-extend-presets';
-
-  let selectedValue = null;
-  let extEstimationId = 0;
-
-  presets.forEach((preset, i) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'stamp-extend-preset-btn';
-    btn.textContent = preset.label;
-    btn.addEventListener('click', () => {
-      presetRow.querySelectorAll('.stamp-extend-preset-btn').forEach((b, j) => {
-        b.classList.toggle('selected', j === i);
-      });
-      selectedValue = type === 'duration' ? preset.days : preset.gb;
-      extEstimationId++;
-      estimateExtensionCost(form, batch.batchId, type, selectedValue, extEstimationId, () => extEstimationId);
-    });
-    presetRow.appendChild(btn);
-  });
   form.appendChild(presetRow);
 
-  const costRow = document.createElement('div');
-  costRow.className = 'stamp-extend-cost hidden';
-  costRow.dataset.role = 'cost';
-  form.appendChild(costRow);
-
-  const confirmBtn = document.createElement('button');
-  confirmBtn.type = 'button';
-  confirmBtn.className = 'stamp-extend-confirm-btn';
-  confirmBtn.textContent = 'Confirm';
-  confirmBtn.disabled = true;
-  confirmBtn.dataset.role = 'confirm';
-  confirmBtn.addEventListener('click', () => {
-    if (selectedValue) {
-      executeExtension(form, batch.batchId, type, selectedValue);
-    }
-  });
-  form.appendChild(confirmBtn);
-
   const statusEl = document.createElement('div');
-  statusEl.className = 'stamp-extend-status hidden';
-  statusEl.dataset.role = 'status';
+  statusEl.className = 'stamp-extend-cost';
+  statusEl.textContent = 'Getting prices…';
   form.appendChild(statusEl);
 
   const cancelBtn = document.createElement('button');
@@ -329,78 +246,43 @@ function showExtensionForm(card, batch, type) {
   form.appendChild(cancelBtn);
 
   card.appendChild(form);
+  void loadExtensionOptions(form, presetRow, statusEl, batch, type);
 }
 
-async function estimateExtensionCost(form, batchId, type, value, thisId, getCurrentId) {
-  const costEl = form.querySelector('[data-role="cost"]');
-  const confirmBtn = form.querySelector('[data-role="confirm"]');
-
-  if (costEl) {
-    costEl.textContent = 'Estimating cost\u2026';
-    costEl.classList.remove('hidden');
-  }
-  if (confirmBtn) confirmBtn.disabled = true;
-
+async function loadExtensionOptions(form, presetRow, statusEl, batch, type) {
+  let options;
   try {
-    const result = type === 'duration'
-      ? await window.swarmNode?.getDurationExtensionCost(batchId, value)
-      : await window.swarmNode?.getSizeExtensionCost(batchId, value);
-
-    if (!isOpen || thisId !== getCurrentId()) return;
-
-    if (result?.success) {
-      if (costEl) costEl.textContent = `Cost: ${result.bzz} xBZZ`;
-      if (confirmBtn) confirmBtn.disabled = false;
-    } else {
-      if (costEl) costEl.textContent = result?.error || 'Failed to estimate cost.';
-    }
+    options = await window.publishSetup?.getExtendOptions(batch.batchId, batch.depth);
   } catch (err) {
-    if (!isOpen || thisId !== getCurrentId()) return;
-    if (costEl) costEl.textContent = err.message || 'Failed to estimate cost.';
+    options = { error: err.message };
   }
-}
+  if (!isOpen || !form.isConnected) return;
 
-async function executeExtension(form, batchId, type, value) {
-  const confirmBtn = form.querySelector('[data-role="confirm"]');
-  const statusEl = form.querySelector('[data-role="status"]');
+  const entries =
+    type === 'duration'
+      ? (options?.durations || []).map((option) => ({
+          label: `+${formatDays(option.days)}`,
+          option,
+          request: { kind: 'extend', batchId: batch.batchId, days: option.days },
+        }))
+      : (options?.sizes || []).map((option) => ({
+          label: `Up to ${formatStorageSize(option.safeLimitBytes)}`,
+          option,
+          request: { kind: 'extend', batchId: batch.batchId, days: 0, depth: option.depth },
+        }));
 
-  if (confirmBtn) confirmBtn.disabled = true;
-  if (statusEl) {
-    statusEl.textContent = type === 'duration'
-      ? 'Extending duration\u2026'
-      : 'Extending size\u2026';
-    statusEl.classList.remove('hidden', 'success', 'error');
-  }
+  entries.forEach(({ label, option, request }) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'stamp-extend-preset-btn';
+    btn.textContent = option.quote ? `${label} · ${option.quote.price.display} xDAI` : label;
+    btn.disabled = !option.quote;
+    btn.addEventListener('click', () => startOperation(request));
+    presetRow.appendChild(btn);
+  });
 
-  try {
-    const result = type === 'duration'
-      ? await window.swarmNode?.extendStorageDuration(batchId, value)
-      : await window.swarmNode?.extendStorageSize(batchId, value);
-
-    if (!isOpen) return;
-
-    if (result?.success) {
-      if (statusEl) {
-        statusEl.textContent = 'Extension successful.';
-        statusEl.classList.add('success');
-      }
-      // Refresh the batch list after a short delay
-      setTimeout(() => { if (isOpen) loadBatchList(); }, 2000);
-    } else {
-      if (statusEl) {
-        statusEl.textContent = result?.error || 'Extension failed.';
-        statusEl.classList.add('error');
-      }
-      if (confirmBtn) confirmBtn.disabled = false;
-    }
-  } catch (err) {
-    if (!isOpen) return;
-    if (statusEl) {
-      statusEl.textContent = err.message || 'Extension failed.';
-      statusEl.classList.add('error');
-    }
-    if (confirmBtn) confirmBtn.disabled = false;
-  }
+  const error = options?.error || entries.find((e) => e.option.error)?.option.error;
+  statusEl.textContent = error || 'You pay in xDAI, the same way as for a new plan.';
 }
 
 function formatDuration(seconds) {
@@ -411,248 +293,4 @@ function formatDuration(seconds) {
   if (hours > 0) return `${hours} hour${hours === 1 ? '' : 's'}`;
   const mins = Math.floor(seconds / 60);
   return `${mins} minute${mins === 1 ? '' : 's'}`;
-}
-
-// ============================================
-// Purchase form
-// ============================================
-
-function buildPresetButtons() {
-  if (!presetContainer) return;
-
-  presetContainer.innerHTML = '';
-  PRESETS.forEach((preset, index) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'stamp-preset-btn';
-    btn.dataset.index = index;
-
-    const labelSpan = document.createElement('span');
-    labelSpan.className = 'stamp-preset-label';
-    labelSpan.textContent = preset.label;
-
-    const descSpan = document.createElement('span');
-    descSpan.className = 'stamp-preset-desc';
-    descSpan.textContent = preset.description;
-
-    btn.appendChild(labelSpan);
-    btn.appendChild(descSpan);
-    btn.addEventListener('click', () => selectPreset(index));
-    presetContainer.appendChild(btn);
-  });
-}
-
-function selectPreset(index) {
-  selectedPreset = PRESETS[index];
-  if (!selectedPreset) return;
-
-  presetContainer?.querySelectorAll('.stamp-preset-btn').forEach((btn, i) => {
-    btn.classList.toggle('selected', i === index);
-  });
-
-  transitionTo(STATE.ESTIMATING);
-  estimateCost();
-}
-
-async function estimateCost() {
-  if (!selectedPreset || !window.swarmNode?.getStorageCost) {
-    transitionTo(STATE.FAILED, 'Swarm node API not available.');
-    return;
-  }
-
-  const thisEstimation = ++estimationId;
-
-  try {
-    const result = await window.swarmNode.getStorageCost(
-      selectedPreset.sizeGB,
-      selectedPreset.durationDays
-    );
-
-    if (thisEstimation !== estimationId || !isOpen) return;
-
-    if (!result?.success) {
-      transitionTo(STATE.FAILED, result?.error || 'Failed to estimate cost.');
-      return;
-    }
-
-    if (costValue) {
-      costValue.textContent = `${result.bzz} xBZZ`;
-    }
-
-    transitionTo(STATE.READY_TO_BUY);
-  } catch (err) {
-    if (thisEstimation !== estimationId || !isOpen) return;
-    transitionTo(STATE.FAILED, err.message || 'Failed to estimate cost.');
-  }
-}
-
-async function refreshBalance() {
-  if (!balanceDisplay) return;
-
-  try {
-    const walletResult = await fetchAntJson('/wallet');
-    if (walletResult.ok && walletResult.data?.bzzBalance) {
-      balanceDisplay.textContent = `Balance: ${formatRawTokenBalance(walletResult.data.bzzBalance, 16)} xBZZ`;
-    } else {
-      balanceDisplay.textContent = 'Balance: --';
-    }
-  } catch {
-    balanceDisplay.textContent = 'Balance: --';
-  }
-}
-
-async function handlePurchase() {
-  if (!selectedPreset || currentState !== STATE.READY_TO_BUY) return;
-
-  transitionTo(STATE.PURCHASING);
-
-  try {
-    const result = await window.swarmNode.buyStorage(
-      selectedPreset.sizeGB,
-      selectedPreset.durationDays
-    );
-
-    if (!isOpen) return;
-
-    if (!result?.success) {
-      transitionTo(STATE.FAILED, result?.error || 'Purchase failed.');
-      return;
-    }
-
-    pendingBatchId = result.batchId;
-    transitionTo(STATE.WAITING_FOR_USABLE);
-    startUsablePoll();
-  } catch (err) {
-    if (!isOpen) return;
-    transitionTo(STATE.FAILED, err.message || 'Purchase failed.');
-  }
-}
-
-// ============================================
-// Usability polling
-// ============================================
-
-function startUsablePoll() {
-  stopUsablePoll();
-  usablePollStart = Date.now();
-  pollForUsable();
-}
-
-function stopUsablePoll() {
-  if (usablePollTimeout) {
-    clearTimeout(usablePollTimeout);
-    usablePollTimeout = null;
-  }
-}
-
-async function pollForUsable() {
-  if (!isOpen) return;
-
-  if (Date.now() - usablePollStart > USABLE_TIMEOUT_MS) {
-    transitionTo(STATE.FAILED, 'Timed out waiting for batch to become usable.');
-    return;
-  }
-
-  try {
-    const result = await window.swarmNode?.getStamps();
-    if (!isOpen) return;
-    if (!result?.success) {
-      scheduleNextPoll();
-      return;
-    }
-
-    const usable = result.stamps.some(
-      (s) => s.usable && (!pendingBatchId || s.batchId === pendingBatchId)
-    );
-
-    if (usable) {
-      transitionTo(STATE.USABLE);
-      // Show the batch list with the data we already have
-      const stamps = result.stamps;
-      setTimeout(() => {
-        if (isOpen) {
-          renderBatchList(stamps);
-          showListView();
-        }
-      }, 2000);
-      return;
-    }
-  } catch {
-    // Keep polling
-  }
-
-  scheduleNextPoll();
-}
-
-function scheduleNextPoll() {
-  if (isOpen && currentState === STATE.WAITING_FOR_USABLE) {
-    usablePollTimeout = setTimeout(() => pollForUsable(), USABLE_POLL_MS);
-  }
-}
-
-// ============================================
-// State machine
-// ============================================
-
-function transitionTo(newState, errorMessage) {
-  currentState = newState;
-  renderState(errorMessage);
-}
-
-function renderState(errorMessage) {
-  const isIdle = currentState === STATE.IDLE;
-  const isEstimating = currentState === STATE.ESTIMATING;
-  const isReady = currentState === STATE.READY_TO_BUY;
-  const isPurchasing = currentState === STATE.PURCHASING;
-  const isWaiting = currentState === STATE.WAITING_FOR_USABLE;
-  const isUsable = currentState === STATE.USABLE;
-  const isFailed = currentState === STATE.FAILED;
-
-  const presetsEnabled = isIdle || isEstimating || isReady || isFailed;
-  presetContainer?.querySelectorAll('.stamp-preset-btn').forEach((btn) => {
-    btn.disabled = !presetsEnabled;
-  });
-
-  if (costDisplay) {
-    costDisplay.classList.toggle('hidden', isIdle);
-  }
-  if (costSpinner) {
-    costSpinner.classList.toggle('hidden', !isEstimating);
-  }
-  if (costValue) {
-    costValue.classList.toggle('hidden', isEstimating || isIdle);
-  }
-
-  if (purchaseBtn) {
-    purchaseBtn.disabled = !isReady;
-    purchaseBtn.classList.toggle('hidden', isPurchasing || isWaiting || isUsable);
-  }
-
-  if (purchaseStatus) {
-    if (isPurchasing) {
-      purchaseStatus.textContent = 'Purchasing storage\u2026';
-      purchaseStatus.classList.remove('hidden');
-    } else if (isWaiting) {
-      purchaseStatus.textContent = 'Batch purchased, waiting for network confirmation\u2026';
-      purchaseStatus.classList.remove('hidden');
-    } else if (isUsable) {
-      purchaseStatus.textContent = 'Storage batch is ready.';
-      purchaseStatus.classList.remove('hidden');
-    } else {
-      purchaseStatus.classList.add('hidden');
-    }
-  }
-
-  if (purchaseError) {
-    if (isFailed && errorMessage) {
-      purchaseError.textContent = errorMessage;
-      purchaseError.classList.remove('hidden');
-    } else {
-      purchaseError.classList.add('hidden');
-    }
-  }
-
-  if (retryBtn) {
-    retryBtn.classList.toggle('hidden', !isFailed);
-  }
 }

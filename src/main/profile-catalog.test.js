@@ -6,6 +6,8 @@ const {
   deleteProfile,
   ensureProfile,
   getCatalogLockPaths,
+  loadCatalog,
+  saveCatalog,
   updateProfileNodeConfig,
   validateProfileDeletion,
   withCatalogWriteLock,
@@ -388,6 +390,113 @@ describe('profile catalog', () => {
     expect(fs.existsSync(radicleDir)).toBe(false);
   });
 
+  describe('deleting the default profile (#124)', () => {
+    test('dev layout: removes Profiles/default and its Radicle home, keeps the rest', () => {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const defaultProfileDir = path.join(appRoot, 'Profiles', 'default');
+      const options = { checkoutHash: 'abcdef12', defaultProfileDir, dev: true };
+      const { record: defaultRecord } = ensureProfile(appRoot, 'default', options);
+      const { record: workRecord } = ensureProfile(appRoot, 'work', options);
+      const radicleRoot = path.join(tempRoot, 'Freedom Dev', 'R', 'abcdef12');
+      fs.mkdirSync(path.join(radicleRoot, '0'), { recursive: true });
+      fs.mkdirSync(path.join(radicleRoot, String(workRecord.slot)), { recursive: true });
+
+      deleteProfile(appRoot, 'default', 'My Profile', { checkoutHash: 'abcdef12', dev: true });
+
+      expect(fs.existsSync(defaultRecord.dir)).toBe(false);
+      expect(fs.existsSync(path.join(radicleRoot, '0'))).toBe(false);
+      expect(fs.existsSync(workRecord.dir)).toBe(true);
+      expect(fs.existsSync(path.join(radicleRoot, String(workRecord.slot)))).toBe(true);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['work']);
+    });
+
+    // A packaged build keeps the default profile in the app data root itself,
+    // next to the catalog and every other profile — so it must be removed
+    // entry by entry, never by deleting the root.
+    test('packaged layout: wipes the default profile out of the app data root only', () => {
+      const appRoot = track(makeTempDir());
+      ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+      const { record: workRecord } = ensureProfile(appRoot, 'work', {
+        defaultProfileDir: appRoot,
+      });
+
+      // The default profile's own data, as the app lays it out in userData.
+      fs.mkdirSync(path.join(appRoot, 'identity-data'), { recursive: true });
+      fs.writeFileSync(path.join(appRoot, 'identity-data', 'vault.json'), 'secret');
+      fs.writeFileSync(path.join(appRoot, 'Cookies'), 'cookies');
+      fs.writeFileSync(path.join(appRoot, 'profile-open'), 'lock target');
+      fs.mkdirSync(path.join(appRoot, 'R', '0'), { recursive: true });
+
+      // App-wide entries that must survive.
+      fs.writeFileSync(path.join(workRecord.dir, 'history.sqlite'), 'work data');
+      fs.mkdirSync(path.join(appRoot, 'R', String(workRecord.slot)), { recursive: true });
+      fs.writeFileSync(path.join(appRoot, 'updater-owner'), 'updater lock target');
+      fs.mkdirSync(path.join(appRoot, 'updater-owner.lock'));
+      fs.mkdirSync(path.join(appRoot, 'logs'));
+      fs.writeFileSync(path.join(appRoot, 'logs', 'main.log'), 'log');
+      const unregisteredDir = path.join(appRoot, 'Profiles', 'stray');
+      fs.mkdirSync(unregisteredDir, { recursive: true });
+
+      deleteProfile(appRoot, 'default', 'My Profile');
+
+      for (const gone of ['identity-data', 'Cookies', 'profile-open', 'profile.json']) {
+        expect(fs.existsSync(path.join(appRoot, gone))).toBe(false);
+      }
+      expect(fs.existsSync(path.join(appRoot, 'R', '0'))).toBe(false);
+
+      expect(fs.readFileSync(path.join(workRecord.dir, 'history.sqlite'), 'utf-8')).toBe(
+        'work data'
+      );
+      expect(fs.existsSync(path.join(appRoot, 'R', String(workRecord.slot)))).toBe(true);
+      expect(fs.existsSync(path.join(appRoot, 'updater-owner'))).toBe(true);
+      expect(fs.existsSync(path.join(appRoot, 'updater-owner.lock'))).toBe(true);
+      expect(fs.existsSync(path.join(appRoot, 'logs', 'main.log'))).toBe(true);
+      expect(fs.existsSync(unregisteredDir)).toBe(true);
+      expect(fs.existsSync(getCatalogLockPaths(appRoot).targetPath)).toBe(true);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['work']);
+    });
+
+    test('still refuses a non-default record that points at the app data root', () => {
+      const appRoot = track(makeTempDir());
+      ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+      ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
+      const catalog = loadCatalog(appRoot);
+      catalog.profiles.find((p) => p.id === 'work').dir = appRoot;
+      saveCatalog(appRoot, catalog);
+
+      expect(() => deleteProfile(appRoot, 'work', 'Work')).toThrow(
+        'Refusing to delete a profile outside the app data root'
+      );
+      expect(fs.existsSync(path.join(appRoot, 'profile.json'))).toBe(true);
+    });
+
+    test('refuses the last remaining profile and removes nothing', () => {
+      const appRoot = track(makeTempDir());
+      ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+
+      expect(() => deleteProfile(appRoot, 'default', 'My Profile')).toThrow(
+        'The last remaining profile cannot be deleted'
+      );
+      expect(fs.existsSync(path.join(appRoot, 'profile.json'))).toBe(true);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    });
+
+    test('refuses a default profile that is currently open', () => {
+      const appRoot = track(makeTempDir());
+      ensureProfile(appRoot, 'default', { defaultProfileDir: appRoot });
+      ensureProfile(appRoot, 'work', { defaultProfileDir: appRoot });
+
+      expect(() =>
+        deleteProfile(appRoot, 'default', 'My Profile', {
+          isProfileLocked: (record) => record.id === 'default',
+        })
+      ).toThrow('Profile is currently open: My Profile');
+      expect(fs.existsSync(path.join(appRoot, 'profile.json'))).toBe(true);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+    });
+  });
+
   describe('validateProfileDeletion', () => {
     function seedWorkProfile() {
       const appRoot = track(makeTempDir());
@@ -417,10 +526,23 @@ describe('profile catalog', () => {
       );
     });
 
-    test('rejects deleting the default profile', () => {
+    // #124: the guard is "never the last profile", not "never `default`".
+    test('allows deleting the default profile while another profile remains', () => {
       const appRoot = seedWorkProfile();
-      expect(() => validateProfileDeletion(appRoot, 'default', 'Default')).toThrow(
-        'The default profile cannot be deleted'
+      expect(() => validateProfileDeletion(appRoot, 'default', 'My Profile')).not.toThrow();
+    });
+
+    test('rejects deleting the last remaining profile, default or not', () => {
+      const appRoot = track(makeTempDir());
+      ensureProfile(appRoot, 'work');
+      expect(() => validateProfileDeletion(appRoot, 'work', 'Work')).toThrow(
+        'The last remaining profile cannot be deleted'
+      );
+
+      const defaultRoot = track(makeTempDir());
+      ensureProfile(defaultRoot, 'default');
+      expect(() => validateProfileDeletion(defaultRoot, 'default', 'My Profile')).toThrow(
+        'The last remaining profile cannot be deleted'
       );
     });
 

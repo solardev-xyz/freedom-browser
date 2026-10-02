@@ -80,8 +80,8 @@ const searchFields = {
   status: $('search-provider-status'),
 };
 
-const swarmModeHelp = $('swarm-mode-help');
-const swarmModeBtn = $('swarm-mode-action-btn');
+const swarmPublishingHelp = $('swarm-publishing-help');
+const swarmPublishingBtn = $('swarm-publishing-btn');
 const profileFields = {
   nameInput: $('profile-name-input'),
   saveStatus: $('profile-save-status'),
@@ -1367,87 +1367,87 @@ const addAllowlistHostFromInput = async () => {
 };
 
 let cachedSettings = null;
-let cachedRegistry = null;
+let cachedSetupState = null;
 
-// Render the Swarm-mode row based on (antNodeMode, registry.ant.mode).
-// The toggle metaphor doesn't fit here: turning light mode ON requires a
-// multi-step funding/chequebook/stamp flow (handled by the wallet
-// sidebar's publish-setup checklist), while turning it OFF is a one-click
-// revert. So we render an asymmetric row: setup-link vs revert-button.
-const renderSwarmModeRow = (settings, registry) => {
-  const beeMode = settings?.antNodeMode === 'light' ? 'light' : 'ultraLight';
-  const registryMode = registry?.ant?.mode || 'none';
-
+// The Swarm publishing row mirrors the main process's publish setup state
+// (src/main/swarm/publish-setup-service.js): whether this profile's node can
+// publish, and one button into the wallet sidebar that fixes it or manages
+// the storage. The node needs no mode switch any more; buying storage there
+// is the whole setup.
+const renderSwarmPublishingRow = (settings, setupState) => {
   // Use onclick (not addEventListener) so each render atomically replaces
   // the prior handler — handler closes over the current state, and we
   // re-render across state transitions.
-  const showAction = (label, handler) => {
-    swarmModeBtn.hidden = false;
-    swarmModeBtn.disabled = false;
-    swarmModeBtn.textContent = label;
-    swarmModeBtn.onclick = handler;
+  const showAction = (label, target) => {
+    swarmPublishingBtn.hidden = false;
+    swarmPublishingBtn.textContent = label;
+    swarmPublishingBtn.onclick = () => {
+      freedomAPI.openPublishSetup(target).catch((err) => {
+        console.error('[settings] could not open the publish setup:', err);
+      });
+    };
   };
 
   const hideAction = () => {
-    swarmModeBtn.hidden = true;
-    swarmModeBtn.onclick = null;
+    swarmPublishingBtn.hidden = true;
+    swarmPublishingBtn.onclick = null;
   };
 
-  if (registryMode === 'reused' || registryMode === 'external') {
-    swarmModeHelp.textContent = 'Connected to an external Swarm node — mode is managed there.';
+  if (setupState?.node?.registryMode === 'reused') {
+    swarmPublishingHelp.textContent =
+      'Connected to a Swarm node managed outside Freedom. Set up publishing where that node runs.';
     hideAction();
     return;
   }
 
-  if (registryMode === 'starting' || registryMode === 'stopping') {
-    swarmModeHelp.textContent = 'Switching…';
-    swarmModeBtn.hidden = false;
-    swarmModeBtn.disabled = true;
-    swarmModeBtn.textContent = 'Please wait';
-    swarmModeBtn.onclick = null;
-    return;
-  }
-
-  if (registryMode === 'none' || registryMode === 'error') {
-    swarmModeHelp.textContent = 'Start the Swarm node to configure its mode.';
-    hideAction();
-    return;
-  }
-
-  if (beeMode === 'light') {
-    swarmModeHelp.textContent = 'Light — node can publish to Swarm.';
-    showAction('Switch back to ultra-light', async () => {
-      swarmModeBtn.disabled = true;
-      const ok = await freedomAPI.saveSettings({ antNodeMode: 'ultraLight' });
-      if (!ok) swarmModeBtn.disabled = false;
-    });
-    return;
-  }
-
-  // The publish-setup flow lives inside the wallet sidebar, which is gated
-  // by the Identity & Wallet feature flag. If that's off, offering a button
-  // would deep-link into a sidebar the user can't open.
+  // The publish setup lives inside the wallet sidebar, which is gated by the
+  // Identity & Wallet feature flag. If that's off, offering a button would
+  // deep-link into a sidebar the user can't open.
   if (settings?.enableIdentityWallet !== true) {
-    swarmModeHelp.textContent =
-      'Ultra-light — read-only. Enable Identity & Wallet (in Experimental, above) to set up publishing.';
+    swarmPublishingHelp.textContent =
+      'Enable Identity & Wallet (in Experimental, above) to publish on Swarm.';
     hideAction();
     return;
   }
 
-  swarmModeHelp.textContent = 'Ultra-light — read-only. Set up publishing to switch to light mode.';
-  showAction('Set up publishing', () => {
-    freedomAPI.openPublishSetup().catch(() => {});
-  });
+  if (!setupState) {
+    swarmPublishingHelp.textContent = 'Checking the Swarm node…';
+    hideAction();
+    return;
+  }
+
+  const readiness = setupState.readiness || {};
+  if (readiness.ok || readiness.key === 'storage-pending') {
+    swarmPublishingHelp.textContent = readiness.message;
+    showAction('Manage storage', 'storage');
+    return;
+  }
+
+  const op = setupState.operation;
+  swarmPublishingHelp.textContent =
+    op?.phase === 'awaiting-funds'
+      ? 'Waiting for your payment to the Swarm node.'
+      : op?.phase === 'executing'
+        ? 'Buying storage…'
+        : op?.phase === 'confirming'
+          ? 'Your storage is bought. The Swarm network is confirming it.'
+          : readiness.message || 'Publishing is not set up.';
+  showAction('Set up publishing', 'setup');
 };
 
-const refreshSwarmModeRow = async () => {
+const refreshSwarmPublishingRow = async () => {
   try {
-    cachedRegistry = await freedomAPI.getServiceRegistry();
+    cachedSetupState = await freedomAPI.getPublishSetupState();
   } catch {
-    cachedRegistry = null;
+    cachedSetupState = null;
   }
-  renderSwarmModeRow(cachedSettings, cachedRegistry);
+  renderSwarmPublishingRow(cachedSettings, cachedSetupState);
 };
+
+freedomAPI.onPublishSetupState?.((state) => {
+  cachedSetupState = state;
+  renderSwarmPublishingRow(cachedSettings, cachedSetupState);
+});
 
 const save = async () => {
   const ok = await freedomAPI.saveSettings(currentFormState());
@@ -1507,8 +1507,8 @@ const formStateMatches = (settings) => {
 // Broadcasts from main keep a second open settings tab in sync; skip the
 // form re-render when the payload matches what's already on screen so we
 // don't clobber an in-flight edit (e.g. the ENS RPC input mid-type).
-// Always refresh the Swarm-mode row — antNodeMode lives outside the form
-// and a flip changes the registry too.
+// Re-render the Swarm publishing row too: it depends on the Identity &
+// Wallet flag.
 freedomAPI.onSettingsUpdated?.((settings) => {
   if (!settings) return;
   cachedSettings = settings;
@@ -1516,7 +1516,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   if (!formStateMatches(settings)) {
     applyFormState(settings);
   }
-  refreshSwarmModeRow();
+  renderSwarmPublishingRow(cachedSettings, cachedSetupState);
 });
 
 (async () => {
@@ -1541,15 +1541,11 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   applyTorRowVisibility();
 
   try {
-    const [settings, registry] = await Promise.all([
-      freedomAPI.getSettings(),
-      freedomAPI.getServiceRegistry().catch(() => null),
-    ]);
+    const settings = await freedomAPI.getSettings();
     cachedSettings = settings;
-    cachedRegistry = registry;
     applySearchSettings(settings);
     applyFormState(settings);
-    renderSwarmModeRow(settings, registry);
+    refreshSwarmPublishingRow();
     refreshRadicleLaunchStatus();
   } catch {
     console.error('[settings] failed to load settings');

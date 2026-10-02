@@ -10,6 +10,28 @@ Older Pi research and the `feature/local-agent-pi` prototype are non-normative h
 
 ## Current working status — 2026-10-02
 
+### Mainline refresh and node startup — 2026-10-02
+
+Merged `origin/main` at `495aa3d8`, retaining the agent runtime/profile isolation,
+Pi 1.0 authentication, publication receipts and capacity checks alongside main's
+new publishing setup and stamp propagation support. Postage capacity/unavailable
+errors now also trigger the new storage setup recovery.
+
+Local macOS arm64 dependencies and nodes match the merged pins: Electron 44.4.5,
+Ant 0.5.53, freedom-ipfs 0.4.3, libradicle 0.7.1, Myotis 0.1.12 (ABI 32), and
+Arti 2.6.0. Myotis was already the newest published addon; its checksum and ABI
+passed. Rebuilt its local supervisor and refreshed adblock scriptlet resources.
+
+Fixed a Myotis startup deadline race: ownership receipt and native startup have
+separate bounded waits, and queued receipts get a poll turn before timeout.
+Both real native nodes started and stopped under Electron in fresh temporary
+directories, including with a deliberate 16-second parent-process stall. This
+qualifies startup/exit, not full chain synchronization or existing profile state.
+
+Validation: **8,166 unit tests passed / 129 skipped**, lint clean, host binary
+check passed, and four disposable Electron scenarios passed (ChatGPT sign-in,
+Meta sign-in, and Myotis recovery in both themes).
+
 ### Pi 1.0 and provider authentication — 2026-10-02
 
 The feature branch now pins Pi **1.0.0**. Freedom continues to use explicit

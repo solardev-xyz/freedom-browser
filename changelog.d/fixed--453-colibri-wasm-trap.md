@@ -1,0 +1,2 @@
+- Sending a transaction no longer closes the browser while Freedom waits for it to confirm ([#453](https://github.com/solardev-xyz/freedom-browser/issues/453))
+  - A Colibri lookup for a transaction its prover had not seen yet crashed the whole app instead of failing over to the next chain-data source

@@ -177,6 +177,14 @@ jobs:
       - name: Run lint
         run: npm run lint
 
+      # Two suites spawn a real Electron (`ipfs-gateway-proxy`, `ens-ccip-proxy`)
+      # and electron 44 downloads its binary on the first `require('electron')`.
+      # Left to the tests, parallel jest workers both start that download and
+      # one spawns the binary while the other is still writing it
+      # (`spawn ETXTBSY`). Pull it once, here, before any worker starts.
+      - name: Warm the Electron binary download
+        run: node -e "require('electron')"
+
       - name: Run test coverage
         run: npm run test:coverage
 
@@ -582,9 +590,7 @@ jobs:
   # the `e2e-not-in-ci:` prefix; the guard reads these lines.
   #
   # e2e-not-in-ci: agent-ollama-live.spec.js — requires an explicitly configured local Ollama model; exercised manually
-  # e2e-not-in-ci: safe-accounts.spec.js — crashes the main process (SIGSEGV on the colibri read path) against the anvil Gnosis fork, #453
-  # e2e-not-in-ci: safe-dapp.spec.js — same main-process SIGSEGV as safe-accounts, #453
-  # e2e-not-in-ci: safe-phone.spec.js — same SIGSEGV (#453), and the freedom-bridge page it pairs through still speaks openlv 0.0.3 (#452)
+  # e2e-not-in-ci: safe-phone.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the co-signature never arrives, #452
   # e2e-not-in-ci: remote-signing.spec.js — the freedom-bridge page it pairs through still speaks openlv 0.0.3, so the handshake never completes, #452
 
   # Settings navigation, persistence, and chain policy are shipped control
@@ -702,10 +708,11 @@ jobs:
   # `src/main/tor-proxy.js` — is decided by Chromium's network stack, which no
   # jest mock can stand in for (that is exactly how #355 happened: the external
   # IPFS gateway proxy used undici, whose sockets never see the session). This
-  # runs the one suite that spawns a real Electron process to check it. The
-  # suite self-skips wherever the Electron binary cannot be resolved;
-  # `FREEDOM_ELECTRON_NET_TEST=1` makes a missing binary a failure here rather
-  # than a silent skip. (`--ignore-scripts` is not what decides that: the
+  # runs the suites that spawn a real Electron process to check it — the IPFS
+  # gateway transport and, since #359, ENS CCIP-Read gateway fetches over the
+  # same transport. The suites self-skip wherever the Electron binary cannot be
+  # resolved; `FREEDOM_ELECTRON_NET_TEST=1` makes a missing binary a failure
+  # here rather than a silent skip. (`--ignore-scripts` is not what decides that: the
   # `electron` package has no postinstall, so `require('electron')` downloads
   # the binary on first use in whichever job asks for it — including the
   # `test` job, where it lands uncached.)
@@ -734,10 +741,19 @@ jobs:
       - name: Install Electron system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run the external gateway proxy integration test
+      # Before jest: both suites below resolve the binary through
+      # `require('electron')`, and two workers racing that first-use download
+      # fail with `spawn ETXTBSY` (seen on this job when #359 added the second
+      # suite).
+      - name: Warm the Electron binary download
+        run: node -e "require('electron')"
+
+      - name: Run the external gateway and ENS CCIP-Read proxy integration tests
         env:
           FREEDOM_ELECTRON_NET_TEST: '1'
-        run: npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
+        run: >-
+          npx jest src/main/__tests__/integration/ipfs-gateway-proxy.test.js
+          src/main/__tests__/integration/ens-ccip-proxy.test.js
 
   # Tab activation, link dispositions and menu dismissal are all about *focus*
   # — which of the shell and the guest `<webview>` owns the keyboard — and no
@@ -854,7 +870,11 @@ jobs:
   # to pick the name and protocol icon (#235). `tez-unverified.spec.js` and
   # `tez-head-conflict.spec.js` drive the Tezos Domains interstitials: the
   # "Continue once" button has to load the resolved content, and a
-  # chain-head disagreement has to be a hard block.
+  # chain-head disagreement has to be a hard block. `ens-trust-popover.spec.js`
+  # (#68) drives the address-bar trust shield and its popover for all four
+  # trust levels: status sentence and row sequences, click-to-copy of the
+  # full value, one click from an open menu to the popover, and the shield
+  # giving way to the neutral globe on an internal page.
   e2e-address-bar-ens:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -888,7 +908,8 @@ jobs:
             test-e2e/ens-history-traversal.spec.js \
             test-e2e/chrome-page-spoof.spec.js \
             test-e2e/tez-unverified.spec.js \
-            test-e2e/tez-head-conflict.spec.js
+            test-e2e/tez-head-conflict.spec.js \
+            test-e2e/ens-trust-popover.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
@@ -909,8 +930,8 @@ jobs:
   # and the sidebar chrome above them (`sidebar-in-flight-chrome`).
   # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
   # is deployed on, and `publisher-identity-selector.spec.js` renders
-  # unusable publisher identities as inert. The anvil-backed Safe specs are
-  # on the not-in-CI list above, not here.
+  # unusable publisher identities as inert. The anvil-backed Safe specs run
+  # in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -951,6 +972,99 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-wallet-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Safe (multi-owner account) lifecycle through the real UI against an anvil
+  # fork of Gnosis: create → fund → activate (a real canonical-factory
+  # deployment) → send, plus a dApp connecting the Safe for an EIP-1271
+  # signature and a send through the board. These used to kill the main
+  # process with SIGSEGV on the first receipt lookup after a broadcast (#453:
+  # a Colibri WASM trap Electron's main process could not catch).
+  #
+  # anvil comes from foundry's own release tarball, checked against a sha256
+  # recorded here (re-derived from upstream's `foundry_v1.8.3_linux_amd64.sha256`
+  # asset, not trusted from it at run time). The fork itself still reads
+  # https://rpc.gnosischain.com, a public endpoint this job cannot pin; the
+  # harness project's CI retries absorb a blip, and
+  # FREEDOM_SAFE_E2E_REQUIRED=1 turns an outage into a failure rather than a
+  # green skip. `safe-phone.spec.js` stays on the not-in-CI list for #452.
+  #
+  # The fixtures read Gnosis from the fork only (a proof source verifies the
+  # live chain), so the specs no longer pass through Colibri on chain 100; the
+  # crash itself is pinned by the jest step below, which needs this job's
+  # Electron binary.
+  e2e-safe:
+    needs: code-changed
+    if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Install foundry (anvil)
+        env:
+          FOUNDRY_VERSION: v1.8.3
+          FOUNDRY_SHA256: 7ca48e6ca3cac1bce1403ca67e5bc1dc3bc1fd818199c9957c7165079c228568
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/foundry"
+          mkdir -p "$dir"
+          cd "$dir"
+          archive="foundry_${FOUNDRY_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-all-errors -o "$archive" \
+            "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_VERSION}/${archive}"
+          echo "${FOUNDRY_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" anvil
+          rm "$archive"
+          ./anvil --version
+          echo "$dir" >> "$GITHUB_PATH"
+
+      # The jest guard for the fix itself (#453): a Colibri WASM trap must be
+      # a catchable error in Electron's *full* main process, and must swap in
+      # a fresh instance. The `test` job runs it too but has no Electron
+      # binary, so there it skips; here the binary is fetched first (the
+      # `electron` package downloads it on first require) and a skip fails.
+      - name: Colibri WASM trap guard under Electron's main process
+        env:
+          FREEDOM_COLIBRI_TRAP_PROBE_REQUIRED: '1'
+        run: |
+          node -e "require('electron')"
+          npx jest src/main/ens/colibri-runtime.test.js
+
+      - name: Run Safe E2E
+        env:
+          FREEDOM_SAFE_E2E_REQUIRED: '1'
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/safe-accounts.spec.js \
+            test-e2e/safe-dapp.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-safe-traces
           path: |
             test-results/
             playwright-report/
@@ -1727,6 +1841,7 @@ jobs:
         e2e-onboarding-identity,
         e2e-profiles,
         e2e-renderer-screenshots,
+        e2e-safe,
         e2e-settings,
         e2e-shortcuts-zoom,
         e2e-tabs,

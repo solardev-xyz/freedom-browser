@@ -19,6 +19,7 @@
   "bin": {
     "freedom-cli": "src/cli/freedom.js"
   },
+  "desktopName": "freedom.desktop",
   "scripts": {
     "start": "electron .",
     "test": "npm run test:unit",
@@ -197,11 +198,7 @@
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
       "executableName": "freedom",
-      "desktop": {
-        "entry": {
-          "StartupWMClass": "freedom-browser"
-        }
-      },
+      "syncDesktopName": true,
       "mimeTypes": [
         "x-scheme-handler/ipfs",
         "x-scheme-handler/ipns",

@@ -10,55 +10,36 @@ import { escapeHtml, formatBalance } from './wallet-utils.js';
 // DOM references
 let assetListEl;
 let balanceErrorEl;
-let swarmBalanceXdaiEl;
-let swarmBalanceXbzzEl;
 
 export function initBalanceDisplay() {
   assetListEl = document.getElementById('asset-list');
   balanceErrorEl = document.getElementById('balance-error');
-  swarmBalanceXdaiEl = document.getElementById('swarm-balance-xdai');
-  swarmBalanceXbzzEl = document.getElementById('swarm-balance-xbzz');
 }
 
 /**
- * Refresh wallet balances for both user wallet and Swarm node wallet
+ * Refresh the user wallet's balances. The Swarm node wallet's balances come
+ * from the publish setup state (node-status.js), so the node card has one
+ * source for them.
  * Runs silently in background - no loading indicators shown to user
  */
 export async function refreshBalances(forceRefresh = false) {
   const userAddress = walletState.fullAddresses.wallet;
-  const swarmAddress = walletState.fullAddresses.swarm;
 
-  if (!userAddress && !swarmAddress) return;
+  if (!userAddress) return;
 
   hideBalanceError();
 
   try {
     // Clear cache if force refresh
-    if (forceRefresh) {
-      if (userAddress) await window.wallet.clearBalanceCache(userAddress);
-      if (swarmAddress) await window.wallet.clearBalanceCache(swarmAddress);
-    }
+    if (forceRefresh) await window.wallet.clearBalanceCache(userAddress);
 
-    // Fetch both wallets in parallel
-    const [userResult, swarmResult] = await Promise.all([
-      userAddress ? window.wallet.getBalances(userAddress) : Promise.resolve(null),
-      swarmAddress ? window.wallet.getBalances(swarmAddress) : Promise.resolve(null),
-    ]);
+    const userResult = await window.wallet.getBalances(userAddress);
 
-    // Display user wallet balances
     if (userResult?.success) {
       displayUserBalances(userResult.balances);
     } else if (userResult) {
       console.error('[WalletUI] Failed to fetch user balances:', userResult.error);
     }
-
-    // Display Swarm node wallet balances
-    if (swarmResult?.success) {
-      displaySwarmBalances(swarmResult.balances);
-    } else if (swarmResult) {
-      console.error('[WalletUI] Failed to fetch Swarm balances:', swarmResult.error);
-    }
-
   } catch (err) {
     console.error('[WalletUI] Failed to refresh balances:', err);
   }
@@ -224,68 +205,20 @@ function displayUserBalances(balances) {
 }
 
 /**
- * Display Swarm node wallet balances in the Nodes tab
- */
-function displaySwarmBalances(balances) {
-  if (!balances) return;
-
-  // xDAI balance (Gnosis native token)
-  const xdaiKey = '100:native';
-  const xdaiBalance = balances[xdaiKey];
-  if (swarmBalanceXdaiEl) {
-    if (xdaiBalance?.error) {
-      swarmBalanceXdaiEl.textContent = 'Error';
-      swarmBalanceXdaiEl.classList.add('error');
-    } else if (xdaiBalance?.formatted) {
-      swarmBalanceXdaiEl.textContent = formatBalance(xdaiBalance.formatted);
-      swarmBalanceXdaiEl.classList.remove('error');
-    } else {
-      swarmBalanceXdaiEl.textContent = '--';
-    }
-  }
-
-  // xBZZ balance (find the xBZZ token key)
-  const xbzzKey = Object.keys(walletState.registeredTokens).find(key =>
-    walletState.registeredTokens[key].symbol === 'xBZZ' && walletState.registeredTokens[key].chainId === 100
-  );
-  const xbzzBalance = xbzzKey ? balances[xbzzKey] : null;
-  if (swarmBalanceXbzzEl) {
-    if (xbzzBalance?.error) {
-      swarmBalanceXbzzEl.textContent = 'Error';
-      swarmBalanceXbzzEl.classList.add('error');
-    } else if (xbzzBalance?.formatted) {
-      swarmBalanceXbzzEl.textContent = formatBalance(xbzzBalance.formatted);
-      swarmBalanceXbzzEl.classList.remove('error');
-    } else {
-      swarmBalanceXbzzEl.textContent = '--';
-    }
-  }
-}
-
-/**
  * Load cached balances for instant display on startup
  */
 export async function loadCachedBalances() {
   const userAddress = walletState.fullAddresses.wallet;
-  const swarmAddress = walletState.fullAddresses.swarm;
 
-  if (!userAddress && !swarmAddress) return;
+  if (!userAddress) return;
 
   try {
-    const [userResult, swarmResult] = await Promise.all([
-      userAddress ? window.wallet.getBalancesCached(userAddress) : Promise.resolve(null),
-      swarmAddress ? window.wallet.getBalancesCached(swarmAddress) : Promise.resolve(null),
-    ]);
+    const userResult = await window.wallet.getBalancesCached(userAddress);
 
     if (userResult?.success && userResult.balances) {
       displayUserBalances(userResult.balances);
     }
-
-    if (swarmResult?.success && swarmResult.balances) {
-      displaySwarmBalances(swarmResult.balances);
-    }
-    const cacheMiss = (userAddress && !(userResult?.success && userResult.balances)) ||
-      (swarmAddress && !(swarmResult?.success && swarmResult.balances));
+    const cacheMiss = !(userResult?.success && userResult.balances);
     if (cacheMiss && walletIsVisible()) await refreshBalances();
   } catch (err) {
     console.error('[WalletUI] Failed to load cached balances:', err);

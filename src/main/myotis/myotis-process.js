@@ -103,7 +103,12 @@ class MyotisProcess {
         if (receipt.generation !== this.generation) { this.invalidReceipt(); return; }
         if (receipt.type === 'owned' && !this.owned) {
           this.owned = true;
-          if (!this.stopping) this.send({ type: 'start', addonPath, network, dataDir, checkpoint, bootEnodes });
+          if (!this.stopping) {
+            // Native startup only begins when ownership has reached the parent.
+            // A busy browser must not spend this budget before sending start.
+            this.armStartupTimer();
+            this.send({ type: 'start', addonPath, network, dataDir, checkpoint, bootEnodes });
+          }
         } else if (receipt.type === 'reaped' && this.owned && !this.terminalReceipt &&
           typeof receipt.forced === 'boolean' &&
           Number.isInteger(receipt.exitCode) && receipt.exitCode >= -1 && receipt.exitCode <= 0xffffffff &&
@@ -120,8 +125,22 @@ class MyotisProcess {
     this.child.on('disconnect', () => {
       if (!this.exited && !this.stopping) this.fail('Myotis child disconnected');
     });
-    this.startTimer = setTimeout(() => this.fail('Myotis startup timed out'), START_MS);
+    this.armStartupTimer();
 
+  }
+
+  armStartupTimer() {
+    clearTimeout(this.startTimer);
+    const timer = setTimeout(() => {
+      // After a main-thread stall, timers can run before queued pipe/IPC data.
+      // Give those receipts one poll turn; an unresponsive child still times out.
+      setImmediate(() => {
+        if (this.startTimer === timer && !this.accepting && !this.stopping && !this.exited) {
+          this.fail('Myotis startup timed out');
+        }
+      });
+    }, START_MS);
+    this.startTimer = timer;
   }
 
   // At most one of each fixed lifecycle event per generation. Never pass raw

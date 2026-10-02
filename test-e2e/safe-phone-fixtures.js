@@ -130,6 +130,16 @@ const test = base.extend({
           'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.url } },
         },
         removedSources: BUILTIN_GNOSIS_SOURCES,
+        // Read Gnosis from the fork only. Myotis and Colibri verify against
+        // the *live* chain: their answers are correct there and wrong here
+        // (the fork-funded Safe reads a verified balance of 0), so a
+        // verifying source can never serve a fork. This keeps the
+        // "nothing escapes to the live chain" promise above; it is not
+        // what kept these specs alive — the SIGSEGV they used to hit (#453,
+        // a Colibri receipt lookup trapping in WASM) is fixed in
+        // colibri-runtime.js and pinned by colibri-runtime.test.js under
+        // Electron's full main process.
+        networks: { 100: { access: { readOrder: ['direct'] } } },
       }),
       'utf-8'
     );

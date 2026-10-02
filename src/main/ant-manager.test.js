@@ -224,9 +224,6 @@ function loadAntManagerModule(options = {}) {
     spawnedProcesses.push(proc);
     return proc;
   });
-  const loadSettings = options.loadSettings || jest.fn(() => ({
-    antNodeMode: options.antNodeMode || 'ultraLight',
-  }));
   const gnosisRpcUrls = options.rpcUrls || ['https://rpc.gnosischain.com'];
   const ethereumRpcUrls = options.ethereumRpcUrls || ['https://ethereum.publicnode.com'];
   const registry = options.registry || {
@@ -300,9 +297,6 @@ function loadAntManagerModule(options = {}) {
       [require.resolve('./migrate-user-data')]: () => ({
         isBeeDataMigrationPending: options.isBeeDataMigrationPending || jest.fn(() => false),
       }),
-      [require.resolve('./settings-store')]: () => ({
-        loadSettings,
-      }),
       [require.resolve('./networks/network-registry')]: () => registry,
       [require.resolve('./profile-resolver')]: () => ({
         getActiveProfile: jest.fn(() => options.activeProfile || null),
@@ -348,7 +342,6 @@ function loadAntManagerModule(options = {}) {
     httpGet,
     ipcMain,
     keysPath,
-    loadSettings,
     log,
     mod,
     noteAntApiUrl,
@@ -773,7 +766,7 @@ describe('ant-manager', () => {
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node disabled for this profile');
   });
 
-  test('starts a bundled ultra-light daemon on a fallback port and writes ultra-light config', async () => {
+  test('starts the bundled daemon on a fallback port with its write-capable chain transport', async () => {
     jest.useFakeTimers();
 
     const platformMap = {
@@ -788,7 +781,6 @@ describe('ant-manager', () => {
     const configPath = path.join(dataDir, 'config.yaml');
     const keysPath = path.join(dataDir, 'keys');
     const ctx = loadAntManagerModule({
-      antNodeMode: 'ultraLight',
       existsSync: (target) => {
         if (target === antBinPath) return true;
         if (target === dataDir) return false;
@@ -822,17 +814,20 @@ describe('ant-manager', () => {
     await jest.advanceTimersByTimeAsync(1000);
     await flushMicrotasks();
 
-    expect(ctx.loadSettings).toHaveBeenCalled();
     expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true });
     expect(ctx.randomBytes).toHaveBeenCalledWith(32);
     // antd self-initializes its identity; Freedom no longer runs an init step.
     expect(ctx.execSync).not.toHaveBeenCalled();
     expect(ctx.spawnedProcesses).toHaveLength(1);
     expect(ctx.spawnedProcesses[0].binary).toBe(ctx.antBinPath);
+    // One mode: the node can always publish, so it always gets the bridge
+    // as its write RPC, and the bridge always forwards its transactions.
+    expect(ctx.startBridge).toHaveBeenCalledWith({ allowBroadcast: true });
     expect(ctx.spawnedProcesses[0].args).toEqual([
       `--config=${ctx.configPath}`,
       '--no-control-socket',
       `--gnosis-logs-rpc-url=${ctx.bridge.url}`,
+      `--gnosis-rpc-url=${ctx.bridge.url}`,
     ]);
     expect(ctx.mod.getActivePort()).toBe(1634);
     expect(ctx.updateService).toHaveBeenCalledWith('ant', {
@@ -845,8 +840,10 @@ describe('ant-manager', () => {
     const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
     expect(configContent).toContain('api-addr: 127.0.0.1:1634');
     expect(configContent).toContain('p2p-addr: :1634');
-    expect(configContent).toContain('swap-enable: false');
-    expect(configContent).toContain('blockchain-rpc-endpoint: ""');
+    // antd ignores swap-enable, and the chain RPC reaches it only as the
+    // bridge flag, never as a URL on disk.
+    expect(configContent).not.toContain('swap-enable');
+    expect(configContent).not.toContain('blockchain-rpc-endpoint');
     expect(configContent).toContain('resolver-options: "https://ethereum.publicnode.com"');
     expect(configContent).toContain(`data-dir: ${ctx.dataDir}`);
     expect(configContent).toContain(`password: ${'ab'.repeat(32)}`);
@@ -862,11 +859,10 @@ describe('ant-manager', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  test('writes light-node config with the primary Gnosis RPC endpoint', async () => {
+  test('keeps every RPC URL out of the config and resolves ENS over a keyless Ethereum RPC', async () => {
     jest.useFakeTimers();
 
     const ctx = loadAntManagerModule({
-      antNodeMode: 'light',
       rpcUrls: ['https://rpc.gnosischain.com', 'https://backup.gnosis.example'],
       ethereumRpcUrls: ['https://eth.user.example', 'https://ethereum.publicnode.com'],
       portSequence: [false],
@@ -889,14 +885,11 @@ describe('ant-manager', () => {
     await jest.advanceTimersByTimeAsync(1000);
     await flushMicrotasks();
 
-    expect(ctx.registry.getEndpointSources).toHaveBeenCalledWith(100, 'rpc');
-
     const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
     expect(ctx.startBridge).toHaveBeenCalledWith({ allowBroadcast: true });
     expect(ctx.spawnedProcesses[0].args).toContain(`--gnosis-rpc-url=${ctx.bridge.url}`);
     expect(configContent).not.toContain(ctx.bridge.url);
-    expect(configContent).toContain('swap-enable: true');
-    expect(configContent).toContain('blockchain-rpc-endpoint: "https://rpc.gnosischain.com"');
+    expect(configContent).not.toContain('rpc.gnosischain.com');
     expect(configContent).toContain('resolver-options: "https://eth.user.example"');
 
     const stopPromise = ctx.mod.stopAnt();
@@ -904,7 +897,7 @@ describe('ant-manager', () => {
     await stopPromise;
   });
 
-  test('prefers keyless Gnosis RPC for Bee over keyed commercial providers', () => {
+  test('prefers a keyless Ethereum RPC for ENS resolution over keyed commercial providers', () => {
     const ctx = loadAntManagerModule({
       registry: {
         getEndpointSources: jest.fn(() => [
@@ -912,25 +905,45 @@ describe('ant-manager', () => {
             id: 'alchemy',
             role: 'rpc',
             keyed: true,
-            coverage: { 100: 'https://gnosis-mainnet.g.alchemy.com/v2/{API_KEY}' },
+            coverage: { 1: 'https://eth-mainnet.g.alchemy.com/v2/{API_KEY}' },
           },
           {
-            id: 'gno-gnosischain',
+            id: 'eth-publicnode',
             role: 'rpc',
             keyed: false,
-            coverage: { 100: 'https://rpc.gnosischain.com' },
+            coverage: { 1: 'https://ethereum.publicnode.com' },
           },
         ]),
         getEndpoints: jest.fn(() => [
-          'https://gnosis-mainnet.g.alchemy.com/v2/redacted',
-          'https://rpc.gnosischain.com',
+          'https://eth-mainnet.g.alchemy.com/v2/redacted',
+          'https://ethereum.publicnode.com',
         ]),
       },
     });
 
-    expect(ctx.mod.getPrimaryGnosisRpcUrl()).toBe('https://rpc.gnosischain.com');
-    expect(ctx.registry.getEndpointSources).toHaveBeenCalledWith(100, 'rpc');
+    expect(ctx.mod.getPrimaryEthereumRpcUrl()).toBe('https://ethereum.publicnode.com');
+    expect(ctx.registry.getEndpointSources).toHaveBeenCalledWith(1, 'rpc');
     expect(ctx.registry.getEndpoints).not.toHaveBeenCalled();
+  });
+
+  test('tells main-process listeners about every status change', async () => {
+    const ctx = loadAntManagerModule({ binExists: false });
+    const listener = jest.fn();
+    const unsubscribe = ctx.mod.onStatusChange(listener);
+
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    expect(listener.mock.calls.map(([update]) => update.status)).toEqual(['starting', 'error']);
+    expect(listener).toHaveBeenLastCalledWith({
+      status: 'error',
+      error: expect.stringContaining('Ant binary not found'),
+    });
+
+    unsubscribe();
+    listener.mockClear();
+    await ctx.mod.stopAnt();
+    expect(listener).not.toHaveBeenCalled();
   });
 
   test('preserves an existing Bee password when rewriting config', async () => {
@@ -1012,9 +1025,13 @@ describe('ant-manager', () => {
     );
   });
 
-  test('fails startup when Ant light mode has no configured primary Gnosis RPC', async () => {
+  // Browsing must not depend on a Gnosis RPC: without one the bridge still
+  // starts (its chain reads fail), and the setup screen reports a node that
+  // cannot reach Gnosis Chain rather than a node that will not start.
+  test('starts without a configured Gnosis RPC', async () => {
+    jest.useFakeTimers();
+
     const ctx = loadAntManagerModule({
-      antNodeMode: 'light',
       rpcUrls: [],
       portSequence: [false],
       httpResponse: () => ({
@@ -1026,13 +1043,16 @@ describe('ant-manager', () => {
     await ctx.mod.startAnt();
     await flushMicrotasks();
 
-    expect(ctx.spawn).not.toHaveBeenCalled();
-    expect(ctx.startBridge).not.toHaveBeenCalled();
-    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
-    expect(ctx.log.error).toHaveBeenCalledWith(
+    expect(ctx.startBridge).toHaveBeenCalledWith({ allowBroadcast: true });
+    expect(ctx.spawn).toHaveBeenCalledTimes(1);
+    expect(ctx.log.error).not.toHaveBeenCalledWith(
       '[Ant] Failed to prepare config:',
-      'No primary Gnosis RPC endpoint configured for Ant light mode'
+      expect.anything()
     );
+
+    const stopPromise = ctx.mod.stopAnt();
+    await jest.advanceTimersByTimeAsync(0);
+    await stopPromise;
   });
 
   test('fails startup when the Bee binary is missing', async () => {
@@ -1122,7 +1142,6 @@ describe('ant-manager', () => {
       jest.useFakeTimers();
 
       const ctx = loadAntManagerModule({
-        antNodeMode: 'ultraLight',
         portSequence: [false],
         // Health never passes, so the node stays in STARTING with its process
         // (and statestore lock) alive — the exact startup-race window.
