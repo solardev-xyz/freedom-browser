@@ -18,6 +18,7 @@ class MockChannel {
   }
 }
 const mockFork = jest.fn(),
+  mockCreateWorker = jest.fn(),
   mockCreate = jest.fn(),
   mockApp = new EventEmitter();
 mockApp.isReady = () => true;
@@ -29,6 +30,9 @@ jest.mock('electron', () => ({
   MessageChannelMain: MockChannel,
 }));
 jest.mock('./railgun-session', () => ({ createRailgunSession: (options) => mockCreate(options) }));
+jest.mock('./railgun-session-worker', () => ({
+  startRailgunSessionWorker: (options) => mockCreateWorker(options),
+}));
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { startRailgunProcess } = require('./railgun-process');
 let scope, args, child, broker, task;
@@ -43,6 +47,7 @@ const context = (principal) =>
     role: 'engine',
   });
 beforeEach(() => {
+  mockCreateWorker.mockReset();
   jest.useFakeTimers();
   jest.spyOn(process, 'kill').mockReturnValue(true);
   scope = createPrivacyScope({ profileId: 'fixture', signal: new AbortController().signal });
@@ -90,6 +95,65 @@ const message = (value) => mockPort.emit('message', { data: JSON.stringify(value
 const command = (id, method = 'get') => ({
   type: 'command',
   wire: JSON.stringify({ id, method, args: { key: 'YQ==' } }),
+});
+test('worker readiness and observed exit both gate the engine lifecycle', async () => {
+  let ready, exited;
+  mockCreateWorker.mockImplementation((options) => {
+    const value = mockCreate(options);
+    value.ready = new Promise((resolve) => {
+      ready = resolve;
+    });
+    value.closed = new Promise((resolve) => {
+      exited = resolve;
+    });
+    return value;
+  });
+  task = startRailgunProcess({ ...args, storageWorker: true });
+  child.emit('spawn');
+  message({ type: 'ready' });
+  let delivered = false,
+    released = false;
+  task.ready.then(() => {
+    delivered = true;
+  });
+  task.closed.then(() => {
+    released = true;
+  });
+  await Promise.resolve();
+  expect(delivered).toBe(false);
+  ready();
+  await task.ready;
+  expect(delivered).toBe(true);
+  task.close();
+  child.emit('exit', 0);
+  await Promise.resolve();
+  expect(released).toBe(false);
+  expect(() => startRailgunProcess(args)).toThrow('Railgun process unavailable');
+  exited();
+  await task.closed;
+  expect(released).toBe(true);
+});
+test('worker startup failure terminates the engine and keeps the slot until the worker exits', async () => {
+  let reject, exited;
+  mockCreateWorker.mockImplementation((options) => {
+    const value = mockCreate(options);
+    value.ready = new Promise((_, fail) => {
+      reject = fail;
+    });
+    value.closed = new Promise((resolve) => {
+      exited = resolve;
+    });
+    return value;
+  });
+  task = startRailgunProcess({ ...args, storageWorker: true });
+  child.emit('spawn');
+  reject(new Error('private worker detail'));
+  await expect(task.ready).rejects.toMatchObject({ code: 'RAILGUN_SESSION_REVOKED' });
+  expect(process.kill).toHaveBeenCalledWith(child.pid, 'SIGTERM');
+  child.emit('exit', 1);
+  expect(() => startRailgunProcess(args)).toThrow();
+  exited();
+  expect((await task.closed).code).toBe('RAILGUN_SESSION_REVOKED');
 });
 test('uses a private bootstrap, filtered environment and string-only startup after spawn', async () => {
   task = startRailgunProcess(args);

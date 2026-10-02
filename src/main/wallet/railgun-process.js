@@ -6,6 +6,7 @@
 const path = require('path');
 const { getPrivacyContext } = require('../networks/privacy-context');
 const { createRailgunSession } = require('./railgun-session');
+const { startRailgunSessionWorker } = require('./railgun-session-worker');
 const owners = new Set();
 const fail = (code) => Object.assign(new Error('Railgun process unavailable'), { code });
 function startRailgunProcess({
@@ -14,6 +15,7 @@ function startRailgunProcess({
   input,
   storage,
   createProvider,
+  storageWorker = false,
   startupMs = 30000,
   lifetimeMs = 600000,
   heapMb = 256,
@@ -27,6 +29,7 @@ function startRailgunProcess({
     !path.isAbsolute(filename) ||
     typeof input !== 'string' ||
     Buffer.byteLength(input) > 65536 ||
+    typeof storageWorker !== 'boolean' ||
     !Number.isInteger(startupMs) ||
     startupMs < 1 ||
     startupMs > 120000 ||
@@ -59,6 +62,7 @@ function startRailgunProcess({
     peakRssBytes = 0,
     missingMetrics = 0,
     readySeen = false,
+    brokerReady = !storageWorker,
     readyDelivered = false,
     escalated = false,
     peerDisconnected = false,
@@ -132,11 +136,16 @@ function startRailgunProcess({
     clearInterval(memoryPoll);
     context.signal.removeEventListener('abort', aborted);
     app.removeListener('before-quit', quit);
-    owners.delete(owner);
     if (!readyDelivered) rejectReady(fail(cause));
-    resolveClosed(
-      Object.freeze({ code: cause, peakRssBytes, exitCode, escalated, peerDisconnected })
-    );
+    const release = () => {
+      owners.delete(owner);
+      resolveClosed(
+        Object.freeze({ code: cause, peakRssBytes, exitCode, escalated, peerDisconnected })
+      );
+    };
+    // A stopped engine cannot release a database still owned by its host worker.
+    if (session?.closed) session.closed.then(release);
+    else release();
   }
   function sampleMemory() {
     if (!spawned || exited || stopping) return;
@@ -154,7 +163,7 @@ function startRailgunProcess({
         stop('RAILGUN_PROCESS_MEMORY_LIMIT');
         return;
       }
-      if (readySeen && !readyDelivered) {
+      if (readySeen && brokerReady && !readyDelivered) {
         readyDelivered = true;
         clearTimeout(startup);
         resolveReady();
@@ -164,13 +173,23 @@ function startRailgunProcess({
     }
   }
   try {
-    session = createRailgunSession({
+    const createSession = storageWorker ? startRailgunSessionWorker : createRailgunSession;
+    session = createSession({
       handle,
       storage,
       createProvider,
       onClose: () =>
         stop(context.signal.aborted ? 'PRIVACY_CONTEXT_REVOKED' : 'RAILGUN_SESSION_REVOKED'),
     });
+    if (storageWorker)
+      session.ready.then(
+        () => {
+          if (stopping || exited) return;
+          brokerReady = true;
+          sampleMemory();
+        },
+        () => stop('RAILGUN_SESSION_REVOKED')
+      );
     context.signal.addEventListener('abort', aborted, { once: true });
     app.once('before-quit', quit);
     if (context.signal.aborted || session.signal.aborted || stopping) {

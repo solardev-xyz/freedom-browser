@@ -8,6 +8,7 @@ const { createPrivacyScope } = require('../src/main/networks/privacy-context');
 const { createRailgunPagedStore } = require('../src/main/wallet/railgun-paged-store');
 const { readRailgunFrontier, readRailgunPosition } = require('../src/main/wallet/railgun-frontier');
 const { startRailgunProcess } = require('../src/main/wallet/railgun-process');
+const storageWorker = process.argv[3] === '--worker';
 const sources = [
   'scripts/qualify-railgun-electron-tree.js',
   'scripts/fixtures/railgun-electron-tree-job.js',
@@ -16,6 +17,8 @@ const sources = [
   'src/main/wallet/railgun-process-entry.js',
   'src/main/wallet/railgun-process-guards.js',
   'src/main/wallet/railgun-session.js',
+  'src/main/wallet/railgun-session-worker.js',
+  'src/main/wallet/railgun-session-worker-entry.js',
   'src/main/wallet/railgun-remote.js',
   'src/main/wallet/railgun-paged-store.js',
   'src/main/wallet/railgun-store-cursor.js',
@@ -72,6 +75,7 @@ async function main() {
     let locked = false,
       crashMarker = false;
     const task = startRailgunProcess({
+      storageWorker,
       handle: scope.getContext({ ...subject, role: 'engine' }),
       filename: require.resolve('./fixtures/railgun-electron-tree-job'),
       input: JSON.stringify({ mode, start, target, write }),
@@ -178,6 +182,7 @@ async function main() {
     syntheticPublicData: true,
     liveRpc: false,
     rootBinding: 'unverified',
+    storageWorker,
     runs,
   };
   fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n');

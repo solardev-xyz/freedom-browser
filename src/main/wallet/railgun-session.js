@@ -61,7 +61,7 @@ function range(input) {
   }
   return result;
 }
-function createRailgunSession({ handle, storage, createProvider, onClose }) {
+function createRailgunSession({ handle, storage, createProvider, onClose, onRevision }) {
   const owner = getPrivacyContext(handle);
   if (
     owner.subject.kind !== 'private-account' ||
@@ -70,7 +70,8 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
     owner.subject.chainId !== 11155111 ||
     owner.subject.operation !== null ||
     typeof createProvider !== 'function' ||
-    typeof onClose !== 'function'
+    typeof onClose !== 'function' ||
+    (onRevision !== undefined && typeof onRevision !== 'function')
   )
     throw fail();
   const scope = createPrivacyScope({
@@ -96,6 +97,10 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
   // This session exclusively owns the store. Every new write path must advance
   // this revision before mutation, or move revision ownership into the store.
   let revision = 0;
+  const invalidate = () => {
+    revision++;
+    onRevision?.(revision);
+  };
   const frontiers = new WeakMap();
   const observations = new WeakMap();
   const cursors = new Map();
@@ -173,7 +178,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
     }
     if (method === 'txBegin' && shape(args, [])) {
       if (transaction) throw fail();
-      revision++;
+      invalidate();
       transaction = {
         id: ++nextTransaction,
         operations: [],
@@ -187,7 +192,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
       if (!transaction || args.transaction !== transaction.id) throw fail();
       try {
         if (method === 'txCommit' && transaction.operations.length) {
-          revision++;
+          invalidate();
           store.batch(transaction.operations);
         }
       } finally {
@@ -272,7 +277,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
           transaction.bytes += bytes;
           operations.length = 0; // Ownership transfers to the transaction until commit/abort.
         } else {
-          revision++;
+          invalidate();
           store.batch(operations);
         }
         return null;
@@ -288,7 +293,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
       const options = range(args.options);
       if (method === 'open' && cursors.size >= 2) throw fail();
       if (method === 'clear') {
-        revision++;
+        invalidate();
         clearRailgunStore(store, options);
         return null;
       }

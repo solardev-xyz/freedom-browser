@@ -8,6 +8,7 @@ const { createPrivacyScope } = require('../src/main/networks/privacy-context');
 const { createRailgunStore } = require('../src/main/wallet/railgun-store');
 const { createRailgunPagedStore } = require('../src/main/wallet/railgun-paged-store');
 const paged = process.argv[3] === '--paged';
+const storageWorker = process.argv.includes('--worker');
 const { startRailgunProcess } = require('../src/main/wallet/railgun-process');
 const sources = [
   'scripts/qualify-railgun-electron.js',
@@ -17,6 +18,8 @@ const sources = [
   'src/main/wallet/railgun-process-entry.js',
   'src/main/wallet/railgun-process-guards.js',
   'src/main/wallet/railgun-session.js',
+  'src/main/wallet/railgun-session-worker.js',
+  'src/main/wallet/railgun-session-worker-entry.js',
   'src/main/wallet/railgun-frontier.js',
   'src/main/wallet/railgun-remote.js',
   'src/main/wallet/railgun-store.js',
@@ -81,6 +84,7 @@ async function main() {
     });
     const actualEngine = ['create', 'lock', 'restore', 'quit'].includes(mode);
     const options = {
+      storageWorker,
       handle,
       filename:
         mode === 'missing-entry'
@@ -239,6 +243,7 @@ async function main() {
     sourceSha256,
     runs,
     storageFormat: paged ? 'paged-v2' : 'legacy-v1',
+    storageWorker,
     noLiveRpc: true,
     publicTestKeysOnly: true,
     productEnabled: false,
