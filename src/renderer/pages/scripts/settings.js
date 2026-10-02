@@ -1226,7 +1226,7 @@ const applyFormState = (settings) => {
     settings.walletTorExperimentAvailable !== true && !fields.walletTorBalanceReads.checked;
   $('wallet-tor-help').textContent =
     settings.walletTorExperimentAvailable === true
-      ? 'Sepolia balances only. Start bundled Tor first. Other balances are unavailable; sending and other wallet traffic keep their existing routes. Circuit isolation is still under test.'
+      ? 'Sepolia balances only. Start bundled Tor first. Other user-wallet balances are unavailable; sending and other wallet traffic keep their existing routes. Swarm node balances keep their existing route. Circuit isolation is still under test.'
       : 'Unavailable pending circuit and platform qualification. You can turn off a previously enabled experiment.';
   fields.autoUpdate.checked = settings.autoUpdate !== false;
   fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';

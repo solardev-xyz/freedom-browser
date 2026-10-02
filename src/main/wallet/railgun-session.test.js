@@ -341,3 +341,75 @@ test.each(['same-frame', 'later-frame'])('duplicate staged key in %s is refused'
     })
   ).rejects.toMatchObject({ code: 'RAILGUN_SESSION_REVOKED' });
 });
+
+const frontierVectors = require('../../../docs/qualification/railgun-frontier-vectors-2026-10-02.json');
+async function seedFrontier() {
+  const raw = (key, bytes) => ({ type: 'put', key: b(key), value: bytes.toString('base64') });
+  const leaf = Buffer.from('20'.padStart(64, '0'), 'hex');
+  await request('batch', {
+    operations: [
+      raw(frontierVectors.keys.metadata, Buffer.from(frontierVectors.metadata[0].hex, 'hex')),
+      raw(frontierVectors.keys.history, Buffer.from('13')),
+      raw(frontierVectors.keys.synced, Buffer.from('9000000')),
+      raw(frontierVectors.keys.root0, Buffer.alloc(32, 1)),
+      raw(frontierVectors.keys.leaf31, leaf),
+      raw(frontierVectors.keys.data31, Buffer.from(JSON.stringify({ hash: leaf.toString('hex') }))),
+    ],
+  });
+}
+test('frontier observations are main-only and invalidated by mutation, begin, close and reopen', async () => {
+  expect(session.inspectFrontier().status).toBe('unscanned');
+  await seedFrontier();
+  const snapshot = session.inspectFrontier();
+  const position = session.inspectPosition(snapshot, { tree: 0, index: 31 });
+  expect(position.status).toBe('persisted-unverified');
+  expect(() => session.assertFresh(position)).not.toThrow();
+  expect(() => session.assertFresh(snapshot)).not.toThrow();
+  expect(() => session.assertFresh({ ...position })).toThrow();
+  expect(() => session.inspectPosition({ ...snapshot }, { tree: 0, index: 31 })).toThrow();
+  await request('batch', { operations: [put('other', 'value')] });
+  expect(() => session.assertFresh(position)).toThrow();
+  expect(() => session.inspectPosition(snapshot, { tree: 0, index: 31 })).toThrow();
+  const before = session.inspectFrontier();
+  const transaction = await request('txBegin', {});
+  expect(() => session.inspectFrontier()).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_FRONTIER_BUSY' })
+  );
+  expect(() => session.inspectPosition(before, { tree: 0, index: 31 })).toThrow();
+  await request('txAbort', { transaction });
+  expect(() => session.inspectPosition(before, { tree: 0, index: 31 })).toThrow();
+  const final = session.inspectFrontier();
+  session.close();
+  expect(() => session.inspectPosition(final, { tree: 0, index: 31 })).toThrow();
+  session = createRailgunSession({ ...options, storage: { ...options.storage, create: false } });
+  id = 0;
+  expect(() => session.inspectPosition(final, { tree: 0, index: 31 })).toThrow();
+  expect(session.inspectPosition(session.inspectFrontier(), { tree: 0, index: 31 }).status).toBe(
+    'persisted-unverified'
+  );
+});
+test('ineligible positions preserve the session, corrupt in-range records revoke it', async () => {
+  await seedFrontier();
+  const frontier = session.inspectFrontier();
+  expect(() => session.inspectPosition(frontier, { tree: 0, index: 32 })).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_FRONTIER_NOT_ELIGIBLE' })
+  );
+  expect(session.signal.aborted).toBe(false);
+  // The boundary exists, but an interior leaf is absent in this synthetic store.
+  expect(() => session.inspectPosition(frontier, { tree: 0, index: 30 })).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_FRONTIER_INVALID' })
+  );
+  expect(session.signal.aborted).toBe(true);
+});
+test('the child cannot request frontier inspection through the command protocol', async () => {
+  await expect(request('inspectFrontier', {})).rejects.toMatchObject({
+    code: 'RAILGUN_SESSION_REVOKED',
+  });
+});
+test('malformed persisted metadata revokes the session when main inspects it', async () => {
+  await request('batch', { operations: [put(frontierVectors.keys.metadata, 'invalid msgpack')] });
+  expect(() => session.inspectFrontier()).toThrow(
+    expect.objectContaining({ code: 'RAILGUN_FRONTIER_INVALID' })
+  );
+  expect(session.signal.aborted).toBe(true);
+});

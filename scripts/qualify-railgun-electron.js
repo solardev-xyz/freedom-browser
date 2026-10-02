@@ -15,6 +15,7 @@ const sources = [
   'src/main/wallet/railgun-process-entry.js',
   'src/main/wallet/railgun-process-guards.js',
   'src/main/wallet/railgun-session.js',
+  'src/main/wallet/railgun-frontier.js',
   'src/main/wallet/railgun-remote.js',
   'src/main/wallet/railgun-store.js',
   'src/main/networks/railgun-host-provider.js',

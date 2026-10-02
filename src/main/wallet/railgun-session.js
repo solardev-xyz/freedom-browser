@@ -4,6 +4,7 @@
  */
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createRailgunStore } = require('./railgun-store');
+const { readRailgunFrontier, readRailgunPosition } = require('./railgun-frontier');
 const MAX_MESSAGE = 2 * 1024 * 1024;
 const READS = new Set([
   'eth_chainId',
@@ -89,6 +90,11 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
     nextCursor = 0,
     nextTransaction = 0,
     transaction;
+  // This session exclusively owns the store. Every new write path must advance
+  // this revision before mutation, or move revision ownership into the store.
+  let revision = 0;
+  const frontiers = new WeakMap();
+  const observations = new WeakMap();
   const cursors = new Map();
   const discardTransaction = () => {
     if (!transaction) return;
@@ -168,6 +174,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
     }
     if (method === 'txBegin' && shape(args, [])) {
       if (transaction) throw fail();
+      revision++;
       transaction = {
         id: ++nextTransaction,
         operations: [],
@@ -180,8 +187,10 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
     if (['txCommit', 'txAbort'].includes(method) && shape(args, ['transaction'])) {
       if (!transaction || args.transaction !== transaction.id) throw fail();
       try {
-        if (method === 'txCommit' && transaction.operations.length)
+        if (method === 'txCommit' && transaction.operations.length) {
+          revision++;
           store.batch(transaction.operations);
+        }
       } finally {
         discardTransaction();
       }
@@ -263,7 +272,10 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
           for (const op of operations) transaction.keys.add(op.key.toString('hex'));
           transaction.bytes += bytes;
           operations.length = 0; // Ownership transfers to the transaction until commit/abort.
-        } else store.batch(operations);
+        } else {
+          revision++;
+          store.batch(operations);
+        }
         return null;
       } finally {
         for (const op of operations) {
@@ -279,6 +291,7 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
       const rows = store.snapshot(options, method === 'clear' || options.values === false);
       if (options.reverse) rows.reverse();
       if (method === 'clear') {
+        revision++;
         try {
           const selected = options.limit >= 0 ? rows.slice(0, options.limit) : rows;
           if (selected.length) store.batch(selected.map(([key]) => ({ type: 'del', key })));
@@ -359,6 +372,50 @@ function createRailgunSession({ handle, storage, createProvider, onClose }) {
       if (counted) pending--;
     }
   }
-  return Object.freeze({ dispatch, close, signal: scope.signal });
+  const unavailable = (code) => Object.assign(new Error('Railgun frontier unavailable'), { code });
+  const inspectFrontier = () => {
+    active();
+    if (transaction) throw unavailable('RAILGUN_FRONTIER_BUSY');
+    try {
+      // No await: metadata, roots and cursor are read from one main-owned store
+      // revision. This is an engine-state observation, never a chain attestation.
+      const result = readRailgunFrontier((key) => store.get(key));
+      frontiers.set(result, revision);
+      observations.set(result, revision);
+      return result;
+    } catch {
+      close();
+      throw unavailable('RAILGUN_FRONTIER_INVALID');
+    }
+  };
+  const inspectPosition = (frontier, { tree, index } = {}) => {
+    active();
+    if (transaction || frontiers.get(frontier) !== revision)
+      throw unavailable('RAILGUN_FRONTIER_STALE');
+    try {
+      const result = readRailgunPosition((key) => store.get(key), frontier, tree, index);
+      observations.set(result, revision);
+      return result;
+    } catch (error) {
+      if (error.code === 'RAILGUN_FRONTIER_NOT_ELIGIBLE') throw error;
+      close();
+      throw unavailable('RAILGUN_FRONTIER_INVALID');
+    }
+  };
+  // Consumers must revalidate immediately before use, with no intervening await.
+  // Freshness never upgrades an observation into verified chain state.
+  const assertFresh = (observation) => {
+    active();
+    if (transaction || observations.get(observation) !== revision)
+      throw unavailable('RAILGUN_FRONTIER_STALE');
+  };
+  return Object.freeze({
+    dispatch,
+    close,
+    signal: scope.signal,
+    inspectFrontier,
+    inspectPosition,
+    assertFresh,
+  });
 }
 module.exports = { createRailgunSession };

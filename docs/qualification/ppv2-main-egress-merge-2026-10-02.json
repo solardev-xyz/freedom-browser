@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "mergedMain": "d4848bd9fa2e187b705aa7aa6291fdf5eb591548",
+  "mergeCommit": "f59ce846",
+  "runtimeSha256": "eacc32476b2fc3be0344e1c9b341a9964e405f59703604385b29307350bcca7a",
+  "sdk": {
+    "startTime": "2026-10-02T10:29:48.238Z",
+    "duration": 113266.538,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "cases": [
+    {
+      "name": "PPv2 native full-value withdrawal and zero-change refusal",
+      "stages": {
+        "initial": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "withdrawal": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "checkpoint": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "secondSpend": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        }
+      }
+    },
+    {
+      "name": "PPv2 token full-value withdrawal and zero-change refusal",
+      "stages": {
+        "initial": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "withdrawal": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "checkpoint": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "secondSpend": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        }
+      }
+    }
+  ],
+  "hooks": [
+    "global.fetch",
+    "global.WebSocket",
+    "http.request",
+    "http.get",
+    "https.request",
+    "https.get",
+    "net.connect",
+    "net.createConnection",
+    "net.Socket.connect",
+    "tls.connect",
+    "http2.connect",
+    "dgram.createSocket",
+    "dgram.Socket.send",
+    "dgram.Socket.connect",
+    "dgram.Socket.bind",
+    "dns.lookup",
+    "dns.lookupService",
+    "dns.resolve",
+    "dns.resolve4",
+    "dns.resolve6",
+    "dns.resolveAny",
+    "dns.resolveCaa",
+    "dns.resolveCname",
+    "dns.resolveMx",
+    "dns.resolveNaptr",
+    "dns.resolveNs",
+    "dns.resolvePtr",
+    "dns.resolveSoa",
+    "dns.resolveSrv",
+    "dns.resolveTlsa",
+    "dns.resolveTxt",
+    "dns.reverse",
+    "dns.Resolver.resolveAny",
+    "dns.Resolver.resolve4",
+    "dns.Resolver.resolve6",
+    "dns.Resolver.resolveCaa",
+    "dns.Resolver.resolveCname",
+    "dns.Resolver.resolveMx",
+    "dns.Resolver.resolveNs",
+    "dns.Resolver.resolveTlsa",
+    "dns.Resolver.resolveTxt",
+    "dns.Resolver.resolveSrv",
+    "dns.Resolver.resolvePtr",
+    "dns.Resolver.resolveNaptr",
+    "dns.Resolver.resolveSoa",
+    "dns.Resolver.reverse",
+    "dns.Resolver.resolve",
+    "dns.promises.lookup",
+    "dns.promises.lookupService",
+    "dns.promises.resolve",
+    "dns.promises.resolve4",
+    "dns.promises.resolve6",
+    "dns.promises.resolveAny",
+    "dns.promises.resolveCaa",
+    "dns.promises.resolveCname",
+    "dns.promises.resolveMx",
+    "dns.promises.resolveNaptr",
+    "dns.promises.resolveNs",
+    "dns.promises.resolvePtr",
+    "dns.promises.resolveSoa",
+    "dns.promises.resolveSrv",
+    "dns.promises.resolveTlsa",
+    "dns.promises.resolveTxt",
+    "dns.promises.reverse",
+    "dns.promises.Resolver.resolveAny",
+    "dns.promises.Resolver.resolve4",
+    "dns.promises.Resolver.resolve6",
+    "dns.promises.Resolver.resolveCaa",
+    "dns.promises.Resolver.resolveCname",
+    "dns.promises.Resolver.resolveMx",
+    "dns.promises.Resolver.resolveNs",
+    "dns.promises.Resolver.resolveTlsa",
+    "dns.promises.Resolver.resolveTxt",
+    "dns.promises.Resolver.resolveSrv",
+    "dns.promises.Resolver.resolvePtr",
+    "dns.promises.Resolver.resolveNaptr",
+    "dns.promises.Resolver.resolveSoa",
+    "dns.promises.Resolver.reverse",
+    "dns.promises.Resolver.resolve",
+    "electron.net.request",
+    "electron.net.fetch",
+    "electron.session.fetch",
+    "electron.session.resolveHost",
+    "electron.session.resolveProxy",
+    "worker_threads.Worker",
+    "child_process.spawn",
+    "child_process.spawnSync",
+    "child_process.exec",
+    "child_process.execSync",
+    "child_process.execFile",
+    "child_process.execFileSync",
+    "child_process.fork"
+  ],
+  "scope": "Controlled main-only lifecycle; approved host transport mocked; chrome blanked; not whole-browser, native or OS-sandbox coverage. No funded profile or live transaction.",
+  "sourceSha256": {
+    "scripts/fixtures/ppv2-egress-tripwire.js": "3547e13c2e71a44c0c70e3a0e77d86e3388b2ffb6a36ccef36db169cc27c7730",
+    "test-e2e/ppv2-withdrawal.spec.js": "c2352e1a98a2a346a94213633433fc144cd9cb2247b6f628bdc6fa0a3f8836f5",
+    "src/main/ens/ccip-fetch.js": "3150fc6a8a59cbc8c02a349be355c20e5070ea0cf6d924ca937a95ea184e2462",
+    "src/main/ipfs/gateway-transport.js": "541a367e188bfd66374538862742e3dd353917dbf947fe69b8b8e964d81e06b1",
+    "src/main/index.js": "4ce73e5fef69d5b05bc90a695867d6995f8406f986d9a766b0f2b4e3ad70f7fe",
+    "src/main/test-harness.js": "81fecfb2bfbe27477e8a504a9c0029ac4485c0e6fdd6a3d760f563c9206f95cb",
+    "src/main/wallet/ppv2-runtime.js": "ab9c698aad19ee9739dda6f617abba8d8ab8f71bdb2b9b1741ff13c7da6e77b5"
+  }
+}

@@ -83,6 +83,21 @@ async function childMain(input) {
     validations.push(last + 1);
     return true;
   });
+  const vectors = require('../docs/qualification/railgun-frontier-vectors-2026-10-02.json');
+  const { RailgunEngine } = require(path.join(enginePath, 'railgun-engine'));
+  assert.equal(inventory.sha256, vectors.inventory);
+  const actualPaths = {
+    metadata: tree.getMerkletreeDBPrefix(),
+    root0: tree.getNodeHashDBPath(0, 16, 0),
+    leaf31: tree.getNodeHashDBPath(0, 0, 31),
+    data31: tree.getDataDBPath(0, 31),
+    history: RailgunEngine.getUTXOMerkletreeHistoryVersionDBPrefix(chain),
+    synced: RailgunEngine.getLastSyncedBlockDBPrefix(version, chain),
+  };
+  for (const [name, parts] of Object.entries(actualPaths))
+    assert.equal(Database.pathToKey(parts), vectors.keys[name]);
+  for (const vector of vectors.metadata)
+    assert.equal(r('msgpack-lite').encode(vector.value).toString('hex'), vector.hex);
   if (input.write) {
     assert.equal(await tree.getTreeLength(0), input.start);
     await tree.insertLeaves(
@@ -113,6 +128,12 @@ async function childMain(input) {
   const commitment = await tree.getCommitmentSafe(0, input.target - 1);
   assert.equal(Boolean(commitment), input.commitment);
   if (commitment) assert.equal(commitment.hash, hex(input.target));
+  if (input.coverage) {
+    // Exercise upstream key/encoding functions. These are synthetic ENGINE
+    // cursor claims, not a host-observed chain anchor or completeness evidence.
+    await RailgunEngine.prototype.setUTXOMerkletreeHistoryVersion.call({ db }, chain, 13);
+    await RailgunEngine.prototype.setLastSyncedBlock.call({ db }, version, chain, 9000000);
+  }
   const report = guards.report();
   assert.equal(report.attempts, 0);
   assert.ok(
@@ -181,6 +202,9 @@ async function run(
     failedCommand,
     interrupted = null,
     childFailure = false;
+  let hostFrontier,
+    requestedPositionAllowed = false,
+    hostBusyChecks = 0;
   const calls = {},
     batchSizes = [],
     batchBytes = [];
@@ -243,6 +267,30 @@ async function run(
         if (stopping) return;
         if (message?.type === 'result') {
           result = message.result;
+          hostFrontier = session.inspectFrontier();
+          assert.equal(
+            hostFrontier.status,
+            (input.coverage || input.coveragePresent) && input.target <= input.length
+              ? 'persisted-unverified'
+              : 'incomplete'
+          );
+          if (input.target > input.length)
+            assert.ok(hostFrontier.reasons.includes('records-beyond-length'));
+          assert.equal(hostFrontier.trees[0].length, input.length);
+          assert.equal(hostFrontier.trees[0].root, '0x' + result.root.replace(/^0x/, ''));
+          if ((input.coverage || input.coveragePresent) && input.target <= input.length) {
+            const position = session.inspectPosition(hostFrontier, {
+              tree: 0,
+              index: input.target - 1,
+            });
+            assert.equal(position.status, 'persisted-unverified');
+            assert.equal(position.root, hostFrontier.trees[0].root);
+            session.assertFresh(position);
+            requestedPositionAllowed = true;
+          } else
+            assert.throws(() =>
+              session.inspectPosition(hostFrontier, { tree: 0, index: input.target - 1 })
+            );
           stop();
           return;
         }
@@ -281,6 +329,10 @@ async function run(
         }
         session.dispatch(message.wire).then(
           (wire) => {
+            if (command.method === 'txStage') {
+              assert.throws(() => session.inspectFrontier(), { code: 'RAILGUN_FRONTIER_BUSY' });
+              hostBusyChecks++;
+            }
             if (command.method === 'txCommit' && killAfterCommit) {
               failedCommand = { method: command.method, batch: batches, operations: 0 };
               interrupted = 'after-commit';
@@ -340,6 +392,9 @@ async function run(
       failedCommand: failedCommand ?? null,
       injected,
       rpcCalls,
+      hostFrontier: hostFrontier ?? null,
+      requestedPositionAllowed,
+      hostBusyChecks,
       calls,
       batchSizes,
       batchBytes,
@@ -404,6 +459,7 @@ async function main() {
     runs.push(
       await run(dir, `cold-after-fault-${failBatch}`, {
         ...normal(64),
+        coverage: true,
         length: 32,
         rows: failBatch === 2 ? 32 : 64,
         commitment: failBatch !== 2,
@@ -437,7 +493,7 @@ async function main() {
       await run(
         dir,
         `atomic-baseline-${name}`,
-        { ...normal(32), write: true, atomic: true },
+        { ...normal(32), write: true, atomic: true, coverage: true },
         { create: true }
       )
     );
@@ -453,6 +509,7 @@ async function main() {
       await run(dir, `atomic-cold-${name}`, {
         ...normal(fault.killAfterCommit ? 64 : 32),
         atomic: true,
+        coveragePresent: true,
       })
     );
     runs.push(
@@ -461,21 +518,37 @@ async function main() {
         start: fault.killAfterCommit ? 64 : 32,
         write: true,
         atomic: true,
+        coveragePresent: true,
       })
     );
     runs.push(
       await run(dir, `atomic-replayed-cold-${name}`, {
         ...normal(fault.killAfterCommit ? 96 : 64),
         atomic: true,
+        coveragePresent: true,
       })
     );
   }
+  const inspected = path.join(directory, 'frontier');
+  fs.mkdirSync(inspected);
+  runs.push(
+    await run(
+      inspected,
+      'frontier-create',
+      { ...normal(32), write: true, atomic: true, coverage: true },
+      { create: true }
+    )
+  );
+  runs.push(
+    await run(inspected, 'frontier-cold', { ...normal(32), atomic: true, coveragePresent: true })
+  );
   const sources = [
     'scripts/qualify-railgun-tree-storage.js',
     'scripts/railgun-fixture-integrity.js',
     'src/main/wallet/railgun-session.js',
     'src/main/wallet/railgun-remote.js',
     'src/main/wallet/railgun-store.js',
+    'src/main/wallet/railgun-frontier.js',
     'src/main/wallet/railgun-tree-transactions.js',
     'src/main/wallet/railgun-process-guards.js',
     'scripts/fixtures/railgun-engine/runtime-integrity.json',
