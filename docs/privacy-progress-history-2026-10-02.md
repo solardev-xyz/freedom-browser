@@ -19,3 +19,22 @@ Earlier checkpoints below remain historical evidence; the latest state and remai
 
 ---
 
+## Superseded wallet-snapshot coordination update
+
+The following was the issue/PR status before durable wallet checkpoints and proof qualification. It is retained verbatim as historical evidence; later checkpoint documents supersede its next-step list.
+
+## October 2 continuation: isolated Railgun wallet scans
+
+[Wallet snapshot checkpoint 103a9db2](https://github.com/solardev-xyz/freedom-browser/blob/103a9db284cbbfcaf400aed7998b177422d0dc77/docs/railgun-wallet-snapshot-2026-10-02.md) adds exclusive, read-only access to completed public checkpoints and a separate encrypted derived-wallet store. The host restricts each storage namespace, revalidates public source/state before and after the utility job, and invalidates prior snapshot evidence on subsequent public work. Wallet construction does not persist the viewing key; token lookup uses checked public preimages without wallet RPC. [Earlier guarded note qualification](https://github.com/solardev-xyz/freedom-browser/blob/c1a224600a3104fcb0c791cf98d35e10c575318f/docs/railgun-wallet-notes-2026-10-02.md) covers malformed notes, local NFTs, exact received/sent sets and incomplete-scan refusal.
+
+Actual Electron evidence: all 10,194 captured Sepolia commitments traversed in 2.529 seconds, then 2.409 seconds with a fresh utility/cache worker; positive synthetic receive, spent-note and self-transfer cases; controlled termination after the first derived batch, incomplete-cache refusal and successful rebuild. The public test vector has 70 unrecoverable sent-history entries, separate from receive quarantine. A differential check confirms the pinned SDK computes the same mismatching hashes and stores no notes for those entries; no origin/intent claim is made. No wallet RPC, POI, prover, signer or transaction submission was granted. All values and viewing material in these tests are public fixtures. These results extend the [121-range Electron public replay and crash/recovery evidence](https://github.com/solardev-xyz/freedom-browser/blob/cd8fd962c00a3dbdbc936f7ef61e7b4b8e67e3af/docs/railgun-coordinated-electron-2026-10-02.md).
+
+At the wallet snapshot checkpoint, local regression passes 7,662 tests /33 skipped; lint and 73 focused boundary tests plus 25 note-validation cases pass. Claude reviewed code and evidence as engineering review, not a security audit. This is qualification infrastructure, not product balances or a durable wallet-coverage grant. Next: main-owned durable derived coverage and current Kohaku reads; live acquisition; artifact/deployed-key binding, proofs, POI/relay transport and operation-bound recoverable funded shield/transfer/unshield; production runtime packaging and broader platform/interruption coverage. No Railgun funds have moved.
+
+[Main 0fa5c440 is merged in e69d1f89](https://github.com/solardev-xyz/freedom-browser/commit/e69d1f892eb5f46b9cd81f5de0b9d7b85e454cfd), including the CCIP validation fix and macOS15 CI runners. All pinned nodes were explicitly refreshed: Ant0.5.54, freedom-ipfs0.4.3, libradicle0.7.1, Myotis0.1.12 plus rebuilt supervisor, Arti2.6.0 built with installed Rust1.99.0. Binary checks pass and the dependency lock is unchanged. The post-merge working-tree regression passes7,684 /33 skipped, including eight separate in-progress cache-observation tests. Historical cd8fd962 CI passed; c1a22460 failed Windows onboarding-identity E2E (the area tracked in #479). Newer heads have no completed CI result cited here.
+
+The replaced source/coordinator, Node replay, earlier main/node-refresh and CI record is preserved in the [dated progress history](https://github.com/solardev-xyz/freedom-browser/blob/a68fe76a6c71a2d45e99c17fb3cd2896125e51b9/docs/privacy-progress-history-2026-10-02.md).
+
+Earlier checkpoints below remain historical evidence; linked documents record exact source pins and remaining gates.
+
+---
