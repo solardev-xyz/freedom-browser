@@ -1,0 +1,52 @@
+{
+  "observedAt": "2026-10-03T09:13:27.155Z",
+  "publicVector": true,
+  "accountsOpened": 0,
+  "runtime": "integrity-checked Node fixture; not guarded Electron",
+  "inventory": {
+    "sha256": "d46dbb16c9161c25baffe12701b2efdb844cb788f7e083d610729973d009e420",
+    "files": 10060,
+    "bytes": 78982588,
+    "nativeFiles": [
+      "@railgun-community/curve25519-scalarmult-wasm/pkg-cjs/curve25519_scalarmult_wasm_bg.wasm",
+      "@railgun-community/curve25519-scalarmult-wasm/pkg-esm/curve25519_scalarmult_wasm_bg.wasm",
+      "@railgun-community/poseidon-hash-wasm/pkg-cjs/poseidon_hash_wasm_bg.wasm",
+      "@railgun-community/poseidon-hash-wasm/pkg-esm/poseidon_hash_wasm_bg.wasm",
+      "blake-hash/prebuilds/darwin-x64/node.napi.node",
+      "blake-hash/prebuilds/linux-x64/node.napi.node",
+      "blake-hash/prebuilds/win32-x64/node.napi.node",
+      "bufferutil/prebuilds/darwin-arm64/bufferutil.node",
+      "bufferutil/prebuilds/darwin-x64/bufferutil.node",
+      "bufferutil/prebuilds/linux-x64/bufferutil.node",
+      "bufferutil/prebuilds/win32-ia32/bufferutil.node",
+      "bufferutil/prebuilds/win32-x64/bufferutil.node",
+      "keccak/prebuilds/darwin-x64/node.napi.node",
+      "keccak/prebuilds/linux-x64/node.napi.glibc.node",
+      "keccak/prebuilds/linux-x64/node.napi.musl.node",
+      "keccak/prebuilds/win32-x64/node.napi.node",
+      "secp256k1/prebuilds/darwin-arm64/secp256k1.node",
+      "secp256k1/prebuilds/linux-x64/secp256k1.glibc.node",
+      "secp256k1/prebuilds/linux-x64/secp256k1.musl.node",
+      "secp256k1/prebuilds/win32-x64/secp256k1.node",
+      "utf-8-validate/prebuilds/darwin-x64+arm64/node.napi.node",
+      "utf-8-validate/prebuilds/linux-x64/node.napi.node",
+      "utf-8-validate/prebuilds/win32-ia32/node.napi.node",
+      "utf-8-validate/prebuilds/win32-x64/node.napi.node"
+    ]
+  },
+  "transactionHash": "0x8e2a4205fb2c01c55a40cd4c8f70424bdefb756ce07fac17cdcb2b98eb41be7e",
+  "blockNumber": 5944769,
+  "projectionMatchedSignedEvent": true,
+  "wrongNoteKeyRejected": true,
+  "wrongPositionRejected": true,
+  "wrongCachedBlindingRejected": true,
+  "sourceSha256": {
+    "scripts/qualify-railgun-owned-poi-vector.js": "c0ff115ff899b02799a13e464d0625dbe82516e1a87eb66c5bd80cccab1a172a",
+    "scripts/fixtures/railgun-owned-poi-public-vector.json": "e2f57e9790eaae2af2d824651c369019fed6a9be222ace547c31aadf967ac6e6",
+    "scripts/fixtures/railgun-poi-signed-event.json": "b5a4fb3822b7870cbe92f5e5eb56cd0c69624ef9a52bc401c7e167e4bc3d9aae",
+    "scripts/railgun-fixture-integrity.js": "ecb3bdd30ed61572ac14444c9579f978f222c35fd203274c25428d5fb313aa93",
+    "src/main/wallet/railgun-engine-manifest.json": "54a4d63dea94e17a542d7510c08e1f35ea71256c821639ba86da29b89f8c7f2c",
+    "src/main/wallet/railgun-owned-poi-records.js": "d591d52f31955c00bfa421b8b961d26adb94b2ebdcf709553bea8c4ef34b943f"
+  },
+  "passed": true
+}

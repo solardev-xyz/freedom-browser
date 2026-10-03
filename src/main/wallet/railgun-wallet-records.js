@@ -155,7 +155,7 @@ async function validateRailgunWalletRecords({
     );
     assert.ok(expected.has(id), 'Unexpected recovered wallet note');
     accepted.push(txo);
-    if (projectOwnedPoi) ownedPoi.push(projectOwnedPoi(txo, leaf));
+    if (projectOwnedPoi) ownedPoi.push(projectOwnedPoi(txo, leaf, nullifier));
   }
   assert.equal(accepted.length, expected.size, 'Missing authenticated wallet note');
   tokenResolver.assertComplete();

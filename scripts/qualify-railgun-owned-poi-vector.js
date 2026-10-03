@@ -41,6 +41,9 @@ async function main() {
     position: vector.position,
     commitmentType: leaf.commitmentType,
     blindedCommitment: vector.blindedCommitment,
+    // Public-vector compatibility only: no owner/viewing credential is known,
+    // so this placeholder does not qualify the actual note's nullifier.
+    nullifier: '0x' + '0'.repeat(64),
     note: {
       hash: BigInt(vector.hash),
       notePublicKey: BigInt(vector.npk),
@@ -52,7 +55,7 @@ async function main() {
     projectRailgunOwnedPoiRecord: project,
     normalizeRailgunOwnedPoiRecords: normalize,
   } = require('../src/main/wallet/railgun-owned-poi-records');
-  const record = project(txo, leaf, runtime);
+  const record = project(txo, leaf, runtime, txo.nullifier);
   assert.equal(record.blindedCommitment, event.blindedCommitment);
   const read = {
     received: [
@@ -64,17 +67,21 @@ async function main() {
     project(
       { ...txo, note: { ...txo.note, notePublicKey: txo.note.notePublicKey + 1n } },
       leaf,
-      runtime
+      runtime,
+      txo.nullifier
     )
   );
   assert.throws(() =>
     project(
       { ...txo, position: txo.position + 1 },
       { ...leaf, utxoIndex: leaf.utxoIndex + 1 },
-      runtime
+      runtime,
+      txo.nullifier
     )
   );
-  assert.throws(() => project({ ...txo, blindedCommitment: '0x' + '0'.repeat(64) }, leaf, runtime));
+  assert.throws(() =>
+    project({ ...txo, blindedCommitment: '0x' + '0'.repeat(64) }, leaf, runtime, txo.nullifier)
+  );
   const sources = [
     'scripts/qualify-railgun-owned-poi-vector.js',
     'scripts/fixtures/railgun-owned-poi-public-vector.json',

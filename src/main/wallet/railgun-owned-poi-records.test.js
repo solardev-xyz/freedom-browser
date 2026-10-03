@@ -19,6 +19,7 @@ function fixture() {
     position: 2,
     note: { hash: 3n, notePublicKey: 4n, tokenHash: hex(5), value: 6n },
     blindedCommitment: hex(7),
+    nullifier: hex(8),
   };
   const runtime = {
     TransactNote: { getHash: jest.fn(() => 3n) },
@@ -29,7 +30,7 @@ function fixture() {
 }
 test('uses the verified public position and independently recomputed commitment before blinding', () => {
   const { leaf, txo, runtime } = fixture();
-  const record = project(txo, leaf, runtime);
+  const record = project(txo, leaf, runtime, hex(8));
   expect(runtime.TransactNote.getHash).toHaveBeenCalledWith(4n, hex(5), 6n);
   expect(runtime.BlindedCommitment.getForShieldOrTransact).toHaveBeenCalledWith(hex(3), 4n, 65538n);
   expect(record).toEqual({
@@ -37,6 +38,7 @@ test('uses the verified public position and independently recomputed commitment 
     hash: hex(3),
     txid: hex(9),
     npk: hex(4),
+    nullifier: hex(8),
     blindedCommitment: hex(7),
     type: 'Shield',
     blockNumber: 6000000,
@@ -50,6 +52,8 @@ test.each([
   'position',
   'type',
   'global-position',
+  'missing-nullifier',
+  'wrong-nullifier',
 ])('refuses %s disagreement instead of exporting a query target', (mode) => {
   const { leaf, txo, runtime } = fixture();
   if (mode === 'cached-blinding') txo.blindedCommitment = hex(8);
@@ -59,12 +63,14 @@ test.each([
   if (mode === 'position') txo.position++;
   if (mode === 'type') txo.commitmentType = 'TransactCommitmentV2';
   if (mode === 'global-position') runtime.getGlobalTreePosition.mockReturnValue(2n);
-  expect(() => project(txo, leaf, runtime)).toThrow();
+  if (mode === 'missing-nullifier') txo.nullifier = undefined;
+  if (mode === 'wrong-nullifier') txo.nullifier = hex(9);
+  expect(() => project(txo, leaf, runtime, hex(8))).toThrow();
 });
 function normalizedFixture() {
   const { leaf, txo, runtime } = fixture();
   return {
-    input: [project(txo, leaf, runtime)],
+    input: [project(txo, leaf, runtime, hex(8))],
     read: { received: [{ id: '1:2', hash: hex(3), txid: hex(9) }] },
     checkpoint: { to: { number: 6000000 } },
   };
@@ -80,6 +86,7 @@ test.each([
   'type',
   'extra',
   'field-overflow',
+  'nullifier-overflow',
 ])('main refuses %s owned projection', (mode) => {
   const { input, read, checkpoint } = normalizedFixture();
   if (mode === 'missing') input.pop();
@@ -95,6 +102,7 @@ test.each([
   if (mode === 'type') input[0].type = 'LegacyGeneratedCommitment';
   if (mode === 'extra') input[0].random = 'never retain';
   if (mode === 'field-overflow') input[0].npk = '0x' + 'f'.repeat(64);
+  if (mode === 'nullifier-overflow') input[0].nullifier = '0x' + 'f'.repeat(64);
   expect(() => normalize(input, read, checkpoint)).toThrow();
 });
 test('main copies immutable facts without promoting them to ownership or spending authority', () => {

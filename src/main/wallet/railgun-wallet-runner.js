@@ -77,6 +77,9 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         session: walletSession,
         walletId,
         checkpoint: checkpointHash(snapshot.checkpoint),
+        trees: Object.freeze(
+          snapshot.checkpoint.state.trees.map((tree) => Object.freeze({ ...tree }))
+        ),
         summary: summarizeRailgunWalletCoverage(coverage),
         mode: restore ? 'restore' : 'scan',
         state,
@@ -106,6 +109,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       read: observed,
       ownedPoi: saved.ownedPoi,
       checkpointHash: saved.checkpoint,
+      trees: saved.trees,
     });
   }
   const instance = Object.freeze({ run, assertScan, read, readOwned });

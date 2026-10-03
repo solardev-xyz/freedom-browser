@@ -116,8 +116,13 @@ async function scanRailgunWallet({ wallet, tree, checkpoint, runtime, signal, re
     readNullifier: (nullifier, number) => tree.getNullifierTxid(nullifier, number),
     nullifyingKey: wallet.nullifyingKey,
     getNullifier: runtime.TransactNote.getNullifier,
-    projectOwnedPoi: (txo, leaf) =>
-      require('./railgun-owned-poi-records').projectRailgunOwnedPoiRecord(txo, leaf, runtime),
+    projectOwnedPoi: (txo, leaf, nullifier) =>
+      require('./railgun-owned-poi-records').projectRailgunOwnedPoiRecord(
+        txo,
+        leaf,
+        runtime,
+        nullifier
+      ),
   });
   await validateRailgunSentRecords({ ...common, sent, expectedSent });
   active();

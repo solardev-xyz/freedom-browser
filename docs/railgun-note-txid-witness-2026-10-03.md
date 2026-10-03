@@ -60,7 +60,11 @@ The new helper is part of the TXID cache policy dependency closure. Existing
 mirror files remain retained; a fresh mirror is required under the new policy.
 The public-history and wallet-derived-cache policies are unchanged. Earlier
 qualification reports retain their original source hashes and are historical
-evidence, not current-source scan authorization.
+evidence, not current-source scan authorization. A subsequent [live policy
+refresh](qualification/railgun-witness-policy-refresh-2026-10-03.json) completed the
+new retained 4,230-row mirror, event coverage and wallet restore at block
+11,834,513, recovering one asset. It makes no owned-note POI requests and does
+not call the new account witness methods; those wrappers remain unit-tested.
 
 ## Remaining private-operation work
 

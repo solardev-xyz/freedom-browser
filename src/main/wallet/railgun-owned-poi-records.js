@@ -13,7 +13,7 @@ function field(value) {
 }
 const canonical = (value) => field('0x' + value.replace(/^0x/, '').toLowerCase());
 const hex = (value) => field('0x' + value.toString(16).padStart(64, '0'));
-function projectRailgunOwnedPoiRecord(txo, leaf, runtime) {
+function projectRailgunOwnedPoiRecord(txo, leaf, runtime, derivedNullifier) {
   assert.ok(['ShieldCommitment', 'TransactCommitmentV2'].includes(leaf.commitmentType));
   assert.equal(txo.commitmentType, leaf.commitmentType);
   assert.equal(txo.tree, leaf.utxoTree);
@@ -34,11 +34,15 @@ function projectRailgunOwnedPoiRecord(txo, leaf, runtime) {
     runtime.BlindedCommitment.getForShieldOrTransact(hash, note.notePublicKey, position)
   );
   assert.equal(canonical(txo.blindedCommitment), blindedCommitment);
+  const nullifier = canonical(derivedNullifier);
+  assert.equal(canonical(txo.nullifier), nullifier);
   return {
     id: `${txo.tree}:${txo.position}`,
     hash,
     txid: '0x' + leaf.txid.replace(/^0x/, '').toLowerCase(),
     npk,
+    // Supplied by the enclosing validated loop's independent derivation.
+    nullifier,
     blindedCommitment,
     type: leaf.commitmentType === 'ShieldCommitment' ? 'Shield' : 'Transact',
     blockNumber: leaf.blockNumber,
@@ -54,7 +58,7 @@ function normalizeRailgunOwnedPoiRecords(input, read, checkpoint) {
   const records = input.map((record) => {
     assert.deepEqual(
       Object.keys(record).sort(),
-      ['id', 'hash', 'txid', 'npk', 'blindedCommitment', 'type', 'blockNumber'].sort()
+      ['id', 'hash', 'txid', 'npk', 'nullifier', 'blindedCommitment', 'type', 'blockNumber'].sort()
     );
     const note = expected.get(record.id);
     assert.ok(note);
@@ -63,6 +67,7 @@ function normalizeRailgunOwnedPoiRecords(input, read, checkpoint) {
     assert.match(record.txid, /^0x[0-9a-f]{64}$/);
     assert.equal(record.txid, note.txid);
     field(record.npk);
+    field(record.nullifier);
     field(record.blindedCommitment);
     assert.ok(!seenBlinded.has(record.blindedCommitment));
     seenBlinded.add(record.blindedCommitment);

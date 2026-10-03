@@ -55,7 +55,13 @@ beforeEach(() => {
   mockSnapshot = {
     checkpointHash: 'b'.repeat(64),
     ownedPoi: [
-      { id: '0:1', blockNumber: 5944769, blindedCommitment: '0x' + '1'.repeat(64), type: 'Shield' },
+      {
+        id: '0:1',
+        blockNumber: 5944769,
+        blindedCommitment: '0x' + '1'.repeat(64),
+        type: 'Shield',
+        nullifier: '0x' + '9'.repeat(64),
+      },
     ],
     read: {
       received: [{ id: '0:1', amount: 5n, spentTxid: false }],

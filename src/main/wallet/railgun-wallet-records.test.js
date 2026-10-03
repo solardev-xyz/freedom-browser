@@ -97,6 +97,18 @@ test('accepts spent state only when it matches the complete local nullifier set'
   input.readNullifier.mockResolvedValue('0x' + hex(9));
   expect((await validateRailgunWalletRecords(input)).accepted).toHaveLength(1);
 });
+test('owned projection receives the independently derived nullifier only after validation', async () => {
+  const input = fixture();
+  input.txos[0].nullifier = '0x' + hex(5);
+  input.projectOwnedPoi = jest.fn((_txo, _leaf, nullifier) => ({ nullifier }));
+  const result = await validateRailgunWalletRecords(input);
+  expect(input.projectOwnedPoi.mock.calls[0][2]).toBe(hex(5));
+  expect(result.ownedPoi).toEqual([{ nullifier: hex(5) }]);
+  input.projectOwnedPoi.mockClear();
+  input.txos[0].nullifier = hex(6);
+  await expect(validateRailgunWalletRecords(input)).rejects.toThrow();
+  expect(input.projectOwnedPoi).not.toHaveBeenCalled();
+});
 
 test('shield commitment mismatch is quarantined before unavailable NFT metadata can poison coverage', async () => {
   const { inspectRailgunShield } = require('./railgun-wallet-records');
