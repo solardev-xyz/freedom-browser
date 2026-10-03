@@ -8,6 +8,7 @@ const {
 } = require('./railgun-private-intent');
 const {
   normalizeRailgunSpendSignature,
+  normalizeRailgunSpendKeyRequest,
   normalizeRailgunPrivateVerification,
 } = require('./railgun-private-results');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
@@ -116,4 +117,35 @@ test.each([
   change(verified.guards);
   expect(() => normalizeRailgunSpendSignature(signed, payload)).toThrow();
   expect(() => normalizeRailgunPrivateVerification(verified, payload)).toThrow();
+});
+
+test('validated signer key requests are immutable matching data, never signing authority', () => {
+  const request = {
+    id: 1,
+    method: 'key',
+    purpose: 'spending-sign',
+    transactionDigest: hex(1),
+    expectedHash: hex(3),
+  };
+  const result = normalizeRailgunSpendKeyRequest(request, payload);
+  expect(result).toEqual({ transactionDigest: hex(1), expectedHash: hex(3) });
+  expect(Object.isFrozen(result)).toBe(true);
+});
+test.each([
+  ['id', 2],
+  ['method', 'result'],
+  ['purpose', 'viewing'],
+  ['transactionDigest', hex(9)],
+  ['expectedHash', hex(9)],
+  ['extra', true],
+])('signer request %s mismatch refuses before key release', (key, value) => {
+  const request = {
+    id: 1,
+    method: 'key',
+    purpose: 'spending-sign',
+    transactionDigest: hex(1),
+    expectedHash: hex(3),
+    [key]: value,
+  };
+  expect(() => normalizeRailgunSpendKeyRequest(request, payload)).toThrow();
 });

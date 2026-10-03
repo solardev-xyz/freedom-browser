@@ -126,7 +126,10 @@ exports.qualify = async function qualify({
                 const message = JSON.parse(wire);
                 assert.equal(message.id, ++sequence);
                 if (sequence === 1) {
-                  assert.deepEqual(message, { id: 1, method: 'key', purpose: 'spending-sign' });
+                  require('../../src/main/wallet/railgun-private-results').normalizeRailgunSpendKeyRequest(
+                    message,
+                    payload
+                  );
                   assertRailgunAccountPrivateWindow(window, account, owners);
                   assert.ok(!signal.aborted);
                   const derived = fixturePair();

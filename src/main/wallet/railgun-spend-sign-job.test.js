@@ -84,7 +84,13 @@ test.each(['railgun-token-unshield', 'railgun-private-transfer'])(
     expect(mockPoseidon).toHaveBeenCalledWith([1n, 2n, 3n, 4n]);
     expect(mockNoteHash).toHaveBeenCalledTimes(kind === 'railgun-token-unshield' ? 1 : 0);
     expect(context.requestKey).toHaveBeenCalledWith(
-      JSON.stringify({ id: 1, method: 'key', purpose: 'spending-sign' })
+      JSON.stringify({
+        id: 1,
+        method: 'key',
+        purpose: 'spending-sign',
+        transactionDigest: checked.digest,
+        expectedHash: input.expectedHash,
+      })
     );
     expect(mockSign).toHaveBeenCalledTimes(1);
     expect(mockVerify).toHaveBeenCalledWith(7n, { R8: [8n, 9n], S: 10n }, [5n, 6n]);

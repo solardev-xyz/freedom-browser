@@ -113,7 +113,11 @@ async function main() {
           const message = JSON.parse(wire);
           assert.equal(message.id, ++sequence);
           if (message.id === 1) {
-            assert.deepEqual(message, { id: 1, method: 'key', purpose: 'spending-sign' });
+            if (refusal?.hostChange) message[refusal.hostChange] = hex(0n);
+            require('../src/main/wallet/railgun-private-results').normalizeRailgunSpendKeyRequest(
+              message,
+              payload
+            );
             key = new Uint8Array(32).fill(7);
             return key;
           }
@@ -133,11 +137,11 @@ async function main() {
       if (key) assert.ok(key.every((n) => n === 0));
       if (refusal) {
         assert.equal(value, undefined);
-        assert.equal(sequence, refusal.afterKey ? 1 : 0);
+        assert.equal(sequence, refusal.afterKey || refusal.hostChange ? 1 : 0);
         refused.push({
           case: refusal.name,
           refused: true,
-          keyTransfers: sequence,
+          keyTransfers: key ? 1 : 0,
           keyWiped: !!key,
           closed,
         });
@@ -157,6 +161,7 @@ async function main() {
       );
       signatures.push({
         keyTransfers: 1,
+        validatedKeyRequestMatched: true,
         keyWiped: true,
         guards: value.guards,
         elapsedMs: Math.round(performance.now() - start),
@@ -450,6 +455,11 @@ async function main() {
     const badChain = structuredClone(captured);
     badChain.transaction.chainId = 1;
     await sign(badChain, { name: 'wrong-chain-before-key' });
+    await sign(captured, {
+      name: 'host-refuses-key-request-digest',
+      hostChange: 'transactionDigest',
+    });
+    await sign(captured, { name: 'host-refuses-key-request-message', hostChange: 'expectedHash' });
     assert.deepEqual(hashes(), sourceSha256);
     fs.writeFileSync(
       path.join(directory, 'report.json'),

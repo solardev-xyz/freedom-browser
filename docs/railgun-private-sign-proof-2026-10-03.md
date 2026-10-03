@@ -1,5 +1,15 @@
 # Separate Railgun spending signer and proof verification — October 3, 2026
 
+**Later October 3 key-request binding:** B now sends the independently checked
+transaction digest and reconstructed message hash in its exact binary-key request.
+Main matches both before any key copy or future durable signing transition. The
+normalizer returns data only; operation ownership, fresh gates and one-use release
+remain mandatory. [The updated synthetic qualification](qualification/railgun-signer-request-2026-10-03.json)
+passes all six ordinary/cold proofs and rejects two altered key-request fields with
+zero key transfers. Forty-eight focused signer/result/policy tests pass; lint is
+clean. This does not add a production vault-signing controller or change the wallet
+policy closure. Earlier evidence below remains historical.
+
 The guarded spending-sign utility now signs the narrow Sepolia private-transfer
 and WETH-unshield intent. A synthetic preparation process uses its signature in a
 real 1×1 circuit, and a fresh process verifies the resulting public transaction

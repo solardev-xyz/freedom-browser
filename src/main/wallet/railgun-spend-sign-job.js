@@ -60,7 +60,13 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
   assert.equal(guardReport().attempts, 0);
   assert.ok(!signal.aborted);
   const bytes = await requestKey(
-    JSON.stringify({ id: 1, method: 'key', purpose: 'spending-sign' })
+    JSON.stringify({
+      id: 1,
+      method: 'key',
+      purpose: 'spending-sign',
+      transactionDigest: checked.digest,
+      expectedHash: hex(message),
+    })
   );
   assert.ok(bytes instanceof Uint8Array);
   const key = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);

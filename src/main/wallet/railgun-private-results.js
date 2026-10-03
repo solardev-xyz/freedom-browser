@@ -24,6 +24,19 @@ function guards(value) {
   assert.equal(new Set(value.hooks).size, value.hooks.length);
   assert.equal(value.canaries, value.hooks.length);
 }
+// B has finished its independent public-intent/message checks before emitting
+// this request. Matching data is necessary, never a key-release capability.
+function normalizeRailgunSpendKeyRequest(value, { transaction, expected, expectedHash }) {
+  const checked = validateRailgunPrivateSigningIntent(transaction, expected);
+  shape(value, ['id', 'method', 'purpose', 'transactionDigest', 'expectedHash']);
+  assert.equal(value.id, 1);
+  assert.equal(value.method, 'key');
+  assert.equal(value.purpose, 'spending-sign');
+  assert.ok(field(expectedHash));
+  assert.equal(value.transactionDigest, checked.digest);
+  assert.equal(value.expectedHash, expectedHash);
+  return Object.freeze({ transactionDigest: checked.digest, expectedHash });
+}
 function normalizeRailgunSpendSignature(value, { transaction, expected, expectedHash }) {
   const intent = validateRailgunPrivateSigningIntent(transaction, expected);
   shape(value, ['signature', 'message', 'transactionDigest', 'guards', 'inventory']);
@@ -66,6 +79,7 @@ function normalizeRailgunPrivateReceiver(value, { transaction, expected, recipie
 module.exports = {
   normalizeRailgunSignature,
   normalizeRailgunSpendSignature,
+  normalizeRailgunSpendKeyRequest,
   normalizeRailgunPrivateVerification,
   normalizeRailgunPrivateReceiver,
 };
