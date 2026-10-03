@@ -151,6 +151,7 @@ afterEach(() => {
 });
 test('deployment, input and verifier observations share one canonical block without granting ownership', async () => {
   const acquired = await source.acquire();
+  expect(JSON.parse(JSON.stringify(acquired.observation))).toStrictEqual(acquired.observation);
   expect(assertRailgunPrivatePreflight(source, acquired.receipt, mockEnrollment)).toEqual({
     anchor,
     input: input(),

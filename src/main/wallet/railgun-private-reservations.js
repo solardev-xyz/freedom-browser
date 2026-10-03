@@ -404,6 +404,33 @@ async function createRailgunPrivateReservations({
       phase.release();
     }
   }
+  // Local read only: do this before disclosing an operation to POI/RPC.
+  // reserve() repeats the conflict/capacity checks at the actual commit point.
+  async function assertAvailable(input) {
+    active();
+    check(!busy);
+    const selected = recoveryFacts(input);
+    busy = true;
+    try {
+      const value = await attest();
+      if (
+        value.entries.some(
+          (e) =>
+            e.state !== 'abandoned' &&
+            e.facts.tree === selected.tree &&
+            e.facts.nullifier === selected.nullifier
+        )
+      )
+        throw fail('RAILGUN_PRIVATE_INPUT_RESERVED');
+      if (value.entries.length === MAX_ENTRIES) throw fail('RAILGUN_RESERVATIONS_CAPACITY');
+    } catch (error) {
+      if (!['RAILGUN_PRIVATE_INPUT_RESERVED', 'RAILGUN_RESERVATIONS_CAPACITY'].includes(error.code))
+        close();
+      throw error;
+    } finally {
+      busy = false;
+    }
+  }
   async function inspect() {
     active();
     check(!busy);
@@ -422,6 +449,7 @@ async function createRailgunPrivateReservations({
   }
   const instance = Object.freeze({
     reserve,
+    assertAvailable,
     assertReceipt,
     markSigning: (receipt, evidence, permit) =>
       changeHeld(receipt, 'signing', signingFacts(evidence), permit),

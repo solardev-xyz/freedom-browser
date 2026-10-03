@@ -75,6 +75,7 @@ beforeEach(() => {
     ownedPoi: [
       {
         id: '0:1',
+        hash: '0x' + '5'.repeat(64),
         blockNumber: 5944769,
         blindedCommitment: '0x' + '1'.repeat(64),
         type: 'Shield',
@@ -139,6 +140,7 @@ test('window POI uses the captured input while ordinary owned reads are busy and
   mockBusy = true;
   const operation = openWindow({ ...args, window: mockWindow, noteIds: ['0:999'] });
   const result = await operation.acquire();
+  expect(JSON.parse(JSON.stringify(result.observation))).toStrictEqual(result.observation);
   expect(attestWindow(operation, result.receipt, mockWallet, args, mockWindow, 1000)).toMatchObject(
     {
       membershipVerified: true,

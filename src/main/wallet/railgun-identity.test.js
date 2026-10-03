@@ -1,9 +1,30 @@
+let mockSignJob, mockPermitConsume, mockDerived;
 let mockVault, mockParent, mockOnJob, mockInputs, mockClosed, mockCurrent;
 jest.mock('../identity/vault', () => ({
   getMnemonic: () =>
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
   getSessionSignal: () => mockVault.signal,
 }));
+jest.mock('./railgun-private-operation', () => ({
+  consumeRailgunPrivateSigningPermit: (...args) => mockPermitConsume(...args),
+}));
+jest.mock('../identity/privacy-keys', () => {
+  const actual = jest.requireActual('../identity/privacy-keys');
+  return {
+    ...actual,
+    createRailgunKeystore: (...args) => {
+      const store = actual.createRailgunKeystore(...args);
+      return {
+        ...store,
+        deriveBytesAt: async (path) => {
+          const key = await store.deriveBytesAt(path);
+          mockDerived.push({ path, key });
+          return key;
+        },
+      };
+    },
+  };
+});
 jest.mock('./privacy-session', () => ({ openPrivacySession: () => mockParent }));
 jest.mock('./railgun-engine-runtime', () => ({
   verifyRailgunEngineRuntime: (v) => {
@@ -15,6 +36,29 @@ jest.mock('./railgun-process', () => ({
   startRailgunProcess: (options) => {
     const input = JSON.parse(options.input);
     mockInputs.push(input);
+    if (!input.purpose) {
+      const controller = new AbortController();
+      let finish, stopped;
+      const closed = new Promise((resolve) => {
+        finish = resolve;
+      });
+      const end = new Promise((_resolve, reject) => {
+        stopped = reject;
+      });
+      const close = () => {
+        controller.abort();
+        finish({ code: 'RAILGUN_PROCESS_CLOSED' });
+        stopped(Error('closed'));
+      };
+      options.broker.signal.addEventListener('abort', close, { once: true });
+      return {
+        closed,
+        close,
+        signal: controller.signal,
+        ready: Promise.race([Promise.resolve().then(() => mockSignJob(options)), end]),
+      };
+    }
+
     let finish;
     const closed = new Promise((resolve) => {
       finish = resolve;
@@ -61,9 +105,16 @@ const {
   openRailgunIdentity,
   assertRailgunIdentity,
   withRailgunViewingCredential,
+  signRailgunPrivateIntent,
+  assertRailgunPrivateSigner,
 } = require('./railgun-identity');
 let identity;
 beforeEach(() => {
+  mockDerived = [];
+  mockPermitConsume = () => {
+    throw Error('no permit');
+  };
+  mockSignJob = null;
   mockVault = new AbortController();
   mockOnJob = null;
   mockInputs = [];
@@ -175,6 +226,11 @@ test('a vault lock while deriving public keys refuses enrollment and releases af
   };
   await expect(openRailgunIdentity({ archive: '/fixture.asar' })).rejects.toThrow();
   expect(mockClosed).toBeGreaterThan(0);
+  mockDerived = [];
+  mockPermitConsume = () => {
+    throw Error('no permit');
+  };
+  mockSignJob = null;
   mockVault = new AbortController();
   mockOnJob = null;
   mockParent = createPrivacyScope({ profileId: 'identity-unit', signal: mockVault.signal });
@@ -188,4 +244,160 @@ test('profile invalidation during derivation refuses the descriptor', async () =
   await expect(openRailgunIdentity({ archive: '/fixture.asar' })).rejects.toThrow();
   expect(mockInputs).toHaveLength(1);
   expect(mockClosed).toBeGreaterThan(0);
+});
+
+async function signingFixture() {
+  identity = await openRailgunIdentity({ archive: '/fixture.asar' });
+  mockDerived = [];
+  const c = require('../../../scripts/fixtures/railgun-capsule-data').capsule(
+    identity.descriptor.walletId
+  );
+  const options = {
+    identity,
+    archive: '/fixture.asar',
+    ...c.preparation,
+    signal: new AbortController().signal,
+    onKeyRequest: async () => ({}),
+  };
+  mockSignJob = async (job) => {
+    const payload = JSON.parse(job.input);
+    const digest = require('./railgun-private-intent').validateRailgunPrivateSigningIntent(
+      payload.transaction,
+      payload.expected
+    ).digest;
+    const key = await job.broker.dispatch(
+      JSON.stringify({
+        id: 1,
+        method: 'key',
+        purpose: 'spending-sign',
+        transactionDigest: digest,
+        expectedHash: payload.expectedHash,
+      })
+    );
+    expect(key.some((v) => v !== 0)).toBe(true);
+    key.fill(0);
+    await job.broker.dispatch(
+      JSON.stringify({
+        id: 2,
+        method: 'result',
+        value: {
+          transactionDigest: digest,
+          message: payload.expectedHash,
+          signature: {
+            R8: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
+            S: '0x' + '0'.repeat(63) + '3',
+          },
+          inventory: require('./railgun-engine-manifest.json').inventory.sha256,
+          guards: { attempts: 0, canaries: 1, hooks: ['fixture.guard'] },
+        },
+      })
+    );
+  };
+  return options;
+}
+test('B token binds live signer, identity and exact public intent; gates bracket derivation', async () => {
+  const options = await signingFixture();
+  let token,
+    checks = 0;
+  options.onKeyRequest = async (_request, value) => {
+    token = value;
+    expect(() => assertRailgunPrivateSigner(token, identity, options)).not.toThrow();
+    expect(() => assertRailgunPrivateSigner({}, identity, options)).toThrow();
+    expect(() => assertRailgunPrivateSigner(token, {}, options)).toThrow();
+    expect(() =>
+      assertRailgunPrivateSigner(token, identity, { ...options, expectedHash: 'changed' })
+    ).toThrow();
+    return {};
+  };
+  mockPermitConsume = (_permit, actual, signer) => {
+    expect(actual).toBe(identity);
+    expect(signer).toBe(token);
+    return {
+      assertCurrent: async () => {
+        checks++;
+        expect(mockDerived).toHaveLength(checks - 1);
+      },
+    };
+  };
+  const result = await signRailgunPrivateIntent(options);
+  expect(result.signature).toBeDefined();
+  expect(checks).toBe(2);
+  expect(mockDerived).toHaveLength(1);
+  expect(mockDerived[0].path).toBe("m/44'/1984'/0'/0'/0'");
+  expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+  expect(() => assertRailgunPrivateSigner(token, identity, options)).toThrow();
+});
+test('fabricated permit never derives a spending key', async () => {
+  const options = await signingFixture();
+  await expect(signRailgunPrivateIntent(options)).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+  });
+  expect(mockDerived).toHaveLength(0);
+});
+test('gate failure after derivation wipes the key before any supervisor reply', async () => {
+  const options = await signingFixture();
+  let checks = 0;
+  mockPermitConsume = () => ({
+    assertCurrent: async () => {
+      if (++checks === 2) throw Error('expired');
+    },
+  });
+  await expect(signRailgunPrivateIntent(options)).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+  });
+  expect(mockDerived).toHaveLength(1);
+  expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+});
+test('abort after derivation wipes the borrowed key while gate read-back is still pending', async () => {
+  const options = await signingFixture();
+  let checks = 0;
+  mockPermitConsume = () => ({
+    assertCurrent: async () => {
+      if (++checks === 2) {
+        mockVault.abort();
+        expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+        await Promise.resolve();
+      }
+    },
+  });
+  await expect(signRailgunPrivateIntent(options)).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+  });
+  expect(mockDerived).toHaveLength(1);
+  expect(mockDerived[0].key.every((v) => v === 0)).toBe(true);
+});
+test('a child exit does not release identity exclusion until its durable callback drains', async () => {
+  const options = await signingFixture();
+  const caller = new AbortController();
+  options.signal = caller.signal;
+  let entered, release;
+  const enteredPromise = new Promise((r) => {
+    entered = r;
+  });
+  const blocked = new Promise((r) => {
+    release = r;
+  });
+  options.onKeyRequest = async () => {
+    entered();
+    await blocked;
+    return {};
+  };
+  let settled = false;
+  const pending = signRailgunPrivateIntent(options).finally(() => {
+    settled = true;
+  });
+  const refused = expect(pending).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+  });
+  await enteredPromise;
+  caller.abort();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  await expect(
+    signRailgunPrivateIntent({ ...options, signal: new AbortController().signal })
+  ).rejects.toThrow();
+  expect(mockDerived).toHaveLength(0);
+  release();
+  await refused;
+  expect(settled).toBe(true);
 });

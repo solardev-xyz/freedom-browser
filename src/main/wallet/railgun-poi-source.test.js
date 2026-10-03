@@ -61,6 +61,7 @@ const open = () => (source = createRailgunPoiSource({ handle, notes }));
 test('fixed requests use an isolated account operation and only issue service observations', async () => {
   const client = open(),
     { receipt, observation } = await client.acquire();
+  expect(JSON.parse(JSON.stringify(observation))).toStrictEqual(observation);
   expect(client.assertResult(receipt)).toBe(observation);
   expect(observation).toMatchObject({
     rootsAccepted: true,

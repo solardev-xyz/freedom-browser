@@ -1,6 +1,7 @@
 /** Main-only, vault-bound Railgun identity. Raw spending material is transferred
  * once to a dedicated public-key derivation utility, never to a wallet scanner.
- * No signing API is exposed. An issued identity expires with its vault/profile.
+ * Signing is restricted to a dedicated utility and a one-use controller permit.
+ * An issued identity expires with its vault/profile.
  */
 const assert = require('assert/strict');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
@@ -10,7 +11,9 @@ const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { startRailgunProcess } = require('./railgun-process');
 const vault = require('../identity/vault');
 const identities = new WeakMap(),
-  owners = new Set();
+  owners = new Set(),
+  signers = new WeakMap(),
+  signing = new WeakSet();
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const fail = () =>
   Object.assign(new Error('Railgun identity unavailable'), { code: 'RAILGUN_IDENTITY_REFUSED' });
@@ -182,7 +185,7 @@ async function openRailgunIdentity({ archive, accountIndex = 0 }) {
       accountIndex,
     });
     const identity = Object.freeze({ descriptor, signal: scope.signal, close });
-    identities.set(identity, { handle, vaultSignal, view, accountIndex });
+    identities.set(identity, { handle, vaultSignal, view, keystore, accountIndex });
     assertRailgunIdentity(identity);
     return identity;
   } catch {
@@ -190,4 +193,171 @@ async function openRailgunIdentity({ archive, accountIndex = 0 }) {
     throw fail();
   }
 }
-module.exports = { openRailgunIdentity, assertRailgunIdentity, withRailgunViewingCredential };
+// No callback receives raw key bytes. The controller must issue an exact,
+// one-use permit only after B validates its request and durable signing exists.
+async function signPrivateIntent({
+  identity,
+  archive,
+  transaction,
+  expected,
+  expectedHash,
+  signal,
+  onKeyRequest,
+  timeoutMs = 60000,
+}) {
+  assertRailgunIdentity(identity);
+  assert.ok(signal instanceof AbortSignal && !signal.aborted);
+  assert.equal(typeof onKeyRequest, 'function');
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 60000);
+  assert.ok(!signing.has(identity));
+  const payload = Object.freeze({
+    archive: verifyRailgunEngineRuntime(archive),
+    spendingPublicKey: Object.freeze(identity.descriptor.spendingPublicKey.map((v) => '0x' + v)),
+    transaction: Object.freeze({ ...transaction }),
+    expected: Object.freeze({ ...expected }),
+    expectedHash,
+  });
+  require('./railgun-private-intent').validateRailgunPrivateSigningIntent(
+    payload.transaction,
+    payload.expected
+  );
+  const saved = identities.get(identity),
+    context = getPrivacyContext(saved.handle),
+    scope = createPrivacyScope({
+      profileId: context.profileId,
+      signal: AbortSignal.any([identity.signal, signal]),
+      isCurrent: () => {
+        assertRailgunIdentity(identity);
+        return true;
+      },
+    });
+  let handle;
+  try {
+    handle = scope.getContext({ ...context.subject, operation: 'spending-sign' });
+  } catch (error) {
+    scope.close();
+    throw error;
+  }
+  const token = Object.freeze({});
+  let task,
+    sequence = 0,
+    value;
+  const current = () => {
+    assertRailgunIdentity(identity);
+    assert.ok(!scope.signal.aborted && task && !task.signal.aborted);
+    getPrivacyContext(handle);
+  };
+  const requests = new Set();
+  async function dispatch(wire) {
+    current();
+    assert.equal(typeof wire, 'string');
+    assert.ok(Buffer.byteLength(wire) <= 16384);
+    const message = JSON.parse(wire);
+    assert.equal(message.id, ++sequence);
+    const results = require('./railgun-private-results');
+    if (sequence === 1) {
+      const request = results.normalizeRailgunSpendKeyRequest(message, payload);
+      const permit = await onKeyRequest(request, token);
+      current();
+      const gate = require('./railgun-private-operation').consumeRailgunPrivateSigningPermit(
+        permit,
+        identity,
+        token
+      );
+      await gate.assertCurrent();
+      current();
+      const bytes = await saved.keystore.deriveBytesAt(`m/44'/1984'/0'/0'/${saved.accountIndex}'`);
+      const wipe = () => bytes.fill(0);
+      scope.signal.addEventListener('abort', wipe, { once: true });
+      try {
+        await gate.assertCurrent();
+        current();
+        // Ownership passes directly to the supervisor, which always wipes
+        // after its binary reply (including closure during this dispatch).
+        return bytes;
+      } catch (error) {
+        wipe();
+        throw error;
+      } finally {
+        scope.signal.removeEventListener('abort', wipe);
+      }
+    }
+    assert.equal(sequence, 2);
+    assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
+    assert.equal(message.method, 'result');
+    value = results.normalizeRailgunSpendSignature(message.value, payload);
+    return JSON.stringify({ id: 2, value: null });
+  }
+  signing.add(identity);
+  signers.set(token, { identity, payload, current, signal: scope.signal });
+  try {
+    task = startRailgunProcess({
+      handle,
+      filename: require.resolve('./railgun-spend-sign-job'),
+      input: JSON.stringify(payload),
+      binaryKey: true,
+      startupMs: Math.min(30000, timeoutMs),
+      lifetimeMs: timeoutMs,
+      heapMb: 128,
+      rssMb: 512,
+      broker: {
+        signal: scope.signal,
+        dispatch(wire) {
+          const pending = dispatch(wire);
+          requests.add(pending);
+          pending.then(
+            () => requests.delete(pending),
+            () => requests.delete(pending)
+          );
+          return pending;
+        },
+      },
+    });
+    await task.ready;
+    current();
+    assert.ok(value && sequence === 2);
+    task.close();
+    assert.equal((await task.closed).code, 'RAILGUN_PROCESS_CLOSED');
+    assertRailgunIdentity(identity);
+    assert.ok(!scope.signal.aborted);
+    return value;
+  } catch {
+    throw Object.assign(new Error('Railgun private signing unavailable'), {
+      code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+    });
+  } finally {
+    signers.delete(token);
+    scope.close();
+    task?.close();
+    if (task) await task.closed;
+    // A child can exit while its host durability callback is still pending.
+    // Keep identity exclusion until that callback has observed revocation.
+    await Promise.allSettled([...requests]);
+    signing.delete(identity);
+  }
+}
+async function signRailgunPrivateIntent(options) {
+  try {
+    return await signPrivateIntent(options);
+  } catch {
+    throw Object.assign(new Error('Railgun private signing unavailable'), {
+      code: 'RAILGUN_PRIVATE_SIGNING_REFUSED',
+    });
+  }
+}
+function assertRailgunPrivateSigner(token, identity, { transaction, expected, expectedHash }) {
+  const value = signers.get(token);
+  assert.ok(value && value.identity === identity);
+  value.current();
+  assert.deepEqual(value.payload.transaction, transaction);
+  assert.deepEqual(value.payload.expected, expected);
+  assert.equal(value.payload.expectedHash, expectedHash);
+  return value.signal;
+}
+module.exports = {
+  openRailgunIdentity,
+  assertRailgunIdentity,
+  withRailgunViewingCredential,
+  signRailgunPrivateIntent,
+  assertRailgunPrivateSigner,
+};

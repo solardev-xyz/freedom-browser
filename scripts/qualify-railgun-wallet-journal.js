@@ -48,6 +48,8 @@ async function main() {
     cancelledViewingProcessClosed = false,
     cancelledViewingProcess = null;
   const privateOperationJobs = [];
+  let spendingReplyObserver = null,
+    productionPrivateOperation = null;
   const walletRestores = [],
     applications = [];
   if (composition) {
@@ -98,6 +100,12 @@ async function main() {
               throw Error('Injected read-only restore interruption');
             }
             const reply = await original.dispatch(wire);
+            if (
+              message.method === 'key' &&
+              message.purpose === 'spending-sign' &&
+              spendingReplyObserver
+            )
+              await spendingReplyObserver(reply);
             if (
               corruptPrivateReceiveKey &&
               message.method === 'key' &&
@@ -412,6 +420,13 @@ async function main() {
     'src/main/wallet/railgun-private-reservations.js',
     'src/main/wallet/railgun-private-witness.js',
     'scripts/fixtures/railgun-enrolled-operation.js',
+    'scripts/fixtures/railgun-enrolled-signing.js',
+    'src/main/wallet/railgun-private-operation.js',
+    'src/main/wallet/railgun-account-poi.js',
+    'src/main/wallet/railgun-private-preflight.js',
+    'src/main/wallet/private-transaction-network.js',
+    'src/main/wallet/signers.js',
+    'src/main/wallet/vault-access.js',
     'scripts/fixtures/railgun-capsule-data.js',
     'src/main/wallet/railgun-private-capsule-store.js',
     'src/main/wallet/railgun-private-capsule.js',
@@ -1688,6 +1703,37 @@ async function main() {
         signingKeyReleased: false,
       });
     }
+    if (process.env.FREEDOM_RAILGUN_PRIVATE_OPERATION) {
+      const kind = process.env.FREEDOM_RAILGUN_PRIVATE_OPERATION;
+      assert.ok(
+        enrollment &&
+          proverArchive &&
+          ['railgun-private-transfer', 'railgun-token-unshield'].includes(kind)
+      );
+      const account =
+        await require('../src/main/wallet/railgun-account-wallet').openRailgunAccountWallet({
+          identity: accountIdentity,
+          enrollment,
+          archive: accountArchive,
+          coordinator,
+          mode: 'active',
+        });
+      try {
+        productionPrivateOperation = await require('./fixtures/railgun-enrolled-signing').qualify({
+          account,
+          owners: { identity: accountIdentity, enrollment, coordinator },
+          archive: accountArchive,
+          proverArchive,
+          artifactDirectory,
+          kind,
+          observeKeys: (observer) => {
+            spendingReplyObserver = observer;
+          },
+        });
+      } finally {
+        await account.close();
+      }
+    }
     assert.equal(applications.length, enrollment ? 10 : 3);
     if (accountIdentity) {
       const handle = scope.getContext({ ...subject, role: 'engine' });
@@ -1765,6 +1811,7 @@ async function main() {
           authenticatedPublicJobs: !!enrollment,
           enrolledPublicComposition: !!enrollment,
           privateOperationJobs,
+          productionPrivateOperation,
           cancelledViewingProcess,
           cancelledViewingMessages: accountIdentity ? cancelledViewingMessages : null,
           viewingKeyTransferCancelled: accountIdentity ? cancelledViewingProcessClosed : null,

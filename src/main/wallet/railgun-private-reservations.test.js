@@ -74,6 +74,7 @@ test('durable holds bind exact facts and return only genuine live receipts', asy
   expect(Object.keys(s).sort()).toEqual([
     'abandon',
     'abandonRecovered',
+    'assertAvailable',
     'assertReceipt',
     'assertReceiptContext',
     'close',
@@ -499,4 +500,20 @@ test('expiry revokes recovery receipts but holds the account phase until the cal
     finish();
     jest.useRealTimers();
   }
+});
+
+test('availability checks are local and repeatable, never a reservation grant', async () => {
+  const s = await open();
+  const { tree, position, nullifier, noteHash } = input();
+  const selected = { tree, position, nullifier, noteHash };
+  await s.assertAvailable(selected);
+  await s.assertAvailable(selected);
+  expect(await s.inspect()).toEqual({ held: 0, signing: 0, abandoned: 0, legacy: 0 });
+  const receipt = await s.reserve(input());
+  await expect(s.assertAvailable(selected)).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+  });
+  await s.assertAvailable({ ...selected, tree: 1 });
+  await s.abandon(receipt);
+  await s.assertAvailable(selected);
 });
