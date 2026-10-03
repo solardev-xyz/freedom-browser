@@ -99,8 +99,12 @@ exports.qualify = async function qualify({
   };
   preflightModule.createRailgunPrivatePreflight = ({ input }) => {
     current();
+    const lifetime = new AbortController();
     const source = {
-      close() {},
+      signal: lifetime.signal,
+      close() {
+        lifetime.abort();
+      },
       acquire: async () => {
         current();
         preflightCalls++;
@@ -201,20 +205,38 @@ exports.qualify = async function qualify({
     assert.throws(() => claim({}, identity, enrollment));
     assert.throws(() => claim(result.completion.receipt, {}, enrollment));
     await account.close();
-    const completion = claim(result.completion.receipt, identity, enrollment);
-    const completed = completion.assertCurrent();
-    assert.deepEqual(completed.stored, stored);
-    assert.throws(() => claim(result.completion.receipt, identity, enrollment));
-    await reservations.withSigningRecovery(async (records, context) => {
-      context.assertCurrent();
-      const recovered = records.find((v) => v.entry.id === result.holdId);
-      assert.ok(recovered);
-      assert.deepEqual(recovered.entry, completed.entry);
-      assert.deepEqual(await capsules.get(result.holdId), completed.stored);
-      assert.equal(completion.assertCurrent(), completed);
-    });
-    completion.close();
-    assert.throws(() => completion.assertCurrent());
+    let submission;
+    if (process.env.FREEDOM_RAILGUN_PRIVATE_SUBMISSION === '1') {
+      submission = await require('./railgun-enrolled-submission').qualify({
+        identity,
+        enrollment,
+        completion: result.completion.receipt,
+        proverArchive,
+        artifactDirectory,
+        owner,
+        expected:
+          require('../../src/main/wallet/railgun-private-intent').validateRailgunPrivateSigningIntent(
+            stored.capsule.preparation.transaction,
+            stored.capsule.preparation.expected
+          ).digest,
+        networkModule,
+      });
+    } else {
+      const completion = claim(result.completion.receipt, identity, enrollment);
+      const completed = completion.assertCurrent();
+      assert.deepEqual(completed.stored, stored);
+      assert.throws(() => claim(result.completion.receipt, identity, enrollment));
+      await reservations.withSigningRecovery(async (records, context) => {
+        context.assertCurrent();
+        const recovered = records.find((v) => v.entry.id === result.holdId);
+        assert.ok(recovered);
+        assert.deepEqual(recovered.entry, completed.entry);
+        assert.deepEqual(await capsules.get(result.holdId), completed.stored);
+        assert.equal(completion.assertCurrent(), completed);
+      });
+      completion.close();
+      assert.throws(() => completion.assertCurrent());
+    }
     return Object.freeze({
       kind,
       status: 'proved',
@@ -235,6 +257,7 @@ exports.qualify = async function qualify({
       completionSurvivesWalletClose: true,
       completionMatchesExclusiveRecovery: true,
       completionUnforgeableAndSingleClaim: true,
+      ...(submission ? { submission } : {}),
       livePoiCalls: 0,
       submissions: 0,
     });

@@ -654,3 +654,24 @@ test('shield funding reads are restricted to the same public address and explici
     network.request(11155111, 'eth_getTransactionCount', [wallet.address, '0x1'])
   ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
 });
+test('recovery permits bounded numbered headers and rejects mismatched response heights', async () => {
+  await expect(
+    network.request(11155111, 'eth_getBlockByNumber', ['0x10', false])
+  ).resolves.toMatchObject({ result: canonical });
+  await expect(
+    network.request(11155111, 'eth_getBlockByNumber', ['0x11', false])
+  ).rejects.toThrow();
+  for (const params of [
+    ['latest', false],
+    ['pending', false],
+    ['0x20000000000000', false],
+    ['0x10', true],
+    ['0x01', false],
+  ]) {
+    const before = requests.length;
+    await expect(network.request(11155111, 'eth_getBlockByNumber', params)).rejects.toMatchObject({
+      code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED',
+    });
+    expect(requests.length).toBe(before);
+  }
+});

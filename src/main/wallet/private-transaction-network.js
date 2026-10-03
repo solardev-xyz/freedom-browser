@@ -67,12 +67,19 @@ function getPrivateTransactionNetwork(handle) {
         params.length === 2 && params[0]?.toLowerCase?.() === principal && params[1] === 'pending';
       if (method === 'eth_getCode') validate = data;
     } else if (method === 'eth_getBlockByNumber') {
-      allowed = params.length === 2 && params[0] === 'finalized' && params[1] === false;
+      allowed =
+        params.length === 2 &&
+        params[1] === false &&
+        (params[0] === 'finalized' ||
+          (typeof params[0] === 'string' &&
+            /^0x(?:0|[1-9a-f][0-9a-f]*)$/.test(params[0]) &&
+            BigInt(params[0]) <= BigInt(Number.MAX_SAFE_INTEGER)));
       validate = (value) =>
         value &&
         hash(value.hash) &&
         isQuantity(value.number) &&
-        BigInt(value.number) <= BigInt(Number.MAX_SAFE_INTEGER);
+        BigInt(value.number) <= BigInt(Number.MAX_SAFE_INTEGER) &&
+        (params[0] === 'finalized' || value.number === params[0]);
     } else if (['eth_gasPrice', 'eth_maxPriorityFeePerGas', 'eth_blockNumber'].includes(method)) {
       allowed = params.length === 0;
     } else if (['eth_call', 'eth_estimateGas'].includes(method)) {

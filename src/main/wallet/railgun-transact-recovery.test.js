@@ -369,3 +369,51 @@ test('actual matched output facts survive encrypted archival and cold reopen', a
   });
   expect((await reopened.listArchive())[0].railgun).toEqual(facts);
 });
+
+test.each([
+  'changed-finalized-hash',
+  'ahead-of-head',
+  'regressed',
+  'changed-prior-anchor',
+  'consistent-advance',
+])('finality consistency across review: %s', async (mode) => {
+  const C = '0x' + 'c'.repeat(64),
+    D = '0x' + 'd'.repeat(64);
+  let reviewed = false;
+  const original = mockRequest.getMockImplementation();
+  mockRequest.mockImplementation(async (handle, url, options) => {
+    const call = JSON.parse(options.body);
+    if (call.method !== 'eth_getBlockByNumber' || call.params[0] === '0x10')
+      return original(handle, url, options);
+    let result;
+    if (call.params[0] === 'finalized') {
+      if (mode === 'ahead-of-head') result = { number: '0x100', hash: D };
+      else if (reviewed && mode === 'regressed') result = canonical;
+      else if (reviewed && ['consistent-advance', 'changed-prior-anchor'].includes(mode))
+        result = { number: '0x12', hash: D };
+      else result = { number: '0x11', hash: reviewed && mode === 'changed-finalized-hash' ? D : C };
+    } else if (call.params[0] === '0x11')
+      result = {
+        number: '0x11',
+        hash: reviewed && ['changed-finalized-hash', 'changed-prior-anchor'].includes(mode) ? D : C,
+      };
+    else if (call.params[0] === '0x12') result = { number: '0x12', hash: D };
+    else throw Error('Unexpected block read');
+    return {
+      status: 200,
+      body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id, result })),
+    };
+  });
+  const pending = recovery.resolve(hash, {
+    minimumConfirmations: 3,
+    review: async () => {
+      reviewed = true;
+      return approve();
+    },
+  });
+  if (mode === 'consistent-advance') await expect(pending).resolves.toHaveProperty('resolution');
+  else {
+    await expect(pending).rejects.toThrow();
+    expect((await recovery.list())[0].resolution).toBeUndefined();
+  }
+});

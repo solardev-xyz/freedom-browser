@@ -1,5 +1,9 @@
 # Railgun private submission and journal recovery — October 3, 2026
 
+This records the integration at `9cfbe288`. The subsequent
+[combined qualification and finality correction](railgun-enrolled-submission-2026-10-03.md)
+exercise the real controller-to-journal path and tighten recovery consistency.
+
 The main-owned submission controller now consumes the opaque completion receipt
 itself, after the wallet has closed. It enters the exclusive signing-recovery
 phase and compares the entire authenticated reservation and capsule against the

@@ -5,6 +5,7 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const { openPrivacySession } = require('./privacy-session');
 const { getPrivateTransactionNetwork } = require('./private-transaction-network');
 const { inspectRailgunTransactReceipt } = require('./railgun-transact-receipt');
+const { readRailgunRecoveryFinality } = require('./railgun-recovery-finality');
 const {
   validRailgunTransactResolution,
   freezeRailgunTransactResolution,
@@ -131,19 +132,7 @@ function openRailgunTransactRecovery(owner) {
                 (before.record.observation.status === 'included' &&
                   before.transact?.status === 'matched')
             );
-            const readFinalized = async (record) => {
-              current();
-              const { result: block } = await network.request(11155111, 'eth_getBlockByNumber', [
-                'finalized',
-                false,
-              ]);
-              current();
-              check(BigInt(block.number) >= BigInt(record.observation.blockNumber));
-              if (BigInt(block.number) === BigInt(record.observation.blockNumber))
-                check(block.hash === record.observation.blockHash);
-              return { number: Number(BigInt(block.number)), hash: block.hash };
-            };
-            const finalized = await readFinalized(before.record);
+            const finalized = await readRailgunRecoveryFinality(network, before.record, current);
             const decision = await review(
               Object.freeze({ ...request, transact: before.transact, finalized })
             );
@@ -155,7 +144,12 @@ function openRailgunTransactRecovery(owner) {
                 before.record.observation.blockNumber === after.record.observation.blockNumber &&
                 JSON.stringify(before.transact) === JSON.stringify(after.transact)
             );
-            const final = await readFinalized(after.record);
+            const final = await readRailgunRecoveryFinality(
+              network,
+              after.record,
+              current,
+              finalized
+            );
             const details = freezeRailgunTransactResolution({
               outcome: after.transact ? 'matched' : 'reverted',
               finalizedBlockNumber: final.number,

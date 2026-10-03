@@ -198,3 +198,21 @@ The current qualification gas payer would publicly link the funding transfer, th
 
 
 ---
+
+
+## October 3 continuation: Railgun private completion, EOA submission and recovery
+
+**The funded 0.001 ETH Shield, finalized reconciliation and cold wallet recovery are complete. Funded private transfer/unshield remains unfinished.** The recovered 0.0009975 WETH note remains unreserved and unspent. PPv2 history and vault remain intact. Product UX and production activation are separate. [Previous progress summaries](https://github.com/solardev-xyz/freedom-browser/blob/9cfbe28843898fd1ed45b501d635f012afdab991/docs/privacy-progress-history-2026-10-03.md) are preserved verbatim; the detailed roadmap below is retained.
+
+**Provenance handoff:** [Controller completion](https://github.com/solardev-xyz/freedom-browser/blob/9cfbe28843898fd1ed45b501d635f012afdab991/docs/railgun-private-completion-2026-10-03.md) is minted only after gated private signing, independent C verification, proof persistence and authenticated readback. It binds the account, exact signing record/capsule and proved transaction, survives wallet closure, expires after 120 seconds and can be claimed once. Saved proof fields alone cannot grant submission authority. Real synthetic transfer/unshield runs exercise vault signing, A/B/C, encrypted stores and exclusive recovery; each records 94 source hashes recorded at qualification and 19 existing enrolled runs. External EOA/POI/preflight observations in those runs are simulated.
+
+**Submission and cold EOA recovery:** [The new controller](https://github.com/solardev-xyz/freedom-browser/blob/9cfbe28843898fd1ed45b501d635f012afdab991/docs/railgun-private-submission-2026-10-03.md) claims completion internally, re-attests the entire durable record under account exclusion, runs C again and obtains fresh chain preflight with the original minimum block. Real-owner gas/nonce/balance and exact-intent checks precede EOA signing. Both generic signing and broadcast require its branded scope; the encrypted journal precedes transport. Cold resolution requires exact nullifier/output events, confirmation/finality and rechecks after review. Archival preserves the private intent/outcome. None of this releases a private signing hold or authorizes replay.
+
+**Evidence limits:** Controller tests simulate verifier/preflight/transaction-service observations. Cold recovery tests exercise real encrypted journals and generic reconciliation against simulated RPC. Combined real-controller → submission service → journal qualification is next; no end-to-end success or live private spend is claimed. Full native regression passes 9,011 tests / 33 skipped across 429 passing suites (the same OpenLV exclusion as earlier runs). Lint is clean. Independent review found callback-drain races and an error-hash provenance gap; fixes and regressions now cover cancellation, late callbacks, fabricated hashes and generic bypasses. Claude reached its weekly quota, so an available independent reviewer reviewed this slice and its documentation. Main remains `0b81852e`, already merged; no subsequent node refresh was needed.
+
+**Next/open:** combined submission qualification; Transact-input creation provenance; interrupted/cold private-signing recovery; post-transaction POI and second spend; broadcaster support; funded private transfer/unshield; cross-platform and production audit/activation. The exact own-hash matcher does not yet resolve an alternate Ethereum hash with the same Railgun outcome. No new live POI query, nullifier preflight or transaction was sent. Owned-note disclosure approval for `https://ppoi.fdi.network` remains pending; querying its blinded selector can link service interest to the public deposit despite Tor. Account-local, public-data and simulated-service work continues independently.
+
+The pinned engine/prover remain isolated, with engine ethers 6.14.3 separate from application ethers 6.17: no application downgrade or dependency addition. The current technical gas payer is publicly linked to the Shield funding EOA; Tor does not remove that link. [Roadmap](https://github.com/solardev-xyz/freedom-browser/blob/9cfbe28843898fd1ed45b501d635f012afdab991/research/privacy-roadmap.md). Research issue #475 and draft PR #476 track the same implementation.
+
+
+---

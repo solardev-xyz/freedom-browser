@@ -313,3 +313,94 @@ test('actual matched note facts and fee deviation survive encrypted archival and
   });
   expect((await reopened.listArchive())[0].railgun).toEqual(facts);
 });
+
+test.each([
+  'changed-finalized-hash',
+  'ahead-of-head',
+  'regressed',
+  'changed-prior-anchor',
+  'consistent-advance',
+])('finality consistency across review: %s', async (mode) => {
+  const C = '0x' + 'c'.repeat(64),
+    D = '0x' + 'd'.repeat(64);
+  let reviewed = false;
+  const original = mockRequest.getMockImplementation();
+  mockRequest.mockImplementation(async (handle, url, options) => {
+    const call = JSON.parse(options.body);
+    if (call.method !== 'eth_getBlockByNumber' || call.params[0] === '0x10')
+      return original(handle, url, options);
+    let result;
+    if (call.params[0] === 'finalized') {
+      if (mode === 'ahead-of-head') result = { number: '0x100', hash: D };
+      else if (reviewed && mode === 'regressed') result = canonical;
+      else if (reviewed && ['consistent-advance', 'changed-prior-anchor'].includes(mode))
+        result = { number: '0x12', hash: D };
+      else result = { number: '0x11', hash: reviewed && mode === 'changed-finalized-hash' ? D : C };
+    } else if (call.params[0] === '0x11')
+      result = {
+        number: '0x11',
+        hash: reviewed && ['changed-finalized-hash', 'changed-prior-anchor'].includes(mode) ? D : C,
+      };
+    else if (call.params[0] === '0x12') result = { number: '0x12', hash: D };
+    else throw Error('Unexpected block read');
+    return {
+      status: 200,
+      body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: call.id, result })),
+    };
+  });
+  const pending = recovery.resolve(hash, {
+    minimumConfirmations: 3,
+    review: async () => {
+      reviewed = true;
+      return approve();
+    },
+  });
+  if (mode === 'consistent-advance') await expect(pending).resolves.toHaveProperty('resolution');
+  else {
+    await expect(pending).rejects.toThrow();
+    expect((await recovery.list())[0].resolution).toBeUndefined();
+  }
+});
+
+test('timed-out review keeps exclusion until drained and cannot mint a late permit', async () => {
+  let entered, release;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const paused = new Promise((resolve) => {
+    release = resolve;
+  });
+  let settled = false;
+  const pending = recovery
+    .resolve(hash, {
+      minimumConfirmations: 3,
+      reviewTimeoutMs: 100,
+      review: async () => {
+        entered();
+        await paused;
+        return approve();
+      },
+    })
+    .then(
+      () => {
+        throw Error('unexpected resolution');
+      },
+      (error) => {
+        settled = true;
+        return error;
+      }
+    );
+  await started;
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  expect(settled).toBe(false);
+  await expect(
+    recovery.resolve(hash, { minimumConfirmations: 3, review: approve })
+  ).rejects.toMatchObject({ code: 'RAILGUN_SHIELD_RECOVERY_REFUSED' });
+  const calls = mockRequest.mock.calls.length;
+  release();
+  expect(await pending).toBeInstanceOf(Error);
+  expect(mockRequest.mock.calls.length).toBe(calls);
+  expect((await recovery.list())[0].resolution).toBeUndefined();
+  await recovery.resolve(hash, { minimumConfirmations: 3, review: approve });
+  expect((await recovery.list())[0].resolution).toBeTruthy();
+});

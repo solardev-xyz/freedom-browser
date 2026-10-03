@@ -1,5 +1,9 @@
 # Railgun private completion and outcome matching — October 3, 2026
 
+This records the completion milestone at `b6439514`. The subsequent
+[submission and recovery integration](railgun-private-submission-2026-10-03.md)
+connects these primitives to the generic transaction journal.
+
 The private-operation controller now issues an opaque completion receipt after
 independent proof verification, proof persistence and authenticated readback.
 Its immutable snapshot binds the identity and enrollment, signing reservation,
