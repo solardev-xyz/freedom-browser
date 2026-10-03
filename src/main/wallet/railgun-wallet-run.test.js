@@ -8,11 +8,28 @@ let mockDescriptor,
   mockFailure,
   mockOperationMode,
   mockReply,
-  mockAbortJob;
+  mockAbortJob,
+  mockActualCapsule;
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) => v }));
 jest.mock('./railgun-prover-runtime', () => ({ verifyRailgunProverRuntime: (v) => v }));
+jest.mock('./railgun-private-capsule', () => ({
+  normalizeRailgunNewCapsule: (value, owned) => {
+    if (mockActualCapsule)
+      return jest
+        .requireActual('./railgun-private-capsule')
+        .normalizeRailgunNewCapsule(value, owned);
+    expect(value).toEqual({ recovery: true });
+    expect(owned.walletId).toBe(mockDescriptor.walletId);
+    return Object.freeze(value);
+  },
+}));
 jest.mock('./railgun-private-preparation', () => ({
-  normalizeRailgunPrivateOffer: (value) => Object.freeze({ ...value }),
+  normalizeRailgunPrivateOffer: (value, selection) =>
+    mockActualCapsule
+      ? jest
+          .requireActual('./railgun-private-preparation')
+          .normalizeRailgunPrivateOffer(value, selection)
+      : Object.freeze({ ...value }),
 }));
 jest.mock('./railgun-identity', () => ({
   assertRailgunIdentity: () => {
@@ -72,16 +89,30 @@ jest.mock('./railgun-process', () => ({
       let resultId = 2,
         extra = {};
       if (mockInput.privateOperation && mockOperationMode !== 'early-result') {
-        const offer = { intent: 'captured' };
+        const offer = mockActualCapsule ? mockActualCapsule.preparation : { intent: 'captured' };
+        const envelope = {
+          preparation: offer,
+          capsule: mockActualCapsule || { recovery: mockOperationMode !== 'bad-capsule' },
+          ...(mockOperationMode === 'extra-envelope' ? { extra: true } : {}),
+        };
+        if (mockOperationMode === 'missing-capsule') delete envelope.capsule;
         mockReply = JSON.parse(
           await options.broker.dispatch(
-            JSON.stringify({ id: 2, method: 'private-intent', value: offer })
+            JSON.stringify({
+              id: 2,
+              method: 'private-intent',
+              value: envelope,
+            })
           )
         );
         resultId = 3;
         if (mockOperationMode === 'repeat')
           await options.broker.dispatch(
-            JSON.stringify({ id: 3, method: 'private-intent', value: offer })
+            JSON.stringify({
+              id: 3,
+              method: 'private-intent',
+              value: envelope,
+            })
           );
         if (mockOperationMode === 'late-storage')
           await options.broker.dispatch(JSON.stringify({ id: 3, channel: 'wallet', wire: '{}' }));
@@ -115,6 +146,7 @@ const { createPrivacyScope } = require('../networks/privacy-context');
 const { runRailgunWalletSnapshot } = require('./railgun-wallet-run');
 let scope, args;
 beforeEach(() => {
+  mockActualCapsule = null;
   mockRefuse = false;
   mockCancelledCopy = false;
   mockFailure = null;
@@ -174,6 +206,7 @@ test('frozen shared revocation reasons stay intact while utility exit is drained
 test('a revoked/foreign identity or wrong walletId starts no worker', async () => {
   mockRefuse = true;
   await expect(runRailgunWalletSnapshot(args)).rejects.toThrow('identity refused');
+  mockActualCapsule = null;
   mockRefuse = false;
   await expect(runRailgunWalletSnapshot({ ...args, walletId: '2'.repeat(64) })).rejects.toThrow();
   expect(mockTask).toBeNull();
@@ -210,7 +243,9 @@ test.each(['refused', 'signed'])(
       R8: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
       S: '0x' + '0'.repeat(63) + '1',
     };
-    const onIntent = jest.fn(async (offer, signal) => {
+    const onIntent = jest.fn(async (offer, signal, capsule) => {
+      expect(capsule).toEqual({ recovery: true });
+      expect(Object.isFrozen(capsule)).toBe(true);
       expect(Object.isFrozen(offer)).toBe(true);
       expect(signal.aborted).toBe(false);
       return status === 'signed' ? { status, signature } : { status };
@@ -226,15 +261,20 @@ test.each(['refused', 'signed'])(
     expect(mockTask.signal.aborted).toBe(true);
   }
 );
-test.each(['repeat', 'late-storage', 'substitute', 'wrong-status', 'early-result'])(
-  'operation protocol violation %s refuses and drains',
-  async (mode) => {
-    mockOperationMode = mode;
-    await expect(runRailgunWalletSnapshot(operation())).rejects.toThrow();
-    expect(mockTask.close).toHaveBeenCalled();
-    expect(mockRouter.close).toHaveBeenCalled();
-  }
-);
+test.each([
+  'repeat',
+  'late-storage',
+  'substitute',
+  'wrong-status',
+  'early-result',
+  'bad-capsule',
+  'extra-envelope',
+])('operation protocol violation %s refuses and drains', async (mode) => {
+  mockOperationMode = mode;
+  await expect(runRailgunWalletSnapshot(operation())).rejects.toThrow();
+  expect(mockTask.close).toHaveBeenCalled();
+  expect(mockRouter.close).toHaveBeenCalled();
+});
 test('late signature response after task cancellation cannot be delivered', async () => {
   const onIntent = jest.fn(async (_offer, signal) => {
     mockTask.close();
@@ -285,3 +325,22 @@ test.each([
   await expect(runRailgunWalletSnapshot(operation(async () => response))).rejects.toThrow();
   expect(mockReply).toBeNull();
 });
+
+test.each(['foreign-wallet', 'missing-capsule', 'extra-envelope'])(
+  'real capsule validation refuses %s before the authorizer',
+  async (mode) => {
+    mockActualCapsule = require('../../../scripts/fixtures/railgun-capsule-data').capsule(
+      mockDescriptor.walletId
+    );
+    mockActualCapsule.engineSha256 = require('./railgun-engine-manifest.json').sha256;
+    const privateIntent = mockActualCapsule.selection,
+      onIntent = jest.fn();
+    if (mode === 'foreign-wallet') mockActualCapsule.walletId = 'f'.repeat(64);
+    mockOperationMode = mode;
+    await expect(
+      runRailgunWalletSnapshot({ ...operation(onIntent), privateIntent })
+    ).rejects.toThrow();
+    expect(onIntent).not.toHaveBeenCalled();
+    expect(mockTask.close).toHaveBeenCalled();
+  }
+);

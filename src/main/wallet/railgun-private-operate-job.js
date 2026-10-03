@@ -29,7 +29,34 @@ exports.run = async (inputText, context) => {
           ...restored,
           selection: input.privateIntent,
         });
-        const response = await restored.exchangePrivateIntent(prepared.publicPreparation);
+        const selected = restored.scan.ownedPoi.filter(
+          (v) => v.id === `${input.privateIntent.tree}:${input.privateIntent.position}`
+        );
+        assert.equal(selected.length, 1);
+        const capsule = require('./railgun-private-capsule').normalizeRailgunPrivateCapsule({
+          version: 1,
+          walletId: restored.descriptor.walletId,
+          engineSha256: require('./railgun-engine-manifest.json').sha256,
+          selection: input.privateIntent,
+          preparation: prepared.publicPreparation,
+          noteHash: selected[0].hash,
+          pathElements: prepared.witness.privateInputs.pathElements[0].map(
+            (v) => '0x' + v.toString(16).padStart(64, '0')
+          ),
+        });
+        // Exercise the recovery path before signing can make this intent durable.
+        // A copying/encoding bug must refuse now, not strand a signed hold later.
+        const reconstructed =
+          await require('./railgun-private-reconstruct').reconstructRailgunPrivateWitness({
+            ...restored,
+            capsule,
+          });
+        assert.deepEqual(reconstructed.witness.privateInputs, prepared.witness.privateInputs);
+        assert.deepEqual(reconstructed.witness.publicInputs, prepared.witness.publicInputs);
+        const response = await restored.exchangePrivateIntent({
+          preparation: prepared.publicPreparation,
+          capsule,
+        });
         assert.ok(response && typeof response === 'object' && !Array.isArray(response));
         assert.ok(!restored.signal.aborted);
         if (response.status === 'refused') {
@@ -41,7 +68,7 @@ exports.run = async (inputText, context) => {
         }
         assert.deepEqual(Object.keys(response).sort(), ['signature', 'status']);
         assert.equal(response.status, 'signed');
-        const proof = await prover.prove(prepared, response.signature);
+        const proof = await prover.prove(reconstructed, response.signature);
         return {
           privatePreparation: prepared.publicPreparation,
           privateOperation: { status: 'proved', ...proof },

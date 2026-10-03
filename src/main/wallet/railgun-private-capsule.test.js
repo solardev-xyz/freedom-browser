@@ -122,3 +122,24 @@ test.each([
   if (['key', 'witness', 'signature'].includes(mode)) input[mode] = {};
   expect(() => normalizeRailgunPrivateCapsule(input)).toThrow();
 });
+
+test.each(['walletId', 'engine', 'selection', 'preparation', 'noteHash'])(
+  'new capsule refuses substituted %s while historical normalization remains separate',
+  (mode) => {
+    const { normalizeRailgunNewCapsule } = require('./railgun-private-capsule');
+    const owned = {
+      walletId: input.walletId,
+      selection: input.selection,
+      preparation: input.preparation,
+      noteHash: input.noteHash,
+    };
+    expect(normalizeRailgunNewCapsule(input, owned)).toEqual(input);
+    const changed = structuredClone(input);
+    if (mode === 'walletId') changed.walletId = 'f'.repeat(64);
+    if (mode === 'engine') changed.engineSha256 = 'f'.repeat(64);
+    if (mode === 'selection') changed.selection.position = 2;
+    if (mode === 'preparation') changed.preparation.expectedHash = hex(9);
+    if (mode === 'noteHash') changed.noteHash = hex(9);
+    expect(() => normalizeRailgunNewCapsule(changed, owned)).toThrow();
+  }
+);

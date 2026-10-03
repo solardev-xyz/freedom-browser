@@ -415,6 +415,7 @@ async function main() {
     'scripts/fixtures/railgun-capsule-data.js',
     'src/main/wallet/railgun-private-capsule-store.js',
     'src/main/wallet/railgun-private-capsule.js',
+    'src/main/wallet/railgun-private-reconstruct.js',
     'src/main/wallet/railgun-private-operate-job.js',
     'src/main/wallet/railgun-private-prover.js',
     'src/main/wallet/railgun-prover-runtime.js',

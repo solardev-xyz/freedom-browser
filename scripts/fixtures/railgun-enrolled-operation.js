@@ -56,8 +56,22 @@ exports.qualify = async function qualify({
     const result = await operateRailgunAccountPrivateIntent(account, owners, request, {
       proverArchive,
       artifactDirectory,
-      async onIntent(offer, signal, window) {
+      async onIntent(offer, signal, window, capsule) {
         token = window;
+        const selected = baseline.ownedPoi.find((v) => v.id === request.noteId);
+        assert.ok(selected);
+        const normalizedCapsule =
+          require('../../src/main/wallet/railgun-private-capsule').normalizeRailgunNewCapsule(
+            capsule,
+            {
+              walletId: enrollment.descriptor.walletId,
+              selection: assertRailgunAccountPrivateWindow(window, account, owners).selection,
+              preparation: offer,
+              noteHash: selected.hash,
+            }
+          );
+        assert.deepEqual(normalizedCapsule, capsule);
+        assert.ok(Object.isFrozen(capsule) && Object.isFrozen(capsule.pathElements));
         assert.deepEqual(
           assertRailgunAccountPrivateWindow(window, account, owners).owned,
           baseline
@@ -208,6 +222,9 @@ exports.qualify = async function qualify({
       receiverVerified: receiver,
       independentProofVerified: !refuse,
       windowExpired: true,
+      recoveryCapsuleValidated: true,
+      recoveryWitnessCheckedBeforeOffer: true,
+      provedFromReconstructedWitness: !refuse,
       busyReadsRefused: true,
       oldViewRefused: true,
       ownedProjectionUnchanged: true,

@@ -283,7 +283,7 @@ function preparationFixture() {
         },
       ],
     },
-    ownedPoi: [{ id: '0:1', nullifier: '0x' + '1'.repeat(64) }],
+    ownedPoi: [{ id: '0:1', hash: '0x' + '3'.repeat(64), nullifier: '0x' + '1'.repeat(64) }],
     trees: [{ tree: 0, root: '0x' + '2'.repeat(64), length: 2 }],
   };
   mockRunner.readOwned.mockImplementation(() => owned);
@@ -319,6 +319,12 @@ test('preparation re-attests, compares captured values and swaps to a diagnostic
 });
 function operationFixture() {
   const value = preparationFixture();
+  jest
+    .spyOn(require('./railgun-private-capsule'), 'normalizeRailgunNewCapsule')
+    .mockImplementation((_capsule, owned) => {
+      expect(owned.noteHash).toBe(value.owned.ownedPoi[0].hash);
+      return { capsule: true };
+    });
   jest
     .spyOn(require('./railgun-private-preparation'), 'normalizeRailgunPrivatePreparation')
     .mockImplementation((raw, captured) => {
@@ -736,4 +742,58 @@ test('owned-note reads recheck public generation and runner journal freshness', 
   });
   expect(() => readRailgunAccountOwnedNotes(wallet, owners)).toThrow('checkpoint changed');
   await wallet.close();
+});
+
+test('account capsule mismatch never reaches the authorizer and drains the operation', async () => {
+  const { request } = operationFixture(),
+    opened = await openRailgunAccountWallet(options),
+    onIntent = jest.fn();
+  require('./railgun-private-capsule').normalizeRailgunNewCapsule.mockImplementationOnce(() => {
+    throw Error('capsule mismatch');
+  });
+  await expect(
+    operateRailgunAccountPrivateIntent(opened, options, request, {
+      onIntent,
+      proverArchive: '/prover.asar',
+      artifactDirectory: '/artifacts',
+    })
+  ).rejects.toMatchObject({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' });
+  expect(onIntent).not.toHaveBeenCalled();
+  expect(mockSession.signal.aborted).toBe(true);
+});
+
+test('real account normalizers refuse a capsule with a different owned note hash after broker validation', async () => {
+  const { owned } = preparationFixture();
+  const capsule = require('../../../scripts/fixtures/railgun-capsule-data').capsule(
+    mockEnrollment.descriptor.walletId
+  );
+  capsule.engineSha256 = require('./railgun-engine-manifest.json').sha256;
+  owned.ownedPoi[0].hash = capsule.noteHash;
+  owned.ownedPoi[0].nullifier = capsule.preparation.expected.nullifier;
+  owned.trees[0].root = capsule.preparation.expected.merkleRoot;
+  const offer = require('./railgun-private-preparation').normalizeRailgunPrivateOffer(
+    capsule.preparation,
+    capsule.selection
+  );
+  capsule.noteHash = '0x' + '0'.repeat(63) + '9';
+  const checked = require('./railgun-private-capsule').normalizeRailgunNewCapsule(capsule, {
+    walletId: mockEnrollment.descriptor.walletId,
+    selection: capsule.selection,
+    preparation: offer,
+  });
+  mockRunner.operateReadOnly = jest.fn(async ({ privateOperation }) =>
+    privateOperation.onIntent(offer, mockSession.signal, checked)
+  );
+  const opened = await openRailgunAccountWallet(options),
+    onIntent = jest.fn();
+  await expect(
+    operateRailgunAccountPrivateIntent(
+      opened,
+      options,
+      { kind: capsule.selection.kind, noteId: '0:1', recipient: capsule.selection.recipient },
+      { onIntent, proverArchive: '/prover.asar', artifactDirectory: '/artifacts' }
+    )
+  ).rejects.toMatchObject({ code: 'RAILGUN_ACCOUNT_WALLET_REFUSED' });
+  expect(onIntent).not.toHaveBeenCalled();
+  expect(mockSession.signal.aborted).toBe(true);
 });

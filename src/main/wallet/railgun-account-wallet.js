@@ -218,7 +218,7 @@ async function openRailgunAccountWallet({
         privateOperation = {
           proverArchive: operation.proverArchive,
           artifactDirectory: operation.artifactDirectory,
-          async onIntent(offer, signal) {
+          async onIntent(offer, signal, capsule) {
             const { transactionDigest, ...raw } = offer;
             const normalized =
               require('./railgun-private-preparation').normalizeRailgunPrivatePreparation(raw, {
@@ -226,6 +226,17 @@ async function openRailgunAccountWallet({
                 ...before,
               });
             check(normalized.transactionDigest === transactionDigest);
+            const selected = before.ownedPoi.filter(
+              (v) => v.id === `${privateIntent.tree}:${privateIntent.position}`
+            );
+            check(selected.length === 1);
+            const normalizedCapsule =
+              require('./railgun-private-capsule').normalizeRailgunNewCapsule(capsule, {
+                walletId: enrollment.descriptor.walletId,
+                selection: privateIntent,
+                preparation: normalized,
+                noteHash: selected[0].hash,
+              });
             const owners = { identity, enrollment, coordinator };
             const entry = privateWindows.get(privateWindow);
             check(entry && entry.operationSignal === undefined);
@@ -233,7 +244,7 @@ async function openRailgunAccountWallet({
             entry.operationSignal = signal;
             assertRailgunAccountPrivateWindow(privateWindow, account, owners);
             check(!signal.aborted);
-            const response = await onIntent(normalized, signal, privateWindow);
+            const response = await onIntent(normalized, signal, privateWindow, normalizedCapsule);
             assertRailgunAccountPrivateWindow(privateWindow, account, owners);
             check(!signal.aborted);
             return response;

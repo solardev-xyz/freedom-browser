@@ -83,4 +83,25 @@ function digestRailgunPrivateCapsule(value) {
     .update(JSON.stringify(capsule))
     .digest('hex');
 }
-module.exports = { normalizeRailgunPrivateCapsule, digestRailgunPrivateCapsule };
+// New-operation handoff: main supplies every field it already owns. Historical
+// recovery still uses the versioned normalizer above, without a current-pin test.
+function normalizeRailgunNewCapsule(value, { walletId, selection, preparation, noteHash }) {
+  const normalized = normalizeRailgunPrivateCapsule(value);
+  const { transaction, expected, expectedHash, recipient, amount } = preparation;
+  const expectedCapsule = normalizeRailgunPrivateCapsule({
+    version: 1,
+    walletId,
+    selection,
+    engineSha256: require('./railgun-engine-manifest.json').sha256,
+    preparation: { transaction, expected, expectedHash, recipient, amount },
+    noteHash: noteHash === undefined ? normalized.noteHash : noteHash,
+    pathElements: normalized.pathElements,
+  });
+  assert.deepEqual(normalized, expectedCapsule);
+  return expectedCapsule;
+}
+module.exports = {
+  normalizeRailgunPrivateCapsule,
+  digestRailgunPrivateCapsule,
+  normalizeRailgunNewCapsule,
+};

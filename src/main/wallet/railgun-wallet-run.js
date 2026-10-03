@@ -147,12 +147,17 @@ async function runRailgunWalletSnapshot({
             // A trusted main operation handles this typed request. The callback
             // is not a key capability; it must establish its own real authority.
             const offer = require('./railgun-private-preparation').normalizeRailgunPrivateOffer(
-              message.value,
+              message.value.preparation,
               privateIntent
+            );
+            assert.deepEqual(Object.keys(message.value).sort(), ['capsule', 'preparation']);
+            const capsule = require('./railgun-private-capsule').normalizeRailgunNewCapsule(
+              message.value.capsule,
+              { walletId, selection: privateIntent, preparation: offer }
             );
             offered = offer;
             const operationSignal = AbortSignal.any([router.signal, scope.signal, task.signal]);
-            intentWork = Promise.resolve().then(() => onIntent(offer, operationSignal));
+            intentWork = Promise.resolve().then(() => onIntent(offer, operationSignal, capsule));
             const response = await intentWork;
             assert.ok(!operationSignal.aborted);
             assertRailgunIdentity(identity, handle);
