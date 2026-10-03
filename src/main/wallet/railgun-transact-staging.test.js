@@ -45,6 +45,7 @@ const {
   stageRailgunTransactInput,
   assertRailgunTransactStaging,
   claimRailgunTransactStaging,
+  assertRailgunTransactStagingAvailable,
 } = require('./railgun-transact-staging');
 const pins = require('./railgun-shield-pins.json');
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
@@ -452,6 +453,10 @@ test('staging is consumed once synchronously and its claim stays bound to the ex
     options.owners,
     options.request
   );
+  expect(
+    assertRailgunTransactStagingAvailable(result.receipt, mockNew, options.owners, options.request)
+      .signal.aborted
+  ).toBe(false);
   const window = {},
     data = {
       owned: mockFresh,
@@ -474,6 +479,9 @@ test('staging is consumed once synchronously and its claim stays bound to the ex
     window
   );
   expect(claim.assertCurrent(20000)).toBe(evidence);
+  expect(() =>
+    assertRailgunTransactStagingAvailable(result.receipt, mockNew, options.owners, options.request)
+  ).toThrow();
   expect(mockWindow).toHaveBeenCalledWith(window, mockNew, options.owners, 20000);
   expect(() =>
     claimRailgunTransactStaging(result.receipt, mockNew, options.owners, options.request, window)

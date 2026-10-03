@@ -1,7 +1,16 @@
-/** Actual enrolled staging/A/creator/path over synthetic history. No admission. */
+/** Actual enrolled staging/provenance, optionally synthetic controller signing. */
 const assert = require('assert/strict');
 const { getPrivacyContext } = require('../../src/main/networks/privacy-context');
-exports.qualify = async ({ account, owners, archive, proverArchive, artifactDirectory, row }) => {
+exports.qualify = async ({
+  account,
+  owners,
+  archive,
+  proverArchive,
+  artifactDirectory,
+  row,
+  controllerKind,
+  observeKeys,
+}) => {
   const wallet = require('../../src/main/wallet/railgun-account-wallet');
   const servicesModule = require('../../src/main/wallet/railgun-public-services');
   const originalFactory = servicesModule.createRailgunPublicServices;
@@ -35,9 +44,12 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
     assert.equal(selected[0].id, '0:2');
     assert.equal(selected[0].hash, row.commitments[0]);
     const request = {
-      kind: 'railgun-private-transfer',
+      kind: controllerKind || 'railgun-private-transfer',
       noteId: selected[0].id,
-      recipient: owners.identity.descriptor.instanceId,
+      recipient:
+        controllerKind === 'railgun-token-unshield'
+          ? (await require('../../src/main/wallet/signers').getSigner(0).getAddress()).toLowerCase()
+          : owners.identity.descriptor.instanceId,
     };
     const policy = wallet.getRailgunAccountWalletPolicy({ archive, ...owners });
     await account.close();
@@ -149,6 +161,38 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
     const evidence = assertRailgunTransactStaging(staged.receipt, staged.account, owners, request);
     assert.deepEqual(evidence.state, payload.state);
     assert.equal(counts.page, 1);
+    if (controllerKind) {
+      assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(controllerKind));
+      const controller = await require('./railgun-enrolled-signing').qualify({
+        account: staged.account,
+        owners,
+        archive,
+        proverArchive,
+        artifactDirectory,
+        kind: controllerKind,
+        stagingReceipt: staged.receipt,
+        observeKeys,
+      });
+      assert.equal(controller.status, 'proved');
+      assert.equal(controller.inputType, 'Transact');
+      assert.equal(instances.length, 5);
+      assert.equal(counts.page, 1);
+      assert.equal(counts.root, 5);
+      assert.ok(instances.every((service) => service.signal.aborted));
+      return {
+        elapsedMs: Math.round(performance.now() - started),
+        controller,
+        serviceQueries: { latest: counts.latest, page: counts.page, root: counts.root },
+        serviceInstances: instances.length,
+        simulatedPublicServices: true,
+        actualEnrolledPhaseHandoff: true,
+        existingCheckpointRestored: true,
+        syntheticVaultSigning: true,
+        liveSpending: false,
+        boundParamsChecked: false,
+        globalTxidCompleteness: false,
+      };
+    }
     const result = await wallet.operateRailgunAccountPrivateIntent(
       staged.account,
       owners,

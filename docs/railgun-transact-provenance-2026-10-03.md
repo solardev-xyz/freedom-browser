@@ -55,12 +55,12 @@ requests, external transports and forbidden RPC attempts. Viewing keys and
 simulated public queries are used; surrounding existing cases sign and prove
 with public synthetic keys. No live owned-note query or transaction occurred.
 
-The private signing controller still accepts Shield inputs only. Next, compose
-this receipt with its exact normalized offer and independently fresh POI and
-preflight gates, reassert every gate after durable awaits and immediately before
-key release, and qualify the combined controller before permitting Transact
-inputs. Main-process placement preserves existing wallet/key/storage boundaries;
-no dependency, IPC or UI surface changes.
+The [private signing controller](railgun-transact-controller-2026-10-03.md) now
+consumes this evidence alongside independent POI and preflight gates. The
+composer itself grants no signing permission. Its root acquisition additionally
+accepts a caller-shortenable 20-second budget, enforced synchronously between
+requests and cleared after settlement; signing assertions retain the original
+root-receipt freshness bound. No dependency, IPC or UI surface changes.
 
 ## Main integration and regression
 

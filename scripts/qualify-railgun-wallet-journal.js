@@ -48,8 +48,18 @@ async function main() {
     cancelledViewingProcessClosed = false,
     cancelledViewingProcess = null;
   const stagingQualification = process.env.FREEDOM_RAILGUN_TRANSACT_STAGING === '1';
+  const transactControllerKind = process.env.FREEDOM_RAILGUN_TRANSACT_CONTROLLER;
+  if (transactControllerKind) {
+    assert.ok(
+      stagingQualification &&
+        ['railgun-private-transfer', 'railgun-token-unshield'].includes(transactControllerKind)
+    );
+    assert.equal(process.env.FREEDOM_RAILGUN_PRIVATE_OPERATION, undefined);
+    assert.equal(process.env.FREEDOM_RAILGUN_PRIVATE_SUBMISSION, undefined);
+  }
   if (stagingQualification) assert.ok(composition === 'enrolled' && proverArchive);
-  let stagingGuard = false;
+  let stagingGuard = false,
+    retainedTransactController;
   const forbiddenStaging = { signerLaunches: 0, spendingKeys: 0, transports: 0, rpc: 0 };
   const transport = require('../src/main/networks/wallet-tor-transport');
   const originalTransport = transport.createWalletTorTransport;
@@ -91,7 +101,10 @@ async function main() {
         options.filename === require.resolve('../src/main/wallet/railgun-spend-sign-job')
       ) {
         forbiddenStaging.signerLaunches++;
-        throw Error('Signer forbidden during synthetic staging');
+        assert.ok(
+          transactControllerKind && forbiddenStaging.signerLaunches === 1,
+          'Signer forbidden during synthetic staging'
+        );
       }
       if (options.filename === require.resolve('../src/main/wallet/railgun-wallet-job'))
         walletRestores.push(JSON.parse(options.input).restore);
@@ -108,7 +121,10 @@ async function main() {
             const message = JSON.parse(wire);
             if (stagingGuard && message.method === 'key' && message.purpose === 'spending-sign') {
               forbiddenStaging.spendingKeys++;
-              throw Error('Spending key forbidden during synthetic staging');
+              assert.ok(
+                transactControllerKind && forbiddenStaging.spendingKeys === 1,
+                'Spending key forbidden during synthetic staging'
+              );
             }
             if (message.method === 'key' && message.purpose === 'private-prepare')
               privateViewingKeys++;
@@ -1063,17 +1079,37 @@ async function main() {
                     proverArchive,
                     artifactDirectory,
                     row: stagingRow,
+                    controllerKind: transactControllerKind,
+                    observeKeys: (observer) => {
+                      spendingReplyObserver = observer;
+                    },
                   });
+                if (transactControllerKind) {
+                  const reservations = await enrollment.openReservations();
+                  const capsules = await enrollment.openPrivateCapsules();
+                  await reservations.withSigningRecovery(async (records) => {
+                    assert.equal(records.length, 1);
+                    const entry = records[0].entry;
+                    const stored = await capsules.get(entry.id);
+                    assert.ok(stored.signature && stored.provedTransaction);
+                    retainedTransactController = {
+                      id: entry.id,
+                      digest: sha(JSON.stringify({ entry, stored })),
+                    };
+                  });
+                }
               } finally {
                 stagingGuard = false;
               }
               assert.deepEqual(forbiddenStaging, {
-                signerLaunches: 0,
-                spendingKeys: 0,
+                signerLaunches: transactControllerKind ? 1 : 0,
+                spendingKeys: transactControllerKind ? 1 : 0,
                 transports: 0,
                 rpc: 0,
               });
-              transactStaging.forbiddenAttempts = { ...forbiddenStaging };
+              transactStaging[transactControllerKind ? 'guardedAttempts' : 'forbiddenAttempts'] = {
+                ...forbiddenStaging,
+              };
             }
             runs.push({
               ...(transactStaging ? { transactStaging } : {}),
@@ -1671,9 +1707,23 @@ async function main() {
         legacySourcePublicJournalUnchanged: true,
       });
       const reservations = await enrollment.openReservations();
+      const retainedControllerSigning = transactControllerKind ? 1 : 0;
+      const retainedController = retainedTransactController;
+      assert.equal(!!retainedController, !!transactControllerKind);
+      if (retainedControllerSigning) {
+        const capsules = await enrollment.openPrivateCapsules();
+        await reservations.withSigningRecovery(async (records) => {
+          assert.equal(records.length, 1);
+          const entry = records[0].entry;
+          const stored = await capsules.get(entry.id);
+          assert.ok(stored.signature && stored.provedTransaction);
+          assert.equal(entry.id, retainedController.id);
+          assert.equal(sha(JSON.stringify({ entry, stored })), retainedController.digest);
+        });
+      }
       assert.deepEqual(await reservations.inspect(), {
         held: 1,
-        signing: 0,
+        signing: retainedControllerSigning,
         abandoned: 0,
         legacy: 0,
       });
@@ -1710,7 +1760,7 @@ async function main() {
         });
         assert.deepEqual(await reservations.inspect(), {
           held: 1,
-          signing: 0,
+          signing: retainedControllerSigning,
           abandoned: 0,
           legacy: 0,
         });
@@ -1720,7 +1770,7 @@ async function main() {
       await reservations.abandonRecovered(recoveryInput);
       assert.deepEqual(await reservations.inspect(), {
         held: 0,
-        signing: 0,
+        signing: retainedControllerSigning,
         abandoned: 1,
         legacy: 0,
       });
@@ -1758,8 +1808,14 @@ async function main() {
       let recoveryReceipt;
       await recoveredReservations.withSigningRecovery(async (records, recoveryContext) => {
         recoveryContext.assertCurrent();
-        assert.equal(records.length, 1);
-        recoveryReceipt = records[0].receipt;
+        assert.equal(records.length, retainedControllerSigning + 1);
+        if (retainedController) {
+          const entry = records.find((record) => record.entry.id === retainedController.id)?.entry;
+          assert.ok(entry);
+          const stored = await recoveredCapsules.get(entry.id);
+          assert.equal(sha(JSON.stringify({ entry, stored })), retainedController.digest);
+        }
+        recoveryReceipt = records.find((record) => record.entry.id === savedCapsule.holdId).receipt;
         recoveredReservations.assertReceiptContext(recoveryReceipt, 'recovery');
         assert.equal(
           (await recoveredReservations.assertReceipt(recoveryReceipt)).id,
@@ -1776,7 +1832,7 @@ async function main() {
       });
       assert.deepEqual(await recoveredReservations.inspect(), {
         held: 0,
-        signing: 1,
+        signing: retainedControllerSigning + 1,
         abandoned: 1,
         legacy: 0,
       });
@@ -1796,7 +1852,8 @@ async function main() {
         signingReceiptRequiresCurrentStore: true,
         signingStatePreservedOnReopen: true,
         signingStateCannotBeAbandoned: true,
-        signingKeyReleased: false,
+        lifecycleSigningKeyReleased: false,
+        additionalControllerSigningPreserved: !!retainedController,
       });
     }
     if (process.env.FREEDOM_RAILGUN_PRIVATE_OPERATION) {

@@ -58,6 +58,7 @@ async function open({
     creator,
     verified,
     rootWork,
+    rootDeadline,
     closed = false,
     attempted = false;
   const receipts = new WeakMap();
@@ -69,7 +70,12 @@ async function open({
   const active = (margin = 0) => {
     assert.ok(Number.isSafeInteger(margin) && margin >= 0 && margin < 60000);
     const now = performance.now();
-    assert.ok(!closed && !scope.signal.aborted && now >= started && now + margin < deadline);
+    assert.ok(
+      !closed &&
+        !scope.signal.aborted &&
+        now >= started &&
+        now + margin < Math.min(deadline, rootDeadline ?? deadline)
+    );
     assert.equal(claim.assertCurrent(margin), staged);
     assert.equal(assertRailgunAccountPrivateWindow(window, account, owners, margin), data);
     if (creatorReceipt)
@@ -152,10 +158,17 @@ async function open({
       globalTxidCompleteness: false,
       spendingEnabled: false,
     });
-    function acquireRoot() {
+    function acquireRoot({ timeoutMs = 20000 } = {}) {
       active();
       assert.ok(!attempted);
+      assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 20000);
       attempted = true;
+      rootDeadline = Math.min(deadline, performance.now() + timeoutMs);
+      const rootTimer = setTimeout(
+        revoke,
+        Math.max(1, Math.floor(rootDeadline - performance.now()))
+      );
+      rootTimer.unref?.();
       rootWork = (async () => {
         try {
           roots = createRailgunTxidRootSource(
@@ -178,6 +191,9 @@ async function open({
         } catch {
           revoke();
           throw fail();
+        } finally {
+          clearTimeout(rootTimer);
+          rootDeadline = undefined;
         }
       })();
       // Return the observed promise itself, not an unobserved async wrapper.

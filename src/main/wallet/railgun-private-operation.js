@@ -1,4 +1,4 @@
-/** Main-owned new-operation signing/proving, initially Shield inputs only.
+/** Main-owned new-operation signing/proving with exact input provenance.
  * Every key requires a genuine live window and B request, fresh gates and a
  * durable exact-intent signing record. No caller data grants key authority.
  * C must verify before saving; saved proof data is not submission authority.
@@ -33,6 +33,11 @@ const {
 } = require('./railgun-private-preflight');
 const { verifyRailgunPrivateProof, assertRailgunPrivateProof } = require('./railgun-private-proof');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
+const { assertRailgunTransactStagingAvailable } = require('./railgun-transact-staging');
+const {
+  openRailgunTransactProvenance,
+  assertRailgunTransactProvenance,
+} = require('./railgun-transact-provenance');
 const pins = require('./railgun-shield-pins.json');
 const permits = new WeakMap(),
   completions = new WeakMap(),
@@ -100,7 +105,15 @@ function complete({
   completions.set(receipt, { identity, enrollment, assertCurrent, close, signal: scope.signal });
   return Object.freeze({ receipt, close, signal: scope.signal });
 }
-async function prove({ account, owners, request, archive, proverArchive, artifactDirectory }) {
+async function prove({
+  account,
+  owners,
+  request,
+  archive,
+  proverArchive,
+  artifactDirectory,
+  stagingReceipt,
+}) {
   owners = Object.freeze({ ...owners });
   request = Object.freeze({ ...request });
   const { identity, enrollment, coordinator } = owners;
@@ -108,9 +121,15 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
   const baseline = readRailgunAccountOwnedNotes(account, owners);
   const selection = selectRailgunPrivatePreparation(baseline, request);
   const selected = baseline.ownedPoi.find((v) => v.id === request.noteId);
-  // Creating-transaction provenance is not yet composed for Transact inputs.
-  // Refuse before opening storage, a network context, a hold or a signer.
-  if (selected?.type !== 'Shield')
+  let staging;
+  if (selected?.type === 'Transact') {
+    try {
+      staging = assertRailgunTransactStagingAvailable(stagingReceipt, account, owners, request);
+      assert.equal(staging.evidence.bindings.archive, archive);
+    } catch {
+      return Object.freeze({ status: 'refused', stage: 'input-provenance' });
+    }
+  } else if (selected?.type !== 'Shield' || stagingReceipt !== undefined)
     return Object.freeze({ status: 'refused', stage: 'input-provenance' });
   assert.equal(selected.id, `${selection.tree}:${selection.position}`);
   archive = verifyRailgunEngineRuntime(archive);
@@ -124,6 +143,7 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
       enrollment.signal,
       account.signal,
       coordinator.signal,
+      ...(staging ? [staging.signal] : []),
     ]),
     isCurrent: () => {
       assertRailgunIdentity(identity, parent);
@@ -199,7 +219,15 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
         proverArchive,
         artifactDirectory,
         async onIntent(offer, signal, window, capsule) {
-          let poi, preflight, acquiredPoi, acquiredPreflight, permit, deadlineTimer;
+          let poi,
+            preflight,
+            acquiredPoi,
+            acquiredPreflight,
+            permit,
+            deadlineTimer,
+            provenance,
+            acquiredProvenance,
+            provenanceValue;
           const data = assertRailgunAccountPrivateWindow(window, account, owners);
           assert.equal(data.owned.checkpointHash, baseline.checkpointHash);
           assert.deepEqual(data.selection, selection);
@@ -212,6 +240,7 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
             preflight?.close();
           };
           operationScope.signal.addEventListener('abort', closeSources, { once: true });
+          const onProvenanceAbort = () => operationScope.close();
           const current = (margin = 0) => {
             active();
             assert.ok(!operationScope.signal.aborted && !signal.aborted);
@@ -230,6 +259,20 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
               preparation: offer,
               noteHash: selected.hash,
             });
+            if (staging) {
+              stage = 'input-provenance';
+              provenance = await openRailgunTransactProvenance({
+                stagingReceipt,
+                account,
+                owners,
+                request,
+                window,
+                signal: operationScope.signal,
+              });
+              provenance.signal.addEventListener('abort', onProvenanceAbort, { once: true });
+              if (provenance.signal.aborted) onProvenanceAbort();
+              current(KEY_MARGIN_MS);
+            }
             let receiver = null;
             stage = 'receiver';
             if (selection.kind === 'railgun-private-transfer') {
@@ -249,11 +292,12 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
             current(KEY_MARGIN_MS);
             stage = 'poi';
             const preflightBudget = 20000,
-              signerBudget = 30000;
+              signerBudget = 30000,
+              rootBudget = staging ? 20000 : 0;
             const commitBy = data.deadline - KEY_MARGIN_MS - signerBudget;
             const poiBudget = Math.min(
               45000,
-              Math.floor(commitBy - performance.now() - preflightBudget)
+              Math.floor(commitBy - performance.now() - preflightBudget - rootBudget)
             );
             assert.ok(poiBudget > 0);
             poi = openRailgunPrivateWindowPoi({ wallet: account, ...owners, archive, window });
@@ -272,7 +316,7 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
             assert.equal(poiValue.input.nullifier, selected.nullifier);
             assert.equal(poiValue.input.noteHash, selected.hash);
             assert.equal(poiValue.input.checkpointHash, baseline.checkpointHash);
-            assert.equal(poiValue.input.type, 'Shield');
+            assert.equal(poiValue.input.type, selected.type);
             assert.equal(offer.expected.nullifier, selected.nullifier);
             stage = 'preflight';
             const preflightInput = Object.freeze({
@@ -282,7 +326,10 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
               checkpointHash: baseline.checkpointHash,
               minimumBlock: baseline.read.readiness.to.number,
             });
-            const remaining = Math.min(preflightBudget, Math.floor(commitBy - performance.now()));
+            const remaining = Math.min(
+              preflightBudget,
+              Math.floor(commitBy - performance.now() - rootBudget)
+            );
             assert.ok(remaining > 0);
             preflight = createRailgunPrivatePreflight({
               enrollment,
@@ -304,6 +351,24 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
               KEY_MARGIN_MS
             );
             assert.deepEqual(preflightValue.input, preflightInput);
+            if (provenance) {
+              stage = 'txid-root';
+              const rootRemaining = Math.min(rootBudget, Math.floor(commitBy - performance.now()));
+              assert.ok(rootRemaining > 0);
+              acquiredProvenance = await provenance.acquireRoot({ timeoutMs: rootRemaining });
+              current(KEY_MARGIN_MS);
+              provenanceValue = assertRailgunTransactProvenance(
+                provenance,
+                acquiredProvenance.receipt,
+                account,
+                owners,
+                window,
+                KEY_MARGIN_MS
+              );
+              assert.equal(provenanceValue.transactionDigest, offer.transactionDigest);
+              assert.equal(provenanceValue.checkpointHash, baseline.checkpointHash);
+              assert.ok(Object.isFrozen(provenanceValue));
+            }
             const gates = (margin = KEY_MARGIN_MS) => {
               current(margin);
               assert.equal(
@@ -326,6 +391,18 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
                 ),
                 preflightValue
               );
+              if (provenance)
+                assert.equal(
+                  assertRailgunTransactProvenance(
+                    provenance,
+                    acquiredProvenance.receipt,
+                    account,
+                    owners,
+                    window,
+                    margin
+                  ),
+                  provenanceValue
+                );
             };
             gates();
             stage = 'signer';
@@ -348,7 +425,7 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
                   expectedHash: offer.expectedHash,
                 });
                 const authorizationDigest = hash({
-                  operation: 'shield-input-private-v1',
+                  operation: staging ? 'transact-input-private-v1' : 'shield-input-private-v1',
                   submitter,
                   capsuleDigest: digestRailgunPrivateCapsule(normalized),
                   checkpointHash: baseline.checkpointHash,
@@ -356,6 +433,7 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
                   poi: poiValue,
                   preflight: preflightValue,
                   signer: validated,
+                  ...(provenanceValue ? { provenance: provenanceValue } : {}),
                 });
                 stage = 'reserve';
                 held = await reservations.reserve({
@@ -415,6 +493,8 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
             clearTimeout(deadlineTimer);
             operationScope.close();
             closeSources();
+            provenance?.signal.removeEventListener('abort', onProvenanceAbort);
+            await provenance?.close();
           }
         },
       }

@@ -259,7 +259,7 @@ test('remaining-time margin rechecks creator, staging and root freshness', async
   expect(() => check(op, acquired.receipt)).toThrow();
 });
 
-test.each(['staging-revoked', 'deadline-before-timer'])(
+test.each(['staging-revoked', 'deadline-before-timer', 'root-budget-before-timer'])(
   'real root source refuses its second request after %s',
   async (mode) => {
     const stagingController = new AbortController();
@@ -282,8 +282,8 @@ test.each(['staging-revoked', 'deadline-before-timer'])(
     mockRootFactory.mockImplementation(
       jest.requireActual('./railgun-txid-root').createRailgunTxidRootSource
     );
-    const op = await open({ timeoutMs: 10000 });
-    const pending = op.acquireRoot();
+    const op = await open({ timeoutMs: mode === 'root-budget-before-timer' ? 150000 : 10000 });
+    const pending = op.acquireRoot({ timeoutMs: 10000 });
     const rejected = expect(pending).rejects.toThrow();
     if (mode === 'staging-revoked') {
       stagingController.abort();

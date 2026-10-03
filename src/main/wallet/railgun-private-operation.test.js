@@ -1,4 +1,40 @@
 let mock, mockStep, mockSign;
+jest.mock('./railgun-transact-staging', () => ({
+  assertRailgunTransactStagingAvailable: (receipt) => {
+    if (!mock.staging || receipt !== mock.staging.receipt || mock.staging.consumed)
+      throw Error('staging');
+    mockStep('staging-available');
+    return {
+      signal: mock.staging.controller.signal,
+      evidence: { bindings: { archive: '/engine.asar' } },
+    };
+  },
+}));
+jest.mock('./railgun-transact-provenance', () => ({
+  openRailgunTransactProvenance: async ({ signal }) => {
+    mockStep('provenance-open');
+    if (mock.staging.consumed) throw Error('consumed');
+    mock.staging.consumed = true;
+    signal.addEventListener('abort', () => mock.provenanceController.abort(), { once: true });
+    if (signal.aborted) mock.provenanceController.abort();
+    return mock.provenance;
+  },
+  assertRailgunTransactProvenance: (operation, receipt, account, owners, window, margin) => {
+    mockStep('provenance-check');
+    if (
+      operation !== mock.provenance ||
+      receipt !== mock.provenanceReceipt ||
+      account !== mock.account ||
+      owners.identity !== mock.identity ||
+      window !== mock.window ||
+      mock.provenance.signal.aborted ||
+      mock.provenanceExpired ||
+      margin !== 20000
+    )
+      throw Error('provenance');
+    return mock.provenanceValue;
+  },
+}));
 jest.mock('./railgun-account-wallet', () => ({
   readRailgunAccountOwnedNotes: () => mock.owned,
   assertRailgunAccountPrivateWindow: (token, account, owners, margin = 0) => {
@@ -178,7 +214,11 @@ beforeEach(() => {
     },
     assertReceipt: async (v) => {
       mockStep('hold-check');
-      return { id: mock.holdId, state: v === mock.signed ? 'signing' : 'held', signing: mock.evidence };
+      return {
+        id: mock.holdId,
+        state: v === mock.signed ? 'signing' : 'held',
+        signing: mock.evidence,
+      };
     },
     assertReceiptContext: (v, kind) => {
       if (v !== mock.signed || kind !== 'operation') throw Error('origin');
@@ -317,6 +357,34 @@ beforeEach(() => {
   };
 });
 afterEach(() => mock.scope.close());
+function enableTransact() {
+  mock.owned.ownedPoi[0].type = 'Transact';
+  mock.poiValue.input.type = 'Transact';
+  mock.staging = { receipt: {}, consumed: false, controller: new AbortController() };
+  options.stagingReceipt = mock.staging.receipt;
+  mock.provenanceController = new AbortController();
+  mock.provenanceReceipt = {};
+  mock.provenanceValue = Object.freeze({
+    transactionDigest: mock.offer.transactionDigest,
+    checkpointHash: mock.owned.checkpointHash,
+    spendingEnabled: false,
+  });
+  mock.provenance = {
+    signal: mock.provenanceController.signal,
+    acquireRoot: async ({ timeoutMs }) => {
+      expect(timeoutMs).toBeGreaterThan(0);
+      expect(timeoutMs).toBeLessThanOrEqual(20000);
+      mockStep('root');
+      await mock.rootPause;
+      return { receipt: mock.provenanceReceipt };
+    },
+    close: jest.fn(async () => {
+      mockStep('provenance-close');
+      mock.provenanceController.abort();
+      await mock.provenanceDrain;
+    }),
+  };
+}
 test('durability, one-use key permission, B/A exits and C precede a saved proof and completion', async () => {
   await expect(prove(options)).resolves.toMatchObject({
     status: 'proved',
@@ -412,6 +480,111 @@ test('Transact input refuses before local stores, network or key', async () => {
   await expect(prove(options)).resolves.toEqual({ status: 'refused', stage: 'input-provenance' });
   expect(mock.events).toEqual([]);
 });
+test('Transact input composes provenance/root after POI/preflight and rechecks it through derivation', async () => {
+  enableTransact();
+  const result = await prove(options);
+  expect(result.status).toBe('proved');
+  const order = [
+    'staging-available',
+    'open-reservations',
+    'provenance-open',
+    'POI',
+    'preflight',
+    'root',
+    'B-validate',
+    'reserve',
+    'put',
+    'mark',
+    'derive',
+    'key',
+    'provenance-close',
+    'A-exit',
+    'C',
+  ];
+  expect(mock.events.filter((name) => order.includes(name))).toEqual(order);
+  expect(mock.events.filter((name) => name === 'provenance-check').length).toBeGreaterThan(8);
+  expect(mock.provenance.close).toHaveBeenCalledTimes(1);
+  const before = [...mock.events];
+  expect(await prove(options)).toEqual({ status: 'refused', stage: 'input-provenance' });
+  expect(mock.events).toEqual(before);
+});
+test.each(['forged', 'consumed', 'shield-with-staging'])(
+  '%s staging refuses before storage or network',
+  async (mode) => {
+    enableTransact();
+    if (mode === 'forged') options.stagingReceipt = {};
+    if (mode === 'consumed') mock.staging.consumed = true;
+    if (mode === 'shield-with-staging') mock.owned.ownedPoi[0].type = 'Shield';
+    expect(await prove(options)).toEqual({ status: 'refused', stage: 'input-provenance' });
+    expect(mock.events).toEqual([]);
+  }
+);
+test.each(['digest', 'checkpoint'])(
+  'changed provenance %s refuses before B or reservation',
+  async (field) => {
+    enableTransact();
+    mock.provenanceValue = Object.freeze({
+      ...mock.provenanceValue,
+      [field === 'digest' ? 'transactionDigest' : 'checkpointHash']: 'changed',
+    });
+    expect((await prove(options)).status).toBe('refused');
+    expect(mock.events).not.toContain('B-validate');
+    expect(mock.events).not.toContain('reserve');
+  }
+);
+test.each(['reserve', 'put', 'mark', 'derive'])(
+  'root expiry at %s prevents key release and preserves signing uncertainty',
+  async (at) => {
+    enableTransact();
+    mock.onStep = (name) => {
+      if (name === at) mock.provenanceExpired = true;
+    };
+    const result = await prove(options);
+    const uncertain = ['mark', 'derive'].includes(at);
+    expect(result.status).toBe(uncertain ? 'signed-unfinished' : 'refused');
+    expect(mock.events).not.toContain('key');
+    expect(mock.events.includes('abandon')).toBe(!uncertain);
+  }
+);
+test('POI expiring during root acquisition refuses before B', async () => {
+  enableTransact();
+  mock.onStep = (name) => {
+    if (name === 'root') mock.poiClosed = true;
+  };
+  expect((await prove(options)).status).toBe('refused');
+  expect(mock.events).not.toContain('B-validate');
+  expect(mock.events).not.toContain('reserve');
+});
+test.each(['staging', 'provenance'])(
+  '%s cancellation during POI closes its transport and drains before releasing the controller',
+  async (which) => {
+    enableTransact();
+    let entered, release, drain;
+    const started = new Promise((resolve) => {
+      entered = resolve;
+    });
+    mock.provenanceDrain = new Promise((resolve) => {
+      drain = resolve;
+    });
+    mock.poi.acquire = () =>
+      new Promise((resolve) => {
+        entered();
+        release = resolve;
+      });
+    const pending = prove(options);
+    await started;
+    (which === 'staging' ? mock.staging.controller : mock.provenanceController).abort();
+    expect(mock.poiClosed).toBe(true);
+    release({ status: 'verified', receipt: {} });
+    for (let n = 0; n < 8; n++) await Promise.resolve();
+    expect(mock.provenance.close).toHaveBeenCalled();
+    expect(await prove(options)).toEqual({ status: 'refused', stage: 'local' });
+    drain();
+    expect((await pending).status).toBe('refused');
+    expect(mock.events).not.toContain('preflight');
+    expect(mock.events).not.toContain('key');
+  }
+);
 test('unshield to an address other than the submitting vault EOA refuses before network', async () => {
   mock.owner = '0x' + '34'.repeat(20);
   expect((await prove(options)).status).toBe('refused');

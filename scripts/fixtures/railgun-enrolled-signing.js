@@ -12,6 +12,7 @@ exports.qualify = async function qualify({
   artifactDirectory,
   kind,
   observeKeys,
+  stagingReceipt,
 }) {
   assert.equal(used, false);
   used = true;
@@ -23,7 +24,7 @@ exports.qualify = async function qualify({
   const baseline = wallet.readRailgunAccountOwnedNotes(account, owners);
   const selected = baseline.ownedPoi.find(
     (v) =>
-      v.type === 'Shield' &&
+      v.type === (stagingReceipt ? 'Transact' : 'Shield') &&
       baseline.read.received.some((n) => n.id === v.id && n.spentTxid === false)
   );
   assert.ok(selected);
@@ -43,6 +44,7 @@ exports.qualify = async function qualify({
     preflightCalls = 0,
     keyReplies = 0,
     checkedBeforeKey = false;
+  const eoaCalls = { contexts: 0, journals: 0, requests: 0 };
   const borrowed = [];
   const reservations = await enrollment.openReservations();
   const capsules = await enrollment.openPrivateCapsules();
@@ -130,13 +132,22 @@ exports.qualify = async function qualify({
     assert.equal(stored.receipt, receipt);
     return stored.observation;
   };
-  networkModule.getPrivateTransactionNetwork = () => ({
-    assertCanSubmit: async () => {},
-    request: async (_chain, method) => {
-      assert.ok(['eth_getCode', 'eth_getBalance'].includes(method));
-      return { result: method === 'eth_getCode' ? '0x' : '0x100000000000000' };
-    },
-  });
+  networkModule.getPrivateTransactionNetwork = () => {
+    eoaCalls.contexts++;
+    current();
+    return {
+      assertCanSubmit: async () => {
+        eoaCalls.journals++;
+        current();
+      },
+      request: async (_chain, method) => {
+        eoaCalls.requests++;
+        current();
+        assert.ok(['eth_getCode', 'eth_getBalance'].includes(method));
+        return { result: method === 'eth_getCode' ? '0x' : '0x100000000000000' };
+      },
+    };
+  };
   observeKeys(async (key) => {
     keyReplies++;
     borrowed.push(key);
@@ -158,6 +169,7 @@ exports.qualify = async function qualify({
       archive,
       proverArchive,
       artifactDirectory,
+      ...(stagingReceipt ? { stagingReceipt } : {}),
       request: {
         kind,
         noteId: selected.id,
@@ -165,12 +177,14 @@ exports.qualify = async function qualify({
       },
     };
     const started = performance.now();
-    const refused = await prove(options);
-    assert.deepEqual(refused, { status: 'refused', stage: 'poi' });
-    assert.equal(keyReplies, 0);
-    assert.equal(preflightCalls, 0);
-    assert.deepEqual(await capsules.inspect(), initialCapsules);
-    assert.deepEqual(await reservations.inspect(), initialReservations);
+    if (!stagingReceipt) {
+      const refused = await prove(options);
+      assert.deepEqual(refused, { status: 'refused', stage: 'poi' });
+      assert.equal(keyReplies, 0);
+      assert.equal(preflightCalls, 0);
+      assert.deepEqual(await capsules.inspect(), initialCapsules);
+      assert.deepEqual(await reservations.inspect(), initialReservations);
+    }
     negative = false;
     const result = await prove(options);
     assert.equal(result.status, 'proved', result.stage);
@@ -187,10 +201,27 @@ exports.qualify = async function qualify({
       stored.provedTransaction,
       stored.capsule.preparation.expected
     );
-    const before = { poiCalls, preflightCalls, keyReplies };
+    const counters = () => ({ poiCalls, preflightCalls, keyReplies, ...eoaCalls });
+    const before = counters();
+    const durableBefore = {
+      reservations: await reservations.inspect(),
+      capsules: await capsules.inspect(),
+      stored: await capsules.get(result.holdId),
+    };
     const duplicate = await prove(options);
-    assert.deepEqual(duplicate, { status: 'refused', stage: 'local' });
-    assert.deepEqual({ poiCalls, preflightCalls, keyReplies }, before);
+    assert.deepEqual(duplicate, {
+      status: 'refused',
+      stage: stagingReceipt ? 'input-provenance' : 'local',
+    });
+    assert.deepEqual(counters(), before);
+    assert.deepEqual(
+      {
+        reservations: await reservations.inspect(),
+        capsules: await capsules.inspect(),
+        stored: await capsules.get(result.holdId),
+      },
+      durableBefore
+    );
     const transact = baseline.ownedPoi.find(
       (v) =>
         v.type === 'Transact' &&
@@ -198,10 +229,22 @@ exports.qualify = async function qualify({
     );
     assert.ok(transact);
     assert.deepEqual(
-      await prove({ ...options, request: { ...options.request, noteId: transact.id } }),
+      await prove({
+        ...options,
+        stagingReceipt: undefined,
+        request: { ...options.request, noteId: transact.id },
+      }),
       { status: 'refused', stage: 'input-provenance' }
     );
-    assert.deepEqual({ poiCalls, preflightCalls, keyReplies }, before);
+    assert.deepEqual(counters(), before);
+    assert.deepEqual(
+      {
+        reservations: await reservations.inspect(),
+        capsules: await capsules.inspect(),
+        stored: await capsules.get(result.holdId),
+      },
+      durableBefore
+    );
     assert.throws(() => claim({}, identity, enrollment));
     assert.throws(() => claim(result.completion.receipt, {}, enrollment));
     await account.close();
@@ -246,14 +289,17 @@ exports.qualify = async function qualify({
       externalObservationsSimulated: true,
       simulatedPoiCalls: poiCalls,
       simulatedPreflightCalls: preflightCalls,
+      simulatedEoaCalls: { ...eoaCalls },
+      duplicateAndUnstagedDurableStateUnchanged: true,
       syntheticVaultSpendingKeyReplies: keyReplies,
       keyBuffersWiped: true,
       durableCapsuleAndSigningCheckedBeforeKey: checkedBeforeKey,
       signatureAndProofPersisted: true,
       independentProofVerified: true,
-      negativePoiNoReservationOrKey: true,
+      negativePoiNoReservationOrKey: stagingReceipt ? null : true,
+      inputType: stagingReceipt ? 'Transact' : 'Shield',
       duplicateNoNetworkOrKey: true,
-      transactRefusedBeforeSideEffects: true,
+      unstagedTransactRefusedBeforeSideEffects: true,
       completionSurvivesWalletClose: true,
       completionMatchesExclusiveRecovery: true,
       completionUnforgeableAndSingleClaim: true,

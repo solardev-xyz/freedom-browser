@@ -273,6 +273,18 @@ exports.assertRailgunTransactStaging = (receipt, account, owners, request, windo
     throw fail();
   }
 };
+// Pre-acquisition check only: callers still have to claim inside the genuine A
+// window. Expose the authentic lifetime so cancellation can stop earlier gates.
+exports.assertRailgunTransactStagingAvailable = (receipt, account, owners, request) => {
+  try {
+    const evidence = exports.assertRailgunTransactStaging(receipt, account, owners, request);
+    const entry = receipts.get(receipt);
+    assert.ok(!entry.claimed);
+    return Object.freeze({ evidence, signal: entry.signal });
+  } catch {
+    throw fail();
+  }
+};
 // Consumption precedes all asynchronous provenance work. A failed or cancelled
 // attempt cannot move the same staging evidence to another operation window.
 exports.claimRailgunTransactStaging = (receipt, account, owners, request, window) => {
