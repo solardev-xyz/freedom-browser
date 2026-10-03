@@ -17,6 +17,10 @@ const { createRailgunTxidRunner } = require('./railgun-txid-runner');
 const { createRailgunTxidJournal } = require('./railgun-txid-journal');
 const { createRailgunTxidRootSource } = require('./railgun-txid-root');
 const { createRailgunPublicServices } = require('./railgun-public-services');
+const {
+  normalizeRailgunTxidWitness,
+  normalizeRailgunNoteTxidWitness,
+} = require('./railgun-txid-note-witness');
 const { getPrivacyStoragePath } = require('./privacy-storage');
 const fail = () =>
   Object.assign(new Error('Railgun account TXID state requires recovery'), {
@@ -164,6 +168,39 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
     // note, membership witness, fresh root and required-list POI before spending.
     return value.coverage;
   }
+  async function witness(mode, input) {
+    await restore();
+    const current = await journal.readState();
+    active();
+    check(current.checkpoint && !current.pending);
+    const payload = { state: current.checkpoint.state, ...input };
+    const computed = await runner.run(mode, payload);
+    active();
+    const value = runner.assertResult(computed.receipt, mode, payload);
+    // These immutable values may outlive this phase, but the runner's receipt
+    // may not. A spending composition must re-verify the path, owned selection,
+    // canonical event relation and fresh service root under its own lifetime.
+    return Object.freeze({
+      ...(mode === 'note-witness'
+        ? {
+            noteWitness: normalizeRailgunNoteTxidWitness(
+              value.noteWitness,
+              payload.state,
+              input.note
+            ),
+          }
+        : { witness: normalizeRailgunTxidWitness(value.witness, payload.state, input.txid) }),
+      ownershipVerified: false,
+      eventCoverageVerified: false,
+      rootAccepted: false,
+      spendingEnabled: false,
+    });
+  }
+  function selectWitness(mode, selector) {
+    // Snapshot before exclusive() schedules work in the next microtask.
+    const input = JSON.parse(JSON.stringify(selector));
+    return exclusive(() => witness(mode, input));
+  }
   async function exclusive(run) {
     active();
     check(!work);
@@ -274,6 +311,8 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
       publicIdentity,
       advance: () => exclusive(advance),
       cover: () => exclusive(cover),
+      witness: (txid) => selectWitness('witness', { txid }),
+      witnessNote: (note) => selectWitness('note-witness', { note }),
       inspect: () => exclusive(diagnostic),
     });
   } catch (error) {

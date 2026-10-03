@@ -177,7 +177,7 @@ test('uses owned keys and bounded live pages, validating roots before fresh proj
     'apply',
     'complete',
   ]);
-  expect(value).not.toHaveProperty('witness');
+  expect(typeof value.witness).toBe('function');
   await value.close();
   const phase = claimRailgunAccountPhase(mockEnrollment, 'wallet');
   phase.release();
@@ -374,4 +374,101 @@ test('coverage uses the public snapshot source and rechecks its evidence before 
   });
   await expect(value.cover()).rejects.toThrow('stale source');
   expect(value.signal.aborted).toBe(true);
+});
+test.each(['witness', 'witnessNote'])(
+  '%s returns diagnostic values after revalidation without exposing runner receipts',
+  async (method) => {
+    const account = await open();
+    await account.advance();
+    state.checkpoint.state = { ...state.checkpoint.state, transcript: '3'.repeat(64), breaks: [] };
+    const row = {
+      version: 'V2',
+      graphID: '0x' + '1'.padStart(64, '0') + '0'.repeat(128),
+      commitments: ['0x' + '1'.repeat(64)],
+      nullifiers: ['0x' + '2'.repeat(64)],
+      boundParamsHash: '0x' + '0'.repeat(64),
+      blockNumber: 1,
+      txid: '4'.repeat(64),
+      timestamp: 1,
+      utxoTreeIn: 0,
+      utxoTreeOut: 1,
+      utxoBatchStartPositionOut: 1,
+      verificationHash: '0x' + '5'.repeat(64),
+    };
+    const witness = {
+      row,
+      leaf: '1'.repeat(64),
+      railgunTxid: '2'.repeat(64),
+      rowSha256: require('crypto').createHash('sha256').update(JSON.stringify(row)).digest('hex'),
+      index: 1,
+      elements: Array(16).fill('0'.repeat(64)),
+      root: state.checkpoint.state.root,
+      checkpointIndex: 1,
+      transcript: state.checkpoint.state.transcript,
+      continuity: require('./railgun-txid-omissions').classifyRailgunTxidContinuity(1, []),
+      globalTxidCompleteness: false,
+    };
+    const note = {
+      type: 'Transact',
+      txid: '0x' + row.txid,
+      hash: row.commitments[0],
+      tree: 1,
+      position: 1,
+      blockNumber: 1,
+    };
+    const observation =
+      method === 'witness'
+        ? witness
+        : {
+            note,
+            outputIndex: 0,
+            witness,
+            ownershipVerified: false,
+            eventCoverageVerified: false,
+            rootAccepted: false,
+            spendingEnabled: false,
+          };
+    const mode = method === 'witness' ? 'witness' : 'note-witness';
+    const key = method === 'witness' ? 'witness' : 'noteWitness';
+    const selector = method === 'witness' ? '2'.repeat(64) : note;
+    mockRunner.assertResult.mockReturnValue({ [key]: observation });
+    const result = await account[method](selector);
+    expect(mockRunner.assertResult).toHaveBeenLastCalledWith({ mode }, mode, {
+      state: state.checkpoint.state,
+      [method === 'witness' ? 'txid' : 'note']: selector,
+    });
+    expect(result[key]).toEqual(observation);
+    expect(result[key]).not.toBe(observation);
+    expect(Object.isFrozen(result[key])).toBe(true);
+    expect(result).not.toHaveProperty('receipt');
+    expect(result).toMatchObject({
+      ownershipVerified: false,
+      eventCoverageVerified: false,
+      rootAccepted: false,
+      spendingEnabled: false,
+    });
+    await account.close();
+    await expect(account[method](selector)).rejects.toThrow();
+  }
+);
+test('note witness snapshots the selector at invocation and refuses stale computation', async () => {
+  const account = await open();
+  await account.advance();
+  const note = { type: 'Transact', tree: 1 };
+  mockRunner.assertResult.mockImplementation(() => {
+    throw Error('stale result');
+  });
+  const pending = account.witnessNote(note);
+  note.tree = 2;
+  await expect(pending).rejects.toThrow('stale result');
+  expect(mockRunner.run).toHaveBeenLastCalledWith('note-witness', {
+    state: state.checkpoint.state,
+    note: { type: 'Transact', tree: 1 },
+  });
+  expect(account.signal.aborted).toBe(true);
+});
+test('empty TXID journal cannot issue a note witness', async () => {
+  const account = await open();
+  await expect(account.witnessNote({ type: 'Transact' })).rejects.toThrow();
+  expect(mockRunner.run.mock.calls.some(([mode]) => mode === 'note-witness')).toBe(false);
 });

@@ -68,7 +68,9 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
   scope.signal.addEventListener('abort', close, { once: true });
   async function run(mode, payload, source) {
     active();
-    check(!busy && ['inspect', 'project', 'apply', 'witness', 'coverage'].includes(mode));
+    check(
+      !busy && ['inspect', 'project', 'apply', 'witness', 'note-witness', 'coverage'].includes(mode)
+    );
     check(
       mode === 'coverage'
         ? source &&

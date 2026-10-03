@@ -67,7 +67,7 @@ records acknowledged transaction
 nonce 0, with 7.955 seconds of preparation and 8.736 seconds in submission.
 It used the genuine vault signer and live Tor through the qualification Arti
 endpoint shim. Expected note value is
-0.0009975 WETH after the 0.0000025 ETH protocol fee. A subsequent local, unpublished recovery run observed inclusion at block 11,834,494 with ten
+0.0009975 WETH after the 0.0000025 WETH protocol fee. A subsequent local, unpublished recovery run observed inclusion at block 11,834,494 with ten
 confirmations and matched the exact Shield at tree 0, position 10,245. Net value
 and fee matched with no deviation. [Finality run `d`](qualification/railgun-shield-live-finality-2026-10-03.json)
 subsequently resolved the matched outcome at 97 confirmations, with the

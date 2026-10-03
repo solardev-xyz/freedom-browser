@@ -28,6 +28,7 @@ async function main() {
     'src/main/wallet/railgun-engine-manifest.json',
     'src/main/wallet/railgun-public-records.js',
     'src/main/wallet/railgun-txid-projection.js',
+    'src/main/wallet/railgun-txid-note-witness.js',
     'src/main/wallet/railgun-txid-omissions.js',
   ];
   const hashes = () =>
@@ -96,7 +97,12 @@ async function main() {
       closed,
       trust: 'indexer-poi-consistency-only',
       passed:
-        result.matches && result.replayed && result.corruptRootRefused && result.proofs.length > 0,
+        result.matches &&
+        result.replayed &&
+        result.corruptRootRefused &&
+        result.proofs.length > 0 &&
+        result.noteWitnesses.length > 0 &&
+        result.wrongNoteHashRefused,
       globalTxidCompleteness: false,
       accountsOpened: 0,
       submissions: 0,
@@ -111,7 +117,9 @@ async function main() {
     return result.matches &&
       result.replayed &&
       result.corruptRootRefused &&
-      result.proofs.length > 0
+      result.proofs.length > 0 &&
+      result.noteWitnesses.length > 0 &&
+      result.wrongNoteHashRefused
       ? 0
       : 1;
   } finally {

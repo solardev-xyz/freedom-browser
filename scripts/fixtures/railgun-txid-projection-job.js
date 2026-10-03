@@ -59,7 +59,8 @@ async function run(text, { request, signal, guardReport }) {
   }
   assert.equal(state.count, input.checkpoint.index + 1);
   assert.equal(state.root, input.checkpoint.root);
-  const proofs = [];
+  const proofs = [],
+    noteWitnesses = [];
   for (const [index, txid] of samples) {
     const proof = await projection().witness(state, txid, read);
     assert.equal(proof.index, index);
@@ -82,6 +83,41 @@ async function run(text, { request, signal, guardReport }) {
       root: proof.root,
       checkpointIndex: proof.checkpointIndex,
     });
+    const inserted = proof.row.commitments.length - (proof.row.unshield ? 1 : 0);
+    if (inserted > 0) {
+      const note = {
+        type: 'Transact',
+        txid: '0x' + proof.row.txid,
+        hash: proof.row.commitments[inserted - 1],
+        tree: proof.row.utxoTreeOut,
+        position: proof.row.utxoBatchStartPositionOut + inserted - 1,
+        blockNumber: proof.row.blockNumber,
+      };
+      const { findRailgunNoteTxidWitness } = require(
+        '../../src/main/wallet/railgun-txid-note-witness'
+      );
+      const start = performance.now();
+      const found = await findRailgunNoteTxidWitness({
+        state,
+        note,
+        read,
+        projection: projection(),
+      });
+      assert.deepEqual(found.witness, proof);
+      assert.equal(found.outputIndex, inserted - 1);
+      assert.equal(found.spendingEnabled, false);
+      if (noteWitnesses.length === 0) {
+        await assert.rejects(() =>
+          findRailgunNoteTxidWitness({
+            state,
+            note: { ...note, hash: '0x' + '0'.repeat(64) },
+            read,
+            projection: projection(),
+          })
+        );
+      }
+      noteWitnesses.push({ matched: true, elapsedMs: Math.round(performance.now() - start) });
+    }
   }
   const corrupted = { ...state, root: '0'.repeat(64) };
   await assert.rejects(() => projection().witness(corrupted, samples.values().next().value, read));
@@ -101,6 +137,8 @@ async function run(text, { request, signal, guardReport }) {
     verificationBreaks: state.breaks,
     transcript: state.transcript,
     proofs,
+    noteWitnesses,
+    wrongNoteHashRefused: noteWitnesses.length > 0,
     corruptRootRefused: true,
     records: values.size,
     guards: guardReport(),

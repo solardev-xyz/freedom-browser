@@ -10,7 +10,9 @@ const { promisify } = require('util');
 async function run(text, { request, signal, guardReport }) {
   const input = JSON.parse(text);
   assert.deepEqual(Object.keys(input).sort(), ['archive', 'mode']);
-  assert.ok(['project', 'apply', 'witness', 'inspect', 'coverage'].includes(input.mode));
+  assert.ok(
+    ['project', 'apply', 'witness', 'note-witness', 'inspect', 'coverage'].includes(input.mode)
+  );
   const archive = require('./railgun-engine-runtime').verifyRailgunEngineRuntime(input.archive);
   const r = createRequire(path.join(archive, 'package.json')),
     root = path.dirname(r.resolve('@railgun-community/engine'));
@@ -81,6 +83,17 @@ async function run(text, { request, signal, guardReport }) {
         abi,
         ethers,
         qualifiedThrough: require('./railgun-public-policy').QUALIFIED_THROUGH,
+      }),
+    };
+  } else if (input.mode === 'note-witness') {
+    assert.deepEqual(Object.keys(payload).sort(), ['note', 'state']);
+    assert.deepEqual(current, payload.state);
+    value = {
+      noteWitness: await require('./railgun-txid-note-witness').findRailgunNoteTxidWitness({
+        state: current,
+        note: payload.note,
+        read,
+        projection,
       }),
     };
   } else if (input.mode === 'witness') {

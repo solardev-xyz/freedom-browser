@@ -26,6 +26,7 @@ async function main() {
       'txid-runner',
       'txid-job',
       'txid-projection',
+      'txid-note-witness',
       'txid-omissions',
       'engine-runtime',
       'process',
@@ -185,9 +186,42 @@ async function main() {
       expected: state,
     });
     assert.equal(finalReplay.value.replayed, true);
+    const outputRow = lastRows.find((row) => row.commitments.length > (row.unshield ? 1 : 0));
+    assert.ok(outputRow);
+    const notePayload = {
+      state,
+      note: {
+        type: 'Transact',
+        txid: '0x' + outputRow.txid,
+        hash: outputRow.commitments[0],
+        tree: outputRow.utxoTreeOut,
+        position: outputRow.utxoBatchStartPositionOut,
+        blockNumber: outputRow.blockNumber,
+      },
+    };
+    const noteStart = performance.now();
+    const noteResult = await runner.run('note-witness', notePayload);
+    const noteWitness = runner.assertResult(
+      noteResult.receipt,
+      'note-witness',
+      notePayload
+    ).noteWitness;
+    assert.deepEqual(
+      require('../src/main/wallet/railgun-txid-note-witness').normalizeRailgunNoteTxidWitness(
+        noteWitness,
+        state,
+        notePayload.note
+      ),
+      noteWitness
+    );
+    assert.deepEqual(noteWitness.witness.row, outputRow);
+    assert.equal(noteWitness.witness.root, state.root);
+    assert.equal(noteWitness.spendingEnabled, false);
+    const noteWitnessMs = Math.round(performance.now() - noteStart);
     // Byte-for-byte encrypted records survive worker/process recreation. Their
     // plaintext TXID row must not occur verbatim in the SQLite file.
     await close();
+    assert.throws(() => runner.assertResult(noteResult.receipt, 'note-witness', notePayload));
     assert.equal(fs.readFileSync(filename).includes(Buffer.from(lastRows[0].graphID)), false);
     assert.deepEqual(hashes(), sourceSha256);
     const report = {
@@ -201,6 +235,7 @@ async function main() {
       coldRestore: true,
       staleReceiptRefused: true,
       encryptedRows: true,
+      noteWitness: { matched: true, closedReceiptRefused: true, elapsedMs: noteWitnessMs },
       mismatchedRootRefusedBeforeMutation: true,
       alteredReplayBaseRefused: true,
       hostJournalQualified: false,

@@ -305,3 +305,27 @@ test('non-coverage jobs cannot request the source or receive a source capability
   };
   await expect(runner.run('inspect', {})).rejects.toThrow();
 });
+test.each(['txBegin', 'sourceNext', 'rpc', 'batch'])(
+  'note-witness refuses %s capabilities',
+  async (method) => {
+    mockRun = async ({ broker }) => {
+      await broker.dispatch(JSON.stringify({ id: 1, method: 'input' }));
+      await broker.dispatch(JSON.stringify({ id: 2, method, args: {} }));
+    };
+    await expect(runner.run('note-witness', { note: {}, state: {} })).rejects.toThrow();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(session.close).toHaveBeenCalled();
+  }
+);
+test('note-witness receipts bind the complete public selector and checkpoint', async () => {
+  const payload = { note: { type: 'Transact', position: 1 }, state: { count: 2 } };
+  const result = await runner.run('note-witness', payload);
+  expect(runner.assertResult(result.receipt, 'note-witness', payload)).toBe(result.value);
+  expect(() => runner.assertResult(result.receipt, 'witness', payload)).toThrow();
+  expect(() =>
+    runner.assertResult(result.receipt, 'note-witness', {
+      ...payload,
+      note: { ...payload.note, position: 2 },
+    })
+  ).toThrow();
+});

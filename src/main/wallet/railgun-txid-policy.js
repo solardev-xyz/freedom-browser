@@ -8,6 +8,7 @@ const engine = require('./railgun-engine-manifest.json');
 const SOURCES = Object.freeze([
   'railgun-txid-policy',
   'railgun-txid-projection',
+  'railgun-txid-note-witness',
   'railgun-txid-omissions',
   'railgun-txid-events',
   'railgun-txid-coverage',

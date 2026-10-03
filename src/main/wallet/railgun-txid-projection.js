@@ -272,4 +272,4 @@ function createRailgunTxidProjection({ hashPair, transactionHash, verificationHa
     inspect: (value) => freeze(state(JSON.parse(JSON.stringify(value)))),
   });
 }
-module.exports = { createRailgunTxidProjection };
+module.exports = { createRailgunTxidProjection, validateRailgunTxidRow: row };

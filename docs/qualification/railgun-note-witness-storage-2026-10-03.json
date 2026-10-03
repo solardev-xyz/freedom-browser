@@ -1,0 +1,90 @@
+{
+  "observedAt": "2026-10-03T08:47:50.805Z",
+  "sourceSha256": {
+    "scripts/qualify-railgun-txid-storage.js": "f708d49b336568472010aad7a54423b2c09be3c69bae3735c9c901fe535b1da0",
+    "src/main/wallet/railgun-txid-runner.js": "671c1d1ca1d01de9eea29ba44581ff9b68b68816d350e26c974e54f383876a71",
+    "src/main/wallet/railgun-txid-job.js": "e98753c1cae03d322de761a70377bbb1b206e8824da63b964d2bbf51cb46235b",
+    "src/main/wallet/railgun-txid-projection.js": "2a0034c4f2813ccd060275f5c71e9db22fd89c50a3a602ea7247e1c2ab92fa73",
+    "src/main/wallet/railgun-txid-note-witness.js": "55c0f4ee08088f648c7030bce9e88c96b2d8c26d48a8b46d57326a104b9a2a6f",
+    "src/main/wallet/railgun-txid-omissions.js": "643940be28f7064ae34ba96d856ec2f6cf37f623bcd5592be81928a11fe83a75",
+    "src/main/wallet/railgun-engine-runtime.js": "3dd0d43fc4cf9a766539986cd0779573ec49d39c261ebaa1c3906c81653bc860",
+    "src/main/wallet/railgun-process.js": "a2ba095f28a0977912f5c40dcd8fdaad6aaa8a5053a1c30efdd43e3449c008e4",
+    "src/main/wallet/railgun-process-entry.js": "d17252bdfc9d7b93994eb4df04bdb4d6eff77fd89b1dc569a1b47ed1e0772f1e",
+    "src/main/wallet/railgun-process-guards.js": "f7bbf6220212b62ae7791f9b47c145d95abec9e499b26f7bfe854e950281d958",
+    "src/main/wallet/railgun-session-worker.js": "da9f952912571b89567e7259e503bed91580d5bb9f29022a5e22289df8d92859",
+    "src/main/wallet/railgun-session-worker-entry.js": "e0e2c586d07ea36c7d0dfd5a7a0e340500b367f18ed03dadcd355939caefa692",
+    "src/main/wallet/railgun-session.js": "b36c4af051dca7b848e6b6f55ece7e46b77018f51781ec916bad79f700a26b9d",
+    "src/main/wallet/railgun-paged-store.js": "68cfdcc3a46c4a9fda4760d4c40fe31ec81456e4a6935ef35608e43d0f69b93c",
+    "src/main/wallet/railgun-remote.js": "1ad3b7fad9b14be7e357ea117b7239cf2777ced44d3a3866602fbec20a3c4793",
+    "src/main/wallet/railgun-wallet-state.js": "5969ea0bc38c5d8ca9f4563c9a72c39e9bbfb34621f175b6e2d41ac4f6bb9292",
+    "src/main/wallet/railgun-public-records.js": "b69ae32debfe8974ee66e3cf831f0958a2687b0a5bd3ee53690d1db900058f5a",
+    "src/main/wallet/railgun-engine-manifest.json": "54a4d63dea94e17a542d7510c08e1f35ea71256c821639ba86da29b89f8c7f2c",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133"
+  },
+  "captureSha256": "11d37888b487780c69bb237e33486a569e00e5732818871ac2c7c74ca35f610b",
+  "checkpoint": {
+    "index": 4229,
+    "root": "17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da"
+  },
+  "state": {
+    "version": 1,
+    "count": 4230,
+    "root": "17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da",
+    "after": "0x0000000000000000000000000000000000000000000000000000000000b48dea00000000000000000000000000000000000000000000000000000000000000360000000000000000000000000000000000000000000000000000000000000000",
+    "verificationHash": "0xbc832f1246cebcc238f1aac9315593582b533d5c8aa87589c036a35c9766983b",
+    "branches": [
+      "04d5d4005d5329fae393c44b9434c2778e0def67ff224cc0b790396b918e079b",
+      "2151bc1f7d82b9f98c18b2fa3fdf39dfbd01bf00bab9369ce766b78e789ca2d0",
+      "190bb0ad4f755a8f6f9acdd2574365db2b7038116924f4989bd855eb4e158365",
+      "1b165dfd021be3b3001d8a545f6379b89cc232174e0bffb5d206e9e1d9963a69",
+      "0c62fa9c07bf30d8109a94de08cf2652289adcaa536e9cd92536d88c57e2597d",
+      "199d2f7a8a32cfd5ea3b0959baf24e7b27e61247f3828234595c199e36a7098c",
+      "0025640112658cb23d8b6034b6f3628f03a55a8d372076ce4bb7fa9b739b4974",
+      "06d7ce4c4471cb9f4c45619ce7db91db234bd61b88d5a08194f321728d8f5127",
+      "258222df71d6066733a5ab028782aa92694666fbc7254da6ab1a63201f92b669",
+      "2c715db352d8a9eac80c754f22698ab0369a80e4dc834ecba3afba2a8c775977",
+      "1c33c7264153107f9567b01b4728474d30b534ed5fece79667003f705d46e122",
+      "23adbb9fed2aa71c56a48983fe661c53c0c602a48db5d4cebc851aa98e436558",
+      "0e6ff69178ec72a95123330516472ead0e703a228660d603b90241e64fd572fb",
+      "1b17b9306e81e9c3f77e1784ec074dc3fd75e1ec23aa7946cfb78d115d3648b0",
+      "0604ba4cb1db40ac727e2722a77d72e0e31b20f9c3f0e5c4608fb848aac8aadf",
+      "0d26121b50026e6a9e8774c87c9847e15385aee480247c15de28cd7064dd74f3"
+    ],
+    "breaks": [
+      {
+        "index": 4188,
+        "precedingRoot": "29b951c81d6d0bd08e8b4657d6a6cc6409d9c2e30f6554b1c4d317dfc8fdf368",
+        "blockNumber": 11816741,
+        "txid": "4b78372a9f06a8ab7ccb8a02373d279fc385515139c6ef157d2fe79ee147e932",
+        "graphID": "0x0000000000000000000000000000000000000000000000000000000000b44f2500000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000",
+        "firstNullifier": "0x1c2cf5a682d5ae2b1617b985a8bc31e3ebcd6c730907b7aa9c67d44763402cae",
+        "expected": "0xfbd11184128f1161139df47f15f76a22a3c64dd6fb8dc656421d7133fce42b0a",
+        "actual": "0x39dc4b897e3739eb2793437d1e272514314e08dc9e494d859da6a058d005ada8"
+      }
+    ],
+    "transcript": "4fbbbd7bbc61df7d7cb8d5402ff382bbf0ed330736fa9308a85bfa418a9b374f"
+  },
+  "store": {
+    "schema": "wallet-store-v1",
+    "storeId": "120bfe7f3146df7f59335597c0d90755be947f45aa55bad3038b7baf35848851",
+    "count": 16932,
+    "bytes": 6315819,
+    "sha256": "b21854879a9e57c9e42dbc2cf38300605948f0ec30c7dff4194a856ffcb1fba9"
+  },
+  "replayed": true,
+  "coldRestore": true,
+  "staleReceiptRefused": true,
+  "encryptedRows": true,
+  "noteWitness": {
+    "matched": true,
+    "closedReceiptRefused": true,
+    "elapsedMs": 4421
+  },
+  "mismatchedRootRefusedBeforeMutation": true,
+  "alteredReplayBaseRefused": true,
+  "hostJournalQualified": false,
+  "enrolledAccountStorageQualified": false,
+  "globalTxidCompleteness": false,
+  "submissions": 0,
+  "passed": true
+}
