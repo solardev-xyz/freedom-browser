@@ -53,7 +53,7 @@ afterEach(async () => {
   for (const worker of workers) worker.close();
   await Promise.all(workers.map((w) => w.closed));
 });
-async function open(create, interrupt = false) {
+async function open(create, interrupt = false, assertScan) {
   const session = startRailgunSessionWorker({
     handle: scope.getContext({
       kind: 'private-account',
@@ -101,6 +101,7 @@ async function open(create, interrupt = false) {
       session: wrapped,
       walletId: '8'.repeat(64),
       policy: '9'.repeat(64),
+      assertScan,
     }),
   };
 }
@@ -257,4 +258,155 @@ test('engine cursors cannot seek outside wallet keys or outlive their phase', as
       })
     )
   ).rejects.toThrow();
+});
+
+async function restorable() {
+  directory = fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-wallet-restore-'));
+  const receipts = new WeakMap();
+  const issue = (mode) => {
+    const receipt = Object.freeze({});
+    receipts.set(receipt, mode);
+    return receipt;
+  };
+  const assertScan = (receipt, expected) => {
+    expect(receipts.has(receipt)).toBe(true);
+    if (expected.mode) expect(receipts.get(receipt)).toBe(expected.mode);
+  };
+  const opened = await open(true, false, assertScan),
+    { store } = opened;
+  const first = issue('scan'),
+    initial = store.beginEngine();
+  await initial.dispatch(
+    JSON.stringify({
+      id: 1,
+      method: 'batch',
+      args: {
+        operations: [{ type: 'put', key: b64(noteKey), value: b64('derived') }],
+      },
+    })
+  );
+  store.finishEngine(first);
+  const observation = await store.write(plan(), coverage(), first);
+  return { ...opened, issue, first, initial, coverage: observation };
+}
+const getNote = (grant, id = 1) =>
+  grant.dispatch(JSON.stringify({ id, method: 'get', args: { key: b64(noteKey) } }));
+
+test('repeated read-only grants preserve bytes, reset IDs and require new restore receipts', async () => {
+  const f = await restorable(),
+    before = await f.session.inspectWalletState();
+  for (let i = 0; i < 2; i++) {
+    const window = new AbortController(),
+      grant = f.store.beginRestore(window.signal);
+    expect(() => f.store.assertCoverage(f.coverage, f.first)).toThrow();
+    expect(JSON.parse(await getNote(grant)).value).toBe(b64('derived'));
+    const receipt = f.issue('restore');
+    f.store.finishRestore(receipt);
+    expect(grant.signal.aborted).toBe(true);
+    expect(grant.getStatus()).toEqual({ readOnly: true, writeAttempts: 0 });
+    window.abort(); // finishing detached this window's cancellation hook
+    const renewed = await f.store.read(receipt);
+    expect(() => f.store.assertCoverage(renewed, receipt)).not.toThrow();
+    expect(await f.session.inspectWalletState()).toEqual(before);
+    expect(() => f.store.beginEngine()).toThrow();
+  }
+});
+test.each(['batch', 'put', 'del', 'clear', 'txBegin', 'txStage', 'txCommit', 'txRollback'])(
+  'read-only grant refuses %s and closes the session',
+  async (method) => {
+    const f = await restorable(),
+      grant = f.store.beginRestore(new AbortController().signal);
+    await expect(
+      grant.dispatch(JSON.stringify({ id: 1, method, args: { operations: [] } }))
+    ).rejects.toThrow();
+    expect(grant.getStatus().writeAttempts).toBe(1);
+    expect(f.store.signal.aborted).toBe(true);
+  }
+);
+test.each([true, false])(
+  'restore receipt cannot authorize coverage writes (supplied=%s)',
+  async (supplied) => {
+    const f = await restorable();
+    f.store.beginRestore(new AbortController().signal);
+    const receipt = f.issue('restore');
+    f.store.finishRestore(receipt);
+    await expect(
+      f.store.write(plan(), coverage(), supplied ? receipt : undefined)
+    ).rejects.toThrow();
+    expect(f.store.signal.aborted).toBe(true);
+  }
+);
+test('late old grant cannot operate during a newer read-only window', async () => {
+  const f = await restorable(),
+    old = f.store.beginRestore(new AbortController().signal);
+  const receipt = f.issue('restore');
+  f.store.finishRestore(receipt);
+  await f.store.read(receipt);
+  f.store.beginRestore(new AbortController().signal);
+  await expect(getNote(old)).rejects.toThrow();
+  expect(f.store.signal.aborted).toBe(true);
+});
+test('unfinished cursor, reused receipt and mismatched finish cannot revive a grant', async () => {
+  for (const mode of ['cursor', 'receipt', 'finish']) {
+    const f = await restorable(),
+      grant = f.store.beginRestore(new AbortController().signal);
+    if (mode === 'cursor') {
+      const prefix = getRailgunWalletPrefixes('8'.repeat(64))[0];
+      await grant.dispatch(
+        JSON.stringify({
+          id: 1,
+          method: 'open',
+          args: { options: { gte: b64(prefix), lt: b64(prefix + '~') } },
+        })
+      );
+    }
+    expect(() =>
+      mode === 'finish'
+        ? f.store.finishEngine(f.issue('restore'))
+        : f.store.finishRestore(mode === 'receipt' ? f.first : f.issue('restore'))
+    ).toThrow();
+    expect(f.store.signal.aborted).toBe(true);
+    expect(grant.signal.aborted).toBe(true);
+    await f.session.closed;
+  }
+});
+test('window cancellation revokes the grant and requires cold recovery', async () => {
+  const f = await restorable(),
+    window = new AbortController();
+  const grant = f.store.beginRestore(window.signal);
+  window.abort();
+  expect(grant.signal.aborted).toBe(true);
+  expect(f.store.signal.aborted).toBe(true);
+  await expect(getNote(grant)).rejects.toThrow();
+});
+test('finishing with an in-flight request revokes and closes rather than granting readiness', async () => {
+  const f = await restorable(),
+    grant = f.store.beginRestore(new AbortController().signal);
+  const pending = getNote(grant),
+    refused = expect(pending).rejects.toThrow();
+  expect(() => f.store.finishRestore(f.issue('restore'))).toThrow();
+  await refused;
+  expect(f.store.signal.aborted).toBe(true);
+});
+test('a restore receipt must be consumed once and cannot finish a later grant', async () => {
+  const f = await restorable();
+  f.store.beginRestore(new AbortController().signal);
+  const receipt = f.issue('restore');
+  f.store.finishRestore(receipt);
+  expect(() => f.store.beginRestore(new AbortController().signal)).toThrow();
+  await f.store.read(receipt);
+  f.store.beginRestore(new AbortController().signal);
+  expect(() => f.store.finishRestore(receipt)).toThrow();
+  expect(f.store.signal.aborted).toBe(true);
+});
+test('read-only grant requires a consumed genuine scan receipt and live window', async () => {
+  const { store, session } = await open(true);
+  expect(() => store.beginRestore(new AbortController().signal)).toThrow();
+  store.close();
+  await session.closed;
+  const f = await restorable(),
+    window = new AbortController();
+  window.abort();
+  expect(() => f.store.beginRestore(window.signal)).toThrow();
+  expect(() => f.store.beginRestore({})).toThrow();
 });

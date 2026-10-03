@@ -54,11 +54,13 @@ function setup() {
     quarantine: [],
     unrecoverableSent: [],
   };
-  const grant = {};
+  const grant = { getStatus: () => ({ readOnly: true, writeAttempts: 0 }) };
   const store = {
     session,
     beginEngine: jest.fn(() => grant),
+    beginRestore: jest.fn(() => grant),
     finishEngine: jest.fn(),
+    finishRestore: jest.fn(),
     close: jest.fn(),
   };
   const runJob = jest.fn(async () => result),
@@ -141,4 +143,33 @@ test('restore must preserve exact whole-store digest and binds it for later jour
       state: { sha256: '6'.repeat(64) },
     })
   ).toThrow();
+});
+
+test('read-only restoration forces restore mode and uses only its matching grant lifecycle', async () => {
+  const f = setup();
+  f.args.snapshot.signal = new AbortController().signal;
+  const { receipt } = await f.runner.restoreReadOnly(f.args);
+  expect(f.store.beginRestore).toHaveBeenCalledWith(f.args.snapshot.signal);
+  expect(f.store.beginEngine).not.toHaveBeenCalled();
+  expect(f.runJob.mock.calls[0][0].restore).toBe(true);
+  expect(f.runJob.mock.calls[0][0].walletGrant).toBe(f.grant);
+  expect(f.store.finishRestore).toHaveBeenCalledWith(receipt);
+  expect(f.store.finishEngine).not.toHaveBeenCalled();
+  expect(() =>
+    f.runner.assertScan(receipt, { session: f.session, walletId, policy, mode: 'restore' })
+  ).not.toThrow();
+});
+test('read-only restoration refuses state mutation or an incomplete job', async () => {
+  for (const mutation of [true, false]) {
+    const f = setup();
+    if (mutation)
+      f.runJob.mockImplementation(async () => {
+        f.mutate();
+        return f.result;
+      });
+    else f.result.closed.code = 'RAILGUN_PROCESS_FAILED';
+    await expect(f.runner.restoreReadOnly(f.args)).rejects.toThrow();
+    expect(f.store.close).toHaveBeenCalledTimes(1);
+    expect(f.store.finishRestore).not.toHaveBeenCalled();
+  }
 });

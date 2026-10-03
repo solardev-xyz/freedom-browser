@@ -31,14 +31,20 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
     if (expected.mode) assert.equal(saved.mode, expected.mode);
     if (expected.state && saved.mode === 'restore') assert.deepEqual(saved.state, expected.state);
   }
-  async function run({ snapshot, walletSession, coverageStore, walletId, restore, ...options }) {
+  async function run(
+    { snapshot, walletSession, coverageStore, walletId, restore, ...options },
+    readOnly = false
+  ) {
     const descriptor = currentIdentity();
     if (descriptor) assert.equal(walletId, descriptor.walletId);
     assert.equal(typeof restore, 'boolean');
+    assert.ok(!readOnly || restore);
     assert.equal(coverageStore.session, walletSession);
     const before = await walletSession.inspectWalletState();
     walletSession.assertFresh(before);
-    const grant = coverageStore.beginEngine();
+    const grant = readOnly
+      ? coverageStore.beginRestore(snapshot.signal)
+      : coverageStore.beginEngine();
     try {
       const result = await runJob({
         ...options,
@@ -70,6 +76,8 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       const state = await walletSession.inspectWalletState();
       walletSession.assertFresh(state);
       if (restore) assert.deepEqual(state, before);
+      const readOnlyStatus = readOnly ? grant.getStatus() : null;
+      if (readOnly) assert.deepEqual(readOnlyStatus, { readOnly: true, writeAttempts: 0 });
       const receipt = Object.freeze({});
       receipts.set(receipt, {
         read,
@@ -84,8 +92,9 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         mode: restore ? 'restore' : 'scan',
         state,
       });
-      coverageStore.finishEngine(receipt);
-      return { result, receipt, coverage };
+      if (readOnly) coverageStore.finishRestore(receipt);
+      else coverageStore.finishEngine(receipt);
+      return { result, receipt, coverage, ...(readOnly ? { readOnly: readOnlyStatus } : {}) };
     } catch (error) {
       coverageStore.close();
       throw error;
@@ -112,7 +121,13 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       trees: saved.trees,
     });
   }
-  const instance = Object.freeze({ run, assertScan, read, readOwned });
+  const instance = Object.freeze({
+    run: (options) => run(options),
+    restoreReadOnly: (options) => run({ ...options, restore: true }, true),
+    assertScan,
+    read,
+    readOwned,
+  });
   instances.add(instance);
   return instance;
 }

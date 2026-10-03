@@ -727,7 +727,7 @@ async function main() {
           assert.equal((await coordinator.recover()).to.number, stage);
           continue;
         }
-        const checked = await running;
+        let checked = await running;
         if (attempt === 'host-first') {
           await coverageStore.read();
           await assert.rejects(coverageStore.read(checked.value.receipt));
@@ -746,7 +746,7 @@ async function main() {
               checked.value.receipt
             );
         const state = await walletSession.inspectWalletState();
-        const evidence = {
+        let evidence = {
           snapshot: checked.evidence,
           coverage,
           state,
@@ -788,7 +788,7 @@ async function main() {
         assert.ok(
           retainedDirectories.every((dir) => fs.existsSync(path.join(dir, 'wallet.sqlite')))
         );
-        const view = require('../src/main/wallet/railgun-kohaku-read').createRailgunKohakuRead({
+        let view = require('../src/main/wallet/railgun-kohaku-read').createRailgunKohakuRead({
           runner,
           journal: walletJournal,
           receipt: checked.value.receipt,
@@ -824,6 +824,58 @@ async function main() {
           tag: 'unverified',
           spendableGranted: false,
         };
+        // The non-enrolled vault composition keeps the actual coverage store
+        // visible so this qualifier can exercise two additional read-only
+        // windows and journal re-attestation without adding a product API.
+        if (accountIdentity && attempt === 'restore') {
+          const readOnlyWindows = [];
+          const beforeReadOnly = await walletSession.inspectWalletState();
+          for (let windowIndex = 0; windowIndex < 2; windowIndex++) {
+            const previousView = view,
+              previousReceipt = checked.value.receipt;
+            const renewed = await coordinator.withPublicSnapshot(async (snapshot) => {
+              await assert.rejects(previousView.balance());
+              return runner.restoreReadOnly({
+                handle,
+                snapshot,
+                walletSession,
+                coverageStore,
+                walletId,
+              });
+            });
+            const renewedCoverage = await coverageStore.read(renewed.value.receipt);
+            const renewedState = await walletSession.inspectWalletState();
+            assert.deepEqual(renewedState, beforeReadOnly);
+            evidence = {
+              snapshot: renewed.evidence,
+              coverage: renewedCoverage,
+              state: renewedState,
+              receipt: renewed.value.receipt,
+            };
+            await walletJournal.revalidate(evidence);
+            assert.throws(() => walletJournal.assertReceipt(previousReceipt));
+            await assert.rejects(previousView.balance());
+            checked = renewed;
+            view = require('../src/main/wallet/railgun-kohaku-read').createRailgunKohakuRead({
+              runner,
+              journal: walletJournal,
+              receipt: checked.value.receipt,
+            });
+            assert.equal(
+              (await view.balance()).reduce((sum, item) => sum + item.amount, 0n).toString(),
+              kohakuReads.observedAmount
+            );
+            assert.deepEqual(checked.value.readOnly, { readOnly: true, writeAttempts: 0 });
+            readOnlyWindows.push({
+              ...checked.value.readOnly,
+              previousReceiptRefused: true,
+              previousViewRefused: true,
+              walletBytesUnchanged: true,
+              journalRevalidated: true,
+            });
+          }
+          kohakuReads.readOnlyWindows = readOnlyWindows;
+        }
         await assert.rejects(coverageStore.read(checked.value.receipt));
         assert.throws(() => walletJournal.assertReady());
         await assert.rejects(view.balance());
@@ -856,7 +908,32 @@ async function main() {
           renewedSameCheckpoint: stage === 20 && !restore,
           elapsedMs: Math.round(performance.now() - started),
           sourceHeaderRequests: requests - beforeRequests,
-          ...result.value,
+          // The scan now carries an internal owned-note projection. Keep that
+          // projection out of reports, even for this public synthetic fixture.
+          // An allowlist also excludes future private fields added by the SDK.
+          ...Object.fromEntries(
+            [
+              'instanceId',
+              'scannedLeaves',
+              'expectedReceived',
+              'expectedSent',
+              'quarantine',
+              'unrecoverableSent',
+              'received',
+              'sent',
+              'spendableGranted',
+              'inventory',
+              'guards',
+              'poiCalls',
+              'electron',
+              'closed',
+            ].map((key) => [key, result.value[key]])
+          ),
+          ownedProjection: {
+            count: result.value.ownedPoi.length,
+            types: [...new Set(result.value.ownedPoi.map((note) => note.type))].sort(),
+            fieldChecksPassed: true,
+          },
         });
         console.log(
           JSON.stringify({
@@ -1164,6 +1241,7 @@ async function main() {
       await walletSession.closed;
     }
     assert.deepEqual(hashes(), sourceSha256);
+    assert.doesNotMatch(JSON.stringify(runs), /"(?:ownedPoi|npk|nullifier|blindedCommitment)"\s*:/);
     fs.writeFileSync(
       path.join(directory, 'report.json'),
       JSON.stringify(

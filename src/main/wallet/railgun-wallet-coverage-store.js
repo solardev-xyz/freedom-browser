@@ -14,6 +14,7 @@ const { getRailgunWalletPrefixes } = require('./railgun-wallet-storage');
 const { plan: normalizePlan } = require('./railgun-scan-journal');
 const PREFIX = 'freedom:railgun:wallet-coverage:v1:';
 const META = PREFIX + 'manifest';
+const reads = new Set(['get', 'getMany', 'open', 'next', 'nextMany', 'seek', 'end']);
 const pageKey = (kind, index) => PREFIX + kind + ':' + index.toString().padStart(4, '0');
 const encode = (value) => Buffer.from(value).toString('base64');
 const fail = () =>
@@ -70,7 +71,9 @@ function createRailgunWalletCoverageStore({ session, walletId, policy, assertSca
       if (method === 'seek') check(contains(cursors.get(args.cursor), decode(args.target)));
     }
   }
-  const observations = new WeakMap();
+  const observations = new WeakMap(),
+    finishedReceipts = new WeakSet();
+  let observationEpoch = 0;
   const freeze = (value) => {
     if (value && typeof value === 'object') {
       for (const child of Object.values(value)) freeze(child);
@@ -79,12 +82,13 @@ function createRailgunWalletCoverageStore({ session, walletId, policy, assertSca
     return value;
   };
   let engineReceipt = null,
+    engineReceiptKind = null,
     hostReceipt = null,
     receiptConsumed = false;
   const observation = (checkpoint, coverage, summary, receipt = hostReceipt) => {
     const result = freeze({ checkpoint, coverage, summary });
     if (receipt) assertScan(receipt, { session, walletId, policy, checkpoint, summary });
-    observations.set(result, { id, receipt });
+    observations.set(result, { id, receipt, epoch: observationEpoch });
     return result;
   };
   const grant = session.claimDispatch(),
@@ -95,8 +99,16 @@ function createRailgunWalletCoverageStore({ session, walletId, policy, assertSca
     pending = 0,
     busy = false,
     phase = 'host',
-    engineStarted = false;
+    engineStarted = false,
+    currentGrant = null;
+  function revokeGrant() {
+    const current = currentGrant;
+    currentGrant = null;
+    current?.windowSignal?.removeEventListener('abort', close);
+    current?.controller.abort();
+  }
   function close() {
+    revokeGrant();
     controller.abort();
     session.close();
   }
@@ -111,15 +123,19 @@ function createRailgunWalletCoverageStore({ session, walletId, policy, assertSca
     check(result.id === nextId && Object.hasOwn(result, 'value'));
     return result.value;
   }
-  async function host(run, receipt) {
+  async function host(run, receipt, writing = false) {
     active();
     check(phase === 'host' && !busy && pending === 0);
     busy = true;
     try {
       if (receipt) {
         check(receipt === engineReceipt && !receiptConsumed);
+        check(!writing || engineReceiptKind === 'engine');
         assertScan(receipt, { session, walletId, policy });
       }
+      // Once a read-only restoration starts, omitting its receipt cannot turn
+      // the host coverage API into a writable path either.
+      check(!writing || engineReceiptKind !== 'restore');
       receiptConsumed = true;
       hostReceipt = receipt ?? null;
       return await run();
@@ -237,24 +253,43 @@ function createRailgunWalletCoverageStore({ session, walletId, policy, assertSca
     await call('txCommit', { transaction });
     return observation(plan, coverage, summary);
   }
-  function beginEngine() {
+  function begin(mode, windowSignal) {
     active();
-    check(!busy && !engineStarted && phase === 'host');
-    engineStarted = true;
-    phase = 'engine';
+    check(!busy && pending === 0 && cursors.size === 0 && !currentGrant && phase === 'host');
+    if (mode === 'engine') {
+      check(!engineStarted);
+      engineStarted = true;
+    } else {
+      check(mode === 'restore' && engineStarted && engineReceipt && receiptConsumed);
+      check(windowSignal instanceof AbortSignal && !windowSignal.aborted);
+      assertScan(engineReceipt, { session, walletId, policy });
+    }
+    phase = mode;
+    observationEpoch++;
+    engineId = 0;
+    const token = { controller: new AbortController(), windowSignal };
+    currentGrant = token;
+    windowSignal?.addEventListener('abort', close, { once: true });
+    let writeAttempts = 0;
     return Object.freeze({
-      signal,
+      signal: AbortSignal.any([signal, token.controller.signal]),
+      getStatus: () => Object.freeze({ readOnly: mode === 'restore', writeAttempts }),
       async dispatch(wire) {
         try {
           active();
           check(
-            phase === 'engine' &&
+            phase === mode &&
+              currentGrant === token &&
               typeof wire === 'string' &&
               Buffer.byteLength(wire) <= 2 * 1024 * 1024 &&
               pending < 8
           );
           const message = JSON.parse(wire);
           check(message.id === engineId + 1);
+          if (mode === 'restore' && !reads.has(message.method)) {
+            writeAttempts++;
+            throw fail();
+          }
           const prefix = engineRequest(message);
           engineId++;
           pending++;
@@ -276,11 +311,40 @@ function createRailgunWalletCoverageStore({ session, walletId, policy, assertSca
       },
     });
   }
+  function finish(receipt, mode) {
+    // Revoke before checking completion, including on a cursor/receipt failure.
+    const current = currentGrant;
+    revokeGrant();
+    try {
+      active();
+      check(current && phase === mode && pending === 0 && cursors.size === 0);
+      if (mode === 'restore') check(receipt);
+      if (receipt) {
+        check(typeof assertScan === 'function');
+        check(typeof receipt === 'object' && !finishedReceipts.has(receipt));
+        assertScan(receipt, {
+          session,
+          walletId,
+          policy,
+          ...(mode === 'restore' ? { mode: 'restore' } : {}),
+        });
+        finishedReceipts.add(receipt);
+      }
+      engineReceipt = receipt ?? null;
+      engineReceiptKind = mode;
+      receiptConsumed = false;
+      phase = 'host';
+    } catch {
+      close();
+      throw fail();
+    }
+  }
   return Object.freeze({
     session,
     signal,
     close,
-    beginEngine,
+    beginEngine: () => begin('engine'),
+    beginRestore: (windowSignal) => begin('restore', windowSignal),
     assertCoverage(value, receipt) {
       active();
       check(
@@ -288,6 +352,7 @@ function createRailgunWalletCoverageStore({ session, walletId, policy, assertSca
           pending === 0 &&
           phase === 'host' &&
           observations.has(value) &&
+          observations.get(value).epoch === observationEpoch &&
           observations.get(value).id === id &&
           receipt &&
           observations.get(value).receipt === receipt
@@ -300,19 +365,10 @@ function createRailgunWalletCoverageStore({ session, walletId, policy, assertSca
         summary: value.summary,
       });
     },
-    finishEngine(receipt) {
-      active();
-      check(phase === 'engine' && pending === 0 && cursors.size === 0);
-      if (receipt) {
-        check(typeof assertScan === 'function');
-        assertScan(receipt, { session, walletId, policy });
-      }
-      engineReceipt = receipt ?? null;
-      receiptConsumed = false;
-      phase = 'host';
-    },
+    finishEngine: (receipt) => finish(receipt, 'engine'),
+    finishRestore: (receipt) => finish(receipt, 'restore'),
     read: (receipt) => host(read, receipt),
-    write: (checkpoint, input, receipt) => host(() => write(checkpoint, input), receipt),
+    write: (checkpoint, input, receipt) => host(() => write(checkpoint, input), receipt, true),
   });
 }
 module.exports = { createRailgunWalletCoverageStore };
