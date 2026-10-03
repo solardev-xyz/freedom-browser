@@ -3,7 +3,7 @@
  * No writer exclusion, source/root acceptance or ongoing authority is returned.
  */
 const assert = require('assert/strict');
-const { getPrivacyContext } = require('../networks/privacy-context');
+const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
@@ -15,6 +15,11 @@ const {
 } = require('./railgun-own-operation');
 const { openRailgunAccountTxid } = require('./railgun-account-txid');
 const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
+const { observeRailgunOwnReceipt } = require('./railgun-own-receipt');
+const { captureRailgunOwnSource, assertRailgunOwnSource } = require('./railgun-own-source-capture');
+const { verifyRailgunOwnTxid } = require('./railgun-own-txid-verifier');
+const { createRailgunTxidRootSource } = require('./railgun-txid-root');
+const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const freeze = (value) => {
   if (value && typeof value === 'object') {
     Object.values(value).forEach(freeze);
@@ -22,22 +27,25 @@ const freeze = (value) => {
   }
   return value;
 };
-async function captureRailgunOwnWitness({
-  enrollment,
-  coordinator,
-  archive,
-  selector,
-  signal,
-  timeoutMs = 180000,
-} = {}) {
+async function captureRailgunOwnWitness(
+  { enrollment, coordinator, archive, selector, signal, timeoutMs } = {},
+  preflight = false
+) {
   let stage = 'context',
     timer,
-    txid;
+    txid,
+    source,
+    roots,
+    rootScope,
+    verificationPhase;
   const controller = new AbortController();
   try {
+    if (timeoutMs === undefined) timeoutMs = preflight ? 300000 : 180000;
     assert.ok(isRailgunAccountEnrollment(enrollment));
     assert.ok(signal instanceof AbortSignal && !signal.aborted);
-    assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 180000);
+    assert.ok(
+      Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= (preflight ? 300000 : 180000)
+    );
     const text = JSON.stringify(selector);
     assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 1024);
     const selected = JSON.parse(text);
@@ -87,6 +95,22 @@ async function captureRailgunOwnWitness({
         throw Error('capture refused');
       }
       const derived = first.derived;
+      let chain, sourceObservation, verified, rootReceipt, rootObservation;
+      if (preflight) {
+        stage = 'receipt';
+        const observed = await observeRailgunOwnReceipt({
+          enrollment,
+          capture: first.capture,
+          signal: lifetime,
+          timeoutMs: remaining(60000),
+        });
+        current();
+        if (observed.status !== 'observed') {
+          stage = 'receipt:' + observed.stage;
+          throw Error('receipt refused');
+        }
+        chain = observed.observation;
+      }
       stage = 'txid';
       // Retain even a late-opened session and drain it in finally. Cancellation
       // never races away from storage/worker completion or releases its phase.
@@ -122,6 +146,74 @@ async function captureRailgunOwnWitness({
       await txid.close();
       txid = undefined;
       current();
+      if (preflight) {
+        stage = 'txid-verify';
+        // A separate phase lease survives cancellation until this verifier
+        // actually exits. The TXID session cannot drain an external utility.
+        verificationPhase = claimRailgunAccountPhase(enrollment, 'recovery');
+        verified = await verifyRailgunOwnTxid({
+          handle: enrollment.getContext('engine', 'own-txid-proof'),
+          archive,
+          state,
+          witness,
+          evidence: {
+            capsule: first.capture.capsule,
+            record: first.capture.record,
+            transaction: chain.transaction,
+            receipt: chain.receipt,
+            row: witness.row,
+          },
+          signal: lifetime,
+          timeoutMs: remaining(30000),
+        });
+        current();
+        verificationPhase.assertCurrent();
+        verificationPhase.release();
+        verificationPhase = undefined;
+      }
+      if (preflight) {
+        stage = 'source';
+        source = await captureRailgunOwnSource({
+          enrollment,
+          coordinator,
+          record: first.capture.record,
+          transaction: chain.transaction,
+          receipt: chain.receipt,
+          signal: lifetime,
+          timeoutMs: remaining(180000),
+        });
+        current();
+        sourceObservation = assertRailgunOwnSource(source.receipt, enrollment, coordinator);
+        assert.deepEqual(
+          sourceObservation.suppliedOutcome,
+          first.capture.projection.railgun.transact
+        );
+        stage = 'root';
+        rootScope = createPrivacyScope({
+          profileId: getPrivacyContext(parent).profileId,
+          signal: lifetime,
+          isCurrent: () => {
+            current();
+            return true;
+          },
+        });
+        roots = createRailgunTxidRootSource(
+          rootScope.getContext({
+            kind: 'service',
+            principal: 'railgun-public-sync',
+            protocol: 'railgun',
+            deployment: 'sepolia',
+            chainId: 11155111,
+            role: 'public-services',
+          })
+        );
+        rootReceipt = await roots.acquire({ index: state.count - 1, root: state.root });
+        current();
+        rootObservation = roots.assertRoot(rootReceipt, {
+          index: state.count - 1,
+          root: state.root,
+        });
+      }
       stage = 'recapture';
       const latest = await captureRailgunOwnOperation({
         enrollment,
@@ -174,8 +266,46 @@ async function captureRailgunOwnWitness({
           },
         });
       }
+      let observations;
+      if (preflight) {
+        stage = 'observations';
+        assert.deepEqual(
+          assertRailgunOwnSource(source.receipt, enrollment, coordinator),
+          sourceObservation
+        );
+        assert.deepEqual(
+          roots.assertRoot(rootReceipt, { index: state.count - 1, root: state.root }),
+          rootObservation
+        );
+        assert.equal(chain.captureBindingDigest, latest.capture.bindingDigest);
+        const finalArchive = Object.hasOwn(latest.capture.record, 'archivedAt')
+          ? {
+              number: latest.capture.record.finalized.blockNumber,
+              hash: latest.capture.record.finalized.blockHash,
+            }
+          : null;
+        const archiveAnchorChecked =
+          finalArchive === null ||
+          chain.anchorsActuallyChecked.some(
+            (anchor) =>
+              anchor.kind === 'archive' &&
+              anchor.number === finalArchive.number &&
+              anchor.hash === finalArchive.hash
+          );
+        observations = {
+          chain,
+          source: sourceObservation,
+          verification: verified,
+          root: rootObservation,
+          finalRepresentation: finalArchive ? 'archived' : 'active',
+          finalArchiveAnchor: finalArchive,
+          archiveAnchorChecked,
+        };
+        current();
+      }
       return freeze({
         status: 'captured',
+        ...(observations ? { observations } : {}),
         capture: latest.capture,
         state,
         witness,
@@ -198,7 +328,14 @@ async function captureRailgunOwnWitness({
   } finally {
     clearTimeout(timer);
     controller.abort();
+    verificationPhase?.release();
+    source?.close();
+    roots?.close();
+    rootScope?.close();
     if (txid) await txid.close();
   }
 }
-module.exports = { captureRailgunOwnWitness };
+module.exports = {
+  captureRailgunOwnWitness: (options) => captureRailgunOwnWitness(options),
+  preflightRailgunOwnTransaction: (options) => captureRailgunOwnWitness(options, true),
+};

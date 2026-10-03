@@ -1,3 +1,29 @@
+const mockObserve = jest.fn(),
+  mockSourceCapture = jest.fn(),
+  mockVerify = jest.fn(),
+  mockRootCreate = jest.fn();
+let mockSource, mockSourceObservation, mockRoots, mockSourceCurrent, mockSourceAt;
+jest.mock('./railgun-own-receipt', () => ({
+  observeRailgunOwnReceipt: (...args) => mockObserve(...args),
+}));
+jest.mock('./railgun-own-source-capture', () => ({
+  captureRailgunOwnSource: (...args) => mockSourceCapture(...args),
+  assertRailgunOwnSource: (receipt) => {
+    if (
+      receipt !== mockSource.receipt ||
+      !mockSourceCurrent ||
+      (mockSourceAt !== undefined && performance.now() - mockSourceAt >= 60000)
+    )
+      throw Error('source expired');
+    return mockSourceObservation;
+  },
+}));
+jest.mock('./railgun-own-txid-verifier', () => ({
+  verifyRailgunOwnTxid: (...args) => mockVerify(...args),
+}));
+jest.mock('./railgun-txid-root', () => ({
+  createRailgunTxidRootSource: (...args) => mockRootCreate(...args),
+}));
 let mockEnrollment, mockCoordinator, mockPublicIdentity, mockPolicy;
 const mockCapture = jest.fn(),
   mockSelectorCapture = jest.fn(),
@@ -26,7 +52,11 @@ const { createPrivacyScope } = require('../networks/privacy-context');
 const { createRailgunTxidProjection } = require('./railgun-txid-projection');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
 const { projectRailgunOwnRecord } = require('./railgun-own-txid');
-const { captureRailgunOwnWitness: capture } = require('./railgun-own-witness');
+const {
+  captureRailgunOwnWitness: capture,
+  preflightRailgunOwnTransaction: preflight,
+} = require('./railgun-own-witness');
+const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const copy = (v) => JSON.parse(JSON.stringify(v));
 const hash = (s) => '0' + createHash('sha256').update(s).digest('hex').slice(1);
 const pair = (a, b) => hash(a + b),
@@ -99,6 +129,50 @@ async function setup(unshield = false, mutateRow = () => {}) {
     events.push('txid-open');
     return txid;
   });
+  mockObserve.mockImplementation(async () => {
+    events.push('receipt');
+    return {
+      status: 'observed',
+      observation: {
+        transaction: fixture.transaction,
+        receipt: fixture.receipt,
+        captureBindingDigest: first.capture.bindingDigest,
+        capturedRepresentation: 'active',
+        anchorsActuallyChecked: [],
+      },
+    };
+  });
+  mockSourceCurrent = true;
+  mockSourceAt = undefined;
+  mockSourceObservation = {
+    suppliedOutcome: first.capture.projection.railgun.transact,
+    sourceAuthenticated: true,
+  };
+  mockSource = { receipt: {}, close: jest.fn(), signal: scope.signal };
+  mockSourceCapture.mockImplementation(async () => {
+    events.push('source');
+    mockSourceAt = performance.now();
+    return mockSource;
+  });
+  mockVerify.mockImplementation(async () => {
+    events.push('verify-exited');
+    return { pathVerified: true, utilityExitObserved: true };
+  });
+  const rootReceipt = {},
+    rootObservation = { index: state.count - 1, root: state.root, accepted: true };
+  mockRoots = {
+    acquire: jest.fn(async () => {
+      events.push('root');
+      return rootReceipt;
+    }),
+    assertRoot: jest.fn((receipt, point) => {
+      expect(receipt).toBe(rootReceipt);
+      expect(point).toEqual({ index: state.count - 1, root: state.root });
+      return rootObservation;
+    }),
+    close: jest.fn(),
+  };
+  mockRootCreate.mockReturnValue(mockRoots);
   options = {
     enrollment: mockEnrollment,
     coordinator: mockCoordinator,
@@ -119,6 +193,7 @@ beforeEach(async () => {
     sourceId: '3'.repeat(64),
   };
   mockEnrollment = {
+    directory: '/synthetic-own-witness',
     signal: scope.signal,
     getContext: () =>
       scope.getContext({
@@ -296,4 +371,142 @@ test('a full checkpoint may still supply the selected existing row', async () =>
     capacityReached: true,
   });
   expect((await capture(options)).status).toBe('captured');
+});
+
+test('preflight composes internally captured observations without returning receipts', async () => {
+  const result = await preflight(options);
+  expect(result.status).toBe('captured');
+  expect(events).toEqual([
+    'capture-selector-exited',
+    'receipt',
+    'txid-open',
+    'witness',
+    'txid-drained',
+    'verify-exited',
+    'source',
+    'root',
+    'recapture',
+  ]);
+  expect(result.observations.verification.pathVerified).toBe(true);
+  expect(result.observations.archiveAnchorChecked).toBe(true);
+  expect(result.txidPathVerified).toBe(false);
+  expect(result.sourceAuthenticated).toBe(false);
+  expect(result.spendingEnabled).toBe(false);
+  expect(result.receipt).toBeUndefined();
+  expect(result.observations.source.receipt).toBeUndefined();
+  expect(mockSource.close).toHaveBeenCalledTimes(1);
+  expect(mockRoots.close).toHaveBeenCalledTimes(1);
+  expect(mockVerify.mock.calls[0][0].evidence.record).toEqual(first.capture.record);
+});
+test('preflight marks a newly archived anchor as unchecked', async () => {
+  latest.capture.record = sample(false, true).record;
+  const result = await preflight(options);
+  expect(result.status).toBe('captured');
+  expect(result.observations.finalRepresentation).toBe('archived');
+  expect(result.observations.archiveAnchorChecked).toBe(false);
+});
+test.each(['receipt', 'source', 'verification', 'root', 'expired-source', 'expired-root'])(
+  'preflight refuses %s and closes acquired resources',
+  async (mode) => {
+    if (mode === 'receipt')
+      mockObserve.mockResolvedValue({ status: 'refused', stage: 'inclusion' });
+    if (mode === 'source') mockSourceCapture.mockRejectedValue(Error('source'));
+    if (mode === 'verification') mockVerify.mockRejectedValue(Error('proof'));
+    if (mode === 'root') mockRoots.acquire.mockRejectedValue(Error('root'));
+    if (mode === 'expired-source')
+      mockCapture.mockImplementation(async () => {
+        mockSourceCurrent = false;
+        return latest;
+      });
+    if (mode === 'expired-root')
+      mockRoots.assertRoot
+        .mockImplementationOnce(() => ({ accepted: true }))
+        .mockImplementationOnce(() => {
+          throw Error('stale');
+        });
+    expect((await preflight(options)).status).toBe('refused');
+    if (['root', 'expired-source', 'expired-root'].includes(mode))
+      expect(mockSource.close).toHaveBeenCalled();
+    if (['root', 'expired-source', 'expired-root'].includes(mode))
+      expect(mockRoots.close).toHaveBeenCalled();
+    const lease = claimRailgunAccountPhase(mockEnrollment, 'recovery');
+    lease.release();
+  }
+);
+test('verifier phase remains claimed until observed completion after cancellation', async () => {
+  let release, entered;
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  mockVerify.mockImplementation(async () => {
+    entered();
+    await new Promise((resolve) => {
+      release = resolve;
+    });
+    return { pathVerified: true };
+  });
+  let settled = false;
+  const pending = preflight(options).then((result) => {
+    settled = true;
+    return result;
+  });
+  await ready;
+  expect(txid.close).toHaveBeenCalled();
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+  caller.abort();
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+  release();
+  expect((await pending).status).toBe('refused');
+  const lease = claimRailgunAccountPhase(mockEnrollment, 'wallet');
+  lease.release();
+  expect(mockRoots.acquire).not.toHaveBeenCalled();
+});
+test('plain witness export cannot be switched into preflight by an extra argument', async () => {
+  expect((await capture(options, true)).status).toBe('captured');
+  expect(mockObserve).not.toHaveBeenCalled();
+  expect(mockVerify).not.toHaveBeenCalled();
+});
+
+test('source freshness starts after slow TXID and verifier steps', async () => {
+  jest.useFakeTimers();
+  txid.witness.mockImplementation(async () => {
+    await jest.advanceTimersByTimeAsync(30001);
+    return { witness: copy(witness) };
+  });
+  mockVerify.mockImplementation(async () => {
+    await jest.advanceTimersByTimeAsync(20001);
+    return { pathVerified: true, utilityExitObserved: true };
+  });
+  expect((await preflight(options)).status).toBe('captured');
+  expect(mockSourceAt).toBeGreaterThan(45000);
+});
+test('uses distinct default overall deadlines for witness and preflight', async () => {
+  jest.useFakeTimers();
+  const timer = jest.spyOn(global, 'setTimeout');
+  expect((await preflight(options)).status).toBe('captured');
+  expect(timer).toHaveBeenCalledWith(expect.any(Function), 300000);
+  timer.mockClear();
+  expect((await capture(options)).status).toBe('captured');
+  expect(timer).toHaveBeenCalledWith(expect.any(Function), 180000);
+  timer.mockRestore();
+});
+
+test('source acquisition budget includes a long visit before snapshot freshness begins', async () => {
+  jest.useFakeTimers();
+  mockSourceCapture.mockImplementation(async ({ timeoutMs }) => {
+    const started = performance.now();
+    await jest.advanceTimersByTimeAsync(60001);
+    if (performance.now() - started >= timeoutMs) throw Error('capture deadline');
+    mockSourceAt = performance.now();
+    return mockSource;
+  });
+  const acquire = mockRoots.acquire.getMockImplementation();
+  mockRoots.acquire.mockImplementation(async (...args) => {
+    await jest.advanceTimersByTimeAsync(20001);
+    return acquire(...args);
+  });
+  expect((await preflight(options)).status).toBe('captured');
+  expect(mockSourceCapture.mock.calls[0][0].timeoutMs).toBe(180000);
 });
