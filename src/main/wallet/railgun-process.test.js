@@ -468,48 +468,55 @@ test.each(['storage', 'provider', 'worker', 'no-signal', 'no-dispatch'])(
   }
 );
 
-test('only the dedicated identity job can receive one binary key, and the supervisor wipes it', async () => {
-  const bytes = Buffer.alloc(32, 7),
-    replyCopies = [];
-  const controller = new AbortController();
-  const identityArgs = {
-    handle: scope.getContext({
-      kind: 'private-account',
-      principal: 'railgun:0',
-      protocol: 'railgun',
-      deployment: 'sepolia',
-      chainId: 11155111,
-      role: 'keystore',
-      operation: 'spending-public',
-    }),
-    filename: require.resolve('./railgun-identity-job'),
-    input: '{}',
-    binaryKey: true,
-    broker: { signal: controller.signal, dispatch: async () => bytes },
-  };
-  expect(() => startRailgunProcess({ ...identityArgs, filename: '/tmp/arbitrary.js' })).toThrow();
-  expect(() => startRailgunProcess({ ...identityArgs, handle: args.handle })).toThrow();
-  task = startRailgunProcess(identityArgs);
-  mockPort.postMessage.mockImplementation((value) => replyCopies.push(structuredClone(value)));
-  child.emit('spawn');
-  message({
-    type: 'command',
-    wire: JSON.stringify({ id: 1, method: 'key', purpose: 'spending-public' }),
-  });
-  await Promise.resolve();
-  expect(replyCopies).toHaveLength(1);
-  expect(replyCopies[0].type).toBe('key-reply');
-  expect([...replyCopies[0].bytes]).toEqual(Array(32).fill(7));
-  expect(bytes.equals(Buffer.alloc(32))).toBe(true);
-  message({
-    type: 'command',
-    wire: JSON.stringify({ id: 1, method: 'key', purpose: 'spending-public' }),
-  });
-  await Promise.resolve();
-  expect(replyCopies).toHaveLength(1);
-  child.emit('exit', 1);
-  expect((await task.closed).code).toBe('RAILGUN_PROCESS_FAILED');
-});
+test.each([
+  ['keystore', 'spending-public', './railgun-identity-job'],
+  ['engine', 'wallet-viewing', './railgun-wallet-job'],
+  ['engine', 'shield-receive', './railgun-shield-receive-job'],
+])(
+  'only dedicated %s/%s job can receive one binary key, and the supervisor wipes it',
+  async (role, purpose, job) => {
+    const bytes = Buffer.alloc(32, 7),
+      replyCopies = [];
+    const controller = new AbortController();
+    const identityArgs = {
+      handle: scope.getContext({
+        kind: 'private-account',
+        principal: 'railgun:0',
+        protocol: 'railgun',
+        deployment: 'sepolia',
+        chainId: 11155111,
+        role,
+        operation: purpose,
+      }),
+      filename: require.resolve(job),
+      input: '{}',
+      binaryKey: true,
+      broker: { signal: controller.signal, dispatch: async () => bytes },
+    };
+    expect(() => startRailgunProcess({ ...identityArgs, filename: '/tmp/arbitrary.js' })).toThrow();
+    expect(() => startRailgunProcess({ ...identityArgs, handle: args.handle })).toThrow();
+    task = startRailgunProcess(identityArgs);
+    mockPort.postMessage.mockImplementation((value) => replyCopies.push(structuredClone(value)));
+    child.emit('spawn');
+    message({
+      type: 'command',
+      wire: JSON.stringify({ id: 1, method: 'key', purpose }),
+    });
+    await Promise.resolve();
+    expect(replyCopies).toHaveLength(1);
+    expect(replyCopies[0].type).toBe('key-reply');
+    expect([...replyCopies[0].bytes]).toEqual(Array(32).fill(7));
+    expect(bytes.equals(Buffer.alloc(32))).toBe(true);
+    message({
+      type: 'command',
+      wire: JSON.stringify({ id: 1, method: 'key', purpose }),
+    });
+    await Promise.resolve();
+    expect(replyCopies).toHaveLength(1);
+    child.emit('exit', 1);
+    expect((await task.closed).code).toBe('RAILGUN_PROCESS_FAILED');
+  }
+);
 test('late binary replies are wiped without crossing a stopped channel', async () => {
   let respond;
   const bytes = Buffer.alloc(32, 8);

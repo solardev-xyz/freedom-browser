@@ -49,7 +49,10 @@ function startRailgunProcess({
             filename === require.resolve('./railgun-identity-job')) ||
           (context.subject.role === 'engine' &&
             context.subject.operation === 'wallet-viewing' &&
-            filename === require.resolve('./railgun-wallet-job'))
+            filename === require.resolve('./railgun-wallet-job')) ||
+          (context.subject.role === 'engine' &&
+            context.subject.operation === 'shield-receive' &&
+            filename === require.resolve('./railgun-shield-receive-job'))
         ))) ||
     (broker !== undefined &&
       (!broker ||
