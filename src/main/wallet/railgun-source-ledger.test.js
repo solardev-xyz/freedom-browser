@@ -4,6 +4,8 @@ const path = require('path');
 const { createHash } = require('crypto');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { createRailgunSourceLedger } = require('./railgun-source-ledger');
+const { startRailgunSessionWorker } = require('./railgun-session-worker');
+const { railgunSourceBinding } = require('./railgun-source-ledger');
 const hash = (v) => createHash('sha256').update(v).digest('hex');
 const blockHash = (n) => '0x' + n.toString(16).padStart(64, '0');
 let scope, options, ledgers;
@@ -25,6 +27,140 @@ async function open(create) {
   ledgers.push(ledger);
   return ledger;
 }
+async function suppliedWorker(binding = railgunSourceBinding(options.binding)) {
+  const worker = startRailgunSessionWorker({
+    handle: scope.getContext({
+      kind: 'private-account',
+      principal: 'fixture',
+      protocol: 'railgun',
+      chainId: 11155111,
+      deployment: 'sepolia-fixture',
+      role: 'engine',
+    }),
+    storage: {
+      format: 'paged-v2',
+      filename: options.filename,
+      key: options.key,
+      binding,
+      create: true,
+    },
+    createProvider: ({ signal }) => ({
+      signal,
+      request: async () => {
+        throw Error('no RPC');
+      },
+    }),
+    onClose: () => {},
+  });
+  ledgers.push(worker);
+  await worker.ready;
+  return worker;
+}
+test('consumes only an authentic matching worker and rejects cloning, path, binding or account substitution', async () => {
+  const worker = await suppliedWorker();
+  const args = { ...options, key: undefined, create: true, storeSession: worker };
+  await expect(
+    createRailgunSourceLedger({ ...args, storeSession: { ...worker } })
+  ).rejects.toThrow();
+  await expect(
+    createRailgunSourceLedger({ ...args, filename: options.filename + '.other' })
+  ).rejects.toThrow();
+  await expect(createRailgunSourceLedger({ ...args, binding: 'c'.repeat(64) })).rejects.toThrow();
+  const foreign = scope.getContext({
+    kind: 'private-account',
+    principal: 'another',
+    protocol: 'railgun',
+    chainId: 11155111,
+    deployment: 'sepolia-fixture',
+    role: 'protocol-rpc',
+  });
+  await expect(createRailgunSourceLedger({ ...args, handle: foreign })).rejects.toThrow();
+  const otherProfile = createPrivacyScope({
+    profileId: 'different-profile',
+    signal: new AbortController().signal,
+  });
+  try {
+    const handle = otherProfile.getContext({
+      kind: 'private-account',
+      principal: 'fixture',
+      protocol: 'railgun',
+      chainId: 11155111,
+      deployment: 'sepolia-fixture',
+      role: 'protocol-rpc',
+    });
+    await expect(createRailgunSourceLedger({ ...args, handle })).rejects.toThrow();
+  } finally {
+    otherProfile.close();
+  }
+  expect(worker.signal.aborted).toBe(false);
+  const ledger = await createRailgunSourceLedger(args);
+  ledgers.push(ledger);
+  await expect(createRailgunSourceLedger(args)).rejects.toThrow();
+  expect(worker.signal.aborted).toBe(false);
+  ledger.assertEmpty();
+  const ref = await ledger.stage(range(), values);
+  expect(ref.ledgerId).toBe(ledger.identity());
+  ledger.close();
+  await worker.closed;
+  await expect(createRailgunSourceLedger(args)).rejects.toThrow();
+});
+test('an existing empty store without source metadata is refused on reopen', async () => {
+  const worker = await suppliedWorker();
+  await expect(
+    createRailgunSourceLedger({ ...options, key: undefined, storeSession: worker })
+  ).rejects.toThrow();
+  await worker.closed;
+  expect(worker.signal.aborted).toBe(true);
+});
+test('initialization refuses a nonempty store with missing source metadata', async () => {
+  const worker = await suppliedWorker();
+  await worker.dispatch(
+    JSON.stringify({
+      id: 1,
+      method: 'batch',
+      args: {
+        operations: [
+          {
+            type: 'put',
+            key: Buffer.from('other').toString('base64'),
+            value: Buffer.from('data').toString('base64'),
+          },
+        ],
+      },
+    })
+  );
+  worker.close();
+  await worker.closed;
+  const reopened = startRailgunSessionWorker({
+    handle: scope.getContext({
+      kind: 'private-account',
+      principal: 'fixture',
+      protocol: 'railgun',
+      chainId: 11155111,
+      deployment: 'sepolia-fixture',
+      role: 'engine',
+    }),
+    storage: {
+      format: 'paged-v2',
+      filename: options.filename,
+      key: options.key,
+      binding: railgunSourceBinding(options.binding),
+      create: false,
+    },
+    createProvider: ({ signal }) => ({
+      signal,
+      request: async () => {
+        throw Error('no RPC');
+      },
+    }),
+    onClose: () => {},
+  });
+  ledgers.push(reopened);
+  await expect(
+    createRailgunSourceLedger({ ...options, key: undefined, create: true, storeSession: reopened })
+  ).rejects.toThrow();
+  await reopened.closed;
+});
 beforeEach(() => {
   scope = createPrivacyScope({ profileId: 'ledger-fixture', signal: new AbortController().signal });
   ledgers = [];

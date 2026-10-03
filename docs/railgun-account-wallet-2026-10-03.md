@@ -45,7 +45,7 @@ coordinator authority. Full enrollment binding to the source/public store keys i
 part of the next public-layer composition, not established by this brand alone.
 
 Main derives the wallet policy from the authenticated engine archive/inventory,
-a versioned Sepolia domain and exact bytes of 15 scan, storage-format, validation
+a versioned Sepolia domain and exact bytes of 15 scan, storage-routing/state, validation
 and read modules. This includes the host runner and job-input builder. A supplied
 expected policy can only confirm that value, never override it. A dependency
 closure test walks the job and host validation roots, with explicit infrastructure

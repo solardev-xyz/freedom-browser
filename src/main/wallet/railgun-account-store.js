@@ -3,12 +3,15 @@
  * always authenticated and never recreated; inventory registration is automatic.
  * This grants no scan readiness. The source/public store IDs must still match
  * their scan journal before a coordinator may use them.
+ * Source returns an exclusively claimed ledger owning the worker lifetime;
+ * its accompanying session permits inspection and closure, not direct dispatch.
  */
 const fs = require('fs'),
   path = require('path');
 const { randomBytes } = require('crypto');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { startRailgunSessionWorker } = require('./railgun-session-worker');
+const { createRailgunSourceLedger, railgunSourceBinding } = require('./railgun-source-ledger');
 const owners = new Set();
 const fail = () =>
   Object.assign(new Error('Railgun account store requires recovery'), {
@@ -60,7 +63,7 @@ async function openRailgunAccountStore({
   const filename = path.join(directory, kind + '.sqlite');
   check(!owners.has(filename));
   owners.add(filename);
-  let worker;
+  let worker, ledger;
   const active = () => {
     check(!enrollment.signal.aborted);
     enrollment.getContext('engine');
@@ -76,7 +79,7 @@ async function openRailgunAccountStore({
         format: 'paged-v2',
         filename: name,
         key,
-        binding: enrollment.binding,
+        binding: kind === 'source' ? railgunSourceBinding(enrollment.binding) : enrollment.binding,
         create: initialize,
       },
       createProvider: ({ signal }) => ({
@@ -91,6 +94,16 @@ async function openRailgunAccountStore({
     const observed = await worker.inspectStoreIdentity();
     worker.assertFresh(observed);
     check(observed.format === 'paged-v2' && /^[0-9a-f]{64}$/.test(observed.instanceId));
+    if (kind === 'source') {
+      ledger = await createRailgunSourceLedger({
+        handle: enrollment.getContext('protocol-rpc'),
+        filename: name,
+        binding: enrollment.binding,
+        create: initialize,
+        storeSession: worker,
+      });
+      check(ledger.identity() === observed.instanceId);
+    }
     active();
     return observed.instanceId;
   };
@@ -120,9 +133,11 @@ async function openRailgunAccountStore({
       check(fs.readdirSync(directory).filter((name) => name.startsWith(prefix)).length < 8);
       const staging = path.join(directory, prefix + randomBytes(16).toString('hex') + '.sqlite');
       initializedId = await open(staging, key, true);
+      ledger?.close();
       worker.close();
       await worker.closed;
       worker = null;
+      ledger = null;
       active();
       check(!fileExists(filename) && fileExists(staging));
       // Serialized under the application's profile lock and this target owner.
@@ -147,7 +162,7 @@ async function openRailgunAccountStore({
     }
     active();
     enrollment.profileGuard.remember(filename);
-    return Object.freeze({ session: worker, storeId, filename });
+    return Object.freeze({ session: worker, storeId, filename, ...(ledger ? { ledger } : {}) });
   };
   try {
     const result = await (kind === 'wallet'
@@ -157,6 +172,7 @@ async function openRailgunAccountStore({
     worker.closed.then(() => owners.delete(filename));
     return result;
   } catch (error) {
+    ledger?.close();
     worker?.close();
     if (worker) await worker.closed;
     owners.delete(filename);

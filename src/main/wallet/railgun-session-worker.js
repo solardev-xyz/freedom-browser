@@ -18,6 +18,7 @@ const READS = new Set([
   'eth_getTransactionByHash',
 ]);
 const owners = new Set();
+const instances = new WeakMap();
 const fail = () =>
   Object.assign(new Error('Railgun worker unavailable'), {
     code: 'RAILGUN_SESSION_REVOKED',
@@ -341,7 +342,7 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     if (record.kind !== 'frontier') throw unavailable('RAILGUN_FRONTIER_NOT_ELIGIBLE');
     return inspect({ method: 'position', observation: record.id, position });
   }
-  return Object.freeze({
+  const session = Object.freeze({
     ready,
     closed,
     dispatch,
@@ -355,5 +356,17 @@ function startRailgunSessionWorker({ handle, storage, createProvider, onClose })
     inspectPosition,
     assertFresh,
   });
+  instances.set(session, { handle, filename, binding: storage.binding });
+  return session;
 }
-module.exports = { startRailgunSessionWorker };
+function assertRailgunSessionWorker(session, { handle, filename, binding }) {
+  const entry = instances.get(session);
+  if (!entry || session.signal.aborted || entry.filename !== filename || entry.binding !== binding)
+    throw fail();
+  const actual = getPrivacyContext(entry.handle),
+    expected = getPrivacyContext(handle);
+  if (actual.profileId !== expected.profileId) throw fail();
+  for (const key of ['kind', 'principal', 'protocol', 'deployment', 'chainId'])
+    if (actual.subject[key] !== expected.subject[key]) throw fail();
+}
+module.exports = { startRailgunSessionWorker, assertRailgunSessionWorker };

@@ -7,6 +7,9 @@ const fs = require('fs'),
   path = require('path');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { openRailgunAccountStore } = require('./railgun-account-store');
+const { createHash } = require('crypto');
+const { startRailgunSessionWorker } = require('./railgun-session-worker');
+const { railgunSourceBinding } = require('./railgun-source-ledger');
 let scope, enrollment, opened, remembered, borrowed, current;
 const generationId = '1'.repeat(64);
 beforeEach(() => {
@@ -149,3 +152,89 @@ test('vault/profile revocation closes returned workers and prevents reopening', 
   expect(first.session.signal.aborted).toBe(true);
   await expect(open()).rejects.toThrow();
 });
+test('source metadata survives publication before inventory registration and ledger owns dispatch', async () => {
+  const remember = enrollment.profileGuard.remember;
+  enrollment.profileGuard.remember = () => {
+    throw Error('interrupted inventory');
+  };
+  await expect(open({ create: true })).rejects.toThrow('interrupted inventory');
+  expect(remembered.size).toBe(0);
+  enrollment.profileGuard.remember = remember;
+  const reopened = await open();
+  reopened.ledger.assertEmpty();
+  expect(reopened.ledger.identity()).toBe(reopened.storeId);
+  const range = {
+    from: 0,
+    to: { number: 10, hash: '0x' + '1'.repeat(64) },
+    previousHash: '0x' + '0'.repeat(64),
+    providersSha256: 'b'.repeat(64),
+    logs: { count: 0, sha256: createHash('sha256').update('').digest('hex') },
+  };
+  const reference = await reopened.ledger.stage(range, []);
+  expect(() => reopened.ledger.assertEmpty()).toThrow();
+  reopened.ledger.close();
+  await reopened.session.closed;
+  const cold = await open({ expectedStoreId: reopened.storeId });
+  expect(await cold.ledger.stage(range, [])).toEqual(reference);
+  expect(() => cold.session.claimDispatch()).toThrow();
+  await expect(
+    cold.session.dispatch(
+      JSON.stringify({
+        id: 1,
+        method: 'get',
+        args: { key: Buffer.from('source:meta').toString('base64') },
+      })
+    )
+  ).rejects.toThrow();
+  await cold.ledger.closed;
+  expect(cold.ledger.signal.aborted).toBe(true);
+});
+test.each(['missing-meta', 'invalid-meta', 'legacy-binding'])(
+  'refuses final source store with %s before inventory registration without replacement',
+  async (mode) => {
+    const filename = path.join(enrollment.directory, 'source.sqlite');
+    const session = startRailgunSessionWorker({
+      handle: enrollment.getContext('engine'),
+      storage: {
+        format: 'paged-v2',
+        filename,
+        key: Buffer.alloc(32, 41),
+        create: true,
+        binding:
+          mode === 'legacy-binding' ? enrollment.binding : railgunSourceBinding(enrollment.binding),
+      },
+      createProvider: ({ signal }) => ({
+        signal,
+        request: async () => {
+          throw Error('no RPC');
+        },
+      }),
+      onClose: () => {},
+    });
+    opened.push({ session });
+    await session.ready;
+    if (mode === 'invalid-meta')
+      await session.dispatch(
+        JSON.stringify({
+          id: 1,
+          method: 'batch',
+          args: {
+            operations: [
+              {
+                type: 'put',
+                key: Buffer.from('source:meta').toString('base64'),
+                value: Buffer.from('{}').toString('base64'),
+              },
+            ],
+          },
+        })
+      );
+    session.close();
+    await session.closed;
+    const before = fs.readFileSync(filename);
+    await expect(open()).rejects.toThrow();
+    await expect(open({ create: true })).rejects.toThrow();
+    expect(remembered.size).toBe(0);
+    expect(fs.readFileSync(filename)).toEqual(before);
+  }
+);

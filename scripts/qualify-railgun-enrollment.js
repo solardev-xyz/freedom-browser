@@ -24,6 +24,9 @@ async function main() {
     'scripts/qualify-railgun-enrollment.js',
     'src/main/wallet/railgun-account-enrollment.js',
     'src/main/wallet/railgun-account-store.js',
+    'src/main/wallet/railgun-source-ledger.js',
+    'src/main/wallet/railgun-scan-journal.js',
+    'src/main/wallet/railgun-public-records.js',
     'src/main/wallet/privacy-profile-guard.js',
     'src/main/wallet/privacy-storage.js',
     'src/main/wallet/railgun-wallet-catalog.js',
@@ -59,6 +62,7 @@ async function main() {
     vaultDirectory = path.join(profile.userDataDir, 'identity');
   let identity, enrollment, worker;
   const storeIds = {};
+  let sourceReference;
   async function store(kind, create, generationId) {
     const opened = await openRailgunAccountStore({
       enrollment,
@@ -74,6 +78,30 @@ async function main() {
       assert.equal(observed.instanceId, opened.storeId);
       if (create) storeIds[kind] = opened.storeId;
       else assert.equal(opened.storeId, storeIds[kind]);
+      if (kind === 'source') {
+        assert.equal(opened.ledger.identity(), opened.storeId);
+        assert.throws(() => worker.claimDispatch());
+        if (create) opened.ledger.assertEmpty();
+        else assert.throws(() => opened.ledger.assertEmpty());
+        const reference = await opened.ledger.stage(
+          {
+            from: 0,
+            to: { number: 10, hash: '0x' + '1'.repeat(64) },
+            previousHash: '0x' + '0'.repeat(64),
+            providersSha256: 'b'.repeat(64),
+            logs: { count: 0, sha256: createHash('sha256').update('').digest('hex') },
+          },
+          []
+        );
+        if (create) sourceReference = reference;
+        else assert.deepEqual(reference, sourceReference);
+        assert.deepEqual(
+          await opened.ledger.visit(reference, () => {
+            throw Error('no logs');
+          }),
+          { count: 0, bytes: 0 }
+        );
+      }
       assert.ok(
         !fs
           .readdirSync(path.dirname(opened.filename))
@@ -151,6 +179,9 @@ async function main() {
           publicVaultFixture: true,
           hostStoreComposition: true,
           stagedInitialization: true,
+          sourceLedgerMetadataInitializedBeforePublication: true,
+          sourceLedgerExclusiveDispatch: true,
+          syntheticEmptySourceRangeRestored: true,
           automaticInventoryRegistration: true,
           identityMatchesAfterUnlock: true,
           encryptedEnrollmentAndCatalog: true,

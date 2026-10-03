@@ -5,7 +5,10 @@
 const { createHash } = require('crypto');
 const { readRailgunSourceRetention } = require('./railgun-scan-journal');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
-const { startRailgunSessionWorker } = require('./railgun-session-worker');
+const {
+  startRailgunSessionWorker,
+  assertRailgunSessionWorker,
+} = require('./railgun-session-worker');
 const fail = () =>
   Object.assign(new Error('Railgun source ledger unavailable'), {
     code: 'RAILGUN_SOURCE_LEDGER_REFUSED',
@@ -55,7 +58,18 @@ function validateMeta(v) {
   if (!v.count) check(JSON.stringify(v) === JSON.stringify(initial()));
   return v;
 }
-async function createRailgunSourceLedger({ handle, filename, key, binding, create = false }) {
+function railgunSourceBinding(binding) {
+  check(digest(binding));
+  return hash('freedom:railgun:source-ledger-v1:' + binding);
+}
+async function createRailgunSourceLedger({
+  handle,
+  filename,
+  key,
+  binding,
+  create = false,
+  storeSession,
+}) {
   const context = getPrivacyContext(handle),
     subject = context.subject;
   check(
@@ -64,10 +78,15 @@ async function createRailgunSourceLedger({ handle, filename, key, binding, creat
       subject.chainId === 11155111 &&
       subject.role === 'protocol-rpc' &&
       subject.operation === null &&
-      digest(binding)
+      digest(binding) &&
+      typeof create === 'boolean'
   );
   // Distinct store binding and filename; the engine never gets this worker.
-  const ledgerBinding = hash('freedom:railgun:source-ledger-v1:' + binding);
+  const ledgerBinding = railgunSourceBinding(binding);
+  if (storeSession) {
+    check(key === undefined);
+    assertRailgunSessionWorker(storeSession, { handle, filename, binding: ledgerBinding });
+  }
   const scope = createPrivacyScope({
     profileId: context.profileId,
     signal: context.signal,
@@ -79,6 +98,8 @@ async function createRailgunSourceLedger({ handle, filename, key, binding, creat
   const engineSubject = { ...subject, role: 'engine' };
   delete engineSubject.operation;
   let session,
+    dispatchGrant,
+    ownsSession = false,
     closed = false,
     busy = false,
     sequence = 0,
@@ -89,7 +110,7 @@ async function createRailgunSourceLedger({ handle, filename, key, binding, creat
     if (closed) return;
     closed = true;
     scope.close();
-    session?.close();
+    if (ownsSession) session?.close();
   }
   const active = () => {
     check(!closed);
@@ -97,29 +118,38 @@ async function createRailgunSourceLedger({ handle, filename, key, binding, creat
     check(!session.signal.aborted);
   };
   try {
-    session = startRailgunSessionWorker({
-      handle: scope.getContext(engineSubject),
-      storage: { format: 'paged-v2', filename, key, binding: ledgerBinding, create },
-      createProvider: ({ signal }) => ({
-        signal,
-        request: async () => {
-          throw fail();
-        },
-      }),
-      onClose: close,
-    });
+    session =
+      storeSession ||
+      startRailgunSessionWorker({
+        handle: scope.getContext(engineSubject),
+        storage: { format: 'paged-v2', filename, key, binding: ledgerBinding, create },
+        createProvider: ({ signal }) => ({
+          signal,
+          request: async () => {
+            throw fail();
+          },
+        }),
+        onClose: close,
+      });
+    // Authority and dispatch-claim refusals leave an existing owner's session
+    // untouched. Successful claim transfers lifetime ownership to the ledger.
+    ownsSession = !storeSession;
     await session.ready;
+    dispatchGrant = session.claimDispatch();
+    ownsSession = true;
+    session.signal.addEventListener('abort', close, { once: true });
     identity = await session.inspectStoreIdentity();
     session.assertFresh(identity);
     check(digest(identity.instanceId));
   } catch (error) {
     close();
+    if (ownsSession && session) await session.closed;
     throw error;
   }
   async function call(method, args) {
     active();
     const id = ++sequence;
-    const reply = JSON.parse(await session.dispatch(JSON.stringify({ id, method, args })));
+    const reply = JSON.parse(await dispatchGrant.dispatch(JSON.stringify({ id, method, args })));
     active();
     check(reply.id === id && Object.hasOwn(reply, 'value'));
     return reply.value;
@@ -157,6 +187,10 @@ async function createRailgunSourceLedger({ handle, filename, key, binding, creat
     const stored = await get('source:meta');
     if (stored === null) {
       check(create);
+      const cursor = await call('open', { options: { limit: 1 } });
+      const first = await call('next', { cursor });
+      await call('end', { cursor });
+      check(first === null);
       meta = initial();
       await write([['source:meta', meta]]);
     } else {
@@ -407,6 +441,10 @@ async function createRailgunSourceLedger({ handle, filename, key, binding, creat
     },
     closed: session.closed,
     signal: session.signal,
+    assertEmpty() {
+      active();
+      check(!busy && JSON.stringify(meta) === JSON.stringify(initial()));
+    },
   });
 }
-module.exports = { createRailgunSourceLedger };
+module.exports = { createRailgunSourceLedger, railgunSourceBinding };

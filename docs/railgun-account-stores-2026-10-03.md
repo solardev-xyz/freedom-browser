@@ -1,5 +1,10 @@
 # Enrolled Railgun store initialization — October 3, 2026
 
+This report is historical for its recorded sources. [The enrolled source-ledger
+continuation](railgun-enrolled-source-2026-10-03.md) adds ledger-domain binding and
+metadata initialization before publication. Earlier disposable source files are
+incompatible and refuse; no automatic migration or recreation is performed.
+
 `openRailgunAccountStore` now creates and reopens source, public and derived wallet
 stores through a genuine current enrollment. Main owns their paths, keys and
 workers. Inventory registration is performed by this reusable composition after
