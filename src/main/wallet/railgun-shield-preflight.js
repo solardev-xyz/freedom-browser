@@ -13,7 +13,7 @@ const abi = new Interface([
   'function shieldFee() view returns (uint120)',
   'function tokenBlocklist(address) view returns (bool)',
 ]);
-const fail = (reason = 'mismatch') =>
+const fail = (reason = 'refused') =>
   Object.assign(new Error('Railgun shield deployment unavailable'), {
     code: 'RAILGUN_SHIELD_DEPLOYMENT_REFUSED',
     reason,
@@ -91,9 +91,11 @@ function createRailgunShieldPreflight(enrollment) {
       let response;
       try {
         response = await rpc.request(method, params, validate);
-      } catch {
+      } catch (error) {
         active();
-        throw fail('rpc');
+        throw Object.assign(fail('rpc'), {
+          causeCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code ?? '') ? error.code : 'UNCLASSIFIED',
+        });
       }
       active();
       fresh();
@@ -126,7 +128,7 @@ function createRailgunShieldPreflight(enrollment) {
           [pins[name], block],
           (v) => typeof v === 'string' && /^0x(?:[0-9a-f]{2})+$/.test(v) && v.length <= 131074
         );
-        check(keccak256(code) === pins.codeHashes[name]);
+        check(keccak256(code) === pins.codeHashes[name], 'mismatch');
       }
       for (const [name, expected] of [
         ['implementation', '0x' + pins.implementation.slice(2).padStart(64, '0')],
@@ -134,7 +136,10 @@ function createRailgunShieldPreflight(enrollment) {
       ]) {
         step = 'slot-' + name;
         const slot = toBeHex(BigInt(id('eip1967.proxy.' + name)) - 1n, 32);
-        check((await read('eth_getStorageAt', [pins.proxy, slot, block], hash)) === expected);
+        check(
+          (await read('eth_getStorageAt', [pins.proxy, slot, block], hash)) === expected,
+          'mismatch'
+        );
       }
       for (const [to, method, args, expected] of [
         [pins.relayAdapt, 'railgun', [], pins.proxy],
@@ -149,22 +154,24 @@ function createRailgunShieldPreflight(enrollment) {
           hash
         );
         const decoded = abi.decodeFunctionResult(method, encoded);
-        check(abi.encodeFunctionResult(method, decoded).toLowerCase() === encoded);
+        check(abi.encodeFunctionResult(method, decoded).toLowerCase() === encoded, 'mismatch');
         check(
-          (typeof decoded[0] === 'string' ? decoded[0].toLowerCase() : decoded[0]) === expected
+          (typeof decoded[0] === 'string' ? decoded[0].toLowerCase() : decoded[0]) === expected,
+          'mismatch'
         );
       }
       step = 'anchor-recheck';
       const reread = await read(
         'eth_getBlockByNumber',
         [anchor.number, false],
-        (v) =>
-          v &&
-          v.number === anchor.number &&
-          v.hash === anchor.hash &&
-          v.timestamp === anchor.timestamp
+        (v) => v && quantity(v.number) && hash(v.hash) && quantity(v.timestamp)
       );
-      check(reread.hash === anchor.hash);
+      check(
+        reread.number === anchor.number &&
+          reread.hash === anchor.hash &&
+          reread.timestamp === anchor.timestamp,
+        'stale'
+      );
       active();
       fresh();
       const observation = Object.freeze({
@@ -179,10 +186,13 @@ function createRailgunShieldPreflight(enrollment) {
       return Object.freeze({ receipt, observation });
     } catch (error) {
       close();
-      const reason = ['rpc', 'mismatch', 'stale', 'inactive'].includes(error.reason)
+      const reason = ['rpc', 'mismatch', 'stale', 'inactive', 'refused'].includes(error.reason)
         ? error.reason
-        : 'mismatch';
-      throw Object.assign(fail(reason), { step });
+        : 'refused';
+      throw Object.assign(fail(reason), {
+        step,
+        ...(reason === 'rpc' ? { causeCode: error.causeCode } : {}),
+      });
     } finally {
       busy = false;
     }
@@ -196,7 +206,8 @@ function createRailgunShieldPreflight(enrollment) {
         !busy &&
         entry.sequence === sequence &&
         now >= entry.at &&
-        now - entry.at < MAX_AGE_MS
+        now - entry.at < MAX_AGE_MS,
+      'stale'
     );
     return entry.observation;
   };

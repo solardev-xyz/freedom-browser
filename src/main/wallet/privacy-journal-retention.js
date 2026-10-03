@@ -4,6 +4,7 @@
 const { privacyError } = require('../networks/privacy-context');
 const { validIntent, isExitIntent } = require('./private-transaction-intent');
 const { validOrdinaryFacts, isClassifiedOrdinary } = require('./ordinary-submission-policy');
+const { validRailgunShieldResolution } = require('./railgun-shield-resolution');
 const ARCHIVE_MAX = 1024;
 const MINIMUM_AGE_MS = 24 * 60 * 60 * 1000;
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -47,7 +48,14 @@ function validArchive(archive, kind) {
           'finalized',
           ...(kind === 'public' && Object.hasOwn(r, 'intent') ? ['intent'] : []),
           ...(kind === 'public' && Object.hasOwn(r, 'route') ? ['route', 'ordinary'] : []),
+          ...(kind === 'public' && Object.hasOwn(r, 'railgun') ? ['railgun'] : []),
         ]) &&
+        (r.intent?.kind === 'railgun-native-shield'
+          ? validRailgunShieldResolution(r.railgun, {
+              ...r,
+              observation: { status: r.status, blockNumber: r.blockNumber, blockHash: r.blockHash },
+            })
+          : r.railgun === undefined) &&
         (!Object.hasOwn(r, 'intent') || (kind === 'public' && validIntent(r.intent))) &&
         (!Object.hasOwn(r, 'route') ||
           (kind === 'public' &&
@@ -106,6 +114,7 @@ function archivePrefix(records, archive, expected, anchors, kind) {
             ...(r.route ? { route: r.route, ordinary: { ...r.ordinary } } : {}),
           }
         : { id: r.id, nullifier: r.nullifier, commitment: r.commitment }),
+      ...(r.resolution.railgun ? { railgun: structuredClone(r.resolution.railgun) } : {}),
       status: r.observation.status,
       blockNumber: r.observation.blockNumber,
       blockHash: r.observation.blockHash,

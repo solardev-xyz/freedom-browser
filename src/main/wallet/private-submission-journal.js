@@ -14,11 +14,16 @@ const HASH = /^0x[0-9a-f]{64}$/;
 const KEY = 'submissions-v1';
 const retention = require('./privacy-journal-retention');
 const { validOrdinaryFacts } = require('./ordinary-submission-policy');
+const {
+  validRailgunShieldResolution,
+  freezeRailgunShieldResolution,
+} = require('./railgun-shield-resolution');
 const unresolved = (records) => records.some((record) => !record.resolution);
 function snapshot(record) {
   if (record.intent) Object.freeze(record.intent);
   if (record.ordinary) Object.freeze(record.ordinary);
   if (record.observation) Object.freeze(record.observation);
+  if (record.resolution?.railgun) freezeRailgunShieldResolution(record.resolution.railgun);
   if (record.resolution) Object.freeze(record.resolution);
   return Object.freeze(record);
 }
@@ -128,6 +133,13 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
             record.observation.confirmations < record.resolution.minimumConfirmations ||
             !Number.isSafeInteger(record.resolution.reviewedAt) ||
             record.resolution.reviewedAt < 0)
+        )
+          throw invalid();
+        if (
+          record.resolution &&
+          (record.intent?.kind === 'railgun-native-shield'
+            ? !validRailgunShieldResolution(record.resolution.railgun, record)
+            : record.resolution.railgun !== undefined)
         )
           throw invalid();
         hashes.add(record.hash);
@@ -337,7 +349,7 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
       getPrivacyContext(handle);
       return snapshot(updated);
     },
-    async resolve(hash, revision, minimumConfirmations) {
+    async resolve(hash, revision, minimumConfirmations, railgunPermit) {
       let updated;
       await modify((records) => {
         const record = records.find((entry) => entry.hash === hash);
@@ -354,7 +366,15 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
           record.observation.confirmations < minimumConfirmations
         )
           throw invalid();
+        const railgun =
+          record.intent?.kind === 'railgun-native-shield'
+            ? require('./railgun-shield-recovery').assertRailgunShieldResolution(
+                railgunPermit,
+                record
+              )
+            : undefined;
         record.resolution = {
+          ...(railgun ? { railgun: structuredClone(railgun) } : {}),
           blockHash: record.observation.blockHash,
           minimumConfirmations,
           reviewedAt: Date.now(),

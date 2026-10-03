@@ -70,6 +70,7 @@ async function main() {
     circuitIsolationQualified: false,
     prepared: [],
     deployments: [],
+    timings: [],
     passed: false,
   };
   const directory = path.join(profile.userDataDir, 'identity');
@@ -133,6 +134,7 @@ async function main() {
           { identity, create: n === 0 }
         );
       stage = 'prepare';
+      const started = performance.now();
       const preparation = await prepareRailgunNativeShield({
         identity,
         enrollment,
@@ -144,6 +146,7 @@ async function main() {
         preparation.prepared
       );
       report.prepared.push(preparation.prepared);
+      const preparedAt = performance.now();
       stage = 'receiver';
       const receiver = await verifyRailgunShieldReceiver({
         identity,
@@ -155,12 +158,21 @@ async function main() {
         assertRailgunShieldReceiver(receiver, identity, enrollment, preparation.receipt),
         preparation.prepared
       );
+      const receivedAt = performance.now();
       stage = 'deployment';
       preflight = createRailgunShieldPreflight(enrollment);
       const acquired = await preflight.acquire();
       report.deployments.push(
         assertRailgunShieldPreflight(preflight, acquired.receipt, enrollment)
       );
+      const deploymentAt = performance.now();
+      report.timings.push({
+        prepareMs: preparedAt - started,
+        receiveMs: receivedAt - preparedAt,
+        deploymentMs: deploymentAt - receivedAt,
+        totalMs: deploymentAt - started,
+        preparationLifetimeMs: 120000,
+      });
       stage = 'lock';
       vault.lockVault();
       assert.throws(() =>
@@ -183,7 +195,8 @@ async function main() {
   } catch (error) {
     report.failure = {
       stage,
-      reason: ['rpc', 'mismatch', 'stale', 'inactive'].includes(error.reason)
+      causeCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.causeCode ?? '') ? error.causeCode : undefined,
+      reason: ['rpc', 'mismatch', 'stale', 'inactive', 'refused'].includes(error.reason)
         ? error.reason
         : undefined,
       code: /^[A-Z0-9_]+$/.test(error.code ?? '') ? error.code : error.name,

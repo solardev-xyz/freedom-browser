@@ -5,6 +5,7 @@
 const { Transaction } = require('ethers');
 const { privacyError } = require('../networks/privacy-context');
 const pins = require('./ppv2-sepolia-pins.json');
+const { isRailgunTarget } = require('./railgun-shield-intent');
 const address = (value) => typeof value === 'string' && /^0x[0-9a-f]{40}$/.test(value);
 function targets() {
   return new Set(
@@ -25,6 +26,7 @@ function assertOrdinaryRequest(tx) {
   if (
     !address(tx.to?.toLowerCase()) ||
     targets().has(tx.to.toLowerCase()) ||
+    isRailgunTarget(tx.to) ||
     (tx.type != null && ![0, 1, 2].includes(Number(tx.type))) ||
     tx.authorizationList != null
   )
@@ -61,7 +63,8 @@ function isClassifiedOrdinary(record) {
     record.route === 'ordinary' &&
     record.intent === undefined &&
     validOrdinaryFacts(record.ordinary) &&
-    !targets().has(record.ordinary.to)
+    !targets().has(record.ordinary.to) &&
+    !isRailgunTarget(record.ordinary.to)
   );
 }
 module.exports = {

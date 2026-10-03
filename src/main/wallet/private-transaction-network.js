@@ -27,6 +27,8 @@ function getPrivateTransactionNetwork(handle) {
       journal: journal(),
       principal,
       assertActive,
+      authorizeRailgun: (record, completed) =>
+        require('./railgun-shield-recovery').authorizeRailgunResolution(handle, record, completed),
     }));
   async function assertCanSubmit(signal) {
     assertActive();
@@ -53,8 +55,21 @@ function getPrivateTransactionNetwork(handle) {
     let validate = isQuantity;
     if (method === 'eth_getTransactionCount') {
       allowed =
-        params.length === 2 && params[0]?.toLowerCase?.() === principal && params[1] === 'pending';
+        params.length === 2 &&
+        params[0]?.toLowerCase?.() === principal &&
+        ['pending', 'latest'].includes(params[1]);
       validate = (value) => isQuantity(value) && BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER);
+    } else if (method === 'eth_getBalance' || method === 'eth_getCode') {
+      allowed =
+        params.length === 2 && params[0]?.toLowerCase?.() === principal && params[1] === 'pending';
+      if (method === 'eth_getCode') validate = data;
+    } else if (method === 'eth_getBlockByNumber') {
+      allowed = params.length === 2 && params[0] === 'finalized' && params[1] === false;
+      validate = (value) =>
+        value &&
+        hash(value.hash) &&
+        isQuantity(value.number) &&
+        BigInt(value.number) <= BigInt(Number.MAX_SAFE_INTEGER);
     } else if (['eth_gasPrice', 'eth_maxPriorityFeePerGas', 'eth_blockNumber'].includes(method)) {
       allowed = params.length === 0;
     } else if (['eth_call', 'eth_estimateGas'].includes(method)) {
@@ -132,6 +147,8 @@ function getPrivateTransactionNetwork(handle) {
         'Signed transaction differs from its operation intent'
       );
     }
+    if (intent.kind === 'railgun-native-shield')
+      require('./railgun-shield-operation').assertRailgunShieldSubmission(handle, intent);
     // Derive all reservation metadata from signed bytes, never caller fields.
     intent = transactionIntent(intent.kind, transaction);
     const txHash = transaction.hash.toLowerCase();

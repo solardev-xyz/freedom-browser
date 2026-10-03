@@ -8,7 +8,7 @@ const quantity = (value) => isQuantity(value) && BigInt(value) <= BigInt(Number.
 const unavailable = () =>
   privacyError('PRIVATE_RECONCILIATION_UNAVAILABLE', 'Current submission evidence is unavailable');
 
-function createSubmissionReconciler({ rpc, journal, principal, assertActive }) {
+function createSubmissionReconciler({ rpc, journal, principal, assertActive, authorizeRailgun }) {
   async function consumedNonce(record) {
     const readBlock = async (tag) =>
       (
@@ -244,6 +244,10 @@ function createSubmissionReconciler({ rpc, journal, principal, assertActive }) {
       ['included', 'reverted', 'nonce-consumed'].includes(record.observation?.status) &&
       record.observation.confirmations >= minimumConfirmations;
     const before = await observe(transactionHash);
+    if (before.intent?.kind === 'railgun-native-shield') {
+      if (typeof authorizeRailgun !== 'function') throw unavailable();
+      authorizeRailgun(before, false);
+    }
     if (!eligible(before))
       throw privacyError(
         'PRIVATE_SUBMISSION_UNRESOLVED',
@@ -300,6 +304,13 @@ function createSubmissionReconciler({ rpc, journal, principal, assertActive }) {
       );
     }
     assertActive();
+    if (after.intent?.kind === 'railgun-native-shield')
+      return journal.resolve(
+        after.hash,
+        after.revision,
+        minimumConfirmations,
+        authorizeRailgun(after, true)
+      );
     return journal.resolve(after.hash, after.revision, minimumConfirmations);
   }
   const archiveResolved = require('./privacy-journal-archiver').createJournalArchiver({

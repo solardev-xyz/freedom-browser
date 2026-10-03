@@ -3,10 +3,16 @@ const { AbiCoder, Interface, keccak256 } = require('ethers');
 const { privacyError } = require('../networks/privacy-context');
 const { RAGEQUIT_ABI } = require('./ppv2-ragequit-policy');
 const { FIELD, NATIVE } = require('./ppv2-deposit-policy');
+const {
+  shieldIntentBinding,
+  validShieldIntent,
+  isRailgunTarget,
+} = require('./railgun-shield-intent');
 const exitABI = new Interface([RAGEQUIT_ABI]);
 const isExitIntent = (value) =>
   ['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(value?.kind);
 const kinds = [
+  'railgun-native-shield',
   'ppv2-register-auth',
   'ppv2-register-viewing',
   'ppv2-native-deposit',
@@ -16,6 +22,7 @@ const kinds = [
   'ppv2-token-ragequit',
 ];
 function validIntent(value) {
+  if (value?.kind === 'railgun-native-shield') return validShieldIntent(value);
   return (
     value &&
     [2, 4].includes(Object.keys(value).length) &&
@@ -36,6 +43,8 @@ function transactionIntent(kind, tx) {
   if (!kinds.includes(kind))
     throw privacyError('PRIVATE_INTENT_INVALID', 'Unsupported transaction intent');
   try {
+    if (isRailgunTarget(tx.to) && kind !== 'railgun-native-shield')
+      throw new Error('Mislabeled shield');
     if (
       typeof tx.data === 'string' &&
       tx.data.slice(0, 10).toLowerCase() === exitABI.getFunction('ragequit').selector &&
@@ -43,7 +52,7 @@ function transactionIntent(kind, tx) {
     ) {
       throw new Error('Mislabeled exit');
     }
-    let binding = {};
+    let binding = kind === 'railgun-native-shield' ? shieldIntentBinding(tx) : {};
     if (isExitIntent({ kind })) {
       const proof = exitABI.decodeFunctionData('ragequit', tx.data)[0];
       const signals = proof.pubSignals;

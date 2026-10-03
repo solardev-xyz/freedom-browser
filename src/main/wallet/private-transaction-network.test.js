@@ -75,6 +75,8 @@ beforeEach(() => {
       eth_chainId: '0xaa36a7',
       eth_gasPrice: '0x64',
       eth_getTransactionCount: nonce,
+      eth_getBalance: '0x123',
+      eth_getCode: '0x',
       eth_estimateGas: '0x5208',
       eth_call: '0x',
       eth_getTransactionReceipt: receipt,
@@ -628,4 +630,27 @@ test('private submissions require classification before signing and again at raw
   });
   expect(await network.listSubmissions()).toEqual([]);
   expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test('shield funding reads are restricted to the same public address and explicit tags', async () => {
+  await expect(
+    network.request(11155111, 'eth_getBalance', [wallet.address, 'pending'])
+  ).resolves.toMatchObject({ result: '0x123' });
+  await expect(
+    network.request(11155111, 'eth_getCode', [wallet.address, 'pending'])
+  ).resolves.toMatchObject({ result: '0x' });
+  await expect(
+    network.request(11155111, 'eth_getTransactionCount', [wallet.address, 'latest'])
+  ).resolves.toMatchObject({ result: '0x0' });
+  for (const method of ['eth_getBalance', 'eth_getCode']) {
+    await expect(network.request(11155111, method, [params.to, 'pending'])).rejects.toMatchObject({
+      code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED',
+    });
+    await expect(
+      network.request(11155111, method, [wallet.address, 'latest'])
+    ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
+  }
+  await expect(
+    network.request(11155111, 'eth_getTransactionCount', [wallet.address, '0x1'])
+  ).rejects.toMatchObject({ code: 'PRIVATE_TRANSACTION_REQUEST_REFUSED' });
 });

@@ -66,7 +66,7 @@ beforeEach(() => {
         operation,
       }),
   };
-  mockRequest.mockImplementation(async (method, params) => {
+  mockRequest.mockImplementation(async (method, params, validate) => {
     let result;
     if (method === 'eth_getBlockByNumber')
       result =
@@ -102,6 +102,8 @@ beforeEach(() => {
       result = abi.encodeFunctionResult(parsed.name, [values[parsed.name]]).toLowerCase();
       if (mockMode === 'padding') result += '00';
     } else throw Error('Unexpected request');
+    if (!validate(result))
+      throw Object.assign(Error('Invalid response'), { code: 'PRIVATE_RPC_INVALID' });
     return { result };
   });
   source = createRailgunShieldPreflight(mockEnrollment);
@@ -152,7 +154,20 @@ test.each([
   'head',
 ])('changed or malformed %s refuses and releases transport', async (mode) => {
   mockMode = mode;
-  await expect(source.acquire()).rejects.toThrow('Railgun shield deployment unavailable');
+  const expected = {
+    code: ['mismatch', 'code-proxy'],
+    'implementation-code': ['mismatch', 'code-implementation'],
+    implementation: ['mismatch', 'slot-implementation'],
+    paused: ['mismatch', 'slot-paused'],
+    slot: ['mismatch', 'slot-implementation'],
+    relay: ['mismatch', 'getter-railgun'],
+    weth: ['mismatch', 'getter-wBase'],
+    fee: ['mismatch', 'getter-shieldFee'],
+    blocked: ['mismatch', 'getter-tokenBlocklist'],
+    padding: ['rpc', 'getter-railgun'],
+    head: ['stale', 'anchor-recheck'],
+  }[mode];
+  await expect(source.acquire()).rejects.toMatchObject({ reason: expected[0], step: expected[1] });
   expect(mockRelease).toHaveBeenCalledTimes(1);
   expect(source.signal.aborted).toBe(true);
 });
@@ -203,7 +218,11 @@ test.each(['old', 'future', 'height'])(
 );
 test('RPC refusal is classified separately from a deployment mismatch', async () => {
   mockRequest.mockRejectedValueOnce(Error('network details not exposed'));
-  await expect(source.acquire()).rejects.toMatchObject({ reason: 'rpc', step: 'anchor' });
+  await expect(source.acquire()).rejects.toMatchObject({
+    reason: 'rpc',
+    step: 'anchor',
+    causeCode: 'UNCLASSIFIED',
+  });
 });
 test('foreign enrollment cannot use a genuine receipt', async () => {
   const result = await source.acquire();
