@@ -50,12 +50,25 @@ const KEY_MARGIN_MS = 20000;
 // Only this controller can mint provenance. This is deliberately separate from
 // the wallet/A lifetime: submission first closes the wallet and enters recovery.
 // It attests past gates, never fresh POI, chain state or permission to broadcast.
-function complete({ identity, enrollment, reservations, capsules, parent, entry, stored }) {
-  const started = performance.now(), deadline = started + 120000;
+function complete({
+  identity,
+  enrollment,
+  reservations,
+  capsules,
+  parent,
+  entry,
+  stored,
+  minimumBlock,
+}) {
+  const started = performance.now(),
+    deadline = started + 120000;
   const scope = createPrivacyScope({
     profileId: getPrivacyContext(parent).profileId,
     signal: AbortSignal.any([
-      identity.signal, enrollment.signal, reservations.signal, capsules.signal,
+      identity.signal,
+      enrollment.signal,
+      reservations.signal,
+      capsules.signal,
     ]),
     isCurrent: () => {
       assertRailgunIdentity(identity, parent);
@@ -74,9 +87,11 @@ function complete({ identity, enrollment, reservations, capsules, parent, entry,
     }
     return v;
   };
-  const evidence = freeze(JSON.parse(JSON.stringify({ entry, stored })));
+  const evidence = freeze(JSON.parse(JSON.stringify({ entry, stored, minimumBlock })));
   const assertCurrent = () => {
-    assert.ok(!scope.signal.aborted && performance.now() >= started && performance.now() < deadline);
+    assert.ok(
+      !scope.signal.aborted && performance.now() >= started && performance.now() < deadline
+    );
     assertRailgunIdentity(identity, parent);
     getPrivacyContext(parent);
     return evidence;
@@ -439,7 +454,16 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
     assert.deepEqual(stored.provedTransaction, result.operation.transaction);
     assertRailgunPrivateProof(proof.receipt, enrollment, evidence);
     active();
-    const completion = complete({ identity, enrollment, reservations, capsules, parent, entry, stored });
+    const completion = complete({
+      identity,
+      enrollment,
+      reservations,
+      capsules,
+      parent,
+      entry,
+      stored,
+      minimumBlock: baseline.read.readiness.to.number,
+    });
     return Object.freeze({ status: 'proved', holdId, completion, submissionEnabled: false });
   } catch {
     return Object.freeze({

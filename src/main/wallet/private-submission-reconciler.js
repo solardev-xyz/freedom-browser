@@ -244,7 +244,7 @@ function createSubmissionReconciler({ rpc, journal, principal, assertActive, aut
       ['included', 'reverted', 'nonce-consumed'].includes(record.observation?.status) &&
       record.observation.confirmations >= minimumConfirmations;
     const before = await observe(transactionHash);
-    if (before.intent?.kind === 'railgun-native-shield') {
+    if (['railgun-native-shield', 'railgun-transact'].includes(before.intent?.kind)) {
       if (typeof authorizeRailgun !== 'function') throw unavailable();
       authorizeRailgun(before, false);
     }
@@ -304,7 +304,7 @@ function createSubmissionReconciler({ rpc, journal, principal, assertActive, aut
       );
     }
     assertActive();
-    if (after.intent?.kind === 'railgun-native-shield')
+    if (['railgun-native-shield', 'railgun-transact'].includes(after.intent?.kind))
       return journal.resolve(
         after.hash,
         after.revision,

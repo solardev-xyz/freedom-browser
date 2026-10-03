@@ -5,6 +5,7 @@ const { privacyError } = require('../networks/privacy-context');
 const { validIntent, isExitIntent } = require('./private-transaction-intent');
 const { validOrdinaryFacts, isClassifiedOrdinary } = require('./ordinary-submission-policy');
 const { validRailgunShieldResolution } = require('./railgun-shield-resolution');
+const { validRailgunTransactResolution } = require('./railgun-transact-resolution');
 const ARCHIVE_MAX = 1024;
 const MINIMUM_AGE_MS = 24 * 60 * 60 * 1000;
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -50,8 +51,10 @@ function validArchive(archive, kind) {
           ...(kind === 'public' && Object.hasOwn(r, 'route') ? ['route', 'ordinary'] : []),
           ...(kind === 'public' && Object.hasOwn(r, 'railgun') ? ['railgun'] : []),
         ]) &&
-        (r.intent?.kind === 'railgun-native-shield'
-          ? validRailgunShieldResolution(r.railgun, {
+        (['railgun-native-shield', 'railgun-transact'].includes(r.intent?.kind)
+          ? (r.intent.kind === 'railgun-transact'
+              ? validRailgunTransactResolution
+              : validRailgunShieldResolution)(r.railgun, {
               ...r,
               observation: { status: r.status, blockNumber: r.blockNumber, blockHash: r.blockHash },
             })

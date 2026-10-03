@@ -28,7 +28,10 @@ function getPrivateTransactionNetwork(handle) {
       principal,
       assertActive,
       authorizeRailgun: (record, completed) =>
-        require('./railgun-shield-recovery').authorizeRailgunResolution(handle, record, completed),
+        (record.intent?.kind === 'railgun-transact'
+          ? require('./railgun-transact-recovery')
+          : require('./railgun-shield-recovery')
+        ).authorizeRailgunResolution(handle, record, completed),
     }));
   async function assertCanSubmit(signal) {
     assertActive();
@@ -147,6 +150,8 @@ function getPrivateTransactionNetwork(handle) {
         'Signed transaction differs from its operation intent'
       );
     }
+    if (intent.kind === 'railgun-transact')
+      require('./railgun-private-submission').assertRailgunPrivateSubmission(handle, intent);
     if (intent.kind === 'railgun-native-shield')
       require('./railgun-shield-operation').assertRailgunShieldSubmission(handle, intent);
     // Derive all reservation metadata from signed bytes, never caller fields.

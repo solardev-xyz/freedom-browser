@@ -77,3 +77,17 @@ test('a ragequit cannot be disguised as a non-exit intent', () => {
     );
   }
 });
+test.each([false, true])(
+  'Railgun private %s uses full calldata metadata and refuses other labels',
+  (unshield) => {
+    const transaction = require('../../../scripts/fixtures/railgun-transact-data')
+      .fixture(unshield)
+      .transaction();
+    const classified = transactionIntent('railgun-transact', transaction);
+    expect(validIntent(classified)).toBe(true);
+    expect(validIntent({ kind: classified.kind, digest: classified.digest })).toBe(false);
+    for (const kind of ['railgun-native-shield', 'ppv2-native-deposit', 'ppv2-token-approval'])
+      expect(() => transactionIntent(kind, transaction)).toThrow();
+    expect(() => transactionIntent('railgun-transact', tx)).toThrow();
+  }
+);

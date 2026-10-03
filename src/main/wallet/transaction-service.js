@@ -327,6 +327,11 @@ async function signAndSendTransaction(params, signer, options = {}) {
     if (typeof options.review !== 'function') {
       throw privacyError('PRIVATE_REVIEW_REQUIRED', 'A main-owned transaction review is required');
     }
+    if (options.intent?.kind === 'railgun-transact')
+      require('./railgun-private-submission').assertRailgunPrivateSubmission(
+        options.privacyContext,
+        options.intent
+      );
     if (options.intent?.kind === 'railgun-native-shield')
       require('./railgun-shield-operation').assertRailgunShieldSubmission(
         options.privacyContext,

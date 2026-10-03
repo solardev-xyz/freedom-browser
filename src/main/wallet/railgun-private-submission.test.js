@@ -1,0 +1,375 @@
+let mock;
+jest.mock('./railgun-private-operation', () => ({
+  claimRailgunPrivateCompletion: (receipt, identity, enrollment) => {
+    if (
+      receipt !== mock.receipt ||
+      identity !== mock.identity ||
+      enrollment !== mock.enrollment ||
+      mock.claimed
+    )
+      throw Error('completion');
+    mock.claimed = true;
+    return mock.claim;
+  },
+}));
+jest.mock('./railgun-private-proof', () => ({
+  verifyRailgunPrivateProof: async () => {
+    mock.step('C');
+    return mock.proof;
+  },
+  assertRailgunPrivateProof: () => {
+    if (mock.proofClosed) throw Error('C');
+  },
+}));
+jest.mock('./railgun-private-preflight', () => ({
+  createRailgunPrivatePreflight: ({ input }) => {
+    mock.step('preflight-open');
+    mock.preflightInput = input;
+    return mock.preflight;
+  },
+  assertRailgunPrivatePreflight: () => {
+    if (mock.preflightClosed) throw Error('preflight');
+    return mock.observed;
+  },
+}));
+jest.mock('./signers', () => ({ getSigner: () => mock.signer }));
+jest.mock('./private-transaction-network', () => ({
+  getPrivateTransactionNetwork: () => mock.network,
+}));
+jest.mock('./transaction-service', () => ({
+  signAndSendTransaction: (...args) => mock.send(...args),
+}));
+const { createPrivacyScope } = require('../networks/privacy-context');
+const { fixture } = require('../../../scripts/fixtures/railgun-transact-data');
+const { extractRailgunTransactIntent } = require('./railgun-transact-intent');
+const {
+  submitRailgunPrivateTransaction: submit,
+  assertRailgunPrivateSubmission: authorize,
+} = require('./railgun-private-submission');
+let options;
+beforeEach(() => {
+  const f = fixture(),
+    tx = f.transaction(),
+    parsed = extractRailgunTransactIntent(tx);
+  delete tx.from;
+  mock = {
+    receipt: {},
+    identity: {},
+    claimed: false,
+    events: [],
+    scope: createPrivacyScope({
+      profileId: 'submission-unit',
+      signal: new AbortController().signal,
+    }),
+  };
+  mock.step = (stage) => {
+    mock.events.push(stage);
+    if (mock.failure === stage) throw Error(stage);
+  };
+  mock.owner = f.transaction().from;
+  mock.snapshot = {
+    minimumBlock: 10,
+    entry: {
+      id: 'a'.repeat(64),
+      state: 'signing',
+      signing: { submitter: mock.owner },
+      facts: {
+        intentDigest: parsed.intentDigest,
+        nullifier: parsed.expected.nullifier,
+        checkpointHash: 'b'.repeat(64),
+      },
+    },
+    stored: {
+      capsule: {
+        selection: { kind: parsed.expected.kind, tree: 0 },
+        preparation: { transaction: parsed.intent, expected: parsed.expected },
+      },
+      provedTransaction: tx,
+    },
+  };
+  mock.claim = {
+    signal: mock.scope.signal,
+    close: () => {
+      mock.claimClosed = true;
+    },
+    assertCurrent: () => {
+      if (mock.claimClosed) throw Error('closed');
+      return mock.snapshot;
+    },
+  };
+  mock.records = [{ receipt: {}, entry: JSON.parse(JSON.stringify(mock.snapshot.entry)) }];
+  mock.reservations = {
+    withSigningRecovery: async (use) => {
+      mock.step('recovery');
+      mock.phase = true;
+      try {
+        const result = await use(mock.records, {
+          signal: mock.scope.signal,
+          assertCurrent: () => {
+            if (!mock.phase) throw Error('phase');
+          },
+        });
+        mock.step('phase-end');
+        return result;
+      } finally {
+        mock.phase = false;
+      }
+    },
+    assertReceiptContext: (_receipt, kind) => {
+      if (!mock.phase || kind !== 'recovery') throw Error('phase');
+    },
+    assertReceipt: async () => {
+      mock.step('attest-hold');
+      return mock.records[0].entry;
+    },
+  };
+  mock.stored = JSON.parse(JSON.stringify(mock.snapshot.stored));
+  mock.enrollment = {
+    openReservations: async () => mock.reservations,
+    openPrivateCapsules: async () => ({
+      get: async () => {
+        mock.step('attest-capsule');
+        return mock.stored;
+      },
+    }),
+    getContext: () =>
+      mock.scope.getContext({
+        kind: 'private-account',
+        principal: 'railgun:0',
+        protocol: 'railgun',
+        deployment: 'sepolia',
+        chainId: 11155111,
+        role: 'engine',
+      }),
+  };
+  mock.proof = {
+    receipt: {},
+    signal: mock.scope.signal,
+    close: () => {
+      mock.proofClosed = true;
+    },
+  };
+  mock.preflight = {
+    signal: mock.scope.signal,
+    close: () => {
+      mock.preflightClosed = true;
+    },
+    acquire: async () => {
+      mock.step('preflight');
+      mock.observed = { input: mock.preflightInput };
+      return { receipt: {} };
+    },
+  };
+  mock.signer = { getAddress: async () => mock.owner, signTransaction() {} };
+  mock.network = {
+    assertCanSubmit: async () => mock.step('journal'),
+    request: async (_chain, method) => {
+      mock.step(method);
+      return {
+        result: {
+          eth_getCode: '0x',
+          eth_estimateGas: '0x100',
+          eth_call: '0x',
+          eth_getTransactionCount: '0x1',
+          eth_getBalance: '0x10000000',
+        }[method],
+      };
+    },
+  };
+  mock.send = async (params, _signer, config) => {
+    mock.step('transaction-service');
+    mock.handle = config.privacyContext;
+    mock.intent = config.intent;
+    authorize(mock.handle, mock.intent);
+    const transaction = { ...params, gasPrice: '100', nonce: 1 };
+    if (!(await config.review({ from: mock.owner, transaction }))) throw Error('review');
+    authorize(mock.handle, mock.intent);
+    mock.step('broadcast');
+    return { hash: '0x' + 'c'.repeat(64) };
+  };
+  options = {
+    identity: mock.identity,
+    enrollment: mock.enrollment,
+    completion: mock.receipt,
+    proverArchive: '/prover',
+    artifactDirectory: '/artifacts',
+    gasLimit: 100000n,
+    maxGasFee: 10000000n,
+    review: async () => true,
+  };
+});
+afterEach(() => mock.scope.close());
+test('claims internally, reattests under exclusion, verifies C then preflight before one EOA attempt', async () => {
+  expect(await submit(options)).toEqual({ hash: '0x' + 'c'.repeat(64) });
+  const ordered = [
+    'recovery',
+    'C',
+    'preflight',
+    'journal',
+    'eth_estimateGas',
+    'eth_call',
+    'transaction-service',
+    'broadcast',
+    'phase-end',
+  ];
+  expect(mock.events.filter((v) => ordered.includes(v))).toEqual(ordered);
+  expect(mock.preflightInput.minimumBlock).toBe(10);
+  expect(() => authorize(mock.handle, mock.intent)).toThrow();
+  expect((await submit(options)).status).toBe('recovery-required');
+  expect(mock.events.filter((v) => v === 'broadcast')).toHaveLength(1);
+});
+test('unbranded completion refuses before stores, proof or network', async () => {
+  expect(await submit({ ...options, completion: mock.claim })).toEqual({
+    status: 'recovery-required',
+    stage: 'completion',
+  });
+  expect(mock.events).toEqual([]);
+  expect(() => authorize({}, {})).toThrow();
+});
+test.each(['entry', 'capsule'])('changed %s refuses before C or network', async (which) => {
+  if (which === 'entry') mock.records[0].entry.signing.submitter = '0x' + '56'.repeat(20);
+  else mock.stored.provedTransaction.data = '0x';
+  expect((await submit(options)).status).toBe('recovery-required');
+  expect(mock.events).not.toContain('C');
+});
+test.each(['C', 'preflight', 'journal', 'eth_estimateGas', 'eth_call'])(
+  '%s refusal sends nothing and drains phase',
+  async (at) => {
+    mock.failure = at;
+    expect((await submit(options)).status).toBe('recovery-required');
+    expect(mock.events).not.toContain('broadcast');
+    expect(mock.phase).toBe(false);
+  }
+);
+test('review mutation of durable data refuses before broadcast', async () => {
+  options.review = async () => {
+    mock.stored.provedTransaction.data = '0x';
+    return true;
+  };
+  expect((await submit(options)).status).toBe('recovery-required');
+  expect(mock.events).not.toContain('broadcast');
+});
+test('claim expiry in review revokes the EOA scope', async () => {
+  options.review = async () => {
+    mock.claimClosed = true;
+    return true;
+  };
+  expect((await submit(options)).status).toBe('recovery-required');
+  expect(mock.events).not.toContain('broadcast');
+});
+test('late phase failure preserves an acknowledged hash', async () => {
+  mock.failure = 'phase-end';
+  expect(await submit(options)).toEqual({ hash: '0x' + 'c'.repeat(64) });
+});
+test('unknown submission hash is retained and never automatically retried', async () => {
+  mock.network.listSubmissions = async () => [
+    {
+      hash: '0x' + 'd'.repeat(64),
+      intent: require('./railgun-transact-intent').railgunTransactJournalIntent({
+        ...mock.snapshot.stored.provedTransaction,
+        from: mock.owner,
+      }),
+    },
+  ];
+  mock.send = async () => {
+    throw Object.assign(Error('uncertain'), { transactionHash: '0x' + 'd'.repeat(64) });
+  };
+  expect(await submit(options)).toEqual({
+    transactionHash: '0x' + 'd'.repeat(64),
+    submissionStatus: 'unknown',
+  });
+  expect((await submit(options)).status).toBe('recovery-required');
+});
+test('fabricated review error hash cannot claim a journaled attempt', async () => {
+  options.review = async () => {
+    throw Object.assign(Error('fake'), {
+      code: 'PRIVATE_BROADCAST_UNCERTAIN',
+      transactionHash: '0x' + 'e'.repeat(64),
+    });
+  };
+  mock.network.listSubmissions = jest.fn(async () => []);
+  expect(await submit(options)).toEqual({ status: 'recovery-required', stage: 'submission' });
+  expect(mock.network.listSubmissions).not.toHaveBeenCalled();
+  expect(mock.events).not.toContain('broadcast');
+});
+test('transaction-service hash without matching durable intent is not promoted', async () => {
+  mock.send = async () => {
+    throw Object.assign(Error('fake'), { transactionHash: '0x' + 'e'.repeat(64) });
+  };
+  mock.network.listSubmissions = async () => [{ hash: '0x' + 'e'.repeat(64), intent: {} }];
+  expect(await submit(options)).toEqual({ status: 'recovery-required', stage: 'submission' });
+});
+test('cancellation drains pending review before releasing the recovery phase', async () => {
+  let enter, release, rejectService;
+  const entered = new Promise((resolve) => {
+    enter = resolve;
+  });
+  const paused = new Promise((resolve) => {
+    release = resolve;
+  });
+  options.review = async () => {
+    enter();
+    await paused;
+    return true;
+  };
+  mock.send = (params, _signer, config) => {
+    const pending = config.review({
+      from: mock.owner,
+      transaction: { ...params, gasPrice: '100', nonce: 1 },
+    });
+    pending.catch(() => {});
+    return new Promise((_resolve, reject) => {
+      rejectService = reject;
+    });
+  };
+  let settled = false;
+  const pending = submit(options).then((value) => {
+    settled = true;
+    return value;
+  });
+  await entered;
+  rejectService(Error('cancelled'));
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  expect(mock.phase).toBe(true);
+  release();
+  expect((await pending).status).toBe('recovery-required');
+  expect(mock.phase).toBe(false);
+  expect(mock.events).not.toContain('broadcast');
+});
+test('cancellation drains a pending EOA signer and prevents another signing attempt', async () => {
+  let enter, release, rejectService, second;
+  const entered = new Promise((resolve) => {
+    enter = resolve;
+  });
+  const paused = new Promise((resolve) => {
+    release = resolve;
+  });
+  mock.signer.signTransaction = async () => {
+    enter();
+    await paused;
+    return 'signed';
+  };
+  mock.send = (params, signer) => {
+    signer.signTransaction(params).catch(() => {});
+    second = signer.signTransaction(params);
+    second.catch(() => {});
+    return new Promise((_resolve, reject) => {
+      rejectService = reject;
+    });
+  };
+  let settled = false;
+  const pending = submit(options).then((value) => {
+    settled = true;
+    return value;
+  });
+  await entered;
+  await expect(second).rejects.toThrow();
+  rejectService(Error('cancelled'));
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  expect(mock.phase).toBe(true);
+  release();
+  expect((await pending).status).toBe('recovery-required');
+  expect(mock.phase).toBe(false);
+});

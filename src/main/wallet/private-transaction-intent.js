@@ -4,6 +4,10 @@ const { privacyError } = require('../networks/privacy-context');
 const { RAGEQUIT_ABI } = require('./ppv2-ragequit-policy');
 const { FIELD, NATIVE } = require('./ppv2-deposit-policy');
 const {
+  railgunTransactJournalIntent,
+  validRailgunTransactIntent,
+} = require('./railgun-transact-intent');
+const {
   shieldIntentBinding,
   validShieldIntent,
   isRailgunTarget,
@@ -13,6 +17,7 @@ const isExitIntent = (value) =>
   ['ppv2-native-ragequit', 'ppv2-token-ragequit'].includes(value?.kind);
 const kinds = [
   'railgun-native-shield',
+  'railgun-transact',
   'ppv2-register-auth',
   'ppv2-register-viewing',
   'ppv2-native-deposit',
@@ -22,6 +27,7 @@ const kinds = [
   'ppv2-token-ragequit',
 ];
 function validIntent(value) {
+  if (value?.kind === 'railgun-transact') return validRailgunTransactIntent(value);
   if (value?.kind === 'railgun-native-shield') return validShieldIntent(value);
   return (
     value &&
@@ -43,6 +49,7 @@ function transactionIntent(kind, tx) {
   if (!kinds.includes(kind))
     throw privacyError('PRIVATE_INTENT_INVALID', 'Unsupported transaction intent');
   try {
+    if (kind === 'railgun-transact') return railgunTransactJournalIntent(tx);
     if (isRailgunTarget(tx.to) && kind !== 'railgun-native-shield')
       throw new Error('Mislabeled shield');
     if (

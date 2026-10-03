@@ -18,12 +18,19 @@ const {
   validRailgunShieldResolution,
   freezeRailgunShieldResolution,
 } = require('./railgun-shield-resolution');
+const {
+  validRailgunTransactResolution,
+  freezeRailgunTransactResolution,
+} = require('./railgun-transact-resolution');
 const unresolved = (records) => records.some((record) => !record.resolution);
 function snapshot(record) {
   if (record.intent) Object.freeze(record.intent);
   if (record.ordinary) Object.freeze(record.ordinary);
   if (record.observation) Object.freeze(record.observation);
-  if (record.resolution?.railgun) freezeRailgunShieldResolution(record.resolution.railgun);
+  if (record.resolution?.railgun)
+    (record.intent?.kind === 'railgun-transact'
+      ? freezeRailgunTransactResolution
+      : freezeRailgunShieldResolution)(record.resolution.railgun);
   if (record.resolution) Object.freeze(record.resolution);
   return Object.freeze(record);
 }
@@ -137,9 +144,11 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
           throw invalid();
         if (
           record.resolution &&
-          (record.intent?.kind === 'railgun-native-shield'
-            ? !validRailgunShieldResolution(record.resolution.railgun, record)
-            : record.resolution.railgun !== undefined)
+          (record.intent?.kind === 'railgun-transact'
+            ? !validRailgunTransactResolution(record.resolution.railgun, record)
+            : record.intent?.kind === 'railgun-native-shield'
+              ? !validRailgunShieldResolution(record.resolution.railgun, record)
+              : record.resolution.railgun !== undefined)
         )
           throw invalid();
         hashes.add(record.hash);
@@ -367,12 +376,17 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
         )
           throw invalid();
         const railgun =
-          record.intent?.kind === 'railgun-native-shield'
-            ? require('./railgun-shield-recovery').assertRailgunShieldResolution(
+          record.intent?.kind === 'railgun-transact'
+            ? require('./railgun-transact-recovery').assertRailgunTransactResolution(
                 railgunPermit,
                 record
               )
-            : undefined;
+            : record.intent?.kind === 'railgun-native-shield'
+              ? require('./railgun-shield-recovery').assertRailgunShieldResolution(
+                  railgunPermit,
+                  record
+                )
+              : undefined;
         record.resolution = {
           ...(railgun ? { railgun: structuredClone(railgun) } : {}),
           blockHash: record.observation.blockHash,
