@@ -1,0 +1,247 @@
+{
+  "source": "https://chainlist.org/rpcs.json",
+  "scope": "Public historical event spot checks, not complete recovery or a funded lifecycle",
+  "direct": {
+    "observedAt": "2026-10-01T14:30:54.539Z",
+    "transport": "direct HTTPS; public contract reads and synthetic quote only",
+    "completeRecoveryQualified": false,
+    "signingEnabled": false,
+    "broadcastEnabled": false,
+    "endpoints": [
+      {
+        "url": "https://sepolia.drpc.org",
+        "error": "HTTP 400"
+      },
+      {
+        "url": "https://eth-sepolia.public.blastapi.io",
+        "error": "HTTP 403"
+      },
+      {
+        "url": "https://ethereum-sepolia-rpc.publicnode.com",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "count": 0,
+          "first": null
+        },
+        "pool": {
+          "count": 0,
+          "first": null
+        }
+      },
+      {
+        "url": "https://gateway.tenderly.co/public/sepolia",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "count": 1,
+          "first": {
+            "block": 10994877,
+            "blockHash": "0x977707aaa3decae0c3dca4b9684c63a105a9415d30ce5c9db06d1e64805ccfe9",
+            "transactionHash": "0x92c7d8939ae7ee4547688a133dfe8720e3454ea11d9808e7499f1344d8693844",
+            "index": "0"
+          }
+        },
+        "pool": {
+          "count": 18,
+          "first": {
+            "block": 10994884,
+            "blockHash": "0x9c513a1262822e52dd1a67f9779cc567190d9da4f9b140fad0a1136e26ce5ba4",
+            "transactionHash": "0x1f4b3315b779129e4e6fad6c3233c0a74ef4487774fd66acb8de68668a6a623e",
+            "index": "0"
+          }
+        }
+      },
+      {
+        "url": "https://endpoints.omniatech.io/v1/eth/sepolia/public",
+        "error": "HTTP 521"
+      },
+      {
+        "url": "https://ethereum-sepolia-public.nodies.app",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "count": 1,
+          "first": {
+            "block": 10994877,
+            "blockHash": "0x977707aaa3decae0c3dca4b9684c63a105a9415d30ce5c9db06d1e64805ccfe9",
+            "transactionHash": "0x92c7d8939ae7ee4547688a133dfe8720e3454ea11d9808e7499f1344d8693844",
+            "index": "0"
+          }
+        },
+        "pool": {
+          "error": "RPC_ERROR -32001"
+        }
+      },
+      {
+        "url": "https://api.zan.top/eth-sepolia",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "error": "RPC_ERROR invalid"
+        },
+        "pool": {
+          "error": "RPC_ERROR invalid"
+        }
+      },
+      {
+        "url": "https://public.1rpc.io/sepolia",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "count": 1,
+          "first": {
+            "block": 10994877,
+            "blockHash": "0x977707aaa3decae0c3dca4b9684c63a105a9415d30ce5c9db06d1e64805ccfe9",
+            "transactionHash": "0x92c7d8939ae7ee4547688a133dfe8720e3454ea11d9808e7499f1344d8693844",
+            "index": "0"
+          }
+        },
+        "pool": {
+          "error": "RPC_ERROR -32602"
+        }
+      },
+      {
+        "url": "https://ethereum-sepolia.therpc.io",
+        "error": "fetch failed"
+      },
+      {
+        "url": "https://0xrpc.io/sep",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "count": 1,
+          "first": {
+            "block": 10994877,
+            "blockHash": "0x977707aaa3decae0c3dca4b9684c63a105a9415d30ce5c9db06d1e64805ccfe9",
+            "transactionHash": "0x92c7d8939ae7ee4547688a133dfe8720e3454ea11d9808e7499f1344d8693844",
+            "index": "0"
+          }
+        },
+        "pool": {
+          "count": 18,
+          "first": {
+            "block": 10994884,
+            "blockHash": "0x9c513a1262822e52dd1a67f9779cc567190d9da4f9b140fad0a1136e26ce5ba4",
+            "transactionHash": "0x1f4b3315b779129e4e6fad6c3233c0a74ef4487774fd66acb8de68668a6a623e",
+            "index": "0"
+          }
+        }
+      },
+      {
+        "url": "https://eth-sepolia-testnet.api.pocket.network",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "error": "RPC_ERROR 4444"
+        },
+        "pool": {
+          "error": "RPC_ERROR 4444"
+        }
+      },
+      {
+        "url": "https://sepolia.rpc.sentio.xyz",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "count": 1,
+          "first": {
+            "block": 10994877,
+            "blockHash": "0x977707aaa3decae0c3dca4b9684c63a105a9415d30ce5c9db06d1e64805ccfe9",
+            "transactionHash": "0x92c7d8939ae7ee4547688a133dfe8720e3454ea11d9808e7499f1344d8693844",
+            "index": "0"
+          }
+        },
+        "pool": {
+          "count": 18,
+          "first": {
+            "block": 10994884,
+            "blockHash": "0x9c513a1262822e52dd1a67f9779cc567190d9da4f9b140fad0a1136e26ce5ba4",
+            "transactionHash": "0x1f4b3315b779129e4e6fad6c3233c0a74ef4487774fd66acb8de68668a6a623e",
+            "index": "0"
+          }
+        }
+      }
+    ],
+    "relayer": {
+      "detailsReadable": true,
+      "quote": {
+        "signer": "0x4ba5ff376865b370790a56276c63e7984dcff1f7",
+        "feeRecipient": "0x4ba5ff376865b370790a56276c63e7984dcff1f7",
+        "processor": "0x7430cc030d7eb8c83e76cd983996982c8c054204",
+        "remainingMs": 59876,
+        "expiration": 1790865128441,
+        "feeWei": "731130337300000",
+        "amountReceivedWei": "1000000000000000",
+        "amountSentWei": "1731130337300000",
+        "gasPriceWei": "1123277442",
+        "relayGasEstimate": "650000",
+        "signatureVerified": true
+      }
+    }
+  },
+  "tor": {
+    "observedAt": "2026-10-01T14:31:53.097Z",
+    "transport": {
+      "version": "Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>",
+      "binarySha256": "46c553c636afd8003f2a282a62ef7799a376c53f9d49ba5cb386b66ed9fb2f26",
+      "bootstrapMs": 3220,
+      "rpc": "https://ethereum-sepolia-rpc.publicnode.com",
+      "transport": "wallet HTTP/TLS over dedicated bundled Arti",
+      "circuitIsolation": "not independently observed in this run"
+    },
+    "completeRecoveryQualified": false,
+    "endpoints": [
+      {
+        "url": "https://gateway.tenderly.co/public/sepolia",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "count": 1,
+          "first": {
+            "block": 10994877,
+            "blockHash": "0x977707aaa3decae0c3dca4b9684c63a105a9415d30ce5c9db06d1e64805ccfe9",
+            "transactionHash": "0x92c7d8939ae7ee4547688a133dfe8720e3454ea11d9808e7499f1344d8693844",
+            "index": "0"
+          }
+        },
+        "pool": {
+          "count": 18,
+          "first": {
+            "block": 10994884,
+            "blockHash": "0x9c513a1262822e52dd1a67f9779cc567190d9da4f9b140fad0a1136e26ce5ba4",
+            "transactionHash": "0x1f4b3315b779129e4e6fad6c3233c0a74ef4487774fd66acb8de68668a6a623e",
+            "index": "0"
+          }
+        }
+      },
+      {
+        "url": "https://0xrpc.io/sep",
+        "error": "HTTP 404"
+      },
+      {
+        "url": "https://sepolia.rpc.sentio.xyz",
+        "chainId": "0xaa36a7",
+        "keystore": {
+          "count": 1,
+          "first": {
+            "block": 10994877,
+            "blockHash": "0x977707aaa3decae0c3dca4b9684c63a105a9415d30ce5c9db06d1e64805ccfe9",
+            "transactionHash": "0x92c7d8939ae7ee4547688a133dfe8720e3454ea11d9808e7499f1344d8693844",
+            "index": "0"
+          }
+        },
+        "pool": {
+          "count": 18,
+          "first": {
+            "block": 10994884,
+            "blockHash": "0x9c513a1262822e52dd1a67f9779cc567190d9da4f9b140fad0a1136e26ce5ba4",
+            "transactionHash": "0x1f4b3315b779129e4e6fad6c3233c0a74ef4487774fd66acb8de68668a6a623e",
+            "index": "0"
+          }
+        }
+      }
+    ],
+    "relayer": {
+      "detailsReadable": false,
+      "failure": {
+        "role": "relayer",
+        "label": "/v1/details",
+        "elapsedMs": 5575,
+        "passed": false,
+        "status": 403
+      }
+    }
+  }
+}

@@ -1,0 +1,716 @@
+{
+  "observedAt": "2026-10-01T15:00:44.353Z",
+  "mainRevision": "39ad0247eea30745758f02ccd61fe39955dbd83c",
+  "mergeCommit": "e68d120f",
+  "fundingRequired": true,
+  "liveTransactionSubmitted": false,
+  "chainStateVerified": false,
+  "transportPrivacyQualified": false,
+  "recovery": {
+    "passed": true,
+    "anchor": {
+      "number": "0xb46543",
+      "hash": "0x56731be54857dd7f56f46eba55c1a6793fa6112d1ef7574a5e94a7615995ee4e"
+    },
+    "trees": {
+      "pool": {
+        "fromBlock": 10932354,
+        "toBlock": 11822403,
+        "windows": 179,
+        "count": 7353,
+        "events": 4474,
+        "firstEventBlock": 10994884,
+        "elapsedMs": 89604,
+        "computed": "17641330102030776156584727015550466984384764448995052442475246396493552680712",
+        "lastEventRoot": "17641330102030776156584727015550466984384764448995052442475246396493552680712",
+        "contractRoot": "17641330102030776156584727015550466984384764448995052442475246396493552680712",
+        "matched": true
+      },
+      "keystore": {
+        "fromBlock": 10932354,
+        "toBlock": 11822403,
+        "windows": 179,
+        "count": 661,
+        "events": 662,
+        "firstEventBlock": 10994877,
+        "elapsedMs": 74854,
+        "computed": "4664133316942869272643265461333523224291328743599336522437152968189100387772",
+        "lastEventRoot": "4664133316942869272643265461333523224291328743599336522437152968189100387772",
+        "contractRoot": "4664133316942869272643265461333523224291328743599336522437152968189100387772",
+        "matched": true
+      }
+    },
+    "asp": {
+      "count": 15325,
+      "computed": "7825324801407785007117481218902057117886416442099062137448840284495946847230",
+      "finalizedRegistry": "10539789880758305059673360656873818722288069684205760661195194379738259205592",
+      "latestRegistry": "7825324801407785007117481218902057117886416442099062137448840284495946847230",
+      "latestBlock": "0xb46597",
+      "matched": true
+    },
+    "snapshot": {
+      "readable": false,
+      "failure": {
+        "role": "asp",
+        "label": "/11155111/public/event-snapshot/payload",
+        "elapsedMs": 18503,
+        "passed": false,
+        "code": "PRIVATE_RESPONSE_TOO_LARGE"
+      }
+    },
+    "sdkNoteRecoveryQualified": false
+  },
+  "crossProvider": {
+    "transport": "direct HTTPS public contract reads only",
+    "provider": "Tenderly",
+    "anchor": {
+      "number": "0xb46543",
+      "hash": "0x56731be54857dd7f56f46eba55c1a6793fa6112d1ef7574a5e94a7615995ee4e"
+    },
+    "chainStateVerified": false,
+    "blockHashMatched": true,
+    "poolMatched": true,
+    "keystoreMatched": true
+  },
+  "unfundedSession": {
+    "observedAt": "2026-10-01T15:00:44.353Z",
+    "owner": "0x6d7d00e435919ead9845f25e2c2f85b969d2c331",
+    "chainId": 11155111,
+    "rpc": "https://sepolia.rpc.sentio.xyz",
+    "signingEnabled": false,
+    "broadcastEnabled": false,
+    "chainStateVerified": false,
+    "protocolLifecycleQualified": false,
+    "transportPrivacyQualified": false,
+    "protocolRpcHosts": ["sepolia.rpc.sentio.xyz"],
+    "deployment": {
+      "chainId": 11155111,
+      "observedAt": "2026-10-01T15:00:45.621Z",
+      "chainStateVerified": false,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "fundingReady": false,
+      "checks": [
+        {
+          "name": "chain-and-finalized-anchor",
+          "passed": true
+        },
+        {
+          "name": "code-pool",
+          "passed": true
+        },
+        {
+          "name": "code-entrypoint",
+          "passed": true
+        },
+        {
+          "name": "code-keystore",
+          "passed": true
+        },
+        {
+          "name": "code-aspRegistry",
+          "passed": true
+        },
+        {
+          "name": "code-processor",
+          "passed": true
+        },
+        {
+          "name": "entrypoint-poolVault",
+          "passed": true
+        },
+        {
+          "name": "pool-keystore",
+          "passed": true
+        },
+        {
+          "name": "pool-aspRegistry",
+          "passed": true
+        },
+        {
+          "name": "processor-POOL",
+          "passed": true
+        },
+        {
+          "name": "processor-ENTRYPOINT",
+          "passed": true
+        },
+        {
+          "name": "processor-relay-interface",
+          "passed": true
+        },
+        {
+          "name": "keystore-root-liveness",
+          "passed": true
+        },
+        {
+          "name": "pool-unpaused",
+          "passed": true
+        },
+        {
+          "name": "native-asset",
+          "passed": true
+        },
+        {
+          "name": "verifier-deposit",
+          "passed": true
+        },
+        {
+          "name": "verifier-ragequit",
+          "passed": true
+        },
+        {
+          "name": "verifier-transact_1x1",
+          "passed": true
+        },
+        {
+          "name": "reviewed-deployment-pins",
+          "passed": true
+        },
+        {
+          "name": "asp-pool-feed",
+          "passed": true
+        },
+        {
+          "name": "asp-public-key",
+          "passed": true
+        },
+        {
+          "name": "asp-root-observations",
+          "passed": true
+        },
+        {
+          "name": "relayer-deployment",
+          "passed": true
+        },
+        {
+          "name": "signed-native-quote",
+          "passed": true
+        },
+        {
+          "name": "quote-allows-proving-and-handoff",
+          "passed": true
+        },
+        {
+          "name": "finalized-anchor-still-canonical",
+          "passed": true
+        }
+      ],
+      "contracts": {
+        "pool": {
+          "address": "0x09b94d3127019298757a6ceeb7911922085f7c01",
+          "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+          "codeBytes": 141,
+          "implementation": {
+            "address": "0x94515c7469eb8be37a5188f6ebe327bf8a9753a8",
+            "codeHash": "0xae64cb5a1f6764736ae1a89d229566923daf98b473e9508b800d67478c3514fe",
+            "codeBytes": 16710
+          }
+        },
+        "entrypoint": {
+          "address": "0xeb3e3961008952348445513e418ad6f43c23ca9a",
+          "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+          "codeBytes": 141,
+          "implementation": {
+            "address": "0x6370b20d1afdde4a6681f43a3124e863279c4454",
+            "codeHash": "0x1fc9ce48f59e4cb6b356022ce85a8fb9df73fbb8150eb8b4452195ccf3a343c5",
+            "codeBytes": 6893
+          }
+        },
+        "keystore": {
+          "address": "0x6d264acb9c3a7a3105c29470afe2f5f1ec203c73",
+          "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+          "codeBytes": 141,
+          "implementation": {
+            "address": "0x2aa77fa12ec391df772157e223f6b1d9862c20ad",
+            "codeHash": "0x27d5319a12d695aa5a50d4bcbfc1f388c90afdff1b475ee6012a1a48f87640cf",
+            "codeBytes": 6587
+          }
+        },
+        "aspRegistry": {
+          "address": "0x35d29efdcf067599ab4a53cf40229477f0b1ca9c",
+          "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+          "codeBytes": 141,
+          "implementation": {
+            "address": "0x3e98ed1a80d16a92d42314809b5e11a612fb98d2",
+            "codeHash": "0x85c5553c7aefbef2d9b5607aa41b4eff33fa1a995c2a8a19e7ff904704c49bc2",
+            "codeBytes": 4664
+          }
+        },
+        "processor": {
+          "address": "0x7430cc030d7eb8c83e76cd983996982c8c054204",
+          "codeHash": "0x96f34d8e312c3e60b2fdb6c4d7e6ed7bf811de6712ff1bb3c5600cf683f0966a",
+          "codeBytes": 6697
+        }
+      },
+      "verifiers": {
+        "deposit": {
+          "address": "0x6b780f56aa1007abd19980cef5b8a68a74f34d06",
+          "codeHash": "0xe658d2e96dcf785acf351f888dab179628e9afb6c33a949de580753e30e8ed77",
+          "codeBytes": 1654
+        },
+        "ragequit": {
+          "address": "0x03b81c5620a5a736cc7084337bd0ebe272ff6f0a",
+          "codeHash": "0xabf1d6b0b71704ded1ae8e2fd9784c744e7a0f561a70a76a99e075b84afd4a4a",
+          "codeBytes": 2099
+        },
+        "transact_1x1": {
+          "address": "0x88fe44b518a0887dcb7518af91dd0c7d85a53c73",
+          "codeHash": "0xbdbe6c6b6a7067f2bd881593ab8e497c37a4bf0be5995b82993e7812d1068c87",
+          "codeBytes": 2261,
+          "selector": "0xc9219a7a"
+        }
+      },
+      "anchor": {
+        "number": "0xb465a2",
+        "hash": "0x7aa13df3a5d7b954819ff5a8e8d86cfe0547da2566236e90b0a4bc86b350b2ad",
+        "timestamp": "0x6abe71e0"
+      },
+      "processorInterface": {
+        "maxBatch": 10,
+        "announcer": {
+          "address": "0x55649e01b5df198d18d95b5cc5051630cfd45564",
+          "codeHash": "0x80ed491c57edc6d92b5a85cc7db2dfeb40bbab52476b5b09b9b21c5c907b77c4",
+          "codeBytes": 709
+        },
+        "relaySelector": "0xace97342"
+      },
+      "keystoreRootLivenessSeconds": 1200,
+      "nativeAsset": {
+        "enabled": true,
+        "minAmountWei": "1",
+        "vettingFeeBPS": "0",
+        "maxRelayFeeWei": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+      },
+      "aspPool": {
+        "poolId": "4",
+        "chainId": "11155111",
+        "entrypoint": "0xeb3e3961008952348445513e418ad6f43c23ca9a",
+        "poolVault": "0x09b94d3127019298757a6ceeb7911922085f7c01",
+        "fromBlock": 10994884
+      },
+      "aspCacheTimestamp": "2026-10-01T15:00:59.241Z",
+      "aspRoot": {
+        "service": "5785862073174582219107752490546179919501886596481206175690798127393296827613",
+        "finalizedRegistry": "21328009571829199257115000014777120540385403229445844634226969065893917827821",
+        "latestRegistry": "5785862073174582219107752490546179919501886596481206175690798127393296827613",
+        "serviceMatchesLatest": true,
+        "leavesQualified": false
+      },
+      "relayer": {
+        "processor": "0x7430cc030d7eb8C83E76cD983996982C8C054204",
+        "gasPayer": null,
+        "relaySwaps": null,
+        "processors": null
+      },
+      "quote": {
+        "signer": "0x4ba5ff376865b370790a56276c63e7984dcff1f7",
+        "feeRecipient": "0x4ba5ff376865b370790a56276c63e7984dcff1f7",
+        "processor": "0x7430cc030d7eb8c83e76cd983996982c8c054204",
+        "remainingMs": 59917,
+        "expiration": 1790866921651,
+        "feeWei": "697273640400000",
+        "amountReceivedWei": "1000000000000000",
+        "amountSentWei": "1697273640400000",
+        "gasPriceWei": "1071190216",
+        "relayGasEstimate": "650000",
+        "signatureVerified": true,
+        "requestMs": 1053
+      },
+      "observationsConsistent": true
+    },
+    "descriptor": {
+      "chainId": 11155111,
+      "accountIndex": 0,
+      "experimental": true,
+      "verified": false,
+      "relayerTransport": "direct",
+      "relayerTorProtected": false,
+      "identityMayBeIpLinked": true,
+      "candidate": {
+        "kohaku": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+        "sdk": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+        "compatibility": "freedom-controlled-session-v1"
+      },
+      "proving": true,
+      "exitProving": true,
+      "withdrawalProving": true,
+      "broadcasting": "reviewed-public-and-single-asset-withdrawal"
+    },
+    "registration": {
+      "nullifyingKeyHash": false,
+      "viewingKey": false,
+      "registeredViewingKey": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "ownerRpcHosts": ["sepolia.rpc.sentio.xyz"],
+    "simulations": [
+      {
+        "kind": "ppv2-register-auth",
+        "returnedEmpty": true
+      },
+      {
+        "kind": "ppv2-register-viewing",
+        "returnedEmpty": true
+      }
+    ],
+    "noteCount": 0,
+    "assetCount": 0,
+    "balanceWei": "0x0",
+    "restartWithinProcess": {
+      "sameRegistration": true,
+      "sameNoteCount": true
+    },
+    "passed": true,
+    "profileBinding": "f7848025da2d4e3fa0fad62be85b84a584dbc7acea9e112d89d784ce16560771",
+    "funding": {
+      "chainId": 11155111,
+      "address": "0x6d7d00e435919ead9845f25e2c2f85b969d2c331",
+      "requestedEther": "0.05",
+      "harnessOnly": true,
+      "runtimeSha256": "ce18c67a40fa0c72593bb1e851a995951afe7371b0ddd88dfee16d1ffa8e2cb7",
+      "profileBinding": "f7848025da2d4e3fa0fad62be85b84a584dbc7acea9e112d89d784ce16560771"
+    }
+  },
+  "freshProcessRestart": {
+    "previousRunPassed": true,
+    "sameOwner": true,
+    "sameEmptyNotes": true,
+    "sameEmptyBalance": true
+  },
+  "review": {
+    "agent": "Claude, existing workspace reviewer",
+    "result": "Claude found no remaining code blocker after controller fixes and fixture review. Requested final-file seven-case Electron rerun passed; ready to request Sepolia test ETH."
+  },
+  "scope": "Real unfunded Kohaku session and public tree reconstruction; funded lifecycle still pending",
+  "validation": {
+    "unit": {
+      "passed": 6654,
+      "skipped": 33,
+      "failed": 0,
+      "passedSuites": 316,
+      "combinedExitCode": 1,
+      "combinedRunnerIssue": "Late websocket-mqtt logging after unchanged OpenLV integration teardown; no failed assertions",
+      "splitRuns": [
+        {
+          "passed": 6648,
+          "skipped": 33,
+          "suites": 315,
+          "exitCode": 0
+        },
+        {
+          "passed": 6,
+          "suites": 1,
+          "exitCode": 0,
+          "scope": "OpenLV integration isolated"
+        }
+      ]
+    },
+    "lint": "passed",
+    "sourceElectron": {
+      "controlledLifecycleCases": 6,
+      "directModeFixtureCases": 2,
+      "additionalWalletCases": 5,
+      "directModeRoleAssertions": "passed on targeted rerun",
+      "staleWorkerFixture": "fixed required validateResult; passed on targeted rerun",
+      "boundedControllerLifecycle": {
+        "passed": true,
+        "syntheticPublicSends": 5,
+        "syntheticRelaySends": 1,
+        "allJournalsResolved": true,
+        "liveTransactions": false
+      },
+      "finalWithdrawalSpec": {
+        "passed": 7,
+        "failed": 0,
+        "exitCode": 0,
+        "finalFile": true
+      }
+    },
+    "packagedQualification": "not repeated for this change",
+    "nodes": {
+      "ant": "0.5.45",
+      "ipfs": "0.4.3",
+      "radicle": "0.7.1",
+      "myotis": "0.1.12 ABI32",
+      "arti": "2.6.0 rebuilt with static-sqlite and no non-system macOS dylibs",
+      "artiSha256": "69cc252f9062a1dd0f972e18b02e536f4f6587dc24d01845deab42aaee0c1c7e"
+    },
+    "binaryCheck": "passed"
+  },
+  "controllerFundingCheck": {
+    "observedAt": "2026-10-01T15:17:03.143Z",
+    "owner": "0x6d7d00e435919ead9845f25e2c2f85b969d2c331",
+    "chainId": 11155111,
+    "rpc": "https://sepolia.rpc.sentio.xyz",
+    "signingEnabled": false,
+    "broadcastEnabled": false,
+    "chainStateVerified": false,
+    "protocolLifecycleQualified": false,
+    "transportPrivacyQualified": false,
+    "protocolRpcHosts": ["sepolia.rpc.sentio.xyz"],
+    "deployment": {
+      "chainId": 11155111,
+      "observedAt": "2026-10-01T15:17:04.457Z",
+      "chainStateVerified": false,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "fundingReady": false,
+      "checks": [
+        {
+          "name": "chain-and-finalized-anchor",
+          "passed": true
+        },
+        {
+          "name": "code-pool",
+          "passed": true
+        },
+        {
+          "name": "code-entrypoint",
+          "passed": true
+        },
+        {
+          "name": "code-keystore",
+          "passed": true
+        },
+        {
+          "name": "code-aspRegistry",
+          "passed": true
+        },
+        {
+          "name": "code-processor",
+          "passed": true
+        },
+        {
+          "name": "entrypoint-poolVault",
+          "passed": true
+        },
+        {
+          "name": "pool-keystore",
+          "passed": true
+        },
+        {
+          "name": "pool-aspRegistry",
+          "passed": true
+        },
+        {
+          "name": "processor-POOL",
+          "passed": true
+        },
+        {
+          "name": "processor-ENTRYPOINT",
+          "passed": true
+        },
+        {
+          "name": "processor-relay-interface",
+          "passed": true
+        },
+        {
+          "name": "keystore-root-liveness",
+          "passed": true
+        },
+        {
+          "name": "pool-unpaused",
+          "passed": true
+        },
+        {
+          "name": "native-asset",
+          "passed": true
+        },
+        {
+          "name": "verifier-deposit",
+          "passed": true
+        },
+        {
+          "name": "verifier-ragequit",
+          "passed": true
+        },
+        {
+          "name": "verifier-transact_1x1",
+          "passed": true
+        },
+        {
+          "name": "reviewed-deployment-pins",
+          "passed": true
+        },
+        {
+          "name": "asp-pool-feed",
+          "passed": true
+        },
+        {
+          "name": "asp-public-key",
+          "passed": true
+        },
+        {
+          "name": "asp-root-observations",
+          "passed": true
+        },
+        {
+          "name": "relayer-deployment",
+          "passed": true
+        },
+        {
+          "name": "signed-native-quote",
+          "passed": true
+        },
+        {
+          "name": "quote-allows-proving-and-handoff",
+          "passed": true
+        },
+        {
+          "name": "finalized-anchor-still-canonical",
+          "passed": true
+        }
+      ],
+      "contracts": {
+        "pool": {
+          "address": "0x09b94d3127019298757a6ceeb7911922085f7c01",
+          "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+          "codeBytes": 141,
+          "implementation": {
+            "address": "0x94515c7469eb8be37a5188f6ebe327bf8a9753a8",
+            "codeHash": "0xae64cb5a1f6764736ae1a89d229566923daf98b473e9508b800d67478c3514fe",
+            "codeBytes": 16710
+          }
+        },
+        "entrypoint": {
+          "address": "0xeb3e3961008952348445513e418ad6f43c23ca9a",
+          "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+          "codeBytes": 141,
+          "implementation": {
+            "address": "0x6370b20d1afdde4a6681f43a3124e863279c4454",
+            "codeHash": "0x1fc9ce48f59e4cb6b356022ce85a8fb9df73fbb8150eb8b4452195ccf3a343c5",
+            "codeBytes": 6893
+          }
+        },
+        "keystore": {
+          "address": "0x6d264acb9c3a7a3105c29470afe2f5f1ec203c73",
+          "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+          "codeBytes": 141,
+          "implementation": {
+            "address": "0x2aa77fa12ec391df772157e223f6b1d9862c20ad",
+            "codeHash": "0x27d5319a12d695aa5a50d4bcbfc1f388c90afdff1b475ee6012a1a48f87640cf",
+            "codeBytes": 6587
+          }
+        },
+        "aspRegistry": {
+          "address": "0x35d29efdcf067599ab4a53cf40229477f0b1ca9c",
+          "codeHash": "0x734d250afdad5c1a4a510abb21380a2ec435c89ffc73e805a8a8d74c5cee7568",
+          "codeBytes": 141,
+          "implementation": {
+            "address": "0x3e98ed1a80d16a92d42314809b5e11a612fb98d2",
+            "codeHash": "0x85c5553c7aefbef2d9b5607aa41b4eff33fa1a995c2a8a19e7ff904704c49bc2",
+            "codeBytes": 4664
+          }
+        },
+        "processor": {
+          "address": "0x7430cc030d7eb8c83e76cd983996982c8c054204",
+          "codeHash": "0x96f34d8e312c3e60b2fdb6c4d7e6ed7bf811de6712ff1bb3c5600cf683f0966a",
+          "codeBytes": 6697
+        }
+      },
+      "verifiers": {
+        "deposit": {
+          "address": "0x6b780f56aa1007abd19980cef5b8a68a74f34d06",
+          "codeHash": "0xe658d2e96dcf785acf351f888dab179628e9afb6c33a949de580753e30e8ed77",
+          "codeBytes": 1654
+        },
+        "ragequit": {
+          "address": "0x03b81c5620a5a736cc7084337bd0ebe272ff6f0a",
+          "codeHash": "0xabf1d6b0b71704ded1ae8e2fd9784c744e7a0f561a70a76a99e075b84afd4a4a",
+          "codeBytes": 2099
+        },
+        "transact_1x1": {
+          "address": "0x88fe44b518a0887dcb7518af91dd0c7d85a53c73",
+          "codeHash": "0xbdbe6c6b6a7067f2bd881593ab8e497c37a4bf0be5995b82993e7812d1068c87",
+          "codeBytes": 2261,
+          "selector": "0xc9219a7a"
+        }
+      },
+      "anchor": {
+        "number": "0xb46601",
+        "hash": "0x7b071e2270776e7bf30233cbb580cc515e25174aae25430e3e11731759f121fd",
+        "timestamp": "0x6abe7660"
+      },
+      "processorInterface": {
+        "maxBatch": 10,
+        "announcer": {
+          "address": "0x55649e01b5df198d18d95b5cc5051630cfd45564",
+          "codeHash": "0x80ed491c57edc6d92b5a85cc7db2dfeb40bbab52476b5b09b9b21c5c907b77c4",
+          "codeBytes": 709
+        },
+        "relaySelector": "0xace97342"
+      },
+      "keystoreRootLivenessSeconds": 1200,
+      "nativeAsset": {
+        "enabled": true,
+        "minAmountWei": "1",
+        "vettingFeeBPS": "0",
+        "maxRelayFeeWei": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+      },
+      "aspPool": {
+        "poolId": "4",
+        "chainId": "11155111",
+        "entrypoint": "0xeb3e3961008952348445513e418ad6f43c23ca9a",
+        "poolVault": "0x09b94d3127019298757a6ceeb7911922085f7c01",
+        "fromBlock": 10994884
+      },
+      "aspCacheTimestamp": "2026-10-01T15:17:10.589Z",
+      "aspRoot": {
+        "service": "5785862073174582219107752490546179919501886596481206175690798127393296827613",
+        "finalizedRegistry": "5785862073174582219107752490546179919501886596481206175690798127393296827613",
+        "latestRegistry": "5785862073174582219107752490546179919501886596481206175690798127393296827613",
+        "serviceMatchesLatest": true,
+        "leavesQualified": false
+      },
+      "relayer": {
+        "processor": "0x7430cc030d7eb8C83E76cD983996982C8C054204",
+        "gasPayer": null,
+        "relaySwaps": null,
+        "processors": null
+      },
+      "quote": {
+        "signer": "0x4ba5ff376865b370790a56276c63e7984dcff1f7",
+        "feeRecipient": "0x4ba5ff376865b370790a56276c63e7984dcff1f7",
+        "processor": "0x7430cc030d7eb8c83e76cd983996982c8c054204",
+        "remainingMs": 59919,
+        "expiration": 1790867898803,
+        "feeWei": "679107931800000",
+        "amountReceivedWei": "1000000000000000",
+        "amountSentWei": "1679107931800000",
+        "gasPriceWei": "1043242972",
+        "relayGasEstimate": "650000",
+        "signatureVerified": true,
+        "requestMs": 517
+      },
+      "observationsConsistent": true
+    },
+    "descriptor": {
+      "chainId": 11155111,
+      "accountIndex": 0,
+      "experimental": true,
+      "verified": false,
+      "relayerTransport": "direct",
+      "relayerTorProtected": false,
+      "identityMayBeIpLinked": true,
+      "candidate": {
+        "kohaku": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+        "sdk": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+        "compatibility": "freedom-controlled-session-v1"
+      },
+      "proving": true,
+      "exitProving": true,
+      "withdrawalProving": true,
+      "broadcasting": "reviewed-public-and-single-asset-withdrawal"
+    },
+    "explicitAction": "register-auth",
+    "checkOnly": true,
+    "step": {
+      "needsFunding": true,
+      "chainId": 11155111,
+      "address": "0x6d7d00e435919ead9845f25e2c2f85b969d2c331",
+      "minimumForStepWei": "3000000000000000",
+      "action": "register-auth"
+    },
+    "passed": true
+  }
+}

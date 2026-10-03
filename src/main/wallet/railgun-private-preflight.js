@@ -1,0 +1,255 @@
+/** Main-only anchored private-spend prerequisites. Input binding is data, not
+ * ownership authority. Querying an unspent nullifier discloses it to the RPC;
+ * callers must use only the explicitly selected operation input and transport.
+ */
+const { Interface } = require('ethers');
+const { getPrivacyContext, createPrivacyScope } = require('../networks/privacy-context');
+const { createPrivateRpc } = require('../networks/private-rpc');
+const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
+const {
+  createRailgunShieldPreflight,
+  assertRailgunShieldPreflight,
+  MAX_AGE_MS,
+} = require('./railgun-shield-preflight');
+const { loadRailgunArtifacts, assertRailgunArtifactVerifier } = require('./railgun-artifacts');
+const pins = require('./railgun-shield-pins.json');
+const abi = new Interface([
+  'function rootHistory(uint256,bytes32) view returns (bool)',
+  'function nullifiers(uint256,bytes32) view returns (bool)',
+  'function unshieldFee() view returns (uint120)',
+  'function getVerificationKey(uint256,uint256) view returns ((string artifactsIPFSHash,(uint256 x,uint256 y) alpha1,(uint256[2] x,uint256[2] y) beta2,(uint256[2] x,uint256[2] y) gamma2,(uint256[2] x,uint256[2] y) delta2,(uint256 x,uint256 y)[] ic))',
+]);
+// Matched by the October 3 Sepolia deployment qualification. A changed fee
+// requires a reviewed policy change, never silent acceptance during signing.
+const UNSHIELD_FEE_BPS = 25;
+const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+const sources = new WeakMap();
+const fail = (reason = 'refused') =>
+  Object.assign(new Error('Railgun private preflight unavailable'), {
+    code: 'RAILGUN_PRIVATE_PREFLIGHT_REFUSED',
+    reason,
+  });
+const check = (v, reason) => {
+  if (!v) throw fail(reason);
+};
+const hash = (v) => typeof v === 'string' && /^0x[0-9a-f]{64}$/.test(v);
+const quantity = (v) => typeof v === 'string' && /^0x(?:0|[1-9a-f][0-9a-f]*)$/.test(v);
+function selection(input) {
+  check(
+    input &&
+      !Array.isArray(input) &&
+      Object.keys(input).sort().join(',') ===
+        'checkpointHash,merkleRoot,minimumBlock,nullifier,tree'
+  );
+  check(Number.isSafeInteger(input.tree) && input.tree >= 0 && input.tree <= 65535);
+  check(Number.isSafeInteger(input.minimumBlock) && input.minimumBlock >= 0);
+  check(typeof input.checkpointHash === 'string' && /^[0-9a-f]{64}$/.test(input.checkpointHash));
+  for (const key of ['merkleRoot', 'nullifier'])
+    check(hash(input[key]) && BigInt(input[key]) < FIELD);
+  return Object.freeze({
+    tree: input.tree,
+    merkleRoot: input.merkleRoot,
+    nullifier: input.nullifier,
+    checkpointHash: input.checkpointHash,
+    minimumBlock: input.minimumBlock,
+  });
+}
+function createRailgunPrivatePreflight({ enrollment, input, artifactDirectory }) {
+  check(isRailgunAccountEnrollment(enrollment) && !enrollment.signal.aborted);
+  const selected = selection(input);
+  check(typeof artifactDirectory === 'string' && require('path').isAbsolute(artifactDirectory));
+  const parent = enrollment.getContext('protocol-rpc', 'private-preflight');
+  const context = getPrivacyContext(parent);
+  const scope = createPrivacyScope({
+    profileId: context.profileId,
+    signal: enrollment.signal,
+    isCurrent: () => {
+      getPrivacyContext(parent);
+      return true;
+    },
+  });
+  const handle = scope.getContext(context.subject);
+  let deployment,
+    rpc,
+    closed = false,
+    busy = false,
+    sequence = 0;
+  const receipts = new WeakMap();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    rpc?.signal.removeEventListener('abort', close);
+    deployment?.signal.removeEventListener('abort', close);
+    deployment?.close();
+    scope.close();
+    rpc?.release();
+  };
+  try {
+    deployment = createRailgunShieldPreflight(enrollment);
+    rpc = createPrivateRpc(handle, 'protocol-rpc');
+    rpc.signal.addEventListener('abort', close, { once: true });
+    deployment.signal.addEventListener('abort', close, { once: true });
+    check(!rpc.signal.aborted && !deployment.signal.aborted, 'inactive');
+  } catch (error) {
+    close();
+    throw error;
+  }
+  const active = () => {
+    check(!closed && !enrollment.signal.aborted && !deployment.signal.aborted, 'inactive');
+    getPrivacyContext(handle);
+    rpc.assertActive();
+  };
+  async function acquire() {
+    active();
+    check(!busy);
+    busy = true;
+    const serial = ++sequence,
+      started = performance.now();
+    let artifacts,
+      step = 'deployment';
+    const fresh = () => {
+      const now = performance.now();
+      check(now >= started && now - started < MAX_AGE_MS, 'stale');
+    };
+    try {
+      const base = await deployment.acquire();
+      const observation = assertRailgunShieldPreflight(deployment, base.receipt, enrollment);
+      active();
+      fresh();
+      const anchor = observation.anchor;
+      check(BigInt(anchor.number) >= BigInt(selected.minimumBlock), 'stale');
+      const block = { blockHash: anchor.hash, requireCanonical: true };
+      step = 'artifacts';
+      artifacts = await loadRailgunArtifacts({
+        handle: scope.getContext({ ...context.subject, role: 'artifacts' }),
+        directory: artifactDirectory,
+        variant: '01x01',
+      });
+      const read = async (method, params, validate) => {
+        active();
+        fresh();
+        assertRailgunShieldPreflight(deployment, base.receipt, enrollment);
+        let response;
+        try {
+          response = await rpc.request(method, params, validate);
+        } catch (error) {
+          active();
+          throw Object.assign(fail('rpc'), {
+            causeCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code ?? '')
+              ? error.code
+              : 'UNCLASSIFIED',
+          });
+        }
+        active();
+        fresh();
+        check(validate(response.result), 'rpc');
+        return response.result;
+      };
+      const getter = async (name, args, expected) => {
+        step = name;
+        const encoded = await read(
+          'eth_call',
+          [{ to: pins.proxy, data: abi.encodeFunctionData(name, args) }, block],
+          hash
+        );
+        const value = abi.decodeFunctionResult(name, encoded);
+        check(abi.encodeFunctionResult(name, value).toLowerCase() === encoded, 'mismatch');
+        check(value[0] === expected, 'mismatch');
+      };
+      await getter('rootHistory', [selected.tree, selected.merkleRoot], true);
+      await getter('unshieldFee', [], BigInt(UNSHIELD_FEE_BPS));
+      step = 'verifier';
+      const encoded = await read(
+        'eth_call',
+        [{ to: pins.proxy, data: abi.encodeFunctionData('getVerificationKey', [1, 1]) }, block],
+        (v) => typeof v === 'string' && /^0x(?:[0-9a-f]{2})+$/.test(v) && v.length <= 32768
+      );
+      try {
+        assertRailgunArtifactVerifier(artifacts, encoded);
+      } catch {
+        active();
+        throw fail('mismatch');
+      }
+      // Expose the selected nullifier only after deployment, fee, root and
+      // verifier checks succeed; it can link this query to a later spend.
+      await getter('nullifiers', [selected.tree, selected.nullifier], false);
+      step = 'anchor-recheck';
+      const reread = await read(
+        'eth_getBlockByNumber',
+        [anchor.number, false],
+        (v) => v && quantity(v.number) && hash(v.hash) && quantity(v.timestamp)
+      );
+      check(
+        reread.number === anchor.number &&
+          reread.hash === anchor.hash &&
+          reread.timestamp === anchor.timestamp,
+        'stale'
+      );
+      active();
+      fresh();
+      assertRailgunShieldPreflight(deployment, base.receipt, enrollment);
+      const value = Object.freeze({
+        anchor,
+        input: selected,
+        deploymentMatched: true,
+        verifierMatched: true,
+        rootAccepted: true,
+        inputUnspent: true,
+        unshieldFeeBps: UNSHIELD_FEE_BPS,
+        trust: 'unverified-rpc',
+        ownershipVerified: false,
+        signingEnabled: false,
+      });
+      const receipt = Object.freeze({});
+      receipts.set(receipt, { serial, started, base: base.receipt, value });
+      return Object.freeze({ receipt, observation: value });
+    } catch (error) {
+      close();
+      const reason = ['rpc', 'stale', 'inactive', 'mismatch'].includes(error.reason)
+        ? error.reason
+        : 'refused';
+      throw Object.assign(fail(reason), {
+        step,
+        ...(reason === 'rpc'
+          ? {
+              causeCode: /^[A-Z][A-Z0-9_]{0,79}$/.test(error.causeCode ?? '')
+                ? error.causeCode
+                : 'UNCLASSIFIED',
+            }
+          : {}),
+      });
+    } finally {
+      artifacts?.wasm.fill(0);
+      artifacts?.zkey.fill(0);
+      busy = false;
+    }
+  }
+  const assertResult = (receipt, minimumRemainingMs = 0) => {
+    active();
+    check(
+      Number.isSafeInteger(minimumRemainingMs) &&
+        minimumRemainingMs >= 0 &&
+        minimumRemainingMs < MAX_AGE_MS
+    );
+    const entry = receipts.get(receipt),
+      now = performance.now();
+    check(
+      entry &&
+        !busy &&
+        entry.serial === sequence &&
+        now >= entry.started &&
+        now - entry.started + minimumRemainingMs < MAX_AGE_MS,
+      'stale'
+    );
+    assertRailgunShieldPreflight(deployment, entry.base, enrollment);
+    return entry.value;
+  };
+  const source = Object.freeze({ acquire, assertResult, close, signal: scope.signal });
+  sources.set(source, enrollment);
+  return source;
+}
+function assertRailgunPrivatePreflight(source, receipt, enrollment, minimumRemainingMs = 0) {
+  check(isRailgunAccountEnrollment(enrollment) && sources.get(source) === enrollment);
+  return source.assertResult(receipt, minimumRemainingMs);
+}
+module.exports = { createRailgunPrivatePreflight, assertRailgunPrivatePreflight, MAX_AGE_MS };

@@ -19,6 +19,7 @@ const path = require('path');
 const execFileAsync = promisify(execFile);
 const fs = require('fs');
 const net = require('net');
+const { setMaxListeners } = require('events');
 const IPC = require('../shared/ipc-channels');
 const { normalizeSocksEndpoint, parseSocksEndpoint } = require('../shared/socks-endpoint');
 const { success, failure } = require('./ipc-contract');
@@ -29,9 +30,7 @@ const {
   getReservedProfilePorts,
   updateActiveProfileNodeConfig,
 } = require('./profile-resolver');
-const {
-  promptForDefaultExternalCandidateProtocol,
-} = require('./profile-external-candidates');
+const { promptForDefaultExternalCandidateProtocol } = require('./profile-external-candidates');
 const { probeSocks5Endpoint, probeTcpEndpoint } = require('./socks-probe');
 const { applyOnionProxy, clearOnionProxy } = require('./tor-proxy');
 const {
@@ -84,6 +83,20 @@ let artiOutputBuffer = '';
 // something (external-candidate prompt, port probe, SOCKS probe) can tell that
 // it has been superseded and must not spawn/commit anything.
 let startGeneration = 0;
+let walletEndpoint = null;
+let walletEndpointController = null;
+
+function revokeWalletEndpoint() {
+  walletEndpoint = null;
+  walletEndpointController?.abort();
+  walletEndpointController = null;
+}
+
+// Main-only capability: external SOCKS servers have not been qualified for
+// Arti's isolation semantics. Never infer wallet readiness from an open port.
+function getWalletSocksEndpoint() {
+  return walletEndpoint;
+}
 
 /**
  * Resolve the bundled arti binary path. Dev layout mirrors radicle:
@@ -127,10 +140,12 @@ function getProfileTorConfig() {
 }
 
 function getPromptWindowForEvent(event) {
-  return BrowserWindow.fromWebContents?.(event?.sender)
-    || BrowserWindow.getFocusedWindow?.()
-    || BrowserWindow.getAllWindows?.()[0]
-    || null;
+  return (
+    BrowserWindow.fromWebContents?.(event?.sender) ||
+    BrowserWindow.getFocusedWindow?.() ||
+    BrowserWindow.getAllWindows?.()[0] ||
+    null
+  );
 }
 
 function isManagedTorConfig(config = getProfileTorConfig()) {
@@ -146,9 +161,12 @@ function isDisabledTorConfig(config = getProfileTorConfig()) {
 }
 
 function hasUnknownTorMode(config) {
-  return Boolean(config?.mode) && !isManagedTorConfig(config)
-    && !isExternalTorConfig(config)
-    && !isDisabledTorConfig(config);
+  return (
+    Boolean(config?.mode) &&
+    !isManagedTorConfig(config) &&
+    !isExternalTorConfig(config) &&
+    !isDisabledTorConfig(config)
+  );
 }
 
 function getConfiguredTorSocksPort(config = getProfileTorConfig()) {
@@ -216,6 +234,7 @@ function writeArtiConfig(dataDir, socksPort) {
  * @returns {() => boolean}
  */
 function beginStartAttempt() {
+  revokeWalletEndpoint();
   startGeneration += 1;
   const generation = startGeneration;
   return () => {
@@ -226,6 +245,7 @@ function beginStartAttempt() {
 }
 
 function updateState(newState, error = null) {
+  if (newState !== STATUS.RUNNING) revokeWalletEndpoint();
   log.info('[Tor] State change:', currentState, '->', newState, error ? `(error: ${error})` : '');
   currentState = newState;
   lastError = error;
@@ -261,7 +281,11 @@ function isPortOpen(port, host = '127.0.0.1') {
 }
 
 /** Find an available port starting from the default. */
-async function findAvailablePort(defaultPort, maxAttempts = DEFAULTS.tor.fallbackRange, options = {}) {
+async function findAvailablePort(
+  defaultPort,
+  maxAttempts = DEFAULTS.tor.fallbackRange,
+  options = {}
+) {
   const reservedPorts = options.reservedPorts || new Set();
   for (let i = 0; i < maxAttempts; i++) {
     const port = defaultPort + i;
@@ -376,6 +400,16 @@ async function applyTorProxy(mode, statusMessage, superseded = () => false) {
   });
   setStatusMessage('tor', statusMessage);
   updateState(STATUS.RUNNING);
+  if (mode === MODE.BUNDLED && artiProcess && artiBootstrapped) {
+    revokeWalletEndpoint();
+    walletEndpointController = new AbortController();
+    setMaxListeners(64, walletEndpointController.signal);
+    walletEndpoint = Object.freeze({
+      ...parseSocksEndpoint(currentSocksEndpoint),
+      generation: startGeneration,
+      signal: walletEndpointController.signal,
+    });
+  }
   startHealthCheck(mode);
   return true;
 }
@@ -652,10 +686,10 @@ async function startTor(opts = {}) {
   const maxAttempts = 120; // up to ~120s for first bootstrap
   const pollInterval = setInterval(async () => {
     if (
-      superseded()
-      || currentState === STATUS.STOPPED
-      || currentState === STATUS.ERROR
-      || !artiProcess
+      superseded() ||
+      currentState === STATUS.STOPPED ||
+      currentState === STATUS.ERROR ||
+      !artiProcess
     ) {
       clearInterval(pollInterval);
       return;
@@ -688,6 +722,7 @@ async function startTor(opts = {}) {
  *   this: only a deliberate stop should make `.onion` resolvable without Tor.
  */
 function stopTor(options = {}) {
+  revokeWalletEndpoint();
   const preserveOnionRouting = options?.preserveOnionRouting === true;
   return new Promise((resolve) => {
     pendingStart = false;
@@ -795,6 +830,7 @@ module.exports = {
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
   getActivePort,
+  getWalletSocksEndpoint,
   getArtiVersion,
   getArtiBinaryPath,
   getTorDataPath,

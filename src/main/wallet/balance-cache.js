@@ -151,6 +151,11 @@ function clearCache(address) {
     cache.balances = {};
   }
 
+  if (address) {
+    for (const key of Object.keys(cache.privateBalances || {})) {
+      if (JSON.parse(key)[1] === address.toLowerCase()) delete cache.privateBalances[key];
+    }
+  } else cache.privateBalances = {};
   saveCache();
 }
 
@@ -165,8 +170,25 @@ function getCacheAge(address) {
   return Date.now() - cached.updatedAt;
 }
 
+// Separate records: ordinary cache merges must never relabel private observations.
+// The active app userData path is profile-scoped; the hashed profile key also
+// prevents reuse if a snapshot is copied to another profile.
+function getPrivateBalances(profileId, address) {
+  loadCache();
+  return cache.privateBalances?.[JSON.stringify([profileId, address.toLowerCase()])] || null;
+}
+
+function setPrivateBalances(profileId, address, balances) {
+  loadCache();
+  cache.privateBalances ||= {};
+  cache.privateBalances[JSON.stringify([profileId, address.toLowerCase()])] = balances;
+  saveCache();
+}
+
 module.exports = {
   loadCache,
+  getPrivateBalances,
+  setPrivateBalances,
   getCachedBalances,
   setCachedBalances,
   getBalancesFromCache,

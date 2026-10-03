@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 1,
+  "sdk": {
+    "startTime": "2026-10-01T23:20:41.462Z",
+    "duration": 114579.482,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "cases": [
+    {
+      "name": "PPv2 native full-value withdrawal and zero-change refusal",
+      "stages": {
+        "initial": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "withdrawal": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "checkpoint": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "secondSpend": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        }
+      }
+    },
+    {
+      "name": "PPv2 token full-value withdrawal and zero-change refusal",
+      "stages": {
+        "initial": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "withdrawal": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "checkpoint": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        },
+        "secondSpend": {
+          "hookCount": 92,
+          "refusedCanaryCount": 92,
+          "allHooksCanaryChecked": true,
+          "attempts": []
+        }
+      }
+    }
+  ],
+  "sourceSha256": {
+    "scripts/fixtures/ppv2-egress-tripwire.js": "3547e13c2e71a44c0c70e3a0e77d86e3388b2ffb6a36ccef36db169cc27c7730",
+    "scripts/fixtures/ppv2-egress-tripwire.test.js": "1e33acbec386d6286c47bc3979acab9beee1742b4a9864e837661385bb57d49d",
+    "test-e2e/ppv2-withdrawal.spec.js": "c2352e1a98a2a346a94213633433fc144cd9cb2247b6f628bdc6fa0a3f8836f5"
+  },
+  "runtimeSha256": "a7327fce6acde362b05e439c0db579c06fdc87272feaaa21046b0b34dd182f34",
+  "unitPassed": 2,
+  "lintPassed": true,
+  "observationWindow": "SDK load through session close plus two event turns and immediate pre-shutdown assertion",
+  "denialThroughShutdown": true,
+  "shutdownAttemptsReported": false,
+  "nativeOrRendererCoverage": false,
+  "osSandbox": false,
+  "liveTransactionsSubmitted": false,
+  "fundedProfileChanged": false,
+  "hookInventory": [
+    "global.fetch",
+    "global.WebSocket",
+    "http.request",
+    "http.get",
+    "https.request",
+    "https.get",
+    "net.connect",
+    "net.createConnection",
+    "net.Socket.connect",
+    "tls.connect",
+    "http2.connect",
+    "dgram.createSocket",
+    "dgram.Socket.send",
+    "dgram.Socket.connect",
+    "dgram.Socket.bind",
+    "dns.lookup",
+    "dns.lookupService",
+    "dns.resolve",
+    "dns.resolve4",
+    "dns.resolve6",
+    "dns.resolveAny",
+    "dns.resolveCaa",
+    "dns.resolveCname",
+    "dns.resolveMx",
+    "dns.resolveNaptr",
+    "dns.resolveNs",
+    "dns.resolvePtr",
+    "dns.resolveSoa",
+    "dns.resolveSrv",
+    "dns.resolveTlsa",
+    "dns.resolveTxt",
+    "dns.reverse",
+    "dns.Resolver.resolveAny",
+    "dns.Resolver.resolve4",
+    "dns.Resolver.resolve6",
+    "dns.Resolver.resolveCaa",
+    "dns.Resolver.resolveCname",
+    "dns.Resolver.resolveMx",
+    "dns.Resolver.resolveNs",
+    "dns.Resolver.resolveTlsa",
+    "dns.Resolver.resolveTxt",
+    "dns.Resolver.resolveSrv",
+    "dns.Resolver.resolvePtr",
+    "dns.Resolver.resolveNaptr",
+    "dns.Resolver.resolveSoa",
+    "dns.Resolver.reverse",
+    "dns.Resolver.resolve",
+    "dns.promises.lookup",
+    "dns.promises.lookupService",
+    "dns.promises.resolve",
+    "dns.promises.resolve4",
+    "dns.promises.resolve6",
+    "dns.promises.resolveAny",
+    "dns.promises.resolveCaa",
+    "dns.promises.resolveCname",
+    "dns.promises.resolveMx",
+    "dns.promises.resolveNaptr",
+    "dns.promises.resolveNs",
+    "dns.promises.resolvePtr",
+    "dns.promises.resolveSoa",
+    "dns.promises.resolveSrv",
+    "dns.promises.resolveTlsa",
+    "dns.promises.resolveTxt",
+    "dns.promises.reverse",
+    "dns.promises.Resolver.resolveAny",
+    "dns.promises.Resolver.resolve4",
+    "dns.promises.Resolver.resolve6",
+    "dns.promises.Resolver.resolveCaa",
+    "dns.promises.Resolver.resolveCname",
+    "dns.promises.Resolver.resolveMx",
+    "dns.promises.Resolver.resolveNs",
+    "dns.promises.Resolver.resolveTlsa",
+    "dns.promises.Resolver.resolveTxt",
+    "dns.promises.Resolver.resolveSrv",
+    "dns.promises.Resolver.resolvePtr",
+    "dns.promises.Resolver.resolveNaptr",
+    "dns.promises.Resolver.resolveSoa",
+    "dns.promises.Resolver.reverse",
+    "dns.promises.Resolver.resolve",
+    "electron.net.request",
+    "electron.net.fetch",
+    "electron.session.fetch",
+    "electron.session.resolveHost",
+    "electron.session.resolveProxy",
+    "worker_threads.Worker",
+    "child_process.spawn",
+    "child_process.spawnSync",
+    "child_process.exec",
+    "child_process.execSync",
+    "child_process.execFile",
+    "child_process.execFileSync",
+    "child_process.fork"
+  ],
+  "postRunChange": "Added an early delegation for non-full-value cases, retaining their original evaluation path; the tested full-value path is unchanged.",
+  "nonInstrumentedControllerRegression": {
+    "startTime": "2026-10-01T23:26:58.003Z",
+    "duration": 18662.885000000002,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "claudeReview": "No blockers after retained shutdown denial, per-hook canaries and bounded coverage wording. Non-full-value delegation explicitly preserves the original path.",
+  "runSourceSha256": {
+    "scripts/fixtures/ppv2-egress-tripwire.js": "3547e13c2e71a44c0c70e3a0e77d86e3388b2ffb6a36ccef36db169cc27c7730",
+    "scripts/fixtures/ppv2-egress-tripwire.test.js": "1e33acbec386d6286c47bc3979acab9beee1742b4a9864e837661385bb57d49d",
+    "test-e2e/ppv2-withdrawal.spec.js": "f6375437d37c56acb7e7edd8ab7adf5a0dc989d554db730e48e6385fe8fe2789"
+  }
+}

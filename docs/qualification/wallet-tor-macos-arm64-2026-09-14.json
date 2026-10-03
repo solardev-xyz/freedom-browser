@@ -1,0 +1,53 @@
+{
+  "version": "Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>",
+  "sha256": "46c553c636afd8003f2a282a62ef7799a376c53f9d49ba5cb386b66ed9fb2f26",
+  "platform": "darwin",
+  "arch": "arm64",
+  "startedAt": "2026-09-14T20:34:18.336Z",
+  "target": "example.com:443",
+  "requests": [
+    {
+      "label": "A",
+      "tunnelId": "Circ 3.0",
+      "status": 200,
+      "elapsedMs": 1321
+    },
+    {
+      "label": "A",
+      "tunnelId": "Circ 4.0",
+      "status": 200,
+      "elapsedMs": 404
+    },
+    {
+      "label": "B",
+      "tunnelId": "Circ 4.1",
+      "status": 200,
+      "elapsedMs": 3425
+    },
+    {
+      "label": "B",
+      "tunnelId": "Circ 4.1",
+      "status": 200,
+      "elapsedMs": 2012
+    },
+    {
+      "label": "A",
+      "tunnelId": "Circ 4.0",
+      "status": 200,
+      "elapsedMs": 592
+    },
+    {
+      "label": "B",
+      "tunnelId": "Circ 4.1",
+      "status": 200,
+      "elapsedMs": 1682
+    }
+  ],
+  "qualified": true,
+  "bootstrapMs": 4028,
+  "crossContextOverlap": [],
+  "sameContextReuse": {
+    "A": true,
+    "B": true
+  }
+}

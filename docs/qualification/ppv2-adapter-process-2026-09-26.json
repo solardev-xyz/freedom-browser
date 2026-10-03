@@ -1,0 +1,117 @@
+{
+  "checkedAt": "2026-09-26",
+  "main": "2983dc62fa2ef6ec63ce4bc1eeca92dd6e6ba530",
+  "sdkRevision": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+  "kohakuRevision": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "compatibilityPatchSha256": "56882d4465f90f73dd84205681bc81094bf6b9f692a9f090d10dc806184bcfcd",
+  "adapterTypecheck": {
+    "passed": true,
+    "diagnostics": ""
+  },
+  "asar": {
+    "revision": "fe0244e3f14110efd83db02c60c96517dea9cd5a",
+    "output": "/var/folders/yk/vgp12b9s3hz7l4vh92hr5r8w0000gn/T/ppv2-process-asar-nK6UyV/ppv2.asar",
+    "manifest": [
+      {
+        "kind": "wasm",
+        "name": "deposit.wasm",
+        "size": 2337270,
+        "sha256": "833e7b3c44a900a95496009a36284e11f57ba0385fab6b63f92075750817550a"
+      },
+      {
+        "kind": "provingKey",
+        "name": "deposit.zkey",
+        "size": 1031707,
+        "sha256": "0e64b6d15ea540b3ab04d5596ab45d1ed6df0872e0261a850039372104837b30"
+      },
+      {
+        "kind": "verificationKey",
+        "name": "deposit.vkey.json",
+        "size": 3744,
+        "sha256": "cc0c1647983f2ca75b192e5c671b9b2932fd690709922bf32443a4053cd0912a"
+      }
+    ],
+    "webWorkerVersions": ["1.2.0"],
+    "asarSha256": "5bb23aef29d004308927e0fad019d048e317074c27acdfe85b1de4a1ba7b96f5",
+    "bundleInputs": 1638
+  },
+  "packaged": {
+    "proof": {
+      "result": {
+        "verified": true,
+        "tamperedRejected": true,
+        "provingMs": 194,
+        "rssBytes": 521715712,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 521732096
+    },
+    "egress": {
+      "result": {
+        "refused": ["fetch", "http", "socket", "dns", "udp", "http2", "child", "electron"],
+        "nested": true,
+        "inheritedSecret": null
+      },
+      "peakRssBytes": 99762176
+    },
+    "crash": "PRIVATE_PROCESS_FAILED",
+    "timeout": "PRIVACY_REQUEST_ABORTED",
+    "memory": "PRIVATE_PROCESS_MEMORY_LIMIT",
+    "started": true,
+    "cancelled": "PRIVACY_CONTEXT_REVOKED",
+    "afterProof": [],
+    "afterCancel": [],
+    "recovered": {
+      "result": {
+        "verified": true,
+        "tamperedRejected": true,
+        "provingMs": 192,
+        "rssBytes": 520847360,
+        "fromAsar": true,
+        "sdkFromAsar": true,
+        "node": "24.21.0",
+        "electron": "44.4.5"
+      },
+      "peakRssBytes": 520847360
+    },
+    "packaged": true,
+    "hostFromAsar": true
+  },
+  "validation": {
+    "fullUnitPassed": 5573,
+    "unitSkipped": 25,
+    "knownBaselineFailures": 3,
+    "focusedAfterFinalFixPassed": 36,
+    "sdkDiscoveryTestsPassed": 87,
+    "sourceElectronPassed": 1,
+    "packagedElectronPassed": 2,
+    "lint": "passed"
+  },
+  "limits": [
+    "Controlled service tests are not live chain recovery.",
+    "Real deposit proof only; no transfer or withdrawal circuits or production keys.",
+    "macOS arm64 only; unsigned packaged build.",
+    "Network tripwires are not an OS sandbox.",
+    "RSS polling is a soft threshold, not a hard memory limit.",
+    "SDK fixture is external to the application package; no application SDK dependency added.",
+    "Final app identifier, audit/deployment matching, state provenance and full session recovery remain unqualified."
+  ],
+  "packagedSourceDigests": [
+    {
+      "file": "src/main/wallet/privacy-process.js",
+      "sha256": "a0f1e9aff4d38caa52a00485092300245455bf135f8e24497f5fa0d0a2bf645d"
+    },
+    {
+      "file": "src/main/wallet/privacy-process-entry.js",
+      "sha256": "928dc6b6fbc74ac43b1f9d9c155b801b285064b4fdf4b745ab93198216d4738c"
+    },
+    {
+      "file": "src/main/networks/kohaku-provider.js",
+      "sha256": "57029371c5060c3080fb0bd857e6157393ac47a17a5aacc369aaa600b9beb302"
+    }
+  ],
+  "applicationAsarSha256": "57cbfec575c079476613204567e00e727aa1ec7f2078beef0b4732f8d595148c"
+}

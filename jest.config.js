@@ -1,5 +1,8 @@
 /** @type {import('jest').Config} */
 module.exports = {
+  // Ignored local build inputs can contain complete upstream workspaces.
+  // They are not Freedom modules, tests or snapshot baselines.
+  modulePathIgnorePatterns: ['<rootDir>/tmp/'],
   testMatch: ['**/*.test.js'],
   // Playwright specs (`test-e2e/**/*.spec.js`) must never be loaded by jest,
   // but plain `*.test.js` unit coverage for e2e helper modules is welcome —

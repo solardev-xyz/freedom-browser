@@ -104,6 +104,22 @@ Ports matter when you are judging evidence:
   already answering there, the manager **adopts** it and reports
   `mode: "reused"` — see the trap in the checklist below.
 
+## Synchronizing a feature branch after merging main
+
+Merging `main` updates source and pins, but does not refresh the gitignored
+node installations. Before testing the merged branch, install its locked npm
+dependencies with `npm ci` when the lockfile changed, reread the fetch-script
+pins, and run the applicable node download commands above plus
+`npm run myotis:download` and `npm run myotis:build-supervisor`. Refresh bundled
+adblock assets when their requirements changed too.
+
+An unchanged Arti pin with a matching installed `arti --version` does not
+require recompilation; a changed or missing build requires `npm run tor:download`.
+Run `npm run check-binaries` and compare installed versions/provenance against
+the merged pins. Record the merged main revision and node versions in the
+validation notes. This synchronizes with main's reviewed versions; do not
+silently bump pins to unrelated upstream releases as part of a merge.
+
 ## Bumping the Ant pin — step-by-step checklist
 
 This is the sequence [#387](https://github.com/solardev-xyz/freedom-browser/pull/387)

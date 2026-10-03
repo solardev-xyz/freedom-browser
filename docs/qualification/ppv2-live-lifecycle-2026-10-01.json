@@ -1,0 +1,3249 @@
+{
+  "chainId": 11155111,
+  "owner": "0x6d7d00e435919ead9845f25e2c2f85b969d2c331",
+  "initialFundingWei": "50000000000000000",
+  "chainStateVerified": false,
+  "transportPrivacyQualified": false,
+  "productionEnabled": false,
+  "routes": {
+    "ownerRpc": "Tor",
+    "protocolRpc": "Tor",
+    "asp": "Tor",
+    "relayer": "direct"
+  },
+  "authCodeRevision": "a58949e7",
+  "viewingAndDepositCodeRevision": "1d8cf97d",
+  "recipientFixCodeRevision": "17e65487",
+  "subsequentLiveCodeRevision": "17e65487",
+  "steps": [
+    {
+      "observedAt": "2026-10-01T16:04:59.788Z",
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "sourceReport": "funding-received-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb466d8",
+        "hash": "0x0d70634d005cd99eabc1ec9abcfbfe7d2aebf7628fe92dc135835a8d32cf9d20",
+        "timestamp": "0x6abe80e0"
+      },
+      "balanceWei": "50000000000000000",
+      "registrationMatches": {
+        "nullifyingKeyHash": false,
+        "viewingKey": false
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:07:24.911Z",
+      "explicitAction": "register-auth",
+      "checkOnly": true,
+      "failure": {
+        "stage": "explicit-register-auth",
+        "code": "TOR_REQUEST_FAILED"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "sourceReport": "funded-check-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb466d8",
+        "hash": "0x0d70634d005cd99eabc1ec9abcfbfe7d2aebf7628fe92dc135835a8d32cf9d20",
+        "timestamp": "0x6abe80e0"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:08:44.544Z",
+      "explicitAction": "register-auth",
+      "checkOnly": true,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "sourceReport": "funded-check-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb466f7",
+        "hash": "0x8c35ba3870921e8c8bd5bbf83e9de277b9426c5232ffa3fc4f71ece7f022a76f",
+        "timestamp": "0x6abe8260"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:10:11.521Z",
+      "explicitAction": "register-auth",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": true,
+      "broadcastEnabled": true,
+      "sourceReport": "auth-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb466f7",
+        "hash": "0x8c35ba3870921e8c8bd5bbf83e9de277b9426c5232ffa3fc4f71ece7f022a76f",
+        "timestamp": "0x6abe8260"
+      },
+      "transaction": {
+        "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+        "nonce": 0,
+        "from": "0x6d7D00E435919EaD9845f25E2c2f85B969D2C331",
+        "to": "0x6d264aCb9C3A7A3105c29470AfE2F5F1EC203C73",
+        "value": "0",
+        "chainId": 11155111
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:11:31.965Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "sourceReport": "auth-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb466f7",
+        "hash": "0x8c35ba3870921e8c8bd5bbf83e9de277b9426c5232ffa3fc4f71ece7f022a76f",
+        "timestamp": "0x6abe8260"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "kind": "ppv2-register-auth"
+        }
+      ],
+      "relayJournal": [],
+      "notes": []
+    },
+    {
+      "observedAt": "2026-10-01T16:13:57.314Z",
+      "failure": {
+        "stage": "session-open",
+        "code": "PRIVATE_PPV2_UNAVAILABLE"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "sourceReport": "auth-resolve-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb466f7",
+        "hash": "0x8c35ba3870921e8c8bd5bbf83e9de277b9426c5232ffa3fc4f71ece7f022a76f",
+        "timestamp": "0x6abe8260"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:15:37.806Z",
+      "explicitAction": "resolve-public",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "auth-resolve-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46717",
+        "hash": "0xff1ac969242a685db74a767c6fe040e13c91ee387b43a31adf5841fc79afa2bf",
+        "timestamp": "0x6abe83e0"
+      },
+      "transaction": {
+        "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+        "nonce": 0,
+        "observation": {
+          "status": "included",
+          "blockNumber": 11822921,
+          "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+          "confirmations": 25,
+          "observedAt": 1790871451261,
+          "trust": "unverified"
+        },
+        "resolution": {
+          "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+          "minimumConfirmations": 12,
+          "reviewedAt": 1790871451274
+        }
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:17:57.695Z",
+      "explicitAction": "register-viewing",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": true,
+      "broadcastEnabled": true,
+      "gasEstimate": {
+        "operation": "ppv2-register-viewing",
+        "gas": "51040"
+      },
+      "reviewedSigningRequest": {
+        "gasLimit": "63800",
+        "gasPriceWei": "1055349242",
+        "maxGasCostWei": "67331281639600"
+      },
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "viewing-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46717",
+        "hash": "0xff1ac969242a685db74a767c6fe040e13c91ee387b43a31adf5841fc79afa2bf",
+        "timestamp": "0x6abe83e0"
+      },
+      "transaction": {
+        "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+        "nonce": 1,
+        "from": "0x6d7D00E435919EaD9845f25E2c2f85B969D2C331",
+        "to": "0x6d264aCb9C3A7A3105c29470AfE2F5F1EC203C73",
+        "value": "0",
+        "chainId": 11155111
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:22:16.750Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "viewing-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46737",
+        "hash": "0x2abff48870389ff8328b48f48b524aadc01e6c69a1efe39c8e55d9e2fad1c18f",
+        "timestamp": "0x6abe8560"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 46,
+            "observedAt": 1790871704055,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "kind": "ppv2-register-viewing"
+        }
+      ],
+      "relayJournal": [],
+      "notes": [],
+      "balanceWei": "49462314379193156",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:24:50.059Z",
+      "explicitAction": "resolve-public",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "viewing-resolve-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46737",
+        "hash": "0x2abff48870389ff8328b48f48b524aadc01e6c69a1efe39c8e55d9e2fad1c18f",
+        "timestamp": "0x6abe8560"
+      },
+      "transaction": {
+        "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+        "nonce": 1,
+        "observation": {
+          "status": "included",
+          "blockNumber": 11822970,
+          "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+          "confirmations": 21,
+          "observedAt": 1790871995239,
+          "trust": "unverified"
+        },
+        "resolution": {
+          "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+          "minimumConfirmations": 12,
+          "reviewedAt": 1790871995252
+        }
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:27:32.590Z",
+      "explicitAction": "deposit",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": true,
+      "broadcastEnabled": true,
+      "gasEstimate": {
+        "operation": "ppv2-native-deposit",
+        "gas": "619010"
+      },
+      "reviewedSigningRequest": {
+        "gasLimit": "773763",
+        "gasPriceWei": "993773931",
+        "maxGasCostWei": "768945498172353"
+      },
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "deposit-one-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46754",
+        "hash": "0x941d173d3f04ec3b0e2d987e29bf1d1d9a57b99d58493e5deeb0c938b9bba6b9",
+        "timestamp": "0x6abe86e0"
+      },
+      "transaction": {
+        "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+        "nonce": 2,
+        "from": "0x6d7D00E435919EaD9845f25E2c2f85B969D2C331",
+        "to": "0xEB3e3961008952348445513e418ad6F43C23ca9a",
+        "value": "5000000000000000",
+        "chainId": 11155111
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:29:56.910Z",
+      "failure": {
+        "stage": "session-open",
+        "code": "PRIVATE_PPV2_UNAVAILABLE"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "deposit-one-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46754",
+        "hash": "0x941d173d3f04ec3b0e2d987e29bf1d1d9a57b99d58493e5deeb0c938b9bba6b9",
+        "timestamp": "0x6abe86e0"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:31:35.494Z",
+      "explicitAction": "resolve-public",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "deposit-one-resolve-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46754",
+        "hash": "0x941d173d3f04ec3b0e2d987e29bf1d1d9a57b99d58493e5deeb0c938b9bba6b9",
+        "timestamp": "0x6abe86e0"
+      },
+      "transaction": {
+        "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+        "nonce": 2,
+        "observation": {
+          "status": "included",
+          "blockNumber": 11823008,
+          "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+          "confirmations": 16,
+          "observedAt": 1790872403821,
+          "trust": "unverified"
+        },
+        "resolution": {
+          "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+          "minimumConfirmations": 12,
+          "reviewedAt": 1790872403832
+        }
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:34:03.586Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "deposit-one-status-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46773",
+        "hash": "0xa8fed42bb7cd0198962923624086d743d7192df95768dd01d45d7873608354b7",
+        "timestamp": "0x6abe8860"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 84,
+            "observedAt": 1790872173879,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 35,
+            "observedAt": 1790872174213,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 16,
+            "observedAt": 1790872403821,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        }
+      ],
+      "relayJournal": [],
+      "notes": [
+        {
+          "status": "active",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "43859055839666778",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:38:08.293Z",
+      "explicitAction": "withdraw",
+      "checkOnly": false,
+      "failure": {
+        "stage": "explicit-withdraw",
+        "code": "PRIVATE_PPV2_RELAY_REFUSED"
+      },
+      "signingEnabled": true,
+      "broadcastEnabled": true,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-one-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46773",
+        "hash": "0xa8fed42bb7cd0198962923624086d743d7192df95768dd01d45d7873608354b7",
+        "timestamp": "0x6abe8860"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:43:24.431Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-refused-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46792",
+        "hash": "0x7de724b652bc6151879b753ab6ac047542b748a767535e77d68b64a2db2a2ffe",
+        "timestamp": "0x6abe89e0"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 136,
+            "observedAt": 1790872797797,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 87,
+            "observedAt": 1790872798585,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 49,
+            "observedAt": 1790872799592,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        }
+      ],
+      "relayJournal": [],
+      "notes": [
+        {
+          "status": "active",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "43859055839666778",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:51:03.295Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-fixed-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb467b2",
+        "hash": "0xb3019b8e954317ac63ca2234beeef303f437ec406b315224fabe895a5e29f2c2",
+        "timestamp": "0x6abe8b60"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 136,
+            "observedAt": 1790872797797,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 87,
+            "observedAt": 1790872798585,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 49,
+            "observedAt": 1790872799592,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        }
+      ],
+      "relayJournal": [],
+      "notes": [
+        {
+          "status": "active",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "43859055839666778",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:53:18.562Z",
+      "failure": {
+        "stage": "deployment-preflight",
+        "code": "ERR_ASSERTION"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-two-oct1",
+      "deploymentChecksPassed": false,
+      "failedDeploymentChecks": [
+        {
+          "name": "asp-public-key",
+          "passed": false,
+          "code": "PREFLIGHT_READ_FAILED"
+        },
+        {
+          "name": "asp-root-observations",
+          "passed": false,
+          "code": "PREFLIGHT_READ_FAILED"
+        }
+      ],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb467d2",
+        "hash": "0x3f341c851563187403cb26438c1365fd9680bfee3e45d30a4b7036782a3639fe",
+        "timestamp": "0x6abe8ce0"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T16:55:18.783Z",
+      "explicitAction": "withdraw",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": true,
+      "broadcastEnabled": true,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-three-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb467d2",
+        "hash": "0x3f341c851563187403cb26438c1365fd9680bfee3e45d30a4b7036782a3639fe",
+        "timestamp": "0x6abe8ce0"
+      },
+      "transaction": {
+        "txHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:00:21.434Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-success-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb467f2",
+        "hash": "0xaa3d398eb5a0e6308b22fefd8e7a930809e6298638adaf60c4c0a4db2000af4d",
+        "timestamp": "0x6abe8e60"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 226,
+            "observedAt": 1790873875475,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 177,
+            "observedAt": 1790873875757,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 139,
+            "observedAt": 1790873876203,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "45859055839666778",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:04:31.851Z",
+      "explicitAction": "resolve-relay",
+      "checkOnly": false,
+      "failure": {
+        "stage": "explicit-resolve-relay",
+        "code": "PRIVATE_PPV2_RECONCILIATION_REFUSED"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-resolve-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb467f2",
+        "hash": "0xaa3d398eb5a0e6308b22fefd8e7a930809e6298638adaf60c4c0a4db2000af4d",
+        "timestamp": "0x6abe8e60"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:06:22.368Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-finality-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46812",
+        "hash": "0x9d9822ba57f640f5a1c3e2c8cee046c522a6c12769ebf832cbc5e61a3f72e6b6",
+        "timestamp": "0x6abe8fe0"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 226,
+            "observedAt": 1790873875475,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 177,
+            "observedAt": 1790873875757,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 139,
+            "observedAt": 1790873876203,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "unknown",
+            "transactionHash": null,
+            "blockHash": null,
+            "blockNumber": null,
+            "trust": "unverified-rpc"
+          },
+          "resolution": null,
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "45859055839666778",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:08:47.880Z",
+      "explicitAction": "resolve-relay",
+      "checkOnly": false,
+      "failure": {
+        "stage": "explicit-resolve-relay",
+        "code": "PRIVATE_PPV2_RECONCILIATION_REFUSED"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-resolve-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46812",
+        "hash": "0x9d9822ba57f640f5a1c3e2c8cee046c522a6c12769ebf832cbc5e61a3f72e6b6",
+        "timestamp": "0x6abe8fe0"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:10:54.824Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-finality-status-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46812",
+        "hash": "0x9d9822ba57f640f5a1c3e2c8cee046c522a6c12769ebf832cbc5e61a3f72e6b6",
+        "timestamp": "0x6abe8fe0"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 226,
+            "observedAt": 1790873875475,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 177,
+            "observedAt": 1790873875757,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 139,
+            "observedAt": 1790873876203,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "unknown",
+            "transactionHash": null,
+            "blockHash": null,
+            "blockNumber": null,
+            "trust": "unverified-rpc"
+          },
+          "resolution": null,
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "45859055839666778",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:13:52.336Z",
+      "explicitAction": "resolve-relay",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-resolve-oct1-third",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46832",
+        "hash": "0x9804d3644802a327bd0b9b5ea1b4b584bd70f6309f677bc5345143e1cd60e1b6",
+        "timestamp": "0x6abe9160"
+      },
+      "relayResolution": {
+        "observation": {
+          "status": "included",
+          "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+          "blockNumber": 11823149,
+          "trust": "unverified-rpc"
+        },
+        "resolution": {
+          "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+          "reviewedAt": 1790874928776
+        }
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:16:27.485Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "withdraw-resolved-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46832",
+        "hash": "0x9804d3644802a327bd0b9b5ea1b4b584bd70f6309f677bc5345143e1cd60e1b6",
+        "timestamp": "0x6abe9160"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 226,
+            "observedAt": 1790873875475,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 177,
+            "observedAt": 1790873875757,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 139,
+            "observedAt": 1790873876203,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "included",
+            "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "blockNumber": 11823149,
+            "trust": "unverified-rpc"
+          },
+          "resolution": {
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "reviewedAt": 1790874928776
+          },
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "45859055839666778",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:18:37.413Z",
+      "explicitAction": "deposit",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": true,
+      "broadcastEnabled": true,
+      "gasEstimate": {
+        "operation": "ppv2-native-deposit",
+        "gas": "602906"
+      },
+      "reviewedSigningRequest": {
+        "gasLimit": "753633",
+        "gasPriceWei": "1040941015",
+        "maxGasCostWei": "784487499957495"
+      },
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "deposit-two-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46852",
+        "hash": "0xad5f3ad8f727d058b94510697d0bd4bf2e020c9d271a64d30e8d709ebbd407fe",
+        "timestamp": "0x6abe92e0"
+      },
+      "transaction": {
+        "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+        "nonce": 3,
+        "from": "0x6d7D00E435919EaD9845f25E2c2f85B969D2C331",
+        "to": "0xEB3e3961008952348445513e418ad6F43C23ca9a",
+        "value": "5000000000000000",
+        "chainId": 11155111
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:21:34.167Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "deposit-two-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46852",
+        "hash": "0xad5f3ad8f727d058b94510697d0bd4bf2e020c9d271a64d30e8d709ebbd407fe",
+        "timestamp": "0x6abe92e0"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 341,
+            "observedAt": 1790875245386,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 292,
+            "observedAt": 1790875245563,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 254,
+            "observedAt": 1790875246102,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "nonce": 3,
+          "state": "submitted",
+          "kind": "ppv2-native-deposit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "included",
+            "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "blockNumber": 11823149,
+            "trust": "unverified-rpc"
+          },
+          "resolution": {
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "reviewedAt": 1790874928776
+          },
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        },
+        {
+          "status": "pending",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "40243666084772988",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "status": "0x1",
+          "blockNumber": "0xb468a1",
+          "gasUsed": "591186",
+          "gasPriceWei": "1040941015",
+          "gasCostWei": "615389754893790"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:23:35.564Z",
+      "explicitAction": "resolve-public",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "deposit-two-resolve-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46852",
+        "hash": "0xad5f3ad8f727d058b94510697d0bd4bf2e020c9d271a64d30e8d709ebbd407fe",
+        "timestamp": "0x6abe92e0"
+      },
+      "transaction": {
+        "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+        "nonce": 3,
+        "observation": {
+          "status": "included",
+          "blockNumber": 11823265,
+          "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+          "confirmations": 17,
+          "observedAt": 1790875496581,
+          "trust": "unverified"
+        },
+        "resolution": {
+          "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+          "minimumConfirmations": 12,
+          "reviewedAt": 1790875496594
+        }
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:26:00.357Z",
+      "failure": {
+        "stage": "deployment-preflight",
+        "code": "ERR_ASSERTION"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-separate-oct1",
+      "deploymentChecksPassed": false,
+      "failedDeploymentChecks": [
+        {
+          "name": "asp-pool-feed",
+          "passed": false,
+          "code": "PREFLIGHT_READ_FAILED"
+        },
+        {
+          "name": "asp-public-key",
+          "passed": false,
+          "code": "PREFLIGHT_READ_FAILED"
+        },
+        {
+          "name": "asp-root-observations",
+          "passed": false,
+          "code": "PREFLIGHT_READ_FAILED"
+        }
+      ],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46872",
+        "hash": "0x7b6935192fdddee056880c90d721cedcf6e01a12b5217e6aa47232e6cc360b2a",
+        "timestamp": "0x6abe9460"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:27:37.792Z",
+      "explicitAction": "ragequit",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": true,
+      "broadcastEnabled": true,
+      "gasEstimate": {
+        "operation": "ppv2-native-ragequit",
+        "gas": "613226"
+      },
+      "reviewedSigningRequest": {
+        "gasLimit": "766533",
+        "gasPriceWei": "1028746286",
+        "maxGasCostWei": "788567976846438"
+      },
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-separate-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46872",
+        "hash": "0x7b6935192fdddee056880c90d721cedcf6e01a12b5217e6aa47232e6cc360b2a",
+        "timestamp": "0x6abe9460"
+      },
+      "transaction": {
+        "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+        "nonce": 4,
+        "from": "0x6d7D00E435919EaD9845f25E2c2f85B969D2C331",
+        "to": "0x09b94d3127019298757A6ceeB7911922085f7C01",
+        "value": "0",
+        "chainId": 11155111
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:32:53.105Z",
+      "failure": {
+        "stage": "deployment-preflight",
+        "code": "ERR_ASSERTION"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-separate-status-oct1",
+      "deploymentChecksPassed": false,
+      "failedDeploymentChecks": [
+        {
+          "name": "chain-and-finalized-anchor",
+          "passed": false,
+          "code": "PREFLIGHT_READ_FAILED"
+        }
+      ],
+      "deploymentCheckCount": 1,
+      "preflightFinalizedAnchor": null
+    },
+    {
+      "observedAt": "2026-10-01T17:33:30.376Z",
+      "failure": {
+        "stage": "session-open",
+        "code": "PRIVATE_PPV2_UNAVAILABLE"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-separate-status-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46892",
+        "hash": "0x933526c698dd5818e1655187c765f77f50733ea355e5fe3ec97ebc89151762e3",
+        "timestamp": "0x6abe95e0"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:34:34.288Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-separate-status-oct1-third",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46892",
+        "hash": "0x933526c698dd5818e1655187c765f77f50733ea355e5fe3ec97ebc89151762e3",
+        "timestamp": "0x6abe95e0"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 397,
+            "observedAt": 1790875914994,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 348,
+            "observedAt": 1790875915719,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 310,
+            "observedAt": 1790875916170,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "nonce": 3,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823265,
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "confirmations": 53,
+            "observedAt": 1790875916666,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790875496594
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "nonce": 4,
+          "state": "submitted",
+          "kind": "ppv2-native-ragequit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "included",
+            "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "blockNumber": 11823149,
+            "trust": "unverified-rpc"
+          },
+          "resolution": {
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "reviewedAt": 1790874928776
+          },
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "44608726963292646",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "status": "0x1",
+          "blockNumber": "0xb468a1",
+          "gasUsed": "591186",
+          "gasPriceWei": "1040941015",
+          "gasCostWei": "615389754893790"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "status": "0x1",
+          "blockNumber": "0xb468d7",
+          "gasUsed": "617197",
+          "gasPriceWei": "1028746286",
+          "gasCostWei": "634939121480342"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:37:27.580Z",
+      "explicitAction": "resolve-public",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-separate-resolve-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46892",
+        "hash": "0x933526c698dd5818e1655187c765f77f50733ea355e5fe3ec97ebc89151762e3",
+        "timestamp": "0x6abe95e0"
+      },
+      "transaction": {
+        "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+        "nonce": 4,
+        "observation": {
+          "status": "included",
+          "blockNumber": 11823319,
+          "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+          "confirmations": 33,
+          "observedAt": 1790876325773,
+          "trust": "unverified"
+        },
+        "resolution": {
+          "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+          "minimumConfirmations": 12,
+          "reviewedAt": 1790876325791
+        }
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:40:35.847Z",
+      "explicitAction": "ragequit",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": true,
+      "broadcastEnabled": true,
+      "gasEstimate": {
+        "operation": "ppv2-native-ragequit",
+        "gas": "645408"
+      },
+      "reviewedSigningRequest": {
+        "gasLimit": "806760",
+        "gasPriceWei": "981685465",
+        "maxGasCostWei": "791984565743400"
+      },
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-change-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb468b2",
+        "hash": "0xdcd970e6ae04e945adca6b41fd3f661538a29d37e329229452b6551b399ce2bd",
+        "timestamp": "0x6abe9760"
+      },
+      "transaction": {
+        "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+        "nonce": 5,
+        "from": "0x6d7D00E435919EaD9845f25E2c2f85B969D2C331",
+        "to": "0x09b94d3127019298757A6ceeB7911922085f7C01",
+        "value": "0",
+        "chainId": 11155111
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:43:39.357Z",
+      "failure": {
+        "stage": "session-open",
+        "code": "PRIVATE_PPV2_UNAVAILABLE"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-change-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb468b2",
+        "hash": "0xdcd970e6ae04e945adca6b41fd3f661538a29d37e329229452b6551b399ce2bd",
+        "timestamp": "0x6abe9760"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:44:25.213Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-change-status-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb468d2",
+        "hash": "0x1a1fc6bf7bf9f429c961d86c300dde3d2559c61b49d196979ac6d80995e8dcfb",
+        "timestamp": "0x6abe98e0"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 451,
+            "observedAt": 1790876586062,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 402,
+            "observedAt": 1790876586305,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 364,
+            "observedAt": 1790876586643,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "nonce": 3,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823265,
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "confirmations": 107,
+            "observedAt": 1790876586826,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790875496594
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "nonce": 4,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823319,
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "confirmations": 53,
+            "observedAt": 1790876587206,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876325791
+          },
+          "kind": "ppv2-native-ragequit"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "nonce": 5,
+          "state": "submitted",
+          "kind": "ppv2-native-ragequit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "included",
+            "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "blockNumber": 11823149,
+            "trust": "unverified-rpc"
+          },
+          "resolution": {
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "reviewedAt": 1790874928776
+          },
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "46280298618996486",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "status": "0x1",
+          "blockNumber": "0xb468a1",
+          "gasUsed": "591186",
+          "gasPriceWei": "1040941015",
+          "gasCostWei": "615389754893790"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "status": "0x1",
+          "blockNumber": "0xb468d7",
+          "gasUsed": "617197",
+          "gasPriceWei": "1028746286",
+          "gasCostWei": "634939121480342"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "status": "0x1",
+          "blockNumber": "0xb46912",
+          "gasUsed": "633024",
+          "gasPriceWei": "981685465",
+          "gasCostWei": "621430459796160"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:46:42.539Z",
+      "explicitAction": "resolve-public",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exit-change-resolve-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb468d2",
+        "hash": "0x1a1fc6bf7bf9f429c961d86c300dde3d2559c61b49d196979ac6d80995e8dcfb",
+        "timestamp": "0x6abe98e0"
+      },
+      "transaction": {
+        "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+        "nonce": 5,
+        "observation": {
+          "status": "included",
+          "blockNumber": 11823378,
+          "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+          "confirmations": 18,
+          "observedAt": 1790876871514,
+          "trust": "unverified"
+        },
+        "resolution": {
+          "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+          "minimumConfirmations": 12,
+          "reviewedAt": 1790876871525
+        }
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:49:05.380Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exits-finality-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb468d2",
+        "hash": "0x1a1fc6bf7bf9f429c961d86c300dde3d2559c61b49d196979ac6d80995e8dcfb",
+        "timestamp": "0x6abe98e0"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 451,
+            "observedAt": 1790876586062,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 402,
+            "observedAt": 1790876586305,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 364,
+            "observedAt": 1790876586643,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "nonce": 3,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823265,
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "confirmations": 107,
+            "observedAt": 1790876586826,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790875496594
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "nonce": 4,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823319,
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "confirmations": 53,
+            "observedAt": 1790876587206,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876325791
+          },
+          "kind": "ppv2-native-ragequit"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "nonce": 5,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823378,
+            "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+            "confirmations": 18,
+            "observedAt": 1790876871514,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876871525
+          },
+          "kind": "ppv2-native-ragequit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "included",
+            "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "blockNumber": 11823149,
+            "trust": "unverified-rpc"
+          },
+          "resolution": {
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "reviewedAt": 1790874928776
+          },
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "46280298618996486",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "status": "0x1",
+          "blockNumber": "0xb468a1",
+          "gasUsed": "591186",
+          "gasPriceWei": "1040941015",
+          "gasCostWei": "615389754893790"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "status": "0x1",
+          "blockNumber": "0xb468d7",
+          "gasUsed": "617197",
+          "gasPriceWei": "1028746286",
+          "gasCostWei": "634939121480342"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "status": "0x1",
+          "blockNumber": "0xb46912",
+          "gasUsed": "633024",
+          "gasPriceWei": "981685465",
+          "gasCostWei": "621430459796160"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:52:43.594Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "exits-finality-status-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb468f2",
+        "hash": "0xd90617e9d6f16f24564dbab47e117309ff31285976904a530a8b1ab55bd7bec4",
+        "timestamp": "0x6abe9a60"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 451,
+            "observedAt": 1790876586062,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 402,
+            "observedAt": 1790876586305,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 364,
+            "observedAt": 1790876586643,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "nonce": 3,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823265,
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "confirmations": 107,
+            "observedAt": 1790876586826,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790875496594
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "nonce": 4,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823319,
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "confirmations": 53,
+            "observedAt": 1790876587206,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876325791
+          },
+          "kind": "ppv2-native-ragequit"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "nonce": 5,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823378,
+            "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+            "confirmations": 18,
+            "observedAt": 1790876871514,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876871525
+          },
+          "kind": "ppv2-native-ragequit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "included",
+            "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "blockNumber": 11823149,
+            "trust": "unverified-rpc"
+          },
+          "resolution": {
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "reviewedAt": 1790874928776
+          },
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        },
+        {
+          "status": "exited",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "46280298618996486",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "status": "0x1",
+          "blockNumber": "0xb468a1",
+          "gasUsed": "591186",
+          "gasPriceWei": "1040941015",
+          "gasCostWei": "615389754893790"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "status": "0x1",
+          "blockNumber": "0xb468d7",
+          "gasUsed": "617197",
+          "gasPriceWei": "1028746286",
+          "gasCostWei": "634939121480342"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "status": "0x1",
+          "blockNumber": "0xb46912",
+          "gasUsed": "633024",
+          "gasPriceWei": "981685465",
+          "gasCostWei": "621430459796160"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:58:38.143Z",
+      "failure": {
+        "stage": "session-open",
+        "code": "PRIVATE_PPV2_UNAVAILABLE"
+      },
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "final-status-oct1",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46911",
+        "hash": "0x384fe0c1058e9fffe02db2fc21697c04c9428833f1d832da3ae2d7d9e380c169",
+        "timestamp": "0x6abe9be0"
+      }
+    },
+    {
+      "observedAt": "2026-10-01T17:59:54.736Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "final-status-oct1-second",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46911",
+        "hash": "0x384fe0c1058e9fffe02db2fc21697c04c9428833f1d832da3ae2d7d9e380c169",
+        "timestamp": "0x6abe9be0"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 451,
+            "observedAt": 1790876586062,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 402,
+            "observedAt": 1790876586305,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 364,
+            "observedAt": 1790876586643,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "nonce": 3,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823265,
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "confirmations": 107,
+            "observedAt": 1790876586826,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790875496594
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "nonce": 4,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823319,
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "confirmations": 53,
+            "observedAt": 1790876587206,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876325791
+          },
+          "kind": "ppv2-native-ragequit"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "nonce": 5,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823378,
+            "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+            "confirmations": 18,
+            "observedAt": 1790876871514,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876871525
+          },
+          "kind": "ppv2-native-ragequit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "included",
+            "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "blockNumber": 11823149,
+            "trust": "unverified-rpc"
+          },
+          "resolution": {
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "reviewedAt": 1790874928776
+          },
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "active",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        },
+        {
+          "status": "exited",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "46280298618996486",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "status": "0x1",
+          "blockNumber": "0xb468a1",
+          "gasUsed": "591186",
+          "gasPriceWei": "1040941015",
+          "gasCostWei": "615389754893790"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "status": "0x1",
+          "blockNumber": "0xb468d7",
+          "gasUsed": "617197",
+          "gasPriceWei": "1028746286",
+          "gasCostWei": "634939121480342"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "status": "0x1",
+          "blockNumber": "0xb46912",
+          "gasUsed": "633024",
+          "gasPriceWei": "981685465",
+          "gasCostWei": "621430459796160"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    },
+    {
+      "observedAt": "2026-10-01T18:06:14.516Z",
+      "explicitAction": "status",
+      "checkOnly": false,
+      "passed": true,
+      "signingEnabled": false,
+      "broadcastEnabled": false,
+      "harnessSha256": "b20ec325930741f0d281d1e07141500ecdf6dbca72d3b0f876752b0776615e3b",
+      "controllerSha256": "09b6fc4d305ce1f240a60e0bc6de033ffda9c60e001676811196f6fcaf6772c2",
+      "sourceReport": "final-status-oct1-third",
+      "deploymentChecksPassed": true,
+      "failedDeploymentChecks": [],
+      "deploymentCheckCount": 26,
+      "preflightFinalizedAnchor": {
+        "number": "0xb46931",
+        "hash": "0x4e9b9b470027b62c157391569092b01cf0df0182d6bd9bfb19fc27d49b866c3c",
+        "timestamp": "0x6abe9d60"
+      },
+      "publicJournal": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "nonce": 0,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822921,
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "confirmations": 451,
+            "observedAt": 1790876586062,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x2552f9c0630f1946c94bd926d7294efc120dcf0fc4e43cd5b2d8de1d654539f3",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871451274
+          },
+          "kind": "ppv2-register-auth"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "nonce": 1,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11822970,
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "confirmations": 402,
+            "observedAt": 1790876586305,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x154746d8a0bf3b723ea1a06e84c45c1b70ef21cc0a34dafbc28fdf9d43a7d85f",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790871995252
+          },
+          "kind": "ppv2-register-viewing"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "nonce": 2,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823008,
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "confirmations": 364,
+            "observedAt": 1790876586643,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xdb4ee6a82487a46aac0f2ec452a2fdbd32ec2fa9ac323e2e722b15be4e4fa50b",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790872403832
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "nonce": 3,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823265,
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "confirmations": 107,
+            "observedAt": 1790876586826,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xeac65ffb7a88211ae1d762687f11f7c4900d47b40d852e8afbf32cb8cf3fc463",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790875496594
+          },
+          "kind": "ppv2-native-deposit"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "nonce": 4,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823319,
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "confirmations": 53,
+            "observedAt": 1790876587206,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0x911f97513048702d49f5636e639a5fa0bd71bd382f6254b10aada44a0697b03a",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876325791
+          },
+          "kind": "ppv2-native-ragequit"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "nonce": 5,
+          "state": "submitted",
+          "observation": {
+            "status": "included",
+            "blockNumber": 11823378,
+            "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+            "confirmations": 18,
+            "observedAt": 1790876871514,
+            "trust": "unverified"
+          },
+          "resolution": {
+            "blockHash": "0xf638cd44e9a2321987856235b825ec8a7f22691b42c0c4faba137b9f7748fa74",
+            "minimumConfirmations": 12,
+            "reviewedAt": 1790876871525
+          },
+          "kind": "ppv2-native-ragequit"
+        }
+      ],
+      "relayJournal": [
+        {
+          "acknowledgedHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+          "observation": {
+            "status": "included",
+            "transactionHash": "0x735a5b1c725b1d19b07175f9ac209797aeee9e8c49ecaada152b752140f13116",
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "blockNumber": 11823149,
+            "trust": "unverified-rpc"
+          },
+          "resolution": {
+            "blockHash": "0x591a27d615a92ac74ddb488a688f29b865d67739a6b62c2eb4744fed13125ea5",
+            "reviewedAt": 1790874928776
+          },
+          "amountOutWei": "2706997884500000"
+        }
+      ],
+      "notes": [
+        {
+          "status": "spent",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        },
+        {
+          "status": "exited",
+          "valueWei": "2293002115500000",
+          "assetType": "native"
+        },
+        {
+          "status": "exited",
+          "valueWei": "5000000000000000",
+          "assetType": "native"
+        }
+      ],
+      "balanceWei": "46280298618996486",
+      "publicReceipts": [
+        {
+          "hash": "0x49fb0935804a3c383c469ecc5554d3deec3b4eaeeee37e73c668e0953c653e04",
+          "status": "0x1",
+          "blockNumber": "0xb46749",
+          "gasUsed": "298807",
+          "gasPriceWei": "1620555198",
+          "gasCostWei": "484233237048786"
+        },
+        {
+          "hash": "0x53f2056ac482e08169b54426d82155e020faf0e31f7d826e93e2a4595915da7e",
+          "status": "0x1",
+          "blockNumber": "0xb4677a",
+          "gasUsed": "50649",
+          "gasPriceWei": "1055349242",
+          "gasCostWei": "53452383758058"
+        },
+        {
+          "hash": "0x3246ca67d3dc8a908b7728e501bd326a98f992db4676ec9a1cc946b1ba3a3ba2",
+          "status": "0x1",
+          "blockNumber": "0xb467a0",
+          "gasUsed": "607038",
+          "gasPriceWei": "993773931",
+          "gasCostWei": "603258539526378"
+        },
+        {
+          "hash": "0x530d6c52efc845f657918bd262e4da7af01c201411f3128cc505ad6489a94ee5",
+          "status": "0x1",
+          "blockNumber": "0xb468a1",
+          "gasUsed": "591186",
+          "gasPriceWei": "1040941015",
+          "gasCostWei": "615389754893790"
+        },
+        {
+          "hash": "0x538f97c2ced03be432f06444d3f4815e9b0dec6e9d0bc06fb365bfd25682ccad",
+          "status": "0x1",
+          "blockNumber": "0xb468d7",
+          "gasUsed": "617197",
+          "gasPriceWei": "1028746286",
+          "gasCostWei": "634939121480342"
+        },
+        {
+          "hash": "0x1bf76f07d4ae41eb5494ee9128d33b2a387d66a3a976058bc914769d91203d37",
+          "status": "0x1",
+          "blockNumber": "0xb46912",
+          "gasUsed": "633024",
+          "gasPriceWei": "981685465",
+          "gasCostWei": "621430459796160"
+        }
+      ],
+      "registrationMatches": {
+        "nullifyingKeyHash": true,
+        "viewingKey": true
+      }
+    }
+  ],
+  "accounting": {
+    "initialFundingWei": "50000000000000000",
+    "publicGasWei": "3012703496503514",
+    "relayFeeWei": "706997884500000",
+    "totalCostWei": "3719701381003514",
+    "remainingPublicBalanceWei": "46280298618996486",
+    "publicTransactions": 6,
+    "relayTransactions": 1,
+    "sourceReport": "ppv2-final-status-oct1-third"
+  },
+  "finalizedSdkExitRecoveryPassed": true,
+  "boundedNativeLifecycleCompleted": true
+}

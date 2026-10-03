@@ -1,16 +1,30 @@
+jest.mock('../settings-store', () => ({ loadSettings: () => ({}) }));
 jest.mock('../networks/chain-data-router', () => ({ request: jest.fn() }));
-jest.mock('../token-registry', () => ({ getTokens: () => ({ '1:native': { chainId: 1, address: null, symbol: 'ETH', decimals: 18 } }) }));
+jest.mock('../token-registry', () => ({
+  getTokens: () => ({ '1:native': { chainId: 1, address: null, symbol: 'ETH', decimals: 18 } }),
+}));
 jest.mock('../networks/network-registry', () => ({ isChainAvailable: () => true }));
-jest.mock('./balance-cache', () => ({ getBalancesFromCache: jest.fn(), setCachedBalances: jest.fn(), clearCache: jest.fn() }));
+jest.mock('./balance-cache', () => ({
+  getBalancesFromCache: jest.fn(),
+  setCachedBalances: jest.fn(),
+  clearCache: jest.fn(),
+}));
 const chainData = require('../networks/chain-data-router');
 const balances = require('./balance-service');
 const cache = require('./balance-cache');
 
-beforeEach(() => { jest.clearAllMocks(); balances.clearBalanceCache(); });
+beforeEach(() => {
+  jest.clearAllMocks();
+  balances.clearBalanceCache();
+});
 
 test('coalesces overlapping foreground, forced, and background refreshes for the same address', async () => {
   let finish;
-  chainData.request.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  chainData.request.mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    })
+  );
   cache.getBalancesFromCache.mockReturnValue({ lastUpdated: 'previous' });
   const first = balances.getAllBalances('0xabc');
   balances.clearBalanceCache('0xabc');

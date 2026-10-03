@@ -1,0 +1,19 @@
+{
+  "source": "authenticated two-RPC public capture",
+  "logSetSha256": "5ea1a7c8f307dcae2f8bbec85200410392b14d1db356f8b2b7d396e656c9d10c",
+  "transactionHash": "0x8e2a4205fb2c01c55a40cd4c8f70424bdefb756ce07fac17cdcb2b98eb41be7e",
+  "blockNumber": 5944769,
+  "logIndex": 152,
+  "tree": 0,
+  "position": 0,
+  "hash": "0x23486ab54b4335993cbd8e0828229814f6719251e6bec45373efde528c4ec30b",
+  "npk": "0x207646089a65390d54ca6d559714534929dcd518aeac7571e38a0b9ccfb1bb51",
+  "tokenHash": "000000000000000000000000fff9976782d46cc05630d1f6ebab18b2324d6b14",
+  "tokenData": {
+    "tokenType": 0,
+    "tokenAddress": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+    "tokenSubID": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "value": "99750000000000000",
+  "blindedCommitment": "0x15286788e718241f2514941fb5713442365941c238886481b3b0948a966c6cb0"
+}

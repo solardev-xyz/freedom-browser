@@ -1,0 +1,2 @@
+- Tor balance-read experiment in Experimental settings ([#475](https://github.com/solardev-xyz/freedom-browser/issues/475)).
+  - Disabled in packaged builds pending qualification. The development experiment covers Sepolia balances; sending keeps its existing routes.

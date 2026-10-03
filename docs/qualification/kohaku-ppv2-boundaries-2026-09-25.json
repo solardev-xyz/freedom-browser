@@ -1,0 +1,57 @@
+{
+  "revision": "6fdc248b3d28942d9aaa35c49c1ac76dab89dc0e",
+  "upstream": "https://github.com/ethereum/kohaku/pull/258",
+  "sources": [
+    {
+      "file": "packages/privacy-pools/src/v2/adapters/http.adapter.ts",
+      "sha256": "067973077129e8e80f1fffd8120661807a2f44368b054ab60803bf4b875a1d2f"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/adapters/rpc.adapter.ts",
+      "sha256": "90b9e2758e9da02076603e4906fbfd4ca4fe89ca4a13bf35d042826dfd295a93"
+    },
+    {
+      "file": "packages/privacy-pools/src/v2/session.ts",
+      "sha256": "eac2568da0a1e7f8fee529de29254ed5b69b65798f7434fdf633d6bfd61fdba1"
+    },
+    {
+      "file": "packages/privacy-pools/package.json",
+      "sha256": "001430c3b6e3a033681a67ee1295ee2243be86287151033b873fc7e3a8a4d39b"
+    },
+    {
+      "file": ".npmrc",
+      "sha256": "9d221d8dadc70c1d4225a971c7971416070512977cd20a6e90ee70c9fbcf0edd"
+    },
+    {
+      "file": "examples/ppv2-sample-app/README.md",
+      "sha256": "fcad7e6ffc0e49aa978cd166904c58187ba2cc245bb133ec224256446b0a6508"
+    },
+    {
+      "file": "examples/ppv2-sample-app/src/wallet/config.ts",
+      "sha256": "5381dab307ad9577608a0d434dfa818fc657432422332d296da35f1d2e654d03"
+    }
+  ],
+  "compiledSha256": "df1761cc2ae6bf4209093f15e46097fcd38158710b0882d40787b29866557efc",
+  "esbuild": "0.28.2",
+  "output": "/var/folders/yk/vgp12b9s3hz7l4vh92hr5r8w0000gn/T/kohaku-ppv2-fixture-D9QloQ/http-adapter.cjs",
+  "scope": "HTTP-adapter interop only. SDK, proving, deployment and recovery unqualified.",
+  "checkedAt": "2026-09-25",
+  "registryCheck": {
+    "package": "@0xbow-io/privacy-pools-v2-sdk",
+    "versionInPr": "0.2.0-beta.0",
+    "registry": "https://npm.pkg.github.com",
+    "unauthenticatedStatus": 401
+  },
+  "interop": {
+    "transport": "local authenticated SOCKS/TLS fixtures",
+    "passed": [
+      "GET JSON",
+      "POST JSON",
+      "GET bounded binary",
+      "timeout cancellation",
+      "authorization header refusal"
+    ],
+    "sdkInstalled": false,
+    "realProofExecuted": false
+  }
+}

@@ -1,0 +1,555 @@
+{
+  "observedAt": "2026-10-03T04:31:55.650Z",
+  "harnessSha256": "95fdb9a44223b35b09e1b9cd47defc847b69e01651a08438f0d663adafad06d4",
+  "chainId": 11155111,
+  "anchor": {
+    "number": 11832799,
+    "hash": "0x49d0b93f21f94b98746a29d3bc1f99048ec9805757f3c1191372c0d2e4a34191"
+  },
+  "mode": "active",
+  "liveAcquisition": true,
+  "trust": "unverified-rpc",
+  "transport": {
+    "mode": "tor-experimental",
+    "transport": "authenticated-socks",
+    "circuitIsolation": "unqualified"
+  },
+  "rpcProviderCount": 1,
+  "circuitIsolationQualified": false,
+  "signingEnabled": false,
+  "submissions": 0,
+  "completed": true,
+  "ranges": [],
+  "sourceSha256": {
+    "src/main/wallet/railgun-account-public.js": "ffeb7759d118aa4211b3def4521566ef0e11f25e150f7a880abe8cbf989eaa56",
+    "src/main/wallet/railgun-public-catalog.js": "7c9adc896757427db002081baa6419b499dca0930c60925bfc75ff3463ab4335",
+    "src/main/wallet/railgun-store-owners.js": "f58212448610bf0dc26fa349654b3b34cd82d3d174506fa052b4091d5e8fe46f",
+    "src/main/wallet/railgun-public-job.js": "a82dab40b14d25288d9ef1d407efd44069fe9cc47fbdb1f9cfe7189f59531217",
+    "src/main/wallet/railgun-public-run.js": "3e218c911eab33fde88df14de72951d1c340147291643f951bebe9868cdbd716",
+    "src/main/wallet/railgun-public-policy.js": "21b9807d6f06694d543f21bcdd2dad8f71f806cde565d5144e2f5170e2f84988",
+    "scripts/qualify-railgun-wallet-journal.js": "842ecd798499884ea8382f0a7944636bd47d30d6d04d8e48564a046a4f2479ac",
+    "src/main/wallet/railgun-account-wallet.js": "5651170d657cf23d2d0ece0a3236c3047ec491faf48a51bfc5e093957a1485d9",
+    "src/main/wallet/railgun-wallet-policy.js": "52db0a1ec95ecf57a5324b63eeafdded9d1b7497a0cdecbe41495a730f6ecab8",
+    "src/main/wallet/railgun-account-store.js": "4eddbec07c7571f9d5ea7758fdd9dcfb3f5ee31663f19e2fcf79917094d60286",
+    "src/main/wallet/railgun-account-enrollment.js": "9b281d5ebd0ab22bccc2ad3e7c3c6ac250700c7a46100090e5bcb19bc2fd5348",
+    "src/main/wallet/privacy-profile-guard.js": "99af11ccd41161de02d0c6626bb6d6c966105ec3edb0be91d7c739fcdcb2e3d4",
+    "src/main/wallet/railgun-identity.js": "5db807b037eee2e4bd86b4df4745c1d751ce48835606d4fe77dfebfb6b652608",
+    "src/main/wallet/railgun-identity-job.js": "1b1ea70e073357ec2b83129e97f90ab073980610a392953d215f6c45ea827390",
+    "src/main/wallet/railgun-wallet-job.js": "cfc9b07c13725dc288e7673b8e8224a9f730d7a5f5f454a02183c2619ff8340e",
+    "src/main/wallet/railgun-wallet-run.js": "a7fc12236e3edbf4d084831a33ce4cca0c45dae1420dd05a3b68678739173e66",
+    "src/main/wallet/railgun-engine-runtime.js": "3dd0d43fc4cf9a766539986cd0779573ec49d39c261ebaa1c3906c81653bc860",
+    "src/main/wallet/railgun-engine-manifest.json": "54a4d63dea94e17a542d7510c08e1f35ea71256c821639ba86da29b89f8c7f2c",
+    "src/main/identity/privacy-keys.js": "faec4ea9fca115d40caed2459c783c421064552e9475db123d91561e24b6e7e3",
+    "src/main/identity/railgun-key-derivation.js": "8976e7ec5ce995cf89c6e5dbd5ddbf9aa7f7f96e405cee387f0eb5c7fe3170e7",
+    "src/main/wallet/privacy-session.js": "ea3753aeea9e2ebfb0c497aac264c7e6f289c06cd7271dfb396c78b0d7e0f0c3",
+    "src/main/wallet/railgun-wallet-catalog.js": "58574552342363c804ba17c6e3c83b1a8698806b0f6a8d048d32a41d5cc2c5d1",
+    "src/main/wallet/railgun-wallet-coverage.js": "b0b196a29e3c0519338f27050b211a185261d063aa8e49d33d5fd645e9f387f3",
+    "src/main/wallet/railgun-wallet-coverage-store.js": "718623dfbe8f51baefdb997a22e41d91d6d748842ac41c0b376e985d955aaa62",
+    "src/main/wallet/railgun-wallet-journal.js": "d5a75643b6d8a05cd3c9a3ef2c8ba32757b979732e35321719e82d48a98fff5d",
+    "src/main/wallet/railgun-wallet-runner.js": "3f08a724fde3bbf19c12eee899b5c09b9e563bfa00ad7badd9c4c9ff6c6ef8f8",
+    "src/main/wallet/railgun-wallet-read.js": "4c1069ca2afc310ec35104d81a926b8c25dcf8e6abf80a8b390f5a7b26027416",
+    "src/main/wallet/railgun-kohaku-read.js": "601b0d37087e154b72722f0d60db3c5257dc1f3a5f4cc80b22f91e4dd1160068",
+    "src/main/wallet/railgun-wallet-state.js": "5969ea0bc38c5d8ca9f4563c9a72c39e9bbfb34621f175b6e2d41ac4f6bb9292",
+    "scripts/fixtures/railgun-wallet-source.js": "f21e488e5e6cc7354897460a28585c0c052771065e00d9623b536432a4018914",
+    "scripts/railgun-wallet-snapshot-electron.js": "729a4e4d45224dbd4c4702d30a30a5f428e952b2c771b1983c623845b8c545c4",
+    "scripts/fixtures/railgun-wallet-snapshot-job.js": "a397ed535400ac14c8c20511387cfe3af4b6f15677fb8028b311858aeff89886",
+    "src/main/wallet/railgun-wallet-storage.js": "39aef793bd8694a6223358f5a672340d10dca635d8bc237dd2e692c39c627a82",
+    "src/main/wallet/railgun-wallet-scan.js": "f89d9bb35d7a02c09ac321be7d8e573abf2862e28041d0e6cc93798466e91050",
+    "src/main/wallet/railgun-wallet-records.js": "99e80f8ae04e096fb3671a02e6d13953999715ad08d5f0ffb24e2eeb7e218cb2",
+    "scripts/railgun-coordinated-electron.js": "86b0700492fe194c384feef9956994551363ecae9bd00af90c8e84180b94fe57",
+    "scripts/fixtures/railgun-coordinated-electron-job.js": "846f32b213027faa0e959205af8815010c63128a9080a5598757d812eeeb1499",
+    "src/main/wallet/railgun-event-projector.js": "dc929e7b50ec8a1b657b6dd14112d117da48167adf7c38d9826fc778a0a51bce",
+    "src/main/wallet/railgun-scan-coordinator.js": "cf8d273bfe5b7d77ff376cc56d08a3dffc9d2781f3b951eb0a164df94dd0a510",
+    "src/main/wallet/railgun-scan-source.js": "fbdf532684d0a798deb7be6443b963d30ecf699b5fb3c080e357bc1cea6eb3fc",
+    "src/main/wallet/railgun-source-ledger.js": "146ed8f869b0d1e3a1b4e2b528e3d3ff1742c545a948aac9f72ca8fda162fd41",
+    "src/main/wallet/railgun-scan-journal.js": "543d939cdd7b27dc1555cc9696812a8d54ea02e1975574cd83a2ac285c623d92",
+    "src/main/wallet/railgun-session-worker.js": "da9f952912571b89567e7259e503bed91580d5bb9f29022a5e22289df8d92859",
+    "src/main/wallet/railgun-public-records.js": "b69ae32debfe8974ee66e3cf831f0958a2687b0a5bd3ee53690d1db900058f5a",
+    "scripts/railgun-log-capture-data.js": "8b1e5d1eb62378f9df347605711a2d315153593d325784094049c7ece0de12ba",
+    "scripts/verify-railgun-sepolia-history.js": "32a1a1842b70d16e5f9ff028b335b864060d04697af64cd8dfee51c74ad0817e",
+    "scripts/railgun-fixture-integrity.js": "ecb3bdd30ed61572ac14444c9579f978f222c35fd203274c25428d5fb313aa93",
+    "scripts/fixtures/railgun-engine/runtime-integrity.json": "dd2415c7d64ac3dc848e0d491b3e281fc30a1df54768252f1b42112837454513",
+    "src/main/wallet/railgun-session.js": "b36c4af051dca7b848e6b6f55ece7e46b77018f51781ec916bad79f700a26b9d",
+    "src/main/wallet/railgun-session-worker-entry.js": "e0e2c586d07ea36c7d0dfd5a7a0e340500b367f18ed03dadcd355939caefa692",
+    "src/main/wallet/railgun-paged-store.js": "68cfdcc3a46c4a9fda4760d4c40fe31ec81456e4a6935ef35608e43d0f69b93c",
+    "src/main/wallet/railgun-frontier.js": "dafeb9425f164bb4e14669048c182bc70088d2fb948a2ac040467ead27038a58",
+    "src/main/wallet/railgun-remote.js": "1ad3b7fad9b14be7e357ea117b7239cf2777ced44d3a3866602fbec20a3c4793",
+    "src/main/wallet/railgun-tree-transactions.js": "7d35a768ad4bd1856639577ae7d264edb2f4487bcf5524b5bc1444ad5219c678",
+    "src/main/wallet/privacy-storage.js": "e16325336a5e9e51191b6e74c0ab8d88d09bc5723b92f0df74118925ba7fad78",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133",
+    "src/main/wallet/railgun-process-guards.js": "f7bbf6220212b62ae7791f9b47c145d95abec9e499b26f7bfe854e950281d958",
+    "src/main/wallet/railgun-process.js": "e9d5d03d8c15fe55ee29751d96d1034fd14ab2ab11726059a8d0ca3ac050d3a6",
+    "src/main/wallet/railgun-process-entry.js": "d17252bdfc9d7b93994eb4df04bdb4d6eff77fd89b1dc569a1b47ed1e0772f1e",
+    "docs/qualification/railgun-sepolia-history-2026-10-02.json": "20e1452bc0aed7991073515c77207c643288f4588c8e1e183c9f240f139f3df8",
+    "scripts/qualify-railgun-live.js": "95fdb9a44223b35b09e1b9cd47defc847b69e01651a08438f0d663adafad06d4",
+    "src/main/networks/private-rpc.js": "2a624200f238aa13c133864b930740328eb24b1582e45c8412d5e5018006add6",
+    "src/main/networks/wallet-tor-transport.js": "54c552a4c89c7e1068b4677286d5fe99d47f5b059ffa372a4d5b969719138bc9",
+    "src/main/tor-manager.js": "14615cd29ba74ab002183c073424afcb7e09a590d8649ac14a41e5cfdffe2ff5",
+    "src/main/wallet/railgun-account-txid.js": "97663ba29a68393028400c278bc3ebcb876de0a456e3e2156bdec335a440bf09",
+    "src/main/wallet/railgun-account-phase.js": "73bc747ae815abda833830ca89658df4e00ea5198580746be8d1d6d4477a5382",
+    "src/main/wallet/railgun-txid-policy.js": "a5315d51666163efb120a3319f52404146cd0ecceb98daff08201ec1778886a8",
+    "src/main/wallet/railgun-txid-projection.js": "6943e35686cbcf933cdcb722b3267e1a5212e4d9e4b02f4fc1ffae91f6fb1aba",
+    "src/main/wallet/railgun-txid-omissions.js": "643940be28f7064ae34ba96d856ec2f6cf37f623bcd5592be81928a11fe83a75",
+    "src/main/wallet/railgun-txid-job.js": "3fe999623b922adcb02e859d31c6929968721958d3608019ef8725541238494f",
+    "src/main/wallet/railgun-txid-runner.js": "31c2ad99f1f5ffa42627b1c24e64e014d07670f7150790b776167e537ddfdad5",
+    "src/main/wallet/railgun-txid-journal.js": "bd2bd877e568d7d5f0a43a1f374d2fe705905c2494344b55cba36e583b2da7c5",
+    "src/main/wallet/railgun-txid-root.js": "6c8f28c7c53206f2458fda7a68dd001d56c0979aa56fdc35c6ec033760ff7a13",
+    "src/main/wallet/railgun-public-services.js": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad"
+  },
+  "torBootstrapMs": 1211,
+  "rpcHosts": [
+    "sepolia.rpc.sentio.xyz"
+  ],
+  "publicPolicy": "8027a111745d275577e507ab39da5c09ba62d1d305c52742ecdfb5d4ff4d6a4a",
+  "generationId": "f942244bc81e7398699d651f93d91a9440d9692d2b67e13970a3dcb5f26eb043",
+  "initialThrough": 11832799,
+  "publicState": {
+    "schema": "public-records-v1",
+    "storeId": "cc120ca9fb0112a7f5228c312f77c231d938ebc1c9c437ee92cea60bab0e1e1d",
+    "trees": [
+      {
+        "tree": 0,
+        "length": 10242,
+        "root": "0x090d851b9be3f06c5288c3196cd4eabcf392a73ffeebfcd6298d19b50cb2c6d3"
+      }
+    ],
+    "commitments": {
+      "count": 10242,
+      "sha256": "36c7b8154ef5556f1ea9155fc5f771a195343c39aaff3d5c22c91627845de6ab"
+    },
+    "nullifiers": {
+      "count": 5634,
+      "sha256": "d86e9b9961234178a7ec2b26e2a3c1d8879028f623536217cb87f9441362ab3d"
+    },
+    "unshields": {
+      "count": 2549,
+      "sha256": "b5dc097378eaa0344960887288b4040f98294d766ba9a17acf8bd204f3985da9"
+    }
+  },
+  "txid": {
+    "policy": "b65311f0b2fbe54e0e1c89c0d17be3a224bbc83b7a35b467290bcc2fe09d3b1b",
+    "publicIdentity": {
+      "generationId": "f942244bc81e7398699d651f93d91a9440d9692d2b67e13970a3dcb5f26eb043",
+      "sourceId": "04bc2066f69c47fc736ba3a64ee154cba2d1ba1c3f72856529d99abfae54d878",
+      "publicId": "cc120ca9fb0112a7f5228c312f77c231d938ebc1c9c437ee92cea60bab0e1e1d"
+    },
+    "initialCount": 0,
+    "pages": [
+      {
+        "count": 100,
+        "root": "1815807baf38d38c344c956562a09c75abee12e03c0d6b9e1ff9d4ef63558af8",
+        "transcript": "f31dacfbc1f0295988608fd0c6254d35ded2923da10b3ecb5642056835243585",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 7572
+      },
+      {
+        "count": 200,
+        "root": "1f17f26307431c971f33b670ae0c8758deedd787d24107936ac6a6714ad95d25",
+        "transcript": "cff609315e0f1383458f96ea890bd3ae70b2443ec0e1344c501d50b17711c17f",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 6195
+      },
+      {
+        "count": 300,
+        "root": "0a6d83d7c4b615a8df3d8cc43c09e4fee322e7389d4ced61e79621b43158f178",
+        "transcript": "bbde25922aa6c726cd3273cccf669fdc107ce1297fde08d91b4499b333e8dae1",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 5899
+      },
+      {
+        "count": 400,
+        "root": "0bf863e3a01a98a287aae32e1aa1627c24494a9d8f3cdd99c0f709886d705d29",
+        "transcript": "2235115d4ace351a855be3f62c615947672818e936632fc09c10088904703846",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3863
+      },
+      {
+        "count": 500,
+        "root": "3061d2fa4ba79bc9dc14034503fdfec508f6b676a0a34748620932567785c7c6",
+        "transcript": "79645cea0210d0ceceea9a483c4714cfadd19b8ccc9dab325de6c791c4bf2f5e",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4756
+      },
+      {
+        "count": 600,
+        "root": "1765168b07f8820d4a6a6ae22e21f9af2dc0d377698ee56ae74edc608e033626",
+        "transcript": "5c19c8864fda356167dee4aa25af266972a037b084297d84e017e0fc17c58911",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3913
+      },
+      {
+        "count": 700,
+        "root": "2bafd22d2641f5ac828058503fc1b31e24f193c5cfc0f1e2775ff696b0cbd86d",
+        "transcript": "d0f6adec05d07588097de39fa2d60931d0b5f38c321fa677c73e55a2519c4fef",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3749
+      },
+      {
+        "count": 800,
+        "root": "1e43ffbbfc017446b4c8516ad86ae6d67cc5bf4b58ceb8234452f9b7034820b7",
+        "transcript": "37539a8629990ea3e869aa0e50965f4c4cb819856bd0c37072d24e8fd4f080e0",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3747
+      },
+      {
+        "count": 900,
+        "root": "2eebe5cea783d73319235afd3d80b8977b318c645787ad47955350d594be9f20",
+        "transcript": "5148222669d283408b788f41000320da0906f938c8a1dc6ea6eac634e8cccafc",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3901
+      },
+      {
+        "count": 1000,
+        "root": "1f7172851ee93e902ba705f09294a85938b11246fb7abf188cbae9de9e41aeef",
+        "transcript": "f4a35538be7a292da19bd8461792ba4757f75b4dc125ce57b981e7006078e701",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3935
+      },
+      {
+        "count": 1100,
+        "root": "2a5810d974f9d10b368bae1d33e47aa7a9d4ea85c0fc9f2bea588a25b7d50b93",
+        "transcript": "87fe6e159c627122280ed5aecf4a83c63206479b650c7f2b69dd3d05ef326771",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3934
+      },
+      {
+        "count": 1200,
+        "root": "0383907f87c1e1cf47ed5c5cec3ec6d93d99f31bb4c48cf6c73e2bc92ec364f3",
+        "transcript": "7f93e3169a4573689fb651b0cee8ca2df546b1b2edf79cef2d2c2dcf838b799d",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3784
+      },
+      {
+        "count": 1300,
+        "root": "1161335e2dd9722216b1aa1b0f764a6f3ca28d2e3e36ec6a141b1853c9fa35f9",
+        "transcript": "cc79b8d977616f4baae335548cfdb2ff08fe37635a386d435b3654e32d18c6ba",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3847
+      },
+      {
+        "count": 1400,
+        "root": "1a80364d33490e50c5e9b922d380c9b1a40d9c05ff1155326c7593806adcad0b",
+        "transcript": "1678f91d6afb142c33dec4b08478868090f8a4d2cf45c2c57e6a12f970f53aea",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3951
+      },
+      {
+        "count": 1500,
+        "root": "0ce7b9b684915284ea519cebd54fac929684faf2274265b0c9813ca46417323c",
+        "transcript": "3372d078dad1776a9d4561ff52e40b452d9477a0b8059e8d63dcdf1337563c0f",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3943
+      },
+      {
+        "count": 1600,
+        "root": "27579b86acdc0c5a77b25529c6f6efd9343e5d0f6df5972058e08cbc92be939b",
+        "transcript": "c432610228ba38fd9537a123c075188981a0b9119ae8f2ac4ad1a8fce56bd104",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4110
+      },
+      {
+        "count": 1700,
+        "root": "1503bd1d8e3d0884abcd784b7a230968707c5dd078a45547c9fa878d1b5d4045",
+        "transcript": "401886cf64b4138023e40797014da5d3323e334809c399c17b01893b8015cd2d",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3977
+      },
+      {
+        "count": 1800,
+        "root": "0be9b42fc730bb86e4f155bf23d6e7534f9dc40bf99ad47a82861d3a2df39d76",
+        "transcript": "1d132430057a4010b3a2dc51cca467e36d3b47c0189718083da341c8a951c1da",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4349
+      },
+      {
+        "count": 1900,
+        "root": "0e447404fc634fbcf91a62250df4a0868bc395923c6878b04ea9a880942cdd64",
+        "transcript": "ac82e554d5dd658e7e1d61f5a16350df3a8e5b192f2bf573cb7a3acad7796706",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3901
+      },
+      {
+        "count": 2000,
+        "root": "049e4a61c53e4ad1858159ac783ca0497c50cdc8f6f19e9c07f2236fd01c46ae",
+        "transcript": "9cb1b2eee328e459d307613c39b6a55c215436570b0d419f1d64388c3457d566",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4070
+      },
+      {
+        "count": 2100,
+        "root": "121eeda73f09b74ebf50f3b11c71cd6d1d9b1530c8f8e68a0d1aa4d747c5ab3a",
+        "transcript": "19c0d232db641e524d35c26e96938494b7993476e59c016263f789d53a6c947f",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4136
+      },
+      {
+        "count": 2200,
+        "root": "03c4aada38a4b8553b30397006b88aab6adcdf1737be1c66a92bc80249a845cb",
+        "transcript": "a099b847c833375794bf80cb9a25763e42f86c7b432aa58cf8bc57fee98281f8",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4117
+      },
+      {
+        "count": 2300,
+        "root": "1b5cc1c614414f397216bf1f7292976d813df205388e203a1bf2cb3f04b89b28",
+        "transcript": "a8b56c53de1bdf261f58d5028d8f71d7c1e5ac4ff58bf2ab8cc11866acb787d4",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3990
+      },
+      {
+        "count": 2400,
+        "root": "18beecb59e6b4d7cd936aaa12fc586afc341b8274cf652edd74755f2e7c269af",
+        "transcript": "d95611c36db5a15a8290782848e05a911a5101c8a170d583bd61836818f0c5f5",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4081
+      },
+      {
+        "count": 2500,
+        "root": "250e541dc0512483695ecacdc6cd962270b02c4ebc7c1266035af8f4fee81cf2",
+        "transcript": "8fd03853bc32438371818453a029e0d22297a756d76ef799966b8fb08fde78b6",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3958
+      },
+      {
+        "count": 2600,
+        "root": "1402158448e9acc36d78426bb998dbf5239316a0f8971fdc2fc19ac157bdb92a",
+        "transcript": "9a1cbc476f4c7592db6d3036e28f90c803c5f291d8acc8fd2d3f8a6b8e9c6755",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3946
+      },
+      {
+        "count": 2700,
+        "root": "2410a3272ef98dc6bd058b5b6f28f98a1820addb24419235aca1612f854effa8",
+        "transcript": "5d2a2fa951039ad19362f2678115707248b8dffbe5b4148e034811770ebdcac2",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3957
+      },
+      {
+        "count": 2800,
+        "root": "1fb4284bb6945574f09080c550819c76d50078c2be46fc4d3aed96824a3d52b1",
+        "transcript": "0f23adee8b3510bc551dd43b5c45715543bd0d5215549eac6c04dac92bbc1565",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3940
+      },
+      {
+        "count": 2900,
+        "root": "2f7f00b89ad715c6b57d01b9be57041a54d71173b46e80aaddfe25041e38e6e1",
+        "transcript": "0f2ccbb905799c000c39bcdab4037adeaf16758ce9806d53eac6713e49d32f0e",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3869
+      },
+      {
+        "count": 3000,
+        "root": "1c5a996b2561bd5f03ee20a74abf18e954ccfe51b41ab4fddbe7a9d86dd6f6a7",
+        "transcript": "093c23d64aa548803e997133a4ed25363ee3e45d44c1bb26bf05d91e9f12940f",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4125
+      },
+      {
+        "count": 3100,
+        "root": "2b93e8eb6b8e42e2e4c54c19920d62b7e785f8b0d640dffc79004ec6c72cbab5",
+        "transcript": "788a5b9170a058decfc61bedbd81bb7b59956337e36e7ab300e8e8862de4444a",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3980
+      },
+      {
+        "count": 3200,
+        "root": "1a5501c82d303045bd764b0c22a77b0eb69e066c452cd1495925a943aa344b0f",
+        "transcript": "8f0e1e474c7d174db48301fc8415c8d897a1be0c2c48c208c3a7602de34909e9",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4016
+      },
+      {
+        "count": 3300,
+        "root": "0ba2a4c71db147c62d7d9c116b884960cbc4cfdf7dce486fd2a78d49f391f266",
+        "transcript": "a30f5d3ab41c60a08265ab716c77b42df497bb482f6f42e175481654a4ca4d1b",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3910
+      },
+      {
+        "count": 3400,
+        "root": "299d372608caec5fa7d64ed2f7f3c5de3a47ea34023bc15c38d284a8cf8ae2e4",
+        "transcript": "e7d319692d6cfc07ef2dabfc0ca8c7c0b622ed0f224b1ca122235837287dea75",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 3961
+      },
+      {
+        "count": 3500,
+        "root": "1f71ac119de1c02bf121a1822d2690412023bce6ccd4d4d02877f423ef104533",
+        "transcript": "8e564fee83c87d54842bcde226a38f5728d0d3761b26279b78b2ce1643c8286b",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4010
+      },
+      {
+        "count": 3600,
+        "root": "156fcac9b808f9351110bbe7cb80e49ac711d46ba7be0a431c46b02bf1ad3350",
+        "transcript": "5b9b8d2e16e3a285d03ca066a6eb4cdadf8632f5f03f11ebf7e65ade53ace081",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4048
+      },
+      {
+        "count": 3700,
+        "root": "2e075ce58305405e19767b7493cfd7e6785b58d955023e62cb7d4488b0e90755",
+        "transcript": "6f58b8733e60dbe078e46ee7e80c48df87fb9e504c49d3aa70419cde5e0f6780",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4053
+      },
+      {
+        "count": 3800,
+        "root": "119e0e3a73669c3ec19b55d247a1839efd32702fb0ccea0418b40d3b2385c68c",
+        "transcript": "136ea4fec62d8bb94d5c3b9fb0a01850c2a16da1da5f5681d11ba9fe8287837b",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4086
+      },
+      {
+        "count": 3900,
+        "root": "1fac8c5e3371da4a7a416d249dd77c0d676702096da152d8ec2cc463ac46d24a",
+        "transcript": "9477b872ff402f9a80031409f882d3da655d445c052cdced4fae41e48f2cffa4",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4056
+      },
+      {
+        "count": 4000,
+        "root": "1c09a5ad431d4c63eeca7e723d66e88ae7bd82a0a5635a115fc6e9490d410bfc",
+        "transcript": "3ff65f94d60904e280004fff3027a3ee2336d852379884cd791e09e09a87bfbb",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4078
+      },
+      {
+        "count": 4100,
+        "root": "1639bb76409ada37f115be5b20a288c337b5b5b316833be40f6811f606c2d1a2",
+        "transcript": "2513e40ae222f3fdeca9f1e9bbf81659e3047b65400c26104b1f9a4582d7a411",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4004
+      },
+      {
+        "count": 4200,
+        "root": "20f25a6f5e593c2383d607f219cfa3b57044e3bf0e3928f196aada61d90d0736",
+        "transcript": "95a7df3ed3ef7bf011a3a8e18694943600d953d7e58ba78f82cdcddb7f05320a",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 4024
+      },
+      {
+        "count": 4230,
+        "root": "17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da",
+        "transcript": "4fbbbd7bbc61df7d7cb8d5402ff382bbf0ed330736fa9308a85bfa418a9b374f",
+        "serviceLatestIndex": 4229,
+        "capacityReached": false,
+        "elapsedMs": 2930
+      }
+    ],
+    "coldReopens": 3,
+    "independentEventCoverage": false,
+    "globalTxidCompleteness": false,
+    "spendingEnabled": false,
+    "checkpoint": {
+      "state": {
+        "version": 1,
+        "count": 4230,
+        "root": "17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da",
+        "after": "0x0000000000000000000000000000000000000000000000000000000000b48dea00000000000000000000000000000000000000000000000000000000000000360000000000000000000000000000000000000000000000000000000000000000",
+        "verificationHash": "0xbc832f1246cebcc238f1aac9315593582b533d5c8aa87589c036a35c9766983b",
+        "branches": [
+          "04d5d4005d5329fae393c44b9434c2778e0def67ff224cc0b790396b918e079b",
+          "2151bc1f7d82b9f98c18b2fa3fdf39dfbd01bf00bab9369ce766b78e789ca2d0",
+          "190bb0ad4f755a8f6f9acdd2574365db2b7038116924f4989bd855eb4e158365",
+          "1b165dfd021be3b3001d8a545f6379b89cc232174e0bffb5d206e9e1d9963a69",
+          "0c62fa9c07bf30d8109a94de08cf2652289adcaa536e9cd92536d88c57e2597d",
+          "199d2f7a8a32cfd5ea3b0959baf24e7b27e61247f3828234595c199e36a7098c",
+          "0025640112658cb23d8b6034b6f3628f03a55a8d372076ce4bb7fa9b739b4974",
+          "06d7ce4c4471cb9f4c45619ce7db91db234bd61b88d5a08194f321728d8f5127",
+          "258222df71d6066733a5ab028782aa92694666fbc7254da6ab1a63201f92b669",
+          "2c715db352d8a9eac80c754f22698ab0369a80e4dc834ecba3afba2a8c775977",
+          "1c33c7264153107f9567b01b4728474d30b534ed5fece79667003f705d46e122",
+          "23adbb9fed2aa71c56a48983fe661c53c0c602a48db5d4cebc851aa98e436558",
+          "0e6ff69178ec72a95123330516472ead0e703a228660d603b90241e64fd572fb",
+          "1b17b9306e81e9c3f77e1784ec074dc3fd75e1ec23aa7946cfb78d115d3648b0",
+          "0604ba4cb1db40ac727e2722a77d72e0e31b20f9c3f0e5c4608fb848aac8aadf",
+          "0d26121b50026e6a9e8774c87c9847e15385aee480247c15de28cd7064dd74f3"
+        ],
+        "breaks": [
+          {
+            "index": 4188,
+            "precedingRoot": "29b951c81d6d0bd08e8b4657d6a6cc6409d9c2e30f6554b1c4d317dfc8fdf368",
+            "blockNumber": 11816741,
+            "txid": "4b78372a9f06a8ab7ccb8a02373d279fc385515139c6ef157d2fe79ee147e932",
+            "graphID": "0x0000000000000000000000000000000000000000000000000000000000b44f2500000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000",
+            "firstNullifier": "0x1c2cf5a682d5ae2b1617b985a8bc31e3ebcd6c730907b7aa9c67d44763402cae",
+            "expected": "0xfbd11184128f1161139df47f15f76a22a3c64dd6fb8dc656421d7133fce42b0a",
+            "actual": "0x39dc4b897e3739eb2793437d1e272514314e08dc9e494d859da6a058d005ada8"
+          }
+        ],
+        "transcript": "4fbbbd7bbc61df7d7cb8d5402ff382bbf0ed330736fa9308a85bfa418a9b374f"
+      },
+      "store": {
+        "schema": "wallet-store-v1",
+        "storeId": "520c35cb22e0187a87876f4bf29ea202bbc5dc131aea2a071457d860302ca7f3",
+        "count": 16932,
+        "bytes": 6315819,
+        "sha256": "b21854879a9e57c9e42dbc2cf38300605948f0ec30c7dff4194a856ffcb1fba9"
+      },
+      "validation": {
+        "index": 4229,
+        "root": "17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da",
+        "service": "sepolia-ppoi-fdi",
+        "accepted": true,
+        "observedAt": "2026-10-03T04:35:38.730Z",
+        "latestIndex": 4229
+      }
+    },
+    "completed": true
+  },
+  "wallet": {
+    "status": "wallet-scanned-unverified",
+    "to": {
+      "number": 11832799,
+      "hash": "0x49d0b93f21f94b98746a29d3bc1f99048ec9805757f3c1191372c0d2e4a34191"
+    },
+    "poi": "unverified",
+    "spendableGranted": false,
+    "assetCount": 0
+  },
+  "passed": true
+}

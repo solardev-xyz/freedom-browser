@@ -1,0 +1,55 @@
+{
+  "observedAt": "2026-10-03T04:10:35.904Z",
+  "sourceSha256": {
+    "scripts/qualify-railgun-txid-root.js": "674e5a08083d0c64bd4d61218140767813b1c807d58400ebfb0cec3e2ecb8c33",
+    "scripts/qualify-ppv2-live.js": "775d3c0dc2b7c138056d25c58da1fa4299065447c849cd8509e83432e1f0e6d2",
+    "src/main/wallet/railgun-txid-root.js": "6c8f28c7c53206f2458fda7a68dd001d56c0979aa56fdc35c6ec033760ff7a13",
+    "src/main/wallet/railgun-public-services.js": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad",
+    "src/main/networks/wallet-tor-transport.js": "54c552a4c89c7e1068b4677286d5fe99d47f5b059ffa372a4d5b969719138bc9",
+    "src/main/networks/isolated-socks.js": "93e0fe9f1a28600926b592091525ae4a0bb77542ae0d1d1184c3c725fc45cfcf",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133"
+  },
+  "projectionReportSha256": "323fa067d7071aac5bbc69e0e94bfdda24c101d7693bb50d23cfc70e77896763",
+  "point": {
+    "index": 4229,
+    "root": "17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da"
+  },
+  "publicQueriesOnly": true,
+  "accountsOpened": 0,
+  "submissions": 0,
+  "globalTxidCompleteness": false,
+  "passed": true,
+  "torManager": "qualification-only-endpoint-shim",
+  "trust": "unverified-service",
+  "transport": {
+    "version": "Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: static-sqlite",
+    "binarySha256": "9d67b310f6d73848a83c5be54454ffc42565076cf46395782d7f7d80fc856d34",
+    "bootstrapMs": 2822,
+    "rpc": "https://sepolia.rpc.sentio.xyz",
+    "transport": "wallet HTTP/TLS over dedicated bundled Arti",
+    "circuitIsolation": "not independently observed in this run"
+  },
+  "acceptance": {
+    "index": 4229,
+    "root": "17a4f2743ea1be1c9560f9c4ac55030916860d9c2784b0cf3df58cfef637e7da",
+    "service": "sepolia-ppoi-fdi",
+    "accepted": true,
+    "observedAt": "2026-10-03T04:10:39.381Z",
+    "latestIndex": 4229
+  },
+  "historicalAcceptance": {
+    "index": 4187,
+    "root": "29b951c81d6d0bd08e8b4657d6a6cc6409d9c2e30f6554b1c4d317dfc8fdf368",
+    "service": "sepolia-ppoi-fdi",
+    "accepted": true,
+    "observedAt": "2026-10-03T04:10:39.550Z",
+    "latestIndex": 4229
+  },
+  "changedRootRejected": true,
+  "rejectedPoint": {
+    "index": 4187,
+    "root": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "forgedAndWrongPointRefused": true,
+  "closedSourceRevokesReceipt": true
+}

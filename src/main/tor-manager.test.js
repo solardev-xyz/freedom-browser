@@ -263,6 +263,7 @@ describe('tor-manager IPC', () => {
     );
     expect(defaultSession.setProxy).toHaveBeenCalled();
     expect(mod.getActivePort()).toBe(9150);
+    expect(mod.getWalletSocksEndpoint()).toBeNull();
     await mod.stopTor();
     await flushMicrotasks();
   });
@@ -279,9 +280,10 @@ describe('tor-manager IPC', () => {
     const spawn = jest.fn();
     let releasePrompt;
     const promptForDefaultExternalCandidateProtocol = jest.fn(
-      () => new Promise((resolve) => {
-        releasePrompt = () => resolve([]);
-      })
+      () =>
+        new Promise((resolve) => {
+          releasePrompt = () => resolve([]);
+        })
     );
     const updateActiveProfileNodeConfig = jest.fn();
 
@@ -372,13 +374,15 @@ describe('tor-manager IPC', () => {
     // the runtime and optional-feature lines. Only the version belongs in the UI.
     const execFile = jest.fn((file, args, options, callback) => {
       callback(null, {
-        stdout: 'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
+        stdout:
+          'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
         stderr: '',
       });
     });
     execFile[require('util').promisify.custom] = () =>
       Promise.resolve({
-        stdout: 'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
+        stdout:
+          'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
         stderr: '',
       });
 
@@ -436,23 +440,24 @@ describe('tor-manager IPC', () => {
 describe('tor-manager .onion routing across sessions', () => {
   const createSessionMock = () => ({ setProxy: jest.fn().mockResolvedValue(undefined) });
 
-  const loadExternalTorManager = () => loadTorManager({
-    enableTorIntegration: true,
-    socksProbeResult: true,
-    activeProfile: {
-      metadata: {
-        nodes: {
-          tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' },
+  const loadExternalTorManager = () =>
+    loadTorManager({
+      enableTorIntegration: true,
+      socksProbeResult: true,
+      activeProfile: {
+        metadata: {
+          nodes: {
+            tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' },
+          },
         },
       },
-    },
-  });
+    });
 
-  const pacCalls = (targetSession) => targetSession.setProxy.mock.calls
-    .filter(([arg]) => arg?.mode === 'pac_script');
+  const pacCalls = (targetSession) =>
+    targetSession.setProxy.mock.calls.filter(([arg]) => arg?.mode === 'pac_script');
 
-  const directCalls = (targetSession) => targetSession.setProxy.mock.calls
-    .filter(([arg]) => arg?.mode === 'direct');
+  const directCalls = (targetSession) =>
+    targetSession.setProxy.mock.calls.filter(([arg]) => arg?.mode === 'direct');
 
   afterEach(() => {
     jest.restoreAllMocks();
@@ -529,6 +534,7 @@ describe('tor-manager .onion routing across sessions', () => {
       });
 
       await mod.startTor({ targetSession });
+      expect(mod.getWalletSocksEndpoint()).toBeNull();
       mod.registerOnionRoutingSession('private-crash', privateSession);
 
       // Arti announces bootstrap, the 1s poller then applies the PAC.
@@ -538,10 +544,21 @@ describe('tor-manager .onion routing across sessions', () => {
 
       expect(pacCalls(targetSession)).toHaveLength(1);
       expect(pacCalls(privateSession)).toHaveLength(1);
+      const walletEndpoint = mod.getWalletSocksEndpoint();
+      // A live development Arti may occupy 19150. The endpoint must match the
+      // port selected and written for this managed process, including fallback.
+      const config = fs.readFileSync(path.join(mod.getTorDataPath(), 'arti.toml'), 'utf8');
+      const selectedPort = Number(config.match(/^socks_listen = (\d+)$/m)?.[1]);
+      expect(selectedPort).toBeGreaterThan(0);
+      expect(selectedPort).toBeLessThanOrEqual(65535);
+      expect(walletEndpoint).toMatchObject({ host: '127.0.0.1', port: selectedPort });
+      expect(walletEndpoint.signal.aborted).toBe(false);
 
       // Arti crashes. Clearing the PAC here would turn .onion into a DIRECT
       // (DNS-leaking) lookup with no user action — fail open.
       artiProcess.emit('close', 1);
+      expect(walletEndpoint.signal.aborted).toBe(true);
+      expect(mod.getWalletSocksEndpoint()).toBeNull();
       await flushMicrotasks();
 
       expect(directCalls(targetSession)).toHaveLength(0);

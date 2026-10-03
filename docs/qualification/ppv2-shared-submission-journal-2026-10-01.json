@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "baseRevision": "5ba560b2d499f28a143699135f4953c68fae9f98",
+  "hostSourceSha256": {
+    "scripts/qualify-ppv2-session.js": "267cfc6d08f5e382b4be031cc34f8ff046c325e9d7245b6de7110a9eb41049f4",
+    "scripts/qualify-ppv2-session.test.js": "f29cc6806620d6af66163d491f14b7d4090c6249b9712ad305a1887c6c9c3537",
+    "src/main/networks/chain-data-router.js": "f5c0212240ea55e88b6402f9b40fcd0480c8a239699816f67a32638579fe2ba9",
+    "src/main/networks/chain-data-router.test.js": "bd4db43a35fe2623f6cfec316a4108269ca0aa9fa0ba83686665db9cf31e3821",
+    "src/main/wallet/ppv2-session.js": "d3afc6797f8ac04668f8ecd24725b0589cd5ab8a334f4e5d30bfc3f9e197b616",
+    "src/main/wallet/ppv2-session.test.js": "24f0aae8db4a9a7c36c617540696eeb2504ae85c43847d8ceb4501828949897d",
+    "src/main/wallet/privacy-storage.js": "e16325336a5e9e51191b6e74c0ab8d88d09bc5723b92f0df74118925ba7fad78",
+    "src/main/wallet/private-submission-journal.js": "06c6a66385638cca3b2d723818814c3587cd0d8d4cfe1167e03c023d60967e82",
+    "src/main/wallet/private-submission-journal.test.js": "c32c06e3057684b3f28a05306b2c0684bb8b274430bb9e1c285245176fcc357b",
+    "src/main/wallet/private-transaction-network.js": "b6938a7a4826496812437e9d1f3b8f4cae9a608dc3354cc0ad06820290490648",
+    "src/main/wallet/transaction-service.js": "44f89e6667f272c5521a3cc77126158e4e92d67213ab65db448bbe832beddd1e",
+    "src/main/wallet/transaction-submission-coordinator.js": "aa5e0692b140324e07e836abbb7c4d53ecf55b662a59132b800e27983bf151db",
+    "src/main/wallet/transaction-submission-coordinator.test.js": "e480475d7ffe1d0e4dd838b3a5cfdf6225b9999f67262777f915a1871afbe512"
+  },
+  "runtime": {
+    "compatibilityPatchSha256": "411957dbb894d0fcb499933a3fb54367befb7fd474bac6098ac07afa32f0133e",
+    "size": 47806236,
+    "sha256": "fa71e37dab6f558a2a73c2903233667f30809201a6ef1af1f2ab17f8971fe19d"
+  },
+  "unit": {
+    "passed": 6766,
+    "skipped": 33,
+    "passingSuites": 322,
+    "skippedSuites": 5,
+    "openlvSeparatelyPassed": 6
+  },
+  "sdk": {
+    "startTime": "2026-10-01T21:32:13.693Z",
+    "duration": 471017.51,
+    "expected": 19,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "lintPassed": true,
+  "liveTransactionsSubmitted": false,
+  "fundedProfileChanged": false,
+  "productionEnabled": false,
+  "limits": [
+    "Sepolia enrollment only; no automatic resolution or unenrollment",
+    "Pre-enrollment/external sends and late remote-wallet broadcasts are outside the journal",
+    "Intent-less ordinary records cannot currently be archived; live capacity64",
+    "A possibly submitted transaction may remain blocked until an explicit reconciliation policy can resolve it",
+    "Whole-profile rollback is not detected by a local authenticated inventory"
+  ]
+}

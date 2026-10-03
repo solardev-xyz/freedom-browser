@@ -44,10 +44,7 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
   app.setPath('userData', process.env.FREEDOM_TEST_USER_DATA);
   // Keep E2E download artifacts inside the per-run temp dir instead of
   // polluting the real ~/Downloads folder.
-  app.setPath(
-    'downloads',
-    require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
-  );
+  app.setPath('downloads', require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads'));
 }
 // Honoured in a packaged build only when the launch also kept a CDP debug port
 // on a scratch profile, i.e. the packaged E2E launcher
@@ -644,6 +641,7 @@ const SHUTDOWN_WATCHDOG_MS = 20_000;
 // the before-quit handler so the handler can bound it and still be the only
 // place that decides when quitting is allowed.
 async function windDown() {
+  require('./wallet/privacy-session').shutdownPrivacySessions();
   const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
 
   // Close all DevTools first to prevent crashes during cleanup
@@ -717,9 +715,11 @@ async function windDown() {
   if (!myotisExits || myotisExits.some((exited) => !exited)) {
     log.warn('[App] Myotis child exit unconfirmed; data-directory reuse remains blocked');
   }
-  log.info(myotisExits && myotisExits.every(Boolean)
-    ? '[App] All processes stopped, quitting...'
-    : '[App] Quitting with Myotis exit unconfirmed');
+  log.info(
+    myotisExits && myotisExits.every(Boolean)
+      ? '[App] All processes stopped, quitting...'
+      : '[App] Quitting with Myotis exit unconfirmed'
+  );
 }
 
 app.on('before-quit', async (event) => {

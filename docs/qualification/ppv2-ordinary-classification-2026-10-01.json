@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "baseRevision": "acfef6e0c3f2a2a875362868eed487cb9fd8bf7c",
+  "hostSourceSha256": {
+    "src/main/networks/chain-data-router.test.js": "ea9f5caa9973820b3696d3502f3edd099601b6f299ac2b520a7b9f40fb81a3a5",
+    "src/main/wallet/ordinary-submission-policy.js": "0651b8dc0644d9974bdd585e8b1ed47bc1d3678e62fb27f02590e2870907aa17",
+    "src/main/wallet/ordinary-submission-policy.test.js": "72fc99f0cdd164640846be2b52b3eec5b9ac8323f87bd3f8d95c5017c3d8d230",
+    "src/main/wallet/ppv2-exit-reservations.js": "3417600ca6237bf713b27cc082ee6923a86354ac6117790741612bd91c0eb6b7",
+    "src/main/wallet/privacy-journal-archiver.js": "e1bccb688c77364641e7bdefee1f3503ece7f0a572533ece98f6ee9d7295de7e",
+    "src/main/wallet/privacy-journal-retention.js": "0fd8f22dae4a462cb8ca79ec0885c039ae15af8d01ea1dcc9ceb08057600ca79",
+    "src/main/wallet/privacy-journal-retention.test.js": "1c1a369d61807c0d8ea76c8777695a6ff8a1a7720fdc9bc91bf4d56b5069d252",
+    "src/main/wallet/private-submission-journal.js": "ed8c0dac252116deb6707be332416d7bbea4e51a72e35264f8f5cebcee00685c",
+    "src/main/wallet/transaction-service.js": "821b20b5c5b5fc9c59f85607cbe9f6517834178e6bb28b67a4922bd23449f9fb",
+    "src/main/wallet/transaction-submission-coordinator.js": "b16e324b5c4aa9a97549eabc1a294d9e2272ca1aca54389588f2d6e610f0f3b3",
+    "src/main/wallet/transaction-submission-coordinator.test.js": "8a838112b51af74cba2df0fe0b55d2644b8575c13f48a423156cc55a5b9035cc"
+  },
+  "unit": {
+    "fullPassed": 6808,
+    "fullSkipped": 33,
+    "openlvSeparatelyPassed": 6,
+    "finalFocusedPassed": 106,
+    "routerPassed": 71,
+    "note": "Four delegation-race cases and the pending-code router case were added after the full run and passed in the final focused runs."
+  },
+  "sdk": {
+    "startTime": "2026-10-01T21:56:06.497Z",
+    "duration": 468934.643,
+    "expected": 19,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "runtimeSha256": "fa71e37dab6f558a2a73c2903233667f30809201a6ef1af1f2ab17f8971fe19d",
+  "lintPassed": true,
+  "claudeReview": "no blockers; private missing-intent enforcement and status-output minimization scheduled as follow-ups",
+  "liveTransactionsSubmitted": false,
+  "fundedProfileChanged": false,
+  "productionEnabled": false
+}

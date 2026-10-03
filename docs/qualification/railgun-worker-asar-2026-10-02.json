@@ -1,0 +1,62 @@
+{
+  "electron": "44.4.5",
+  "node": "v24.21.0",
+  "moduleAbi": "149",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "minimalAsar": true,
+  "fullPackagedApp": false,
+  "createAndReopen": true,
+  "noLiveRpc": true,
+  "publicSyntheticData": true,
+  "archiveSha256": "68b086f587be95c3730e0bc88b6f31b5248acbcc1c129e52de53cffd6078ba23",
+  "native": [
+    {
+      "path": "darwin-arm64.node",
+      "sha256": "98e0e8acd01c632fe5615243e1296af0372826f8783b18fc31c506f73c47459c"
+    },
+    {
+      "path": "darwin-x64.node",
+      "sha256": "e6db154afe9d250e242e2ea3d45d273718ab80a0751d08873637553031752d21"
+    },
+    {
+      "path": "linux-arm64.node",
+      "sha256": "8ba771f284dfd9430e3ef8e2ffc373ed7cc5a92fc7c4c0c7baf39dd672863485"
+    },
+    {
+      "path": "linux-x64.node",
+      "sha256": "6fd4292c6c5f352436cd85c9e1cb286978efa43c20ae350973f83414ced9991d"
+    },
+    {
+      "path": "linuxmusl-arm64.node",
+      "sha256": "09d5927246024b6d93c079ae1079554cbdd85790792342bf24636987dce7a786"
+    },
+    {
+      "path": "linuxmusl-x64.node",
+      "sha256": "d661495d2dd4a026ccda893dd8ea1e2c245c3a681bd28224064953c8a9cc0a72"
+    },
+    {
+      "path": "win32-arm64.node",
+      "sha256": "a47870d114b98baecaff0baa51cfb93d6280d43f064280adaadefafb6949f1bf"
+    },
+    {
+      "path": "win32-x64.node",
+      "sha256": "e21e5efd71fba66578e95b62554d9028064a80dafd7221bf8a8ef155de8d240a"
+    }
+  ],
+  "selectedNative": {
+    "path": "app.asar.unpacked/node_modules/better-sqlite3/prebuilds/darwin-arm64.node",
+    "sha256": "98e0e8acd01c632fe5615243e1296af0372826f8783b18fc31c506f73c47459c"
+  },
+  "sourceSha256": {
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133",
+    "src/main/wallet/railgun-session.js": "69b18896a6125a432fd8d29b668e9b8fb214b4759cdf60b43e14e28aa2649ae2",
+    "src/main/wallet/railgun-session-worker.js": "302bbdf06d56bfb4050fc16ac2c034e52b3ecb30ae3d99f01868b7b4695879e3",
+    "src/main/wallet/railgun-session-worker-entry.js": "b109b5d1864184e279510eab687fad917910bbbae249c964b103eca0f53752d0",
+    "src/main/wallet/railgun-store.js": "0841c7805d16dbe3b94da3be258bcf6f8a3f0badaad82632dc5f4ee444ff56ee",
+    "src/main/wallet/railgun-paged-store.js": "2e0c0eb1f2584a33722e6d8585140366ec9765bae36249a26edc608bb676c7b3",
+    "src/main/wallet/railgun-store-cursor.js": "03549b879ab8d78aeb0ddd1187815b3898ae250ec08369c8cbe6736e14d5661a",
+    "src/main/wallet/railgun-frontier.js": "dafeb9425f164bb4e14669048c182bc70088d2fb948a2ac040467ead27038a58",
+    "scripts/qualify-railgun-storage-asar.js": "b2f23754fabac4ff78bfcdf357c22d5da1181758110647ad4cbaa4ad1a8c4c54"
+  }
+}
