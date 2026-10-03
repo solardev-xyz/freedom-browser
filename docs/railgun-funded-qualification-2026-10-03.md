@@ -1,0 +1,64 @@
+# Railgun funded qualification — October 3, 2026
+
+The dedicated disposable Railgun account now holds 0.01 Sepolia ETH transferred
+from the existing PPv2 qualification account. This is test funding, not a shield.
+The PPv2 vault and prior protocol history remain intact. Its October 1 balance
+is historical; this transfer spends 0.01 ETH plus gas from that balance.
+The transfer publicly links the PPv2 test EOA to the Railgun funding EOA.
+Shielding also exposes the funding EOA, amount and time; the recipient note
+contents remain encrypted.
+
+## Funding evidence
+
+[The send report](qualification/railgun-funding-send-2026-10-03.json) records one
+broadcast attempt over the qualification Tor transport. The transaction is
+`0x431f109703f7c100c54c3c17c59897f718243d69dabe6312e34e2b544cfd67d9`,
+from `0x6d7d00e435919ead9845f25e2c2f85b969d2c331` to the dedicated vault-derived
+Railgun funding EOA `0xc08016f92e3bcee92e8d723eec9af1ac19b1dc6e`.
+
+[The finality report](qualification/railgun-funding-finality-2026-10-03.json)
+records inclusion in block 11,834,322 and explicit resolution at 75 confirmations,
+after the RPC's finalized height covered inclusion. Earlier observations at
+7, 52 and 62 confirmations correctly left it unresolved. This is unverified
+single-provider (Sentio) RPC evidence, not an independent consensus proof.
+
+The sender is the actual vault-backed ordinary signer. The harness pins the
+destination report by SHA-256, enforces a separate disposable destination,
+fixed 0.01 ETH amount, empty calldata, legacy 21,000 gas, undelegated EOAs and
+equal latest/pending nonces. It doubles the gas-price quote within a 0.0005 ETH
+maximum gas-cost budget. Before bytes reach transport, the ordinary submission
+journal records the hash and nonce. A separate non-secret unsigned transfer
+plan is fsynced before that handoff. Explicit identical-hash rebroadcast can
+reproduce the original signed transaction; no new nonce or journal entry is
+created. Its deterministic re-signing and plan checks are unit-tested; the harness
+rebroadcast mode itself was not exercised because the live send was acknowledged. No raw signed bytes or private keys are written to reports.
+
+The account-report file contains a local profile path and remains local. The
+published funding reports contain public test addresses and transaction facts.
+The send report retains an unusable `undefined/tx/...` explorer URL because
+the custom qualification chain has no explorer base; the transaction hash is valid.
+Fourteen transfer-plan tests and lint pass. Claude reviewed the destination,
+signing, journal, replay and finality gates. The latest main-wallet regression
+before these qualification scripts was 8,287 passed / 33 skipped.
+
+## Next funded operation
+
+The live controller requires an existing enrolled profile, the pinned finalized
+funding report and a pinned, completed, source-matched public/TXID/wallet scan.
+It cold-restores the exact public generation and empty wallet before preparing
+one 0.001 ETH shield. It caps gas at 750,000 and maximum gas cost at 0.002 ETH.
+The main-owned operation independently simulates the transaction and checks
+its recipient, current deployment, nonce, balance and reviewed bytes.
+
+Check mode performs a live funded simulation without signing. Shield mode
+permits at most one journaled shield attempt across active and archived journal records;
+an uncertain attempt requires observation, not an automatic resend. Recovery
+works after restart through the dedicated shield matcher and finalized review.
+See [the signing/recovery design](railgun-shield-submission-2026-10-03.md).
+
+The transport here uses a dedicated bundled Arti process through a qualification
+endpoint shim. This does not qualify production Tor-manager ownership or
+per-account circuit isolation. Owned-note POI and TXID provenance, operation-bound
+private proofs/signing, transfer, unshield and output recovery remain required
+to reach the funded PPv2 milestone. No product UI or production activation is
+part of this qualification.
