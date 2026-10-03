@@ -50,20 +50,29 @@ function createRailgunTxidRootSource(handle) {
     active();
     check(!busy);
     const point = checkpoint(input);
+    const started = performance.now();
+    const fresh = () => {
+      active();
+      const now = performance.now();
+      check(now >= started && now - started < MAX_AGE_MS);
+    };
+    const deadline = setTimeout(close, MAX_AGE_MS);
+    deadline.unref?.();
     busy = true;
     try {
       const latest = await services.latestTxid();
-      active();
+      fresh();
       check(latest.index >= point.index);
       if (latest.index === point.index && latest.root !== point.root)
         throw fail('RAILGUN_TXID_ROOT_REJECTED');
       if ((await services.validateTxidRoot({ tree: 0, ...point })) !== true)
         throw fail('RAILGUN_TXID_ROOT_REJECTED');
-      active();
+      fresh();
       const receipt = Object.freeze({});
       receipts.set(receipt, {
         point,
-        at: performance.now(),
+        // Acquisition cannot renew the age of the first service observation.
+        at: started,
         observation: Object.freeze({
           ...point,
           service: 'sepolia-ppoi-fdi',
@@ -77,11 +86,17 @@ function createRailgunTxidRootSource(handle) {
       close();
       throw fail(error?.code === 'RAILGUN_TXID_ROOT_REJECTED' ? error.code : undefined);
     } finally {
+      clearTimeout(deadline);
       busy = false;
     }
   }
-  function assertRoot(receipt, input) {
+  function assertRoot(receipt, input, minimumRemainingMs = 0) {
     active();
+    check(
+      Number.isSafeInteger(minimumRemainingMs) &&
+        minimumRemainingMs >= 0 &&
+        minimumRemainingMs < MAX_AGE_MS
+    );
     const point = checkpoint(input),
       value = receipts.get(receipt),
       now = performance.now();
@@ -90,7 +105,7 @@ function createRailgunTxidRootSource(handle) {
         value.point.index === point.index &&
         value.point.root === point.root &&
         now >= value.at &&
-        now - value.at < MAX_AGE_MS
+        now - value.at + minimumRemainingMs < MAX_AGE_MS
     );
     return value.observation;
   }

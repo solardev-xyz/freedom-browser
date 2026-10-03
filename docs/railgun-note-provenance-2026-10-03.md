@@ -68,3 +68,19 @@ The detached comparison must consume those events. Fresh root/required-list POI,
 remaining-time margins and durable input holds must then be bound before any key
 release. General multi-row creators, post-transaction POI and a funded second
 spend remain unqualified.
+
+## Root freshness prerequisite
+
+TXID-root receipts now age from before the first service request, rather than
+from successful acquisition. Both service responses must arrive within the
+original 60-second budget. The deadline closes transport while the acquisition
+continues to await pending work before releasing its busy state. `assertRoot`
+accepts an optional remaining-lifetime margin; the strict boundary is
+`age + margin < 60000`. Existing callers use margin zero; future signing
+composition must request its own key-release margin explicitly.
+
+Forty-five root/account-TXID/journal tests pass, including thirteen new slow-query,
+clock-regression, margin and drain cases; lint is clean. The Codex reviewer
+independently approved this change. No live service query was made. Because the
+root-source code also belongs to the TXID policy closure, this follow-up changes
+the mirror policy again before the deferred live rebuild.

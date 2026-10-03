@@ -96,3 +96,79 @@ test('snapshots the point before service I/O and refuses concurrent requests', a
   const receipt = await pending;
   expect(source.assertRoot(receipt, expected).index).toBe(100);
 });
+
+test('acquisition age starts before the first query and leaves only its remaining signing margin', async () => {
+  let now = 1000;
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  mockServices.latestTxid.mockImplementation(async () => {
+    now += 20000;
+    return { index: 110, root: '2'.repeat(64) };
+  });
+  mockServices.validateTxidRoot.mockImplementation(async () => {
+    now += 10000;
+    return true;
+  });
+  const receipt = await source.acquire(point);
+  expect(() => source.assertRoot(receipt, point, 29999)).not.toThrow();
+  expect(() => source.assertRoot(receipt, point, 30000)).toThrow();
+  now = 1000 + MAX_AGE_MS;
+  expect(() => source.assertRoot(receipt, point)).toThrow();
+});
+test.each(['first', 'second', 'clock-first', 'clock-second'])(
+  'refuses stale or regressed %s acquisition without renewing freshness',
+  async (mode) => {
+    let now = 1000;
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    mockServices.latestTxid.mockImplementation(async () => {
+      if (mode === 'first') now += MAX_AGE_MS;
+      if (mode === 'clock-first') now--;
+      return { index: 110, root: '2'.repeat(64) };
+    });
+    mockServices.validateTxidRoot.mockImplementation(async () => {
+      now = mode === 'clock-second' ? 999 : 1000 + MAX_AGE_MS;
+      return true;
+    });
+    await expect(source.acquire(point)).rejects.toMatchObject({
+      code: 'RAILGUN_TXID_ROOT_REFUSED',
+    });
+    if (mode.endsWith('first')) expect(mockServices.validateTxidRoot).not.toHaveBeenCalled();
+    expect(controller.signal.aborted).toBe(true);
+  }
+);
+test.each([-1, 0.5, NaN, Infinity, MAX_AGE_MS, '1'])(
+  'refuses invalid remaining lifetime %s',
+  async (margin) => {
+    const receipt = await source.acquire(point);
+    expect(() => source.assertRoot(receipt, point, margin)).toThrow();
+  }
+);
+test.each(['first', 'second'])(
+  'deadline closes transport and drains pending %s request',
+  async (stage) => {
+    jest.useFakeTimers();
+    try {
+      let release,
+        settled = false;
+      mockServices[stage === 'first' ? 'latestTxid' : 'validateTxidRoot'].mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          })
+      );
+      const pending = source.acquire(point).catch((error) => {
+        settled = true;
+        return error;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(MAX_AGE_MS);
+      expect(controller.signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      release(stage === 'first' ? { index: 110, root: '2'.repeat(64) } : true);
+      expect(await pending).toMatchObject({ code: 'RAILGUN_TXID_ROOT_REFUSED' });
+      if (stage === 'first') expect(mockServices.validateTxidRoot).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  }
+);
