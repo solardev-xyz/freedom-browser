@@ -20,3 +20,22 @@ Earlier published updates and exact historical evidence are retained in the [pro
 ---
 
 This is a historical status snapshot, superseded by the current continuation.
+
+
+---
+
+## Superseded public update through inventory commit 5d95d543
+
+## October 3 continuation: enrolled Railgun public scanning and recovery
+
+[The enrolled public pipeline](https://github.com/solardev-xyz/freedom-browser/blob/9bf4ce55fb8907567842978bea78c0dadf3947ff/docs/railgun-account-public-2026-10-03.md) now composes vault-derived source/public/wallet stores, a versioned policy-bound scan journal, authenticated engine jobs and current-Kohaku viewing. Main owns acquisition, keys, storage and coordinator authority; no renderer flow or spending feature is enabled. Public ABI decoding uses ethers 6.14.3 inside the authenticated engine archive, without downgrading the application's dependencies.
+
+**Qualified at `9bf4ce55`:** 12 composed Electron cases cover eight scan/restore/rebuild windows, recovery after one acknowledged public storage commit, interrupted wallet advance/publication and obsolete wallet candidate replacement; viewing-key handoff cancellation also passes. The public-commit fault is an injected broker error, not SIGKILL or exhaustive phase-crash coverage. A separate 121-range archived Sepolia replay matches all 10,194 leaves, 5,614 nullifiers, 2,546 unshields, the exact tree root and cold-restored state. Reports contain source hashes and runtime provenance. Full native regression: **7,904 passed / 33 skipped**; 97 focused tests and lint pass. These are controlled archived/synthetic observations, not live Railgun acquisition or receipt-proven completeness. Balances remain unverified; no Railgun funds have moved.
+
+The earlier vault identity, independent prover, artifact qualification and enrollment remain documented in [the previous progress summary](https://github.com/solardev-xyz/freedom-browser/blob/5d95d543e30cab796103e289296f248e3ff71ff0/docs/privacy-progress-history-2026-10-03.md). Staged store initialization (`62ed058b`), wallet composition (`ba374eff`) and enrolled source-ledger ownership (`e8441ac3`) precede the new public pipeline. The [PPv2 seven-transaction Sepolia lifecycle](https://github.com/solardev-xyz/freedom-browser/blob/9bf4ce55fb8907567842978bea78c0dadf3947ff/docs/ppv2-live-lifecycle-2026-10-01.md) remains the funded baseline; the original funded profile has not been touched by this Railgun work.
+
+**Before funding Railgun:** make public caches rebuildable across policy changes and retire closed inactive wallet generations without deleting their retained files. [Inventory overflow now refuses safely](https://github.com/solardev-xyz/freedom-browser/blob/5d95d543e30cab796103e289296f248e3ff71ff0/docs/privacy-inventory-capacity-2026-10-03.md), preserving the marker and existing PPv2 reads/writes at the shared 4,096-file boundary. The current public journal refuses a changed policy and the wallet catalog has eight listed generation slots. These are explicit availability gates, not completed recovery features. Then continue live source/governance advancement, TXID/POI/relay qualification, intent-bound proofs/signing, durable reservations and funded recoverable shield/private-transfer/unshield. Governance events after block 11,829,346 still require requalification. One full account currently occupies all three storage-worker slots. Distribution/licensing, platform coverage, dependency and upstream security gates remain open; product UX is still deferred.
+
+Claude reviewed the implementation, interruption semantics, evidence and this summary. Current `main` was fetched and already contained in the branch; no new merge or node refresh was needed. [Source-boundary CI](https://github.com/solardev-xyz/freedom-browser/actions/runs/37082815649) passed at `e8441ac3`; [public-pipeline CI](https://github.com/solardev-xyz/freedom-browser/actions/runs/37085106484) was still in progress at this update. The prior reconciliation-test timeout teardown was reproduced and fixed in `cdceb051`; [the investigation](https://github.com/solardev-xyz/freedom-browser/blob/cdceb0517a95a45384d4a4a36479a3d2bd7952fa/docs/privacy-ci-timeout-2026-10-03.md) records the timeout reproduction and fix. It is separate from the earlier `069c7ca0` macOS onboarding failure, which remains recorded as a failure.
+
+Historical roadmap and implementation detail follow; newer continuation notes supersede their earlier status claims.
