@@ -47,6 +47,19 @@ async function main() {
     cancelledViewingMessages = 0,
     cancelledViewingProcessClosed = false,
     cancelledViewingProcess = null;
+  const stagingQualification = process.env.FREEDOM_RAILGUN_TRANSACT_STAGING === '1';
+  if (stagingQualification) assert.ok(composition === 'enrolled' && proverArchive);
+  let stagingGuard = false;
+  const forbiddenStaging = { signerLaunches: 0, spendingKeys: 0, transports: 0, rpc: 0 };
+  const transport = require('../src/main/networks/wallet-tor-transport');
+  const originalTransport = transport.createWalletTorTransport;
+  transport.createWalletTorTransport = (...args) => {
+    if (stagingGuard) {
+      forbiddenStaging.transports++;
+      throw Error('External transport forbidden during synthetic staging');
+    }
+    return originalTransport(...args);
+  };
   const privateOperationJobs = [];
   let spendingReplyObserver = null,
     productionPrivateOperation = null;
@@ -73,6 +86,13 @@ async function main() {
     const runtime = require('../src/main/wallet/railgun-process'),
       originalStart = runtime.startRailgunProcess;
     runtime.startRailgunProcess = (options) => {
+      if (
+        stagingGuard &&
+        options.filename === require.resolve('../src/main/wallet/railgun-spend-sign-job')
+      ) {
+        forbiddenStaging.signerLaunches++;
+        throw Error('Signer forbidden during synthetic staging');
+      }
       if (options.filename === require.resolve('../src/main/wallet/railgun-wallet-job'))
         walletRestores.push(JSON.parse(options.input).restore);
       if (!options.broker) return originalStart(options);
@@ -86,6 +106,10 @@ async function main() {
           async dispatch(wire) {
             messages++;
             const message = JSON.parse(wire);
+            if (stagingGuard && message.method === 'key' && message.purpose === 'spending-sign') {
+              forbiddenStaging.spendingKeys++;
+              throw Error('Spending key forbidden during synthetic staging');
+            }
             if (message.method === 'key' && message.purpose === 'private-prepare')
               privateViewingKeys++;
             if (message.method === 'key' && message.purpose === 'private-receive')
@@ -202,8 +226,21 @@ async function main() {
         );
     accountParent = require('../src/main/wallet/privacy-session').openPrivacySession();
   }
-  const sourceBytes = fs.readFileSync(sourceFilename),
-    { logs, foreignTransfers } = JSON.parse(sourceBytes);
+  const originalSourceBytes = fs.readFileSync(sourceFilename);
+  let sourceBytes = originalSourceBytes,
+    stagingRow;
+  if (stagingQualification) {
+    const derived = require('./fixtures/railgun-transact-staging-source').derive(
+      JSON.parse(originalSourceBytes)
+    );
+    stagingRow = derived.row;
+    sourceBytes = Buffer.from(JSON.stringify(derived.source) + '\n');
+    fs.writeFileSync(path.join(directory, 'derived-synthetic-source.json'), sourceBytes, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+  }
+  const { logs, foreignTransfers } = JSON.parse(sourceBytes);
   const hash = (n) => '0x' + n.toString(16).padStart(64, '0');
   const capture = {
     logSetSha256: sha(sourceBytes),
@@ -234,6 +271,10 @@ async function main() {
       release: () => {},
       assertActive: active,
       request: async (method, params, validate) => {
+        if (stagingGuard && !['eth_getLogs', 'eth_getBlockByNumber'].includes(method)) {
+          forbiddenStaging.rpc++;
+          throw Error('Private RPC forbidden during synthetic staging');
+        }
         if (process.env.RAILGUN_REPLAY_DIAGNOSTIC)
           console.log('archived-rpc', method, JSON.stringify(params));
         active();
@@ -516,6 +557,19 @@ async function main() {
     'src/main/wallet/railgun-process-entry.js',
     'docs/qualification/railgun-sepolia-history-2026-10-02.json',
   ];
+  for (const file of [
+    'scripts/fixtures/railgun-transact-staging-source.js',
+    'scripts/fixtures/railgun-transact-staging-row.js',
+    'scripts/fixtures/railgun-enrolled-transact-staging.js',
+    ...[
+      'railgun-transact-staging',
+      'railgun-account-txid',
+      'railgun-note-provenance',
+      'railgun-note-provenance-job',
+      ...require('../src/main/wallet/railgun-txid-policy').SOURCES,
+    ].map((name) => 'src/main/wallet/' + name + '.js'),
+  ])
+    if (!sources.includes(file)) sources.push(file);
   const hashes = () =>
     Object.fromEntries(
       sources.map((file) => [file, sha(fs.readFileSync(path.join(__dirname, '..', file)))])
@@ -996,7 +1050,32 @@ async function main() {
                 }
               }
             }
+            let transactStaging;
+            if (stagingQualification && stage === 30 && attempt === 'restore') {
+              stagingGuard = true;
+              try {
+                transactStaging =
+                  await require('./fixtures/railgun-enrolled-transact-staging').qualify({
+                    account: opened,
+                    owners: { identity: accountIdentity, enrollment, coordinator },
+                    archive: accountArchive,
+                    proverArchive,
+                    artifactDirectory,
+                    row: stagingRow,
+                  });
+              } finally {
+                stagingGuard = false;
+              }
+              assert.deepEqual(forbiddenStaging, {
+                signerLaunches: 0,
+                spendingKeys: 0,
+                transports: 0,
+                rpc: 0,
+              });
+              transactStaging.forbiddenAttempts = { ...forbiddenStaging };
+            }
             runs.push({
+              ...(transactStaging ? { transactStaging } : {}),
               stage,
               attempt,
               mode,
@@ -1844,6 +1923,13 @@ async function main() {
           submissions: 0,
           anchor: capture.report.anchor,
           logSetSha256: capture.logSetSha256,
+          ...(stagingQualification
+            ? {
+                originalInputSha256: sha(originalSourceBytes),
+                derivedInputSha256: sha(sourceBytes),
+                derivedCreatorHistory: true,
+              }
+            : {}),
           requests,
           applications,
           publicPolicy: enrollment ? publicAccount.policy : null,
