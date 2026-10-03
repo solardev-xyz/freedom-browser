@@ -4,6 +4,7 @@
  */
 const accounts = new WeakMap();
 const privateWindows = new WeakMap();
+const privateCreators = new WeakMap();
 const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
@@ -242,6 +243,7 @@ async function openRailgunAccountWallet({
             check(entry && entry.operationSignal === undefined);
             check(signal instanceof AbortSignal);
             entry.operationSignal = signal;
+            entry.transactionDigest = transactionDigest;
             assertRailgunAccountPrivateWindow(privateWindow, account, owners);
             check(!signal.aborted);
             const response = await onIntent(normalized, signal, privateWindow, normalizedCapsule);
@@ -271,6 +273,58 @@ async function openRailgunAccountWallet({
               enrollment,
               coordinator,
               live: true,
+              captureCreator() {
+                const owners = { identity, enrollment, coordinator };
+                const assertCurrent = () =>
+                  assertRailgunAccountPrivateWindow(privateWindow, account, owners);
+                assertCurrent();
+                check(!windowEntry.creatorAttempted);
+                windowEntry.creatorAttempted = true;
+                const selected = before.ownedPoi.filter(
+                  (v) => v.id === `${privateIntent.tree}:${privateIntent.position}`
+                );
+                check(selected.length === 1 && selected[0].type === 'Transact');
+                const received = before.read.received.filter(
+                  (v) => v.id === `${privateIntent.tree}:${privateIntent.position}`
+                );
+                check(
+                  received.length === 1 &&
+                    received[0].tree === privateIntent.tree &&
+                    received[0].position === privateIntent.position &&
+                    received[0].hash === selected[0].hash &&
+                    received[0].txid === selected[0].txid &&
+                    received[0].spentTxid === false
+                );
+                const note = {
+                  type: 'Transact',
+                  txid: selected[0].txid,
+                  hash: selected[0].hash,
+                  tree: privateIntent.tree,
+                  position: privateIntent.position,
+                  blockNumber: selected[0].blockNumber,
+                };
+                windowEntry.creatorWork = (async () => {
+                  const observation =
+                    await require('./railgun-private-creator').collectRailgunPrivateCreator({
+                      note,
+                      checkpoint: snapshot.checkpoint,
+                      visit: snapshot.visitSource,
+                      assertCurrent,
+                    });
+                  assertCurrent();
+                  check(observation.checkpointHash === captured);
+                  const receipt = Object.freeze({});
+                  const evidence = Object.freeze({
+                    ...observation,
+                    transactionDigest: windowEntry.transactionDigest,
+                    eventSourceAuthenticated: true,
+                  });
+                  privateCreators.set(receipt, { privateWindow, evidence });
+                  return Object.freeze({ receipt, observation: evidence });
+                })();
+                windowEntry.creatorWork.catch(() => {});
+                return windowEntry.creatorWork;
+              },
               assertCurrent() {
                 phase.assertCurrent();
                 check(busy && !signal.aborted);
@@ -305,8 +359,11 @@ async function openRailgunAccountWallet({
             ...(privateIntent ? { privateIntent } : {}),
             ...(privateOperation ? { privateOperation } : {}),
           });
-          return scan.finally(() => {
-            if (windowEntry) windowEntry.live = false;
+          return scan.finally(async () => {
+            if (windowEntry) {
+              windowEntry.live = false;
+              if (windowEntry.creatorWork) await Promise.allSettled([windowEntry.creatorWork]);
+            }
           });
         });
         const freshCoverage = await coverageStore.read(renewed.value.receipt);
@@ -429,6 +486,22 @@ function assertRailgunAccountPrivateWindow(token, account, owners, minimumRemain
   check(now >= entry.data.started && now + minimumRemainingMs < entry.data.deadline);
   return entry.data;
 }
+function readRailgunAccountPrivateCreator(window, account, owners) {
+  assertRailgunAccountPrivateWindow(window, account, owners);
+  return privateWindows.get(window).captureCreator();
+}
+function assertRailgunAccountPrivateCreator(
+  receipt,
+  window,
+  account,
+  owners,
+  minimumRemainingMs = 0
+) {
+  assertRailgunAccountPrivateWindow(window, account, owners, minimumRemainingMs);
+  const value = privateCreators.get(receipt);
+  check(value && value.privateWindow === window);
+  return value.evidence;
+}
 module.exports = {
   openRailgunAccountWallet,
   getRailgunAccountWalletPolicy,
@@ -437,4 +510,6 @@ module.exports = {
   prepareRailgunAccountPrivateIntent,
   operateRailgunAccountPrivateIntent,
   assertRailgunAccountPrivateWindow,
+  readRailgunAccountPrivateCreator,
+  assertRailgunAccountPrivateCreator,
 };

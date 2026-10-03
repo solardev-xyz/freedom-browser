@@ -797,3 +797,150 @@ test('real account normalizers refuse a capsule with a different owned note hash
   expect(onIntent).not.toHaveBeenCalled();
   expect(mockSession.signal.aborted).toBe(true);
 });
+
+function creatorFixture() {
+  const f = operationFixture();
+  Object.assign(f.owned.ownedPoi[0], {
+    type: 'Transact',
+    txid: '0x' + '4'.repeat(64),
+    blockNumber: 10,
+  });
+  Object.assign(f.owned.read.received[0], {
+    hash: f.owned.ownedPoi[0].hash,
+    txid: f.owned.ownedPoi[0].txid,
+  });
+  const visit = jest.fn(async (visitor) => {
+    await visitor({ marker: 'captured' });
+    return { count: 1, bytes: 1 };
+  });
+  options.coordinator.withPublicSnapshot = async (run) => ({
+    value: await run({ checkpoint: {}, signal: scope.signal, visitSource: visit }),
+    evidence: {},
+  });
+  const observation = Object.freeze({
+    checkpointHash: '{}',
+    events: Object.freeze([]),
+    spendingEnabled: false,
+  });
+  const collect = jest
+    .spyOn(require('./railgun-private-creator'), 'collectRailgunPrivateCreator')
+    .mockImplementation(async (input) => {
+      input.assertCurrent();
+      expect(input.note).toEqual({
+        type: 'Transact',
+        txid: f.owned.ownedPoi[0].txid,
+        hash: f.owned.ownedPoi[0].hash,
+        tree: 0,
+        position: 1,
+        blockNumber: 10,
+      });
+      expect(input.visit).toBe(visit);
+      await input.visit(() => {});
+      input.assertCurrent();
+      return observation;
+    });
+  return { ...f, collect, visit, observation };
+}
+test('creator capture uses the retained snapshot once and issues only window-bound source evidence', async () => {
+  const {
+    readRailgunAccountPrivateCreator: capture,
+    assertRailgunAccountPrivateCreator: attest,
+  } = require('./railgun-account-wallet');
+  const f = creatorFixture(),
+    opened = await openRailgunAccountWallet(options);
+  let token, receipt;
+  await operateRailgunAccountPrivateIntent(opened, options, f.request, {
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+    onIntent: async (_offer, _signal, window) => {
+      token = window;
+      const pending = capture(window, opened, options);
+      expect(() => capture(window, opened, options)).toThrow();
+      const value = await pending;
+      receipt = value.receipt;
+      expect(value.observation).toEqual({
+        ...f.observation,
+        transactionDigest: 'digest',
+        eventSourceAuthenticated: true,
+      });
+      expect(attest(receipt, window, opened, options)).toBe(value.observation);
+      expect(() => attest({ ...receipt }, window, opened, options)).toThrow();
+      expect(() => attest(receipt, {}, opened, options)).toThrow();
+      expect(() => attest(receipt, window, {}, options)).toThrow();
+      for (const key of ['identity', 'enrollment', 'coordinator'])
+        expect(() => attest(receipt, window, opened, { ...options, [key]: {} })).toThrow();
+      expect(() => attest(receipt, window, opened, options, 175000)).toThrow();
+      return { status: 'refused' };
+    },
+  });
+  expect(f.visit).toHaveBeenCalledTimes(1);
+  expect(f.collect).toHaveBeenCalledTimes(1);
+  expect(() => attest(receipt, token, opened, options)).toThrow();
+  expect(() => capture(token, opened, options)).toThrow();
+  await opened.close();
+});
+test.each(['shield', 'spent', 'hash', 'transaction', 'duplicate'])(
+  'creator capture refuses %s selected ownership before visiting',
+  async (mode) => {
+    const { readRailgunAccountPrivateCreator: capture } = require('./railgun-account-wallet');
+    const f = creatorFixture(),
+      opened = await openRailgunAccountWallet(options);
+    await operateRailgunAccountPrivateIntent(opened, options, f.request, {
+      proverArchive: '/prover.asar',
+      artifactDirectory: '/artifacts',
+      onIntent: async (_offer, _signal, window) => {
+        if (mode === 'shield') f.owned.ownedPoi[0].type = 'Shield';
+        if (mode === 'spent') f.owned.read.received[0].spentTxid = '0x' + '5'.repeat(64);
+        if (mode === 'hash') f.owned.read.received[0].hash = '0x' + '5'.repeat(64);
+        if (mode === 'transaction') f.owned.read.received[0].txid = '0x' + '5'.repeat(64);
+        if (mode === 'duplicate') f.owned.read.received.push({ ...f.owned.read.received[0] });
+        expect(() => capture(window, opened, options)).toThrow();
+        return { status: 'refused' };
+      },
+    });
+    expect(f.visit).not.toHaveBeenCalled();
+    expect(f.collect).not.toHaveBeenCalled();
+    await opened.close();
+  }
+);
+test('a handler cannot release the phase or leak rejection from an unobserved creator capture', async () => {
+  const { readRailgunAccountPrivateCreator: capture } = require('./railgun-account-wallet');
+  const f = creatorFixture(),
+    opened = await openRailgunAccountWallet(options);
+  let release,
+    entered,
+    token,
+    settled = false;
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  f.collect.mockImplementation(async () => {
+    await new Promise((resolve) => {
+      release = resolve;
+    });
+    return f.observation;
+  });
+  const pending = operateRailgunAccountPrivateIntent(opened, options, f.request, {
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+    onIntent: async (_offer, _signal, window) => {
+      token = window;
+      void capture(window, opened, options);
+      entered();
+      return { status: 'refused' };
+    },
+  });
+  const done = pending.then((v) => {
+    settled = true;
+    return v;
+  });
+  await ready;
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(() => assertRailgunAccountPrivateWindow(token, opened, options)).toThrow();
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+  release();
+  expect((await done).operation.status).toBe('refused');
+  await new Promise((resolve) => setImmediate(resolve));
+  await opened.close();
+});
