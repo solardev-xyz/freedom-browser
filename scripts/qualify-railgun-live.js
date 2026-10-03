@@ -1,6 +1,6 @@
 /** Read-only enrolled Railgun acquisition through managed Tor. Uses an existing
  * disposable qualification vault; never creates/replaces a vault or submits a tx.
- * electron script archive profile anchor-report new-output mode [range-limit] [txid-page-limit]
+ * electron script archive profile anchor-report new-output mode [range-limit] [txid-page-limit] [restore-windows]
  * mode: enroll (first account), new (rebuild), pending (resume), active (continue).
  */
 const fs = require('fs'),
@@ -16,10 +16,18 @@ process.on('unhandledRejection', () => {
   cancelLive();
 });
 async function main() {
-  const [archive, profileDirectory, anchorFilename, output, mode, limitText, txidText] =
-    process.argv.slice(2);
+  const [
+    archive,
+    profileDirectory,
+    anchorFilename,
+    output,
+    mode,
+    limitText,
+    txidText,
+    windowsText,
+  ] = process.argv.slice(2);
   assert.ok(
-    process.argv.length <= 9 &&
+    process.argv.length <= 10 &&
       [archive, profileDirectory, anchorFilename, output].every(
         (v) => typeof v === 'string' && path.isAbsolute(v)
       )
@@ -29,6 +37,8 @@ async function main() {
   assert.ok(Number.isSafeInteger(limit) && limit >= 1 && limit <= 2000);
   const txidLimit = txidText === undefined ? 0 : Number(txidText);
   assert.ok(Number.isSafeInteger(txidLimit) && txidLimit >= 0 && txidLimit <= 100);
+  const restoreWindows = windowsText === undefined ? 0 : Number(windowsText);
+  assert.ok(Number.isSafeInteger(restoreWindows) && restoreWindows >= 0 && restoreWindows <= 2);
   assert.ok(!app.isPackaged && process.env.FREEDOM_WALLET_TOR_EXPERIMENT === '1');
   assert.ok(
     !process.env.FREEDOM_IDENTITY_DATA && fs.realpathSync(profileDirectory) === profileDirectory
@@ -102,13 +112,13 @@ async function main() {
       ...qualifiedSources,
       'scripts/qualify-railgun-live.js',
       'src/main/wallet/railgun-owned-poi-records.js',
+      'src/main/wallet/railgun-account-phase.js',
       'src/main/networks/private-rpc.js',
       'src/main/networks/wallet-tor-transport.js',
       'src/main/tor-manager.js',
       ...(txidLimit
         ? [
             'src/main/wallet/railgun-account-txid.js',
-            'src/main/wallet/railgun-account-phase.js',
             ...require('../src/main/wallet/railgun-txid-policy').SOURCES.map(
               (name) => 'src/main/wallet/' + name + '.js'
             ),
@@ -345,6 +355,41 @@ async function main() {
         spendableGranted: false,
         assetCount: (await wallet.view.balance()).length,
       };
+      if (restoreWindows) {
+        stage = 'wallet-readonly';
+        const {
+          restoreRailgunAccountWallet,
+          readRailgunAccountOwnedNotes,
+        } = require('../src/main/wallet/railgun-account-wallet');
+        const owners = { identity, enrollment, coordinator: publicAccount.coordinator };
+        report.wallet.readOnlyWindows = [];
+        for (let index = 0; index < restoreWindows; index++) {
+          const oldView = wallet.view,
+            before = readRailgunAccountOwnedNotes(wallet, owners);
+          const balances = await oldView.balance(),
+            started = performance.now();
+          const restoring = restoreRailgunAccountWallet(wallet, owners);
+          assert.throws(() => readRailgunAccountOwnedNotes(wallet, owners));
+          const nextView = await restoring;
+          assert.equal(nextView, wallet.view);
+          assert.notEqual(nextView, oldView);
+          await assert.rejects(oldView.balance());
+          const after = readRailgunAccountOwnedNotes(wallet, owners);
+          assert.equal(after.checkpointHash, before.checkpointHash);
+          assert.deepEqual(after.ownedPoi, before.ownedPoi);
+          assert.deepEqual(after.trees, before.trees);
+          assert.deepEqual(await nextView.balance(), balances);
+          report.wallet.readOnlyWindows.push({
+            elapsedMs: Math.round(performance.now() - started),
+            checkpointUnchanged: true,
+            ownedProjectionUnchanged: true,
+            balanceUnchanged: true,
+            busyOwnedReadRefused: true,
+            oldViewRefused: true,
+            currentViewReplaced: true,
+          });
+        }
+      }
       report.completed = true;
     }
     assert.deepEqual(hashes(), report.sourceSha256);

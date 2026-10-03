@@ -12,6 +12,9 @@ jest.mock('./railgun-scan-coordinator', () => ({
   assertRailgunScanCoordinator: (...args) => mockAssertCoordinator(...args),
 }));
 jest.mock('./railgun-wallet-policy', () => ({ getRailgunWalletPolicy: () => '2'.repeat(64) }));
+jest.mock('./railgun-wallet-coverage', () => ({
+  checkpointHash: (value) => JSON.stringify(value),
+}));
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (v) => v === mockEnrollment,
 }));
@@ -44,6 +47,7 @@ const {
   openRailgunAccountWallet,
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
+  restoreRailgunAccountWallet,
 } = require('./railgun-account-wallet');
 let scope, options, directory, generation, events, state;
 beforeEach(() => {
@@ -151,6 +155,10 @@ beforeEach(() => {
       events.push('scan');
       return { receipt: {}, coverage: {} };
     }),
+    restoreReadOnly: jest.fn(async () => {
+      events.push('read-only-restore');
+      return { receipt: {}, coverage: {}, readOnly: { readOnly: true, writeAttempts: 0 } };
+    }),
   };
   mockView = {};
   mockRead.mockImplementation(() => {
@@ -228,6 +236,104 @@ test('active restoration authenticates the expected store before journal constru
   await opened.close();
   expect(mockJournal.close).toHaveBeenCalled();
   expect(opened.signal.aborted).toBe(true);
+});
+
+test('account restoration swaps its view and owned receipt only after journal revalidation', async () => {
+  const opened = await openRailgunAccountWallet(options),
+    originalView = opened.view;
+  const originalReceipt = mockRead.mock.calls[0][0].receipt;
+  mockRead.mockImplementation(() => {
+    events.push('new-view');
+    return { restored: true };
+  });
+  events.length = 0;
+  const restoredView = await restoreRailgunAccountWallet(opened, options);
+  expect(events).toEqual(['read-only-restore', 'coverage-read', 'revalidate', 'new-view']);
+  expect(opened.view).toBe(restoredView);
+  expect(opened.view).not.toBe(originalView);
+  readRailgunAccountOwnedNotes(opened, options);
+  const renewedReceipt = mockRunner.readOwned.mock.calls.at(-1)[0];
+  expect(renewedReceipt).not.toBe(originalReceipt);
+  expect(mockRead.mock.calls.at(-1)[0].receipt).toBe(renewedReceipt);
+  expect(mockJournal.revalidate.mock.calls.at(-1)[0].receipt).toBe(renewedReceipt);
+  expect(mockCoverage.write).not.toHaveBeenCalled();
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+  await opened.close();
+});
+test.each(['identity', 'enrollment', 'coordinator'])(
+  'foreign %s cannot restore an account',
+  async (owner) => {
+    const opened = await openRailgunAccountWallet(options);
+    expect(() => restoreRailgunAccountWallet(opened, { ...options, [owner]: {} })).toThrow();
+    expect(() => restoreRailgunAccountWallet({}, options)).toThrow();
+    expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
+    await opened.close();
+  }
+);
+test('a changed checkpoint refuses before the read-only job and closes the account', async () => {
+  const opened = await openRailgunAccountWallet(options);
+  options.coordinator.withPublicSnapshot = async (run) => ({
+    value: await run({ checkpoint: { changed: true } }),
+    evidence: {},
+  });
+  await expect(restoreRailgunAccountWallet(opened, options)).rejects.toThrow();
+  expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
+  expect(opened.signal.aborted).toBe(true);
+});
+test('coordinator contention before entering the window leaves the current account usable', async () => {
+  const opened = await openRailgunAccountWallet(options),
+    original = opened.view;
+  options.coordinator.withPublicSnapshot = async () => {
+    throw Error('busy');
+  };
+  await expect(restoreRailgunAccountWallet(opened, options)).rejects.toThrow();
+  expect(opened.view).toBe(original);
+  expect(opened.signal.aborted).toBe(false);
+  expect(() => readRailgunAccountOwnedNotes(opened, options)).not.toThrow();
+  expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
+  expect(mockCoverage.close).not.toHaveBeenCalled();
+  await opened.close();
+});
+test.each(['job', 'coverage', 'journal', 'view'])(
+  'failed %s cannot expose a partial replacement',
+  async (stage) => {
+    const opened = await openRailgunAccountWallet(options),
+      original = opened.view;
+    const refuse = () => {
+      throw Error('refused');
+    };
+    if (stage === 'job') mockRunner.restoreReadOnly.mockImplementationOnce(refuse);
+    if (stage === 'coverage') mockCoverage.read.mockImplementationOnce(refuse);
+    if (stage === 'journal') mockJournal.revalidate.mockImplementationOnce(refuse);
+    if (stage === 'view') mockRead.mockImplementationOnce(refuse);
+    await expect(restoreRailgunAccountWallet(opened, options)).rejects.toThrow();
+    expect(opened.view).toBe(original);
+    expect(opened.signal.aborted).toBe(true);
+    expect(() => readRailgunAccountOwnedNotes(opened, options)).toThrow();
+  }
+);
+test('busy restoration excludes other reads/restores and close drains it before releasing the phase', async () => {
+  const opened = await openRailgunAccountWallet(options);
+  let finish;
+  mockRunner.restoreReadOnly.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+  );
+  const restoring = restoreRailgunAccountWallet(opened, options);
+  const refused = expect(restoring).rejects.toThrow();
+  await Promise.resolve();
+  expect(() => readRailgunAccountOwnedNotes(opened, options)).toThrow();
+  await expect(restoreRailgunAccountWallet(opened, options)).rejects.toThrow();
+  const closing = opened.close();
+  await Promise.resolve();
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+  finish({ receipt: {}, coverage: {} });
+  await refused;
+  await closing;
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'txid');
+  phase.release();
 });
 test.each(['advance', 'new', 'pending'])(
   '%s persists intent before scanning and completion before publishing reads',

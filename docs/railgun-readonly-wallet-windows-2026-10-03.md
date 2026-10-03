@@ -87,7 +87,11 @@ throughout; a failure after opening the window must close the entire account.
 There must be no unrelated coverage-store call between acquiring the fresh
 coverage observation and revalidating the journal.
 
-The current account wrapper still captures its initial receipt. Integrating that
+At this checkpoint the account wrapper still captures its initial receipt. Integrating that
 atomic replacement, durable reservations, POI-bound signing and proof generation
 remains the next step. Combined real-history restoration and proving must also
 be measured against the coordinator's 180-second limit.
+
+The subsequent [account-owned window composition](railgun-account-windows-2026-10-03.md)
+implements atomic replacement and qualifies interruption/cold recovery. Private
+preparation, reservations and POI-bound signing remain separate work.

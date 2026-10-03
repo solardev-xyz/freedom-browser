@@ -27,6 +27,7 @@ async function main() {
   let accountIdentity, accountParent, accountProfileId, enrollment;
   const vault = accountArchive ? require('../src/main/identity/vault') : null;
   let lockOnViewingKey = false,
+    failReadOnlyRestore = false,
     failWalletBatch = false,
     failPublicCommit = false,
     failPublication = false,
@@ -70,8 +71,17 @@ async function main() {
           ...original,
           async dispatch(wire) {
             messages++;
-            const message = JSON.parse(wire),
-              reply = await original.dispatch(wire);
+            const message = JSON.parse(wire);
+            if (
+              failReadOnlyRestore &&
+              options.filename === require.resolve('../src/main/wallet/railgun-wallet-job') &&
+              JSON.parse(options.input).restore === true &&
+              message.method === 'key'
+            ) {
+              failReadOnlyRestore = false;
+              throw Error('Injected read-only restore interruption');
+            }
+            const reply = await original.dispatch(wire);
             if (
               lockOnViewingKey &&
               message.method === 'key' &&
@@ -616,6 +626,41 @@ async function main() {
             assert.ok(
               retainedDirectories.every((dir) => fs.existsSync(path.join(dir, 'wallet.sqlite')))
             );
+            const accountWindows = [];
+            if (attempt === 'restore') {
+              const {
+                readRailgunAccountOwnedNotes,
+                restoreRailgunAccountWallet,
+              } = require('../src/main/wallet/railgun-account-wallet');
+              const owners = { identity: accountIdentity, enrollment, coordinator };
+              for (let i = 0; i < 2; i++) {
+                const previousView = opened.view;
+                const before = readRailgunAccountOwnedNotes(opened, owners);
+                const restoring = restoreRailgunAccountWallet(opened, owners);
+                assert.throws(() => readRailgunAccountOwnedNotes(opened, owners));
+                const nextView = await restoring;
+                assert.equal(nextView, opened.view);
+                assert.notEqual(nextView, previousView);
+                await assert.rejects(previousView.balance());
+                const after = readRailgunAccountOwnedNotes(opened, owners);
+                assert.equal(after.checkpointHash, before.checkpointHash);
+                assert.notEqual(after.read.received[0], before.read.received[0]);
+                assert.deepEqual(after.ownedPoi, before.ownedPoi);
+                assert.equal(
+                  (await nextView.balance()).reduce((sum, b) => sum + b.amount, 0n),
+                  amount
+                );
+                accountWindows.push({
+                  currentViewReplaced: true,
+                  busyOwnedReadRefused: true,
+                  oldViewRefused: true,
+                  checkpointUnchanged: true,
+                  ownedProjectionUnchanged: true,
+                  freshOwnedNoteObjects: true,
+                  balanceUnchanged: true,
+                });
+              }
+            }
             runs.push({
               stage,
               attempt,
@@ -625,6 +670,7 @@ async function main() {
               unspentNotes: notes.length,
               instanceMatches: true,
               spendableGranted: false,
+              accountWindows,
             });
           } finally {
             await opened.close();
@@ -957,6 +1003,35 @@ async function main() {
           policy,
           mode,
         });
+      const interruptedRestore = await openWallet('active');
+      failReadOnlyRestore = true;
+      await assert.rejects(
+        require('../src/main/wallet/railgun-account-wallet').restoreRailgunAccountWallet(
+          interruptedRestore,
+          { identity: accountIdentity, enrollment, coordinator }
+        )
+      );
+      assert.equal(failReadOnlyRestore, false);
+      assert.equal(interruptedRestore.signal.aborted, true);
+      assert.equal(coordinator.signal.aborted, true);
+      await assert.rejects(interruptedRestore.view.balance());
+      await interruptedRestore.close();
+      await close();
+      await open(false);
+      assert.equal((await coordinator.recover()).to.number, 30);
+      const restoredAfterInterruption = await openWallet('active');
+      try {
+        assert.equal((await restoredAfterInterruption.view.balance())[0].amount, 2700n);
+      } finally {
+        await restoredAfterInterruption.close();
+      }
+      runs.push({
+        attempt: 'read-only-window-interruption',
+        accountClosed: true,
+        publicCoordinatorClosed: true,
+        coldRecovery: true,
+        observedAmount: '2700',
+      });
       failPublication = true;
       await assert.rejects(openWallet('new'), /Injected publication interruption/);
       assert.equal(failPublication, false);
