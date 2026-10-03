@@ -80,3 +80,12 @@ fail when the metadata/archived-anchor fixes are removed in memory.
 Authenticated account/journal/source capture, fresh root composition and ordered
 spent-input/output POI preparation remain next. The detached result does not mint
 an account capability or permit POI disclosure.
+
+
+## Full regression
+
+The frozen tree at `ecb3033f` passes 9,326 tests / 33 skipped across 438 passing
+suites in 293.753 seconds, retaining the existing OpenLV exclusion. An earlier
+sandboxed attempt was stopped after native Electron/node startup failures; the
+successful run used native-process access. No production, fixture or test files
+changed between attempts. Main remains current at `b18d571b` after a fresh fetch.
