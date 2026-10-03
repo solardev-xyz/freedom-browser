@@ -626,6 +626,13 @@ contextBridge.exposeInMainWorld('publishSetup', {
   },
 });
 
+// The node's chequebook as browsing credit and its swap-enable switch
+// (src/main/swarm/browsing-credit-service.js, #488). Chrome only.
+contextBridge.exposeInMainWorld('browsingCredit', {
+  getState: () => ipcRenderer.invoke('swarm:credit-get-state'),
+  setSwapEnable: (enabled) => ipcRenderer.invoke('swarm:credit-set-swap-enable', enabled),
+});
+
 contextBridge.exposeInMainWorld('networks', {
   getChains: () => ipcRenderer.invoke('networks:get-chains'),
   getChain: (chainId) => ipcRenderer.invoke('networks:get-chain', chainId),

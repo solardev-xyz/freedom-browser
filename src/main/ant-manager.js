@@ -1,6 +1,6 @@
 const log = require('./logger');
 const { ipcMain, app } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -26,6 +26,7 @@ const {
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
 const { antApiGet } = require('./swarm/ant-api-chrome');
+const { loadSettings } = require('./settings-store');
 
 // States
 const STATUS = {
@@ -200,23 +201,109 @@ function getPrimaryEthereumRpcUrl() {
 // entry, there for the chrome's `file:` origin, also let every `data:` frame
 // and sandboxed iframe read API responses (security audit O-1, #428).
 //
-// No `blockchain-rpc-endpoint` and no `swap-enable` either. The node reaches
-// Gnosis Chain only through the chain bridge, whose URL startAnt passes as
-// `--gnosis-rpc-url` (antd lets the flag win over the YAML key), so no RPC
-// URL, keyed or not, lands on disk. antd ignores `swap-enable`: settlement
-// follows from having a chequebook.
-function buildAntConfigContent({ dataDir, apiPort, p2pPort, password, resolverRpcEndpoint }) {
+// No `blockchain-rpc-endpoint` either. The node reaches Gnosis Chain only
+// through the chain bridge, whose URL startAnt passes as `--gnosis-rpc-url`
+// (antd lets the flag win over the YAML key), so no RPC URL, keyed or not,
+// lands on disk.
+//
+// `swap-enable` is bee's node-wide switch for paying peers with cheques from
+// the chequebook, downloads and uploads alike (#488; Ant's side is
+// freedom-hq/ant#126). It comes from the `antSwapEnable` setting, default on
+// as in bee and Ant. Ant releases from before the switch parse the key and
+// ignore it, so it is always written; whether the bundled antd honours it is
+// what getSwapEnableSupport() probes.
+function buildAntConfigContent({
+  dataDir,
+  apiPort,
+  p2pPort,
+  password,
+  resolverRpcEndpoint,
+  swapEnable = true,
+}) {
   return `# Ant node configuration (bee-compatible keys)
 api-addr: 127.0.0.1:${apiPort}
 p2p-addr: :${p2pPort}
 mainnet: true
 full-node: false
+swap-enable: ${swapEnable ? 'true' : 'false'}
 skip-postage-snapshot: true
 resolver-options: "${resolverRpcEndpoint}"
 storage-incentives-enable: false
 data-dir: ${dataDir}
 password: ${password}
 `;
+}
+
+function isSwapEnabledSetting() {
+  return loadSettings().antSwapEnable !== false;
+}
+
+// Whether the bundled antd honours `swap-enable` (#488). Ant has no HTTP
+// route or `/node` field that says so, and the pinned release predates the
+// switch, so ask the binary itself: a release with the switch lists
+// `--swap-enable` in its `--help`. The answer is cached per binary file, so
+// a pin bump in a dev checkout is picked up without restarting Freedom.
+const SWAP_SUPPORT_PROBE_TIMEOUT_MS = 5000;
+let swapSupportCache = null; // { key, promise }
+
+function probeSwapEnableSupport(binPath) {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        binPath,
+        ['--help'],
+        { timeout: SWAP_SUPPORT_PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 },
+        (err, stdout = '', stderr = '') => {
+          const text = `${stdout}\n${stderr}`;
+          if (/(^|\s)--swap-enable(?![\w-])/m.test(text)) {
+            resolve('supported');
+            return;
+          }
+          if (err && !stdout) {
+            log.warn(`[Ant] Could not read antd --help: ${err.message}`);
+            resolve('unknown');
+            return;
+          }
+          resolve('unsupported');
+        }
+      );
+    } catch (err) {
+      log.warn(`[Ant] Could not run antd --help: ${err.message}`);
+      resolve('unknown');
+    }
+  });
+}
+
+/**
+ * `'supported'` / `'unsupported'` when Freedom runs its bundled antd,
+ * `'unmanaged'` when the node is reused, external or disabled (its own
+ * configuration decides, and Freedom cannot restart it), `'unknown'` when
+ * the binary could not be asked.
+ */
+async function getSwapEnableSupport() {
+  if (
+    currentMode === MODE.REUSED ||
+    currentMode === MODE.EXTERNAL ||
+    currentMode === MODE.DISABLED ||
+    isExternalAntConfig() ||
+    isDisabledAntConfig()
+  ) {
+    return 'unmanaged';
+  }
+  const binPath = getAntBinaryPath();
+  let stat;
+  try {
+    stat = fs.statSync(binPath);
+  } catch {
+    return 'unknown';
+  }
+  const key = `${binPath}:${stat.size}:${stat.mtimeMs}`;
+  if (swapSupportCache?.key !== key) {
+    swapSupportCache = { key, promise: probeSwapEnableSupport(binPath) };
+  }
+  const result = await swapSupportCache.promise;
+  if (result === 'unknown' && swapSupportCache?.key === key) swapSupportCache = null;
+  return result;
 }
 
 function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
@@ -264,6 +351,7 @@ function ensureConfig(dataDir, apiPort, p2pPort = DEFAULTS.ant.p2pPort) {
     p2pPort,
     password,
     resolverRpcEndpoint,
+    swapEnable: isSwapEnabledSetting(),
   });
 
   fs.writeFileSync(configPath, configContent);
@@ -996,5 +1084,7 @@ module.exports = {
   setUseInjectedIdentity,
   hasInjectedKeys,
   getPrimaryEthereumRpcUrl,
+  getSwapEnableSupport,
+  buildAntConfigContent,
   STATUS,
 };

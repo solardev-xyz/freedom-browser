@@ -366,6 +366,11 @@ module.exports = {
   SWARM_SETUP_TRACK_FUNDING_TX: 'swarm:setup-track-funding-tx',
   SWARM_SETUP_RESTART_NODE: 'swarm:setup-restart-node',
 
+  // The node's chequebook as browsing credit, and its swap-enable switch
+  // (src/main/swarm/browsing-credit-service.js, #488). Chrome only.
+  SWARM_CREDIT_GET_STATE: 'swarm:credit-get-state',
+  SWARM_CREDIT_SET_SWAP_ENABLE: 'swarm:credit-set-swap-enable',
+
   // Swarm Feed Store
   SWARM_GET_ALL_ORIGINS: 'swarm:get-all-origins',
   SWARM_HAS_FEED_IDENTITY: 'swarm:has-feed-identity',

@@ -1615,6 +1615,44 @@
                       </div>
                     </div>
 
+                    <!-- Browsing credit (#488): the chequebook also pays for faster downloads -->
+                    <div class="node-info-group hidden" id="swarm-credit-group">
+                      <div class="node-info-label-row">
+                        <span class="node-info-label">Browsing Credit</span>
+                        <span
+                          class="node-card-status hidden"
+                          id="swarm-credit-tier"
+                          data-status="stopped"
+                        ></span>
+                      </div>
+                      <div class="node-balance-row">
+                        <span class="node-balance-symbol">xBZZ</span>
+                        <span class="node-balance-value" id="swarm-credit-available">--</span>
+                      </div>
+                      <div class="swarm-credit-line hidden" id="swarm-credit-detail"></div>
+                      <div class="swarm-credit-line hidden" id="swarm-credit-spend"></div>
+                      <p class="swarm-credit-status hidden" id="swarm-credit-status"></p>
+                      <div class="node-upgrade-cta hidden" id="swarm-credit-topup-cta">
+                        <button type="button" class="node-upgrade-btn" id="swarm-credit-topup">
+                          <span>Top Up Credit</span>
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="m9 18 6-6-6-6" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="swarm-credit-toggle-row">
+                        <label class="swarm-credit-toggle-text" for="swarm-credit-switch">
+                          <span class="swarm-credit-toggle-label">Pay peers from the chequebook</span>
+                          <span class="swarm-credit-line" id="swarm-credit-toggle-hint"></span>
+                        </label>
+                        <label class="toggle-switch">
+                          <input type="checkbox" role="switch" id="swarm-credit-switch" disabled />
+                          <span class="toggle-slider"></span>
+                        </label>
+                      </div>
+                      <p class="swarm-credit-note" id="swarm-credit-note"></p>
+                    </div>
+
                     <!-- Publisher Identities CTA (visible when identities exist) -->
                     <div class="node-upgrade-cta hidden" id="swarm-identities-cta">
                       <button type="button" class="node-upgrade-btn" id="swarm-identities-btn">
@@ -3418,8 +3456,9 @@
 
               <div class="subscreen-content">
                 <p class="stamp-manager-intro">
-                  Your node pays other nodes for bandwidth from its chequebook. It keeps a small
-                  xBZZ deposit there, which stays yours until it is spent.
+                  Your node pays other nodes for bandwidth from its chequebook: for uploads, and for
+                  downloads faster than the free tier. It keeps a small xBZZ deposit there, which
+                  stays yours until it is spent.
                 </p>
 
                 <div class="stamp-cost-section" id="chequebook-balances">

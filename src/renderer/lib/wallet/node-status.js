@@ -8,6 +8,11 @@
  * chequebook balances, and whether it can publish. The balances are chain
  * reads, so the card asks the service to poll them only while it is on
  * screen.
+ *
+ * Its Browsing Credit group (#488) renders the browsing credit service
+ * (src/main/swarm/browsing-credit-service.js): the chequebook's spendable
+ * balance, the recent spend, whether the node pays peers, and the node's
+ * `swap-enable` switch. It is read on the same on-screen cadence.
  */
 
 import { state } from '../state.js';
@@ -18,9 +23,13 @@ import { openStampManager } from './stamp-manager.js';
 import { topUpXdai } from './funding-actions.js';
 import { openChequebookDeposit } from './chequebook-deposit.js';
 import { openPublisherIdentities } from './publisher-identities.js';
+import { describeBrowsingCredit } from './browsing-credit.js';
 
 // Share of the Swarm card that must be on screen for it to count as shown.
 const CARD_VISIBLE_RATIO = 0.05;
+// How often the Browsing Credit group re-reads while the card is shown. The
+// service throttles the chain reads behind it to the same pace.
+const CREDIT_REFRESH_MS = 15_000;
 
 // DOM references
 let swarmModeBadge;
@@ -37,11 +46,16 @@ let swarmSetupCta;
 let swarmSetupBtn;
 let swarmSetupBtnLabel;
 let swarmSetupHint;
+let creditEls = {};
 
 let setupState = null;
 let chequebookFullAddress = null;
 let currentCtaTarget = null; // 'setup' | 'storage' | null
 let cardWatched = false;
+let creditState = null;
+let creditTimer = null;
+let creditRequest = 0;
+let toggleInFlight = false;
 
 // Node status tracking
 let nodeStatusUnsubscribers = [];
@@ -61,6 +75,19 @@ export function initNodeStatus() {
   swarmSetupBtn = document.getElementById('swarm-setup-btn');
   swarmSetupBtnLabel = document.getElementById('swarm-setup-btn-label');
   swarmSetupHint = document.getElementById('swarm-setup-hint');
+  creditEls = {
+    group: document.getElementById('swarm-credit-group'),
+    tier: document.getElementById('swarm-credit-tier'),
+    available: document.getElementById('swarm-credit-available'),
+    detail: document.getElementById('swarm-credit-detail'),
+    spend: document.getElementById('swarm-credit-spend'),
+    status: document.getElementById('swarm-credit-status'),
+    topUpCta: document.getElementById('swarm-credit-topup-cta'),
+    topUp: document.getElementById('swarm-credit-topup'),
+    toggle: document.getElementById('swarm-credit-switch'),
+    toggleHint: document.getElementById('swarm-credit-toggle-hint'),
+    note: document.getElementById('swarm-credit-note'),
+  };
 
   setupNodeCards();
 
@@ -70,6 +97,11 @@ export function initNodeStatus() {
 
   document.getElementById('swarm-topup-chequebook')?.addEventListener('click', () => {
     openChequebookDeposit();
+  });
+
+  creditEls.topUp?.addEventListener('click', () => openChequebookDeposit());
+  creditEls.toggle?.addEventListener('change', () => {
+    void handleSwapToggle(creditEls.toggle.checked);
   });
 
   const chequebookCopyBtn = document.getElementById('swarm-chequebook-copy');
@@ -153,6 +185,8 @@ function watchCardVisibility() {
       if (visible === cardWatched) return;
       cardWatched = visible;
       void window.publishSetup?.watch('node-card', visible);
+      if (visible) startCreditRefresh();
+      else stopCreditRefresh();
     },
     { threshold: [0, CARD_VISIBLE_RATIO] }
   );
@@ -225,7 +259,9 @@ function getStatusBadgeState(status) {
 }
 
 function updateSwarmStatus(status) {
+  const previous = state.currentAntStatus;
   state.currentAntStatus = status;
+  if (status !== previous && cardWatched) void refreshCredit();
 
   if (swarmStatusBadge) {
     const badgeState = getStatusBadgeState(status);
@@ -242,6 +278,101 @@ function updateSwarmUi() {
   }
   updateSwarmBalances();
   updateSwarmSetupCta();
+  renderCredit();
+}
+
+// ---------------------------------------------------------------------------
+// Browsing credit (#488)
+// ---------------------------------------------------------------------------
+
+function startCreditRefresh() {
+  stopCreditRefresh();
+  void refreshCredit();
+  creditTimer = setInterval(() => void refreshCredit(), CREDIT_REFRESH_MS);
+}
+
+function stopCreditRefresh() {
+  if (creditTimer) clearInterval(creditTimer);
+  creditTimer = null;
+}
+
+async function refreshCredit() {
+  if (!window.browsingCredit?.getState) return;
+  const request = ++creditRequest;
+  try {
+    const next = await window.browsingCredit.getState();
+    // A read that started before the switch was flipped is older than the
+    // flip's own answer.
+    if (request !== creditRequest || toggleInFlight) return;
+    creditState = next;
+  } catch (err) {
+    console.error('[WalletUI] Failed to read browsing credit:', err);
+  }
+  renderCredit();
+}
+
+async function handleSwapToggle(enabled) {
+  if (!window.browsingCredit?.setSwapEnable || toggleInFlight) return;
+  toggleInFlight = true;
+  creditRequest += 1;
+  // Show the restart while it runs, with the switch where the user put it.
+  if (creditState) {
+    creditState = {
+      ...creditState,
+      swapEnable: enabled,
+      toggle: { inProgress: true, error: null },
+    };
+  }
+  renderCredit();
+  let result;
+  try {
+    result = await window.browsingCredit.setSwapEnable(enabled);
+  } catch (err) {
+    result = { ok: false, error: err?.message || null };
+  }
+  toggleInFlight = false;
+  if (result?.state) creditState = result.state;
+  if (!result?.ok && creditState) {
+    creditState = {
+      ...creditState,
+      swapEnable: result?.state ? result.state.swapEnable : !enabled,
+      toggle: { inProgress: false, error: result?.error || 'Could not change the setting.' },
+    };
+  }
+  renderCredit();
+}
+
+function setLine(el, text) {
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+}
+
+function renderCredit() {
+  // The publish CTA warns when paying peers is off, so it follows the credit.
+  updateSwarmSetupCta();
+  const view = describeBrowsingCredit(creditState, setupState);
+  creditEls.group?.classList.toggle('hidden', !view.visible);
+  if (!view.visible) return;
+
+  if (creditEls.tier) {
+    creditEls.tier.classList.toggle('hidden', !view.tier);
+    creditEls.tier.textContent = view.tier?.text || '';
+    // Reuse the node badge palette: green while paying, grey on the free tier.
+    creditEls.tier.dataset.status = view.tier?.value === 'paying' ? 'running' : 'stopped';
+  }
+  if (creditEls.available) creditEls.available.textContent = view.available;
+  setLine(creditEls.detail, view.detail);
+  setLine(creditEls.spend, view.spend);
+  setLine(creditEls.status, view.status);
+  if (creditEls.status) creditEls.status.dataset.level = view.level;
+  creditEls.topUpCta?.classList.toggle('hidden', !view.showTopUp);
+  if (creditEls.toggle) {
+    creditEls.toggle.checked = view.toggle.checked;
+    creditEls.toggle.disabled = view.toggle.disabled;
+  }
+  if (creditEls.toggleHint) creditEls.toggleHint.textContent = view.toggle.hint;
+  setLine(creditEls.note, view.costNote);
 }
 
 function updateSwarmBalances() {
@@ -273,7 +404,7 @@ function handleSetupCtaClick() {
 }
 
 function updateSwarmSetupCta() {
-  const cta = describePublishCta(setupState);
+  const cta = describePublishCta(setupState, creditState);
 
   swarmSetupCta?.classList.toggle('hidden', !cta.visible);
   currentCtaTarget = cta.visible && !cta.disabled ? cta.target : null;

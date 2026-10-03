@@ -132,8 +132,13 @@ export function buildFundUrl(address, xdai) {
 /**
  * The node card's publishing button: `{ visible, disabled, label, hint,
  * target }`, where `target` is the screen it opens ('setup' or 'storage').
+ *
+ * @param state  the publish setup state
+ * @param credit  browsingCredit.getState() result, if read (#488). Readiness
+ *   itself does not block on the `swap-enable` switch, since a small upload
+ *   still fits in the peers' free allowance; the ready CTA warns instead.
  */
-export function describePublishCta(state) {
+export function describePublishCta(state, credit = null) {
   const hidden = { visible: false, disabled: true, label: '', hint: '', target: null };
   if (!state) return hidden;
   const mode = state.node?.registryMode;
@@ -164,6 +169,9 @@ export function describePublishCta(state) {
 
   switch (state.readiness?.key) {
     case 'ready':
+      if (credit?.support === 'supported' && credit.swapEnable === false) {
+        return cta('Manage Storage', 'Paying peers is off, so large uploads can stall', 'storage');
+      }
       return cta('Manage Storage', 'View and extend your storage', 'storage');
     case 'storage-pending':
       return cta('Manage Storage', 'New storage is reaching the network', 'storage');

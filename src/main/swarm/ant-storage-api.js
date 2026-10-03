@@ -4,7 +4,8 @@
  * The Swarm node routes the publish setup reads and writes:
  *
  *   - the Bee-compatible reads readiness is built from (`/health`, `/node`,
- *     `/readiness`, `/stamps`, `/addresses`, `/wallet`, `/chequebook/*`);
+ *     `/readiness`, `/stamps`, `/addresses`, `/wallet`, `/chequebook/*`),
+ *     and `/settlements` for the browsing credit (browsing-credit-service.js);
  *   - antd's xDAI storage routes: `GET /v0/storage/quote`,
  *     `POST /v0/storage/buy`, `POST /v0/storage/extend` and
  *     `GET|POST /v0/settlement/deposit`. The user sends plain xDAI to the node
@@ -113,6 +114,7 @@ const getAddresses = (opts) => antRequest('GET', '/addresses', opts);
 const getWallet = (opts) => antRequest('GET', '/wallet', opts);
 const getChequebookAddress = (opts) => antRequest('GET', '/chequebook/address', opts);
 const getChequebookBalance = (opts) => antRequest('GET', '/chequebook/balance', opts);
+const getSettlements = (opts) => antRequest('GET', '/settlements', opts);
 
 /**
  * Price a new batch (`{ depth, days }`) or an extension of an existing one
@@ -234,6 +236,7 @@ module.exports = {
   getWallet,
   getChequebookAddress,
   getChequebookBalance,
+  getSettlements,
   getStorageQuote,
   buyStorage,
   extendStorage,

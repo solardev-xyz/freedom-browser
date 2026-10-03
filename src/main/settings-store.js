@@ -34,6 +34,11 @@ const DEFAULT_SETTINGS = {
   theme: 'system',
   enableIdentityWallet: true,
   startAntAtLaunch: true,
+  // Bee's `swap-enable` for the bundled Swarm node (#488): pay peers with
+  // cheques from the node's chequebook, which lifts downloads past the free
+  // tier. On by default, as in bee and Ant; the wallet sidebar's Nodes tab
+  // switches it ("Pay peers from the chequebook") and restarts the node.
+  antSwapEnable: true,
   startIpfsAtLaunch: true,
   startRadicleAtLaunch: false,
   // Experimental: start the Myotis P2P Ethereum light client at launch.

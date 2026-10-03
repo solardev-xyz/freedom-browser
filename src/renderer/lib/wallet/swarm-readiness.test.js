@@ -135,6 +135,25 @@ describe('swarm-readiness view helpers', () => {
       ).toMatchObject({ label: 'Manage Storage', target: 'storage' });
     });
 
+    test('warns on the ready CTA that uploads can stall while paying peers is off (#488)', () => {
+      const ready = stateWith({ readiness: { ok: true, key: 'ready' } });
+      expect(
+        mod.describePublishCta(ready, { support: 'supported', swapEnable: false })
+      ).toMatchObject({
+        label: 'Manage Storage',
+        target: 'storage',
+        hint: 'Paying peers is off, so large uploads can stall',
+      });
+      // On, or a node that does not honour the switch: the usual hint.
+      for (const credit of [
+        { support: 'supported', swapEnable: true },
+        { support: 'unsupported', swapEnable: false },
+        null,
+      ]) {
+        expect(mod.describePublishCta(ready, credit).hint).toBe('View and extend your storage');
+      }
+    });
+
     test('shows the payment it is waiting for, and a purchase in flight', () => {
       const awaiting = stateWith({
         operation: { phase: 'awaiting-funds', quote: { send: { display: '0.46' } } },

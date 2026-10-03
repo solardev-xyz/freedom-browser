@@ -16,7 +16,7 @@ const ANT_REPO = process.env.ANT_REPO || 'freedom-hq/ant';
 // could ship a different Ant than CI validated. Override via ANT_RELEASE_TAG
 // for local testing of newer releases; set it to `latest` to resolve the
 // repo's most recent published release.
-const PINNED_RELEASE_TAG = 'v0.5.55';
+const PINNED_RELEASE_TAG = 'v0.5.56';
 // In-repo trust root for the pinned release: the sha256 of its SHA256SUMS
 // asset, recorded at pin time (trust-on-first-use by the author). The release
 // downloads its SHA256SUMS from the same GitHub release as the binaries, so
@@ -24,7 +24,7 @@ const PINNED_RELEASE_TAG = 'v0.5.55';
 // together. Verifying the sums file against a digest committed here makes
 // that tampering detectable. Update alongside PINNED_RELEASE_TAG on every
 // deliberate bump: `shasum -a 256` the freshly downloaded SHA256SUMS.
-const PINNED_SHA256SUMS_DIGEST = '7492ca7d99f9f2b0ae0d027b815f079de05100ccfab51ac7ac2c28fff5c935e7';
+const PINNED_SHA256SUMS_DIGEST = 'b957e1f0c056ec026b1a9924338497c53c834c1c414e522fa9c9697b5f2fc5bb';
 const ANT_RELEASE_TAG = process.env.ANT_RELEASE_TAG || PINNED_RELEASE_TAG;
 
 const API_HOST = 'api.github.com';

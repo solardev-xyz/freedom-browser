@@ -76,6 +76,16 @@ describe('swarm-probe', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  test.each([502, 503, 504])('retries through %i (node not ready yet)', async (status) => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(makeResponse(status))
+      .mockResolvedValueOnce(makeResponse(200));
+    const { promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep });
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   test('resolves bee_unreachable on ECONNREFUSED', async () => {
     const fetchImpl = jest.fn().mockRejectedValue(makeConnRefusedError());
     const { promise } = startProbe(VALID_HASH, { fetchImpl, sleep: noSleep });

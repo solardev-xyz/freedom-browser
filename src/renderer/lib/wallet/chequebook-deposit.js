@@ -2,9 +2,12 @@
  * Chequebook Deposit Module
  *
  * Sidebar sub-screen for the node's chequebook deposit: the xBZZ its
- * chequebook holds to pay other nodes for bandwidth. The node keeps it at
- * its target by itself after each storage purchase; when it runs dry, the
- * top-up is paid in xDAI through the publish setup's pay step.
+ * chequebook holds to pay other nodes for bandwidth, uploads and (on nodes
+ * that pay for them, #488) faster downloads. The node keeps it at its target
+ * by itself after each storage purchase; when it runs dry, the top-up is paid
+ * in xDAI through the publish setup's pay step. That is also the deposit-only
+ * path the Nodes tab's Browsing Credit "Top Up Credit" opens: no storage is
+ * bought.
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
@@ -85,7 +88,7 @@ function render() {
     text = 'This node manages its chequebook deposit through its own configuration.';
   } else if (chequebook.needsTopUp) {
     text =
-      'The deposit is used up, so uploads will stall. Top it up to keep publishing; you pay in xDAI, like for storage.';
+      'The deposit is used up, so uploads will stall and downloads use the free tier. Top it up to keep publishing and browsing at full speed; you pay in xDAI, like for storage.';
   } else {
     text = 'The deposit is funded. Your node tops it up by itself when you buy storage.';
   }

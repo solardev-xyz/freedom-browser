@@ -68,6 +68,19 @@ against the pins as described in `release-process.md` § Bundled binaries.
 sample** of that file (used by `npm run ant:init` / `npm run system-ant:start`),
 not the file the app runs from.
 
+The generated `config.yaml` always carries bee's `swap-enable` (#488), from the
+`antSwapEnable` setting the wallet sidebar's **Pay peers from the chequebook**
+switch writes. Releases from before Ant's switch
+([freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126), renamed to
+`swap-enable`) parse the key and ignore it. Whether the bundled binary honours
+it is decided by running `antd --help` once per binary file and looking for
+`--swap-enable` (`getSwapEnableSupport()`), so a pin bump to a release that has
+the switch enables the sidebar switch with no code change. Check it on that
+bump: the Nodes tab's switch should stop saying "Not supported by this node
+version". Flipping the switch rewrites the config and restarts the managed
+node, because Ant's runtime switch is reachable only over its control socket,
+which Freedom runs without.
+
 Ports matter when you are judging evidence:
 
 - A Freedom-managed profile gets its own port — base **11633** in packaged

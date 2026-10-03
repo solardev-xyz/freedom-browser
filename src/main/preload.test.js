@@ -86,7 +86,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(30);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(31);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -105,6 +105,7 @@ describe('preload', () => {
       'remoteSigner',
       'swarmNode',
       'publishSetup',
+      'browsingCredit',
       'networks',
       'payments',
       'tokens',
@@ -224,6 +225,8 @@ describe('preload', () => {
       [exposures.publishSetup, 'dismiss', [7], IPC.SWARM_SETUP_CANCEL, [7, { dismiss: true }]],
       [exposures.publishSetup, 'trackFundingTx', ['0x' + '1'.repeat(64)], IPC.SWARM_SETUP_TRACK_FUNDING_TX, ['0x' + '1'.repeat(64)]],
       [exposures.publishSetup, 'restartNode', [], IPC.SWARM_SETUP_RESTART_NODE, []],
+      [exposures.browsingCredit, 'getState', [], IPC.SWARM_CREDIT_GET_STATE, []],
+      [exposures.browsingCredit, 'setSwapEnable', [false], IPC.SWARM_CREDIT_SET_SWAP_ENABLE, [false]],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of invokeCases) {

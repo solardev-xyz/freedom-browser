@@ -1,0 +1,4 @@
+- The Swarm node's chequebook as browsing credit, in the wallet sidebar's Nodes tab ([#488](https://github.com/solardev-xyz/freedom-browser/issues/488)):
+  - Credit left, spend over the last 24 hours and 7 days, paying or free tier
+  - Top-up in xDAI when it runs low, without buying storage
+  - "Pay peers from the chequebook" switch, on nodes that support it

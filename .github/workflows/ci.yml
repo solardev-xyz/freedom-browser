@@ -937,8 +937,10 @@ jobs:
   # and the sidebar chrome above them (`sidebar-in-flight-chrome`).
   # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
   # is deployed on, and `publisher-identity-selector.spec.js` renders
-  # unusable publisher identities as inert. The anvil-backed Safe specs run
-  # in `e2e-safe` below.
+  # unusable publisher identities as inert. `browsing-credit.spec.js` (#488)
+  # drives the Nodes tab's Browsing Credit group through node states the
+  # pinned Ant cannot produce yet (paying, low, empty, switch on/off). The
+  # anvil-backed Safe specs run in `e2e-safe` below.
   e2e-wallet:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -972,7 +974,8 @@ jobs:
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
             test-e2e/safe-send-chain.spec.js \
-            test-e2e/publisher-identity-selector.spec.js
+            test-e2e/publisher-identity-selector.spec.js \
+            test-e2e/browsing-credit.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

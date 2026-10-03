@@ -217,6 +217,7 @@ function loadAntManagerModule(options = {}) {
     close: jest.fn().mockResolvedValue(), pipeLog: jest.fn() };
   const startBridge = options.startBridge || jest.fn().mockResolvedValue(bridge);
   const execSync = options.execSync || jest.fn();
+  const execFile = options.execFile || jest.fn((_bin, _args, _opts, cb) => cb(null, '', ''));
   const spawn = jest.fn((binary, args = [], spawnOptions = {}) => {
     const proc = (options.createProcess || createProcessMock)(binary, options.processOptions || {});
     proc.args = args;
@@ -264,6 +265,12 @@ function loadAntManagerModule(options = {}) {
       return false;
     }),
     mkdirSync: jest.fn(),
+    statSync: jest.fn((target) => {
+      if (target === antBinPath && options.binExists !== false) {
+        return options.binStat || { size: 1000, mtimeMs: 1 };
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    }),
     readFileSync: jest.fn(() => options.configContents || ''),
     writeFileSync: jest.fn(),
   };
@@ -281,6 +288,10 @@ function loadAntManagerModule(options = {}) {
       child_process: () => ({
         spawn,
         execSync,
+        execFile,
+      }),
+      [require.resolve('./settings-store')]: () => ({
+        loadSettings: jest.fn(() => options.settings || {}),
       }),
       crypto: () => ({
         randomBytes,
@@ -337,6 +348,7 @@ function loadAntManagerModule(options = {}) {
     configPath,
     dataDir,
     execSync,
+    execFile,
     fsMock,
     registry,
     httpGet,
@@ -840,9 +852,10 @@ describe('ant-manager', () => {
     const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
     expect(configContent).toContain('api-addr: 127.0.0.1:1634');
     expect(configContent).toContain('p2p-addr: :1634');
-    // antd ignores swap-enable, and the chain RPC reaches it only as the
-    // bridge flag, never as a URL on disk.
-    expect(configContent).not.toContain('swap-enable');
+    // swap-enable follows the antSwapEnable setting, on by default as in
+    // bee (#488); the chain RPC reaches the node only as the bridge flag,
+    // never as a URL on disk.
+    expect(configContent).toMatch(/^swap-enable: true$/m);
     expect(configContent).not.toContain('blockchain-rpc-endpoint');
     expect(configContent).toContain('resolver-options: "https://ethereum.publicnode.com"');
     expect(configContent).toContain(`data-dir: ${ctx.dataDir}`);
@@ -1071,6 +1084,103 @@ describe('ant-manager', () => {
     expect(ctx.spawn).not.toHaveBeenCalled();
     expect(ctx.startBridge).not.toHaveBeenCalled();
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
+  });
+
+  // #488: bee's swap-enable, written from the antSwapEnable setting.
+  describe('swap-enable', () => {
+    test('writes swap-enable: false when the user switched paying peers off', () => {
+      const ctx = loadAntManagerModule({ settings: { antSwapEnable: false } });
+      const content = ctx.mod.buildAntConfigContent({
+        dataDir: '/d',
+        apiPort: 1633,
+        p2pPort: 1634,
+        password: 'pw',
+        resolverRpcEndpoint: 'https://eth.example',
+        swapEnable: false,
+      });
+      expect(content).toMatch(/^swap-enable: false$/m);
+      expect(content).not.toMatch(/^swap-enable: true$/m);
+    });
+
+    test('startAnt writes the setting into config.yaml', async () => {
+      const ctx = loadAntManagerModule({
+        settings: { antSwapEnable: false },
+        portSequence: [false, false],
+        httpResponse: () => ({ statusCode: 200, body: { status: 'ok', version: '0.5.55' } }),
+      });
+      await ctx.mod.startAnt();
+      await flushMicrotasks();
+      const config = ctx.fsMock.writeFileSync.mock.calls.find(([file]) => file === ctx.configPath);
+      expect(config[1]).toMatch(/^swap-enable: false$/m);
+      await ctx.mod.stopAnt();
+    });
+
+    const helpWith = (text) => jest.fn((_bin, _args, _opts, cb) => cb(null, text, ''));
+
+    test('reports supported when the bundled antd lists --swap-enable', async () => {
+      const execFile = helpWith('Options:\n      --swap-enable <BOOL>  Pay peers...\n');
+      const ctx = loadAntManagerModule({ execFile });
+      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('supported');
+      expect(execFile).toHaveBeenCalledWith(ctx.antBinPath, ['--help'], expect.any(Object), expect.any(Function));
+    });
+
+    test('reports unsupported for an antd from before the switch', async () => {
+      // #126 before the rename named it --retrieval-payments; that release
+      // does not read swap-enable from config.yaml, so it is not supported.
+      const ctx = loadAntManagerModule({
+        execFile: helpWith('      --retrieval-payments <BOOL>\n      --no-control-socket\n'),
+      });
+      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unsupported');
+    });
+
+    test('a longer flag that starts with --swap-enable is not the switch', async () => {
+      const ctx = loadAntManagerModule({
+        execFile: helpWith('      --swap-enable-pushsync <BOOL>\n      --swap-enable_x\n'),
+      });
+      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unsupported');
+    });
+
+    test.each(['--swap-enable', '--swap-enable=<BOOL>', '  --swap-enable [default: true]'])(
+      'reads %j as the switch',
+      async (line) => {
+        const ctx = loadAntManagerModule({ execFile: helpWith(`Options:\n${line}\n`) });
+        await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('supported');
+      }
+    );
+
+    test('asks the binary once per file, again after it changes', async () => {
+      const execFile = helpWith('--swap-enable');
+      const ctx = loadAntManagerModule({ execFile });
+      await ctx.mod.getSwapEnableSupport();
+      await ctx.mod.getSwapEnableSupport();
+      expect(execFile).toHaveBeenCalledTimes(1);
+      ctx.fsMock.statSync.mockReturnValue({ size: 2000, mtimeMs: 2 });
+      await ctx.mod.getSwapEnableSupport();
+      expect(execFile).toHaveBeenCalledTimes(2);
+    });
+
+    test('unknown when the binary is missing or cannot be run, and retried', async () => {
+      const missing = loadAntManagerModule({ binExists: false });
+      await expect(missing.mod.getSwapEnableSupport()).resolves.toBe('unknown');
+
+      const execFile = jest.fn((_bin, _args, _opts, cb) => cb(new Error('EACCES'), '', ''));
+      const ctx = loadAntManagerModule({ execFile });
+      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unknown');
+      await ctx.mod.getSwapEnableSupport();
+      expect(execFile).toHaveBeenCalledTimes(2);
+    });
+
+    test('unmanaged for an external or disabled profile node, without running anything', async () => {
+      for (const mode of ['external', 'disabled']) {
+        const execFile = helpWith('--swap-enable');
+        const ctx = loadAntManagerModule({
+          execFile,
+          activeProfile: { metadata: { nodes: { bee: { mode, url: 'http://127.0.0.1:1633' } } } },
+        });
+        await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unmanaged');
+        expect(execFile).not.toHaveBeenCalled();
+      }
+    });
   });
 
   // Regression guard for issue #90: identity injection must stop a Bee node that
