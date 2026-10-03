@@ -20,7 +20,9 @@ and original authorization digest. Optional signature and proved transaction fie
 can be filled once; identical retries are no-ops. A proved transaction must match
 the saved intent except for its proof coordinates. That structural check grants
 no cryptographic validity: the controller must independently verify the proof
-before calling the store.
+before calling the store. Submission must independently verify the exact saved
+transaction again and require a fresh main-owned proof receipt; a stored
+transaction alone never grants proof or submission authority.
 
 ## Signing order
 

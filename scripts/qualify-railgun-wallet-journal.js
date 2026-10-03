@@ -424,6 +424,7 @@ async function main() {
     'src/main/wallet/privacy-artifacts.js',
     'src/main/wallet/railgun-spend-sign-job.js',
     'src/main/wallet/railgun-private-verify-job.js',
+    'src/main/wallet/railgun-private-proof.js',
     'src/main/wallet/railgun-private-prepare-job.js',
     'src/main/wallet/railgun-private-preparation.js',
     'src/main/wallet/railgun-private-intent.js',

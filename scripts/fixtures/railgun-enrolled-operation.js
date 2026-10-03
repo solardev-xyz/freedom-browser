@@ -9,10 +9,7 @@ const {
   getPrivacyContext,
 } = require('../../src/main/networks/privacy-context');
 const { startRailgunProcess } = require('../../src/main/wallet/railgun-process');
-const {
-  normalizeRailgunSpendSignature,
-  normalizeRailgunPrivateVerification,
-} = require('../../src/main/wallet/railgun-private-results');
+const { normalizeRailgunSpendSignature } = require('../../src/main/wallet/railgun-private-results');
 
 exports.qualify = async function qualify({
   account,
@@ -173,49 +170,40 @@ exports.qualify = async function qualify({
     assert.equal(result.operation.status, refuse ? 'refused' : 'proved');
     let verifier;
     if (!refuse) {
-      const scope = createPrivacyScope({ profileId: context.profileId, signal: identity.signal });
+      const {
+        verifyRailgunPrivateProof,
+        assertRailgunPrivateProof,
+      } = require('../../src/main/wallet/railgun-private-proof');
       const payload = {
-        archive: proverArchive,
-        artifactDirectory,
         intent: result.preparation.transaction,
         transaction: result.operation.transaction,
         expected: result.preparation.expected,
       };
-      let task, value;
+      const verification = await verifyRailgunPrivateProof({
+        enrollment,
+        proverArchive,
+        artifactDirectory,
+        ...payload,
+        signal: identity.signal,
+      });
       try {
-        task = startRailgunProcess({
-          handle: scope.getContext({
-            ...context.subject,
-            role: 'prover',
-            operation: 'private-verify',
-          }),
-          filename: require.resolve('../../src/main/wallet/railgun-private-verify-job'),
-          input: JSON.stringify(payload),
-          startupMs: 30000,
-          lifetimeMs: 60000,
-          broker: {
-            signal: scope.signal,
-            async dispatch(wire) {
-              const message = JSON.parse(wire);
-              assert.equal(value, undefined);
-              assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
-              assert.equal(message.id, 1);
-              assert.equal(message.method, 'result');
-              value = message.value;
-              return JSON.stringify({ id: 1, value: null });
-            },
-          },
-        });
-        await task.ready;
-        task.close();
-        verifier = await task.closed;
+        verifier = verification.process;
         assert.equal(verifier.code, 'RAILGUN_PROCESS_CLOSED');
-        assert.equal(normalizeRailgunPrivateVerification(value, payload).verified, true);
+        const observation = assertRailgunPrivateProof(verification.receipt, enrollment, payload);
+        assert.equal(observation.verified, true);
+        assert.equal(observation.utilityExitObserved, true);
+        assert.throws(() => assertRailgunPrivateProof({}, enrollment, payload));
+        assert.throws(() => assertRailgunPrivateProof(verification.receipt, {}, payload));
+        assert.throws(() =>
+          assertRailgunPrivateProof(verification.receipt, enrollment, {
+            ...payload,
+            transaction: { ...payload.transaction, value: '1' },
+          })
+        );
       } finally {
-        task?.close();
-        if (task) await task.closed;
-        scope.close();
+        verification.close();
       }
+      assert.throws(() => assertRailgunPrivateProof(verification.receipt, enrollment, payload));
     }
     runs.push({
       kind: request.kind,
@@ -224,6 +212,8 @@ exports.qualify = async function qualify({
       syntheticSpendingKeyTransfers: keyTransfers,
       receiverVerified: receiver,
       independentProofVerified: !refuse,
+      mainOwnedProofReceiptChecked: !refuse,
+      closedProofReceiptRefused: !refuse,
       windowExpired: true,
       recoveryCapsuleValidated: true,
       recoveryWitnessCheckedBeforeOffer: true,

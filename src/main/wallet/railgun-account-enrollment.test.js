@@ -234,6 +234,11 @@ test('duplicate create, concurrent open, forged identity and foreign generations
   expect(getPrivacyContext(entry.getContext('storage', 'scan-journal')).subject.operation).toBe(
     'scan-journal'
   );
+  expect(getPrivacyContext(entry.getContext('prover', 'private-verify')).subject.operation).toBe(
+    'private-verify'
+  );
+  expect(() => entry.getContext('prover')).toThrow();
+  expect(() => entry.getContext('prover', 'private-sign')).toThrow();
   expect(() => entry.getContext('keystore')).toThrow();
   await expect(open()).rejects.toThrow();
   await expect(entry.withGenerationKeys('f'.repeat(64), () => {})).rejects.toThrow();

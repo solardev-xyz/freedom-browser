@@ -430,7 +430,10 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     },
     getContext(role, operation) {
       active();
-      check(['engine', 'storage', 'protocol-rpc'].includes(role));
+      check(
+        ['engine', 'storage', 'protocol-rpc'].includes(role) ||
+          (role === 'prover' && operation === 'private-verify')
+      );
       const next = { ...subject, role };
       delete next.operation;
       if (operation !== undefined) next.operation = operation;
