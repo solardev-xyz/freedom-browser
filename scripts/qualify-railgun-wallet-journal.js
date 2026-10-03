@@ -27,6 +27,7 @@ async function main() {
   let accountIdentity, accountParent, accountProfileId, enrollment;
   const vault = accountArchive ? require('../src/main/identity/vault') : null;
   let lockOnViewingKey = false,
+    privateViewingKeys = 0,
     failReadOnlyRestore = false,
     failWalletBatch = false,
     failPublicCommit = false,
@@ -72,6 +73,8 @@ async function main() {
           async dispatch(wire) {
             messages++;
             const message = JSON.parse(wire);
+            if (message.method === 'key' && message.purpose === 'private-prepare')
+              privateViewingKeys++;
             if (
               failReadOnlyRestore &&
               options.filename === require.resolve('../src/main/wallet/railgun-wallet-job') &&
@@ -383,6 +386,12 @@ async function main() {
     'src/main/wallet/railgun-account-store.js',
     'src/main/wallet/railgun-account-enrollment.js',
     'src/main/wallet/railgun-private-reservations.js',
+    'src/main/wallet/railgun-private-witness.js',
+    'src/main/wallet/railgun-private-prepare-job.js',
+    'src/main/wallet/railgun-private-preparation.js',
+    'src/main/wallet/railgun-private-intent.js',
+    'src/main/wallet/railgun-private-policy.js',
+    'src/main/wallet/railgun-shield-pins.json',
     'src/main/wallet/privacy-profile-guard.js',
     'src/main/wallet/railgun-identity.js',
     'src/main/wallet/railgun-identity-job.js',
@@ -653,6 +662,7 @@ async function main() {
               retainedDirectories.every((dir) => fs.existsSync(path.join(dir, 'wallet.sqlite')))
             );
             const accountWindows = [];
+            const privatePreparations = [];
             if (attempt === 'restore') {
               const {
                 readRailgunAccountOwnedNotes,
@@ -686,6 +696,56 @@ async function main() {
                   balanceUnchanged: true,
                 });
               }
+              const beforePreparation = readRailgunAccountOwnedNotes(opened, owners);
+              const selected = beforePreparation.read.received
+                .filter((v) => v.spentTxid === false)
+                .at(-1);
+              if (
+                selected.asset.contract ===
+                require('../src/main/wallet/railgun-shield-pins.json').wrappedNative
+              ) {
+                for (const kind of ['railgun-private-transfer', 'railgun-token-unshield']) {
+                  const previousView = opened.view,
+                    keysBefore = privateViewingKeys,
+                    started = performance.now();
+                  const prepared =
+                    await require('../src/main/wallet/railgun-account-wallet').prepareRailgunAccountPrivateIntent(
+                      opened,
+                      owners,
+                      {
+                        kind,
+                        noteId: selected.id,
+                        recipient:
+                          kind === 'railgun-private-transfer'
+                            ? accountIdentity.descriptor.instanceId
+                            : '0x' + '12'.repeat(20),
+                      }
+                    );
+                  assert.equal(prepared.view, opened.view);
+                  await assert.rejects(previousView.balance());
+                  assert.equal(prepared.preparation.spendingEnabled, false);
+                  assert.equal(prepared.preparation.witnessRetained, false);
+                  assert.deepEqual(prepared.readOnly, { readOnly: true, writeAttempts: 0 });
+                  assert.equal(prepared.preparation.amount, selected.amount.toString());
+                  assert.equal(privateViewingKeys - keysBefore, 1);
+                  assert.deepEqual(
+                    readRailgunAccountOwnedNotes(opened, owners).ownedPoi,
+                    beforePreparation.ownedPoi
+                  );
+                  privatePreparations.push({
+                    kind,
+                    elapsedMs: Math.round(performance.now() - started),
+                    currentViewReplaced: true,
+                    oldViewRefused: true,
+                    ownedProjectionUnchanged: true,
+                    fullInputAmount: true,
+                    viewingKeyTransfers: 1,
+                    spendingEnabled: false,
+                    witnessRetained: false,
+                    writeAttempts: 0,
+                  });
+                }
+              }
             }
             runs.push({
               stage,
@@ -697,6 +757,7 @@ async function main() {
               instanceMatches: true,
               spendableGranted: false,
               accountWindows,
+              privatePreparations,
             });
           } finally {
             await opened.close();

@@ -472,6 +472,7 @@ test.each([
   ['keystore', 'spending-public', './railgun-identity-job'],
   ['keystore', 'spending-sign', './railgun-spend-sign-job'],
   ['engine', 'wallet-viewing', './railgun-wallet-job'],
+  ['engine', 'private-prepare', './railgun-private-prepare-job'],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
 ])(
   'only dedicated %s/%s job can receive one binary key, and the supervisor wipes it',
@@ -547,6 +548,8 @@ test.each([
   ['spending-public', './railgun-spend-sign-job'],
   ['spending-sign', './railgun-wallet-job'],
   ['spending-public', './railgun-wallet-job'],
+  ['spending-sign', './railgun-private-prepare-job'],
+  ['private-prepare', './railgun-spend-sign-job'],
 ])('refuses binary-key job cross-pairing %s/%s', (operation, filename) => {
   const handle = scope.getContext({
     kind: 'private-account',

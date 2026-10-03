@@ -193,8 +193,15 @@ async function openRailgunAccountWallet({
       getRailgunAccountPublicIdentity(coordinator, enrollment);
       return runner.readOwned(checked.value.receipt, journal);
     };
-    async function restoreCurrent() {
-      current();
+    async function restoreCurrent(request) {
+      const before = current();
+      const privateIntent =
+        request === undefined
+          ? undefined
+          : require('./railgun-private-preparation').selectRailgunPrivatePreparation(
+              before,
+              request
+            );
       const captured = checkpointHash(coordinator.assertSnapshot(checked.evidence));
       busy = true;
       let entered = false;
@@ -206,12 +213,13 @@ async function openRailgunAccountWallet({
           phase.assertCurrent();
           check(!lifetime.aborted && checkpointHash(snapshot.checkpoint) === captured);
           assertRailgunIdentity(identity, handle);
-          scan = runner.restoreReadOnly({
+          scan = (privateIntent ? runner.prepareReadOnly : runner.restoreReadOnly)({
             handle,
             snapshot,
             walletSession,
             coverageStore,
             walletId,
+            ...(privateIntent ? { privateIntent } : {}),
           });
           return scan;
         });
@@ -228,6 +236,14 @@ async function openRailgunAccountWallet({
           journal,
           receipt: renewed.value.receipt,
         });
+        if (privateIntent) {
+          const after = runner.readOwned(renewed.value.receipt, journal);
+          check(after.checkpointHash === before.checkpointHash);
+          require('assert/strict').deepEqual(after.ownedPoi, before.ownedPoi);
+          require('assert/strict').deepEqual(after.trees, before.trees);
+          require('assert/strict').deepEqual(after.read.received, before.read.received);
+          check(renewed.value.preparation && renewed.value.preparation.spendingEnabled === false);
+        }
         phase.assertCurrent();
         check(!lifetime.aborted);
         assertRailgunIdentity(identity, handle);
@@ -235,7 +251,13 @@ async function openRailgunAccountWallet({
         // exported view switch together, only after successful revalidation.
         checked = renewed;
         view = nextView;
-        return view;
+        return privateIntent
+          ? Object.freeze({
+              view,
+              preparation: renewed.value.preparation,
+              readOnly: Object.freeze({ ...renewed.value.readOnly }),
+            })
+          : view;
       })();
       try {
         return await restoration;
@@ -284,9 +306,14 @@ function readRailgunAccountOwnedNotes(account, owners) {
 function restoreRailgunAccountWallet(account, owners) {
   return owned(account, owners).restoreCurrent();
 }
+function prepareRailgunAccountPrivateIntent(account, owners, request) {
+  check(request !== undefined);
+  return owned(account, owners).restoreCurrent(request);
+}
 module.exports = {
   openRailgunAccountWallet,
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,
+  prepareRailgunAccountPrivateIntent,
 };

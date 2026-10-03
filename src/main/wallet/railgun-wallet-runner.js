@@ -69,6 +69,19 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       );
       const read = normalizeRailgunWalletRead(result, coverage);
       const ownedPoi = normalizeRailgunOwnedPoiRecords(result.ownedPoi, read, snapshot.checkpoint);
+      const preparation =
+        options.privateIntent === undefined
+          ? undefined
+          : require('./railgun-private-preparation').normalizeRailgunPrivatePreparation(
+              result.privatePreparation,
+              {
+                selection: options.privateIntent,
+                read,
+                ownedPoi,
+                trees: snapshot.checkpoint.state.trees,
+              }
+            );
+      if (options.privateIntent === undefined) assert.equal(result.privatePreparation, undefined);
       if (descriptor) {
         assert.equal(read.instanceId, descriptor.instanceId);
         currentIdentity();
@@ -94,7 +107,13 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       });
       if (readOnly) coverageStore.finishRestore(receipt);
       else coverageStore.finishEngine(receipt);
-      return { result, receipt, coverage, ...(readOnly ? { readOnly: readOnlyStatus } : {}) };
+      return {
+        result,
+        receipt,
+        coverage,
+        ...(readOnly ? { readOnly: readOnlyStatus } : {}),
+        ...(preparation ? { preparation } : {}),
+      };
     } catch (error) {
       coverageStore.close();
       throw error;
@@ -124,6 +143,10 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
   const instance = Object.freeze({
     run: (options) => run(options),
     restoreReadOnly: (options) => run({ ...options, restore: true }, true),
+    prepareReadOnly: (options) => {
+      assert.ok(options.privateIntent);
+      return run({ ...options, restore: true }, true);
+    },
     assertScan,
     read,
     readOwned,

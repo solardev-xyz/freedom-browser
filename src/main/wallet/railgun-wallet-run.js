@@ -16,7 +16,10 @@ async function runRailgunWalletSnapshot({
   walletId,
   walletGrant,
   restore,
+  privateIntent,
 }) {
+  if (privateIntent !== undefined) assert.equal(restore, true);
+  const purpose = privateIntent === undefined ? 'wallet-viewing' : 'private-prepare';
   const descriptor = assertRailgunIdentity(identity, handle);
   assert.equal(walletId, descriptor.walletId);
   archive = verifyRailgunEngineRuntime(archive);
@@ -47,17 +50,21 @@ async function runRailgunWalletSnapshot({
     storageSequence = 0;
   try {
     task = startRailgunProcess({
-      handle: scope.getContext({ ...context.subject, role: 'engine', operation: 'wallet-viewing' }),
+      handle: scope.getContext({ ...context.subject, role: 'engine', operation: purpose }),
       binaryKey: true,
       startupMs: 120000,
       lifetimeMs: 180000,
-      filename: require.resolve('./railgun-wallet-job'),
+      filename:
+        privateIntent === undefined
+          ? require.resolve('./railgun-wallet-job')
+          : require.resolve('./railgun-private-prepare-job'),
       input: JSON.stringify({
         archive,
         descriptor,
         checkpoint: snapshot.checkpoint,
         walletId,
         restore,
+        ...(privateIntent === undefined ? {} : { privateIntent }),
         prefixes: router.prefixes,
       }),
       broker: {
@@ -68,7 +75,7 @@ async function runRailgunWalletSnapshot({
           assert.equal(result, undefined);
           assertRailgunIdentity(identity, handle);
           if (message.id === 1) {
-            assert.deepEqual(message, { id: 1, method: 'key', purpose: 'wallet-viewing' });
+            assert.deepEqual(message, { id: 1, method: 'key', purpose });
             let output;
             try {
               return await withRailgunViewingCredential(identity, ({ viewingKey }) => {

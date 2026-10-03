@@ -1,6 +1,6 @@
 /** Read-only enrolled Railgun acquisition through managed Tor. Uses an existing
  * disposable qualification vault; never creates/replaces a vault or submits a tx.
- * electron script archive profile anchor-report new-output mode [range-limit] [txid-page-limit] [restore-windows]
+ * electron script archive profile anchor-report new-output mode [range-limit] [txid-page-limit] [restore-windows] [prepare]
  * mode: enroll (first account), new (rebuild), pending (resume), active (continue).
  */
 const fs = require('fs'),
@@ -25,9 +25,10 @@ async function main() {
     limitText,
     txidText,
     windowsText,
+    prepareText,
   ] = process.argv.slice(2);
   assert.ok(
-    process.argv.length <= 10 &&
+    process.argv.length <= 11 &&
       [archive, profileDirectory, anchorFilename, output].every(
         (v) => typeof v === 'string' && path.isAbsolute(v)
       )
@@ -39,6 +40,7 @@ async function main() {
   assert.ok(Number.isSafeInteger(txidLimit) && txidLimit >= 0 && txidLimit <= 100);
   const restoreWindows = windowsText === undefined ? 0 : Number(windowsText);
   assert.ok(Number.isSafeInteger(restoreWindows) && restoreWindows >= 0 && restoreWindows <= 2);
+  assert.ok(prepareText === undefined || prepareText === 'prepare');
   assert.ok(!app.isPackaged && process.env.FREEDOM_WALLET_TOR_EXPERIMENT === '1');
   assert.ok(
     !process.env.FREEDOM_IDENTITY_DATA && fs.realpathSync(profileDirectory) === profileDirectory
@@ -113,6 +115,13 @@ async function main() {
       'scripts/qualify-railgun-live.js',
       'src/main/wallet/railgun-owned-poi-records.js',
       'src/main/wallet/railgun-account-phase.js',
+      'src/main/wallet/railgun-private-prepare-job.js',
+      'src/main/wallet/railgun-private-witness.js',
+      'src/main/wallet/railgun-private-preparation.js',
+      'src/main/wallet/railgun-private-intent.js',
+      'src/main/wallet/railgun-private-policy.js',
+      'src/main/wallet/railgun-shield-pins.json',
+      'src/main/wallet/railgun-private-reservations.js',
       'src/main/networks/private-rpc.js',
       'src/main/networks/wallet-tor-transport.js',
       'src/main/tor-manager.js',
@@ -387,6 +396,58 @@ async function main() {
             busyOwnedReadRefused: true,
             oldViewRefused: true,
             currentViewReplaced: true,
+          });
+        }
+      }
+      if (prepareText) {
+        stage = 'wallet-private-intent';
+        const {
+          readRailgunAccountOwnedNotes,
+          prepareRailgunAccountPrivateIntent,
+        } = require('../src/main/wallet/railgun-account-wallet');
+        const owners = { identity, enrollment, coordinator: publicAccount.coordinator };
+        const before = readRailgunAccountOwnedNotes(wallet, owners);
+        const recipient = (
+          await require('../src/main/wallet/signers').getSigner(0).getAddress()
+        ).toLowerCase();
+        const note = before.read.received.find(
+          (v) =>
+            v.spentTxid === false &&
+            v.asset.__type === 'erc20' &&
+            v.asset.contract ===
+              require('../src/main/wallet/railgun-shield-pins.json').wrappedNative
+        );
+        assert.ok(note);
+        report.wallet.privatePreparations = [];
+        for (const kind of ['railgun-private-transfer', 'railgun-token-unshield']) {
+          const oldView = wallet.view,
+            started = performance.now();
+          const prepared = await prepareRailgunAccountPrivateIntent(wallet, owners, {
+            kind,
+            noteId: note.id,
+            recipient:
+              kind === 'railgun-private-transfer' ? identity.descriptor.instanceId : recipient,
+          });
+          assert.equal(prepared.view, wallet.view);
+          await assert.rejects(oldView.balance());
+          assert.equal(prepared.preparation.amount, note.amount.toString());
+          assert.equal(prepared.preparation.witnessRetained, false);
+          assert.equal(prepared.preparation.spendingEnabled, false);
+          assert.deepEqual(prepared.readOnly, { readOnly: true, writeAttempts: 0 });
+          const after = readRailgunAccountOwnedNotes(wallet, owners);
+          assert.equal(after.checkpointHash, before.checkpointHash);
+          assert.deepEqual(after.ownedPoi, before.ownedPoi);
+          assert.deepEqual(after.trees, before.trees);
+          report.wallet.privatePreparations.push({
+            kind,
+            elapsedMs: Math.round(performance.now() - started),
+            currentViewReplaced: true,
+            oldViewRefused: true,
+            ownedProjectionUnchanged: true,
+            fullInputAmount: true,
+            witnessRetained: false,
+            spendingEnabled: false,
+            writeAttempts: 0,
           });
         }
       }

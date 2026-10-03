@@ -48,6 +48,7 @@ const {
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,
+  prepareRailgunAccountPrivateIntent,
 } = require('./railgun-account-wallet');
 let scope, options, directory, generation, events, state;
 beforeEach(() => {
@@ -260,6 +261,86 @@ test('account restoration swaps its view and owned receipt only after journal re
   expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
   await opened.close();
 });
+function preparationFixture() {
+  const owned = {
+    checkpointHash: '6'.repeat(64),
+    read: {
+      instanceId: 'self',
+      received: [
+        {
+          id: '0:1',
+          tree: 0,
+          position: 1,
+          amount: 1000n,
+          spentTxid: false,
+          asset: { __type: 'erc20', contract: require('./railgun-shield-pins.json').wrappedNative },
+        },
+      ],
+    },
+    ownedPoi: [{ id: '0:1', nullifier: '0x' + '1'.repeat(64) }],
+    trees: [{ tree: 0, root: '0x' + '2'.repeat(64), length: 2 }],
+  };
+  mockRunner.readOwned.mockImplementation(() => owned);
+  mockRunner.prepareReadOnly = jest.fn(async () => ({
+    receipt: {},
+    coverage: {},
+    readOnly: { readOnly: true, writeAttempts: 0 },
+    preparation: { spendingEnabled: false, witnessRetained: false },
+  }));
+  return { owned, request: { kind: 'railgun-private-transfer', noteId: '0:1', recipient: 'self' } };
+}
+test('preparation re-attests, compares captured values and swaps to a diagnostic result', async () => {
+  const { request } = preparationFixture(),
+    opened = await openRailgunAccountWallet(options),
+    old = opened.view;
+  mockRead.mockImplementation(() => ({}));
+  const result = await prepareRailgunAccountPrivateIntent(opened, options, request);
+  expect(result.view).toBe(opened.view);
+  expect(result.view).not.toBe(old);
+  expect(result.preparation).toMatchObject({ spendingEnabled: false, witnessRetained: false });
+  expect(mockRunner.prepareReadOnly).toHaveBeenCalledWith(
+    expect.objectContaining({
+      privateIntent: {
+        kind: request.kind,
+        tree: 0,
+        position: 1,
+        recipient: 'self',
+      },
+    })
+  );
+  expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
+  await opened.close();
+});
+test('unsupported preparation refuses before a window and preserves the current account', async () => {
+  const { request } = preparationFixture(),
+    opened = await openRailgunAccountWallet(options),
+    old = opened.view;
+  await expect(
+    prepareRailgunAccountPrivateIntent(opened, options, { ...request, recipient: 'foreign' })
+  ).rejects.toThrow();
+  expect(mockRunner.prepareReadOnly).not.toHaveBeenCalled();
+  expect(opened.signal.aborted).toBe(false);
+  expect(opened.view).toBe(old);
+  expect(() => readRailgunAccountOwnedNotes(opened, options)).not.toThrow();
+  expect(() => prepareRailgunAccountPrivateIntent(opened, options)).toThrow();
+  await opened.close();
+});
+test.each(['checkpointHash', 'ownedPoi', 'trees', 'read'])(
+  'changed restored %s refuses preparation without swapping',
+  async (field) => {
+    const { request, owned } = preparationFixture(),
+      opened = await openRailgunAccountWallet(options),
+      old = opened.view;
+    const changed = structuredClone(owned);
+    if (field === 'read') changed.read.received[0].amount++;
+    else if (field === 'checkpointHash') changed.checkpointHash = '7'.repeat(64);
+    else changed[field] = [];
+    mockRunner.readOwned.mockImplementationOnce(() => owned).mockImplementation(() => changed);
+    await expect(prepareRailgunAccountPrivateIntent(opened, options, request)).rejects.toThrow();
+    expect(opened.view).toBe(old);
+    expect(opened.signal.aborted).toBe(true);
+  }
+);
 test.each(['identity', 'enrollment', 'coordinator'])(
   'foreign %s cannot restore an account',
   async (owner) => {

@@ -2,7 +2,12 @@
 const assert = require('assert/strict'),
   path = require('path'),
   { createRequire } = require('module');
-async function run(inputText, { request, requestKey, signal, guardReport }) {
+async function withWallet(
+  inputText,
+  { request, requestKey, signal, guardReport },
+  purpose,
+  prepare
+) {
   const input = JSON.parse(inputText),
     archive = require('./railgun-engine-runtime').verifyRailgunEngineRuntime(input.archive),
     r = createRequire(path.join(archive, 'package.json')),
@@ -46,9 +51,7 @@ async function run(inputText, { request, requestKey, signal, guardReport }) {
     walletDb = new Database(walletRemote.leveldown);
   const descriptor = input.descriptor;
   assert.equal(input.walletId, descriptor.walletId);
-  const keyBytes = await requestKey(
-    JSON.stringify({ id: 1, method: 'key', purpose: 'wallet-viewing' })
-  );
+  const keyBytes = await requestKey(JSON.stringify({ id: 1, method: 'key', purpose }));
   assert.ok(keyBytes instanceof Uint8Array && keyBytes.byteLength === 32);
   const viewingKey = Buffer.from(keyBytes.buffer, keyBytes.byteOffset, keyBytes.byteLength);
   try {
@@ -109,6 +112,17 @@ async function run(inputText, { request, requestKey, signal, guardReport }) {
       signal,
       restore: input.restore,
     });
+    const extra = prepare
+      ? await prepare({
+          archive,
+          wallet,
+          tree,
+          descriptor,
+          checkpoint: input.checkpoint,
+          scan: result,
+          signal,
+        })
+      : {};
     assert.equal(poiCalls, 0);
     assert.equal(guardReport().attempts, 0);
     const messageId = ++sequence;
@@ -120,6 +134,7 @@ async function run(inputText, { request, requestKey, signal, guardReport }) {
             method: 'result',
             value: {
               ...result,
+              ...extra,
               inventory: inventory.sha256,
               guards: guardReport(),
               poiCalls,
@@ -136,4 +151,5 @@ async function run(inputText, { request, requestKey, signal, guardReport }) {
     walletRemote.close();
   }
 }
-module.exports = { run };
+const run = (inputText, context) => withWallet(inputText, context, 'wallet-viewing');
+module.exports = { run, withWallet };

@@ -67,6 +67,7 @@ test('local wallet job and host validation dependencies are pinned or cross expl
   }
   for (const root of [
     'railgun-wallet-job',
+    'railgun-private-prepare-job',
     'railgun-wallet-runner',
     'railgun-wallet-run',
     'railgun-wallet-coverage-store',
@@ -74,5 +75,5 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-kohaku-read',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(16);
+  expect(visited.size).toBe(22);
 });

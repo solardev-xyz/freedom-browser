@@ -33,9 +33,18 @@ jest.mock('./railgun-process', () => ({
     });
     const ready = (async () => {
       const bytes = await options.broker.dispatch(
-        JSON.stringify({ id: 1, method: 'key', purpose: 'wallet-viewing' })
+        JSON.stringify({
+          id: 1,
+          method: 'key',
+          purpose: mockInput.privateIntent ? 'private-prepare' : 'wallet-viewing',
+        })
       );
       expect(options.binaryKey).toBe(true);
+      expect(options.filename).toBe(
+        require.resolve(
+          mockInput.privateIntent ? './railgun-private-prepare-job' : './railgun-wallet-job'
+        )
+      );
       expect(bytes.byteLength).toBe(32);
       expect(bytes.byteOffset).toBe(0);
       expect(bytes.buffer.byteLength).toBe(32);
@@ -121,4 +130,17 @@ test('a revoked/foreign identity or wrong walletId starts no worker', async () =
   mockRefuse = false;
   await expect(runRailgunWalletSnapshot({ ...args, walletId: '2'.repeat(64) })).rejects.toThrow();
   expect(mockTask).toBeNull();
+});
+test('private preparation uses only the dedicated viewing-key entry and requires restore mode', async () => {
+  const privateIntent = {
+    kind: 'railgun-token-unshield',
+    tree: 0,
+    position: 1,
+    recipient: '0x' + '12'.repeat(20),
+  };
+  await expect(runRailgunWalletSnapshot({ ...args, privateIntent })).rejects.toThrow();
+  expect(mockTask).toBeNull();
+  await runRailgunWalletSnapshot({ ...args, privateIntent, restore: true });
+  expect(mockInput.privateIntent).toEqual(privateIntent);
+  expect([...mockCopy]).toEqual(Array(32).fill(0));
 });

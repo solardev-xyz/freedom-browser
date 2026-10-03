@@ -9,7 +9,7 @@ const assert = require('assert/strict'),
 async function main() {
   const filename = process.argv[2],
     mode = process.argv[3];
-  assert.ok(mode === undefined || mode === 'vault-public-vector');
+  assert.ok(mode === undefined || ['vault-public-vector', 'vault-weth-vector'].includes(mode));
   assert.ok(path.isAbsolute(filename));
   const fixture = path.join(__dirname, 'railgun-engine');
   require('../railgun-fixture-integrity').assertRailgunFixture(path.join(fixture, 'node_modules'));
@@ -25,7 +25,7 @@ async function main() {
     path.join(root, 'utils/keys-utils')
   );
   let wallet;
-  if (mode === 'vault-public-vector') {
+  if (['vault-public-vector', 'vault-weth-vector'].includes(mode)) {
     const { WalletNode } = require(path.join(root, 'key-derivation/wallet-node'));
     const seed = WalletNode.fromMnemonic(
       'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
@@ -45,7 +45,10 @@ async function main() {
     );
   }
   require(path.join(root, 'wallet/wallet-info')).default.setWalletSource('freedomfixture');
-  const token = '0x' + '12'.repeat(20),
+  const token =
+      mode === 'vault-weth-vector'
+        ? require('../../src/main/wallet/railgun-shield-pins.json').wrappedNative
+        : '0x' + '12'.repeat(20),
     shields = [];
   for (const [index, value] of [1000n, 2000n].entries()) {
     const note = new ShieldNoteERC20(
