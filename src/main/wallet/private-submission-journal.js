@@ -34,6 +34,13 @@ function snapshot(record) {
   if (record.resolution) Object.freeze(record.resolution);
   return Object.freeze(record);
 }
+function freezeSnapshot(value) {
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(freezeSnapshot);
+    Object.freeze(value);
+  }
+  return value;
+}
 function validObservation(value) {
   return (
     value &&
@@ -193,6 +200,15 @@ function createSubmissionJournal({ handle, directory, key, profileGuard }) {
   }
   return Object.freeze({
     list,
+    // One authenticated read prevents an archival transition from splitting
+    // active/archive observations. This is detached data, not a write lease or
+    // continuing authority; callers must reattest at their eventual use boundary.
+    async readSnapshot() {
+      getPrivacyContext(handle);
+      const value = await storage.get(KEY);
+      getPrivacyContext(handle);
+      return freezeSnapshot(decode(value));
+    },
     assertCanSubmit,
     // Explicit private initialization enrolls the account before its first
     // submission. Ordinary sends must never create a new enrollment.

@@ -203,6 +203,15 @@ test('pins caller data before asynchronous visitation', async () => {
   expect(result.transactionIndex).toBe(4);
   expect(result.source.ledgerSha256).toBe('d'.repeat(64));
 });
+test('capture-local cancellation during visitation drains the authenticated suffix', async () => {
+  const f = fixture();
+  let checks = 0;
+  f.options.assertCurrent.mockImplementation(() => {
+    if (++checks >= 2) throw Error('capture cancelled');
+  });
+  await expect(collect(f.options)).rejects.toMatchObject({ code: 'RAILGUN_OWN_SOURCE_REFUSED' });
+  expect(f.visitedCount()).toBe(f.logs.length);
+});
 test('awaits authenticated suffix after receiving a correct selected group', async () => {
   const f = fixture(),
     visit = f.options.visit.getMockImplementation();

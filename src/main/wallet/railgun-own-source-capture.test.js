@@ -52,7 +52,7 @@ beforeEach(() => {
     withPublicSnapshot: jest.fn(async (run) => {
       ready = null;
       const value = await run({
-        checkpoint: { version: 1 },
+        checkpoint: { version: 1, source: { ledgerId: 'source' } },
         signal: publicController.signal,
         visitSource: async (visit) => {
           await visit({});
@@ -69,7 +69,10 @@ beforeEach(() => {
     }),
     assertSnapshot: jest.fn((token) => {
       if (!ready || token !== ready || mode === 'snapshot') throw Error('stale');
-      return { version: mode === 'checkpoint' ? 2 : 1 };
+      return {
+        version: mode === 'checkpoint' ? 2 : 1,
+        source: { ledgerId: mode === 'ledger' ? 'wrong' : 'source' },
+      };
     }),
   };
   mockCollect.mockImplementation(async ({ checkpoint, visit, assertCurrent }) => {
@@ -128,13 +131,21 @@ test('mints genuine source-only evidence after final snapshot assertion', async 
   ready = null;
   expect(() => attest(result.receipt, mockEnrollment, mockCoordinator)).toThrow();
 });
-test.each(['suffix', 'snapshot', 'checkpoint'])(
+test.each(['suffix', 'snapshot', 'checkpoint', 'ledger'])(
   'refuses %s failure without issuing evidence',
   async (value) => {
     mode = value;
     await expect(start()).rejects.toMatchObject({ code: 'RAILGUN_OWN_SOURCE_CAPTURE_REFUSED' });
   }
 );
+test('a semantic refusal completes the snapshot and permits a later capture', async () => {
+  mockCollect.mockRejectedValueOnce(Error('mismatched caller receipt'));
+  await expect(start()).rejects.toMatchObject({ code: 'RAILGUN_OWN_SOURCE_CAPTURE_REFUSED' });
+  expect(ready).not.toBeNull();
+  expect(publicController.signal.aborted).toBe(false);
+  const result = await start();
+  expect(attest(result.receipt, mockEnrollment, mockCoordinator)).toBe(result.observation);
+});
 test.each(['caller', 'coordinator', 'enrollment', 'close', 'timeout', 'generation'])(
   'revokes existing evidence on %s',
   async (value) => {

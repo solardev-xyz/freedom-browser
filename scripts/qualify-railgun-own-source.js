@@ -223,7 +223,9 @@ async function main() {
     unexpectedRpc = 0,
     visited = 0,
     failAfterVisit = false,
-    injected = 0;
+    injected = 0,
+    cancelDuringVisit = null,
+    cancelledVisits = 0;
   const methods = {};
   transport.createWalletTorTransport = () => {
     externalAttempts++;
@@ -282,8 +284,15 @@ async function main() {
     const ledger = await originalLedger(options);
     return Object.freeze({
       ...ledger,
-      async visitThrough(...args) {
-        const result = await ledger.visitThrough(...args);
+      async visitThrough(digest, visitor) {
+        const result = await ledger.visitThrough(digest, async (log) => {
+          if (cancelDuringVisit) {
+            cancelDuringVisit.abort();
+            cancelDuringVisit = null;
+            cancelledVisits++;
+          }
+          await visitor(log);
+        });
         visited++;
         if (failAfterVisit) {
           failAfterVisit = false;
@@ -319,7 +328,7 @@ async function main() {
     phase = 'public-advance';
     publicAccount = await openRailgunAccountPublic({ enrollment, archive, create: true });
     await publicAccount.advance({ to: 300, anchor: { number: 310, hash: blockHash(310) } });
-    const capture = () =>
+    const capture = (overrides = {}) =>
       captureRailgunOwnSource({
         enrollment,
         coordinator: publicAccount.coordinator,
@@ -327,6 +336,7 @@ async function main() {
         transaction: fixture.transaction,
         receipt: fixture.receipt,
         signal: enrollment.signal,
+        ...overrides,
       });
     phase = 'capture';
     captured = await capture();
@@ -360,16 +370,68 @@ async function main() {
     captured.close();
     captured = null;
     runs.push({ mode: 'later-snapshot', oldReceiptRefused: true });
+    phase = 'semantic-refusal';
+    const changed = structuredClone(fixture);
+    changed.transaction.transactionIndex = changed.receipt.transactionIndex = '0x5';
+    changed.receipt.logs.forEach((log) => {
+      log.transactionIndex = '0x5';
+    });
+    const beforeMismatch = visited;
+    await assert.rejects(capture({ transaction: changed.transaction, receipt: changed.receipt }), {
+      code: 'RAILGUN_OWN_SOURCE_CAPTURE_REFUSED',
+    });
+    assert.equal(visited, beforeMismatch + 1);
+    assert.equal(publicAccount.coordinator.signal.aborted, false);
+    captured = await capture();
+    assert.equal(
+      assertRailgunOwnSource(captured.receipt, enrollment, publicAccount.coordinator)
+        .sourceAuthenticated,
+      true
+    );
+    captured.close();
+    captured = null;
+    runs.push({
+      mode: 'semantic-refusal',
+      authenticatedVisitCompleted: true,
+      coordinatorSurvived: true,
+      followingCaptureSucceeded: true,
+    });
+    phase = 'capture-cancellation';
+    const cancellation = new AbortController();
+    const beforeCancellation = visited;
+    cancelDuringVisit = cancellation;
+    await assert.rejects(capture({ signal: cancellation.signal }), {
+      code: 'RAILGUN_OWN_SOURCE_CAPTURE_REFUSED',
+    });
+    assert.equal(cancelledVisits, 1);
+    assert.equal(visited, beforeCancellation + 1);
+    assert.equal(publicAccount.coordinator.signal.aborted, false);
+    captured = await capture();
+    assert.equal(
+      assertRailgunOwnSource(captured.receipt, enrollment, publicAccount.coordinator)
+        .sourceAuthenticated,
+      true
+    );
+    captured.close();
+    captured = null;
+    runs.push({
+      mode: 'capture-cancellation',
+      authenticatedVisitCompleted: true,
+      coordinatorSurvived: true,
+      followingCaptureSucceeded: true,
+    });
     phase = 'late-failure';
     const oldVisited = visited;
     failAfterVisit = true;
     await assert.rejects(capture(), { code: 'RAILGUN_OWN_SOURCE_CAPTURE_REFUSED' });
     assert.equal(injected, 1);
     assert.equal(visited, oldVisited + 1);
+    assert.equal(publicAccount.coordinator.signal.aborted, true);
     runs.push({
       mode: 'post-visit-failure',
       authenticatedVisitCompleted: true,
       captureRefused: true,
+      coordinatorClosed: true,
     });
     await publicAccount.close();
     publicAccount = null;
@@ -406,6 +468,7 @@ async function main() {
           rpcMethods: methods,
           sourceVisits: visited,
           injectedPostVisitFailures: injected,
+          cancelledVisits,
           externalAttempts,
           unexpectedRpc,
           actualEnrolledCoordinator: true,

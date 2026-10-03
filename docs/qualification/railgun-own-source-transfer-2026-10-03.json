@@ -1,6 +1,6 @@
 {
-  "createdAt": "2026-10-03T20:12:18.018Z",
-  "elapsedMs": 2478,
+  "createdAt": "2026-10-03T20:23:14.253Z",
+  "elapsedMs": 1982,
   "kind": "transfer",
   "sourceSha256": {
     "src/main/wallet/railgun-account-public.js": "ffeb7759d118aa4211b3def4521566ef0e11f25e150f7a880abe8cbf989eaa56",
@@ -23,7 +23,7 @@
     "scripts/fixtures/railgun-enrolled-submission.js": "dab025cd1120ca469a3fd9c8efbbd1d6c692a26fc095df84f22f3e4122dadfb5",
     "src/main/wallet/railgun-private-submission.js": "3bfbf7561ace034b9cae74752b7d22ed373f70195edadb3567938dfdfcec1f07",
     "src/main/wallet/private-transaction-intent.js": "554fab0536cda77cf2b26a7ce94fd1a63fd45e87c0b0aebbf8b341e442d9e879",
-    "src/main/wallet/private-submission-journal.js": "91fdee0984063d2cc9ad57a97e992646a8777655ae9075a69dca67fa571d1e30",
+    "src/main/wallet/private-submission-journal.js": "550a31139ec57e9495ddcdefc600f8d9a2cda121df09f57b7abec8dcaaf9d2e8",
     "src/main/wallet/private-submission-reconciler.js": "786ce5f69cdf9a491e08687fb95cc169d38c7939d5b9cd59706c9547cbc9f47b",
     "src/main/wallet/privacy-journal-retention.js": "8c6193e6f403f6ac7cc1b1a4836dd4d1efddba6673922e11338f248baebcdfe6",
     "src/main/wallet/railgun-transact-intent.js": "a742e2b53a4da44e494854de28b80972c9035d7c2c591f8bcba721c502bb6954",
@@ -133,11 +133,11 @@
     "src/main/wallet/railgun-txid-journal.js": "bd2bd877e568d7d5f0a43a1f374d2fe705905c2494344b55cba36e583b2da7c5",
     "src/main/wallet/railgun-txid-root.js": "d883bbc277e17b9544bfa92dfe50aae0460b6d083ab5a0dcf2f6fa946da233e9",
     "src/main/wallet/railgun-public-services.js": "373331e12ad303ab617de9bda3cf49c9d91689bced7ee4b8641f5ff235e753ad",
-    "scripts/qualify-railgun-own-source.js": "de88505aa6833e66ec9b44cfd9b5ef94db26668df8c7a2b4592daa10090c0cf3",
+    "scripts/qualify-railgun-own-source.js": "3c56b4cbbc2254154ef41c2f8ca5fe39185e0484d04aeea25b7d207be4acf8b0",
     "scripts/fixtures/railgun-own-txid-data.js": "f5d56ae07e13815d2c19a14fa4f6cec8b1c2979e80b81461d9705fdb26bf7683",
     "scripts/fixtures/railgun-transact-data.js": "eb96647d3e82fe5d6995d125284c8bf43817180184be80890cf5e4c4c7ef0afb",
-    "src/main/wallet/railgun-own-source.js": "976232812ffe74d9476fd13de1ab7224bd4a062fe4c9984ec126ed5ffef9c067",
-    "src/main/wallet/railgun-own-source-capture.js": "02791ef1af9aa1bb3a8e4b75b816686f1d5756149c41c224263d62f65c6d10b5",
+    "src/main/wallet/railgun-own-source.js": "e6486038ee088efa1378bc4cac49f328bb60edf6b6fb9d38f873936729a550d1",
+    "src/main/wallet/railgun-own-source-capture.js": "a10c7b0d0cd20798f3dc07d8c7e9bb538e38207335a98e9f9a0c7fa8a24177f0",
     "src/main/wallet/railgun-shield-receipt.js": "745ce73b2427ae3a0a5413455679c4d8514b6ab949f211a88d81a9e901970f4b"
   },
   "runs": [
@@ -148,7 +148,7 @@
       "accountAuthenticated": false,
       "currentFinalityVerified": false,
       "spendingEnabled": false,
-      "checkpointHash": "e2ef8ab555fcc909ba44910a5b2532047b1e9a4041bcfc91e1b4836dc7d3f697",
+      "checkpointHash": "c1ec0a9a17b2a7b284fb20bf63ff8dd384a43f20cb51947b4bf305f1a0a117b5",
       "logsSha256": "4c40edea7e03ae89e393d5a7cee978412ee248d7006dab80cfbb39b4ee94b08e"
     },
     {
@@ -156,9 +156,22 @@
       "oldReceiptRefused": true
     },
     {
+      "mode": "semantic-refusal",
+      "authenticatedVisitCompleted": true,
+      "coordinatorSurvived": true,
+      "followingCaptureSucceeded": true
+    },
+    {
+      "mode": "capture-cancellation",
+      "authenticatedVisitCompleted": true,
+      "coordinatorSurvived": true,
+      "followingCaptureSucceeded": true
+    },
+    {
       "mode": "post-visit-failure",
       "authenticatedVisitCompleted": true,
-      "captureRefused": true
+      "captureRefused": true,
+      "coordinatorClosed": true
     },
     {
       "mode": "public-store-reopen",
@@ -166,11 +179,12 @@
     }
   ],
   "rpcMethods": {
-    "eth_getBlockByNumber": 60,
+    "eth_getBlockByNumber": 92,
     "eth_getLogs": 2
   },
-  "sourceVisits": 3,
+  "sourceVisits": 7,
   "injectedPostVisitFailures": 1,
+  "cancelledVisits": 1,
   "externalAttempts": 0,
   "unexpectedRpc": 0,
   "actualEnrolledCoordinator": true,

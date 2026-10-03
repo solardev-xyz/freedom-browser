@@ -54,12 +54,14 @@ async function collect({ record, transaction, receipt, checkpoint, visit, assert
     failed = false;
   const logs = [];
   const visited = await visit((log) => {
-    assertCurrent();
     count++;
     bytes += Buffer.byteLength(JSON.stringify(log) + '\n');
     assert.ok(count <= 100000 && bytes <= 128 * 1024 * 1024);
     if (failed) return;
     try {
+      // Capture-local cancellation refuses admission without interrupting the
+      // ledger's authentication. Its own window/lifetime still controls I/O.
+      assertCurrent();
       assert.deepEqual(Object.keys(log).sort(), [
         'address',
         'blockHash',

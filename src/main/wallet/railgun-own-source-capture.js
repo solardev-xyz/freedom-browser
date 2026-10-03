@@ -39,11 +39,6 @@ async function capture({
   const scope = createPrivacyScope({
     profileId: getPrivacyContext(parent).profileId,
     signal: AbortSignal.any([signal, enrollment.signal, coordinator.signal]),
-    isCurrent: () => {
-      getPrivacyContext(parent);
-      assertRailgunAccountPublic(coordinator, enrollment, policy);
-      return performance.now() >= started && performance.now() < deadline;
-    },
   });
   let evidence,
     captured,
@@ -77,22 +72,30 @@ async function capture({
     // Await the coordinator itself, including its final authentication/refresh.
     // Cancellation revokes admission; it never races away from in-flight work.
     const snapshot = await coordinator.withPublicSnapshot(async (window) => {
-      current();
-      const assertCurrent = () => {
+      try {
         current();
-        assert.ok(!window.signal.aborted);
-      };
-      const value = await collectRailgunOwnSource({
-        ...supplied,
-        checkpoint: window.checkpoint,
-        visit: window.visitSource,
-        assertCurrent,
-      });
-      assertCurrent();
-      return value;
+        const assertCurrent = () => {
+          current();
+          assert.ok(!window.signal.aborted);
+        };
+        const value = await collectRailgunOwnSource({
+          ...supplied,
+          checkpoint: window.checkpoint,
+          visit: window.visitSource,
+          assertCurrent,
+        });
+        assertCurrent();
+        return value;
+      } catch {
+        // Ordinary mismatches and capture-local cancellation are not ledger
+        // corruption. The coordinator independently tracks visitor failures.
+        return null;
+      }
     });
     current();
+    assert.ok(snapshot.value);
     captured = coordinator.assertSnapshot(snapshot.evidence);
+    assert.equal(captured.source.ledgerId, publicIdentity.sourceId);
     assert.equal(checkpointHash(captured), snapshot.value.checkpointHash);
     evidence = snapshot.evidence;
     const observation = Object.freeze({
