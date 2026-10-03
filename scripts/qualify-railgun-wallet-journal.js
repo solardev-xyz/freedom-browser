@@ -412,6 +412,9 @@ async function main() {
     'src/main/wallet/railgun-private-reservations.js',
     'src/main/wallet/railgun-private-witness.js',
     'scripts/fixtures/railgun-enrolled-operation.js',
+    'scripts/fixtures/railgun-capsule-data.js',
+    'src/main/wallet/railgun-private-capsule-store.js',
+    'src/main/wallet/railgun-private-capsule.js',
     'src/main/wallet/railgun-private-operate-job.js',
     'src/main/wallet/railgun-private-prover.js',
     'src/main/wallet/railgun-prover-runtime.js',
@@ -518,16 +521,10 @@ async function main() {
   let walletSession, walletJournal, catalog, generation, walletDirectory;
   const retainedDirectories = [];
   const legacyHashes = new Map();
-  const reservationInput = Object.freeze({
-    tree: 0,
-    position: 1,
-    nullifier: '0x' + '1'.repeat(64),
-    noteHash: '0x' + '2'.repeat(64),
-    kind: 'railgun-private-transfer',
-    intentDigest: '0x' + '3'.repeat(64),
-    checkpointHash: '4'.repeat(64),
-    poiDigest: '5'.repeat(64),
-  });
+  const capsuleData = require('./fixtures/railgun-capsule-data');
+  const reservationCapsule = capsuleData.capsule(walletId);
+  const reservationInput = Object.freeze(capsuleData.facts(reservationCapsule));
+
   let initialReservationStore, initialReservationReceipt;
   try {
     if (enrollment) {
@@ -1620,9 +1617,18 @@ async function main() {
         operationId: '8'.repeat(64),
         gatesDigest: '9'.repeat(64),
       });
-      const signingReceipt = await reservations.markSigning(replacement, signingEvidence);
+      const capsuleStore = await enrollment.openPrivateCapsules();
+      const savedCapsule = await capsuleStore.put(
+        replacement,
+        reservationCapsule,
+        signingEvidence.gatesDigest
+      );
+      const signingReceipt = await capsuleStore.markSigning(replacement, signingEvidence);
       assert.equal((await reservations.assertReceipt(signingReceipt)).state, 'signing');
-      assert.deepEqual((await reservations.assertReceipt(signingReceipt)).signing, signingEvidence);
+      const signedEvidence = (await reservations.assertReceipt(signingReceipt)).signing;
+      assert.equal(signedEvidence.submitter, signingEvidence.submitter);
+      assert.equal(signedEvidence.operationId, signingEvidence.operationId);
+      assert.notEqual(signedEvidence.gatesDigest, signingEvidence.gatesDigest);
       await assert.rejects(reservations.assertReceipt(replacement));
       await assert.rejects(reservations.abandon(signingReceipt));
       await close();
@@ -1634,6 +1640,20 @@ async function main() {
           }
         );
       const recoveredReservations = await enrollment.openReservations();
+      const recoveredCapsules = await enrollment.openPrivateCapsules();
+      assert.deepEqual(await recoveredCapsules.get(savedCapsule.holdId), savedCapsule);
+      let recoveryReceipt;
+      await recoveredReservations.withSigningRecovery(async (records, recoveryContext) => {
+        recoveryContext.assertCurrent();
+        assert.equal(records.length, 1);
+        recoveryReceipt = records[0].receipt;
+        recoveredReservations.assertReceiptContext(recoveryReceipt, 'recovery');
+        assert.equal(
+          (await recoveredReservations.assertReceipt(recoveryReceipt)).id,
+          savedCapsule.holdId
+        );
+      });
+      await assert.rejects(recoveredReservations.assertReceipt(recoveryReceipt));
       await assert.rejects(recoveredReservations.assertReceipt(signingReceipt));
       await assert.rejects(recoveredReservations.abandonRecovered(recoveryInput), {
         code: 'RAILGUN_RESERVATION_NOT_RECOVERABLE',
@@ -1650,6 +1670,10 @@ async function main() {
       await open(false);
       runs.push({
         attempt: 'reservation-lifecycle',
+        capsulePersistedBeforeSigning: true,
+        capsulePreservedOnReopen: true,
+        recoveryReceiptRevokedAfterPhase: true,
+        gatesDigestBindsCapsule: true,
         syntheticInputFacts: true,
         syntheticSigningEvidence: true,
         liveWalletBlockedRecovery: true,

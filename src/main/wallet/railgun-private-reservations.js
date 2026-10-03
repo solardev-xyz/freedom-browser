@@ -12,7 +12,7 @@ const RECORD = 'railgun-private-reservations-v1',
   MAX_SEQUENCE = MAX_ENTRIES * 2,
   FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const owners = new Set(),
-  instances = new WeakSet();
+  instances = new WeakMap();
 const fail = (code = 'RAILGUN_RESERVATIONS_REFUSED') =>
   Object.assign(new Error('Railgun private input requires recovery'), { code });
 const check = (v) => {
@@ -77,6 +77,7 @@ async function createRailgunPrivateReservations({
   readFloor,
   advanceFloor,
   claimRecovery,
+  authorizeSigning,
 }) {
   const context = getPrivacyContext(handle),
     subject = context.subject;
@@ -92,7 +93,8 @@ async function createRailgunPrivateReservations({
   check(
     typeof readFloor === 'function' &&
       typeof advanceFloor === 'function' &&
-      typeof claimRecovery === 'function'
+      typeof claimRecovery === 'function' &&
+      typeof authorizeSigning === 'function'
   );
   check(path.isAbsolute(directory) && fs.realpathSync(directory) === directory);
   const filename = getPrivacyStoragePath(handle, directory);
@@ -107,7 +109,8 @@ async function createRailgunPrivateReservations({
     },
   });
   const lease = randomBytes(32).toString('hex'),
-    receipts = new WeakMap();
+    receipts = new WeakMap(),
+    receiptOrigins = new WeakMap();
   let storage,
     current,
     closed = false,
@@ -254,11 +257,13 @@ async function createRailgunPrivateReservations({
     check(!busy);
     const entry = receipts.get(receipt);
     check(entry);
+    receiptOrigins.get(receipt)?.assertCurrent();
     busy = true;
     try {
       const value = await attest();
       if (!value.entries.some((e) => JSON.stringify(e) === JSON.stringify(entry)))
         throw fail('RAILGUN_RESERVATION_RECEIPT_STALE');
+      receiptOrigins.get(receipt)?.assertCurrent();
       return entry;
     } catch (error) {
       if (error.code !== 'RAILGUN_RESERVATION_RECEIPT_STALE') close();
@@ -293,9 +298,11 @@ async function createRailgunPrivateReservations({
     assertCurrent();
     const receipt = Object.freeze({});
     receipts.set(receipt, next);
+    if (state === 'signing')
+      receiptOrigins.set(receipt, { kind: 'operation', assertCurrent: active });
     return receipt;
   }
-  async function changeHeld(receipt, state, signing = null) {
+  async function changeHeld(receipt, state, signing = null, permit = null) {
     active();
     check(!busy);
     const entry = receipts.get(receipt);
@@ -305,7 +312,11 @@ async function createRailgunPrivateReservations({
       const value = await attest();
       if (!value.entries.some((e) => JSON.stringify(e) === JSON.stringify(entry)))
         throw fail('RAILGUN_RESERVATION_RECEIPT_STALE');
-      return await transition(entry, state, signing);
+      const assertCurrent =
+        state === 'signing' ? authorizeSigning(permit, instance, receipt, signing) : active;
+      check(typeof assertCurrent === 'function');
+      assertCurrent();
+      return await transition(entry, state, signing, assertCurrent);
     } catch (error) {
       if (error.code !== 'RAILGUN_RESERVATION_RECEIPT_STALE') close();
       throw error;
@@ -338,6 +349,61 @@ async function createRailgunPrivateReservations({
       phase.release();
     }
   }
+  // Trusted controller callback: expected external refusals return values, all
+  // awaits observe context.signal/deadline and drain children before returning.
+  // Expiry revokes receipt use immediately; the phase is not released until the
+  // callback settles, so timed-out children cannot race a new wallet operation.
+  async function withSigningRecovery(use, { timeoutMs = 45000 } = {}) {
+    active();
+    check(!busy && typeof use === 'function');
+    check(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 175000);
+    const phase = claimRecovery(),
+      controller = new AbortController(),
+      issued = [];
+    const signal = AbortSignal.any([scope.signal, controller.signal]);
+    const deadline = performance.now() + timeoutMs;
+    const assertCurrent = () => {
+      active();
+      phase.assertCurrent();
+      check(!signal.aborted && performance.now() < deadline);
+    };
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const context = Object.freeze({ signal, deadline, assertCurrent });
+    busy = true;
+    try {
+      assertCurrent();
+      const value = await attest();
+      assertCurrent();
+      const records = value.entries
+        .filter((e) => e.state === 'signing')
+        .map((entry) => {
+          const receipt = Object.freeze({});
+          receipts.set(receipt, entry);
+          issued.push(receipt);
+          receiptOrigins.set(receipt, { kind: 'recovery', assertCurrent });
+          return Object.freeze({ receipt, entry });
+        });
+      busy = false;
+      const result = await use(Object.freeze(records), context);
+      check(!busy);
+      assertCurrent();
+      await attest();
+      assertCurrent();
+      return result;
+    } catch (error) {
+      close();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      for (const receipt of issued) {
+        receipts.delete(receipt);
+        receiptOrigins.delete(receipt);
+      }
+      busy = false;
+      phase.release();
+    }
+  }
   async function inspect() {
     active();
     check(!busy);
@@ -357,17 +423,44 @@ async function createRailgunPrivateReservations({
   const instance = Object.freeze({
     reserve,
     assertReceipt,
-    markSigning: (receipt, evidence) => changeHeld(receipt, 'signing', signingFacts(evidence)),
+    markSigning: (receipt, evidence, permit) =>
+      changeHeld(receipt, 'signing', signingFacts(evidence), permit),
     abandon: (receipt) => changeHeld(receipt, 'abandoned'),
     abandonRecovered,
+    withSigningRecovery,
+    assertReceiptContext: (receipt, kind) => {
+      active();
+      const origin = receiptOrigins.get(receipt);
+      check(origin && origin.kind === kind && receipts.has(receipt));
+      origin.assertCurrent();
+    },
     inspect,
     close,
     signal: scope.signal,
   });
-  instances.add(instance);
+  instances.set(instance, {
+    binding,
+    walletId,
+    directory,
+    profileId: context.profileId,
+    principal: subject.principal,
+  });
   return instance;
 }
 module.exports = {
   createRailgunPrivateReservations,
   isRailgunPrivateReservations: (v) => instances.has(v),
+  assertRailgunPrivateReservationsOwner: (value, { handle, binding, walletId, directory }) => {
+    const owner = instances.get(value),
+      context = getPrivacyContext(handle);
+    check(
+      owner &&
+        !value.signal.aborted &&
+        owner.binding === binding &&
+        owner.walletId === walletId &&
+        owner.directory === directory &&
+        owner.profileId === context.profileId &&
+        owner.principal === context.subject.principal
+    );
+  },
 };

@@ -16,6 +16,7 @@ const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { createRailgunWalletCatalog } = require('./railgun-wallet-catalog');
 const { isRailgunPublicCatalog } = require('./railgun-public-catalog');
 const { createRailgunPrivateReservations } = require('./railgun-private-reservations');
+const { createRailgunPrivateCapsuleStore } = require('./railgun-private-capsule-store');
 const owners = new Set(),
   instances = new WeakSet(),
   RECORD = 'railgun-account-enrollment-v1';
@@ -96,7 +97,14 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     throw fail();
   }
   owners.add(file);
-  let rootKey, catalog, guard, manifest, reservations, openingReservations;
+  let rootKey,
+    catalog,
+    guard,
+    manifest,
+    reservations,
+    openingReservations,
+    capsules,
+    openingCapsules;
   const borrowed = new Set();
   let closed = false;
   function close() {
@@ -105,6 +113,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     rootKey?.fill(0);
     borrowed.forEach((key) => key.fill(0));
     catalog?.close();
+    capsules?.close();
     reservations?.close();
     scope.close();
     owners.delete(file);
@@ -282,6 +291,14 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
         create: !fs.existsSync(target),
         readFloor,
         advanceFloor,
+        authorizeSigning: (permit, heldStore, receipt, evidence) =>
+          require('./railgun-private-capsule-store').consumeRailgunCapsuleSigningPermit(
+            permit,
+            capsules,
+            heldStore,
+            receipt,
+            evidence
+          ),
         claimRecovery: () =>
           require('./railgun-account-phase').claimRailgunAccountPhase(instance, 'recovery'),
       });
@@ -290,6 +307,76 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     } finally {
       key?.fill(0);
       openingReservations = false;
+    }
+  }
+  async function openPrivateCapsules() {
+    active();
+    if (capsules && !capsules.signal.aborted) return capsules;
+    check(!openingCapsules);
+    openingCapsules = true;
+    let key;
+    try {
+      const held = await openReservations();
+      active();
+      const capsuleHandle = scope.getContext({
+        ...subject,
+        operation: 'railgun-private-capsules-v1:' + descriptor.walletId,
+      });
+      const target = getPrivacyStoragePath(capsuleHandle, accountDirectory);
+      regularFileIfPresent(target);
+      guard.assert(target);
+      const floorRecord = 'railgun-private-capsules-floor-v1';
+      const decodeFloor = (text) => {
+        if (text === null) return null;
+        const value = JSON.parse(text);
+        check(
+          value &&
+            Object.keys(value).sort().join(',') === 'binding,sequence,version' &&
+            value.version === 1 &&
+            value.binding === binding &&
+            Number.isSafeInteger(value.sequence) &&
+            value.sequence >= 0 &&
+            value.sequence <= 96
+        );
+        return value.sequence;
+      };
+      const readFloor = async () => {
+        active();
+        const value = state(await manifest.get(RECORD));
+        active();
+        check(value.status === 'active');
+        const result = decodeFloor(await manifest.get(floorRecord));
+        active();
+        return result;
+      };
+      const advanceFloor = async (sequence) => {
+        active();
+        check(Number.isSafeInteger(sequence) && sequence >= 0 && sequence <= 96);
+        await manifest.update(floorRecord, (text) => {
+          active();
+          check(sequence >= (decodeFloor(text) ?? 0));
+          return JSON.stringify({ version: 1, binding, sequence });
+        });
+        active();
+      };
+      key = derive('private-capsules');
+      capsules = await createRailgunPrivateCapsuleStore({
+        handle: capsuleHandle,
+        directory: accountDirectory,
+        key,
+        binding,
+        walletId: descriptor.walletId,
+        profileGuard: guard,
+        reservations: held,
+        create: !fs.existsSync(target),
+        readFloor,
+        advanceFloor,
+      });
+      active();
+      return capsules;
+    } finally {
+      key?.fill(0);
+      openingCapsules = false;
     }
   }
   const instance = Object.freeze({
@@ -301,6 +388,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     signal: scope.signal,
     close,
     openReservations,
+    openPrivateCapsules,
     // Trusted host composition only. Callers must not retain copies of these
     // borrowed buffers; a worker must own/wipe any explicitly copied key.
     withPublicKeys: (use) => withKeys(['source-ledger', 'public-store', 'scan-journal'], null, use),

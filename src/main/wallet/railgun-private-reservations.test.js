@@ -45,6 +45,7 @@ beforeEach(() => {
       if (floor !== null && v < floor) throw Error('floor');
       floor = v;
     },
+    authorizeSigning: () => () => {},
     claimRecovery: () => ({ assertCurrent() {}, release() {} }),
   };
 });
@@ -74,11 +75,13 @@ test('durable holds bind exact facts and return only genuine live receipts', asy
     'abandon',
     'abandonRecovered',
     'assertReceipt',
+    'assertReceiptContext',
     'close',
     'inspect',
     'markSigning',
     'reserve',
     'signal',
+    'withSigningRecovery',
   ]);
   const disk = fs.readFileSync(filename(), 'utf8');
   expect(disk).not.toContain(input().nullifier);
@@ -307,6 +310,7 @@ test('cold held recovery owns the phase throughout durable update and always rel
   let claimed = false,
     checks = 0;
   const cold = await open(false, {
+    authorizeSigning: () => () => {},
     claimRecovery: () => {
       expect(claimed).toBe(false);
       claimed = true;
@@ -336,6 +340,7 @@ test('cold held recovery owns the phase throughout durable update and always rel
 });
 test('busy account recovery refusal does not mutate or close the reservation store', async () => {
   const s = await open(true, {
+    authorizeSigning: () => () => {},
     claimRecovery: () => {
       throw Error('phase busy');
     },
@@ -433,4 +438,65 @@ test.each([
   expect(() => s.markSigning(receipt, { ...signing(), ...invalid })).toThrow();
   expect((await s.assertReceipt(receipt)).state).toBe('held');
   expect(floor).toBe(1);
+});
+
+test('recovery receipts expire after callback and distinguish operation receipts', async () => {
+  const s = await open(),
+    operation = await s.markSigning(await s.reserve(input()), signing());
+  expect(() => s.assertReceiptContext(operation, 'operation')).not.toThrow();
+  let retained;
+  await s.withSigningRecovery(async (records) => {
+    retained = records[0].receipt;
+    expect(() => s.assertReceiptContext(retained, 'recovery')).not.toThrow();
+    expect(() => s.assertReceiptContext(retained, 'operation')).toThrow();
+    expect((await s.assertReceipt(retained)).state).toBe('signing');
+    return { status: 'refused' };
+  });
+  await expect(s.assertReceipt(retained)).rejects.toThrow();
+  expect(() => s.assertReceiptContext(retained, 'recovery')).toThrow();
+  expect((await s.assertReceipt(operation)).state).toBe('signing');
+});
+test('expiry revokes recovery receipts but holds the account phase until the callback drains', async () => {
+  jest.useFakeTimers();
+  let released = false,
+    observed = false,
+    finish;
+  const done = new Promise((resolve) => {
+    finish = resolve;
+  });
+  try {
+    const s = await open(true, {
+      claimRecovery: () => ({
+        assertCurrent() {},
+        release() {
+          released = true;
+        },
+      }),
+    });
+    await s.markSigning(await s.reserve(input()), signing());
+    const pending = s.withSigningRecovery(
+      async (records, context) => {
+        observed = true;
+        await new Promise((resolve) =>
+          context.signal.addEventListener('abort', resolve, { once: true })
+        );
+        expect(() => s.assertReceiptContext(records[0].receipt, 'recovery')).toThrow();
+        expect(released).toBe(false);
+        await done;
+      },
+      { timeoutMs: 10 }
+    );
+    const rejected = expect(pending).rejects.toThrow();
+    for (let i = 0; i < 20 && !observed; i++) await Promise.resolve();
+    expect(observed).toBe(true);
+    await jest.advanceTimersByTimeAsync(11);
+    expect(released).toBe(false);
+    finish();
+    await rejected;
+    expect(released).toBe(true);
+    expect(s.signal.aborted).toBe(true);
+  } finally {
+    finish();
+    jest.useRealTimers();
+  }
 });
