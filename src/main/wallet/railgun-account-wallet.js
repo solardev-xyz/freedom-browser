@@ -3,6 +3,7 @@
  * Kohaku reads. The returned view stays valid only while all evidence is current.
  */
 const accounts = new WeakMap();
+const privateWindows = new WeakMap();
 const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
@@ -193,7 +194,7 @@ async function openRailgunAccountWallet({
       getRailgunAccountPublicIdentity(coordinator, enrollment);
       return runner.readOwned(checked.value.receipt, journal);
     };
-    async function restoreCurrent(request) {
+    async function restoreCurrent(request, operation) {
       const before = current();
       const privateIntent =
         request === undefined
@@ -203,6 +204,42 @@ async function openRailgunAccountWallet({
               request
             );
       const captured = checkpointHash(coordinator.assertSnapshot(checked.evidence));
+      let privateWindow;
+      const windowStarted = performance.now();
+      let privateOperation;
+      if (operation !== undefined) {
+        check(privateIntent && operation && typeof operation.onIntent === 'function');
+        require('assert/strict').deepEqual(Object.keys(operation).sort(), [
+          'artifactDirectory',
+          'onIntent',
+          'proverArchive',
+        ]);
+        const onIntent = operation.onIntent;
+        privateOperation = {
+          proverArchive: operation.proverArchive,
+          artifactDirectory: operation.artifactDirectory,
+          async onIntent(offer, signal) {
+            const { transactionDigest, ...raw } = offer;
+            const normalized =
+              require('./railgun-private-preparation').normalizeRailgunPrivatePreparation(raw, {
+                selection: privateIntent,
+                ...before,
+              });
+            check(normalized.transactionDigest === transactionDigest);
+            const owners = { identity, enrollment, coordinator };
+            const entry = privateWindows.get(privateWindow);
+            check(entry && entry.operationSignal === undefined);
+            check(signal instanceof AbortSignal);
+            entry.operationSignal = signal;
+            assertRailgunAccountPrivateWindow(privateWindow, account, owners);
+            check(!signal.aborted);
+            const response = await onIntent(normalized, signal, privateWindow);
+            assertRailgunAccountPrivateWindow(privateWindow, account, owners);
+            check(!signal.aborted);
+            return response;
+          },
+        };
+      }
       busy = true;
       let entered = false;
       // Keep the whole re-attestation promise separate from this method's
@@ -213,15 +250,53 @@ async function openRailgunAccountWallet({
           phase.assertCurrent();
           check(!lifetime.aborted && checkpointHash(snapshot.checkpoint) === captured);
           assertRailgunIdentity(identity, handle);
-          scan = (privateIntent ? runner.prepareReadOnly : runner.restoreReadOnly)({
+          let windowEntry;
+          if (privateOperation) {
+            privateWindow = Object.freeze({});
+            const signal = AbortSignal.any([snapshot.signal, lifetime]);
+            windowEntry = {
+              account,
+              identity,
+              enrollment,
+              coordinator,
+              live: true,
+              assertCurrent() {
+                phase.assertCurrent();
+                check(busy && !signal.aborted);
+                check(windowEntry.operationSignal && !windowEntry.operationSignal.aborted);
+                assertRailgunIdentity(identity, handle);
+              },
+              data: Object.freeze({
+                owned: before,
+                selection: privateIntent,
+                checkpointHash: captured,
+                get signal() {
+                  return windowEntry.operationSignal;
+                },
+                started: windowStarted,
+                deadline: windowStarted + 175000,
+              }),
+            };
+            privateWindows.set(privateWindow, windowEntry);
+          }
+          scan = (
+            privateOperation
+              ? runner.operateReadOnly
+              : privateIntent
+                ? runner.prepareReadOnly
+                : runner.restoreReadOnly
+          )({
             handle,
             snapshot,
             walletSession,
             coverageStore,
             walletId,
             ...(privateIntent ? { privateIntent } : {}),
+            ...(privateOperation ? { privateOperation } : {}),
           });
-          return scan;
+          return scan.finally(() => {
+            if (windowEntry) windowEntry.live = false;
+          });
         });
         const freshCoverage = await coverageStore.read(renewed.value.receipt);
         const freshState = await walletSession.inspectWalletState();
@@ -255,6 +330,7 @@ async function openRailgunAccountWallet({
           ? Object.freeze({
               view,
               preparation: renewed.value.preparation,
+              ...(privateOperation ? { operation: renewed.value.operation } : {}),
               readOnly: Object.freeze({ ...renewed.value.readOnly }),
             })
           : view;
@@ -310,10 +386,44 @@ function prepareRailgunAccountPrivateIntent(account, owners, request) {
   check(request !== undefined);
   return owned(account, owners).restoreCurrent(request);
 }
+/** Main-only handler contract: onIntent receives owned-normalized data, A's
+ * signal and an opaque window token. Retain neither beyond the callback. Every
+ * await/child needs an abort-aware deadline inside the window; observe all child
+ * exits before returning. Expected refusals return {status: 'refused'}; integrity
+ * failures throw. A production signer must reassert window/preflight/POI margins,
+ * receiver digest, held receipt and B's validated digest before markSigning, then
+ * recheck A/B liveness before one key copy. This plumbing grants no key authority.
+ */
+function operateRailgunAccountPrivateIntent(account, owners, request, operation) {
+  check(request !== undefined && operation !== undefined);
+  return owned(account, owners).restoreCurrent(request, operation);
+}
+function assertRailgunAccountPrivateWindow(token, account, owners, minimumRemainingMs = 0) {
+  const entry = privateWindows.get(token);
+  check(
+    entry &&
+      entry.live &&
+      entry.account === account &&
+      entry.identity === owners.identity &&
+      entry.enrollment === owners.enrollment &&
+      entry.coordinator === owners.coordinator
+  );
+  check(
+    Number.isSafeInteger(minimumRemainingMs) &&
+      minimumRemainingMs >= 0 &&
+      minimumRemainingMs < 175000
+  );
+  entry.assertCurrent();
+  const now = performance.now();
+  check(now >= entry.data.started && now + minimumRemainingMs < entry.data.deadline);
+  return entry.data;
+}
 module.exports = {
   openRailgunAccountWallet,
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,
   prepareRailgunAccountPrivateIntent,
+  operateRailgunAccountPrivateIntent,
+  assertRailgunAccountPrivateWindow,
 };

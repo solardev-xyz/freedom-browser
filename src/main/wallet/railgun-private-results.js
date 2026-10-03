@@ -2,12 +2,12 @@
  * ownership, freshness, reservation and observed utility exit remain host gates.
  */
 const assert = require('assert/strict');
+const { normalizeRailgunSignature } = require('./railgun-private-signature');
 const {
   validateRailgunPrivateSigningIntent,
   matchRailgunPrivateProvedTransaction,
 } = require('./railgun-private-intent');
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
-const SUBGROUP = 2736030358979909402780800718157159386076813972158567259200215660948447373041n;
 const field = (value, limit = FIELD) =>
   typeof value === 'string' && /^0x[0-9a-f]{64}$/.test(value) && BigInt(value) < limit;
 function shape(value, keys) {
@@ -32,18 +32,8 @@ function normalizeRailgunSpendSignature(value, { transaction, expected, expected
   assert.equal(value.transactionDigest, intent.digest);
   assert.equal(value.inventory, require('./railgun-engine-manifest.json').inventory.sha256);
   guards(value.guards);
-  shape(value.signature, ['R8', 'S']);
-  assert.ok(
-    Array.isArray(value.signature.R8) &&
-      value.signature.R8.length === 2 &&
-      value.signature.R8.every((v) => field(v))
-  );
-  assert.ok(field(value.signature.S, SUBGROUP));
-  return Object.freeze({
-    signature: Object.freeze({ R8: Object.freeze([...value.signature.R8]), S: value.signature.S }),
-    message: value.message,
-    transactionDigest: intent.digest,
-  });
+  const signature = normalizeRailgunSignature(value.signature);
+  return Object.freeze({ signature, message: value.message, transactionDigest: intent.digest });
 }
 function normalizeRailgunPrivateVerification(value, { intent, transaction, expected }) {
   const checked = matchRailgunPrivateProvedTransaction(intent, transaction, expected);
@@ -74,6 +64,7 @@ function normalizeRailgunPrivateReceiver(value, { transaction, expected, recipie
   });
 }
 module.exports = {
+  normalizeRailgunSignature,
   normalizeRailgunSpendSignature,
   normalizeRailgunPrivateVerification,
   normalizeRailgunPrivateReceiver,

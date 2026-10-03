@@ -3,6 +3,8 @@ const { TRANSACT_ABI, BOUND_PARAMS } = require('./railgun-private-policy');
 const {
   selectRailgunPrivatePreparation,
   normalizeRailgunPrivatePreparation,
+  normalizeRailgunPrivateOffer,
+  normalizeRailgunPrivateOperation,
 } = require('./railgun-private-preparation');
 const pins = require('./railgun-shield-pins.json');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
@@ -87,6 +89,55 @@ test.each(['kind', 'noteId', 'recipient', 'extra'])(
     expect(() => selectRailgunPrivatePreparation(owned, request)).toThrow();
   }
 );
+test('a structural offer is immutable data and does not establish ownership', () => {
+  tx[1] = result.expected.merkleRoot = hex(9);
+  result.transaction.data = encode();
+  const offer = normalizeRailgunPrivateOffer(result, selection);
+  expect(Object.isFrozen(offer)).toBe(true);
+  expect(Object.isFrozen(offer.expected)).toBe(true);
+  expect(() => normalize()).toThrow();
+  result.expected.merkleRoot = hex(8);
+  expect(offer.expected.merkleRoot).toBe(hex(9));
+});
+test('refusal carries no transaction, signature or authority', () => {
+  expect(normalizeRailgunPrivateOperation({ status: 'refused' }, normalize())).toEqual({
+    status: 'refused',
+  });
+  expect(() =>
+    normalizeRailgunPrivateOperation({ status: 'refused', signature: {} }, normalize())
+  ).toThrow();
+});
+test('proof result accepts only proof-coordinate changes and never attests verification', () => {
+  const preparation = normalize();
+  tx[0][0][0] = 1;
+  const transaction = { ...result.transaction, data: encode() };
+  const digest = require('./railgun-private-intent').matchRailgunPrivateProvedTransaction(
+    preparation.transaction,
+    transaction,
+    preparation.expected
+  ).digest;
+  const operation = {
+    status: 'proved',
+    transaction,
+    transactionDigest: digest,
+    independentlyVerified: false,
+  };
+  const normalized = normalizeRailgunPrivateOperation(operation, preparation);
+  expect(Object.isFrozen(normalized.transaction)).toBe(true);
+  for (const changed of [
+    { independentlyVerified: true },
+    { transactionDigest: '0'.repeat(64) },
+    { status: 'signed' },
+    { witness: {} },
+  ])
+    expect(() =>
+      normalizeRailgunPrivateOperation({ ...operation, ...changed }, preparation)
+    ).toThrow();
+  tx[3][0] = hex(9);
+  operation.transaction.data = encode();
+  expect(() => normalizeRailgunPrivateOperation(operation, preparation)).toThrow();
+  expect(normalized.transaction.data).not.toBe(operation.transaction.data);
+});
 test('only a self-transfer destination can be requested', () => {
   request.kind = 'railgun-private-transfer';
   expect(() => selectRailgunPrivatePreparation(owned, request)).toThrow();

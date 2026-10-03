@@ -117,6 +117,10 @@ async function prepareRailgunPrivateWitness({
   const witness = await transaction.generateTransactionRequest(publicWallet, version, '', {
     minGasPrice: 0n,
   });
+  assert.deepEqual(
+    witness.privateInputs.publicKey,
+    descriptor.spendingPublicKey.map((v) => BigInt('0x' + v))
+  );
   const prover = new Prover({
     assertArtifactExists: (inputs, outputCount) => {
       assert.equal(inputs, 1);

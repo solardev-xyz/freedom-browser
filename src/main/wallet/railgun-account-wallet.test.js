@@ -49,6 +49,8 @@ const {
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,
   prepareRailgunAccountPrivateIntent,
+  operateRailgunAccountPrivateIntent,
+  assertRailgunAccountPrivateWindow,
 } = require('./railgun-account-wallet');
 let scope, options, directory, generation, events, state;
 beforeEach(() => {
@@ -173,7 +175,10 @@ beforeEach(() => {
     policy: generation.policy,
     coordinator: {
       signal: scope.signal,
-      withPublicSnapshot: async (run) => ({ value: await run({ checkpoint: {} }), evidence: {} }),
+      withPublicSnapshot: async (run) => ({
+        value: await run({ checkpoint: {}, signal: scope.signal }),
+        evidence: {},
+      }),
       assertSnapshot: () => ({}),
     },
   };
@@ -183,6 +188,7 @@ afterEach(async () => {
   mockSession.close();
   await mockSession.closed;
   scope.close();
+  jest.restoreAllMocks();
 });
 test('a TXID phase refuses wallet opening before a generation or worker changes', async () => {
   const phase = claimRailgunAccountPhase(mockEnrollment, 'txid');
@@ -310,6 +316,143 @@ test('preparation re-attests, compares captured values and swaps to a diagnostic
   );
   expect(mockRunner.restoreReadOnly).not.toHaveBeenCalled();
   await opened.close();
+});
+function operationFixture() {
+  const value = preparationFixture();
+  jest
+    .spyOn(require('./railgun-private-preparation'), 'normalizeRailgunPrivatePreparation')
+    .mockImplementation((raw, captured) => {
+      expect(raw).toEqual({ intent: 'public' });
+      expect(captured.read).toBe(value.owned.read);
+      return { transactionDigest: 'digest' };
+    });
+  mockRunner.operateReadOnly = jest.fn(async ({ privateOperation }) => {
+    const reply = await privateOperation.onIntent(
+      { intent: 'public', transactionDigest: 'digest' },
+      mockSession.signal
+    );
+    return {
+      receipt: {},
+      coverage: {},
+      readOnly: { readOnly: true, writeAttempts: 0 },
+      preparation: { spendingEnabled: false },
+      operation: { status: reply.status },
+    };
+  });
+  return value;
+}
+test('private windows bind exact owners and captured data, expire after the run and preserve refusal as a result', async () => {
+  jest.spyOn(performance, 'now').mockReturnValue(141048.33140849692);
+  const { owned, request } = operationFixture();
+  const opened = await openRailgunAccountWallet(options);
+  let token;
+  const operation = {
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+    onIntent: async (offer, signal, window) => {
+      token = window;
+      const data = assertRailgunAccountPrivateWindow(window, opened, options, 1000);
+      expect(data.owned).toBe(owned);
+      expect(data.selection.position).toBe(1);
+      expect(data.deadline - data.started).toBeCloseTo(175000, 6);
+      expect(signal.aborted).toBe(false);
+      expect(offer.transactionDigest).toBe('digest');
+      expect(() => assertRailgunAccountPrivateWindow({ ...window }, opened, options)).toThrow();
+      for (const key of ['identity', 'enrollment', 'coordinator'])
+        expect(() =>
+          assertRailgunAccountPrivateWindow(window, opened, { ...options, [key]: {} })
+        ).toThrow();
+      expect(() => assertRailgunAccountPrivateWindow(window, {}, options)).toThrow();
+      expect(() => assertRailgunAccountPrivateWindow(window, opened, options, 175000)).toThrow();
+      expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+      return { status: 'refused' };
+    },
+  };
+  const result = await operateRailgunAccountPrivateIntent(opened, options, request, operation);
+  expect(result.operation).toEqual({ status: 'refused' });
+  expect(opened.signal.aborted).toBe(false);
+  expect(() => readRailgunAccountOwnedNotes(opened, options)).not.toThrow();
+  expect(() => assertRailgunAccountPrivateWindow(token, opened, options)).toThrow();
+  await opened.close();
+});
+test.each(['clock', 'abort'])(
+  'private window %s invalidation refuses a late authorizer reply',
+  async (mode) => {
+    const { request } = operationFixture();
+    let now = 100;
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    const opened = await openRailgunAccountWallet(options);
+    const operation = {
+      proverArchive: '/prover.asar',
+      artifactDirectory: '/artifacts',
+      onIntent: async () => {
+        if (mode === 'clock') now += 175000;
+        else mockSession.close();
+        return { status: 'refused' };
+      },
+    };
+    await expect(
+      operateRailgunAccountPrivateIntent(opened, options, request, operation)
+    ).rejects.toThrow();
+    expect(opened.signal.aborted).toBe(true);
+  }
+);
+test('the genuine token refuses immediately when A dies while the authorizer drains', async () => {
+  const { request } = operationFixture();
+  const opened = await openRailgunAccountWallet(options);
+  const job = new AbortController();
+  let release, entered;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  mockRunner.operateReadOnly.mockImplementation(async ({ privateOperation }) => {
+    await privateOperation.onIntent({ intent: 'public', transactionDigest: 'digest' }, job.signal);
+    throw Error('A exited');
+  });
+  let token,
+    settled = false;
+  const run = operateRailgunAccountPrivateIntent(opened, options, request, {
+    proverArchive: '/prover.asar',
+    artifactDirectory: '/artifacts',
+    async onIntent(_offer, signal, window) {
+      token = window;
+      expect(assertRailgunAccountPrivateWindow(window, opened, options).signal).toBe(signal);
+      entered();
+      await pending;
+      return { status: 'refused' };
+    },
+  })
+    .catch((error) => error)
+    .finally(() => {
+      settled = true;
+    });
+  await started;
+  job.abort();
+  expect(() => assertRailgunAccountPrivateWindow(token, opened, options)).toThrow();
+  expect(settled).toBe(false);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'recovery')).toThrow();
+  release();
+  expect(await run).toBeInstanceOf(Error);
+  expect(settled).toBe(true);
+});
+test('operation rejects substituted offers before the trusted authorizer runs', async () => {
+  const { request } = operationFixture();
+  const opened = await openRailgunAccountWallet(options);
+  const onIntent = jest.fn();
+  mockRunner.operateReadOnly.mockImplementation(async ({ privateOperation }) =>
+    privateOperation.onIntent({ intent: 'other', transactionDigest: 'digest' }, mockSession.signal)
+  );
+  await expect(
+    operateRailgunAccountPrivateIntent(opened, options, request, {
+      onIntent,
+      proverArchive: '/prover.asar',
+      artifactDirectory: '/artifacts',
+    })
+  ).rejects.toThrow();
+  expect(onIntent).not.toHaveBeenCalled();
 });
 test('unsupported preparation refuses before a window and preserves the current account', async () => {
   const { request } = preparationFixture(),

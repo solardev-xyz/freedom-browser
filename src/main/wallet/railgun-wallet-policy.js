@@ -10,6 +10,12 @@ const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const sources = [
   'railgun-wallet-job',
   'railgun-private-prepare-job',
+  'railgun-private-operate-job',
+  'railgun-private-prover',
+  'railgun-private-signature',
+  'railgun-prover-runtime',
+  'railgun-prover-manifest.json',
+  'railgun-artifacts',
   'railgun-private-witness',
   'railgun-private-preparation',
   'railgun-private-intent',

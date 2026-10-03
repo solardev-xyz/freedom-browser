@@ -35,7 +35,7 @@ function selectRailgunPrivatePreparation(owned, request) {
   });
 }
 function normalizeRailgunPrivatePreparation(value, { selection, read, ownedPoi, trees }) {
-  shape(value, ['transaction', 'expected', 'expectedHash', 'recipient', 'amount']);
+  const offer = normalizeRailgunPrivateOffer(value, selection);
   const note = read.received.find(
     (v) => v.tree === selection.tree && v.position === selection.position
   );
@@ -57,19 +57,8 @@ function normalizeRailgunPrivatePreparation(value, { selection, read, ownedPoi, 
     assert.equal(expected.recipient, selection.recipient);
     assert.equal(expected.amount, value.amount);
   } else assert.equal(value.recipient, read.instanceId);
-  const checked = validateRailgunPrivateSigningIntent(value.transaction, expected);
-  assert.match(value.expectedHash, /^0x[0-9a-f]{64}$/);
-  assert.ok(
-    BigInt(value.expectedHash) <
-      21888242871839275222246405745257275088548364400416034343698204186575808495617n
-  );
   return Object.freeze({
-    transaction: Object.freeze({ ...value.transaction }),
-    expected: Object.freeze({ ...expected }),
-    expectedHash: value.expectedHash,
-    transactionDigest: checked.digest,
-    recipient: value.recipient,
-    amount: value.amount,
+    ...offer,
     witnessRetained: false,
     recipientVerified: false,
     reservationsChecked: false,
@@ -77,4 +66,59 @@ function normalizeRailgunPrivatePreparation(value, { selection, read, ownedPoi, 
     spendingEnabled: false,
   });
 }
-module.exports = { selectRailgunPrivatePreparation, normalizeRailgunPrivatePreparation };
+// Structural broker data only. Ownership/value must still be checked against
+// the main-captured note before this offer can reach a spending-key gate.
+function normalizeRailgunPrivateOffer(value, selection) {
+  shape(value, ['transaction', 'expected', 'expectedHash', 'recipient', 'amount']);
+  const checked = validateRailgunPrivateSigningIntent(value.transaction, value.expected);
+  assert.equal(checked.kind, selection.kind);
+  assert.equal(checked.tree, selection.tree);
+  assert.equal(value.recipient, selection.recipient);
+  assert.match(value.amount, /^[1-9][0-9]{0,16}$/);
+  assert.ok(BigInt(value.amount) <= BigInt(pins.maxQualificationAmount));
+  if (checked.kind === 'railgun-token-unshield') {
+    assert.equal(checked.recipient, value.recipient);
+    assert.equal(checked.amount, value.amount);
+  }
+  assert.match(value.expectedHash, /^0x[0-9a-f]{64}$/);
+  assert.ok(
+    BigInt(value.expectedHash) <
+      21888242871839275222246405745257275088548364400416034343698204186575808495617n
+  );
+  return Object.freeze({
+    transaction: Object.freeze({ ...value.transaction }),
+    expected: Object.freeze({ ...value.expected }),
+    expectedHash: value.expectedHash,
+    transactionDigest: checked.digest,
+    recipient: value.recipient,
+    amount: value.amount,
+  });
+}
+function normalizeRailgunPrivateOperation(value, preparation) {
+  assert.ok(value && typeof value === 'object' && !Array.isArray(value));
+  if (value.status === 'refused') {
+    shape(value, ['status']);
+    return Object.freeze({ status: 'refused' });
+  }
+  shape(value, ['status', 'transaction', 'transactionDigest', 'independentlyVerified']);
+  assert.equal(value.status, 'proved');
+  assert.equal(value.independentlyVerified, false);
+  const checked = require('./railgun-private-intent').matchRailgunPrivateProvedTransaction(
+    preparation.transaction,
+    value.transaction,
+    preparation.expected
+  );
+  assert.equal(value.transactionDigest, checked.digest);
+  return Object.freeze({
+    status: 'proved',
+    transaction: Object.freeze({ ...value.transaction }),
+    transactionDigest: checked.digest,
+    independentlyVerified: false,
+  });
+}
+module.exports = {
+  selectRailgunPrivatePreparation,
+  normalizeRailgunPrivatePreparation,
+  normalizeRailgunPrivateOffer,
+  normalizeRailgunPrivateOperation,
+};

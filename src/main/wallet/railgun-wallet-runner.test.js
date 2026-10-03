@@ -173,3 +173,59 @@ test('read-only restoration refuses state mutation or an incomplete job', async 
     expect(f.store.finishRestore).not.toHaveBeenCalled();
   }
 });
+test.each(['ok', 'write', 'state', 'unfinished', 'bad-operation'])(
+  'operation keeps the read-only receipt contract (%s)',
+  async (mode) => {
+    const f = setup();
+    const module = require('./railgun-private-preparation');
+    const preparation = { transactionDigest: 'checked', spendingEnabled: false };
+    const prepare = jest
+      .spyOn(module, 'normalizeRailgunPrivatePreparation')
+      .mockReturnValue(preparation);
+    const operation = jest
+      .spyOn(module, 'normalizeRailgunPrivateOperation')
+      .mockImplementation((v, p) => {
+        expect(p).toBe(preparation);
+        if (mode === 'bad-operation') throw Error('Invalid final transaction');
+        return v;
+      });
+    try {
+      f.result.privatePreparation = { from: 'utility' };
+      f.result.privateOperation = { status: 'refused' };
+      if (mode === 'write') f.grant.getStatus = () => ({ readOnly: true, writeAttempts: 1 });
+      if (mode === 'state')
+        f.runJob.mockImplementation(async () => {
+          f.mutate();
+          return f.result;
+        });
+      if (mode === 'unfinished') f.result.closed.code = 'RAILGUN_PROCESS_FAILED';
+      const running = f.runner.operateReadOnly({
+        ...f.args,
+        privateIntent: {},
+        privateOperation: {},
+      });
+      if (mode !== 'ok') {
+        await expect(running).rejects.toThrow();
+        expect(f.store.finishRestore).not.toHaveBeenCalled();
+        expect(f.store.close).toHaveBeenCalled();
+      } else {
+        const completed = await running;
+        expect(completed.operation).toEqual({ status: 'refused' });
+        expect(completed.preparation).toBe(preparation);
+        expect(f.store.finishRestore).toHaveBeenCalledWith(completed.receipt);
+        expect(f.runJob.mock.calls[0][0].restore).toBe(true);
+      }
+      expect(f.store.beginEngine).not.toHaveBeenCalled();
+      expect(f.store.finishEngine).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+      operation.mockRestore();
+    }
+  }
+);
+test('ordinary wallet runs reject an unsolicited operation result', async () => {
+  const f = setup();
+  f.result.privateOperation = { status: 'proved' };
+  await expect(f.runner.run(f.args)).rejects.toThrow();
+  expect(f.store.finishEngine).not.toHaveBeenCalled();
+});

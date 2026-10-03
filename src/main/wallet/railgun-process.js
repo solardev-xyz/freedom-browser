@@ -54,6 +54,9 @@ function startRailgunProcess({
             context.subject.operation === 'private-receive' &&
             filename === require.resolve('./railgun-private-receive-job')) ||
           (context.subject.role === 'engine' &&
+            context.subject.operation === 'private-operate' &&
+            filename === require.resolve('./railgun-private-operate-job')) ||
+          (context.subject.role === 'engine' &&
             context.subject.operation === 'private-prepare' &&
             filename === require.resolve('./railgun-private-prepare-job')) ||
           (context.subject.role === 'engine' &&

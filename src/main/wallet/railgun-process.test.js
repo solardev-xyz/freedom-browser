@@ -473,6 +473,7 @@ test.each([
   ['keystore', 'spending-sign', './railgun-spend-sign-job'],
   ['engine', 'wallet-viewing', './railgun-wallet-job'],
   ['engine', 'private-prepare', './railgun-private-prepare-job'],
+  ['engine', 'private-operate', './railgun-private-operate-job'],
   ['engine', 'private-receive', './railgun-private-receive-job'],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
 ])(
@@ -556,6 +557,10 @@ test.each([
   ['private-receive', './railgun-wallet-job', 'engine'],
   ['private-receive', './railgun-private-prepare-job', 'engine'],
   ['private-prepare', './railgun-private-receive-job', 'engine'],
+  ['private-operate', './railgun-private-prepare-job', 'engine'],
+  ['private-prepare', './railgun-private-operate-job', 'engine'],
+  ['private-operate', './railgun-spend-sign-job', 'engine'],
+  ['spending-sign', './railgun-private-operate-job'],
 ])('refuses binary-key job cross-pairing %s/%s', (operation, filename, role = 'keystore') => {
   const handle = scope.getContext({
     kind: 'private-account',

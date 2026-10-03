@@ -82,6 +82,14 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
               }
             );
       if (options.privateIntent === undefined) assert.equal(result.privatePreparation, undefined);
+      const operation =
+        options.privateOperation === undefined
+          ? undefined
+          : require('./railgun-private-preparation').normalizeRailgunPrivateOperation(
+              result.privateOperation,
+              preparation
+            );
+      if (options.privateOperation === undefined) assert.equal(result.privateOperation, undefined);
       if (descriptor) {
         assert.equal(read.instanceId, descriptor.instanceId);
         currentIdentity();
@@ -113,6 +121,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         coverage,
         ...(readOnly ? { readOnly: readOnlyStatus } : {}),
         ...(preparation ? { preparation } : {}),
+        ...(operation ? { operation } : {}),
       };
     } catch (error) {
       coverageStore.close();
@@ -145,6 +154,10 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
     restoreReadOnly: (options) => run({ ...options, restore: true }, true),
     prepareReadOnly: (options) => {
       assert.ok(options.privateIntent);
+      return run({ ...options, restore: true }, true);
+    },
+    operateReadOnly: (options) => {
+      assert.ok(options.privateIntent && options.privateOperation);
       return run({ ...options, restore: true }, true);
     },
     assertScan,

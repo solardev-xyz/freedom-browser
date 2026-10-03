@@ -5,8 +5,15 @@ let mockDescriptor,
   mockInput,
   mockRouter,
   mockTask,
-  mockFailure;
+  mockFailure,
+  mockOperationMode,
+  mockReply,
+  mockAbortJob;
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) => v }));
+jest.mock('./railgun-prover-runtime', () => ({ verifyRailgunProverRuntime: (v) => v }));
+jest.mock('./railgun-private-preparation', () => ({
+  normalizeRailgunPrivateOffer: (value) => Object.freeze({ ...value }),
+}));
 jest.mock('./railgun-identity', () => ({
   assertRailgunIdentity: () => {
     if (mockRefuse) throw Error('identity refused');
@@ -27,22 +34,34 @@ jest.mock('./railgun-wallet-storage', () => ({ createRailgunWalletStorage: () =>
 jest.mock('./railgun-process', () => ({
   startRailgunProcess: (options) => {
     mockInput = JSON.parse(options.input);
+    const controller = new AbortController();
     let resolveClosed;
     const closed = new Promise((resolve) => {
       resolveClosed = resolve;
     });
-    const ready = (async () => {
+    const failed = new Promise((_resolve, reject) => {
+      mockAbortJob = reject;
+    });
+    const running = (async () => {
       const bytes = await options.broker.dispatch(
         JSON.stringify({
           id: 1,
           method: 'key',
-          purpose: mockInput.privateIntent ? 'private-prepare' : 'wallet-viewing',
+          purpose: mockInput.privateOperation
+            ? 'private-operate'
+            : mockInput.privateIntent
+              ? 'private-prepare'
+              : 'wallet-viewing',
         })
       );
       expect(options.binaryKey).toBe(true);
       expect(options.filename).toBe(
         require.resolve(
-          mockInput.privateIntent ? './railgun-private-prepare-job' : './railgun-wallet-job'
+          mockInput.privateOperation
+            ? './railgun-private-operate-job'
+            : mockInput.privateIntent
+              ? './railgun-private-prepare-job'
+              : './railgun-wallet-job'
         )
       );
       expect(bytes.byteLength).toBe(32);
@@ -50,18 +69,45 @@ jest.mock('./railgun-process', () => ({
       expect(bytes.buffer.byteLength).toBe(32);
       expect([...bytes]).toEqual(Array(32).fill(7));
       bytes.fill(0);
+      let resultId = 2,
+        extra = {};
+      if (mockInput.privateOperation && mockOperationMode !== 'early-result') {
+        const offer = { intent: 'captured' };
+        mockReply = JSON.parse(
+          await options.broker.dispatch(
+            JSON.stringify({ id: 2, method: 'private-intent', value: offer })
+          )
+        );
+        resultId = 3;
+        if (mockOperationMode === 'repeat')
+          await options.broker.dispatch(
+            JSON.stringify({ id: 3, method: 'private-intent', value: offer })
+          );
+        if (mockOperationMode === 'late-storage')
+          await options.broker.dispatch(JSON.stringify({ id: 3, channel: 'wallet', wire: '{}' }));
+        extra = {
+          privatePreparation: mockOperationMode === 'substitute' ? { intent: 'other' } : offer,
+          privateOperation: { status: mockReply.value.status === 'signed' ? 'proved' : 'refused' },
+        };
+        if (mockOperationMode === 'wrong-status') extra.privateOperation.status = 'unexpected';
+      }
       await options.broker.dispatch(
         JSON.stringify({
-          id: 2,
+          id: resultId,
           method: 'result',
-          value: { instanceId: mockDescriptor.instanceId },
+          value: { instanceId: mockDescriptor.instanceId, ...extra },
         })
       );
     })();
+    const ready = Promise.race([running, failed]);
     return (mockTask = {
       ready,
       closed,
-      close: jest.fn(() => resolveClosed({ code: 'RAILGUN_PROCESS_CLOSED' })),
+      signal: controller.signal,
+      close: jest.fn(() => {
+        controller.abort();
+        resolveClosed({ code: 'RAILGUN_PROCESS_CLOSED' });
+      }),
     });
   },
 }));
@@ -72,6 +118,7 @@ beforeEach(() => {
   mockRefuse = false;
   mockCancelledCopy = false;
   mockFailure = null;
+  mockOperationMode = mockReply = null;
   mockCopy = mockTask = mockInput = null;
   mockDescriptor = { walletId: '1'.repeat(64), instanceId: '0zk1' + 'q'.repeat(123) };
   scope = createPrivacyScope({ profileId: 'view-run-test', signal: new AbortController().signal });
@@ -143,4 +190,98 @@ test('private preparation uses only the dedicated viewing-key entry and requires
   await runRailgunWalletSnapshot({ ...args, privateIntent, restore: true });
   expect(mockInput.privateIntent).toEqual(privateIntent);
   expect([...mockCopy]).toEqual(Array(32).fill(0));
+});
+function operation(onIntent = jest.fn(async () => ({ status: 'refused' }))) {
+  return {
+    ...args,
+    restore: true,
+    privateIntent: { kind: 'test' },
+    privateOperation: {
+      proverArchive: '/prover.asar',
+      artifactDirectory: '/artifacts',
+      onIntent,
+    },
+  };
+}
+test.each(['refused', 'signed'])(
+  'a typed %s operation request uses the exact entry and retains no JSON key',
+  async (status) => {
+    const signature = {
+      R8: ['0x' + '1'.repeat(64), '0x' + '2'.repeat(64)],
+      S: '0x' + '0'.repeat(63) + '1',
+    };
+    const onIntent = jest.fn(async (offer, signal) => {
+      expect(Object.isFrozen(offer)).toBe(true);
+      expect(signal.aborted).toBe(false);
+      return status === 'signed' ? { status, signature } : { status };
+    });
+    const result = await runRailgunWalletSnapshot(operation(onIntent));
+    expect(result.privateOperation.status).toBe(status === 'signed' ? 'proved' : 'refused');
+    expect(onIntent).toHaveBeenCalledTimes(1);
+    expect(mockInput.privateOperation).toEqual({
+      proverArchive: '/prover.asar',
+      artifactDirectory: '/artifacts',
+    });
+    expect(JSON.stringify(mockInput)).not.toContain('07'.repeat(32));
+    expect(mockTask.signal.aborted).toBe(true);
+  }
+);
+test.each(['repeat', 'late-storage', 'substitute', 'wrong-status', 'early-result'])(
+  'operation protocol violation %s refuses and drains',
+  async (mode) => {
+    mockOperationMode = mode;
+    await expect(runRailgunWalletSnapshot(operation())).rejects.toThrow();
+    expect(mockTask.close).toHaveBeenCalled();
+    expect(mockRouter.close).toHaveBeenCalled();
+  }
+);
+test('late signature response after task cancellation cannot be delivered', async () => {
+  const onIntent = jest.fn(async (_offer, signal) => {
+    mockTask.close();
+    expect(signal.aborted).toBe(true);
+    return { status: 'refused' };
+  });
+  await expect(runRailgunWalletSnapshot(operation(onIntent))).rejects.toThrow();
+  expect(mockReply).toBeNull();
+});
+test('an exited A does not release its account run before its pending handler has drained', async () => {
+  let releaseHandler, entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const pending = new Promise((resolve) => {
+    releaseHandler = resolve;
+  });
+  let settled = false;
+  const run = runRailgunWalletSnapshot(
+    operation(async (_offer, signal) => {
+      entered(signal);
+      await pending;
+      return { status: 'refused' };
+    })
+  );
+  const observed = run
+    .catch((error) => error)
+    .finally(() => {
+      settled = true;
+    });
+  const signal = await started;
+  mockTask.close();
+  mockAbortJob(Error('A timed out'));
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(signal.aborted).toBe(true);
+  expect(mockRouter.close).toHaveBeenCalled();
+  expect(settled).toBe(false);
+  releaseHandler();
+  expect(await observed).toBeInstanceOf(Error);
+  expect(settled).toBe(true);
+  expect(mockReply).toBeNull();
+});
+test.each([
+  { status: 'refused', signature: {} },
+  { status: 'signed', signature: { R8: [], S: 'key' } },
+  { status: 'other' },
+])('malformed operation replies are never forwarded (%#)', async (response) => {
+  await expect(runRailgunWalletSnapshot(operation(async () => response))).rejects.toThrow();
+  expect(mockReply).toBeNull();
 });

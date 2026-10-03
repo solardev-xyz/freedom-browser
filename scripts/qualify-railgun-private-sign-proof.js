@@ -31,8 +31,10 @@ async function main() {
     'scripts/fixtures/railgun-private-sign-proof-job.js',
     'src/main/wallet/railgun-spend-sign-job.js',
     'src/main/wallet/railgun-private-verify-job.js',
+    'src/main/wallet/railgun-private-prover.js',
     'src/main/wallet/railgun-private-intent.js',
     'src/main/wallet/railgun-private-results.js',
+    'src/main/wallet/railgun-private-signature.js',
     'src/main/wallet/railgun-private-policy.js',
     'src/main/wallet/railgun-shield-pins.json',
     'src/main/wallet/railgun-process.js',
@@ -261,6 +263,7 @@ async function main() {
       assert.equal(sequence, 3);
       assert.equal(result.verified, true);
       assert.equal(result.wrongMessageSignatureRefused, true);
+      assert.equal(result.wrongSignatureRefusedBeforeProving, true);
       assert.equal(result.guards.attempts, 0);
       const independent = await verify(result);
       const zeroProofRefused = await verify({ ...result, finalTransaction: result.intent }, true);
@@ -268,6 +271,7 @@ async function main() {
         kind,
         verified: true,
         wrongMessageSignatureRefused: true,
+        wrongSignatureRefusedBeforeProving: true,
         zeroProofRefused,
         independent,
         guards: result.guards,

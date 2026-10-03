@@ -9,7 +9,15 @@ const { getPrivacyStoragePath } = require('../src/main/wallet/privacy-storage');
 let qualificationLock;
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 async function main() {
-  const [sourceFilename, directory, accountArchive, composition] = process.argv.slice(2);
+  const [sourceFilename, directory, accountArchive, composition, proverArchive, artifactDirectory] =
+    process.argv.slice(2);
+  assert.ok(process.argv.slice(2).length <= 6);
+  assert.ok(
+    (proverArchive === undefined && artifactDirectory === undefined) ||
+      (composition === 'enrolled' &&
+        path.isAbsolute(proverArchive) &&
+        path.isAbsolute(artifactDirectory))
+  );
   assert.ok(composition === undefined || (composition === 'enrolled' && accountArchive));
   assert.ok(accountArchive === undefined || path.isAbsolute(accountArchive));
   assert.ok(
@@ -39,6 +47,7 @@ async function main() {
     cancelledViewingMessages = 0,
     cancelledViewingProcessClosed = false,
     cancelledViewingProcess = null;
+  const privateOperationJobs = [];
   const walletRestores = [],
     applications = [];
   if (composition) {
@@ -129,6 +138,8 @@ async function main() {
         },
       });
       task.closed.then((result) => {
+        if (options.filename === require.resolve('../src/main/wallet/railgun-private-operate-job'))
+          privateOperationJobs.push(result);
         if (cancelledThisTask) {
           cancelledViewingMessages = messages;
           cancelledViewingProcess = result;
@@ -400,6 +411,15 @@ async function main() {
     'src/main/wallet/railgun-account-phase.js',
     'src/main/wallet/railgun-private-reservations.js',
     'src/main/wallet/railgun-private-witness.js',
+    'scripts/fixtures/railgun-enrolled-operation.js',
+    'src/main/wallet/railgun-private-operate-job.js',
+    'src/main/wallet/railgun-private-prover.js',
+    'src/main/wallet/railgun-prover-runtime.js',
+    'src/main/wallet/railgun-prover-manifest.json',
+    'src/main/wallet/railgun-artifacts.js',
+    'src/main/wallet/privacy-artifacts.js',
+    'src/main/wallet/railgun-spend-sign-job.js',
+    'src/main/wallet/railgun-private-verify-job.js',
     'src/main/wallet/railgun-private-prepare-job.js',
     'src/main/wallet/railgun-private-preparation.js',
     'src/main/wallet/railgun-private-intent.js',
@@ -407,6 +427,7 @@ async function main() {
     'src/main/wallet/railgun-private-receive.js',
     'src/main/wallet/railgun-private-receive-job.js',
     'src/main/wallet/railgun-private-results.js',
+    'src/main/wallet/railgun-private-signature.js',
     'src/main/wallet/railgun-shield-pins.json',
     'src/main/wallet/privacy-profile-guard.js',
     'src/main/wallet/railgun-identity.js',
@@ -684,6 +705,7 @@ async function main() {
             );
             const accountWindows = [];
             const privatePreparations = [];
+            const privateOperations = [];
             if (attempt === 'restore') {
               const {
                 readRailgunAccountOwnedNotes,
@@ -909,6 +931,25 @@ async function main() {
                     assert.equal(privateReceiveKeys, keyCount);
                     receiver = { validUnshieldRefusedBeforeKey: true, viewingKeyTransfers: 0 };
                   }
+                  if (proverArchive && stage === 10) {
+                    privateOperations.push(
+                      ...(await require('./fixtures/railgun-enrolled-operation').qualify({
+                        account: opened,
+                        owners,
+                        archive: accountArchive,
+                        proverArchive,
+                        artifactDirectory,
+                        request: {
+                          kind,
+                          noteId: selected.id,
+                          recipient:
+                            kind === 'railgun-private-transfer'
+                              ? accountIdentity.descriptor.instanceId
+                              : '0x' + '12'.repeat(20),
+                        },
+                      }))
+                    );
+                  }
                   privatePreparations.push({
                     kind,
                     elapsedMs: Math.round(performance.now() - started),
@@ -936,6 +977,7 @@ async function main() {
               spendableGranted: false,
               accountWindows,
               privatePreparations,
+              privateOperations,
             });
           } finally {
             await opened.close();
@@ -1696,6 +1738,7 @@ async function main() {
           enrolledWalletComposition: !!enrollment,
           authenticatedPublicJobs: !!enrollment,
           enrolledPublicComposition: !!enrollment,
+          privateOperationJobs,
           cancelledViewingProcess,
           cancelledViewingMessages: accountIdentity ? cancelledViewingMessages : null,
           viewingKeyTransferCancelled: accountIdentity ? cancelledViewingProcessClosed : null,

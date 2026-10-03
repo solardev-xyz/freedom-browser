@@ -53,6 +53,7 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     require.resolve('./railgun-process'),
     require.resolve('./railgun-wallet-journal'),
     require.resolve('./privacy-storage'),
+    require.resolve('./privacy-artifacts'),
   ]);
   const visited = new Set();
   function walk(filename) {
@@ -68,6 +69,7 @@ test('local wallet job and host validation dependencies are pinned or cross expl
   for (const root of [
     'railgun-wallet-job',
     'railgun-private-prepare-job',
+    'railgun-private-operate-job',
     'railgun-wallet-runner',
     'railgun-wallet-run',
     'railgun-wallet-coverage-store',
@@ -75,5 +77,5 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-kohaku-read',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(22);
+  expect(visited.size).toBe(28);
 });

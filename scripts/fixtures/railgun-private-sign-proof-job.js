@@ -103,7 +103,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     chainId: pins.chainId,
     role: 'artifacts',
   });
-  let artifacts;
+  let artifacts, privateProver, rejectedProver;
   try {
     const txRequest = await transaction.generateTransactionRequest(
       wallet,
@@ -132,6 +132,15 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       },
     });
     prover.setSnarkJSGroth16(require(path.join(proverArchive, 'serial-prover.cjs')));
+    const openPrivateProver = () =>
+      require('../../src/main/wallet/railgun-private-prover').createRailgunPrivateProver({
+        archive,
+        proverArchive,
+        artifactDirectory: input.artifactDirectory,
+        spendingPublicKey: input.spendingPublicKey,
+        signal,
+      });
+    privateProver = await openPrivateProver();
     const dummy = await transaction.generateDummyProvedTransaction(prover, txRequest);
     const expected = {
       kind: unshield ? 'railgun-token-unshield' : 'railgun-private-transfer',
@@ -164,15 +173,19 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     );
     assert.equal(reply.id, 1);
     const signature = reply.value;
-    const witness = { ...txRequest, signature: [...signature.R8, signature.S].map(BigInt) };
     const start = performance.now();
-    const proved = await transaction.generateProvedTransaction(
-      'V2_PoseidonMerkle',
-      prover,
-      witness,
-      () => {}
-    );
-    const finalTransaction = { ...intent, data: abi.encodeFunctionData('transact', [[proved]]) };
+    const prepared = {
+      witness: txRequest,
+      transaction,
+      publicPreparation: {
+        transaction: intent,
+        expected,
+        expectedHash: payload.expectedHash,
+      },
+    };
+    const proofResult = await privateProver.prove(prepared, signature);
+    assert.equal(proofResult.independentlyVerified, false);
+    const finalTransaction = proofResult.transaction;
     matchRailgunPrivateProvedTransaction(intent, finalTransaction, expected);
     // Ask a new B to sign a different root, then try that otherwise valid
     // signature with the original private witness. It must fail the circuit.
@@ -190,6 +203,23 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       await request(JSON.stringify({ id: 2, method: 'sign', value: changed }))
     );
     assert.equal(wrongReply.id, 2);
+    rejectedProver = await openPrivateProver();
+    let invalidSignatureReachedProver = false;
+    await assert.rejects(() =>
+      rejectedProver.prove(
+        {
+          ...prepared,
+          transaction: {
+            generateProvedTransaction: () => {
+              invalidSignatureReachedProver = true;
+              throw Error('Should reject before proving');
+            },
+          },
+        },
+        wrongReply.value
+      )
+    );
+    assert.equal(invalidSignatureReachedProver, false);
     await assert.rejects(() =>
       prover.proveRailgun(
         'V2_PoseidonMerkle',
@@ -212,6 +242,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
               kind: input.kind,
               verified: true,
               wrongMessageSignatureRefused: true,
+              wrongSignatureRefusedBeforeProving: true,
               proofElapsedMs: Math.round(performance.now() - start),
               guards: guardReport(),
               finalTransaction,
@@ -224,6 +255,8 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       { id: 3, value: null }
     );
   } finally {
+    privateProver?.close();
+    rejectedProver?.close();
     viewingKey.fill(0);
     artifacts?.wasm.fill(0);
     artifacts?.zkey.fill(0);
