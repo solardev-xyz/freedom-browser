@@ -25,7 +25,12 @@ const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
 
 // Builtin keyless Gnosis rpc sources to remove so nothing escapes to the
 // live chain (keyed sources resolve to nothing without API keys).
-const BUILTIN_GNOSIS_SOURCES = ['gno-gnosischain', 'gno-ankr', 'gno-publicnode', 'gno-drpc-public'];
+const BUILTIN_GNOSIS_SOURCES = [
+  'gno-gnosischain',
+  'gno-gatewayfm',
+  'gno-publicnode',
+  'gno-drpc-public',
+];
 
 /**
  * anvil present + fork RPC reachable — mirrors the jest fork-test gate.

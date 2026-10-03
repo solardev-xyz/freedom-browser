@@ -39,11 +39,6 @@
     "keyed": false,
     "coverage": { "1": "https://cloudflare-eth.com" }
   },
-  "eth-ankr": {
-    "role": "rpc",
-    "keyed": false,
-    "coverage": { "1": "https://rpc.ankr.com/eth" }
-  },
   "eth-flashbots": {
     "role": "rpc",
     "keyed": false,
@@ -60,10 +55,10 @@
     "keyed": false,
     "coverage": { "100": "https://rpc.gnosischain.com" }
   },
-  "gno-ankr": {
+  "gno-gatewayfm": {
     "role": "rpc",
     "keyed": false,
-    "coverage": { "100": "https://rpc.ankr.com/gnosis" }
+    "coverage": { "100": "https://rpc.gnosis.gateway.fm" }
   },
   "gno-publicnode": {
     "role": "rpc",

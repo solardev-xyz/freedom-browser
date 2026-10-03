@@ -1,0 +1,1 @@
+- Gnosis Chain reads use Gateway.fm's public RPC in place of Ankr's, which now turns away requests without an API key ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))
