@@ -1,0 +1,1123 @@
+{
+  "observedAt": "2026-10-03T02:57:42.129Z",
+  "harnessSha256": "fd5343948f544c3914af2b52cf24bde47c5ec2dcac9a83946b37c7ba02bf8fa8",
+  "chainId": 11155111,
+  "anchor": {
+    "number": 11832799,
+    "hash": "0x49d0b93f21f94b98746a29d3bc1f99048ec9805757f3c1191372c0d2e4a34191"
+  },
+  "mode": "active",
+  "liveAcquisition": true,
+  "trust": "unverified-rpc",
+  "transport": {
+    "mode": "tor-experimental",
+    "transport": "authenticated-socks",
+    "circuitIsolation": "unqualified"
+  },
+  "rpcProviderCount": 1,
+  "circuitIsolationQualified": false,
+  "signingEnabled": false,
+  "submissions": 0,
+  "completed": false,
+  "ranges": [
+    {
+      "from": 5860000,
+      "to": 5879999,
+      "elapsedMs": 6903
+    },
+    {
+      "from": 5880000,
+      "to": 5899999,
+      "elapsedMs": 3695
+    },
+    {
+      "from": 5900000,
+      "to": 5919999,
+      "elapsedMs": 3681
+    },
+    {
+      "from": 5920000,
+      "to": 5939999,
+      "elapsedMs": 4512
+    },
+    {
+      "from": 5940000,
+      "to": 5959999,
+      "elapsedMs": 4099
+    },
+    {
+      "from": 5960000,
+      "to": 5979999,
+      "elapsedMs": 4592
+    },
+    {
+      "from": 5980000,
+      "to": 5999999,
+      "elapsedMs": 3340
+    },
+    {
+      "from": 6000000,
+      "to": 6019999,
+      "elapsedMs": 4152
+    },
+    {
+      "from": 6020000,
+      "to": 6039999,
+      "elapsedMs": 4006
+    },
+    {
+      "from": 6040000,
+      "to": 6059999,
+      "elapsedMs": 4189
+    },
+    {
+      "from": 6060000,
+      "to": 6079999,
+      "elapsedMs": 3776
+    },
+    {
+      "from": 6080000,
+      "to": 6099999,
+      "elapsedMs": 5369
+    },
+    {
+      "from": 6100000,
+      "to": 6119999,
+      "elapsedMs": 4106
+    },
+    {
+      "from": 6120000,
+      "to": 6139999,
+      "elapsedMs": 3484
+    },
+    {
+      "from": 6140000,
+      "to": 6159999,
+      "elapsedMs": 3879
+    },
+    {
+      "from": 6160000,
+      "to": 6179999,
+      "elapsedMs": 4305
+    },
+    {
+      "from": 6180000,
+      "to": 6199999,
+      "elapsedMs": 4131
+    },
+    {
+      "from": 6200000,
+      "to": 6219999,
+      "elapsedMs": 4276
+    },
+    {
+      "from": 6220000,
+      "to": 6239999,
+      "elapsedMs": 4817
+    },
+    {
+      "from": 6240000,
+      "to": 6259999,
+      "elapsedMs": 4731
+    },
+    {
+      "from": 6260000,
+      "to": 6279999,
+      "elapsedMs": 9780
+    },
+    {
+      "from": 6280000,
+      "to": 6299999,
+      "elapsedMs": 4638
+    },
+    {
+      "from": 6300000,
+      "to": 6319999,
+      "elapsedMs": 4006
+    },
+    {
+      "from": 6320000,
+      "to": 6339999,
+      "elapsedMs": 4798
+    },
+    {
+      "from": 6340000,
+      "to": 6359999,
+      "elapsedMs": 4641
+    },
+    {
+      "from": 6360000,
+      "to": 6379999,
+      "elapsedMs": 4558
+    },
+    {
+      "from": 6380000,
+      "to": 6399999,
+      "elapsedMs": 4716
+    },
+    {
+      "from": 6400000,
+      "to": 6419999,
+      "elapsedMs": 4464
+    },
+    {
+      "from": 6420000,
+      "to": 6439999,
+      "elapsedMs": 5612
+    },
+    {
+      "from": 6440000,
+      "to": 6459999,
+      "elapsedMs": 6194
+    },
+    {
+      "from": 6460000,
+      "to": 6479999,
+      "elapsedMs": 5896
+    },
+    {
+      "from": 6480000,
+      "to": 6499999,
+      "elapsedMs": 7377
+    },
+    {
+      "from": 6500000,
+      "to": 6519999,
+      "elapsedMs": 4838
+    },
+    {
+      "from": 6520000,
+      "to": 6539999,
+      "elapsedMs": 5645
+    },
+    {
+      "from": 6540000,
+      "to": 6559999,
+      "elapsedMs": 4485
+    },
+    {
+      "from": 6560000,
+      "to": 6579999,
+      "elapsedMs": 4744
+    },
+    {
+      "from": 6580000,
+      "to": 6599999,
+      "elapsedMs": 5486
+    },
+    {
+      "from": 6600000,
+      "to": 6619999,
+      "elapsedMs": 5231
+    },
+    {
+      "from": 6620000,
+      "to": 6639999,
+      "elapsedMs": 5127
+    },
+    {
+      "from": 6640000,
+      "to": 6659999,
+      "elapsedMs": 5018
+    },
+    {
+      "from": 6660000,
+      "to": 6679999,
+      "elapsedMs": 5503
+    },
+    {
+      "from": 6680000,
+      "to": 6699999,
+      "elapsedMs": 6055
+    },
+    {
+      "from": 6700000,
+      "to": 6719999,
+      "elapsedMs": 3929
+    },
+    {
+      "from": 6720000,
+      "to": 6739999,
+      "elapsedMs": 4528
+    },
+    {
+      "from": 6740000,
+      "to": 6759999,
+      "elapsedMs": 4805
+    },
+    {
+      "from": 6760000,
+      "to": 6779999,
+      "elapsedMs": 7732
+    },
+    {
+      "from": 6780000,
+      "to": 6799999,
+      "elapsedMs": 4085
+    },
+    {
+      "from": 6800000,
+      "to": 6819999,
+      "elapsedMs": 4479
+    },
+    {
+      "from": 6820000,
+      "to": 6839999,
+      "elapsedMs": 4730
+    },
+    {
+      "from": 6840000,
+      "to": 6859999,
+      "elapsedMs": 5876
+    },
+    {
+      "from": 6860000,
+      "to": 6879999,
+      "elapsedMs": 6188
+    },
+    {
+      "from": 6880000,
+      "to": 6899999,
+      "elapsedMs": 5707
+    },
+    {
+      "from": 6900000,
+      "to": 6919999,
+      "elapsedMs": 5372
+    },
+    {
+      "from": 6920000,
+      "to": 6939999,
+      "elapsedMs": 5890
+    },
+    {
+      "from": 6940000,
+      "to": 6959999,
+      "elapsedMs": 4570
+    },
+    {
+      "from": 6960000,
+      "to": 6979999,
+      "elapsedMs": 5239
+    },
+    {
+      "from": 6980000,
+      "to": 6999999,
+      "elapsedMs": 12908
+    },
+    {
+      "from": 7000000,
+      "to": 7019999,
+      "elapsedMs": 8068
+    },
+    {
+      "from": 7020000,
+      "to": 7039999,
+      "elapsedMs": 5305
+    },
+    {
+      "from": 7040000,
+      "to": 7059999,
+      "elapsedMs": 4330
+    },
+    {
+      "from": 7060000,
+      "to": 7079999,
+      "elapsedMs": 5012
+    },
+    {
+      "from": 7080000,
+      "to": 7099999,
+      "elapsedMs": 5623
+    },
+    {
+      "from": 7100000,
+      "to": 7119999,
+      "elapsedMs": 5406
+    },
+    {
+      "from": 7120000,
+      "to": 7139999,
+      "elapsedMs": 5182
+    },
+    {
+      "from": 7140000,
+      "to": 7159999,
+      "elapsedMs": 5608
+    },
+    {
+      "from": 7160000,
+      "to": 7179999,
+      "elapsedMs": 7008
+    },
+    {
+      "from": 7180000,
+      "to": 7199999,
+      "elapsedMs": 6529
+    },
+    {
+      "from": 7200000,
+      "to": 7219999,
+      "elapsedMs": 6577
+    },
+    {
+      "from": 7220000,
+      "to": 7239999,
+      "elapsedMs": 4968
+    },
+    {
+      "from": 7240000,
+      "to": 7259999,
+      "elapsedMs": 5075
+    },
+    {
+      "from": 7260000,
+      "to": 7279999,
+      "elapsedMs": 4870
+    },
+    {
+      "from": 7280000,
+      "to": 7299999,
+      "elapsedMs": 5379
+    },
+    {
+      "from": 7300000,
+      "to": 7319999,
+      "elapsedMs": 6904
+    },
+    {
+      "from": 7320000,
+      "to": 7339999,
+      "elapsedMs": 7336
+    },
+    {
+      "from": 7340000,
+      "to": 7359999,
+      "elapsedMs": 5659
+    },
+    {
+      "from": 7360000,
+      "to": 7379999,
+      "elapsedMs": 5227
+    },
+    {
+      "from": 7380000,
+      "to": 7399999,
+      "elapsedMs": 5692
+    },
+    {
+      "from": 7400000,
+      "to": 7419999,
+      "elapsedMs": 4846
+    },
+    {
+      "from": 7420000,
+      "to": 7439999,
+      "elapsedMs": 5137
+    },
+    {
+      "from": 7440000,
+      "to": 7459999,
+      "elapsedMs": 6409
+    },
+    {
+      "from": 7460000,
+      "to": 7479999,
+      "elapsedMs": 5123
+    },
+    {
+      "from": 7480000,
+      "to": 7499999,
+      "elapsedMs": 4572
+    },
+    {
+      "from": 7500000,
+      "to": 7519999,
+      "elapsedMs": 6385
+    },
+    {
+      "from": 7520000,
+      "to": 7539999,
+      "elapsedMs": 6264
+    },
+    {
+      "from": 7540000,
+      "to": 7559999,
+      "elapsedMs": 7979
+    },
+    {
+      "from": 7560000,
+      "to": 7579999,
+      "elapsedMs": 9071
+    },
+    {
+      "from": 7580000,
+      "to": 7599999,
+      "elapsedMs": 5824
+    },
+    {
+      "from": 7600000,
+      "to": 7619999,
+      "elapsedMs": 7218
+    },
+    {
+      "from": 7620000,
+      "to": 7639999,
+      "elapsedMs": 5697
+    },
+    {
+      "from": 7640000,
+      "to": 7659999,
+      "elapsedMs": 6129
+    },
+    {
+      "from": 7660000,
+      "to": 7679999,
+      "elapsedMs": 4321
+    },
+    {
+      "from": 7680000,
+      "to": 7699999,
+      "elapsedMs": 6305
+    },
+    {
+      "from": 7700000,
+      "to": 7719999,
+      "elapsedMs": 6941
+    },
+    {
+      "from": 7720000,
+      "to": 7739999,
+      "elapsedMs": 7232
+    },
+    {
+      "from": 7740000,
+      "to": 7759999,
+      "elapsedMs": 5108
+    },
+    {
+      "from": 7760000,
+      "to": 7779999,
+      "elapsedMs": 5598
+    },
+    {
+      "from": 7780000,
+      "to": 7799999,
+      "elapsedMs": 5961
+    },
+    {
+      "from": 7800000,
+      "to": 7819999,
+      "elapsedMs": 5637
+    },
+    {
+      "from": 7820000,
+      "to": 7839999,
+      "elapsedMs": 5552
+    },
+    {
+      "from": 7840000,
+      "to": 7859999,
+      "elapsedMs": 5451
+    },
+    {
+      "from": 7860000,
+      "to": 7879999,
+      "elapsedMs": 5397
+    },
+    {
+      "from": 7880000,
+      "to": 7899999,
+      "elapsedMs": 7660
+    },
+    {
+      "from": 7900000,
+      "to": 7919999,
+      "elapsedMs": 5179
+    },
+    {
+      "from": 7920000,
+      "to": 7939999,
+      "elapsedMs": 4338
+    },
+    {
+      "from": 7940000,
+      "to": 7959999,
+      "elapsedMs": 6543
+    },
+    {
+      "from": 7960000,
+      "to": 7979999,
+      "elapsedMs": 5012
+    },
+    {
+      "from": 7980000,
+      "to": 7999999,
+      "elapsedMs": 4342
+    },
+    {
+      "from": 8000000,
+      "to": 8019999,
+      "elapsedMs": 4604
+    },
+    {
+      "from": 8020000,
+      "to": 8039999,
+      "elapsedMs": 4253
+    },
+    {
+      "from": 8040000,
+      "to": 8059999,
+      "elapsedMs": 5382
+    },
+    {
+      "from": 8060000,
+      "to": 8079999,
+      "elapsedMs": 5535
+    },
+    {
+      "from": 8080000,
+      "to": 8099999,
+      "elapsedMs": 5864
+    },
+    {
+      "from": 8100000,
+      "to": 8119999,
+      "elapsedMs": 4191
+    },
+    {
+      "from": 8120000,
+      "to": 8139999,
+      "elapsedMs": 5092
+    },
+    {
+      "from": 8140000,
+      "to": 8159999,
+      "elapsedMs": 7288
+    },
+    {
+      "from": 8160000,
+      "to": 8179999,
+      "elapsedMs": 5341
+    },
+    {
+      "from": 8180000,
+      "to": 8199999,
+      "elapsedMs": 5392
+    },
+    {
+      "from": 8200000,
+      "to": 8219999,
+      "elapsedMs": 5355
+    },
+    {
+      "from": 8220000,
+      "to": 8239999,
+      "elapsedMs": 5285
+    },
+    {
+      "from": 8240000,
+      "to": 8259999,
+      "elapsedMs": 5937
+    },
+    {
+      "from": 8260000,
+      "to": 8279999,
+      "elapsedMs": 5407
+    },
+    {
+      "from": 8280000,
+      "to": 8299999,
+      "elapsedMs": 6156
+    },
+    {
+      "from": 8300000,
+      "to": 8319999,
+      "elapsedMs": 5542
+    },
+    {
+      "from": 8320000,
+      "to": 8339999,
+      "elapsedMs": 5159
+    },
+    {
+      "from": 8340000,
+      "to": 8359999,
+      "elapsedMs": 7987
+    },
+    {
+      "from": 8360000,
+      "to": 8379999,
+      "elapsedMs": 7373
+    },
+    {
+      "from": 8380000,
+      "to": 8399999,
+      "elapsedMs": 7664
+    },
+    {
+      "from": 8400000,
+      "to": 8419999,
+      "elapsedMs": 8245
+    },
+    {
+      "from": 8420000,
+      "to": 8439999,
+      "elapsedMs": 5320
+    },
+    {
+      "from": 8440000,
+      "to": 8459999,
+      "elapsedMs": 7563
+    },
+    {
+      "from": 8460000,
+      "to": 8479999,
+      "elapsedMs": 5388
+    },
+    {
+      "from": 8480000,
+      "to": 8499999,
+      "elapsedMs": 7484
+    },
+    {
+      "from": 8500000,
+      "to": 8519999,
+      "elapsedMs": 10287
+    },
+    {
+      "from": 8520000,
+      "to": 8539999,
+      "elapsedMs": 8138
+    },
+    {
+      "from": 8540000,
+      "to": 8559999,
+      "elapsedMs": 8533
+    },
+    {
+      "from": 8560000,
+      "to": 8579999,
+      "elapsedMs": 8383
+    },
+    {
+      "from": 8580000,
+      "to": 8599999,
+      "elapsedMs": 6480
+    },
+    {
+      "from": 8600000,
+      "to": 8619999,
+      "elapsedMs": 5891
+    },
+    {
+      "from": 8620000,
+      "to": 8639999,
+      "elapsedMs": 6342
+    },
+    {
+      "from": 8640000,
+      "to": 8659999,
+      "elapsedMs": 6053
+    },
+    {
+      "from": 8660000,
+      "to": 8679999,
+      "elapsedMs": 6820
+    },
+    {
+      "from": 8680000,
+      "to": 8699999,
+      "elapsedMs": 7985
+    },
+    {
+      "from": 8700000,
+      "to": 8719999,
+      "elapsedMs": 8972
+    },
+    {
+      "from": 8720000,
+      "to": 8739999,
+      "elapsedMs": 8102
+    },
+    {
+      "from": 8740000,
+      "to": 8759999,
+      "elapsedMs": 7608
+    },
+    {
+      "from": 8760000,
+      "to": 8779999,
+      "elapsedMs": 7087
+    },
+    {
+      "from": 8780000,
+      "to": 8799999,
+      "elapsedMs": 12177
+    },
+    {
+      "from": 8800000,
+      "to": 8819999,
+      "elapsedMs": 14107
+    },
+    {
+      "from": 8820000,
+      "to": 8839999,
+      "elapsedMs": 17743
+    },
+    {
+      "from": 8840000,
+      "to": 8859999,
+      "elapsedMs": 8842
+    },
+    {
+      "from": 8860000,
+      "to": 8879999,
+      "elapsedMs": 6350
+    },
+    {
+      "from": 8880000,
+      "to": 8899999,
+      "elapsedMs": 5534
+    },
+    {
+      "from": 8900000,
+      "to": 8919999,
+      "elapsedMs": 5844
+    },
+    {
+      "from": 8920000,
+      "to": 8939999,
+      "elapsedMs": 6017
+    },
+    {
+      "from": 8940000,
+      "to": 8959999,
+      "elapsedMs": 4709
+    },
+    {
+      "from": 8960000,
+      "to": 8979999,
+      "elapsedMs": 6737
+    },
+    {
+      "from": 8980000,
+      "to": 8999999,
+      "elapsedMs": 7784
+    },
+    {
+      "from": 9000000,
+      "to": 9019999,
+      "elapsedMs": 5872
+    },
+    {
+      "from": 9020000,
+      "to": 9039999,
+      "elapsedMs": 13622
+    },
+    {
+      "from": 9040000,
+      "to": 9059999,
+      "elapsedMs": 12849
+    },
+    {
+      "from": 9060000,
+      "to": 9079999,
+      "elapsedMs": 43767
+    },
+    {
+      "from": 9080000,
+      "to": 9099999,
+      "elapsedMs": 73409
+    },
+    {
+      "from": 9100000,
+      "to": 9119999,
+      "elapsedMs": 45492
+    },
+    {
+      "from": 9120000,
+      "to": 9139999,
+      "elapsedMs": 34275
+    },
+    {
+      "from": 9140000,
+      "to": 9159999,
+      "elapsedMs": 8158
+    },
+    {
+      "from": 9160000,
+      "to": 9179999,
+      "elapsedMs": 11803
+    },
+    {
+      "from": 9180000,
+      "to": 9199999,
+      "elapsedMs": 8046
+    },
+    {
+      "from": 9200000,
+      "to": 9219999,
+      "elapsedMs": 8366
+    },
+    {
+      "from": 9220000,
+      "to": 9239999,
+      "elapsedMs": 8236
+    },
+    {
+      "from": 9240000,
+      "to": 9259999,
+      "elapsedMs": 7371
+    },
+    {
+      "from": 9260000,
+      "to": 9279999,
+      "elapsedMs": 10476
+    },
+    {
+      "from": 9280000,
+      "to": 9299999,
+      "elapsedMs": 6853
+    },
+    {
+      "from": 9300000,
+      "to": 9319999,
+      "elapsedMs": 7092
+    },
+    {
+      "from": 9320000,
+      "to": 9339999,
+      "elapsedMs": 6828
+    },
+    {
+      "from": 9340000,
+      "to": 9359999,
+      "elapsedMs": 8114
+    },
+    {
+      "from": 9360000,
+      "to": 9379999,
+      "elapsedMs": 9494
+    },
+    {
+      "from": 9380000,
+      "to": 9399999,
+      "elapsedMs": 10790
+    },
+    {
+      "from": 9400000,
+      "to": 9419999,
+      "elapsedMs": 13508
+    },
+    {
+      "from": 9420000,
+      "to": 9439999,
+      "elapsedMs": 9868
+    },
+    {
+      "from": 9440000,
+      "to": 9459999,
+      "elapsedMs": 7819
+    },
+    {
+      "from": 9460000,
+      "to": 9479999,
+      "elapsedMs": 10280
+    },
+    {
+      "from": 9480000,
+      "to": 9499999,
+      "elapsedMs": 18946
+    },
+    {
+      "from": 9500000,
+      "to": 9519999,
+      "elapsedMs": 8259
+    },
+    {
+      "from": 9520000,
+      "to": 9539999,
+      "elapsedMs": 12554
+    },
+    {
+      "from": 9540000,
+      "to": 9559999,
+      "elapsedMs": 10287
+    },
+    {
+      "from": 9560000,
+      "to": 9579999,
+      "elapsedMs": 10339
+    },
+    {
+      "from": 9580000,
+      "to": 9599999,
+      "elapsedMs": 7680
+    },
+    {
+      "from": 9600000,
+      "to": 9619999,
+      "elapsedMs": 11410
+    },
+    {
+      "from": 9620000,
+      "to": 9639999,
+      "elapsedMs": 8221
+    },
+    {
+      "from": 9640000,
+      "to": 9659999,
+      "elapsedMs": 8470
+    },
+    {
+      "from": 9660000,
+      "to": 9679999,
+      "elapsedMs": 16753
+    },
+    {
+      "from": 9680000,
+      "to": 9699999,
+      "elapsedMs": 14196
+    },
+    {
+      "from": 9700000,
+      "to": 9719999,
+      "elapsedMs": 7858
+    },
+    {
+      "from": 9720000,
+      "to": 9739999,
+      "elapsedMs": 6712
+    },
+    {
+      "from": 9740000,
+      "to": 9759999,
+      "elapsedMs": 8522
+    },
+    {
+      "from": 9760000,
+      "to": 9779999,
+      "elapsedMs": 11254
+    },
+    {
+      "from": 9780000,
+      "to": 9799999,
+      "elapsedMs": 8429
+    },
+    {
+      "from": 9800000,
+      "to": 9819999,
+      "elapsedMs": 7673
+    },
+    {
+      "from": 9820000,
+      "to": 9839999,
+      "elapsedMs": 8066
+    },
+    {
+      "from": 9840000,
+      "to": 9859999,
+      "elapsedMs": 8956
+    },
+    {
+      "from": 9860000,
+      "to": 9879999,
+      "elapsedMs": 9875
+    },
+    {
+      "from": 9880000,
+      "to": 9899999,
+      "elapsedMs": 10622
+    },
+    {
+      "from": 9900000,
+      "to": 9919999,
+      "elapsedMs": 10712
+    },
+    {
+      "from": 9920000,
+      "to": 9939999,
+      "elapsedMs": 10729
+    },
+    {
+      "from": 9940000,
+      "to": 9959999,
+      "elapsedMs": 10043
+    }
+  ],
+  "sourceSha256": {
+    "src/main/wallet/railgun-account-public.js": "0e9ec8d1bdd64316844184724c938167e4f908c2bd9f31bf5a997a7fd2933435",
+    "src/main/wallet/railgun-public-catalog.js": "7c9adc896757427db002081baa6419b499dca0930c60925bfc75ff3463ab4335",
+    "src/main/wallet/railgun-store-owners.js": "f58212448610bf0dc26fa349654b3b34cd82d3d174506fa052b4091d5e8fe46f",
+    "src/main/wallet/railgun-public-job.js": "a82dab40b14d25288d9ef1d407efd44069fe9cc47fbdb1f9cfe7189f59531217",
+    "src/main/wallet/railgun-public-run.js": "3e218c911eab33fde88df14de72951d1c340147291643f951bebe9868cdbd716",
+    "src/main/wallet/railgun-public-policy.js": "21b9807d6f06694d543f21bcdd2dad8f71f806cde565d5144e2f5170e2f84988",
+    "scripts/qualify-railgun-wallet-journal.js": "842ecd798499884ea8382f0a7944636bd47d30d6d04d8e48564a046a4f2479ac",
+    "src/main/wallet/railgun-account-wallet.js": "eb6b03867361b7a9801e0251fe552a1388b4d72e4108886b62c376834fd79508",
+    "src/main/wallet/railgun-wallet-policy.js": "52db0a1ec95ecf57a5324b63eeafdded9d1b7497a0cdecbe41495a730f6ecab8",
+    "src/main/wallet/railgun-account-store.js": "613a2b994dca958b1a9b334442a231c56a812b2afe2d6a4200571fdfbcfc9992",
+    "src/main/wallet/railgun-account-enrollment.js": "749888353b93d710acdc943629a34463cef4a6c384ed2321ceb1d9453af9529a",
+    "src/main/wallet/privacy-profile-guard.js": "8ff6a852f1484e88def1d889f7b68833d0b769f4b876f6ecb4223d2028a9e6cd",
+    "src/main/wallet/railgun-identity.js": "5db807b037eee2e4bd86b4df4745c1d751ce48835606d4fe77dfebfb6b652608",
+    "src/main/wallet/railgun-identity-job.js": "1b1ea70e073357ec2b83129e97f90ab073980610a392953d215f6c45ea827390",
+    "src/main/wallet/railgun-wallet-job.js": "cfc9b07c13725dc288e7673b8e8224a9f730d7a5f5f454a02183c2619ff8340e",
+    "src/main/wallet/railgun-wallet-run.js": "a7fc12236e3edbf4d084831a33ce4cca0c45dae1420dd05a3b68678739173e66",
+    "src/main/wallet/railgun-engine-runtime.js": "3dd0d43fc4cf9a766539986cd0779573ec49d39c261ebaa1c3906c81653bc860",
+    "src/main/wallet/railgun-engine-manifest.json": "54a4d63dea94e17a542d7510c08e1f35ea71256c821639ba86da29b89f8c7f2c",
+    "src/main/identity/privacy-keys.js": "faec4ea9fca115d40caed2459c783c421064552e9475db123d91561e24b6e7e3",
+    "src/main/identity/railgun-key-derivation.js": "8976e7ec5ce995cf89c6e5dbd5ddbf9aa7f7f96e405cee387f0eb5c7fe3170e7",
+    "src/main/wallet/privacy-session.js": "ea3753aeea9e2ebfb0c497aac264c7e6f289c06cd7271dfb396c78b0d7e0f0c3",
+    "src/main/wallet/railgun-wallet-catalog.js": "58574552342363c804ba17c6e3c83b1a8698806b0f6a8d048d32a41d5cc2c5d1",
+    "src/main/wallet/railgun-wallet-coverage.js": "b0b196a29e3c0519338f27050b211a185261d063aa8e49d33d5fd645e9f387f3",
+    "src/main/wallet/railgun-wallet-coverage-store.js": "718623dfbe8f51baefdb997a22e41d91d6d748842ac41c0b376e985d955aaa62",
+    "src/main/wallet/railgun-wallet-journal.js": "d5a75643b6d8a05cd3c9a3ef2c8ba32757b979732e35321719e82d48a98fff5d",
+    "src/main/wallet/railgun-wallet-runner.js": "3f08a724fde3bbf19c12eee899b5c09b9e563bfa00ad7badd9c4c9ff6c6ef8f8",
+    "src/main/wallet/railgun-wallet-read.js": "4c1069ca2afc310ec35104d81a926b8c25dcf8e6abf80a8b390f5a7b26027416",
+    "src/main/wallet/railgun-kohaku-read.js": "601b0d37087e154b72722f0d60db3c5257dc1f3a5f4cc80b22f91e4dd1160068",
+    "src/main/wallet/railgun-wallet-state.js": "5969ea0bc38c5d8ca9f4563c9a72c39e9bbfb34621f175b6e2d41ac4f6bb9292",
+    "scripts/fixtures/railgun-wallet-source.js": "f21e488e5e6cc7354897460a28585c0c052771065e00d9623b536432a4018914",
+    "scripts/railgun-wallet-snapshot-electron.js": "729a4e4d45224dbd4c4702d30a30a5f428e952b2c771b1983c623845b8c545c4",
+    "scripts/fixtures/railgun-wallet-snapshot-job.js": "a397ed535400ac14c8c20511387cfe3af4b6f15677fb8028b311858aeff89886",
+    "src/main/wallet/railgun-wallet-storage.js": "39aef793bd8694a6223358f5a672340d10dca635d8bc237dd2e692c39c627a82",
+    "src/main/wallet/railgun-wallet-scan.js": "f89d9bb35d7a02c09ac321be7d8e573abf2862e28041d0e6cc93798466e91050",
+    "src/main/wallet/railgun-wallet-records.js": "99e80f8ae04e096fb3671a02e6d13953999715ad08d5f0ffb24e2eeb7e218cb2",
+    "scripts/railgun-coordinated-electron.js": "86b0700492fe194c384feef9956994551363ecae9bd00af90c8e84180b94fe57",
+    "scripts/fixtures/railgun-coordinated-electron-job.js": "846f32b213027faa0e959205af8815010c63128a9080a5598757d812eeeb1499",
+    "src/main/wallet/railgun-event-projector.js": "dc929e7b50ec8a1b657b6dd14112d117da48167adf7c38d9826fc778a0a51bce",
+    "src/main/wallet/railgun-scan-coordinator.js": "cf8d273bfe5b7d77ff376cc56d08a3dffc9d2781f3b951eb0a164df94dd0a510",
+    "src/main/wallet/railgun-scan-source.js": "fbdf532684d0a798deb7be6443b963d30ecf699b5fb3c080e357bc1cea6eb3fc",
+    "src/main/wallet/railgun-source-ledger.js": "146ed8f869b0d1e3a1b4e2b528e3d3ff1742c545a948aac9f72ca8fda162fd41",
+    "src/main/wallet/railgun-scan-journal.js": "543d939cdd7b27dc1555cc9696812a8d54ea02e1975574cd83a2ac285c623d92",
+    "src/main/wallet/railgun-session-worker.js": "da9f952912571b89567e7259e503bed91580d5bb9f29022a5e22289df8d92859",
+    "src/main/wallet/railgun-public-records.js": "b69ae32debfe8974ee66e3cf831f0958a2687b0a5bd3ee53690d1db900058f5a",
+    "scripts/railgun-log-capture-data.js": "8b1e5d1eb62378f9df347605711a2d315153593d325784094049c7ece0de12ba",
+    "scripts/verify-railgun-sepolia-history.js": "32a1a1842b70d16e5f9ff028b335b864060d04697af64cd8dfee51c74ad0817e",
+    "scripts/railgun-fixture-integrity.js": "ecb3bdd30ed61572ac14444c9579f978f222c35fd203274c25428d5fb313aa93",
+    "scripts/fixtures/railgun-engine/runtime-integrity.json": "dd2415c7d64ac3dc848e0d491b3e281fc30a1df54768252f1b42112837454513",
+    "src/main/wallet/railgun-session.js": "b36c4af051dca7b848e6b6f55ece7e46b77018f51781ec916bad79f700a26b9d",
+    "src/main/wallet/railgun-session-worker-entry.js": "e0e2c586d07ea36c7d0dfd5a7a0e340500b367f18ed03dadcd355939caefa692",
+    "src/main/wallet/railgun-paged-store.js": "68cfdcc3a46c4a9fda4760d4c40fe31ec81456e4a6935ef35608e43d0f69b93c",
+    "src/main/wallet/railgun-frontier.js": "dafeb9425f164bb4e14669048c182bc70088d2fb948a2ac040467ead27038a58",
+    "src/main/wallet/railgun-remote.js": "1ad3b7fad9b14be7e357ea117b7239cf2777ced44d3a3866602fbec20a3c4793",
+    "src/main/wallet/railgun-tree-transactions.js": "7d35a768ad4bd1856639577ae7d264edb2f4487bcf5524b5bc1444ad5219c678",
+    "src/main/wallet/privacy-storage.js": "e16325336a5e9e51191b6e74c0ab8d88d09bc5723b92f0df74118925ba7fad78",
+    "src/main/networks/privacy-context.js": "10b07e3c4e35044401fde2bf11fe933c96a3fa014d752bb47601ae69954b5133",
+    "src/main/wallet/railgun-process-guards.js": "f7bbf6220212b62ae7791f9b47c145d95abec9e499b26f7bfe854e950281d958",
+    "src/main/wallet/railgun-process.js": "e9d5d03d8c15fe55ee29751d96d1034fd14ab2ab11726059a8d0ca3ac050d3a6",
+    "src/main/wallet/railgun-process-entry.js": "d17252bdfc9d7b93994eb4df04bdb4d6eff77fd89b1dc569a1b47ed1e0772f1e",
+    "docs/qualification/railgun-sepolia-history-2026-10-02.json": "20e1452bc0aed7991073515c77207c643288f4588c8e1e183c9f240f139f3df8",
+    "scripts/qualify-railgun-live.js": "fd5343948f544c3914af2b52cf24bde47c5ec2dcac9a83946b37c7ba02bf8fa8",
+    "src/main/networks/private-rpc.js": "2a624200f238aa13c133864b930740328eb24b1582e45c8412d5e5018006add6",
+    "src/main/networks/wallet-tor-transport.js": "4b6c7e844bef68879c62c3d307a801aa765d653f747e9b8658285eda874bfcc3",
+    "src/main/tor-manager.js": "14615cd29ba74ab002183c073424afcb7e09a590d8649ac14a41e5cfdffe2ff5"
+  },
+  "torBootstrapMs": 1213,
+  "rpcHosts": [
+    "sepolia.rpc.sentio.xyz"
+  ],
+  "publicPolicy": "8027a111745d275577e507ab39da5c09ba62d1d305c52742ecdfb5d4ff4d6a4a",
+  "generationId": "f942244bc81e7398699d651f93d91a9440d9692d2b67e13970a3dcb5f26eb043",
+  "initialThrough": 5859999,
+  "scannedThrough": 9959999
+}

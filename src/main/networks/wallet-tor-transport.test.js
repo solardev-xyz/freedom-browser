@@ -2,7 +2,7 @@ const { listen, proxy } = require('../../../test/helpers/tor-socks-fixture');
 const http = require('http');
 const https = require('https');
 const dns = require('dns');
-const { once } = require('events');
+const { once, EventEmitter } = require('events');
 const { createWalletTorTransport } = require('./wallet-tor-transport');
 const { connectIsolatedSocks } = require('./isolated-socks');
 const { createPrivacyScope } = require('./privacy-context');
@@ -14,6 +14,7 @@ describe('wallet Tor transport', () => {
   function handler(req, res) {
     seen.push({ url: req.url, headers: req.headers });
     if (req.url === '/stall') return;
+    if (req.url === '/close') res.setHeader('Connection', 'close');
     if (req.url === '/redirect') {
       res.writeHead(302, { location: 'http://leak.example/' });
       res.end();
@@ -118,6 +119,134 @@ describe('wallet Tor transport', () => {
     });
   });
 
+  test.each(['release', 'deadline', 'endpoint'])(
+    'drains queued requests after %s during stalled SOCKS negotiation',
+    async (reason) => {
+      await socks.close();
+      socks = await proxy(server.address().port, 'stall');
+      const handle = context();
+      const results = Promise.allSettled(
+        Array.from({ length: 8 }, () =>
+          transport.request(handle, 'http://rpc.example.test/stall', { timeoutMs: 100 })
+        )
+      );
+      await socks.greeting;
+      if (reason === 'release') transport.release(handle);
+      if (reason === 'endpoint') socks.controller.abort();
+      const settled = await results;
+      expect(settled).toHaveLength(8);
+      expect(settled.every((value) => value.status === 'rejected')).toBe(true);
+      expect(settled.map((value) => value.reason.code)).toEqual(
+        Array(8).fill(reason === 'deadline' ? 'TOR_REQUEST_TIMEOUT' : 'PRIVACY_REQUEST_ABORTED')
+      );
+      expect(seen).toHaveLength(0);
+    },
+    2000
+  );
+
+  test.each(['release', 'deadline', 'endpoint'])(
+    'drains queued requests after %s with occupied HTTP sockets',
+    async (reason) => {
+      const handle = context();
+      let arrived;
+      const both = new Promise((resolve) => {
+        arrived = resolve;
+      });
+      let count = 0;
+      server.on('request', () => {
+        if (++count === 2) arrived();
+      });
+      const results = Promise.allSettled(
+        Array.from({ length: 8 }, () =>
+          transport.request(handle, 'http://rpc.example.test/stall', { timeoutMs: 100 })
+        )
+      );
+      await both;
+      if (reason === 'release') transport.release(handle);
+      if (reason === 'endpoint') socks.controller.abort();
+      const settled = await results;
+      expect(settled.map((value) => value.reason.code)).toEqual(
+        Array(8).fill(reason === 'deadline' ? 'TOR_REQUEST_TIMEOUT' : 'PRIVACY_REQUEST_ABORTED')
+      );
+    },
+    2000
+  );
+
+  test('drains siblings when a reused TLS connection fails with requests queued', async () => {
+    const secureServer = https.createServer(fixture, handler);
+    const port = await listen(secureServer);
+    await socks.close();
+    socks = await proxy(port);
+    const trusted = createWalletTorTransport({
+      getEndpoint: () => socks.endpoint,
+      ca: fixture.cert,
+    });
+    const handle = context();
+    try {
+      await trusted.request(handle, 'https://rpc.example.test/warm');
+      const arrived = once(secureServer, 'request');
+      const results = Promise.allSettled(
+        Array.from({ length: 8 }, () =>
+          trusted
+            .request(handle, 'https://rpc.example.test/stall', { timeoutMs: 100 })
+            .catch((error) => {
+              trusted.release(handle);
+              throw error;
+            })
+        )
+      );
+      await arrived;
+      secureServer.closeAllConnections();
+      const settled = await results;
+      expect(settled.every((value) => value.status === 'rejected')).toBe(true);
+    } finally {
+      trusted.close();
+      secureServer.closeAllConnections();
+      await new Promise((resolve) => secureServer.close(resolve));
+    }
+  }, 2000);
+
+  test('drains queued requests after concurrent connection failures', async () => {
+    await socks.close();
+    socks = await proxy(server.address().port, 'bad-reply');
+    const handle = context();
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, () =>
+        transport.request(handle, 'http://rpc.example.test/', { timeoutMs: 100 }).catch((error) => {
+          transport.release(handle);
+          throw error;
+        })
+      )
+    );
+    expect(results.every((value) => value.status === 'rejected')).toBe(true);
+    expect(seen).toHaveLength(0);
+  }, 2000);
+
+  test('drains queued requests when both occupied sockets and their replacements fail', async () => {
+    await socks.close();
+    socks = await proxy(server.address().port, 'fail-replacements');
+    const handle = context();
+    let arrived;
+    const both = new Promise((resolve) => {
+      arrived = resolve;
+    });
+    let count = 0;
+    server.on('request', () => {
+      if (++count === 2) arrived();
+    });
+    const results = Promise.allSettled(
+      Array.from({ length: 8 }, () =>
+        transport.request(handle, 'http://rpc.example.test/stall', { timeoutMs: 200 })
+      )
+    );
+    await both;
+    server.closeAllConnections();
+    const settled = await results;
+    expect(settled.every((value) => value.status === 'rejected')).toBe(true);
+    expect(socks.records.length).toBeGreaterThanOrEqual(3);
+    expect(seen).toHaveLength(2);
+  }, 2000);
+
   test('lock destroys pools; redirects and oversized responses never complete', async () => {
     await expect(
       transport.request(context(), 'http://rpc.example.test/redirect')
@@ -142,6 +271,46 @@ describe('wallet Tor transport', () => {
       code: 'TOR_TRANSPORT_CLOSED',
     });
   });
+
+  test('accepts a complete response whose server closes the connection', async () => {
+    const result = await transport.request(context(), 'http://rpc.example.test/close');
+    expect(result.status).toBe(200);
+    expect(result.body.toString()).toBe('ok');
+  });
+
+  test.each(['release', 'deadline'])(
+    'settles %s even when a destroyed queued request emits no error',
+    async (reason) => {
+      const requests = [];
+      jest.spyOn(http, 'request').mockImplementation(() => {
+        const req = new EventEmitter();
+        req.write = jest.fn();
+        req.end = jest.fn();
+        req.destroy = jest.fn(() => {
+          req.destroyed = true;
+        });
+        requests.push(req);
+        return req;
+      });
+      const handle = context();
+      const results = Promise.allSettled(
+        Array.from({ length: 8 }, () =>
+          transport.request(handle, 'http://rpc.example.test/', { timeoutMs: 30 })
+        )
+      );
+      if (reason === 'release') transport.release(handle);
+      const settled = await results;
+      expect(settled.map((value) => value.reason.code)).toEqual(
+        Array(8).fill(reason === 'deadline' ? 'TOR_REQUEST_TIMEOUT' : 'PRIVACY_REQUEST_ABORTED')
+      );
+      for (const req of requests) {
+        expect(req.destroyed).toBe(true);
+        expect(() => req.emit('error', new Error('late socket assignment'))).not.toThrow();
+      }
+      expect(seen).toHaveLength(0);
+    },
+    2000
+  );
 
   test('restart uses a fresh SOCKS connection instead of old pooled sockets', async () => {
     const a = context();

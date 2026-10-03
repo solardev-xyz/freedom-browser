@@ -209,6 +209,32 @@ function createWalletTorTransport({
     inFlight += 1;
     try {
       const result = await new Promise((resolve, reject) => {
+        let settled = false,
+          receivedResponse;
+        const failure = () =>
+          privacyError(
+            combined.aborted
+              ? timeout.signal.aborted
+                ? 'TOR_REQUEST_TIMEOUT'
+                : 'PRIVACY_REQUEST_ABORTED'
+              : 'TOR_REQUEST_FAILED',
+            'Private HTTP request failed'
+          );
+        const finish = (error, value) => {
+          if (settled) return;
+          settled = true;
+          combined.removeEventListener('abort', abort);
+          if (error) reject(error);
+          else resolve(value);
+        };
+        const abort = () => {
+          // A queued ClientRequest may never receive a socket after its agent
+          // closes. Revoke it directly rather than relying on a future Node
+          // socket assignment to deliver the request's error event.
+          const error = failure();
+          req.destroy(error);
+          finish(error);
+        };
         const client = url.protocol === 'https:' ? https : http;
         const req = client.request(
           url,
@@ -220,9 +246,10 @@ function createWalletTorTransport({
             privacySignal: combined,
           },
           (response) => {
+            receivedResponse = response;
             if (response.statusCode >= 300 && response.statusCode < 400) {
               response.destroy();
-              reject(
+              finish(
                 privacyError(
                   'PRIVATE_REDIRECT_REFUSED',
                   'Private redirects require a new approved request'
@@ -235,7 +262,7 @@ function createWalletTorTransport({
               response.headers['content-encoding'] !== 'identity'
             ) {
               response.destroy();
-              reject(
+              finish(
                 privacyError('PRIVATE_ENCODING_REFUSED', 'Unsupported private response encoding')
               );
               return;
@@ -246,14 +273,14 @@ function createWalletTorTransport({
               size += chunk.length;
               if (size > 4 * 1024 * 1024) {
                 response.destroy();
-                reject(privacyError('PRIVATE_RESPONSE_TOO_LARGE', 'Private response is too large'));
+                finish(privacyError('PRIVATE_RESPONSE_TOO_LARGE', 'Private response is too large'));
               } else chunks.push(chunk);
             });
             response.on('error', () =>
-              reject(privacyError('TOR_RESPONSE_FAILED', 'Private response failed'))
+              finish(privacyError('TOR_RESPONSE_FAILED', 'Private response failed'))
             );
             response.on('end', () =>
-              resolve({
+              finish(null, {
                 status: response.statusCode,
                 headers: response.headers,
                 body: Buffer.concat(chunks),
@@ -261,18 +288,18 @@ function createWalletTorTransport({
             );
           }
         );
-        req.on('error', () =>
-          reject(
-            privacyError(
-              combined.aborted
-                ? timeout.signal.aborted
-                  ? 'TOR_REQUEST_TIMEOUT'
-                  : 'PRIVACY_REQUEST_ABORTED'
-                : 'TOR_REQUEST_FAILED',
-              'Private HTTP request failed'
-            )
-          )
-        );
+        // Retain the error consumer for errors delivered after cancellation.
+        req.on('error', () => finish(failure()));
+        req.once('close', () => {
+          // A Connection: close response can be complete before its readable
+          // end event is delivered. Let that event finish the body first.
+          if (!receivedResponse?.complete) finish(failure());
+        });
+        combined.addEventListener('abort', abort, { once: true });
+        if (combined.aborted) {
+          abort();
+          return;
+        }
         if (bytes) req.write(bytes);
         req.end();
       });

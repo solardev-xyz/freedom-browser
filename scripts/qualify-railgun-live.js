@@ -192,7 +192,21 @@ async function main() {
       const from = (status.to?.number ?? -1) + 1;
       const to = Math.min(anchor.number, from + (from < 5700000 ? 100000 : 20000) - 1);
       const rangeStarted = Date.now();
-      status = await publicAccount.advance({ to, anchor });
+      // Qualification-only last resort: preserve a failed observation if an
+      // underlying drain ever stops settling. Never turn a timeout into success
+      // or reuse a capability whose work has not drained.
+      const watchdog = setTimeout(() => {
+        report.passed = false;
+        report.failure = { stage, code: 'QUALIFICATION_SCAN_STALLED', from, to };
+        save();
+        cancelLive();
+      }, 600000);
+      try {
+        status = await publicAccount.advance({ to, anchor });
+        assert.ok(!failed);
+      } finally {
+        clearTimeout(watchdog);
+      }
       const range = { from, to, elapsedMs: Date.now() - rangeStarted };
       report.ranges.push(range);
       report.scannedThrough = to;
@@ -246,7 +260,7 @@ async function main() {
     report.passed = !failed;
   } catch (error) {
     report.passed = false;
-    report.failure = {
+    report.failure ??= {
       stage,
       code: /^[A-Z0-9_]+$/.test(error.code ?? '') ? error.code : error.name,
     };

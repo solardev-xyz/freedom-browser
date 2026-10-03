@@ -24,6 +24,10 @@ async function proxy(targetPort, behavior = 'normal') {
     let phase = 0;
     const record = { id: records.length };
     records.push(record);
+    if (behavior === 'fail-replacements' && record.id >= 2) {
+      socket.destroy();
+      return;
+    }
     function receive(chunk) {
       data = Buffer.concat([data, chunk]);
       if (phase === 0 && data.length >= 3) {
