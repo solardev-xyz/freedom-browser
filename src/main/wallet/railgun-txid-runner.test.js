@@ -61,10 +61,11 @@ beforeEach(() => {
     },
   };
   runner = createRailgunTxidRunner({
+    policy: '9'.repeat(64),
     handle,
     archive: '/engine.asar',
     session,
-    filename: '/fixture/txid.sqlite',
+    filename: '/fixture/txid-' + '9'.repeat(64) + '.sqlite',
     binding: '8'.repeat(64),
   });
   mockRun = async ({ broker }) => {
@@ -219,10 +220,13 @@ test('a public-store filename or unbranded worker is refused before dispatch is 
   const claim = jest.fn();
   for (const [filename, branded] of [
     ['/fixture/public.sqlite', true],
-    ['/fixture/txid.sqlite', false],
+    ['/fixture/txid.sqlite', true],
+    ['/fixture/txid-' + 'a'.repeat(64) + '.sqlite', true],
+    ['/fixture/txid-' + '9'.repeat(64) + '.sqlite', false],
   ])
     expect(() =>
       createRailgunTxidRunner({
+        policy: '9'.repeat(64),
         handle,
         archive: '/engine.asar',
         filename,

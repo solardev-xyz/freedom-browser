@@ -14,7 +14,7 @@ const STORES = [
 ];
 const RAILGUN_FILE = new RegExp(
   '^wallet-railgun-accounts/account-[0-9a-f]{64}/(?:[0-9a-f]{64}\\.json|' +
-    '(?:source|public)\\.sqlite|railgun-public-[0-9a-f]{64}/(?:(?:source|public)\\.sqlite|[0-9a-f]{64}\\.json)|railgun-cache-[0-9a-f]{64}/(?:wallet\\.sqlite|[0-9a-f]{64}\\.json))$'
+    '(?:source|public)\\.sqlite|railgun-public-[0-9a-f]{64}/(?:(?:source|public|txid-[0-9a-f]{64})\\.sqlite|[0-9a-f]{64}\\.json)|railgun-cache-[0-9a-f]{64}/(?:wallet\\.sqlite|[0-9a-f]{64}\\.json))$'
 );
 
 function createPrivacyProfileGuard({ handle, profile, seed }) {

@@ -48,7 +48,7 @@ async function main() {
     role: 'engine',
   };
   const handle = scope.getContext(subject),
-    filename = path.join(output, 'txid.sqlite');
+    filename = path.join(output, 'txid-' + '9'.repeat(64) + '.sqlite');
   let worker, runner, journal, storeId;
   const rootReceipts = new WeakMap();
   const issueRoot = (state) => {
@@ -102,6 +102,7 @@ async function main() {
     if (storeId) assert.equal(identity.instanceId, storeId);
     storeId = identity.instanceId;
     runner = require('../src/main/wallet/railgun-txid-runner').createRailgunTxidRunner({
+      policy: '9'.repeat(64),
       handle,
       archive,
       session: worker,
@@ -109,7 +110,11 @@ async function main() {
       binding: '8'.repeat(64),
     });
     journal = await require('../src/main/wallet/railgun-txid-journal').createRailgunTxidJournal({
-      handle: scope.getContext({ ...subject, role: 'storage', operation: 'railgun-txid-v1' }),
+      handle: scope.getContext({
+        ...subject,
+        role: 'storage',
+        operation: 'railgun-txid-v1:' + '9'.repeat(64),
+      }),
       directory: output,
       key: Buffer.alloc(32, 84),
       binding: '8'.repeat(64),

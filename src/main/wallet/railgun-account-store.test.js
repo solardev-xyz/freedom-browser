@@ -66,8 +66,62 @@ beforeEach(() => {
       expect(id).toBe(generationId);
       return keys([['wallet-store', 43]], use);
     },
+    withTxidGenerationKeys: async (_catalog, id, policy, use) => {
+      expect(id).toBe(generationId);
+      return keys([['txid-store', Number.parseInt(policy.slice(0, 2), 16)]], use);
+    },
   };
   mockEnrollments.add(enrollment);
+});
+test('versioned TXID mirrors coexist with active public stores and bind their own identity and policy key', async () => {
+  const directory = path.join(enrollment.directory, 'railgun-public-' + generationId);
+  fs.mkdirSync(directory);
+  current = {
+    active: {
+      id: generationId,
+      policy: '2'.repeat(64),
+      storeId: 'a'.repeat(64),
+      ledgerId: 'b'.repeat(64),
+    },
+    pending: null,
+  };
+  const publicCatalog = { inspect: async () => structuredClone(current) };
+  const options = { kind: 'txid', publicCatalog, generationId, txidPolicy: '4'.repeat(64) };
+  const first = await open({ ...options, create: true });
+  expect(first.filename).toBe(path.join(directory, 'txid-' + options.txidPolicy + '.sqlite'));
+  expect(remembered.has(first.filename)).toBe(true);
+  expect(first.storeId).not.toBe(current.active.storeId);
+  first.session.close();
+  await first.session.closed;
+  const second = await open({ ...options, txidPolicy: '5'.repeat(64), create: true });
+  expect(second.storeId).not.toBe(first.storeId);
+  second.session.close();
+  await second.session.closed;
+  const cold = await open({ ...options, expectedStoreId: first.storeId });
+  expect(cold.storeId).toBe(first.storeId);
+  cold.session.close();
+  await cold.session.closed;
+  await expect(open({ ...options, expectedStoreId: second.storeId })).rejects.toThrow();
+  await expect(open({ ...options, publicCatalog: undefined })).rejects.toThrow();
+});
+test('TXID policy allocation is bounded including interrupted staging attempts', async () => {
+  const directory = path.join(enrollment.directory, 'railgun-public-' + generationId);
+  fs.mkdirSync(directory);
+  const publicCatalog = { inspect: async () => structuredClone(current) };
+  for (let i = 0; i < 8; i++)
+    fs.writeFileSync(
+      path.join(directory, 'txid-' + String(i).repeat(64) + '.init-' + 'a'.repeat(32) + '.sqlite'),
+      'retained'
+    );
+  const options = {
+    kind: 'txid',
+    publicCatalog,
+    generationId,
+    txidPolicy: 'f'.repeat(64),
+    create: true,
+  };
+  await expect(open(options)).rejects.toThrow();
+  expect(fs.readdirSync(directory)).toHaveLength(8);
 });
 afterEach(async () => {
   opened.forEach((v) => v.session.close());

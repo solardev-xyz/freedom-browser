@@ -35,6 +35,8 @@ const {
   openRailgunAccountPublic,
   assertRailgunAccountPublic,
   getRailgunAccountPublicIdentity,
+  openRailgunAccountPublicTxidStore,
+  withRailgunAccountTxidJournalKey,
 } = require('./railgun-account-public');
 let scope, stores, controllers, opened, metadata, publicRecords, coordinatorOptions, journalPath;
 beforeEach(() => {
@@ -68,6 +70,14 @@ beforeEach(() => {
     profileGuard: { assert: jest.fn(), remember: jest.fn() },
     withPublicCatalogKey: async (use) => use({ 'public-catalog': Buffer.alloc(32, 6) }),
     withPublicGenerationKeys: async (_catalog, _id, use) => mockEnrollment.withPublicKeys(use),
+    withTxidGenerationKeys: jest.fn(async (_catalog, _id, _policy, use) => {
+      const key = Buffer.alloc(32, 7);
+      try {
+        return await use({ 'txid-journal': key });
+      } finally {
+        key.fill(0);
+      }
+    }),
     withPublicKeys: async (use) => {
       const key = Buffer.alloc(32, 5);
       try {
@@ -305,4 +315,73 @@ test('catalog write failure immediately revokes the public lifetime and both wor
   await new Promise((resolve) => setImmediate(resolve));
   expect(value.signal.aborted).toBe(true);
   expect(stores.every((v) => v.session.signal.aborted)).toBe(true);
+});
+test('TXID helpers require active public ownership and borrow only the matching journal key', async () => {
+  const value = await open(true);
+  const options = {
+    coordinator: value.coordinator,
+    enrollment: mockEnrollment,
+    policy: value.policy,
+    txidPolicy: 'e'.repeat(64),
+    create: true,
+  };
+  await expect(openRailgunAccountPublicTxidStore(options)).rejects.toThrow();
+  await value.publish();
+  const txid = await openRailgunAccountPublicTxidStore(options);
+  expect(mockOpen.mock.calls.at(-1)[0]).toMatchObject({
+    kind: 'txid',
+    generationId: value.generationId,
+    txidPolicy: options.txidPolicy,
+    create: true,
+  });
+  let borrowed;
+  const result = await withRailgunAccountTxidJournalKey(
+    value.coordinator,
+    mockEnrollment,
+    value.policy,
+    options.txidPolicy,
+    async (key) => {
+      borrowed = key;
+      expect(key[0]).toBe(7);
+      return 'done';
+    }
+  );
+  expect(result).toBe('done');
+  expect(borrowed.every((v) => v === 0)).toBe(true);
+  expect(mockEnrollment.withTxidGenerationKeys.mock.calls.at(-1).slice(1, 3)).toEqual([
+    value.generationId,
+    options.txidPolicy,
+  ]);
+  txid.session.close();
+  await txid.session.closed;
+  await value.close();
+  await expect(
+    withRailgunAccountTxidJournalKey(
+      value.coordinator,
+      mockEnrollment,
+      value.policy,
+      options.txidPolicy,
+      () => {}
+    )
+  ).rejects.toThrow();
+});
+test('a TXID store arriving after public revocation is closed before the helper rejects', async () => {
+  const value = await open(true);
+  await value.publish();
+  const original = mockOpen.getMockImplementation();
+  mockOpen.mockImplementation(async (options) => {
+    const result = await original(options);
+    await value.close();
+    return result;
+  });
+  await expect(
+    openRailgunAccountPublicTxidStore({
+      coordinator: value.coordinator,
+      enrollment: mockEnrollment,
+      policy: value.policy,
+      txidPolicy: 'e'.repeat(64),
+      create: true,
+    })
+  ).rejects.toThrow();
+  expect(stores.at(-1).session.signal.aborted).toBe(true);
 });

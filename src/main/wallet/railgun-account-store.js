@@ -13,6 +13,7 @@ const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { startRailgunSessionWorker } = require('./railgun-session-worker');
 const { createRailgunSourceLedger, railgunSourceBinding } = require('./railgun-source-ledger');
 const { claimRailgunAccountStore } = require('./railgun-store-owners');
+const { railgunTxidBinding } = require('./railgun-txid-policy');
 const fail = () =>
   Object.assign(new Error('Railgun account store requires recovery'), {
     code: 'RAILGUN_ACCOUNT_STORE_REFUSED',
@@ -39,11 +40,17 @@ async function openRailgunAccountStore({
   kind,
   generationId,
   publicCatalog,
+  txidPolicy,
   create = false,
   expectedStoreId,
 }) {
   check(isRailgunAccountEnrollment(enrollment));
-  check(typeof create === 'boolean' && ['source', 'public', 'wallet'].includes(kind));
+  check(typeof create === 'boolean' && ['source', 'public', 'wallet', 'txid'].includes(kind));
+  check(
+    kind === 'txid'
+      ? publicCatalog && typeof txidPolicy === 'string' && /^[0-9a-f]{64}$/.test(txidPolicy)
+      : txidPolicy === undefined
+  );
   check(
     kind === 'wallet' || publicCatalog !== undefined
       ? typeof generationId === 'string' && /^[0-9a-f]{64}$/.test(generationId)
@@ -64,7 +71,8 @@ async function openRailgunAccountStore({
         ? path.join(enrollment.directory, 'railgun-public-' + generationId)
         : enrollment.directory;
   realDirectory(directory);
-  const filename = path.join(directory, kind + '.sqlite');
+  const basename = kind === 'txid' ? 'txid-' + txidPolicy : kind;
+  const filename = path.join(directory, basename + '.sqlite');
   const release = claimRailgunAccountStore(filename);
   let worker, ledger;
   const active = () => {
@@ -82,7 +90,12 @@ async function openRailgunAccountStore({
         format: 'paged-v2',
         filename: name,
         key,
-        binding: kind === 'source' ? railgunSourceBinding(enrollment.binding) : enrollment.binding,
+        binding:
+          kind === 'source'
+            ? railgunSourceBinding(enrollment.binding)
+            : kind === 'txid'
+              ? railgunTxidBinding(enrollment.binding)
+              : enrollment.binding,
         create: initialize,
       },
       createProvider: ({ signal }) => ({
@@ -113,7 +126,13 @@ async function openRailgunAccountStore({
   const use = async (keys) => {
     const key =
       keys[
-        kind === 'source' ? 'source-ledger' : kind === 'public' ? 'public-store' : 'wallet-store'
+        kind === 'source'
+          ? 'source-ledger'
+          : kind === 'public'
+            ? 'public-store'
+            : kind === 'txid'
+              ? 'txid-store'
+              : 'wallet-store'
       ];
     active();
     let generation;
@@ -125,14 +144,23 @@ async function openRailgunAccountStore({
     };
     if (kind === 'wallet' || publicCatalog) {
       generation = await selectedGeneration();
-      check(!create || generation.storeId === undefined);
+      check(kind === 'txid' || !create || generation.storeId === undefined);
     }
     check(create ? !fileExists(filename) : fileExists(filename));
     let initializedId;
     if (create) {
+      if (kind === 'txid') {
+        const policies = new Set(
+          fs
+            .readdirSync(directory)
+            .map((name) => /^txid-([0-9a-f]{64})(?:\.sqlite|\.init-)/.exec(name)?.[1])
+            .filter(Boolean)
+        );
+        check(policies.has(txidPolicy) || policies.size < 8);
+      }
       // Retain interrupted initializers for review rather than deleting them.
       // Bound the number before allocating another encrypted file.
-      const prefix = kind + '.init-';
+      const prefix = basename + '.init-';
       check(fs.readdirSync(directory).filter((name) => name.startsWith(prefix)).length < 8);
       const staging = path.join(directory, prefix + randomBytes(16).toString('hex') + '.sqlite');
       initializedId = await open(staging, key, true);
@@ -161,7 +189,8 @@ async function openRailgunAccountStore({
     if (expectedStoreId !== undefined) check(storeId === expectedStoreId);
     if (generation) {
       check(JSON.stringify(await selectedGeneration()) === JSON.stringify(generation));
-      const expected = kind === 'source' ? generation.ledgerId : generation.storeId;
+      const expected =
+        kind === 'source' ? generation.ledgerId : kind === 'txid' ? undefined : generation.storeId;
       if (expected !== undefined) check(storeId === expected);
     }
     active();
@@ -171,9 +200,11 @@ async function openRailgunAccountStore({
   try {
     const result = await (kind === 'wallet'
       ? enrollment.withGenerationKeys(generationId, use)
-      : publicCatalog
-        ? enrollment.withPublicGenerationKeys(publicCatalog, generationId, use)
-        : enrollment.withPublicKeys(use));
+      : kind === 'txid'
+        ? enrollment.withTxidGenerationKeys(publicCatalog, generationId, txidPolicy, use)
+        : publicCatalog
+          ? enrollment.withPublicGenerationKeys(publicCatalog, generationId, use)
+          : enrollment.withPublicKeys(use));
     active();
     worker.closed.then(release);
     return result;

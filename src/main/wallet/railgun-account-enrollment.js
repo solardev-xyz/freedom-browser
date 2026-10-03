@@ -244,6 +244,21 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       directory(generation.directory);
       return withKeys(['source-ledger', 'public-store', 'scan-journal'], id, use);
     },
+    async withTxidGenerationKeys(publicCatalog, id, policy, use) {
+      active();
+      check(
+        isRailgunPublicCatalog(publicCatalog) &&
+          publicCatalog.binding === binding &&
+          publicCatalog.directory === accountDirectory &&
+          typeof policy === 'string' &&
+          /^[0-9a-f]{64}$/.test(policy)
+      );
+      const generation = publicCatalog.selected(id);
+      publicCatalog.assertActive(id, generation.policy);
+      directory(generation.directory);
+      check(typeof generation.storeId === 'string' && /^[0-9a-f]{64}$/.test(generation.storeId));
+      return withKeys(['txid-store', 'txid-journal'], [id, generation.storeId, policy], use);
+    },
     async withGenerationKeys(id, use) {
       active();
       check(typeof id === 'string' && /^[0-9a-f]{64}$/.test(id));

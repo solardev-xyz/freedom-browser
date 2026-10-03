@@ -21,7 +21,7 @@ const freeze = (v) => {
   }
   return v;
 };
-function createRailgunTxidRunner({ handle, archive, session, filename, binding }) {
+function createRailgunTxidRunner({ handle, archive, session, filename, binding, policy }) {
   const context = getPrivacyContext(handle),
     subject = context.subject;
   check(
@@ -36,7 +36,9 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding }
   check(
     typeof filename === 'string' &&
       path.isAbsolute(filename) &&
-      path.basename(filename) === 'txid.sqlite'
+      typeof policy === 'string' &&
+      /^[0-9a-f]{64}$/.test(policy) &&
+      path.basename(filename) === 'txid-' + policy + '.sqlite'
   );
   assertRailgunSessionWorker(session, { handle, filename, binding });
   archive = verifyRailgunEngineRuntime(archive);

@@ -76,7 +76,7 @@ beforeEach(() => {
     deployment: 'sepolia',
     chainId: 11155111,
     role: 'storage',
-    operation: 'railgun-txid-v1',
+    operation: 'railgun-txid-v1:' + 'c'.repeat(64),
   });
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-txid-journal-'));
   filename = getPrivacyStoragePath(handle, directory);

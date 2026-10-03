@@ -59,7 +59,7 @@ async function main() {
     deployment: 'sepolia',
     role: 'engine',
   });
-  const filename = path.join(output, 'txid.sqlite');
+  const filename = path.join(output, 'txid-' + '9'.repeat(64) + '.sqlite');
   let worker,
     runner,
     storeId,
@@ -97,6 +97,7 @@ async function main() {
     if (storeId) assert.equal(identity.instanceId, storeId);
     storeId = identity.instanceId;
     runner = require('../src/main/wallet/railgun-txid-runner').createRailgunTxidRunner({
+      policy: '9'.repeat(64),
       handle,
       archive,
       session: worker,

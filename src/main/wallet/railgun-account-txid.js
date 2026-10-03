@@ -1,0 +1,254 @@
+/** Enrolled, public-data-only TXID mirror. This lifetime owns the third worker
+ * while wallet scanning is closed. Checkpoints are diagnostics, never POI or
+ * spending authority. No caller supplies rows, roots, keys or service URLs.
+ */
+const fs = require('fs'),
+  path = require('path');
+const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
+const { claimRailgunAccountPhase } = require('./railgun-account-phase');
+const {
+  getRailgunAccountPublicIdentity,
+  openRailgunAccountPublicTxidStore,
+  withRailgunAccountTxidJournalKey,
+} = require('./railgun-account-public');
+const { getRailgunPublicPolicy } = require('./railgun-public-policy');
+const { getRailgunTxidPolicy, railgunTxidBinding } = require('./railgun-txid-policy');
+const { createRailgunTxidRunner } = require('./railgun-txid-runner');
+const { createRailgunTxidJournal } = require('./railgun-txid-journal');
+const { createRailgunTxidRootSource } = require('./railgun-txid-root');
+const { createRailgunPublicServices } = require('./railgun-public-services');
+const { getPrivacyStoragePath } = require('./privacy-storage');
+const fail = () =>
+  Object.assign(new Error('Railgun account TXID state requires recovery'), {
+    code: 'RAILGUN_ACCOUNT_TXID_REFUSED',
+  });
+const check = (v) => {
+  if (!v) throw fail();
+};
+function exists(filename) {
+  try {
+    const stat = fs.lstatSync(filename);
+    check(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+async function openRailgunAccountTxid({ enrollment, archive, coordinator, create = false }) {
+  check(typeof create === 'boolean');
+  const publicPolicy = getRailgunPublicPolicy(archive),
+    publicIdentity = getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
+    policy = getRailgunTxidPolicy(archive),
+    binding = railgunTxidBinding(enrollment.binding),
+    phase = claimRailgunAccountPhase(enrollment, 'txid');
+  let scope, opened, runner, journal, roots, services, work, onAbort;
+  const watched = [];
+  let closed = false,
+    draining,
+    serviceLatestIndex = null;
+  const active = () => {
+    check(!closed && !scope.signal.aborted);
+    phase.assertCurrent();
+    getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy);
+  };
+  const stop = () => {
+    closed = true;
+    if (onAbort) for (const signal of watched) signal.removeEventListener('abort', onAbort);
+    scope?.close();
+    journal?.close();
+    roots?.close();
+    services?.close();
+    runner?.close();
+    opened?.session.close();
+  };
+  const close = () => {
+    if (draining) return draining;
+    stop();
+    draining = (async () => {
+      if (work) await work.catch(() => {});
+      stop();
+      if (opened) await opened.session.closed;
+      phase.release();
+    })();
+    return draining;
+  };
+  const validate = (state) => roots.acquire({ index: state.count - 1, root: state.root });
+  async function applyAndComplete(token, payload) {
+    await runner.run('apply', payload);
+    // Root acquisition can itself exceed the compute receipt lifetime. Replay
+    // the already authenticated page after refreshing the root, so both final
+    // receipts are fresh. The runner verifies the whole idempotent page.
+    const root = await validate(payload.expected);
+    const applied = await runner.run('apply', payload);
+    await journal.complete(token, applied.receipt, root);
+  }
+  async function restore() {
+    const current = await journal.readState();
+    active();
+    if (current.pending) {
+      const payload = current.pending.work;
+      const receipt = await validate(payload.expected);
+      const inspected = await runner.run('inspect', {});
+      const token = await journal.resume(inspected.receipt, receipt);
+      await applyAndComplete(token, payload);
+    } else {
+      const receipt = current.checkpoint ? await validate(current.checkpoint.state) : undefined;
+      const inspected = await runner.run('inspect', {});
+      await journal.revalidate(inspected.receipt, receipt);
+    }
+    active();
+  }
+  async function advance() {
+    // Opening already recovered the journal. Every successful page is complete;
+    // a page failure closes this lifetime and requires another opening.
+    const inspected = await runner.run('inspect', {}),
+      base = inspected.value.state,
+      latest = await services.latestTxid();
+    serviceLatestIndex = latest.index;
+    active();
+    check(latest.index + 1 >= base.count);
+    const target = Math.min(latest.index + 1, 8000);
+    if (target === base.count) return diagnostic();
+    const page = await services.txidPage(base.after);
+    active();
+    const rows = page.transactions.slice(0, target - base.count);
+    check(rows.length > 0);
+    // A service round trip may outlive a compute receipt. Acquire root evidence
+    // first, then repeat the deterministic read-only projection before prepare.
+    const projected = await runner.run('project', { base, rows });
+    const expected = projected.value.state;
+    const root = await validate(expected);
+    const fresh = await runner.run('project', { base, rows });
+    check(JSON.stringify(fresh.value.state) === JSON.stringify(expected));
+    const payload = { base, rows, expected };
+    const token = await journal.prepare(payload, fresh.receipt, root);
+    await applyAndComplete(token, payload);
+    active();
+    return diagnostic();
+  }
+  async function diagnostic() {
+    const value = await journal.readState();
+    return Object.freeze({
+      ...value,
+      capacityReached: value.checkpoint?.state.count === 8000,
+      serviceLatestIndex,
+    });
+  }
+  async function exclusive(run) {
+    active();
+    check(!work);
+    work = Promise.resolve().then(run);
+    try {
+      const value = await work;
+      active();
+      return value;
+    } catch (error) {
+      await close();
+      throw error;
+    } finally {
+      work = null;
+    }
+  }
+  try {
+    const context = getPrivacyContext(enrollment.getContext('engine'));
+    scope = createPrivacyScope({
+      profileId: context.profileId,
+      signal: AbortSignal.any([enrollment.signal, coordinator.signal]),
+      isCurrent: () => {
+        phase.assertCurrent();
+        return true;
+      },
+    });
+    const serviceHandle = scope.getContext({
+      kind: 'service',
+      principal: 'railgun-public-sync',
+      protocol: 'railgun',
+      deployment: 'sepolia',
+      chainId: 11155111,
+      role: 'public-services',
+    });
+    roots = createRailgunTxidRootSource(serviceHandle);
+    services = createRailgunPublicServices(serviceHandle);
+    const directory = coordinator.identity.directory;
+    const journalHandle = scope.getContext({
+      ...context.subject,
+      role: 'storage',
+      operation: 'railgun-txid-v1:' + policy,
+    });
+    const filename = path.join(directory, 'txid-' + policy + '.sqlite'),
+      journalFile = getPrivacyStoragePath(journalHandle, directory);
+    enrollment.profileGuard.assert(filename);
+    enrollment.profileGuard.assert(journalFile);
+    const hasStore = exists(filename),
+      hasJournal = exists(journalFile);
+    check(create || (hasStore && hasJournal));
+    check(hasStore || !hasJournal);
+    opened = await openRailgunAccountPublicTxidStore({
+      coordinator,
+      enrollment,
+      policy: publicPolicy,
+      txidPolicy: policy,
+      create: !hasStore,
+    });
+    active();
+    runner = createRailgunTxidRunner({
+      handle: scope.getContext({ ...context.subject, operation: undefined }),
+      archive,
+      session: opened.session,
+      filename: opened.filename,
+      binding,
+      policy,
+    });
+    await withRailgunAccountTxidJournalKey(
+      coordinator,
+      enrollment,
+      publicPolicy,
+      policy,
+      async (key) => {
+        journal = await createRailgunTxidJournal({
+          handle: journalHandle,
+          directory,
+          key,
+          profileGuard: enrollment.profileGuard,
+          binding,
+          publicIdentity,
+          policy,
+          session: opened.session,
+          assertResult: runner.assertResult,
+          assertRoot: roots.assertRoot,
+          create: !hasJournal,
+        });
+      }
+    );
+    await restore();
+    onAbort = () => {
+      close().catch(() => {});
+    };
+    for (const signal of [
+      scope.signal,
+      opened.session.signal,
+      runner.signal,
+      journal.signal,
+      roots.signal,
+      services.signal,
+    ]) {
+      check(signal instanceof AbortSignal && !signal.aborted);
+      watched.push(signal);
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    active();
+    return Object.freeze({
+      close,
+      signal: scope.signal,
+      policy,
+      publicIdentity,
+      advance: () => exclusive(advance),
+      inspect: () => exclusive(diagnostic),
+    });
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+module.exports = { openRailgunAccountTxid };

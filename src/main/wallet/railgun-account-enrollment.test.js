@@ -3,6 +3,12 @@ const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
 let mockProfile, mockParent, mockIdentity, mockVault, mockMnemonic;
+const mockCoordinators = new WeakSet();
+jest.mock('./railgun-scan-coordinator', () => ({
+  assertRailgunScanCoordinator: (v) => {
+    if (!mockCoordinators.has(v)) throw Error('coordinator');
+  },
+}));
 jest.mock('../profile-resolver', () => ({ getActiveProfile: () => mockProfile }));
 jest.mock('./privacy-session', () => ({ openPrivacySession: () => mockParent }));
 jest.mock('../identity/vault', () => ({
@@ -291,4 +297,63 @@ test('public generation keys are catalog-bound, separated from legacy keys and w
   });
   entry.close();
   expect(catalog.signal.aborted).toBe(true);
+});
+test('TXID keys require active catalog ownership and separate policy, public store and account generation', async () => {
+  const entry = await open(true);
+  const { createRailgunPublicCatalog } = require('./railgun-public-catalog');
+  const catalog = await entry.withPublicCatalogKey((keys) =>
+    createRailgunPublicCatalog({
+      handle: entry.getContext('storage', 'railgun-public-catalog-v1'),
+      directory: entry.directory,
+      binding: entry.binding,
+      key: keys['public-catalog'],
+      create: true,
+      profileGuard: entry.profileGuard,
+    })
+  );
+  async function publish(generation, storeId) {
+    const coordinator = {
+      identity: {
+        directory: generation.directory,
+        binding: entry.binding,
+        policy: generation.policy,
+        ledgerId: '4'.repeat(64),
+      },
+      assertSnapshot: () => ({
+        to: { number: 10 },
+        source: { ledgerId: '4'.repeat(64) },
+        state: { storeId },
+      }),
+    };
+    mockCoordinators.add(coordinator);
+    await catalog.publish(generation, coordinator, {});
+  }
+  const first = await catalog.begin('2'.repeat(64)),
+    policy = 'a'.repeat(64);
+  await expect(entry.withTxidGenerationKeys(catalog, first.id, policy, () => {})).rejects.toThrow();
+  await publish(first, '5'.repeat(64));
+  let firstKeys, buffers;
+  await entry.withTxidGenerationKeys(catalog, first.id, policy, (keys) => {
+    buffers = Object.values(keys);
+    firstKeys = buffers.map((k) => k.toString('hex'));
+  });
+  expect(new Set(firstKeys).size).toBe(2);
+  expect(buffers.every((k) => k.every((v) => v === 0))).toBe(true);
+  await entry.withTxidGenerationKeys(catalog, first.id, 'b'.repeat(64), (keys) =>
+    expect(new Set([...firstKeys, ...Object.values(keys).map((k) => k.toString('hex'))]).size).toBe(
+      4
+    )
+  );
+  await expect(
+    entry.withTxidGenerationKeys({ ...catalog }, first.id, policy, () => {})
+  ).rejects.toThrow();
+  const second = await catalog.begin('3'.repeat(64));
+  await publish(second, '6'.repeat(64));
+  await expect(entry.withTxidGenerationKeys(catalog, first.id, policy, () => {})).rejects.toThrow();
+  await entry.withTxidGenerationKeys(catalog, second.id, policy, (keys) =>
+    expect(new Set([...firstKeys, ...Object.values(keys).map((k) => k.toString('hex'))]).size).toBe(
+      4
+    )
+  );
+  catalog.close();
 });

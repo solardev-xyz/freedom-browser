@@ -277,8 +277,48 @@ function getRailgunAccountPublicIdentity(coordinator, enrollment, policy) {
   const { generationId, sourceId, publicId } = coordinators.get(coordinator);
   return Object.freeze({ generationId, sourceId, publicId });
 }
+async function openRailgunAccountPublicTxidStore({
+  coordinator,
+  enrollment,
+  policy,
+  txidPolicy,
+  create,
+}) {
+  assertRailgunAccountPublic(coordinator, enrollment, policy);
+  const entry = coordinators.get(coordinator);
+  const opened = await openRailgunAccountStore({
+    enrollment,
+    kind: 'txid',
+    publicCatalog: entry.catalog,
+    generationId: entry.generationId,
+    txidPolicy,
+    create,
+  });
+  try {
+    assertRailgunAccountPublic(coordinator, enrollment, policy);
+    return opened;
+  } catch (error) {
+    opened.session.close();
+    await opened.session.closed;
+    throw error;
+  }
+}
+async function withRailgunAccountTxidJournalKey(coordinator, enrollment, policy, txidPolicy, use) {
+  assertRailgunAccountPublic(coordinator, enrollment, policy);
+  const entry = coordinators.get(coordinator);
+  const result = await enrollment.withTxidGenerationKeys(
+    entry.catalog,
+    entry.generationId,
+    txidPolicy,
+    (keys) => use(keys['txid-journal'])
+  );
+  assertRailgunAccountPublic(coordinator, enrollment, policy);
+  return result;
+}
 module.exports = {
   openRailgunAccountPublic,
   assertRailgunAccountPublic,
   getRailgunAccountPublicIdentity,
+  openRailgunAccountPublicTxidStore,
+  withRailgunAccountTxidJournalKey,
 };

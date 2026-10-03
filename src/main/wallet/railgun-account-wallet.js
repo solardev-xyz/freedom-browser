@@ -17,6 +17,7 @@ const { assertRailgunScanCoordinator } = require('./railgun-scan-coordinator');
 const { getRailgunWalletPolicy } = require('./railgun-wallet-policy');
 const { getRailgunAccountPublicIdentity } = require('./railgun-account-public');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
+const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const fail = () =>
   Object.assign(new Error('Railgun wallet requires recovery'), {
     code: 'RAILGUN_ACCOUNT_WALLET_REFUSED',
@@ -70,6 +71,7 @@ async function openRailgunAccountWallet({
   check(walletId === enrollment.descriptor.walletId);
   assertRailgunScanCoordinator(coordinator, handle);
   const runner = createRailgunAccountRunner({ identity, archive, policy });
+  const phase = claimRailgunAccountPhase(enrollment, 'wallet');
   let generation, candidate, walletSession, coverageStore, journal, scan, lifetime, onAbort;
   const close = async () => {
     if (lifetime && onAbort) lifetime.removeEventListener('abort', onAbort);
@@ -80,6 +82,7 @@ async function openRailgunAccountWallet({
     // exit. Drain that runner too, not only the separate storage worker.
     if (scan) await scan.catch(() => {});
     if (walletSession) await walletSession.closed;
+    phase.release();
   };
   try {
     if (mode === 'new') {

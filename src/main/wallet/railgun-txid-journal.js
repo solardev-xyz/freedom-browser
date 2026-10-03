@@ -141,7 +141,7 @@ async function createRailgunTxidJournal({
       subject.deployment === 'sepolia' &&
       subject.chainId === 11155111 &&
       subject.role === 'storage' &&
-      subject.operation === 'railgun-txid-v1'
+      subject.operation === 'railgun-txid-v1:' + policy
   );
   check(
     typeof directory === 'string' &&

@@ -39,6 +39,7 @@ const fs = require('fs'),
   path = require('path');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { getPrivacyStoragePath } = require('./privacy-storage');
+const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const {
   openRailgunAccountWallet,
   getRailgunAccountWalletPolicy,
@@ -57,6 +58,7 @@ beforeEach(() => {
   scope = createPrivacyScope({ profileId: 'fixture', signal: new AbortController().signal });
   mockIdentity = { descriptor: { walletId: '4'.repeat(64), accountIndex: 0 } };
   mockEnrollment = {
+    directory,
     descriptor: mockIdentity.descriptor,
     binding: '5'.repeat(64),
     signal: scope.signal,
@@ -170,6 +172,31 @@ afterEach(async () => {
   mockSession.close();
   await mockSession.closed;
   scope.close();
+});
+test('a TXID phase refuses wallet opening before a generation or worker changes', async () => {
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'txid');
+  try {
+    await expect(openRailgunAccountWallet({ ...options, mode: 'new' })).rejects.toThrow();
+    expect(mockOpenStore).not.toHaveBeenCalled();
+    expect(mockEnrollment.catalog.begin).not.toHaveBeenCalled();
+  } finally {
+    phase.release();
+  }
+});
+test('an open wallet view holds its phase until its storage worker has exited', async () => {
+  const value = await openRailgunAccountWallet(options);
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+  let finish;
+  mockSession.closed = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const closing = value.close();
+  await Promise.resolve();
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+  finish();
+  await closing;
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'txid');
+  phase.release();
 });
 test('foreign or obsolete enrolled public authority refuses before opening any wallet store', async () => {
   mockAssertPublic.mockImplementationOnce(() => {

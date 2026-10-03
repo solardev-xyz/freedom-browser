@@ -1,6 +1,6 @@
 /** Read-only enrolled Railgun acquisition through managed Tor. Uses an existing
  * disposable qualification vault; never creates/replaces a vault or submits a tx.
- * electron script archive profile anchor-report new-output mode [range-limit]
+ * electron script archive profile anchor-report new-output mode [range-limit] [txid-page-limit]
  * mode: enroll (first account), new (rebuild), pending (resume), active (continue).
  */
 const fs = require('fs'),
@@ -16,10 +16,10 @@ process.on('unhandledRejection', () => {
   cancelLive();
 });
 async function main() {
-  const [archive, profileDirectory, anchorFilename, output, mode, limitText] =
+  const [archive, profileDirectory, anchorFilename, output, mode, limitText, txidText] =
     process.argv.slice(2);
   assert.ok(
-    process.argv.length <= 8 &&
+    process.argv.length <= 9 &&
       [archive, profileDirectory, anchorFilename, output].every(
         (v) => typeof v === 'string' && path.isAbsolute(v)
       )
@@ -27,6 +27,8 @@ async function main() {
   assert.ok(['enroll', 'new', 'pending', 'active'].includes(mode));
   const limit = limitText === undefined ? 1000 : Number(limitText);
   assert.ok(Number.isSafeInteger(limit) && limit >= 1 && limit <= 2000);
+  const txidLimit = txidText === undefined ? 0 : Number(txidText);
+  assert.ok(Number.isSafeInteger(txidLimit) && txidLimit >= 0 && txidLimit <= 100);
   assert.ok(!app.isPackaged && process.env.FREEDOM_WALLET_TOR_EXPERIMENT === '1');
   assert.ok(
     !process.env.FREEDOM_IDENTITY_DATA && fs.realpathSync(profileDirectory) === profileDirectory
@@ -88,6 +90,7 @@ async function main() {
     enrollment,
     publicAccount,
     wallet,
+    txid,
     rpc,
     stage = 'unlock',
     failed = false;
@@ -101,6 +104,15 @@ async function main() {
       'src/main/networks/private-rpc.js',
       'src/main/networks/wallet-tor-transport.js',
       'src/main/tor-manager.js',
+      ...(txidLimit
+        ? [
+            'src/main/wallet/railgun-account-txid.js',
+            'src/main/wallet/railgun-account-phase.js',
+            ...require('../src/main/wallet/railgun-txid-policy').SOURCES.map(
+              (name) => 'src/main/wallet/' + name + '.js'
+            ),
+          ]
+        : []),
     ]),
   ];
   const hashes = () =>
@@ -225,6 +237,75 @@ async function main() {
       ]);
       assert.equal(abi.decodeFunctionResult('merkleRoot', result)[0], plan.state.trees.at(-1).root);
       report.publicState = plan.state;
+      if (txidLimit) {
+        stage = 'txid';
+        const openTxid = (create) =>
+          require('../src/main/wallet/railgun-account-txid').openRailgunAccountTxid({
+            enrollment,
+            archive,
+            coordinator: publicAccount.coordinator,
+            create,
+          });
+        const bounded = async (run) => {
+          const watchdog = setTimeout(() => {
+            report.passed = false;
+            report.failure = { stage, code: 'QUALIFICATION_TXID_STALLED' };
+            save();
+            cancelLive();
+          }, 600000);
+          try {
+            return await run();
+          } finally {
+            clearTimeout(watchdog);
+          }
+        };
+        txid = await bounded(() => openTxid(true));
+        const initial = await txid.inspect();
+        report.txid = {
+          policy: txid.policy,
+          publicIdentity: txid.publicIdentity,
+          initialCount: initial.checkpoint?.state.count ?? 0,
+          pages: [],
+          coldReopens: 0,
+          independentEventCoverage: false,
+          globalTxidCompleteness: false,
+          spendingEnabled: false,
+        };
+        for (let n = 0; n < txidLimit; n++) {
+          const pageStarted = Date.now();
+          const value = await bounded(() => txid.advance());
+          assert.ok(value.checkpoint && !value.pending);
+          const page = {
+            count: value.checkpoint.state.count,
+            root: value.checkpoint.state.root,
+            transcript: value.checkpoint.state.transcript,
+            serviceLatestIndex: value.serviceLatestIndex,
+            capacityReached: value.capacityReached,
+            elapsedMs: Date.now() - pageStarted,
+          };
+          report.txid.pages.push(page);
+          save();
+          console.log(JSON.stringify({ txid: page }));
+          if (n === 0 || n === 1) {
+            await bounded(() => txid.close());
+            txid = await bounded(() => openTxid(false));
+            const cold = await txid.inspect();
+            assert.deepEqual(cold.checkpoint, value.checkpoint);
+            report.txid.coldReopens++;
+          }
+          if (page.capacityReached || page.count === page.serviceLatestIndex + 1) break;
+        }
+        const final = await txid.inspect();
+        report.txid.checkpoint = final.checkpoint;
+        await bounded(() => txid.close());
+        txid = await bounded(() => openTxid(false));
+        assert.deepEqual((await txid.inspect()).checkpoint, final.checkpoint);
+        report.txid.coldReopens++;
+        await bounded(() => txid.close());
+        txid = null;
+        report.txid.completed = true;
+        save();
+      }
       stage = 'wallet';
       const walletPolicy =
         require('../src/main/wallet/railgun-account-wallet').getRailgunAccountWalletPolicy({
@@ -267,6 +348,7 @@ async function main() {
     console.error(JSON.stringify(report.failure));
   } finally {
     await wallet?.close();
+    await txid?.close();
     await publicAccount?.close();
     rpc?.release();
     enrollment?.close();
