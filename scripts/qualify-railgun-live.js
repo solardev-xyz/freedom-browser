@@ -122,6 +122,9 @@ async function main() {
       'src/main/wallet/railgun-private-policy.js',
       'src/main/wallet/railgun-shield-pins.json',
       'src/main/wallet/railgun-private-reservations.js',
+      'src/main/wallet/railgun-private-receive.js',
+      'src/main/wallet/railgun-private-receive-job.js',
+      'src/main/wallet/railgun-private-results.js',
       'src/main/networks/private-rpc.js',
       'src/main/networks/wallet-tor-transport.js',
       'src/main/tor-manager.js',
@@ -438,6 +441,31 @@ async function main() {
           assert.equal(after.checkpointHash, before.checkpointHash);
           assert.deepEqual(after.ownedPoi, before.ownedPoi);
           assert.deepEqual(after.trees, before.trees);
+          let receiver;
+          if (kind === 'railgun-private-transfer') {
+            const p = prepared.preparation;
+            const checked =
+              await require('../src/main/wallet/railgun-private-receive').verifyRailgunPrivateReceiver(
+                {
+                  identity,
+                  enrollment,
+                  archive,
+                  transaction: p.transaction,
+                  expected: p.expected,
+                  recipient: p.recipient,
+                  amount: p.amount,
+                }
+              );
+            assert.equal(checked.recipientVerified, true);
+            assert.equal(checked.transactionDigest, p.transactionDigest);
+            assert.equal(checked.spendingEnabled, false);
+            assert.equal(checked.inputOwnershipVerified, false);
+            receiver = {
+              recipientVerified: true,
+              inputOwnershipVerified: false,
+              spendingEnabled: false,
+            };
+          }
           report.wallet.privatePreparations.push({
             kind,
             elapsedMs: Math.round(performance.now() - started),
@@ -448,6 +476,7 @@ async function main() {
             witnessRetained: false,
             spendingEnabled: false,
             writeAttempts: 0,
+            ...(receiver ? { receiver } : {}),
           });
         }
       }

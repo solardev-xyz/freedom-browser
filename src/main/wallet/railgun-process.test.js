@@ -473,6 +473,7 @@ test.each([
   ['keystore', 'spending-sign', './railgun-spend-sign-job'],
   ['engine', 'wallet-viewing', './railgun-wallet-job'],
   ['engine', 'private-prepare', './railgun-private-prepare-job'],
+  ['engine', 'private-receive', './railgun-private-receive-job'],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
 ])(
   'only dedicated %s/%s job can receive one binary key, and the supervisor wipes it',
@@ -550,14 +551,19 @@ test.each([
   ['spending-public', './railgun-wallet-job'],
   ['spending-sign', './railgun-private-prepare-job'],
   ['private-prepare', './railgun-spend-sign-job'],
-])('refuses binary-key job cross-pairing %s/%s', (operation, filename) => {
+  ['spending-sign', './railgun-private-receive-job'],
+  ['private-receive', './railgun-spend-sign-job'],
+  ['private-receive', './railgun-wallet-job', 'engine'],
+  ['private-receive', './railgun-private-prepare-job', 'engine'],
+  ['private-prepare', './railgun-private-receive-job', 'engine'],
+])('refuses binary-key job cross-pairing %s/%s', (operation, filename, role = 'keystore') => {
   const handle = scope.getContext({
     kind: 'private-account',
     principal: 'railgun:0',
     protocol: 'railgun',
     deployment: 'sepolia',
     chainId: 11155111,
-    role: 'keystore',
+    role,
     operation,
   });
   expect(() =>

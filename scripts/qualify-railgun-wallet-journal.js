@@ -28,6 +28,8 @@ async function main() {
   const vault = accountArchive ? require('../src/main/identity/vault') : null;
   let lockOnViewingKey = false,
     privateViewingKeys = 0,
+    privateReceiveKeys = 0,
+    corruptPrivateReceiveKey = false,
     failReadOnlyRestore = false,
     failWalletBatch = false,
     failPublicCommit = false,
@@ -75,6 +77,8 @@ async function main() {
             const message = JSON.parse(wire);
             if (message.method === 'key' && message.purpose === 'private-prepare')
               privateViewingKeys++;
+            if (message.method === 'key' && message.purpose === 'private-receive')
+              privateReceiveKeys++;
             if (
               failReadOnlyRestore &&
               options.filename === require.resolve('../src/main/wallet/railgun-wallet-job') &&
@@ -85,6 +89,14 @@ async function main() {
               throw Error('Injected read-only restore interruption');
             }
             const reply = await original.dispatch(wire);
+            if (
+              corruptPrivateReceiveKey &&
+              message.method === 'key' &&
+              message.purpose === 'private-receive'
+            ) {
+              corruptPrivateReceiveKey = false;
+              reply[0] ^= 1;
+            }
             if (
               lockOnViewingKey &&
               message.method === 'key' &&
@@ -172,7 +184,7 @@ async function main() {
     accountParent = require('../src/main/wallet/privacy-session').openPrivacySession();
   }
   const sourceBytes = fs.readFileSync(sourceFilename),
-    { logs } = JSON.parse(sourceBytes);
+    { logs, foreignTransfers } = JSON.parse(sourceBytes);
   const hash = (n) => '0x' + n.toString(16).padStart(64, '0');
   const capture = {
     logSetSha256: sha(sourceBytes),
@@ -391,6 +403,9 @@ async function main() {
     'src/main/wallet/railgun-private-preparation.js',
     'src/main/wallet/railgun-private-intent.js',
     'src/main/wallet/railgun-private-policy.js',
+    'src/main/wallet/railgun-private-receive.js',
+    'src/main/wallet/railgun-private-receive-job.js',
+    'src/main/wallet/railgun-private-results.js',
     'src/main/wallet/railgun-shield-pins.json',
     'src/main/wallet/privacy-profile-guard.js',
     'src/main/wallet/railgun-identity.js',
@@ -732,6 +747,162 @@ async function main() {
                     readRailgunAccountOwnedNotes(opened, owners).ownedPoi,
                     beforePreparation.ownedPoi
                   );
+                  let receiver;
+                  if (kind === 'railgun-private-transfer') {
+                    const p = prepared.preparation,
+                      keyCount = privateReceiveKeys;
+                    const verify =
+                      require('../src/main/wallet/railgun-private-receive').verifyRailgunPrivateReceiver;
+                    const args = {
+                      identity: accountIdentity,
+                      enrollment,
+                      archive: accountArchive,
+                      transaction: p.transaction,
+                      expected: p.expected,
+                      recipient: p.recipient,
+                      amount: p.amount,
+                    };
+                    const checked = await verify(args);
+                    assert.equal(checked.recipientVerified, true);
+                    assert.equal(checked.transactionDigest, p.transactionDigest);
+                    assert.equal(checked.spendingEnabled, false);
+                    assert.equal(checked.inputOwnershipVerified, false);
+                    await assert.rejects(
+                      verify({ ...args, amount: (BigInt(p.amount) + 1n).toString() }),
+                      { code: 'RAILGUN_PRIVATE_RECEIVER_REFUSED' }
+                    );
+                    const { Interface, AbiCoder, keccak256 } = require('ethers');
+                    const {
+                      TRANSACT_ABI,
+                      BOUND_PARAMS,
+                    } = require('../src/main/wallet/railgun-private-policy');
+                    const abi = new Interface([TRANSACT_ABI]);
+                    const bad = abi
+                      .decodeFunctionData('transact', p.transaction.data)[0][0]
+                      .toArray(true);
+                    bad[4][6][0][0][1] =
+                      '0x' + (BigInt(bad[4][6][0][0][1]) ^ 1n).toString(16).padStart(64, '0');
+                    const boundHash =
+                      BigInt(
+                        keccak256(AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [bad[4]]))
+                      ) %
+                      21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+                    await assert.rejects(
+                      verify({
+                        ...args,
+                        transaction: {
+                          ...p.transaction,
+                          data: abi.encodeFunctionData('transact', [[bad]]),
+                        },
+                        expected: {
+                          ...p.expected,
+                          boundParamsHash: '0x' + boundHash.toString(16).padStart(64, '0'),
+                        },
+                      }),
+                      { code: 'RAILGUN_PRIVATE_RECEIVER_REFUSED' }
+                    );
+                    const changedCommitment = abi
+                      .decodeFunctionData('transact', p.transaction.data)[0][0]
+                      .toArray(true);
+                    changedCommitment[3][0] =
+                      '0x' + (BigInt(changedCommitment[3][0]) ^ 1n).toString(16).padStart(64, '0');
+                    await assert.rejects(
+                      verify({
+                        ...args,
+                        transaction: {
+                          ...p.transaction,
+                          data: abi.encodeFunctionData('transact', [[changedCommitment]]),
+                        },
+                        expected: { ...p.expected, commitment: changedCommitment[3][0] },
+                      }),
+                      { code: 'RAILGUN_PRIVATE_RECEIVER_REFUSED' }
+                    );
+                    corruptPrivateReceiveKey = true;
+                    await assert.rejects(verify(args), {
+                      code: 'RAILGUN_PRIVATE_RECEIVER_REFUSED',
+                    });
+                    assert.equal(corruptPrivateReceiveKey, false);
+                    const foreign = foreignTransfers?.find((v) => v.amount === p.amount);
+                    assert.ok(foreign);
+                    const foreignTx = abi
+                      .decodeFunctionData('transact', p.transaction.data)[0][0]
+                      .toArray(true);
+                    foreignTx[3][0] = foreign.commitment;
+                    foreignTx[4][6] = [foreign.ciphertext];
+                    const foreignHash =
+                      BigInt(
+                        keccak256(AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [foreignTx[4]]))
+                      ) %
+                      21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+                    await assert.rejects(
+                      verify({
+                        ...args,
+                        transaction: {
+                          ...p.transaction,
+                          data: abi.encodeFunctionData('transact', [[foreignTx]]),
+                        },
+                        expected: {
+                          ...p.expected,
+                          commitment: foreign.commitment,
+                          boundParamsHash: '0x' + foreignHash.toString(16).padStart(64, '0'),
+                        },
+                      }),
+                      { code: 'RAILGUN_PRIVATE_RECEIVER_REFUSED' }
+                    );
+                    assert.equal(privateReceiveKeys - keyCount, 6);
+                    const keyCountBeforePolicyRefusal = privateReceiveKeys;
+                    const nonzero = abi
+                      .decodeFunctionData('transact', p.transaction.data)[0][0]
+                      .toArray(true);
+                    nonzero[0][0][0] = 1n;
+                    await assert.rejects(
+                      verify({
+                        ...args,
+                        transaction: {
+                          ...p.transaction,
+                          data: abi.encodeFunctionData('transact', [[nonzero]]),
+                        },
+                      })
+                    );
+                    await assert.rejects(
+                      verify({
+                        ...args,
+                        expected: { ...p.expected, kind: 'railgun-token-unshield' },
+                      })
+                    );
+                    assert.equal(privateReceiveKeys, keyCountBeforePolicyRefusal);
+                    receiver = {
+                      recipientVerified: true,
+                      wrongAmountRefused: true,
+                      changedCiphertextRefused: true,
+                      changedCommitmentRefused: true,
+                      wrongViewingKeyRefused: true,
+                      foreignRecipientRefused: true,
+                      nonzeroProofRefusedBeforeKey: true,
+                      wrongKindRefusedBeforeKey: true,
+                      viewingKeyTransfersIncludingNegatives: 6,
+                      inputOwnershipVerified: false,
+                      spendingEnabled: false,
+                    };
+                  } else {
+                    const p = prepared.preparation,
+                      keyCount = privateReceiveKeys;
+                    await assert.rejects(
+                      require('../src/main/wallet/railgun-private-receive').verifyRailgunPrivateReceiver(
+                        {
+                          identity: accountIdentity,
+                          enrollment,
+                          archive: accountArchive,
+                          transaction: p.transaction,
+                          expected: p.expected,
+                          recipient: accountIdentity.descriptor.instanceId,
+                          amount: p.amount,
+                        }
+                      )
+                    );
+                    assert.equal(privateReceiveKeys, keyCount);
+                    receiver = { validUnshieldRefusedBeforeKey: true, viewingKeyTransfers: 0 };
+                  }
                   privatePreparations.push({
                     kind,
                     elapsedMs: Math.round(performance.now() - started),
@@ -743,6 +914,7 @@ async function main() {
                     spendingEnabled: false,
                     witnessRetained: false,
                     writeAttempts: 0,
+                    ...(receiver ? { receiver } : {}),
                   });
                 }
               }

@@ -54,4 +54,27 @@ function normalizeRailgunPrivateVerification(value, { intent, transaction, expec
   guards(value.guards);
   return Object.freeze({ transactionDigest: checked.digest, verified: true });
 }
-module.exports = { normalizeRailgunSpendSignature, normalizeRailgunPrivateVerification };
+function normalizeRailgunPrivateReceiver(value, { transaction, expected, recipient, amount }) {
+  const checked = validateRailgunPrivateSigningIntent(transaction, expected);
+  assert.equal(checked.kind, 'railgun-private-transfer');
+  shape(value, ['verified', 'transactionDigest', 'recipient', 'amount', 'guards', 'inventory']);
+  assert.equal(value.verified, true);
+  assert.equal(value.transactionDigest, checked.digest);
+  assert.equal(value.recipient, recipient);
+  assert.equal(value.amount, amount);
+  assert.equal(value.inventory, require('./railgun-engine-manifest.json').inventory.sha256);
+  guards(value.guards);
+  return Object.freeze({
+    recipientVerified: true,
+    transactionDigest: checked.digest,
+    recipient,
+    amount,
+    inputOwnershipVerified: false,
+    spendingEnabled: false,
+  });
+}
+module.exports = {
+  normalizeRailgunSpendSignature,
+  normalizeRailgunPrivateVerification,
+  normalizeRailgunPrivateReceiver,
+};

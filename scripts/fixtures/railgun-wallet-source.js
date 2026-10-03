@@ -137,11 +137,77 @@ async function main() {
     ])
   );
   assert.equal(guards.report().attempts, 0);
+  const foreignTransfers = [];
+  if (mode === 'vault-weth-vector') {
+    const { WalletNode } = require(path.join(root, 'key-derivation/wallet-node'));
+    const seed = WalletNode.fromMnemonic(
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
+    );
+    const spending = seed.derive("m/44'/1984'/0'/0'/1'").getSpendingKeyPair();
+    const viewing = await seed.derive("m/420'/1984'/0'/0'/1'").getViewingKeyPair();
+    const foreign = new ViewOnlyWallet('0'.repeat(64), {}, viewing, spending.pubkey, undefined, {});
+    spending.privateKey.fill(0);
+    try {
+      for (const value of [700n, 2000n]) {
+        const output = TransactNote.createTransfer(
+          foreign.addressKeys,
+          wallet.addressKeys,
+          value,
+          getTokenDataERC20(token),
+          false,
+          0,
+          undefined
+        );
+        const blinding = getNoteBlindingKeys(
+          wallet.viewingPublicKey,
+          foreign.viewingPublicKey,
+          output.random,
+          output.senderRandom
+        );
+        const symmetric = await getSharedSymmetricKey(
+          wallet.viewingKeyPair.privateKey,
+          blinding.blindedReceiverViewingKey
+        );
+        let cipher;
+        try {
+          cipher = output.encryptV2(
+            'V2_PoseidonMerkle',
+            symmetric,
+            wallet.masterPublicKey,
+            output.senderRandom,
+            wallet.viewingKeyPair.privateKey
+          );
+        } finally {
+          symmetric.fill(0);
+        }
+        foreignTransfers.push({
+          amount: value.toString(),
+          commitment: hash(output.hash),
+          ciphertext: {
+            ciphertext: [
+              '0x' + cipher.noteCiphertext.iv + cipher.noteCiphertext.tag,
+              ...cipher.noteCiphertext.data.map((v) => '0x' + v),
+            ],
+            blindedSenderViewingKey:
+              '0x' + Buffer.from(blinding.blindedSenderViewingKey).toString('hex'),
+            blindedReceiverViewingKey:
+              '0x' + Buffer.from(blinding.blindedReceiverViewingKey).toString('hex'),
+            annotationData: '0x' + cipher.annotationData.replace(/^0x/, ''),
+            memo: '0x' + cipher.noteMemo.replace(/^0x/, ''),
+          },
+        });
+      }
+    } finally {
+      viewing.privateKey.fill(0);
+    }
+  }
+  assert.equal(guards.report().attempts, 0);
   fs.writeFileSync(
     filename,
     JSON.stringify({
       logs,
       guards: guards.report(),
+      ...(foreignTransfers.length ? { foreignTransfers } : {}),
       ...(mode
         ? {
             publicVaultVector: true,

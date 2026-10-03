@@ -51,6 +51,9 @@ function startRailgunProcess({
             context.subject.operation === 'spending-sign' &&
             filename === require.resolve('./railgun-spend-sign-job')) ||
           (context.subject.role === 'engine' &&
+            context.subject.operation === 'private-receive' &&
+            filename === require.resolve('./railgun-private-receive-job')) ||
+          (context.subject.role === 'engine' &&
             context.subject.operation === 'private-prepare' &&
             filename === require.resolve('./railgun-private-prepare-job')) ||
           (context.subject.role === 'engine' &&
