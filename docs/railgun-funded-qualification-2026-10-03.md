@@ -1,7 +1,8 @@
 # Railgun funded qualification — October 3, 2026
 
 The dedicated disposable Railgun account now holds 0.01 Sepolia ETH transferred
-from the existing PPv2 qualification account. This is test funding, not a shield.
+from the existing PPv2 qualification account. The first 0.001 ETH shield was subsequently acknowledged by the RPC;
+its receipt matches the prepared note, with finalized recovery still pending.
 The PPv2 vault and prior protocol history remain intact. Its October 1 balance
 is historical; this transfer spends 0.01 ETH plus gas from that balance.
 The transfer publicly links the PPv2 test EOA to the Railgun funding EOA.
@@ -41,20 +42,37 @@ Fourteen transfer-plan tests and lint pass. Claude reviewed the destination,
 signing, journal, replay and finality gates. The latest main-wallet regression
 before these qualification scripts was 8,287 passed / 33 skipped.
 
-## Next funded operation
+## First live shield
 
 The live controller requires an existing enrolled profile, the pinned finalized
 funding report and a pinned, completed, source-matched public/TXID/wallet scan.
 It cold-restores the exact public generation and empty wallet before preparing
-one 0.001 ETH shield. It caps gas at 750,000 and maximum gas cost at 0.002 ETH.
+one 0.001 ETH shield. It caps gas at 1,100,000 and maximum gas cost at 0.002 ETH.
 The main-owned operation independently simulates the transaction and checks
 its recipient, current deployment, nonce, balance and reviewed bytes.
 
-Check mode performs a live funded simulation without signing. Shield mode
+The first two check runs stopped before signing at the original 750,000 gas
+cap; the second measured 877,565 gas. The controller limit was raised to
+1,100,000 (about 25% headroom) while keeping the 0.002 ETH maximum gas cost.
+[Check run `c`](qualification/railgun-shield-live-check-2026-10-03.json) passed
+with an 882,668 gas estimate, 939,609,142 wei gas price and the expected 0.01 ETH
+balance. Check mode performs a live funded simulation without signing. Shield mode
 permits at most one journaled shield attempt across active and archived journal records;
 an uncertain attempt requires observation, not an automatic resend. Recovery
 works after restart through the dedicated shield matcher and finalized review.
-See [the signing/recovery design](railgun-shield-submission-2026-10-03.md).
+[The actual send report](qualification/railgun-shield-live-send-2026-10-03.json)
+records acknowledged transaction
+`0x5b935d5592e32807135e39d3770a5cd6e40343c682454d83c472dba8d17cda57`,
+nonce 0, with 7.955 seconds of preparation and 8.736 seconds in submission.
+It used the genuine vault signer and live Tor through the qualification Arti
+endpoint shim. Expected note value is
+0.0009975 WETH after the 0.0000025 ETH protocol fee. A subsequent local, unpublished recovery run observed inclusion at block 11,834,494 with ten
+confirmations and matched the exact Shield at tree 0, position 10,245. Net value
+and fee matched with no deviation. Finality and wallet note recovery remain
+pending; this receipt alone does not authorize spending.
+The legacy `broadcastSource: direct` field identifies the selected RPC route,
+not a Tor bypass; the qualification transport metadata describes the actual
+HTTP/TLS-over-Arti path. See [the signing/recovery design](railgun-shield-submission-2026-10-03.md).
 
 The transport here uses a dedicated bundled Arti process through a qualification
 endpoint shim. This does not qualify production Tor-manager ownership or

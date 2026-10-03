@@ -12,7 +12,7 @@ const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-
 const { openLiveTransport } = require('./qualify-ppv2-live');
 const AMOUNT = '1000000000000000',
   MAX_GAS_FEE = 2000000000000000n,
-  GAS_LIMIT = 750000n;
+  GAS_LIMIT = 1100000n;
 let lock;
 async function main() {
   const [
@@ -296,14 +296,21 @@ async function main() {
           data: tx.data,
         };
         const { result: estimate } = await network.request(11155111, 'eth_estimateGas', [rpcTx]);
+        report.preparation.estimate = BigInt(estimate).toString();
+        stage = 'simulation-gas';
         assert.ok(BigInt(estimate) > 0n && BigInt(estimate) <= GAS_LIMIT);
+        stage = 'simulation-call';
         await network.request(11155111, 'eth_call', [rpcTx, 'latest']);
         const { result: balance } = await network.request(11155111, 'eth_getBalance', [
           owner,
           'pending',
         ]);
         const quote = await network.getFeeQuote(11155111);
+        report.preparation.balance = BigInt(balance).toString();
+        report.preparation.gasPrice = quote.gasPrice;
+        stage = 'simulation-balance';
         assert.ok(BigInt(balance) >= BigInt(AMOUNT) + GAS_LIMIT * BigInt(quote.gasPrice));
+        stage = 'simulation-fee';
         assert.ok(GAS_LIMIT * BigInt(quote.gasPrice) <= MAX_GAS_FEE);
         report.preparation.estimate = BigInt(estimate).toString();
         report.preparation.balance = BigInt(balance).toString();
