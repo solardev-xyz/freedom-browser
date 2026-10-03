@@ -60,5 +60,10 @@ Reports contain booleans and counts, never captured account records or selectors
 
 Next is fresh receipt/finality and source/path/root composition before ordered
 post-transaction POI work. No new callback authority, renderer, IPC, dependency or
-top-level architectural responsibility was introduced. The earlier 9,403-test full
-regression predates this witness composition.
+top-level architectural responsibility was introduced. After merging main `7a1a5c7c` in `74becfaf`, the frozen tree passes 9,481 tests /
+33 skipped across 444 suites in 305.069 seconds with native-process access and
+the existing OpenLV exclusion. Lint is clean and all 143 qualification source
+hashes still match after the merge. Ant 0.5.56, freedom-ipfs 0.4.3, Myotis 0.1.12
+and libradicle 0.7.1 installers were rerun; Arti 2.6.0 was rebuilt with the
+already-installed Rust 1.99 toolchain after default Rust 1.88 failed its minimum
+version check. Binary checks pass.
