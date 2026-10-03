@@ -382,6 +382,7 @@ async function main() {
     'src/main/wallet/railgun-wallet-policy.js',
     'src/main/wallet/railgun-account-store.js',
     'src/main/wallet/railgun-account-enrollment.js',
+    'src/main/wallet/railgun-private-reservations.js',
     'src/main/wallet/privacy-profile-guard.js',
     'src/main/wallet/railgun-identity.js',
     'src/main/wallet/railgun-identity-job.js',
@@ -471,6 +472,17 @@ async function main() {
   let walletSession, walletJournal, catalog, generation, walletDirectory;
   const retainedDirectories = [];
   const legacyHashes = new Map();
+  const reservationInput = Object.freeze({
+    tree: 0,
+    position: 1,
+    nullifier: '0x' + '1'.repeat(64),
+    noteHash: '0x' + '2'.repeat(64),
+    kind: 'railgun-private-transfer',
+    intentDigest: '0x' + '3'.repeat(64),
+    checkpointHash: '4'.repeat(64),
+    poiDigest: '5'.repeat(64),
+  });
+  let initialReservationStore, initialReservationReceipt;
   try {
     if (enrollment) {
       const { openRailgunAccountStore } = require('../src/main/wallet/railgun-account-store');
@@ -537,6 +549,14 @@ async function main() {
       assert.deepEqual(fs.readFileSync(marker), markerBefore);
     }
     await open(true);
+    if (enrollment) {
+      initialReservationStore = await enrollment.openReservations();
+      initialReservationReceipt = await initialReservationStore.reserve(reservationInput);
+      assert.deepEqual(
+        (await initialReservationStore.assertReceipt(initialReservationReceipt)).facts,
+        reservationInput
+      );
+    }
     let previousEvidence;
     for (const stage of [10, 20, 30]) {
       if (enrollment && stage === 30) {
@@ -550,6 +570,12 @@ async function main() {
           await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
             { identity: accountIdentity }
           );
+        await assert.rejects(initialReservationStore.assertReceipt(initialReservationReceipt));
+        const reservations = await enrollment.openReservations();
+        assert.deepEqual(await reservations.inspect(), { held: 1 });
+        await assert.rejects(reservations.reserve(reservationInput), {
+          code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+        });
         await open(false);
         const recovered = await coordinator.recover();
         assert.equal(recovered.to.number, stage);
@@ -1252,6 +1278,21 @@ async function main() {
         authenticatedHeight: 10,
         readOnlyInspectionPreservedInventory: true,
         legacySourcePublicJournalUnchanged: true,
+      });
+      const reservations = await enrollment.openReservations();
+      assert.deepEqual(await reservations.inspect(), { held: 1 });
+      await assert.rejects(reservations.reserve(reservationInput), {
+        code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+      });
+      runs.push({
+        attempt: 'account-reservations',
+        syntheticInputFacts: true,
+        held: 1,
+        enrollmentReopenPreserved: true,
+        cacheRebuildPreserved: true,
+        duplicateRefused: true,
+        oldReceiptRefused: true,
+        signingEnabled: false,
       });
     }
     assert.equal(applications.length, enrollment ? 10 : 3);

@@ -71,6 +71,84 @@ function inventory() {
     fs.readFileSync(path.join(mockProfile.userDataDir, 'wallet-privacy-inventory.json'))
   ).state.files;
 }
+const reservationInput = () => ({
+  tree: 0,
+  position: 1,
+  nullifier: '0x' + '1'.repeat(64),
+  noteHash: '0x' + '2'.repeat(64),
+  kind: 'railgun-private-transfer',
+  intentDigest: '0x' + '3'.repeat(64),
+  checkpointHash: '4'.repeat(64),
+  poiDigest: '5'.repeat(64),
+});
+const reservationFile = (entry) =>
+  require('./privacy-storage').getPrivacyStoragePath(
+    entry.getContext('storage', 'railgun-private-reservations-v1:' + entry.descriptor.walletId),
+    entry.directory
+  );
+test('account reservations migrate lazily, survive generation replacement and revoke with enrollment', async () => {
+  const entry = await open(true),
+    previousInventory = inventory();
+  const pending = entry.openReservations();
+  await expect(entry.openReservations()).rejects.toThrow();
+  const store = await pending;
+  expect(await entry.openReservations()).toBe(store);
+  expect(inventory()).toHaveLength(previousInventory.length + 1);
+  const receipt = await store.reserve(reservationInput());
+  await entry.catalog.begin('6'.repeat(64));
+  await entry.catalog.begin('7'.repeat(64));
+  expect(await store.inspect()).toEqual({ held: 1 });
+  entry.close();
+  await expect(store.assertReceipt(receipt)).rejects.toThrow();
+  const cold = await open(),
+    reopened = await cold.openReservations();
+  expect(await reopened.inspect()).toEqual({ held: 1 });
+  await expect(reopened.reserve(reservationInput())).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+  });
+});
+test('account manifest floor rejects an older reservation file across restart', async () => {
+  const entry = await open(true),
+    store = await entry.openReservations(),
+    file = reservationFile(entry);
+  const empty = fs.readFileSync(file);
+  await store.reserve(reservationInput());
+  entry.close();
+  fs.writeFileSync(file, empty);
+  const cold = await open();
+  await expect(cold.openReservations()).rejects.toThrow();
+});
+test('missing reservation file is detected by the profile inventory before enrollment reopens', async () => {
+  const entry = await open(true);
+  await entry.openReservations();
+  const file = reservationFile(entry);
+  entry.close();
+  fs.renameSync(file, file + '.retained');
+  await expect(open()).rejects.toMatchObject({ code: 'PRIVATE_PROFILE_STORE_MISSING' });
+  expect(fs.existsSync(file)).toBe(false);
+});
+test('reservation commit before failed floor write remains held after cold reopen', async () => {
+  const entry = await open(true),
+    store = await entry.openReservations();
+  const rename = fs.renameSync.bind(fs);
+  let armed = true;
+  jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    if (armed && /wallet-railgun-accounts\/[0-9a-f]{64}\.json$/.test(to)) {
+      armed = false;
+      throw Error('floor write interrupted');
+    }
+    return rename(from, to);
+  });
+  await expect(store.reserve(reservationInput())).rejects.toThrow();
+  expect(store.signal.aborted).toBe(true);
+  entry.close();
+  const cold = await open(),
+    restored = await cold.openReservations();
+  expect(await restored.inspect()).toEqual({ held: 1 });
+  await expect(restored.reserve(reservationInput())).rejects.toMatchObject({
+    code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+  });
+});
 test('explicit enrollment persists identity/catalog, separates storage keys and reopens unchanged', async () => {
   await expect(open()).rejects.toThrow();
   const first = await open(true),
