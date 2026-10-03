@@ -61,3 +61,17 @@ preflight gates, reassert every gate after durable awaits and immediately before
 key release, and qualify the combined controller before permitting Transact
 inputs. Main-process placement preserves existing wallet/key/storage boundaries;
 no dependency, IPC or UI surface changes.
+
+## Main integration and regression
+
+Main `b18d571b` was merged cleanly in `27935f12`. Ant 0.5.56 was downloaded
+for every configured target; freedom-ipfs 0.4.3 and libradicle 0.7.1 were refreshed
+for this macOS arm64 host; all official Myotis 0.1.12 targets were refreshed,
+including the host's offline ABI 32 checkpoint constructor check. Existing Arti
+2.6.0 was version-checked. Node 24.18.1 matches `.nvmrc`; `npm ls --depth=0`,
+`npm run check-binaries` and lint pass. No dependency manifests changed.
+
+The frozen merged production/test/fixture tree passes 9,239 tests / 33 skipped
+across 436 passing suites in 297.768 seconds. The prior OpenLV test exclusion
+remains. This is local regression evidence, not a new funded operation, platform
+matrix, renderer smoke test or current-HEAD rerun of every historical report.
