@@ -47,3 +47,19 @@ test('claims are account-local and forged enrollments or unsupported phases refu
     second.release();
   }
 });
+test('recovery excludes every compute phase until observed-drain release, even after revocation', () => {
+  const { value, controller } = enrollment();
+  const recovery = claimRailgunAccountPhase(value, 'recovery');
+  try {
+    for (const phase of ['wallet', 'txid', 'recovery'])
+      expect(() => claimRailgunAccountPhase(value, phase)).toThrow();
+    controller.abort();
+    const cold = enrollment().value;
+    expect(() => claimRailgunAccountPhase(cold, 'wallet')).toThrow();
+    recovery.release();
+    const next = claimRailgunAccountPhase(cold, 'wallet');
+    next.release();
+  } finally {
+    recovery.release();
+  }
+});

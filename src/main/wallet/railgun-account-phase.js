@@ -9,7 +9,8 @@ const fail = () =>
     code: 'RAILGUN_ACCOUNT_PHASE_BUSY',
   });
 function claimRailgunAccountPhase(enrollment, phase) {
-  if (!isRailgunAccountEnrollment(enrollment) || !['wallet', 'txid'].includes(phase)) throw fail();
+  if (!isRailgunAccountEnrollment(enrollment) || !['wallet', 'txid', 'recovery'].includes(phase))
+    throw fail();
   enrollment.getContext('engine');
   if (enrollment.signal.aborted || owners.has(enrollment.directory)) throw fail();
   const owner = {},

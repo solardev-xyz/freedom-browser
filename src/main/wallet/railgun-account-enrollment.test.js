@@ -81,6 +81,12 @@ const reservationInput = () => ({
   checkpointHash: '4'.repeat(64),
   poiDigest: '5'.repeat(64),
 });
+const reservationRecoveryInput = () => ({
+  tree: 0,
+  position: 1,
+  nullifier: '0x' + '1'.repeat(64),
+  noteHash: '0x' + '2'.repeat(64),
+});
 const reservationFile = (entry) =>
   require('./privacy-storage').getPrivacyStoragePath(
     entry.getContext('storage', 'railgun-private-reservations-v1:' + entry.descriptor.walletId),
@@ -97,12 +103,12 @@ test('account reservations migrate lazily, survive generation replacement and re
   const receipt = await store.reserve(reservationInput());
   await entry.catalog.begin('6'.repeat(64));
   await entry.catalog.begin('7'.repeat(64));
-  expect(await store.inspect()).toEqual({ held: 1 });
+  expect(await store.inspect()).toEqual({ held: 1, signing: 0, abandoned: 0, legacy: 0 });
   entry.close();
   await expect(store.assertReceipt(receipt)).rejects.toThrow();
   const cold = await open(),
     reopened = await cold.openReservations();
-  expect(await reopened.inspect()).toEqual({ held: 1 });
+  expect(await reopened.inspect()).toEqual({ held: 1, signing: 0, abandoned: 0, legacy: 0 });
   await expect(reopened.reserve(reservationInput())).rejects.toMatchObject({
     code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
   });
@@ -117,6 +123,37 @@ test('account manifest floor rejects an older reservation file across restart', 
   fs.writeFileSync(file, empty);
   const cold = await open();
   await expect(cold.openReservations()).rejects.toThrow();
+});
+test('cold hold recovery excludes active wallet/TXID phases and cannot release signing records', async () => {
+  const entry = await open(true),
+    store = await entry.openReservations();
+  await store.reserve(reservationInput());
+  entry.close();
+  const cold = await open(),
+    restored = await cold.openReservations();
+  const { claimRailgunAccountPhase } = require('./railgun-account-phase');
+  for (const kind of ['wallet', 'txid']) {
+    const phase = claimRailgunAccountPhase(cold, kind);
+    try {
+      await expect(restored.abandonRecovered(reservationRecoveryInput())).rejects.toMatchObject({
+        code: 'RAILGUN_ACCOUNT_PHASE_BUSY',
+      });
+      expect(await restored.inspect()).toEqual({ held: 1, signing: 0, abandoned: 0, legacy: 0 });
+    } finally {
+      phase.release();
+    }
+  }
+  await restored.abandonRecovered(reservationRecoveryInput());
+  expect(await restored.inspect()).toEqual({ held: 0, signing: 0, abandoned: 1, legacy: 0 });
+  const held = await restored.reserve(reservationInput());
+  await restored.markSigning(held, {
+    submitter: '0x' + '1'.repeat(40),
+    operationId: 'a'.repeat(64),
+    gatesDigest: 'b'.repeat(64),
+  });
+  await expect(restored.abandonRecovered(reservationRecoveryInput())).rejects.toThrow();
+  const phase = claimRailgunAccountPhase(cold, 'wallet');
+  phase.release();
 });
 test('missing reservation file is detected by the profile inventory before enrollment reopens', async () => {
   const entry = await open(true);
@@ -144,7 +181,7 @@ test('reservation commit before failed floor write remains held after cold reope
   entry.close();
   const cold = await open(),
     restored = await cold.openReservations();
-  expect(await restored.inspect()).toEqual({ held: 1 });
+  expect(await restored.inspect()).toEqual({ held: 1, signing: 0, abandoned: 0, legacy: 0 });
   await expect(restored.reserve(reservationInput())).rejects.toMatchObject({
     code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
   });

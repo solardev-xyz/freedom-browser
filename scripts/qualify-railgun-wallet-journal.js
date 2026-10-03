@@ -397,6 +397,7 @@ async function main() {
     'src/main/wallet/railgun-wallet-policy.js',
     'src/main/wallet/railgun-account-store.js',
     'src/main/wallet/railgun-account-enrollment.js',
+    'src/main/wallet/railgun-account-phase.js',
     'src/main/wallet/railgun-private-reservations.js',
     'src/main/wallet/railgun-private-witness.js',
     'src/main/wallet/railgun-private-prepare-job.js',
@@ -596,7 +597,12 @@ async function main() {
           );
         await assert.rejects(initialReservationStore.assertReceipt(initialReservationReceipt));
         const reservations = await enrollment.openReservations();
-        assert.deepEqual(await reservations.inspect(), { held: 1 });
+        assert.deepEqual(await reservations.inspect(), {
+          held: 1,
+          signing: 0,
+          abandoned: 0,
+          legacy: 0,
+        });
         await assert.rejects(reservations.reserve(reservationInput), {
           code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
         });
@@ -1513,7 +1519,12 @@ async function main() {
         legacySourcePublicJournalUnchanged: true,
       });
       const reservations = await enrollment.openReservations();
-      assert.deepEqual(await reservations.inspect(), { held: 1 });
+      assert.deepEqual(await reservations.inspect(), {
+        held: 1,
+        signing: 0,
+        abandoned: 0,
+        legacy: 0,
+      });
       await assert.rejects(reservations.reserve(reservationInput), {
         code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
       });
@@ -1526,6 +1537,87 @@ async function main() {
         duplicateRefused: true,
         oldReceiptRefused: true,
         signingEnabled: false,
+      });
+      const recoveryInput = Object.freeze({
+        tree: reservationInput.tree,
+        position: reservationInput.position,
+        nullifier: reservationInput.nullifier,
+        noteHash: reservationInput.noteHash,
+      });
+      const recoveryWallet =
+        await require('../src/main/wallet/railgun-account-wallet').openRailgunAccountWallet({
+          identity: accountIdentity,
+          enrollment,
+          archive: accountArchive,
+          coordinator,
+          mode: 'active',
+        });
+      try {
+        await assert.rejects(reservations.abandonRecovered(recoveryInput), {
+          code: 'RAILGUN_ACCOUNT_PHASE_BUSY',
+        });
+        assert.deepEqual(await reservations.inspect(), {
+          held: 1,
+          signing: 0,
+          abandoned: 0,
+          legacy: 0,
+        });
+      } finally {
+        await recoveryWallet.close();
+      }
+      await reservations.abandonRecovered(recoveryInput);
+      assert.deepEqual(await reservations.inspect(), {
+        held: 0,
+        signing: 0,
+        abandoned: 1,
+        legacy: 0,
+      });
+      const replacement = await reservations.reserve(reservationInput);
+      const signingEvidence = Object.freeze({
+        submitter: '0x' + '7'.repeat(40),
+        operationId: '8'.repeat(64),
+        gatesDigest: '9'.repeat(64),
+      });
+      const signingReceipt = await reservations.markSigning(replacement, signingEvidence);
+      assert.equal((await reservations.assertReceipt(signingReceipt)).state, 'signing');
+      assert.deepEqual((await reservations.assertReceipt(signingReceipt)).signing, signingEvidence);
+      await assert.rejects(reservations.assertReceipt(replacement));
+      await assert.rejects(reservations.abandon(signingReceipt));
+      await close();
+      enrollment.close();
+      enrollment =
+        await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
+          {
+            identity: accountIdentity,
+          }
+        );
+      const recoveredReservations = await enrollment.openReservations();
+      await assert.rejects(recoveredReservations.assertReceipt(signingReceipt));
+      await assert.rejects(recoveredReservations.abandonRecovered(recoveryInput), {
+        code: 'RAILGUN_RESERVATION_NOT_RECOVERABLE',
+      });
+      await assert.rejects(recoveredReservations.reserve(reservationInput), {
+        code: 'RAILGUN_PRIVATE_INPUT_RESERVED',
+      });
+      assert.deepEqual(await recoveredReservations.inspect(), {
+        held: 0,
+        signing: 1,
+        abandoned: 1,
+        legacy: 0,
+      });
+      await open(false);
+      runs.push({
+        attempt: 'reservation-lifecycle',
+        syntheticInputFacts: true,
+        syntheticSigningEvidence: true,
+        liveWalletBlockedRecovery: true,
+        drainedWalletAllowedHeldRecovery: true,
+        abandonedInputReservedAgain: true,
+        oldHeldReceiptRefused: true,
+        signingReceiptRequiresCurrentStore: true,
+        signingStatePreservedOnReopen: true,
+        signingStateCannotBeAbandoned: true,
+        signingKeyReleased: false,
       });
     }
     assert.equal(applications.length, enrollment ? 10 : 3);

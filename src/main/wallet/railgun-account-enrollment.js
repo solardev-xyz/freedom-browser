@@ -248,7 +248,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
             value.binding === binding &&
             Number.isSafeInteger(value.sequence) &&
             value.sequence >= 0 &&
-            value.sequence <= 512
+            value.sequence <= 1024
         );
         return value.sequence;
       };
@@ -263,7 +263,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       };
       const advanceFloor = async (sequence) => {
         active();
-        check(Number.isSafeInteger(sequence) && sequence >= 0 && sequence <= 512);
+        check(Number.isSafeInteger(sequence) && sequence >= 0 && sequence <= 1024);
         await manifest.update(floorRecord, (text) => {
           active();
           check(sequence >= (decodeFloor(text) ?? 0));
@@ -282,6 +282,8 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
         create: !fs.existsSync(target),
         readFloor,
         advanceFloor,
+        claimRecovery: () =>
+          require('./railgun-account-phase').claimRailgunAccountPhase(instance, 'recovery'),
       });
       active();
       return reservations;
