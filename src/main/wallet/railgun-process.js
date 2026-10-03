@@ -47,6 +47,9 @@ function startRailgunProcess({
           (context.subject.role === 'keystore' &&
             ['spending-public', 'viewing-identity'].includes(context.subject.operation) &&
             filename === require.resolve('./railgun-identity-job')) ||
+          (context.subject.role === 'keystore' &&
+            context.subject.operation === 'spending-sign' &&
+            filename === require.resolve('./railgun-spend-sign-job')) ||
           (context.subject.role === 'engine' &&
             context.subject.operation === 'wallet-viewing' &&
             filename === require.resolve('./railgun-wallet-job')) ||

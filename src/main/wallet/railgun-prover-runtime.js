@@ -78,4 +78,7 @@ function verifyRailgunProverRuntime(archive) {
   }
 }
 
-module.exports = { verifyRailgunProverRuntime };
+function loadRailgunProverRuntime(archive) {
+  return require(path.join(verifyRailgunProverRuntime(archive), 'serial-prover.cjs'));
+}
+module.exports = { verifyRailgunProverRuntime, loadRailgunProverRuntime };

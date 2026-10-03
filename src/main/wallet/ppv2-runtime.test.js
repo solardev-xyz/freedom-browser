@@ -120,7 +120,7 @@ test('rejects the archive before executing its plugin', () => {
   expect(execute).not.toHaveBeenCalled();
 });
 
-test('application references to external PPv2 runtime entries stay in the verified loader', () => {
+test('application references to external protocol runtime entries stay in their verified loaders', () => {
   const root = path.resolve(__dirname, '..');
   const files = fs
     .readdirSync(root, { recursive: true })
@@ -132,5 +132,6 @@ test('application references to external PPv2 runtime entries stay in the verifi
   );
   expect(references.map((name) => name.split(path.sep).join('/'))).toEqual([
     'wallet/ppv2-runtime.js',
+    'wallet/railgun-prover-runtime.js',
   ]);
 });

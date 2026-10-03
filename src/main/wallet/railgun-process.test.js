@@ -470,6 +470,7 @@ test.each(['storage', 'provider', 'worker', 'no-signal', 'no-dispatch'])(
 
 test.each([
   ['keystore', 'spending-public', './railgun-identity-job'],
+  ['keystore', 'spending-sign', './railgun-spend-sign-job'],
   ['engine', 'wallet-viewing', './railgun-wallet-job'],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
 ])(
@@ -539,6 +540,33 @@ test('late binary replies are wiped without crossing a stopped channel', async (
   await Promise.resolve();
   expect(bytes.equals(Buffer.alloc(32))).toBe(true);
   expect(mockPort.postMessage).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['spending-sign', './railgun-identity-job'],
+  ['spending-public', './railgun-spend-sign-job'],
+  ['spending-sign', './railgun-wallet-job'],
+  ['spending-public', './railgun-wallet-job'],
+])('refuses binary-key job cross-pairing %s/%s', (operation, filename) => {
+  const handle = scope.getContext({
+    kind: 'private-account',
+    principal: 'railgun:0',
+    protocol: 'railgun',
+    deployment: 'sepolia',
+    chainId: 11155111,
+    role: 'keystore',
+    operation,
+  });
+  expect(() =>
+    startRailgunProcess({
+      handle,
+      filename: require.resolve(filename),
+      input: '{}',
+      binaryKey: true,
+      broker: { signal: scope.signal, dispatch: async () => new Uint8Array(32) },
+    })
+  ).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
 });
 
 test('a 32-byte view over a larger backing buffer is never copied to a child', async () => {
