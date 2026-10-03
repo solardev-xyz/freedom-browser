@@ -280,3 +280,89 @@ test('failure to persist the floor refuses before acquiring or staging logs', as
   expect(ledger.stage).not.toHaveBeenCalled();
   expect(rpc.request.mock.calls.some(([method]) => method === 'eth_getLogs')).toBe(false);
 });
+
+test('event headers run in bounded groups and all validate before ledger staging', async () => {
+  const source = open(),
+    original = rpc.request.getMockImplementation();
+  let inFlight = 0,
+    maximum = 0,
+    checked = 0;
+  const logs = Array.from({ length: 20 }, (_, i) => ({
+    ...log(),
+    blockNumber: '0x' + (i + 1).toString(16),
+    blockHash: hash(i + 2),
+  }));
+  rpc.request.mockImplementation(async (method, params, ...rest) => {
+    if (method === 'eth_getLogs') return { result: logs };
+    inFlight++;
+    maximum = Math.max(maximum, inFlight);
+    await new Promise((resolve) => setImmediate(resolve));
+    const result = await original(method, params, ...rest);
+    inFlight--;
+    checked++;
+    return result;
+  });
+  ledger.stage.mockImplementationOnce(async () => {
+    expect(inFlight).toBe(0);
+    expect(checked).toBe(24); // Four distinct boundary/header reads plus 20 event blocks.
+    return Object.freeze({ ledgerId: 'b'.repeat(64), ledgerSha256: 'c'.repeat(64) });
+  });
+  await source.acquire({ ...input(), to: 30 });
+  expect(maximum).toBe(8);
+});
+
+test('header mismatch cancels siblings and drains them before rejecting without staging', async () => {
+  const source = open(),
+    original = rpc.request.getMockImplementation();
+  let sawLogs = false,
+    release,
+    siblingStarted = false,
+    settled = false;
+  rpc.request.mockImplementation(async (method, params, ...rest) => {
+    if (method === 'eth_getLogs') {
+      sawLogs = true;
+      return { result: [log(), { ...log(), blockNumber: '0x6', blockHash: hash(7) }] };
+    }
+    if (sawLogs && params[0] === '0x6') {
+      siblingStarted = true;
+      await new Promise((resolve) => {
+        release = resolve;
+      });
+    }
+    const result = await original(method, params, ...rest);
+    if (sawLogs && params[0] === '0x5') result.result.hash = hash(99);
+    return result;
+  });
+  const operation = source.acquire(input()).finally(() => {
+    settled = true;
+  });
+  const rejected = expect(operation).rejects.toThrow('Railgun scan source unavailable');
+  while (!siblingStarted || !rpc.signal.aborted) await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(ledger.stage).not.toHaveBeenCalled();
+  release();
+  await rejected;
+  expect(ledger.stage).not.toHaveBeenCalled();
+});
+
+test('canonical boundary reads are concurrent and deduplicate identical block numbers', async () => {
+  const source = open(),
+    original = rpc.request.getMockImplementation();
+  let pending = 0,
+    maximum = 0;
+  rpc.request.mockImplementation(async (method, params, ...rest) => {
+    if (method === 'eth_getLogs') return { result: [] };
+    pending++;
+    maximum = Math.max(maximum, pending);
+    await new Promise((resolve) => setImmediate(resolve));
+    pending--;
+    return original(method, params, ...rest);
+  });
+  await source.acquire({ ...input(), from: 100, to: 100, previousHash: hash(100) });
+  expect(maximum).toBe(3); // finalized, block 100 and its predecessor.
+  expect(
+    rpc.request.mock.calls.filter(
+      ([method, params]) => method === 'eth_getBlockByNumber' && params[0] === '0x64'
+    )
+  ).toHaveLength(2);
+});

@@ -10,6 +10,7 @@ const PROXY = '0xecfcf3b4ec647c4ca6d49108b311b7a7c9543fea';
 const MAX_AGE_MS = 60000;
 const MAX_RANGE_MS = 180000;
 const MAX_BLOCKS = 100000;
+const HEADER_CONCURRENCY = 8;
 const fail = () =>
   Object.assign(new Error('Railgun scan source unavailable'), {
     code: 'RAILGUN_SCAN_SOURCE_REFUSED',
@@ -158,20 +159,62 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
     };
     const readHeader = async (number) =>
       header(await read('eth_getBlockByNumber', [tag(number), false]), number);
+    // Abort siblings on the first failure, then observe every result before
+    // releasing this acquisition. No detached request can outlive its owner.
+    async function together(jobs) {
+      check(jobs.length <= HEADER_CONCURRENCY);
+      const results = await Promise.allSettled(
+        jobs.map(async (job) => {
+          try {
+            return await job();
+          } catch (error) {
+            close();
+            throw error;
+          }
+        })
+      );
+      active();
+      check(results.every((result) => result.status === 'fulfilled'));
+      return results.map((result) => result.value);
+    }
+    async function eventHeaders(blocks) {
+      const entries = [...blocks];
+      for (let start = 0; start < entries.length; start += HEADER_CONCURRENCY) {
+        await together(
+          entries.slice(start, start + HEADER_CONCURRENCY).map(
+            ([number, hash]) =>
+              async () =>
+                check((await readHeader(number)).hash === hash)
+          )
+        );
+      }
+    }
     async function canonical() {
-      const finalized = header(await read('eth_getBlockByNumber', ['finalized', false]));
+      const numbers = [
+        ...new Set([
+          range.anchor.number,
+          range.from,
+          range.to,
+          ...(range.from ? [range.from - 1] : []),
+        ]),
+      ];
+      const [finalized, ...headers] = await together([
+        async () => header(await read('eth_getBlockByNumber', ['finalized', false])),
+        ...numbers.map((number) => () => readHeader(number)),
+      ]);
+      const byNumber = new Map(headers.map((value) => [value.number, value]));
       check(finalized.number >= range.anchor.number);
-      const anchor = await readHeader(range.anchor.number);
+      const anchor = byNumber.get(range.anchor.number);
       check(anchor.hash === range.anchor.hash);
       if (finalized.number === anchor.number) check(finalized.hash === anchor.hash);
-      const from = await readHeader(range.from),
-        to = range.to === range.from ? from : await readHeader(range.to);
+      const from = byNumber.get(range.from),
+        to = byNumber.get(range.to);
       check(from.parentHash === range.previousHash);
-      if (range.from) check((await readHeader(range.from - 1)).hash === range.previousHash);
+      if (range.from) check(byNumber.get(range.from - 1).hash === range.previousHash);
       if (range.to === range.anchor.number) check(to.hash === anchor.hash);
       return { from, to, anchor };
     }
-    return { read, readHeader, canonical };
+    return { read, eventHeaders, canonical };
   }
   function issue(plan, boundaries, canonicalAt) {
     const evidence = Object.freeze({});
@@ -234,7 +277,7 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
     if (range.from === 0) check(range.previousHash === '0x' + '0'.repeat(64));
     freeze(range);
     busy = true;
-    const { read, readHeader, canonical } = requests(range);
+    const { read, eventHeaders, canonical } = requests(range);
     const deadline = setTimeout(close, MAX_RANGE_MS);
     try {
       const before = await canonical();
@@ -249,7 +292,7 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
         range.from,
         range.to
       );
-      for (const [number, hash] of blocks) check((await readHeader(number)).hash === hash);
+      await eventHeaders(blocks);
       const digest = createHash('sha256');
       for (const log of logs) digest.update(JSON.stringify(log) + '\n');
       const logDigest = { count: logs.length, sha256: digest.digest('hex') };

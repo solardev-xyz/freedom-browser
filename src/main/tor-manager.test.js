@@ -545,7 +545,13 @@ describe('tor-manager .onion routing across sessions', () => {
       expect(pacCalls(targetSession)).toHaveLength(1);
       expect(pacCalls(privateSession)).toHaveLength(1);
       const walletEndpoint = mod.getWalletSocksEndpoint();
-      expect(walletEndpoint).toMatchObject({ host: '127.0.0.1', port: 19150 });
+      // A live development Arti may occupy 19150. The endpoint must match the
+      // port selected and written for this managed process, including fallback.
+      const config = fs.readFileSync(path.join(mod.getTorDataPath(), 'arti.toml'), 'utf8');
+      const selectedPort = Number(config.match(/^socks_listen = (\d+)$/m)?.[1]);
+      expect(selectedPort).toBeGreaterThan(0);
+      expect(selectedPort).toBeLessThanOrEqual(65535);
+      expect(walletEndpoint).toMatchObject({ host: '127.0.0.1', port: selectedPort });
       expect(walletEndpoint.signal.aborted).toBe(false);
 
       // Arti crashes. Clearing the PAC here would turn .onion into a DIRECT
