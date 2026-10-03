@@ -50,8 +50,12 @@ also passes against these sources, covering the existing account scan, cold
 restore, retained rebuild and interrupted/cancelled recovery paths. It does not
 exercise the new repeated-window entry, which remains covered by the separate
 vault-bound run above. The wallet policy changes with these source files and
-requires rebuilding the retained live wallet generation before further live
-qualification; public and TXID policies are unchanged.
+required rebuilding the retained live wallet generation; public and TXID policies
+are unchanged. [The subsequent live cache refresh](qualification/railgun-readonly-live-refresh-2026-10-03.json)
+passes at block 11,834,513, recovers one asset and retains coverage of all 4,230
+mirrored TXID rows. It performs ordinary account recovery under the new policy,
+not the additional read-only-window entry or private preparation. It sends no
+owned-note POI query and signs or submits nothing.
 
 Unit tests cover write refusals, pending requests, leaked cursors, old grants,
 receipt reuse, cancellation, observation invalidation and unchanged-state
