@@ -8,6 +8,7 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { railgunTransactJournalIntent } = require('./railgun-transact-intent');
 const { projectRailgunOwnRecord } = require('./railgun-own-txid');
+const { deriveRailgunOwnSelector } = require('./railgun-own-selector');
 const { getPrivateSubmissionJournal } = require('./private-submission-journal');
 const pins = require('./railgun-shield-pins.json');
 const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -59,12 +60,10 @@ function selectJournal(snapshot, facts, intent) {
   assert.deepEqual(record.intent, intent);
   return { record, projection: projectRailgunOwnRecord(record) };
 }
-async function captureRailgunOwnOperation({
-  enrollment,
-  selector: input,
-  signal,
-  timeoutMs = 45000,
-} = {}) {
+async function captureRailgunOwnOperation(
+  { enrollment, selector: input, signal, timeoutMs = 45000 } = {},
+  selectorArchive
+) {
   let stage = 'context',
     scope,
     timer;
@@ -136,6 +135,20 @@ async function captureRailgunOwnOperation({
           stage = 'journal';
           const first = selectJournal(await journal.readSnapshot(), entry.facts, intent);
           active();
+          let derived;
+          if (selectorArchive !== undefined) {
+            stage = 'selector';
+            const selectorBudget = Math.min(30000, Math.floor(deadline - performance.now()) - 2000);
+            assert.ok(selectorBudget >= 1);
+            derived = await deriveRailgunOwnSelector({
+              handle: enrollment.getContext('engine', 'own-txid-selector'),
+              archive: selectorArchive,
+              provedTransaction,
+              signal: AbortSignal.any([lifetime, context.signal]),
+              timeoutMs: selectorBudget,
+            });
+            active();
+          }
           stage = 'reattest';
           reservations.assertReceiptContext(receipt, 'recovery');
           assert.deepEqual(await reservations.assertReceipt(receipt), entry);
@@ -180,7 +193,7 @@ async function captureRailgunOwnOperation({
             })
           );
           active();
-          return freeze({ status: 'captured', capture });
+          return freeze({ status: 'captured', capture, ...(derived ? { derived } : {}) });
         } catch {
           // A missing/incomplete operation or changed observation is an expected
           // refusal, not a reason to tear down healthy reservation storage.
@@ -201,4 +214,11 @@ async function captureRailgunOwnOperation({
     scope?.close();
   }
 }
-module.exports = { captureRailgunOwnOperation };
+module.exports = {
+  captureRailgunOwnOperation: (options) => captureRailgunOwnOperation(options),
+  captureRailgunOwnOperationSelector: ({ archive, ...options } = {}) => {
+    if (typeof archive !== 'string')
+      return Promise.resolve(Object.freeze({ status: 'refused', stage: 'context' }));
+    return captureRailgunOwnOperation(options, archive);
+  },
+};

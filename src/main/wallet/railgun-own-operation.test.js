@@ -1,3 +1,7 @@
+const mockDerive = jest.fn();
+jest.mock('./railgun-own-selector', () => ({
+  deriveRailgunOwnSelector: (...args) => mockDerive(...args),
+}));
 let mockEnrollment, mockJournal, mockHandle;
 jest.mock('./railgun-account-enrollment', () => ({
   isRailgunAccountEnrollment: (value) => value === mockEnrollment,
@@ -10,7 +14,10 @@ jest.mock('./private-submission-journal', () => ({
   },
 }));
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
-const { captureRailgunOwnOperation: capture } = require('./railgun-own-operation');
+const {
+  captureRailgunOwnOperation: capture,
+  captureRailgunOwnOperationSelector: captureSelector,
+} = require('./railgun-own-operation');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const { digestRailgunPrivateCapsule } = require('./railgun-private-capsule');
@@ -76,6 +83,7 @@ function configure(unshield = false, archived = false) {
   };
 }
 beforeEach(() => {
+  mockDerive.mockReset();
   caller = new AbortController();
   scope = createPrivacyScope({ profileId: 'own-operation', signal: new AbortController().signal });
   receipt = Object.freeze({});
@@ -296,4 +304,53 @@ test('invalid enrollment and selectors refuse before store acquisition', async (
   caller.abort();
   expect((await capture(input)).status).toBe('refused');
   expect(mockEnrollment.openReservations).not.toHaveBeenCalled();
+});
+
+test('selector executes inside recovery and settles before its final attestation', async () => {
+  mockDerive.mockImplementation(async (options) => {
+    expect(inRecovery).toBe(true);
+    expect(options.provedTransaction).toEqual(stored.provedTransaction);
+    expect(options.signal.aborted).toBe(false);
+    return Object.freeze({ railgunTxid: '1'.repeat(64), utilityExitObserved: true });
+  });
+  const result = await captureSelector({ ...input, archive: '/runtime.asar' });
+  expect(result.status).toBe('captured');
+  expect(result.derived.utilityExitObserved).toBe(true);
+  expect(mockDerive).toHaveBeenCalledTimes(1);
+  expect(inRecovery).toBe(false);
+  expect(capsules.readSigned).toHaveBeenCalledTimes(2);
+});
+test('selector refusal returns a value inside recovery and permits another capture', async () => {
+  mockDerive.mockRejectedValue(Error('selector unavailable'));
+  expect(await captureSelector({ ...input, archive: '/runtime.asar' })).toEqual({
+    status: 'refused',
+    stage: 'selector',
+  });
+  expect((await capture(input)).status).toBe('captured');
+});
+test('selector cancellation drains the outstanding derivation before leaving recovery', async () => {
+  let release, started;
+  const entered = new Promise((resolve) => {
+    started = resolve;
+  });
+  mockDerive.mockImplementation(async () => {
+    started();
+    await new Promise((resolve) => {
+      release = resolve;
+    });
+    return {};
+  });
+  let settled = false;
+  const pending = captureSelector({ ...input, archive: '/runtime.asar' }).then((result) => {
+    settled = true;
+    return result;
+  });
+  await entered;
+  caller.abort();
+  await Promise.resolve();
+  expect(inRecovery).toBe(true);
+  expect(settled).toBe(false);
+  release();
+  expect((await pending).status).toBe('refused');
+  expect(inRecovery).toBe(false);
 });
