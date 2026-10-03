@@ -111,6 +111,7 @@ const { createPrivacyScope } = require('../networks/privacy-context');
 const {
   proveRailgunAccountPrivateOperation: prove,
   consumeRailgunPrivateSigningPermit: consume,
+  claimRailgunPrivateCompletion: claim,
 } = require('./railgun-private-operation');
 const fixture = require('../../../scripts/fixtures/railgun-capsule-data');
 const { normalizeRailgunPrivateOffer } = require('./railgun-private-preparation');
@@ -169,6 +170,7 @@ beforeEach(() => {
   mock.signed = {};
   mock.holdId = 'a'.repeat(64);
   mock.reservations = {
+    signal: mock.scope.signal,
     assertAvailable: async () => mockStep('available'),
     reserve: async () => {
       mockStep('reserve');
@@ -176,7 +178,7 @@ beforeEach(() => {
     },
     assertReceipt: async (v) => {
       mockStep('hold-check');
-      return { id: mock.holdId, state: v === mock.signed ? 'signing' : 'held' };
+      return { id: mock.holdId, state: v === mock.signed ? 'signing' : 'held', signing: mock.evidence };
     },
     assertReceiptContext: (v, kind) => {
       if (v !== mock.signed || kind !== 'operation') throw Error('origin');
@@ -184,6 +186,7 @@ beforeEach(() => {
     abandon: async () => mockStep('abandon'),
   };
   mock.capsules = {
+    signal: mock.scope.signal,
     inspect: async () => {
       mockStep('capacity');
       return { records: 0, capacity: 32 };
@@ -191,6 +194,7 @@ beforeEach(() => {
     put: async (_receipt, capsule, authorizationDigest) => {
       mockStep('put');
       mock.stored = {
+        capsule,
         capsuleDigest: require('./railgun-private-capsule').digestRailgunPrivateCapsule(capsule),
         authorizationDigest,
       };
@@ -204,8 +208,14 @@ beforeEach(() => {
       mockStep('capsule-check');
       return mock.stored;
     },
-    saveSignature: async () => mockStep('save-signature'),
-    saveProvedTransaction: async () => mockStep('save-proof'),
+    saveSignature: async (_receipt, signature) => {
+      mockStep('save-signature');
+      mock.stored.signature = signature;
+    },
+    saveProvedTransaction: async (_receipt, transaction) => {
+      mockStep('save-proof');
+      mock.stored.provedTransaction = transaction;
+    },
   };
   mock.enrollment = {
     signal: mock.scope.signal,
@@ -307,8 +317,8 @@ beforeEach(() => {
   };
 });
 afterEach(() => mock.scope.close());
-test('durability, one-use key permission, B/A exits and C precede a saved proof; no submission authority', async () => {
-  await expect(prove(options)).resolves.toEqual({
+test('durability, one-use key permission, B/A exits and C precede a saved proof and completion', async () => {
+  await expect(prove(options)).resolves.toMatchObject({
     status: 'proved',
     holdId: mock.holdId,
     submissionEnabled: false,
@@ -336,6 +346,66 @@ test('durability, one-use key permission, B/A exits and C precede a saved proof;
   expect(mock.events).not.toContain('abandon');
   expect(mock.evidence.submitter).toBe(mock.owner);
   expect(mock.proofClosed && mock.poiClosed && mock.preflightClosed).toBe(true);
+});
+test('completion cannot be forged, moved to another owner or claimed twice', async () => {
+  const result = await prove(options);
+  expect(() => claim({}, mock.identity, mock.enrollment)).toThrow();
+  expect(() => claim(result.completion.receipt, {}, mock.enrollment)).toThrow();
+  expect(() => claim(result.completion.receipt, mock.identity, {})).toThrow();
+  const claimed = claim(result.completion.receipt, mock.identity, mock.enrollment);
+  const evidence = claimed.assertCurrent();
+  expect(evidence.stored.provedTransaction).toEqual(mock.offer.transaction);
+  expect(evidence.entry.signing.submitter).toBe(mock.owner);
+  expect(Object.isFrozen(evidence.stored.capsule.preparation.expected)).toBe(true);
+  mock.stored.provedTransaction = {};
+  expect(claimed.assertCurrent().stored.provedTransaction).toEqual(mock.offer.transaction);
+  expect(() => claim(result.completion.receipt, mock.identity, mock.enrollment)).toThrow();
+  claimed.close();
+  expect(() => claimed.assertCurrent()).toThrow();
+});
+test('completion survives wallet closure but is revoked by identity/enrollment closure', async () => {
+  const wallet = new AbortController();
+  mock.account.signal = wallet.signal;
+  const result = await prove(options);
+  wallet.abort();
+  const claimed = claim(result.completion.receipt, mock.identity, mock.enrollment);
+  expect(claimed.assertCurrent().entry.id).toBe(mock.holdId);
+  mock.scope.close();
+  expect(() => claimed.assertCurrent()).toThrow();
+});
+test('completion expires even after claiming', async () => {
+  jest.useFakeTimers();
+  try {
+    mock.data.deadline = performance.now() + 175000;
+    const result = await prove(options);
+    const claimed = claim(result.completion.receipt, mock.identity, mock.enrollment);
+    await jest.advanceTimersByTimeAsync(120000);
+    expect(() => claimed.assertCurrent()).toThrow();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+test.each(['identity', 'enrollment', 'reservations', 'capsules'])(
+  'independent %s closure revokes completion',
+  async (owner) => {
+    const controller = new AbortController();
+    mock[owner].signal = controller.signal;
+    const result = await prove(options);
+    const claimed = claim(result.completion.receipt, mock.identity, mock.enrollment);
+    expect(claimed.signal.aborted).toBe(false);
+    controller.abort();
+    expect(claimed.signal.aborted).toBe(true);
+    expect(() => claimed.assertCurrent()).toThrow();
+  }
+);
+test('proof readback mismatch retains signing hold without issuing completion', async () => {
+  mock.capsules.saveProvedTransaction = async () => {
+    mock.stored.provedTransaction = { ...mock.offer.transaction, data: '0x' };
+  };
+  const result = await prove(options);
+  expect(result.status).toBe('signed-unfinished');
+  expect(result.completion).toBeUndefined();
+  expect(mock.events).not.toContain('abandon');
 });
 test('Transact input refuses before local stores, network or key', async () => {
   mock.owned.ownedPoi[0].type = 'Transact';

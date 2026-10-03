@@ -35,6 +35,7 @@ const { verifyRailgunPrivateProof, assertRailgunPrivateProof } = require('./rail
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const pins = require('./railgun-shield-pins.json');
 const permits = new WeakMap(),
+  completions = new WeakMap(),
   busy = new WeakSet();
 const hash = (v) =>
   createHash('sha256')
@@ -46,6 +47,44 @@ const fail = () =>
     code: 'RAILGUN_PRIVATE_OPERATION_REFUSED',
   });
 const KEY_MARGIN_MS = 20000;
+// Only this controller can mint provenance. This is deliberately separate from
+// the wallet/A lifetime: submission first closes the wallet and enters recovery.
+// It attests past gates, never fresh POI, chain state or permission to broadcast.
+function complete({ identity, enrollment, reservations, capsules, parent, entry, stored }) {
+  const started = performance.now(), deadline = started + 120000;
+  const scope = createPrivacyScope({
+    profileId: getPrivacyContext(parent).profileId,
+    signal: AbortSignal.any([
+      identity.signal, enrollment.signal, reservations.signal, capsules.signal,
+    ]),
+    isCurrent: () => {
+      assertRailgunIdentity(identity, parent);
+      return true;
+    },
+  });
+  const receipt = Object.freeze({});
+  const close = () => scope.close();
+  const timer = setTimeout(close, 120000);
+  timer.unref?.();
+  scope.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+  const freeze = (v) => {
+    if (v && typeof v === 'object') {
+      Object.values(v).forEach(freeze);
+      Object.freeze(v);
+    }
+    return v;
+  };
+  const evidence = freeze(JSON.parse(JSON.stringify({ entry, stored })));
+  const assertCurrent = () => {
+    assert.ok(!scope.signal.aborted && performance.now() >= started && performance.now() < deadline);
+    assertRailgunIdentity(identity, parent);
+    getPrivacyContext(parent);
+    return evidence;
+  };
+  assertCurrent();
+  completions.set(receipt, { identity, enrollment, assertCurrent, close, signal: scope.signal });
+  return Object.freeze({ receipt, close, signal: scope.signal });
+}
 async function prove({ account, owners, request, archive, proverArchive, artifactDirectory }) {
   owners = Object.freeze({ ...owners });
   request = Object.freeze({ ...request });
@@ -85,6 +124,8 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
     signed,
     holdId,
     proof,
+    signedCapsule,
+    signedSignature,
     signingAttempted = false,
     stage = 'local';
   const active = () => {
@@ -348,6 +389,8 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
             assert.ok(signed);
             stage = 'signature-storage';
             await capsules.saveSignature(signed, signature.signature);
+            signedCapsule = normalized;
+            signedSignature = signature.signature;
             current();
             return { status: 'signed', signature: signature.signature };
           } catch {
@@ -386,9 +429,18 @@ async function prove({ account, owners, request, archive, proverArchive, artifac
     assertRailgunPrivateProof(proof.receipt, enrollment, evidence);
     stage = 'proof-storage';
     await capsules.saveProvedTransaction(signed, result.operation.transaction);
+    const stored = await capsules.get(holdId);
+    const entry = await reservations.assertReceipt(signed);
+    assert.equal(entry.id, holdId);
+    assert.equal(entry.state, 'signing');
+    assert.equal(entry.signing.submitter, submitter);
+    assert.deepEqual(stored.capsule, signedCapsule);
+    assert.deepEqual(stored.signature, signedSignature);
+    assert.deepEqual(stored.provedTransaction, result.operation.transaction);
     assertRailgunPrivateProof(proof.receipt, enrollment, evidence);
     active();
-    return Object.freeze({ status: 'proved', holdId, submissionEnabled: false });
+    const completion = complete({ identity, enrollment, reservations, capsules, parent, entry, stored });
+    return Object.freeze({ status: 'proved', holdId, completion, submissionEnabled: false });
   } catch {
     return Object.freeze({
       status: signingAttempted ? 'signed-unfinished' : 'refused',
@@ -423,4 +475,23 @@ function consumeRailgunPrivateSigningPermit(permit, identity, signerToken) {
   permits.delete(permit);
   return Object.freeze({ assertCurrent: value.assertCurrent });
 }
-module.exports = { proveRailgunAccountPrivateOperation, consumeRailgunPrivateSigningPermit };
+function claimRailgunPrivateCompletion(receipt, identity, enrollment) {
+  try {
+    const value = completions.get(receipt);
+    assert.ok(value && value.identity === identity && value.enrollment === enrollment);
+    value.assertCurrent();
+    completions.delete(receipt);
+    return Object.freeze({
+      assertCurrent: value.assertCurrent,
+      close: value.close,
+      signal: value.signal,
+    });
+  } catch {
+    throw fail();
+  }
+}
+module.exports = {
+  proveRailgunAccountPrivateOperation,
+  consumeRailgunPrivateSigningPermit,
+  claimRailgunPrivateCompletion,
+};

@@ -146,6 +146,7 @@ exports.qualify = async function qualify({
   try {
     const {
       proveRailgunAccountPrivateOperation: prove,
+      claimRailgunPrivateCompletion: claim,
     } = require('../../src/main/wallet/railgun-private-operation');
     const options = {
       account,
@@ -197,6 +198,23 @@ exports.qualify = async function qualify({
       { status: 'refused', stage: 'input-provenance' }
     );
     assert.deepEqual({ poiCalls, preflightCalls, keyReplies }, before);
+    assert.throws(() => claim({}, identity, enrollment));
+    assert.throws(() => claim(result.completion.receipt, {}, enrollment));
+    await account.close();
+    const completion = claim(result.completion.receipt, identity, enrollment);
+    const completed = completion.assertCurrent();
+    assert.deepEqual(completed.stored, stored);
+    assert.throws(() => claim(result.completion.receipt, identity, enrollment));
+    await reservations.withSigningRecovery(async (records, context) => {
+      context.assertCurrent();
+      const recovered = records.find((v) => v.entry.id === result.holdId);
+      assert.ok(recovered);
+      assert.deepEqual(recovered.entry, completed.entry);
+      assert.deepEqual(await capsules.get(result.holdId), completed.stored);
+      assert.equal(completion.assertCurrent(), completed);
+    });
+    completion.close();
+    assert.throws(() => completion.assertCurrent());
     return Object.freeze({
       kind,
       status: 'proved',
@@ -214,6 +232,9 @@ exports.qualify = async function qualify({
       negativePoiNoReservationOrKey: true,
       duplicateNoNetworkOrKey: true,
       transactRefusedBeforeSideEffects: true,
+      completionSurvivesWalletClose: true,
+      completionMatchesExclusiveRecovery: true,
+      completionUnforgeableAndSingleClaim: true,
       livePoiCalls: 0,
       submissions: 0,
     });
