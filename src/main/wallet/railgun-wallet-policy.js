@@ -6,6 +6,7 @@ const fs = require('fs');
 const { createHash } = require('crypto');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const engine = require('./railgun-engine-manifest.json');
+const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const sources = [
   'railgun-wallet-job',
   'railgun-wallet-runner',
@@ -33,6 +34,7 @@ function getRailgunWalletPolicy(archive) {
       11155111,
       engine.sha256,
       engine.inventory.sha256,
+      getRailgunPublicPolicy(archive),
       sources.map((name) => [name, hash(fs.readFileSync(require.resolve('./' + name)))]),
     ])
   );

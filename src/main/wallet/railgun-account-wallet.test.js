@@ -3,6 +3,11 @@ const mockOpenStore = jest.fn(),
   mockCreateJournal = jest.fn(),
   mockRead = jest.fn();
 const mockAssertCoordinator = jest.fn();
+const mockAssertPublic = jest.fn();
+jest.mock('./railgun-account-public', () => ({
+  assertRailgunAccountPublic: (...args) => mockAssertPublic(...args),
+}));
+jest.mock('./railgun-public-policy', () => ({ getRailgunPublicPolicy: () => 'a'.repeat(64) }));
 jest.mock('./railgun-scan-coordinator', () => ({
   assertRailgunScanCoordinator: (...args) => mockAssertCoordinator(...args),
 }));
@@ -151,6 +156,13 @@ afterEach(async () => {
   mockSession.close();
   await mockSession.closed;
   scope.close();
+});
+test('foreign or obsolete enrolled public authority refuses before opening any wallet store', async () => {
+  mockAssertPublic.mockImplementationOnce(() => {
+    throw Error('public binding');
+  });
+  await expect(openRailgunAccountWallet(options)).rejects.toThrow('public binding');
+  expect(mockOpenStore).not.toHaveBeenCalled();
 });
 test('active restoration authenticates the expected store before journal construction and revalidation', async () => {
   const opened = await openRailgunAccountWallet(options);

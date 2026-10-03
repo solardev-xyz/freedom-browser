@@ -105,8 +105,11 @@ async function runRailgunWalletSnapshot({
     return { ...result, closed };
   } catch (error) {
     task?.close();
-    if (task) error.closed = await task.closed;
-    throw error;
+    const closed = await task?.closed;
+    throw Object.assign(new Error('Railgun wallet job failed', { cause: error }), {
+      code: error?.code,
+      closed,
+    });
   } finally {
     task?.close();
     if (task) await task.closed;

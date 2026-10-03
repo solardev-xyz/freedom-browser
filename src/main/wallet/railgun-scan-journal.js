@@ -111,7 +111,7 @@ function sameRangeContent(left, right) {
   };
   return normalize(left) === normalize(right);
 }
-function unpack(text, binding, storeId, ledgerId) {
+function unpack(text, binding, storeId, ledgerId, policy) {
   check(typeof text === 'string' && Buffer.byteLength(text) <= MAX_RECORD);
   let value;
   try {
@@ -130,10 +130,12 @@ function unpack(text, binding, storeId, ledgerId) {
       'sequence',
       'checkpoint',
       'pending',
+      ...(policy === undefined ? [] : ['policy']),
     ])
   );
   check(
-    value.version === 2 &&
+    value.version === (policy === undefined ? 2 : 3) &&
+      value.policy === policy &&
       value.binding === binding &&
       value.storeId === storeId &&
       value.ledgerId === ledgerId
@@ -145,7 +147,8 @@ function unpack(text, binding, storeId, ledgerId) {
     if (item) check(item.state.storeId === storeId && item.source.ledgerId === ledgerId);
   if (pending) contiguous(checkpoint, pending);
   return {
-    version: 2,
+    version: policy === undefined ? 2 : 3,
+    ...(policy === undefined ? {} : { policy }),
     binding,
     storeId,
     ledgerId,
@@ -184,9 +187,13 @@ async function createRailgunScanJournal({
   ledgerId,
   storeSession,
   assertSource,
+  policy,
+  create,
 }) {
   const context = getPrivacyContext(handle),
     subject = context.subject;
+  check(policy === undefined || (digest(policy) && typeof create === 'boolean'));
+  check(create === undefined || typeof create === 'boolean');
   check(
     subject.kind === 'private-account' &&
       subject.protocol === 'railgun' &&
@@ -270,10 +277,12 @@ async function createRailgunScanJournal({
     });
     await storage.update(RECORD_KEY, (text) => {
       active();
+      if (create !== undefined) check(create ? text === null : text !== null);
       const old =
         text === null
           ? {
-              version: 2,
+              version: policy === undefined ? 2 : 3,
+              ...(policy === undefined ? {} : { policy }),
               binding,
               storeId,
               ledgerId,
@@ -283,7 +292,7 @@ async function createRailgunScanJournal({
               checkpoint: null,
               pending: null,
             }
-          : unpack(text, binding, storeId, ledgerId);
+          : unpack(text, binding, storeId, ledgerId, policy);
       current = { ...old, generation: old.generation + 1, lease, sequence: old.sequence + 1 };
       return encode(current);
     });
@@ -300,7 +309,7 @@ async function createRailgunScanJournal({
     try {
       await storage.update(RECORD_KEY, (text) => {
         active();
-        const old = unpack(text, binding, storeId, ledgerId);
+        const old = unpack(text, binding, storeId, ledgerId, policy);
         check(
           old.lease === lease &&
             old.generation === current.generation &&
@@ -323,7 +332,7 @@ async function createRailgunScanJournal({
     if (busy || retaining) throw fail('RAILGUN_SCAN_BUSY');
     const text = await storage.get(RECORD_KEY);
     active();
-    const value = unpack(text, binding, storeId, ledgerId);
+    const value = unpack(text, binding, storeId, ledgerId, policy);
     check(
       value.lease === lease &&
         value.sequence === current.sequence &&

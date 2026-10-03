@@ -9,7 +9,8 @@ const fs = require('fs'),
 const { readRailgunLogCapture } = require('./railgun-log-capture-data');
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 async function main() {
-  const [captureDir, headerDir, directory] = process.argv.slice(2);
+  const [captureDir, headerDir, directory, archive] = process.argv.slice(2);
+  assert.ok(archive === undefined || path.isAbsolute(archive));
   for (const value of [captureDir, headerDir, directory]) assert.ok(path.isAbsolute(value));
   assert.ok(!fs.existsSync(directory));
   fs.mkdirSync(directory, { mode: 0o700 });
@@ -152,7 +153,12 @@ async function main() {
     });
     const rpcHandle = scope.getContext({ ...subject, role: 'protocol-rpc' }),
       engineHandle = scope.getContext({ ...subject, role: 'engine' });
-    jobs = require('./railgun-coordinated-electron').createJobs(engineHandle, qualifiedThrough);
+    jobs = archive
+      ? require('../src/main/wallet/railgun-public-run').createRailgunPublicJobs({
+          handle: engineHandle,
+          archive,
+        })
+      : require('./railgun-coordinated-electron').createJobs(engineHandle, qualifiedThrough);
     ledger = await createRailgunSourceLedger({
       handle: rpcHandle,
       filename: path.join(directory, 'source.sqlite'),
@@ -222,6 +228,11 @@ async function main() {
     await Promise.all([ledger?.closed, session?.closed]);
   }
   const sources = [
+    'src/main/wallet/railgun-public-job.js',
+    'src/main/wallet/railgun-public-run.js',
+    'src/main/wallet/railgun-public-policy.js',
+    'src/main/wallet/railgun-engine-runtime.js',
+    'src/main/wallet/railgun-engine-manifest.json',
     'scripts/qualify-railgun-coordinated-electron.js',
     'scripts/railgun-coordinated-electron.js',
     'scripts/fixtures/railgun-coordinated-electron-job.js',
@@ -256,7 +267,7 @@ async function main() {
     for (const range of ranges) {
       const started = performance.now();
       // This nonempty historical range contains all three public event categories.
-      const interrupt = range.from === 7000000;
+      const interrupt = !archive && range.from === 7000000;
       if (interrupt) crashPhase = 'nullifiers';
       try {
         await coordinator.advance({ to: range.to, anchor: capture.report.anchor });
@@ -315,6 +326,8 @@ async function main() {
       logSetSha256: capture.logSetSha256,
       headerFileSha256: headerReport.headerFileSha256,
       controlledArchivedRpc: true,
+      authenticatedEngineArchive: !!archive,
+      interruptionQualified: !archive,
       liveRpc: false,
       engine: 'authenticated9.6.0-guarded-electron-utility',
       electron: process.versions.electron,

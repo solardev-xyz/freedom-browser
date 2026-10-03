@@ -57,6 +57,27 @@ async function open(overrides = {}) {
     });
   return journal;
 }
+test('policy journals require explicit creation and refuse missing, changed-policy and legacy reopen without mutation', async () => {
+  const policy = 'd'.repeat(64);
+  await expect(open({ policy, create: false })).rejects.toThrow();
+  const journal = await open({ policy, create: true });
+  expect(await journal.readState()).toMatchObject({ version: 3, policy });
+  journal.close();
+  const before = fs.readFileSync(options.filename);
+  await expect(open({ policy, create: true })).rejects.toThrow();
+  await expect(open({ policy: 'e'.repeat(64), create: false })).rejects.toThrow();
+  await expect(open()).rejects.toThrow();
+  expect(fs.readFileSync(options.filename)).toEqual(before);
+  const reopened = await open({ policy, create: false });
+  expect(await reopened.readState()).toMatchObject({ version: 3, policy });
+});
+test('a legacy journal is not silently promoted into an enrolled public policy', async () => {
+  const journal = await open();
+  journal.close();
+  const before = fs.readFileSync(options.filename);
+  await expect(open({ policy: 'd'.repeat(64), create: false })).rejects.toThrow();
+  expect(fs.readFileSync(options.filename)).toEqual(before);
+});
 beforeEach(() => {
   journals = [];
   observation = range().state;

@@ -14,6 +14,8 @@ const { getPrivacyStoragePath } = require('./privacy-storage');
 const { createRailgunKohakuRead } = require('./railgun-kohaku-read');
 const { assertRailgunScanCoordinator } = require('./railgun-scan-coordinator');
 const { getRailgunWalletPolicy } = require('./railgun-wallet-policy');
+const { assertRailgunAccountPublic } = require('./railgun-account-public');
+const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const fail = () =>
   Object.assign(new Error('Railgun wallet requires recovery'), {
     code: 'RAILGUN_ACCOUNT_WALLET_REFUSED',
@@ -48,6 +50,7 @@ async function openRailgunAccountWallet({
     walletId = descriptor.walletId;
   check(walletId === enrollment.descriptor.walletId);
   assertRailgunScanCoordinator(coordinator, handle);
+  assertRailgunAccountPublic(coordinator, enrollment, getRailgunPublicPolicy(archive));
   const runner = createRailgunAccountRunner({ identity, archive, policy });
   let generation, candidate, walletSession, coverageStore, journal, scan, lifetime, onAbort;
   const close = async () => {

@@ -27,13 +27,15 @@ async function main() {
   const vault = accountArchive ? require('../src/main/identity/vault') : null;
   let lockOnViewingKey = false,
     failWalletBatch = false,
+    failPublicCommit = false,
     failPublication = false,
     cancelledViewingKey,
     cancelledViewingClosed,
     cancelledViewingMessages = 0,
     cancelledViewingProcessClosed = false,
     cancelledViewingProcess = null;
-  const walletRestores = [];
+  const walletRestores = [],
+    applications = [];
   if (composition) {
     const catalogModule = require('../src/main/wallet/railgun-wallet-catalog'),
       original = catalogModule.createRailgunWalletCatalog;
@@ -81,6 +83,14 @@ async function main() {
               vault.lockVault();
             }
             if (
+              failPublicCommit &&
+              options.filename === require.resolve('../src/main/wallet/railgun-public-job') &&
+              message.method === 'txCommit'
+            ) {
+              failPublicCommit = false;
+              throw Error('Injected acknowledged public commit interruption');
+            }
+            if (
               failWalletBatch &&
               message.channel === 'wallet' &&
               JSON.parse(message.wire).method === 'batch'
@@ -103,6 +113,30 @@ async function main() {
         }
       });
       return task;
+    };
+  }
+  if (composition) {
+    const publicModule = require('../src/main/wallet/railgun-public-run'),
+      originalJobs = publicModule.createRailgunPublicJobs;
+    publicModule.createRailgunPublicJobs = (options) => {
+      const jobs = originalJobs(options);
+      return Object.freeze({
+        ...jobs,
+        async apply(input, capability) {
+          try {
+            const result = await jobs.apply(input, capability);
+            applications.push({ to: input.plan.to.number, ...result });
+            return result;
+          } catch (error) {
+            applications.push({
+              to: input.plan.to.number,
+              interrupted: true,
+              closed: error.closed,
+            });
+            throw error;
+          }
+        },
+      });
     };
   }
   if (accountArchive) {
@@ -212,8 +246,8 @@ async function main() {
     source,
     session,
     coordinator,
+    publicAccount,
     crashPhase = null;
-  const applications = [];
   async function open(create) {
     scope = createPrivacyScope({
       profileId: accountProfileId ?? 'coordinated-public-history',
@@ -221,66 +255,77 @@ async function main() {
     });
     const rpcHandle = scope.getContext({ ...subject, role: 'protocol-rpc' }),
       engineHandle = scope.getContext({ ...subject, role: 'engine' });
-    jobs = require('./railgun-coordinated-electron').createJobs(engineHandle, qualifiedThrough);
-    ledger = await createRailgunSourceLedger({
-      handle: rpcHandle,
-      filename: path.join(directory, 'source.sqlite'),
-      key: Buffer.alloc(32, 61),
-      binding: 'a'.repeat(64),
-      create,
-    });
-    source = createRailgunScanSource({
-      handle: rpcHandle,
-      ledger,
-      projectRange: async (...args) => {
-        try {
-          return await jobs.project(...args);
-        } catch (error) {
-          console.error('public planner diagnostic', error.stack);
-          throw error;
-        }
-      },
-    });
-    session = startRailgunSessionWorker({
-      handle: engineHandle,
-      storage: {
-        format: 'paged-v2',
-        filename: path.join(directory, 'engine.sqlite'),
-        key: Buffer.alloc(32, 62),
-        binding: 'b'.repeat(64),
+    if (enrollment) {
+      publicAccount =
+        await require('../src/main/wallet/railgun-account-public').openRailgunAccountPublic({
+          enrollment,
+          archive: accountArchive,
+          create,
+        });
+      coordinator = publicAccount.coordinator;
+    } else {
+      jobs = require('./railgun-coordinated-electron').createJobs(engineHandle, qualifiedThrough);
+      ledger = await createRailgunSourceLedger({
+        handle: rpcHandle,
+        filename: path.join(directory, 'source.sqlite'),
+        key: Buffer.alloc(32, 61),
+        binding: 'a'.repeat(64),
         create,
-      },
-      createProvider: ({ signal }) => ({
-        signal,
-        request: async () => {
-          throw Error('Engine RPC forbidden');
+      });
+      source = createRailgunScanSource({
+        handle: rpcHandle,
+        ledger,
+        projectRange: async (...args) => {
+          try {
+            return await jobs.project(...args);
+          } catch (error) {
+            console.error('public planner diagnostic', error.stack);
+            throw error;
+          }
         },
-      }),
-      onClose: () => {},
-    });
-    await session.ready;
-    coordinator = await createRailgunScanCoordinator({
-      handle: engineHandle,
-      storeSession: session,
-      source,
-      journalStorage: { directory, key: Buffer.alloc(32, 63), binding: 'c'.repeat(64) },
-      applyRange: async (input, capability) => {
-        try {
-          applications.push({
-            to: input.plan.to.number,
-            ...(await jobs.apply({ ...input, crashPhase }, capability)),
-          });
-        } catch (error) {
-          applications.push({
-            to: input.plan.to.number,
-            interrupted: true,
-            phase: error.phase,
-            exitSignal: error.exitSignal,
-          });
-          throw error;
-        }
-      },
-    });
+      });
+      session = startRailgunSessionWorker({
+        handle: engineHandle,
+        storage: {
+          format: 'paged-v2',
+          filename: path.join(directory, 'engine.sqlite'),
+          key: Buffer.alloc(32, 62),
+          binding: 'b'.repeat(64),
+          create,
+        },
+        createProvider: ({ signal }) => ({
+          signal,
+          request: async () => {
+            throw Error('Engine RPC forbidden');
+          },
+        }),
+        onClose: () => {},
+      });
+      await session.ready;
+      coordinator = await createRailgunScanCoordinator({
+        handle: engineHandle,
+        storeSession: session,
+        source,
+        journalStorage: { directory, key: Buffer.alloc(32, 63), binding: 'c'.repeat(64) },
+        applyRange: async (input, capability) => {
+          try {
+            applications.push({
+              to: input.plan.to.number,
+              ...(await jobs.apply({ ...input, crashPhase }, capability)),
+            });
+          } catch (error) {
+            console.error('public apply diagnostic', error.stack);
+            applications.push({
+              to: input.plan.to.number,
+              interrupted: true,
+              phase: error.phase,
+              exitSignal: error.exitSignal,
+            });
+            throw error;
+          }
+        },
+      });
+    }
     catalog =
       enrollment?.catalog ??
       (await createRailgunWalletCatalog({
@@ -301,6 +346,7 @@ async function main() {
     walletDirectory = generation?.directory ?? catalog.activeFor(policy).directory;
   }
   async function close() {
+    await publicAccount?.close();
     catalog?.close();
     coordinator?.close();
     source?.close();
@@ -310,6 +356,10 @@ async function main() {
     await Promise.all([ledger?.closed, session?.closed]);
   }
   const sources = [
+    'src/main/wallet/railgun-account-public.js',
+    'src/main/wallet/railgun-public-job.js',
+    'src/main/wallet/railgun-public-run.js',
+    'src/main/wallet/railgun-public-policy.js',
     'scripts/qualify-railgun-wallet-journal.js',
     'src/main/wallet/railgun-account-wallet.js',
     'src/main/wallet/railgun-wallet-policy.js',
@@ -406,7 +456,26 @@ async function main() {
     await open(true);
     let previousEvidence;
     for (const stage of [10, 20, 30]) {
-      if (stage !== 20 || accountIdentity)
+      if (enrollment && stage === 30) {
+        failPublicCommit = true;
+        await assert.rejects(coordinator.advance({ to: stage, anchor: capture.report.anchor }));
+        assert.equal(failPublicCommit, false);
+        assert.equal(applications.at(-1).interrupted, true);
+        await close();
+        enrollment.close();
+        enrollment =
+          await require('../src/main/wallet/railgun-account-enrollment').openRailgunAccountEnrollment(
+            { identity: accountIdentity }
+          );
+        await open(false);
+        const recovered = await coordinator.recover();
+        assert.equal(recovered.to.number, stage);
+        runs.push({
+          attempt: 'interrupted-public-apply',
+          acknowledgedCommitInterrupted: true,
+          recoveredThrough: recovered.to.number,
+        });
+      } else if (stage !== 20 || accountIdentity)
         await coordinator.advance({ to: stage, anchor: capture.report.anchor });
       if (previousEvidence) assert.throws(() => coordinator.assertSnapshot(previousEvidence));
       for (const attempt of accountIdentity
@@ -803,7 +872,7 @@ async function main() {
         observedAmount: '2700',
       });
     }
-    assert.equal(applications.length, enrollment ? 4 : 3);
+    assert.equal(applications.length, enrollment ? 5 : 3);
     if (accountIdentity) {
       const handle = scope.getContext({ ...subject, role: 'engine' });
       walletSession = startRailgunSessionWorker({
@@ -876,6 +945,8 @@ async function main() {
           publicViewingVector: true,
           vaultBoundAccount: !!accountIdentity,
           enrolledWalletComposition: !!enrollment,
+          authenticatedPublicJobs: !!enrollment,
+          enrolledPublicComposition: !!enrollment,
           cancelledViewingProcess,
           cancelledViewingMessages: accountIdentity ? cancelledViewingMessages : null,
           viewingKeyTransferCancelled: accountIdentity ? cancelledViewingProcessClosed : null,
@@ -893,6 +964,8 @@ async function main() {
           anchor: capture.report.anchor,
           logSetSha256: capture.logSetSha256,
           requests,
+          applications,
+          publicPolicy: enrollment ? publicAccount.policy : null,
           runs,
         },
         null,

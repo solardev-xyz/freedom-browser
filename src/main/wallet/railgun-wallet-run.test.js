@@ -1,4 +1,11 @@
-let mockDescriptor, mockRefuse, mockCopy, mockCancelledCopy, mockInput, mockRouter, mockTask;
+let mockDescriptor,
+  mockRefuse,
+  mockCopy,
+  mockCancelledCopy,
+  mockInput,
+  mockRouter,
+  mockTask,
+  mockFailure;
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: (v) => v }));
 jest.mock('./railgun-identity', () => ({
   assertRailgunIdentity: () => {
@@ -9,7 +16,7 @@ jest.mock('./railgun-identity', () => ({
     const viewingKey = Buffer.alloc(32, 7);
     try {
       mockCopy = await use({ viewingKey });
-      if (mockCancelledCopy) throw Error('identity revoked');
+      if (mockCancelledCopy) throw mockFailure || Error('identity revoked');
       return mockCopy;
     } finally {
       viewingKey.fill(0);
@@ -55,6 +62,7 @@ let scope, args;
 beforeEach(() => {
   mockRefuse = false;
   mockCancelledCopy = false;
+  mockFailure = null;
   mockCopy = mockTask = mockInput = null;
   mockDescriptor = { walletId: '1'.repeat(64), instanceId: '0zk1' + 'q'.repeat(123) };
   scope = createPrivacyScope({ profileId: 'view-run-test', signal: new AbortController().signal });
@@ -89,10 +97,23 @@ test('the viewing key is copied into a dedicated 32-byte backing buffer and neve
 });
 test('revocation after making the viewing-key copy wipes it even though no response is delivered', async () => {
   mockCancelledCopy = true;
-  await expect(runRailgunWalletSnapshot(args)).rejects.toThrow('identity revoked');
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    cause: new Error('identity revoked'),
+  });
   expect([...mockCopy]).toEqual(Array(32).fill(0));
   expect(mockTask.close).toHaveBeenCalled();
   expect(mockRouter.close).toHaveBeenCalledTimes(1);
+});
+test('frozen shared revocation reasons stay intact while utility exit is drained', async () => {
+  mockCancelledCopy = true;
+  mockFailure = Object.freeze(Object.assign(new Error('shared reason'), { code: 'REVOKED' }));
+  await expect(runRailgunWalletSnapshot(args)).rejects.toMatchObject({
+    cause: mockFailure,
+    code: 'REVOKED',
+    closed: { code: 'RAILGUN_PROCESS_CLOSED' },
+  });
+  expect(Object.keys(mockFailure)).toEqual(['code']);
+  expect([...mockCopy]).toEqual(Array(32).fill(0));
 });
 test('a revoked/foreign identity or wrong walletId starts no worker', async () => {
   mockRefuse = true;

@@ -3,7 +3,6 @@
  * No database, wallet keys, network or signer capability is accepted here.
  */
 const assert = require('assert/strict');
-const { AbiCoder, Interface, keccak256 } = require('ethers');
 const { paths } = require('./railgun-frontier');
 const {
   ZERO_NODES,
@@ -14,12 +13,13 @@ const FIELD = 218882428718392752222464057452572750885483644004160343436982041865
 const hex = (value) => BigInt(value).toString(16).padStart(64, '0');
 const bare = (value) => value.replace(/^0x/, '').toLowerCase();
 const segment = (n) => hex(n);
-const proxyAbi = new Interface([
+const proxyEvents = [
   'event ProxyUpgrade(address previousImplementation,address newImplementation)',
   'event ProxyOwnershipTransfer(address previousOwner,address newOwner)',
   'event ProxyPause()',
   'event ProxyUnpause()',
-]);
+];
+const proxyInterfaces = new WeakMap();
 const governanceEvents = new Set([
   'ProxyUpgrade',
   'ProxyOwnershipTransfer',
@@ -31,7 +31,10 @@ const governanceEvents = new Set([
   'Initialized',
   'VerifyingKeySet',
 ]);
-function parseRailgunSourceEvent(abi, log, qualifiedThrough = 0) {
+function parseRailgunSourceEvent(abi, log, qualifiedThrough = 0, ethers = require('ethers')) {
+  if (!proxyInterfaces.has(ethers.Interface))
+    proxyInterfaces.set(ethers.Interface, new ethers.Interface(proxyEvents));
+  const proxyAbi = proxyInterfaces.get(ethers.Interface);
   const event = abi.parseLog(log) ?? proxyAbi.parseLog(log);
   assert.ok(event, 'Unidentified proxy event');
   if (!['Shield', 'Transact', 'Nullified', 'Unshield'].includes(event.name)) {
@@ -40,7 +43,15 @@ function parseRailgunSourceEvent(abi, log, qualifiedThrough = 0) {
   }
   return event;
 }
-function createRailgunEventProjector({ abi, V2Events, poseidonHex, zero, qualifiedThrough = 0 }) {
+function createRailgunEventProjector({
+  abi,
+  V2Events,
+  poseidonHex,
+  zero,
+  qualifiedThrough = 0,
+  ethers = require('ethers'),
+}) {
+  const { AbiCoder, keccak256 } = ethers;
   assert.ok(Number.isSafeInteger(qualifiedThrough) && qualifiedThrough >= 0);
   assert.equal(typeof abi?.parseLog, 'function');
   assert.equal(typeof poseidonHex, 'function');
@@ -70,7 +81,7 @@ function createRailgunEventProjector({ abi, V2Events, poseidonHex, zero, qualifi
     );
     lastBlock = log.blockNumber;
     lastLog = log.logIndex;
-    const event = parseRailgunSourceEvent(abi, log, qualifiedThrough);
+    const event = parseRailgunSourceEvent(abi, log, qualifiedThrough, ethers);
     const { name, args } = event;
     if (name === 'Shield' || name === 'Transact') {
       const number = Number(args.treeNumber),
