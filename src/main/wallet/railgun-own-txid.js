@@ -172,4 +172,30 @@ function matchRailgunOwnTxid(input) {
     });
   }
 }
-module.exports = { matchRailgunOwnTxid };
+// Stable comparison data across observation refresh and archival. The original
+// active/archive record is still required by the matcher; this projection is
+// neither an authenticated account snapshot nor a current-finality grant.
+function projectRailgunOwnRecord(value) {
+  try {
+    const text = JSON.stringify(value);
+    assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 32768);
+    const { record, resolution } = resolvedRecord(JSON.parse(text));
+    assert.ok(
+      validRailgunTransactResolution(resolution, record) && resolution.outcome === 'matched'
+    );
+    return freeze({
+      hash: record.hash,
+      nonce: record.nonce,
+      intent: record.intent,
+      status: record.observation.status,
+      blockNumber: record.observation.blockNumber,
+      blockHash: record.observation.blockHash,
+      railgun: resolution,
+    });
+  } catch {
+    throw Object.assign(new Error('Railgun own record comparison unavailable'), {
+      code: 'RAILGUN_OWN_RECORD_REFUSED',
+    });
+  }
+}
+module.exports = { matchRailgunOwnTxid, projectRailgunOwnRecord };

@@ -227,6 +227,7 @@ async function createRailgunPrivateCapsuleStore({
         ![
           'RAILGUN_CAPSULE_STORE_CAPACITY',
           'RAILGUN_CAPSULE_NOT_FOUND',
+          'RAILGUN_CAPSULE_NOT_READY',
           'RAILGUN_CAPSULE_CONFLICT',
         ].includes(error.code)
       )
@@ -396,9 +397,31 @@ async function createRailgunPrivateCapsuleStore({
       }
     });
   }
+  // Recovery-only local data. A persisted signature/proof is not fresh signing,
+  // chain, POI or disclosure authority. Keep the binding inside its owning store.
+  async function readSigned(receipt) {
+    reservations.assertReceiptContext(receipt, 'recovery');
+    return exclusive(async () => {
+      const held = await reservations.assertReceipt(receipt);
+      active();
+      reservations.assertReceiptContext(receipt, 'recovery');
+      check(held.state === 'signing');
+      const entry = current.entries.find((value) => value.holdId === held.id);
+      if (!entry) throw fail('RAILGUN_CAPSULE_NOT_FOUND');
+      assertBinding(entry, held);
+      if (entry.signature === null || entry.provedTransaction === null)
+        throw fail('RAILGUN_CAPSULE_NOT_READY');
+      check(entry.signingDigest === hash(held.signing));
+      await attest();
+      active();
+      reservations.assertReceiptContext(receipt, 'recovery');
+      return entry;
+    });
+  }
   const instance = Object.freeze({
     put,
     markSigning,
+    readSigned,
     saveSignature: (receipt, value) => fill(receipt, 'signature', normalizeRailgunSignature(value)),
     saveProvedTransaction: (receipt, value) =>
       fill(receipt, 'provedTransaction', Object.freeze({ ...value })),

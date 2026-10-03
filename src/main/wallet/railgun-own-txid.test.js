@@ -1,8 +1,63 @@
-const { matchRailgunOwnTxid: match } = require('./railgun-own-txid');
+const {
+  matchRailgunOwnTxid: match,
+  projectRailgunOwnRecord: project,
+} = require('./railgun-own-txid');
 const { sample } = require('../../../scripts/fixtures/railgun-own-txid-data');
 const { fixture } = require('../../../scripts/fixtures/railgun-transact-data');
 const pins = require('./railgun-shield-pins.json');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
+test.each([false, true])(
+  'stable %s record projection survives refresh and archival as data only',
+  (unshield) => {
+    const active = sample(unshield).record,
+      archived = sample(unshield, true).record;
+    const value = project(active);
+    expect(project(archived)).toEqual(value);
+    active.state = 'attempted';
+    active.revision++;
+    active.attemptedAt++;
+    active.observation.observedAt++;
+    active.observation.confirmations++;
+    active.resolution.reviewedAt++;
+    expect(project(active)).toEqual(value);
+    expect(Object.keys(value)).toEqual([
+      'hash',
+      'nonce',
+      'intent',
+      'status',
+      'blockNumber',
+      'blockHash',
+      'railgun',
+    ]);
+    expect(Object.isFrozen(value.intent)).toBe(true);
+    expect(Object.isFrozen(value.railgun.transact.output)).toBe(true);
+    active.intent.digest = hex(999);
+    expect(value.intent.digest).not.toBe(active.intent.digest);
+    expect(value.railgun.transact.spendingEnabled).toBe(false);
+  }
+);
+test.each(['unresolved', 'reorged', 'metadata', 'mixed', 'archive-anchor', 'oversize'])(
+  'stable record projection still refuses %s metadata',
+  (mode) => {
+    const value = sample(false, mode === 'archive-anchor').record;
+    if (mode === 'unresolved') value.resolution = null;
+    if (mode === 'reorged') value.observation.status = 'reorged';
+    if (mode === 'metadata') value.observation.confirmations = 0;
+    if (mode === 'mixed') value.archivedAt = 1;
+    if (mode === 'archive-anchor') value.finalized.blockNumber = 299;
+    if (mode === 'oversize') value.extra = 'x'.repeat(32768);
+    expect(() => project(value)).toThrow(
+      expect.objectContaining({ code: 'RAILGUN_OWN_RECORD_REFUSED' })
+    );
+  }
+);
+test('projection binds a changed inclusion instead of hiding it as refresh metadata', () => {
+  const original = sample().record,
+    changed = structuredClone(original);
+  changed.observation.blockHash = changed.resolution.blockHash = hex(777);
+  changed.resolution.railgun.transact.blockHash = hex(777);
+  expect(project(changed)).not.toEqual(project(original));
+});
 test.each([
   [false, false],
   [true, false],

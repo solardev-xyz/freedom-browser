@@ -199,6 +199,93 @@ test('substitution of a held input, recipient or note refuses before storage', a
   expect(floor).toBe(0);
   expect(s.signal.aborted).toBe(true);
 });
+test('readSigned binds complete recovery data to a live recovery receipt without writes', async () => {
+  const s = await open(),
+    c = capsule(),
+    held = await hold(c);
+  await s.put(held, c, signing.gatesDigest);
+  const signed = await s.markSigning(held, signing);
+  await s.saveSignature(signed, signature);
+  const tx = abi.decodeFunctionData('transact', c.preparation.transaction.data)[0][0].toArray(true);
+  tx[0][0][0] = 1n;
+  const proved = { ...c.preparation.transaction, data: abi.encodeFunctionData('transact', [[tx]]) };
+  const stored = await s.saveProvedTransaction(signed, proved);
+  const before = fs.readFileSync(filename());
+  for (const invalid of [{}, held, signed]) await expect(s.readSigned(invalid)).rejects.toThrow();
+  expect(s.signal.aborted).toBe(false);
+  let escaped;
+  await reservations.withSigningRecovery(async (records) => {
+    escaped = records[0].receipt;
+    const recovered = await s.readSigned(escaped);
+    expect(recovered).toEqual(stored);
+    expect(Object.isFrozen(recovered.capsule.pathElements)).toBe(true);
+    expect(Object.isFrozen(recovered.provedTransaction)).toBe(true);
+    expect(recovered.signingDigest).toMatch(/^[0-9a-f]{64}$/);
+  });
+  expect(fs.readFileSync(filename())).toEqual(before);
+  expect(floor).toBe(3);
+  await expect(s.readSigned(escaped)).rejects.toThrow();
+  expect(s.signal.aborted).toBe(false);
+  expect(reservations.signal.aborted).toBe(false);
+});
+test.each(['signature', 'proof'])(
+  'readSigned refuses missing %s without closing healthy stores',
+  async (missing) => {
+    const s = await open(),
+      c = capsule(),
+      held = await hold(c);
+    await s.put(held, c, signing.gatesDigest);
+    const signed = await s.markSigning(held, signing);
+    if (missing === 'proof') await s.saveSignature(signed, signature);
+    const before = fs.readFileSync(filename());
+    await reservations.withSigningRecovery(async ([record]) => {
+      await expect(s.readSigned(record.receipt)).rejects.toMatchObject({
+        code: 'RAILGUN_CAPSULE_NOT_READY',
+      });
+      expect(s.signal.aborted).toBe(false);
+      expect(reservations.signal.aborted).toBe(false);
+    });
+    expect(fs.readFileSync(filename())).toEqual(before);
+    expect(s.signal.aborted).toBe(false);
+    expect(reservations.signal.aborted).toBe(false);
+  }
+);
+test('readSigned refuses expiry during final attestation and retains durable data', async () => {
+  let expiring = false,
+    reads = 0;
+  const s = await open(true, {
+    readFloor: async () => {
+      if (expiring && ++reads === 2) jest.advanceTimersByTime(11);
+      return floor;
+    },
+  });
+  const c = capsule(),
+    held = await hold(c);
+  await s.put(held, c, signing.gatesDigest);
+  const signed = await s.markSigning(held, signing);
+  await s.saveSignature(signed, signature);
+  await s.saveProvedTransaction(signed, c.preparation.transaction);
+  const before = fs.readFileSync(filename());
+  jest.useFakeTimers();
+  try {
+    await expect(
+      reservations.withSigningRecovery(
+        async ([record]) => {
+          expiring = true;
+          return s.readSigned(record.receipt);
+        },
+        { timeoutMs: 10 }
+      )
+    ).rejects.toThrow();
+    expect(reads).toBe(2);
+    expect(s.signal.aborted).toBe(true);
+    expect(reservations.signal.aborted).toBe(true);
+    expect(fs.readFileSync(filename())).toEqual(before);
+    expect(floor).toBe(3);
+  } finally {
+    jest.useRealTimers();
+  }
+});
 test('copies caller state and preserves every unrelated record through fills', async () => {
   const s = await open(),
     a = capsule(),
