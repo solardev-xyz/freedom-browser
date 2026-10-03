@@ -154,3 +154,79 @@ test('a missing TXID or out-of-tree checkpoint refuses', async () => {
     })
   ).toThrow();
 });
+
+test('detached verification recomputes a cold witness without reading a store', async () => {
+  const p = create(),
+    db = store(),
+    input = rows(3);
+  const result = await p.append(p.empty(), input, db.read);
+  db.apply(result);
+  for (const index of [0, 1, 2]) {
+    const proof = await p.witness(result.state, transaction(input[index]).railgunTxid, db.read);
+    const detached = structuredClone(proof);
+    expect(create().verifyWitness(structuredClone(result.state), detached)).toEqual(proof);
+    const verified = create().verifyWitness(result.state, detached);
+    detached.elements[0] = hash('changed');
+    expect(verified.elements).toEqual(proof.elements);
+    expect(Object.isFrozen(verified.elements)).toBe(true);
+  }
+});
+test.each(Array.from({ length: 16 }, (_, n) => n))(
+  'detached verification refuses a changed sibling at level %i',
+  async (level) => {
+    const p = create(),
+      db = store(),
+      input = rows(3);
+    const result = await p.append(p.empty(), input, db.read);
+    db.apply(result);
+    const proof = structuredClone(
+      await p.witness(result.state, transaction(input[1]).railgunTxid, db.read)
+    );
+    proof.elements[level] = hash('corrupt');
+    expect(() => p.verifyWitness(result.state, proof)).toThrow();
+  }
+);
+test.each([
+  'index',
+  'leaf',
+  'railgunTxid',
+  'row',
+  'root',
+  'checkpoint',
+  'transcript',
+  'continuity',
+  'extra',
+  'empty-sibling',
+])('detached verification refuses altered %s evidence', async (kind) => {
+  const p = create(),
+    db = store(),
+    input = rows(3);
+  const result = await p.append(p.empty(), input, db.read);
+  db.apply(result);
+  const state = structuredClone(result.state);
+  const proof = structuredClone(await p.witness(state, transaction(input[1]).railgunTxid, db.read));
+  if (kind === 'index') proof.index = 0;
+  if (kind === 'leaf' || kind === 'railgunTxid') proof[kind] = hash('corrupt');
+  if (kind === 'row') {
+    proof.row.boundParamsHash = '0x' + hash('corrupt');
+    proof.rowSha256 = createHash('sha256').update(JSON.stringify(proof.row)).digest('hex');
+  }
+  if (kind === 'root') proof.root = state.root = hash('corrupt');
+  if (kind === 'checkpoint') proof.checkpointIndex--;
+  if (kind === 'transcript') proof.transcript = hash('corrupt');
+  if (kind === 'continuity') proof.continuity.status = 'complete';
+  if (kind === 'extra') proof.verified = true;
+  if (kind === 'empty-sibling') {
+    // Even a path/root recomputed around a fabricated outside-tree sibling
+    // must refuse: positions beyond the checkpoint are canonical zeros.
+    proof.elements[15] = hash('corrupt');
+    let node = proof.leaf,
+      cursor = proof.index;
+    for (const sibling of proof.elements) {
+      node = cursor & 1 ? pair(sibling, node) : pair(node, sibling);
+      cursor >>= 1;
+    }
+    proof.root = state.root = node;
+  }
+  expect(() => p.verifyWitness(state, proof)).toThrow();
+});

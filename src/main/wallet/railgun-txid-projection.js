@@ -264,11 +264,39 @@ function createRailgunTxidProjection({ hashPair, transactionHash, verificationHa
       globalTxidCompleteness: false,
     });
   }
+  // Detached public evidence: no store or lookup authority survives a phase
+  // switch. Recompute the row and path instead of trusting a prior job's flags.
+  function verifyWitness(input, value) {
+    const current = state(JSON.parse(JSON.stringify(input)));
+    const checked = require('./railgun-txid-note-witness').normalizeRailgunTxidWitness(
+      value,
+      current
+    );
+    inspectRecord(
+      JSON.stringify({
+        row: checked.row,
+        leaf: checked.leaf,
+        railgunTxid: checked.railgunTxid,
+        rowSha256: checked.rowSha256,
+      })
+    );
+    let node = checked.leaf,
+      cursor = checked.index;
+    for (let level = 0; level < 16; level++) {
+      const sibling = checked.elements[level];
+      if ((cursor ^ 1) * 2 ** level >= current.count) check(sibling === zeros[level]);
+      node = cursor & 1 ? pair(sibling, node) : pair(node, sibling);
+      cursor >>= 1;
+    }
+    check(cursor === 0 && node === current.root);
+    return checked;
+  }
   return Object.freeze({
     empty,
     append,
     witness,
     inspectRecord,
+    verifyWitness,
     inspect: (value) => freeze(state(JSON.parse(JSON.stringify(value)))),
   });
 }
