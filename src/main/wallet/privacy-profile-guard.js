@@ -114,6 +114,7 @@ function createPrivacyProfileGuard({ handle, profile, seed }) {
         state = read();
       if (!fs.existsSync(file)) throw fail('PRIVATE_PROFILE_STORE_MISSING');
       if (!state.files.includes(relative)) {
+        if (state.files.length >= 4096) throw fail('PRIVATE_PROFILE_INVENTORY_FULL');
         state.files.push(relative);
         write(state);
       }

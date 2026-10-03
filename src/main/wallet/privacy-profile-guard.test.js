@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createHash } = require('crypto');
+const { createHash, createHmac } = require('crypto');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { createPrivacyStorage } = require('./privacy-storage');
@@ -42,6 +42,58 @@ beforeEach(() => {
 afterEach(() => {
   scope.close();
   jest.restoreAllMocks();
+});
+test('capacity refusal preserves a valid inventory and existing PPv2 reads and writes', async () => {
+  const inventory = guard(),
+    storage = store('wallet-ppv2-relays', inventory);
+  await storage.set('record', 'existing pending operation');
+  const marker = path.join(profile.userDataDir, 'wallet-privacy-inventory.json');
+  const record = JSON.parse(fs.readFileSync(marker));
+  const directory = path.join(profile.userDataDir, 'wallet-railgun-accounts');
+  fs.mkdirSync(directory);
+  for (let n = 0; n < 4095; n++) {
+    const name = n.toString(16).padStart(64, '0') + '.json';
+    fs.writeFileSync(path.join(directory, name), 'retained fixture');
+    record.state.files.push('wallet-railgun-accounts/' + name);
+  }
+  // Seed a valid capacity-boundary fixture directly; avoid 4,096 fsynced setup
+  // registrations. The production guard still authenticates and checks all files.
+  const markerKey = createHmac('sha256', seed)
+    .update('Freedom privacy inventory v1\0')
+    .update(profile.id)
+    .digest();
+  record.mac = createHmac('sha256', markerKey).update(JSON.stringify(record.state)).digest('hex');
+  markerKey.fill(0);
+  fs.writeFileSync(marker, JSON.stringify(record));
+  const before = fs.readFileSync(marker),
+    extra = path.join(directory, 'f'.repeat(64) + '.json');
+  fs.writeFileSync(extra, 'unregistered retained fixture');
+  expect(() => inventory.remember(extra)).toThrow(
+    expect.objectContaining({ code: 'PRIVATE_PROFILE_INVENTORY_FULL' })
+  );
+  expect(fs.readFileSync(marker)).toEqual(before);
+  const late = store('wallet-private-submissions', inventory);
+  await expect(late.set('record', 'durable but unregistered')).rejects.toMatchObject({
+    code: 'PRIVATE_PROFILE_INVENTORY_FULL',
+    storageCommitted: true,
+  });
+  const lateDirectory = path.join(profile.userDataDir, 'wallet-private-submissions');
+  const lateFile = path.join(lateDirectory, fs.readdirSync(lateDirectory)[0]);
+  const retained = fs.readFileSync(lateFile);
+  await expect(late.get('record')).rejects.toMatchObject({
+    code: 'PRIVATE_PROFILE_INVENTORY_FULL',
+  });
+  await expect(late.set('record', 'must not replace')).rejects.toMatchObject({
+    code: 'PRIVATE_PROFILE_INVENTORY_FULL',
+  });
+  expect(fs.readFileSync(lateFile)).toEqual(retained);
+  expect(fs.readFileSync(marker)).toEqual(before);
+  expect(await storage.get('record')).toBe('existing pending operation');
+  await storage.set('record', 'still usable');
+  scope.close();
+  bind();
+  expect(await store('wallet-ppv2-relays').get('record')).toBe('still usable');
+  expect(JSON.parse(fs.readFileSync(marker)).state.files).toHaveLength(4096);
 });
 
 test.each([
