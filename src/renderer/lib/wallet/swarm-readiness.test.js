@@ -62,6 +62,9 @@ describe('swarm-readiness view helpers', () => {
         PLANS
       )
     ).toBe('Grow your storage to 5 GB');
+    expect(
+      mod.describeOperationTarget({ request: { kind: 'deposit', amountPlur: '5000000000000000' } }, PLANS)
+    ).toBe('Add 0.5 xBZZ to the chequebook deposit');
     expect(mod.describeOperationTarget({ request: { kind: 'deposit' } }, PLANS)).toBe(
       'Top up the chequebook deposit'
     );
@@ -73,6 +76,9 @@ describe('swarm-readiness view helpers', () => {
     expect(mod.describeExecuting({ request: { kind: 'buy' } }).title).toBe(
       'Activating Your Storage'
     );
+    expect(
+      mod.describeDone({ request: { kind: 'deposit', amountPlur: '1000000000000000' }, result: {} })
+    ).toBe('Added 0.1 xBZZ to the chequebook deposit. It pays for faster downloads and for uploads.');
     expect(mod.describeDone({ request: { kind: 'deposit' }, result: { alreadyFull: true } })).toBe(
       'The chequebook deposit is already full.'
     );

@@ -3466,13 +3466,42 @@
                     <span class="stamp-cost-label">Deposit</span>
                     <span class="stamp-cost-value" id="chequebook-current-bzz">--</span>
                   </div>
-                  <div class="stamp-cost-row">
+                  <!-- Only for a target-only top-up: an amount deposit is not capped by it. -->
+                  <div class="stamp-cost-row" id="chequebook-target-row">
                     <span class="stamp-cost-label">Target</span>
                     <span class="stamp-cost-value" id="chequebook-target-bzz">--</span>
+                  </div>
+                  <!-- An amount deposit swaps this first (see publish-setup-service.js). -->
+                  <div class="stamp-cost-row hidden" id="chequebook-wallet-row">
+                    <span class="stamp-cost-label">Node wallet</span>
+                    <span class="stamp-cost-value" id="chequebook-wallet-xdai">--</span>
                   </div>
                 </div>
 
                 <p class="stamp-manager-intro" id="chequebook-deposit-text"></p>
+
+                <!-- Any amount (freedom-hq/ant#126); hidden on an older node, which
+                     only tops up to its target. Presets come from browsing-credit.js. -->
+                <div class="hidden" id="chequebook-amount">
+                  <div class="send-field">
+                    <span class="send-label">Add to the deposit</span>
+                    <div class="safe-preset-row" id="chequebook-amount-presets"></div>
+                  </div>
+                  <div class="send-field">
+                    <label class="send-label" for="chequebook-amount-input">Other amount</label>
+                    <input
+                      type="text"
+                      class="send-input"
+                      id="chequebook-amount-input"
+                      inputmode="decimal"
+                      placeholder="xBZZ, from 0.001 to 10"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <div class="send-field-error hidden" id="chequebook-amount-error"></div>
+                  </div>
+                  <p class="stamp-manager-intro hidden" id="chequebook-amount-spend"></p>
+                </div>
 
                 <button type="button" class="stamp-purchase-btn hidden" id="chequebook-deposit-btn">
                   Top Up Deposit

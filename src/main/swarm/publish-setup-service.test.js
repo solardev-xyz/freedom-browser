@@ -22,6 +22,8 @@ const {
   normalizeQuote,
   roundUpToCent,
   formatUnits,
+  parseXdaiShortfall,
+  parseDepositAmount,
   PLANS,
   REQUOTE_MS,
   WATCH_REFRESH_MS,
@@ -1015,6 +1017,177 @@ describe('extend and deposit', () => {
   });
 });
 
+describe('a deposit of a chosen amount (freedom-hq/ant#126)', () => {
+  const AMOUNT = '1000000000000000'; // 0.1 xBZZ
+  const SHORT = 'not enough xDAI: send 0.1201 more xDAI to your account, then try again';
+  const withSettlement = (api) =>
+    api.getNode.mockResolvedValue(
+      ok({ beeMode: 'light', settlement: { supported: true, swapSwitch: true } })
+    );
+
+  test('the node prices it by refusing, the pay step asks for that, and it deposits once paid', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    // A full deposit is no reason to skip an amount the user asked for.
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, shortfallPlur: '0', walletXdaiWei: '0' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(fail(400, SHORT));
+
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(api.topUpSettlementDeposit).toHaveBeenLastCalledWith({ amountPlur: AMOUNT });
+    expect(service.getState().operation).toMatchObject({
+      phase: 'awaiting-funds',
+      request: { kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' },
+      notice: null,
+      quote: {
+        walletAddress: WALLET,
+        send: { display: '0.13', wei: '130000000000000000' },
+        depositXbzz: '0.1',
+        sufficientFunds: false,
+      },
+    });
+
+    // Not enough arrived yet: no second write.
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '120000000000000000' }))
+    );
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation.quote.send.display).toBe('0.01');
+
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '130000000000000000' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(ok(depositBody({ needsTopUp: false })));
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(2);
+    expect(api.topUpSettlementDeposit).toHaveBeenLastCalledWith({ amountPlur: AMOUNT });
+    expect(service.getState().operation).toMatchObject({
+      phase: 'done',
+      result: { deposit: true },
+    });
+  });
+
+  test('a node that already holds the xDAI deposits at once, once the user saw that balance', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '900000000000000000' }))
+    );
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '900000000000000000' });
+    await settle();
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(1);
+    expect(service.getState().operation.phase).toBe('done');
+  });
+
+  test('never lets the node swap wallet xDAI the deposit screen did not show', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '900000000000000000' }))
+    );
+    // No balance shown (an older screen, or a wallet read as empty)…
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation).toMatchObject({
+      phase: 'failed',
+      error: expect.stringMatching(/more xDAI than when you chose/),
+    });
+    // …or a smaller one than the wallet holds now: nothing is sent either.
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '100000000000000000' });
+    await settle();
+    expect(service.getState().operation.phase).toBe('failed');
+    expect(api.topUpSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('a wallet that grew after the price was known pays without asking again', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '0' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(fail(400, SHORT));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' });
+    await settle();
+    expect(service.getState().operation.phase).toBe('awaiting-funds');
+    // The user paid the figure the pay step showed (and a little more).
+    api.getSettlementDeposit.mockResolvedValue(
+      ok(depositBody({ needsTopUp: false, walletXdaiWei: '200000000000000000' }))
+    );
+    api.topUpSettlementDeposit.mockResolvedValue(ok(depositBody({ needsTopUp: false })));
+    await jest.advanceTimersByTimeAsync(REQUOTE_MS);
+    expect(api.topUpSettlementDeposit).toHaveBeenCalledTimes(2);
+    expect(service.getState().operation.phase).toBe('done');
+  });
+
+  test('the wallet balance the screen showed must be a wei integer', () => {
+    const { service } = setup();
+    for (const walletXdaiWei of ['-1', '1.5', 'abc', '01', 5]) {
+      expect(service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei }).ok).toBe(false);
+    }
+    expect(service.arm({ kind: 'deposit', amountPlur: AMOUNT, walletXdaiWei: '0' }).ok).toBe(true);
+  });
+
+  test('an Ant from before #126 would ignore the amount, so nothing is sent', async () => {
+    const { service, api } = setup();
+    // createApi's /node has no `settlement` object: v0.5.56 and older.
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation).toMatchObject({ phase: 'failed' });
+    expect(service.getState().operation.error).toMatch(/default target/);
+    expect(api.topUpSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('keeps the deposit route’s guards: no chequebook, unmanaged', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ chequebook: null })));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation.error).toMatch(/first storage purchase creates/);
+
+    api.getSettlementDeposit.mockResolvedValue(ok(depositBody({ managed: false })));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation.error).toMatch(/its own configuration/);
+    expect(api.topUpSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('a refusal without a figure fails rather than guessing', async () => {
+    const { service, api } = setup();
+    withSettlement(api);
+    api.topUpSettlementDeposit.mockResolvedValue(fail(400, 'not enough xDAI'));
+    service.arm({ kind: 'deposit', amountPlur: AMOUNT });
+    await settle();
+    expect(service.getState().operation).toMatchObject({ phase: 'failed', error: 'not enough xDAI' });
+  });
+
+  test('an amount out of range or not a PLUR integer is refused before anything runs', () => {
+    const { service, api } = setup();
+    for (const amountPlur of ['0', '-1', '1.5', 'abc', '01000000000000000', 1e15, '9999999999999']) {
+      expect(service.arm({ kind: 'deposit', amountPlur })).toEqual({
+        ok: false,
+        error: expect.stringMatching(/between 0\.001 and 10 xBZZ/),
+      });
+    }
+    expect(service.arm({ kind: 'deposit', amountPlur: '100000000000000001' }).ok).toBe(false);
+    expect(parseDepositAmount('10000000000000')).toBe('10000000000000');
+    expect(parseDepositAmount('100000000000000000')).toBe('100000000000000000');
+    expect(api.getSettlementDeposit).not.toHaveBeenCalled();
+  });
+
+  test('reads the shortfall antd names', () => {
+    expect(parseXdaiShortfall(SHORT)).toBe(120_100_000_000_000_000n);
+    expect(parseXdaiShortfall('not enough xDAI: send 2 more xDAI')).toBe(2n * 10n ** 18n);
+    expect(parseXdaiShortfall('not enough xDAI')).toBeNull();
+    expect(parseXdaiShortfall('send 0.0000 more xDAI')).toBeNull();
+    expect(parseXdaiShortfall(null)).toBeNull();
+  });
+});
+
 describe('the payment from the Freedom wallet', () => {
   test('a confirmed payment re-quotes at once instead of waiting for the next tick', async () => {
     const { service, api, getTransactionStatus } = setup();
@@ -1080,6 +1253,7 @@ describe('watching and the account snapshot', () => {
       storage: 'available',
       walletAddress: WALLET,
       xdai: '0.25',
+      xdaiWei: '250000000000000000',
       bzz: '0',
       chequebook: {
         address: CHEQUEBOOK,
@@ -1108,6 +1282,7 @@ describe('watching and the account snapshot', () => {
       storage: 'missing',
       walletAddress: WALLET,
       xdai: '0.25',
+      xdaiWei: '250000000000000000',
       bzz: '0.5',
       chequebook: {
         address: CHEQUEBOOK,

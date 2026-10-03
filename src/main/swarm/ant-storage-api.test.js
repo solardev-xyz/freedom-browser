@@ -125,11 +125,38 @@ describe('storage routes', () => {
   test('reads and tops up the settlement deposit', async () => {
     const fetchImpl = respond({ needsTopUp: false });
     await api.getSettlementDeposit({ fetchImpl });
-    await api.topUpSettlementDeposit({ fetchImpl });
+    await api.topUpSettlementDeposit({}, { fetchImpl });
+    await api.topUpSettlementDeposit({ amountPlur: '1000000000000000' }, { fetchImpl });
     expect(fetchImpl.mock.calls.map(([url, init]) => [init.method, url])).toEqual([
       ['GET', 'http://127.0.0.1:11633/v0/settlement/deposit'],
       ['POST', 'http://127.0.0.1:11633/v0/settlement/deposit'],
+      // freedom-hq/ant#126: deposit that much more, whatever the target.
+      ['POST', 'http://127.0.0.1:11633/v0/settlement/deposit?amount=1000000000000000'],
     ]);
+  });
+
+  test('flips the swap switch with a JSON body, and only a bare boolean', async () => {
+    const fetchImpl = respond({ swapSwitch: true, swapEnabled: false, persisted: false });
+    const res = await api.setSwapEnabled(false, { fetchImpl });
+    expect(res).toMatchObject({ ok: true, data: { swapEnabled: false } });
+    await api.setSwapEnabled('yes', { fetchImpl });
+    const [[url, init], [, second]] = fetchImpl.mock.calls;
+    expect(url).toBe('http://127.0.0.1:11633/v0/settlement/swap');
+    expect(init).toMatchObject({
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"swapEnabled":false}',
+    });
+    // No `Origin` from the main process: antd's web-page guard lets it through.
+    expect(init.headers).not.toHaveProperty('Origin');
+    expect(second.body).toBe('{"swapEnabled":false}');
+  });
+
+  test('a read sends no body and no content type', async () => {
+    const fetchImpl = respond({});
+    await api.getNode({ fetchImpl });
+    expect(fetchImpl.mock.calls[0][1]).not.toHaveProperty('body');
+    expect(fetchImpl.mock.calls[0][1]).not.toHaveProperty('headers');
   });
 });
 

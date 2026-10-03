@@ -16,7 +16,9 @@
  *     `/stamps`, plus the settlement deposit and node wallet balances while a
  *     surface that shows them is on screen.
  *   - The armed operation: a buy, an extend or a deposit top-up the user
- *     chose. While it waits for funds it re-quotes every few seconds, and the
+ *     chose. A top-up refills the deposit to the node's target or, on Ant
+ *     releases with freedom-hq/ant#126, adds an amount the user picked.
+ *     While it waits for funds it re-quotes every few seconds, and the
  *     first quote with `sufficientFunds` fires the write route exactly once.
  *     It lives here rather than in a window, so closing the screen does not
  *     drop it.
@@ -99,6 +101,20 @@ const REJECTED_BATCH_MESSAGE =
   'Your storage was bought, but the Swarm network did not accept it, so it cannot be used to publish. Restarting the node can help; otherwise pick a plan again.';
 
 const WEI_PER_CENT = 10n ** 16n;
+const PLUR_PER_BZZ = 10n ** 16n;
+// What a "Top Up Credit" amount may be (freedom-hq/ant#126's
+// `POST /v0/settlement/deposit?amount=`): from the node's own default deposit
+// (0.001 xBZZ) to 10 xBZZ (about 17 GB of fully paid download), so a typo
+// cannot swap the node's whole xDAI balance. The renderer offers the same
+// range (browsing-credit.js).
+const MIN_DEPOSIT_AMOUNT_PLUR = PLUR_PER_BZZ / 1000n;
+const MAX_DEPOSIT_AMOUNT_PLUR = 10n * PLUR_PER_BZZ;
+
+const WALLET_GREW_MESSAGE =
+  'Your node wallet now holds more xDAI than when you chose this top-up, and the node pays from it first. Choose the amount again to go ahead.';
+
+const OLD_NODE_DEPOSIT_AMOUNT_MESSAGE =
+  'This Swarm node can only top its deposit up to its default target. A newer Ant adds any amount.';
 
 function toBigInt(value) {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') {
@@ -190,6 +206,25 @@ function normalizeQuote(data, kind) {
     price,
     depositXbzz: toBigInt(depositPlur) > 0n ? formatUnits(depositPlur, 16) : null,
     sufficientFunds: data.sufficientFunds,
+  };
+}
+
+/**
+ * The pay step's quote for an amount deposit, from the shortfall the node
+ * reported (parseXdaiShortfall) and the wallet the last deposit read saw.
+ */
+function amountQuote(op, shortWei) {
+  return {
+    depth: null,
+    days: null,
+    amountPerChunk: null,
+    walletAddress: op.walletAddress,
+    walletXdai: formatUnits(op.walletXdaiWei ?? 0n, 18),
+    xdaiToSendWei: shortWei.toString(),
+    send: roundUpToCent(shortWei),
+    price: null,
+    depositXbzz: formatUnits(op.params.amountPlur, 16),
+    sufficientFunds: false,
   };
 }
 
@@ -305,6 +340,26 @@ function isShortOfXdai(res) {
   return res?.status === 400 && /(not enough|insufficient) xDAI/i.test(res.message || '');
 }
 
+/**
+ * The xDAI (wei) a refused write says the node wallet is short of: antd's
+ * `not enough xDAI: send 0.1201 more xDAI to your account, then try again`,
+ * rounded up to 4 places by the node. Null when the message has no figure.
+ */
+function parseXdaiShortfall(message) {
+  const match = /send (\d+)(?:\.(\d{1,18}))? more xDAI/i.exec(message || '');
+  if (!match) return null;
+  const wei = BigInt(match[1]) * 10n ** 18n + BigInt((match[2] || '').padEnd(18, '0') || '0');
+  return wei > 0n ? wei : null;
+}
+
+/** A deposit amount from the renderer: a PLUR integer string within range. */
+function parseDepositAmount(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d{0,30}$/.test(value)) return null;
+  const plur = BigInt(value);
+  if (plur < MIN_DEPOSIT_AMOUNT_PLUR || plur > MAX_DEPOSIT_AMOUNT_PLUR) return null;
+  return plur.toString();
+}
+
 function parseRequest(request) {
   const kind = request?.kind;
   if (kind === 'buy') {
@@ -330,7 +385,22 @@ function parseRequest(request) {
     if (days === 0 && depth === null) return { error: 'Choose how long or how big to make it.' };
     return { kind, request: { kind, batchId, days, depth }, params: { batchId, days, depth } };
   }
-  if (kind === 'deposit') return { kind, request: { kind }, params: {} };
+  if (kind === 'deposit') {
+    if (request.amountPlur == null) return { kind, request: { kind }, params: {} };
+    const amountPlur = parseDepositAmount(request.amountPlur);
+    if (!amountPlur) return { error: 'Choose an amount between 0.001 and 10 xBZZ.' };
+    // The node wallet's xDAI the deposit screen showed when the user chose
+    // this: the most the node may swap before Freedom has a price for it.
+    const spend = request.walletXdaiWei == null ? '0' : request.walletXdaiWei;
+    if (typeof spend !== 'string' || !/^(0|[1-9]\d{0,40})$/.test(spend)) {
+      return { error: 'Invalid wallet balance.' };
+    }
+    return {
+      kind,
+      request: { kind, amountPlur, walletXdaiWei: spend },
+      params: { amountPlur, walletSpendCapWei: BigInt(spend) },
+    };
+  }
   return { error: 'Unknown operation.' };
 }
 
@@ -393,6 +463,7 @@ function createPublishSetupService({
       storage: acc.storage,
       walletAddress: acc.walletAddress,
       xdai: formatUnits(acc.xdaiWei, 18),
+      xdaiWei: toBigInt(acc.xdaiWei) === null ? null : toBigInt(acc.xdaiWei).toString(),
       bzz: formatUnits(acc.bzzPlur, 16),
       chequebook: cb
         ? {
@@ -711,7 +782,9 @@ function createPublishSetupService({
   }
 
   function writeOperation(op) {
-    if (op.kind === 'deposit') return api.topUpSettlementDeposit();
+    if (op.kind === 'deposit') {
+      return api.topUpSettlementDeposit({ amountPlur: op.params.amountPlur });
+    }
     if (op.kind === 'extend') {
       return api.extendStorage({
         batchId: op.params.batchId,
@@ -838,6 +911,25 @@ function createPublishSetupService({
     }
 
     const label = actionLabel(current.kind);
+    // An amount deposit has no quote route of its own: the node prices it when
+    // asked to pay, and refuses before sending anything when its wallet is
+    // short. That refusal is the quote (see requoteAmountDeposit).
+    if (current.params.amountPlur && isShortOfXdai(res)) {
+      const short = parseXdaiShortfall(res.message);
+      if (short === null) {
+        failOperation(current, antStorageApi.describeAntError(res, label));
+        return;
+      }
+      current.executed = false;
+      current.xdaiNeededWei = (current.walletXdaiWei ?? 0n) + short;
+      current.quote = amountQuote(current, short);
+      current.phase = 'awaiting-funds';
+      current.notice = null;
+      emit();
+      scheduleQuote(current);
+      return;
+    }
+
     // 409 (another node transaction runs), 503 (chain init) and a funds race
     // leave nothing on chain: go back to quoting and try again.
     if (res.status === 409 || res.status === 503 || isShortOfXdai(res)) {
@@ -901,6 +993,10 @@ function createPublishSetupService({
         );
         return;
       }
+      if (current.params.amountPlur) {
+        await requoteAmountDeposit(current, res.data);
+        return;
+      }
       if (res.data.needsTopUp !== true) {
         finishOperation(current, { deposit: true, alreadyFull: true });
         return;
@@ -920,6 +1016,68 @@ function createPublishSetupService({
       await execute(current);
       return;
     }
+    current.phase = 'awaiting-funds';
+    emit();
+    scheduleQuote(current);
+  }
+
+  /**
+   * A deposit of an amount the user picked (freedom-hq/ant#126). The deposit
+   * route prices only a top-up to the node's target, so this one is priced by
+   * asking the node to pay it: the first quote goes straight to the write,
+   * which either deposits (the wallet had the xDAI, as a target top-up with
+   * `sufficientFunds` does) or is refused before anything is sent, naming the
+   * xDAI the wallet lacks. That becomes the pay step's figure, and the write
+   * is tried again once the wallet holds that much more.
+   *
+   * The node swaps from its wallet before Freedom has any price, so that first
+   * write may spend only the xDAI the deposit screen showed the user as
+   * at stake (`walletSpendCapWei`, from the request). A wallet that has grown
+   * since fails the operation instead of spending xDAI nobody agreed to.
+   *
+   * An Ant release from before #126 ignores `?amount=` and would top up to its
+   * target instead, so the node must report `/node`'s `settlement` first.
+   */
+  async function requoteAmountDeposit(current, data) {
+    if (!current.amountChecked) {
+      const info = await api.getNode({ timeoutMs: PROBE_TIMEOUT_MS });
+      if (operation !== current || !QUOTING_PHASES.has(current.phase)) return;
+      if (!info.ok) {
+        current.notice = antStorageApi.describeAntError(info, 'Getting a price');
+        emit();
+        scheduleQuote(current);
+        return;
+      }
+      const settlement = info.data?.settlement;
+      if (!settlement || typeof settlement !== 'object') {
+        failOperation(current, OLD_NODE_DEPOSIT_AMOUNT_MESSAGE);
+        return;
+      }
+      current.amountChecked = true;
+    }
+    const wallet = toBigInt(data.walletXdaiWei);
+    if (!isAddress(data.walletAddress) || wallet === null || wallet < 0n) {
+      current.notice = 'The Swarm node returned a price Freedom could not read.';
+      emit();
+      scheduleQuote(current);
+      return;
+    }
+    current.walletAddress = data.walletAddress.toLowerCase();
+    current.walletXdaiWei = wallet;
+    if (current.xdaiNeededWei == null) {
+      if (wallet > current.params.walletSpendCapWei) {
+        failOperation(current, WALLET_GREW_MESSAGE);
+        return;
+      }
+      await execute(current);
+      return;
+    }
+    if (wallet >= current.xdaiNeededWei) {
+      await execute(current);
+      return;
+    }
+    current.quote = amountQuote(current, current.xdaiNeededWei - wallet);
+    current.notice = current.fundingTx?.status === 'failed' ? current.notice : null;
     current.phase = 'awaiting-funds';
     emit();
     scheduleQuote(current);
@@ -956,6 +1114,11 @@ function createPublishSetupService({
       result: null,
       fundingTx: null,
       executed: false,
+      // An amount deposit's pricing (requoteAmountDeposit).
+      amountChecked: false,
+      walletAddress: null,
+      walletXdaiWei: null,
+      xdaiNeededWei: null,
     };
     emit();
     void requote(operation);
@@ -1278,6 +1441,8 @@ module.exports = {
   roundUpToCent,
   formatUnits,
   normalizeSwarmMode,
+  parseXdaiShortfall,
+  parseDepositAmount,
   getPublishSetupService,
   getPublishReadiness,
   registerPublishSetupIpc,
@@ -1290,4 +1455,6 @@ module.exports = {
   CONFIRM_POLL_MS,
   CONFIRM_TIMEOUT_MS,
   CHAIN_INIT_SLOW_MS,
+  MIN_DEPOSIT_AMOUNT_PLUR,
+  MAX_DEPOSIT_AMOUNT_PLUR,
 };

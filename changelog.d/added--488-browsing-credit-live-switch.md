@@ -1,0 +1,4 @@
+- Browsing Credit on Ant releases with [freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126) ([#488](https://github.com/solardev-xyz/freedom-browser/issues/488)):
+  - "Pay peers from the chequebook" switches the running node without a restart
+  - Top up any amount: 0.05, 0.1 or 0.5 xBZZ, or your own
+  - Pays for faster downloads and for uploads, with Ant's measured costs

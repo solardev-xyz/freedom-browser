@@ -217,7 +217,6 @@ function loadAntManagerModule(options = {}) {
     close: jest.fn().mockResolvedValue(), pipeLog: jest.fn() };
   const startBridge = options.startBridge || jest.fn().mockResolvedValue(bridge);
   const execSync = options.execSync || jest.fn();
-  const execFile = options.execFile || jest.fn((_bin, _args, _opts, cb) => cb(null, '', ''));
   const spawn = jest.fn((binary, args = [], spawnOptions = {}) => {
     const proc = (options.createProcess || createProcessMock)(binary, options.processOptions || {});
     proc.args = args;
@@ -265,12 +264,6 @@ function loadAntManagerModule(options = {}) {
       return false;
     }),
     mkdirSync: jest.fn(),
-    statSync: jest.fn((target) => {
-      if (target === antBinPath && options.binExists !== false) {
-        return options.binStat || { size: 1000, mtimeMs: 1 };
-      }
-      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-    }),
     readFileSync: jest.fn(() => options.configContents || ''),
     writeFileSync: jest.fn(),
   };
@@ -288,7 +281,6 @@ function loadAntManagerModule(options = {}) {
       child_process: () => ({
         spawn,
         execSync,
-        execFile,
       }),
       [require.resolve('./settings-store')]: () => ({
         loadSettings: jest.fn(() => options.settings || {}),
@@ -348,7 +340,6 @@ function loadAntManagerModule(options = {}) {
     configPath,
     dataDir,
     execSync,
-    execFile,
     fsMock,
     registry,
     httpGet,
@@ -1115,70 +1106,16 @@ describe('ant-manager', () => {
       await ctx.mod.stopAnt();
     });
 
-    const helpWith = (text) => jest.fn((_bin, _args, _opts, cb) => cb(null, text, ''));
-
-    test('reports supported when the bundled antd lists --swap-enable', async () => {
-      const execFile = helpWith('Options:\n      --swap-enable <BOOL>  Pay peers...\n');
-      const ctx = loadAntManagerModule({ execFile });
-      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('supported');
-      expect(execFile).toHaveBeenCalledWith(ctx.antBinPath, ['--help'], expect.any(Object), expect.any(Function));
-    });
-
-    test('reports unsupported for an antd from before the switch', async () => {
-      // #126 before the rename named it --retrieval-payments; that release
-      // does not read swap-enable from config.yaml, so it is not supported.
-      const ctx = loadAntManagerModule({
-        execFile: helpWith('      --retrieval-payments <BOOL>\n      --no-control-socket\n'),
-      });
-      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unsupported');
-    });
-
-    test('a longer flag that starts with --swap-enable is not the switch', async () => {
-      const ctx = loadAntManagerModule({
-        execFile: helpWith('      --swap-enable-pushsync <BOOL>\n      --swap-enable_x\n'),
-      });
-      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unsupported');
-    });
-
-    test.each(['--swap-enable', '--swap-enable=<BOOL>', '  --swap-enable [default: true]'])(
-      'reads %j as the switch',
-      async (line) => {
-        const ctx = loadAntManagerModule({ execFile: helpWith(`Options:\n${line}\n`) });
-        await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('supported');
-      }
-    );
-
-    test('asks the binary once per file, again after it changes', async () => {
-      const execFile = helpWith('--swap-enable');
-      const ctx = loadAntManagerModule({ execFile });
-      await ctx.mod.getSwapEnableSupport();
-      await ctx.mod.getSwapEnableSupport();
-      expect(execFile).toHaveBeenCalledTimes(1);
-      ctx.fsMock.statSync.mockReturnValue({ size: 2000, mtimeMs: 2 });
-      await ctx.mod.getSwapEnableSupport();
-      expect(execFile).toHaveBeenCalledTimes(2);
-    });
-
-    test('unknown when the binary is missing or cannot be run, and retried', async () => {
-      const missing = loadAntManagerModule({ binExists: false });
-      await expect(missing.mod.getSwapEnableSupport()).resolves.toBe('unknown');
-
-      const execFile = jest.fn((_bin, _args, _opts, cb) => cb(new Error('EACCES'), '', ''));
-      const ctx = loadAntManagerModule({ execFile });
-      await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unknown');
-      await ctx.mod.getSwapEnableSupport();
-      expect(execFile).toHaveBeenCalledTimes(2);
-    });
-
-    test('unmanaged for an external or disabled profile node, without running anything', async () => {
+    // Whether the running antd has the switch is read from the node itself
+    // (`GET /node`'s `settlement`, browsing-credit-service.js), not from
+    // `antd --help`: ant-manager only says whether Freedom runs the node.
+    test('a bundled node is managed; an external or disabled profile node is not', () => {
+      expect(loadAntManagerModule().mod.isManagedAntNode()).toBe(true);
       for (const mode of ['external', 'disabled']) {
-        const execFile = helpWith('--swap-enable');
         const ctx = loadAntManagerModule({
-          execFile,
           activeProfile: { metadata: { nodes: { bee: { mode, url: 'http://127.0.0.1:1633' } } } },
         });
-        await expect(ctx.mod.getSwapEnableSupport()).resolves.toBe('unmanaged');
-        expect(execFile).not.toHaveBeenCalled();
+        expect(ctx.mod.isManagedAntNode()).toBe(false);
       }
     });
   });

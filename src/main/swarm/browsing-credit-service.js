@@ -2,12 +2,13 @@
  * Browsing Credit Service (#488)
  *
  * The Swarm node's chequebook pays peers for bandwidth. Ant does it the way
- * bee does (freedom-hq/ant#126): the free pseudosettle refresh comes first,
- * and once the debt to a peer passes half its payment threshold a cheque
- * from the chequebook pays the rest. That is what lifts downloads past the
- * free tier's ~5-6 Mbit/s, so the chequebook is browsing credit as well as
- * the publishing deposit. The wallet sidebar's Nodes tab shows it; this
- * service is what it reads:
+ * bee does (freedom-hq/ant#126), for downloads and uploads alike: the free
+ * pseudosettle refresh comes first, and once the debt to a peer passes half
+ * its payment threshold a cheque from the chequebook pays the rest. That is
+ * what lifts downloads past the free tier's ~5-6 Mbit/s and keeps large
+ * uploads from stalling, so the chequebook is browsing credit as well as the
+ * publishing deposit. The wallet sidebar's Nodes tab shows it; this service
+ * is what it reads:
  *
  *   - `GET /chequebook/balance`: `totalBalance` (on chain) and
  *     `availableBalance` (bee's: what is left once every cheque the node has
@@ -22,17 +23,19 @@
  *     (its lifetime total is not dated). So is the first reading after a gap
  *     in the sampling (Freedom closed while a reused node kept paying, the
  *     node down): that growth has no hour either, and is left out.
- *   - The node-wide `swap-enable` switch ("Pay peers from the chequebook"):
- *     the `antSwapEnable` setting, which ant-manager writes into config.yaml.
- *     Ant exposes the runtime switch only on its control socket, which
- *     Freedom runs with `--no-control-socket`, and through ant-ffi; it has no
- *     HTTP route. So a change is a config write plus a restart of the
- *     managed node (through the publish setup service's restart, which
- *     refuses while a purchase is executing).
+ *   - `GET /node`'s `settlement` object (Ant releases with #126):
+ *     `{ supported, swapSwitch, swapEnabled, paying, chequebook }`. Its
+ *     presence is the capability signal (no `antd --help` parsing): a node
+ *     that answers `/node` without it predates the switch. `paying` is the
+ *     node's own word on whether cheques pay peers right now.
+ *   - The node-wide `swap-enable` switch ("Pay peers from the chequebook"),
+ *     flipped live with `PUT /v0/settlement/swap` — no restart. antd does not
+ *     persist it, so the `antSwapEnable` setting is saved too and ant-manager
+ *     writes it into config.yaml, and the next start matches.
  *
- * An Ant release from before the switch (the pinned one, as of this change)
- * still serves the two reads; the switch is then reported `unsupported` and
- * the sidebar disables it.
+ * An Ant release from before the switch (the pinned v0.5.56, as of this
+ * change) still serves the two reads; the switch is then reported
+ * `unsupported` and the sidebar disables it.
  */
 
 const fs = require('fs');
@@ -61,6 +64,8 @@ const MAX_SAMPLE_GAP_MS = 3 * SAMPLE_MS;
 // more often than this.
 const BALANCE_MAX_AGE_MS = 15_000;
 const SETTLEMENTS_MAX_AGE_MS = 15_000;
+// `/node` is answered from the node's memory: re-read it on most card reads.
+const NODE_INFO_MAX_AGE_MS = 5_000;
 const STORE_FILE = 'swarm-browsing-credit.json';
 const STORE_VERSION = 1;
 const ZERO_ADDRESS = /^0x0{40}$/i;
@@ -89,6 +94,36 @@ function formatPlur(value, maxDecimals = 6) {
     .slice(0, maxDecimals)
     .replace(/0+$/, '');
   return fraction ? `${raw / unit}.${fraction}` : `${raw / unit}`;
+}
+
+/**
+ * `/node`'s (or `/v0/settlement/swap`'s) `settlement` object, or null when the
+ * body has none: an Ant release from before freedom-hq/ant#126.
+ */
+function normalizeSettlement(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return {
+    supported: raw.supported === true,
+    swapSwitch: raw.swapSwitch === true,
+    swapEnabled: raw.swapEnabled === true,
+    paying: raw.paying === true,
+    chequebook: typeof raw.chequebook === 'string' ? raw.chequebook.toLowerCase() : null,
+  };
+}
+
+const NO_SETTLEMENT_MESSAGE =
+  'This node cannot pay peers in the mode it runs in (ultra-light), so the switch changes nothing.';
+
+/** A sentence for a failed `PUT /v0/settlement/swap`. */
+function describeSwitchError(res) {
+  if (res?.notSent) return 'The Swarm node is not running.';
+  if (res?.timedOut || res?.status === 504) return 'The Swarm node did not answer in time.';
+  if (res?.unreachable) return 'Cannot reach the Swarm node.';
+  if (res?.status === 503) {
+    return 'The Swarm node is still connecting to Gnosis Chain. Try again in a moment.';
+  }
+  const detail = res?.message ? `: ${res.message}` : '.';
+  return `The Swarm node refused the change (HTTP ${res?.status ?? 0})${detail}`;
 }
 
 // A peer's high-water mark is refreshed at most this often while its figure
@@ -251,10 +286,9 @@ function createSpendStore(filePath) {
 function createBrowsingCreditService({
   api = antStorageApi,
   getNodeStatus,
-  getSwapSupport,
+  isManaged = () => true,
   isSwapEnabled,
   setSwapEnabled,
-  restartNode,
   store,
   now = () => Date.now(),
   setIntervalFn = setInterval,
@@ -264,6 +298,10 @@ function createBrowsingCreditService({
   let settlementsAt = 0;
   let addressCache = null; // { at, address }
   let toggle = { inProgress: false, error: null };
+  // `/node`'s settlement, read while the node runs: { at, settlement } with
+  // `settlement` null on a node from before the switch; null: not read yet.
+  let nodeInfo = null;
+  let nodeInfoInflight = null;
   let sampler = null;
   let sampleInflight = null;
   // When this process last read /settlements for each chequebook: the ledger's
@@ -273,6 +311,41 @@ function createBrowsingCreditService({
 
   function nodeStatus() {
     return getNodeStatus?.()?.status || 'stopped';
+  }
+
+  async function readNodeInfo() {
+    const res = await api.getNode();
+    if (!res.ok || !res.data || typeof res.data !== 'object') {
+      // 503 until chain init, or unreachable: keep what was known.
+      return;
+    }
+    nodeInfo = { at: now(), settlement: normalizeSettlement(res.data.settlement) };
+  }
+
+  function nodeInfoOnce() {
+    if (!nodeInfoInflight) {
+      nodeInfoInflight = readNodeInfo()
+        .catch((err) => log.warn(`[BrowsingCredit] node read failed: ${err.message}`))
+        .finally(() => {
+          nodeInfoInflight = null;
+        });
+    }
+    return nodeInfoInflight;
+  }
+
+  /**
+   * `'supported'` (the running node has the live switch), `'unsupported'` (it
+   * answered `/node` without one), `'no-settlement'` (it has the switch but
+   * runs in a mode that never pays peers, e.g. ultra-light: Ant reports
+   * `swapSwitch: true` with `supported: false` there, and flipping it would
+   * change nothing), `'unmanaged'` (reused, external or disabled: its own
+   * configuration decides), `'unknown'` (not read yet).
+   */
+  function swapSupport() {
+    if (!isManaged()) return 'unmanaged';
+    if (nodeStatus() !== 'running' || !nodeInfo) return 'unknown';
+    if (!nodeInfo.settlement?.swapSwitch) return 'unsupported';
+    return nodeInfo.settlement.supported ? 'supported' : 'no-settlement';
   }
 
   async function readChequebookAddress() {
@@ -382,17 +455,24 @@ function createBrowsingCreditService({
 
   async function getState() {
     const status = nodeStatus();
-    const support = await getSwapSupport();
     if (status === 'running') {
       const reads = [];
+      if (!nodeInfo || now() - nodeInfo.at >= NODE_INFO_MAX_AGE_MS) reads.push(nodeInfoOnce());
       if (!chequebook || now() - chequebook.at >= BALANCE_MAX_AGE_MS) reads.push(balanceOnce());
       if (now() - settlementsAt >= SETTLEMENTS_MAX_AGE_MS) reads.push(sampleOnce());
       await Promise.all(reads);
     }
+    const settlement = status === 'running' ? nodeInfo?.settlement || null : null;
     return {
       node: status,
-      support,
-      swapEnable: isSwapEnabled(),
+      support: swapSupport(),
+      // What the node runs now when it can say; otherwise the saved setting.
+      swapEnable: settlement?.swapSwitch ? settlement.swapEnabled : isSwapEnabled(),
+      // The node's own word on whether cheques pay peers right now; null when
+      // it cannot say (an Ant from before the switch, or not read yet).
+      paying: settlement ? settlement.paying : null,
+      // `POST /v0/settlement/deposit?amount=`: the same Ant releases.
+      depositAmount: Boolean(settlement),
       toggle: { ...toggle },
       // undefined: not read yet; null: the node has no chequebook.
       chequebook: status === 'running' ? publicChequebook() : undefined,
@@ -400,45 +480,75 @@ function createBrowsingCreditService({
     };
   }
 
+  /**
+   * Flip `swap-enable`: live on the running node, and in the setting that
+   * ant-manager writes into config.yaml, so the next start matches. With the
+   * node stopped only the setting changes.
+   */
   async function setSwapEnable(enabled) {
     if (typeof enabled !== 'boolean') return { ok: false, error: 'Invalid setting.' };
-    if (toggle.inProgress) return { ok: false, error: 'The Swarm node is already restarting.' };
-    const support = await getSwapSupport();
-    if (support === 'unmanaged') {
+    if (toggle.inProgress) return { ok: false, error: 'The switch is already changing.' };
+    if (!isManaged()) {
       return { ok: false, error: 'Freedom does not manage this Swarm node.' };
     }
-    if (support !== 'supported') {
-      return { ok: false, error: 'Not supported by this node version.' };
-    }
     const previous = isSwapEnabled();
-    if (previous === enabled) {
-      toggle = { inProgress: false, error: null };
-      return { ok: true, state: await getState() };
-    }
-    if (!setSwapEnabled(enabled)) {
-      return { ok: false, error: 'Could not save the setting.' };
-    }
     const status = nodeStatus();
     if (status === 'stopped' || status === 'error') {
-      // The next start writes it into config.yaml.
+      // Nothing runs to flip: the next start writes it into config.yaml.
+      if (previous !== enabled && !setSwapEnabled(enabled)) {
+        return { ok: false, error: 'Could not save the setting.' };
+      }
       toggle = { inProgress: false, error: null };
       return { ok: true, state: await getState() };
+    }
+    if (status !== 'running') {
+      return { ok: false, error: 'The Swarm node is starting. Try again in a moment.' };
+    }
+    await nodeInfoOnce();
+    const support = swapSupport();
+    if (support !== 'supported') {
+      return {
+        ok: false,
+        error:
+          support === 'unsupported'
+            ? 'Not supported by this node version.'
+            : support === 'no-settlement'
+              ? NO_SETTLEMENT_MESSAGE
+              : 'Could not check the Swarm node. Try again in a moment.',
+      };
+    }
+    if (previous === enabled && nodeInfo.settlement.swapEnabled === enabled) {
+      toggle = { inProgress: false, error: null };
+      return { ok: true, state: await getState() };
+    }
+    if (previous !== enabled && !setSwapEnabled(enabled)) {
+      return { ok: false, error: 'Could not save the setting.' };
     }
     toggle = { inProgress: true, error: null };
     let error = null;
     try {
-      const result = await restartNode();
-      if (result && result.ok === false) error = result.error || 'Restarting the Swarm node failed.';
+      const res = await api.setSwapEnabled(enabled);
+      const settlement = res.ok ? normalizeSettlement(res.data) : null;
+      if (settlement) nodeInfo = { at: now(), settlement };
+      if (!res.ok) error = describeSwitchError(res);
+      else if (settlement && settlement.swapEnabled !== enabled) {
+        error = 'The Swarm node did not take the change.';
+      }
     } catch (err) {
-      error = err?.message || 'Restarting the Swarm node failed.';
+      error = err?.message || 'Changing the switch failed.';
     }
     if (error) {
-      // The node still runs with the old value: keep the setting with it.
-      setSwapEnabled(previous);
+      log.warn(`[BrowsingCredit] swap-enable ${enabled} failed: ${error}`);
+      // Keep the setting with what the node runs (a timed-out change may
+      // still have landed), so the next start does not flip it back.
+      nodeInfo = null;
+      await nodeInfoOnce();
+      const live = nodeInfo?.settlement?.swapSwitch ? nodeInfo.settlement.swapEnabled : previous;
+      if (isSwapEnabled() !== live) setSwapEnabled(live);
+    } else {
+      log.info(`[BrowsingCredit] swap-enable is now ${enabled} (live, and in config.yaml)`);
     }
     toggle = { inProgress: false, error };
-    chequebook = null;
-    addressCache = null;
     return { ok: !error, error, state: await getState() };
   }
 
@@ -455,6 +565,7 @@ function createBrowsingCreditService({
     if (!running) {
       chequebook = null;
       addressCache = null;
+      nodeInfo = null;
     }
   }
 
@@ -476,13 +587,11 @@ function getBrowsingCreditService() {
   if (!service) {
     const antManager = require('../ant-manager');
     const { loadSettings, saveSettings } = require('../settings-store');
-    const { getPublishSetupService } = require('./publish-setup-service');
     service = createBrowsingCreditService({
       getNodeStatus: antManager.getStatus,
-      getSwapSupport: antManager.getSwapEnableSupport,
+      isManaged: antManager.isManagedAntNode,
       isSwapEnabled: () => loadSettings().antSwapEnable !== false,
       setSwapEnabled: (enabled) => saveSettings({ antSwapEnable: enabled }),
-      restartNode: () => getPublishSetupService().restartNode(),
       store: createSpendStore(path.join(app.getPath('userData'), STORE_FILE)),
     });
     antManager.onStatusChange(() => service.handleNodeStatus());
@@ -505,6 +614,7 @@ module.exports = {
   recordSettlements,
   spendWithin,
   formatPlur,
+  normalizeSettlement,
   registerBrowsingCreditIpc,
   BUCKET_MS,
   DAY_MS,

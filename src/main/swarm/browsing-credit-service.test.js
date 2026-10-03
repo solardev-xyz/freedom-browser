@@ -223,6 +223,18 @@ function makeService(overrides = {}) {
   let now = T0;
   let swap = overrides.swapEnable ?? true;
   let status = overrides.status ?? 'running';
+  const support = overrides.support ?? 'supported';
+  // The running antd's live switch (freedom-hq/ant#126), started from the
+  // setting as config.yaml would have it.
+  const node = { swapEnabled: swap };
+  // An ultra-light node reports the switch too, with `supported: false`.
+  const settlement = () => ({
+    supported: support !== 'no-settlement',
+    swapSwitch: true,
+    swapEnabled: node.swapEnabled,
+    paying: support !== 'no-settlement' && node.swapEnabled,
+    chequebook: CHEQUEBOOK,
+  });
   const api = {
     getChequebookAddress: jest.fn(async () => ({ ok: true, data: { chequebookAddress: overrides.address ?? CHEQUEBOOK } })),
     getChequebookBalance: jest.fn(async () => ({
@@ -230,19 +242,33 @@ function makeService(overrides = {}) {
       data: overrides.balance ?? { totalBalance: plur(0.001), availableBalance: plur(0.0004) },
     })),
     getSettlements: jest.fn(async () => ({ ok: true, data: { totalSent: '0', settlements: overrides.rows?.() ?? [] } })),
+    getNode: jest.fn(async () => {
+      if (support === 'unknown') return { ok: false, status: 503, data: null, message: 'chain initializing' };
+      // v0.5.56 and older answer /node without the `settlement` object.
+      return {
+        ok: true,
+        status: 200,
+        data: { beeMode: 'light', swapEnabled: true, ...(support === 'unsupported' ? {} : { settlement: settlement() }) },
+      };
+    }),
+    setSwapEnabled:
+      overrides.put ??
+      jest.fn(async (enabled) => {
+        node.swapEnabled = enabled;
+        return { ok: true, status: 200, data: { ...settlement(), persisted: false } };
+      }),
   };
   const store = memoryStore();
   const intervals = [];
   const deps = {
     api,
     getNodeStatus: () => ({ status }),
-    getSwapSupport: jest.fn(async () => overrides.support ?? 'supported'),
+    isManaged: () => support !== 'unmanaged',
     isSwapEnabled: () => swap,
     setSwapEnabled: jest.fn((v) => {
       swap = v;
       return true;
     }),
-    restartNode: overrides.restartNode ?? jest.fn(async () => ({ ok: true, error: null })),
     store,
     now: () => now,
     setIntervalFn: jest.fn((fn, ms) => {
@@ -258,6 +284,7 @@ function makeService(overrides = {}) {
     deps,
     store,
     intervals,
+    node,
     advance: (ms) => {
       now += ms;
     },
@@ -376,67 +403,140 @@ describe('createBrowsingCreditService', () => {
     expect(ctx.store.data[CHEQUEBOOK].sampled).toBe(T0 + SAMPLE_MS);
   });
 
+  describe('capability, from /node (no antd --help)', () => {
+    test.each([
+      ['supported', { support: 'supported', paying: true, depositAmount: true }],
+      ['unsupported', { support: 'unsupported', paying: null, depositAmount: false }],
+      ['no-settlement', { support: 'no-settlement', paying: false }],
+      ['unknown', { support: 'unknown', paying: null, depositAmount: false }],
+      ['unmanaged', { support: 'unmanaged', paying: true, depositAmount: true }],
+    ])('a %s node', async (support, expected) => {
+      const ctx = makeService({ support });
+      expect(await ctx.svc.getState()).toMatchObject(expected);
+    });
+
+    test('the switch shows what the node runs, not only the setting', async () => {
+      const ctx = makeService();
+      ctx.node.swapEnabled = false; // flipped outside Freedom
+      expect(await ctx.svc.getState()).toMatchObject({ swapEnable: false, paying: false });
+      // An older node can't say: the setting it was started with stands.
+      const old = makeService({ support: 'unsupported', swapEnable: false });
+      expect((await old.svc.getState()).swapEnable).toBe(false);
+    });
+
+    test('a stopped node forgets what it said', async () => {
+      const ctx = makeService();
+      await ctx.svc.getState();
+      ctx.setStatus('stopped');
+      ctx.svc.handleNodeStatus();
+      expect(await ctx.svc.getState()).toMatchObject({ support: 'unknown', paying: null });
+    });
+
+    test('/node is re-read on the card cadence, not on every call', async () => {
+      const ctx = makeService();
+      await ctx.svc.getState();
+      await ctx.svc.getState();
+      expect(ctx.api.getNode).toHaveBeenCalledTimes(1);
+      ctx.advance(5_000);
+      await ctx.svc.getState();
+      expect(ctx.api.getNode).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('setSwapEnable', () => {
-    test('saves the setting and restarts the running node', async () => {
+    test('flips the running node live and saves the setting for the next start', async () => {
       const ctx = makeService();
       const result = await ctx.svc.setSwapEnable(false);
       expect(result.ok).toBe(true);
+      expect(ctx.api.setSwapEnabled).toHaveBeenCalledWith(false);
       expect(ctx.deps.setSwapEnabled).toHaveBeenCalledWith(false);
-      expect(ctx.deps.restartNode).toHaveBeenCalledTimes(1);
-      expect(result.state).toMatchObject({ swapEnable: false, toggle: { inProgress: false, error: null } });
+      expect(ctx.node.swapEnabled).toBe(false);
+      expect(result.state).toMatchObject({
+        swapEnable: false,
+        paying: false,
+        toggle: { inProgress: false, error: null },
+      });
+
+      expect((await ctx.svc.setSwapEnable(true)).state).toMatchObject({ swapEnable: true, paying: true });
+      expect(ctx.swap()).toBe(true);
     });
 
-    test('a stopped node takes it at its next start, without a restart', async () => {
+    test('a stopped node takes it at its next start', async () => {
       const ctx = makeService({ status: 'stopped' });
       expect((await ctx.svc.setSwapEnable(false)).ok).toBe(true);
-      expect(ctx.deps.restartNode).not.toHaveBeenCalled();
+      expect(ctx.api.setSwapEnabled).not.toHaveBeenCalled();
       expect(ctx.swap()).toBe(false);
     });
 
-    test('no change, no restart', async () => {
+    test('a starting node is asked again later', async () => {
+      const ctx = makeService({ status: 'starting' });
+      expect((await ctx.svc.setSwapEnable(false)).ok).toBe(false);
+      expect(ctx.deps.setSwapEnabled).not.toHaveBeenCalled();
+    });
+
+    test('no change, nothing sent', async () => {
       const ctx = makeService();
       expect((await ctx.svc.setSwapEnable(true)).ok).toBe(true);
       expect(ctx.deps.setSwapEnabled).not.toHaveBeenCalled();
-      expect(ctx.deps.restartNode).not.toHaveBeenCalled();
+      expect(ctx.api.setSwapEnabled).not.toHaveBeenCalled();
+    });
+
+    test('a setting that already matches still flips a node that runs otherwise', async () => {
+      const ctx = makeService();
+      ctx.node.swapEnabled = false;
+      expect((await ctx.svc.setSwapEnable(true)).ok).toBe(true);
+      expect(ctx.api.setSwapEnabled).toHaveBeenCalledWith(true);
+      expect(ctx.deps.setSwapEnabled).not.toHaveBeenCalled();
     });
 
     test.each([
       ['unsupported', 'Not supported by this node version.'],
-      ['unknown', 'Not supported by this node version.'],
+      ['no-settlement', expect.stringMatching(/cannot pay peers .*ultra-light/)],
+      ['unknown', 'Could not check the Swarm node. Try again in a moment.'],
       ['unmanaged', 'Freedom does not manage this Swarm node.'],
     ])('refuses on a %s node and changes nothing', async (support, error) => {
       const ctx = makeService({ support });
       expect(await ctx.svc.setSwapEnable(false)).toEqual({ ok: false, error });
       expect(ctx.deps.setSwapEnabled).not.toHaveBeenCalled();
-      expect(ctx.deps.restartNode).not.toHaveBeenCalled();
+      expect(ctx.api.setSwapEnabled).not.toHaveBeenCalled();
     });
 
-    test('a refused restart puts the setting back to what the node runs with', async () => {
+    test('a refused change puts the setting back to what the node runs', async () => {
       const ctx = makeService({
-        restartNode: jest.fn(async () => ({
-          ok: false,
-          error: 'Wait for the purchase to finish before restarting the node.',
-        })),
+        put: jest.fn(async () => ({ ok: false, status: 503, data: null, message: 'chain initializing' })),
       });
       const result = await ctx.svc.setSwapEnable(false);
       expect(result.ok).toBe(false);
       expect(ctx.swap()).toBe(true);
-      expect(result.state.toggle.error).toMatch(/purchase/);
+      expect(result.state).toMatchObject({ swapEnable: true, toggle: { error: expect.stringMatching(/Gnosis Chain/) } });
+    });
+
+    test('a timed-out change that landed anyway keeps the setting with the node', async () => {
+      const ctx = makeService({
+        put: jest.fn(async (enabled) => {
+          ctx.node.swapEnabled = enabled;
+          return { ok: false, status: 504, data: null, message: 'the node didn’t answer the swap switch in time' };
+        }),
+      });
+      const result = await ctx.svc.setSwapEnable(false);
+      expect(result).toMatchObject({ ok: false, error: 'The Swarm node did not answer in time.' });
+      expect(ctx.swap()).toBe(false);
+      expect(result.state.swapEnable).toBe(false);
     });
 
     test('one change at a time', async () => {
       let finish;
       const ctx = makeService({
-        restartNode: jest.fn(() => new Promise((resolve) => { finish = resolve; })),
+        put: jest.fn(() => new Promise((resolve) => { finish = resolve; })),
       });
       const first = ctx.svc.setSwapEnable(false);
       await new Promise((r) => setImmediate(r));
       expect((await ctx.svc.getState()).toggle.inProgress).toBe(true);
       expect(await ctx.svc.setSwapEnable(true)).toEqual({
         ok: false,
-        error: 'The Swarm node is already restarting.',
+        error: 'The switch is already changing.',
       });
-      finish({ ok: true });
+      finish({ ok: true, status: 200, data: { swapSwitch: true, swapEnabled: false } });
       expect((await first).ok).toBe(true);
     });
 

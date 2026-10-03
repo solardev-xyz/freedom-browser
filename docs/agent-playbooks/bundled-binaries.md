@@ -71,15 +71,20 @@ not the file the app runs from.
 The generated `config.yaml` always carries bee's `swap-enable` (#488), from the
 `antSwapEnable` setting the wallet sidebar's **Pay peers from the chequebook**
 switch writes. Releases from before Ant's switch
-([freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126), renamed to
-`swap-enable`) parse the key and ignore it. Whether the bundled binary honours
-it is decided by running `antd --help` once per binary file and looking for
-`--swap-enable` (`getSwapEnableSupport()`), so a pin bump to a release that has
-the switch enables the sidebar switch with no code change. Check it on that
-bump: the Nodes tab's switch should stop saying "Not supported by this node
-version". Flipping the switch rewrites the config and restarts the managed
-node, because Ant's runtime switch is reachable only over its control socket,
-which Freedom runs without.
+([freedom-hq/ant#126](https://github.com/freedom-hq/ant/pull/126), merged after
+v0.5.56) parse the key and ignore it. Releases with it say so themselves:
+`GET /node` carries a `settlement` object (`supported`, `swapSwitch`,
+`swapEnabled`, `paying`, `chequebook`), and its absence on a node that answers
+`/node` means "no switch" (`browsing-credit-service.js`; there is no
+`antd --help` probe). On those releases the switch flips the running node with
+`PUT /v0/settlement/swap` `{"swapEnabled": bool}` — no restart — and the setting
+is still written to `config.yaml`, because antd does not persist the runtime
+change. **Top Up Credit** passes the chosen amount as
+`POST /v0/settlement/deposit?amount=<PLUR>`; an older node would ignore
+`amount` and top up to its target, so the publish setup service checks `/node`'s
+`settlement` before sending one. On the pin bump to a release with #126, check
+that the Nodes tab's switch stops saying "Not supported by this node version",
+flips without the node restarting, and that the deposit screen offers amounts.
 
 Ports matter when you are judging evidence:
 

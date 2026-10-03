@@ -315,7 +315,7 @@ async function handleSwapToggle(enabled) {
   if (!window.browsingCredit?.setSwapEnable || toggleInFlight) return;
   toggleInFlight = true;
   creditRequest += 1;
-  // Show the restart while it runs, with the switch where the user put it.
+  // Show the change while the node takes it, with the switch where the user put it.
   if (creditState) {
     creditState = {
       ...creditState,

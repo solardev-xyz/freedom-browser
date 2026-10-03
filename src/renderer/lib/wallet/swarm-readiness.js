@@ -8,6 +8,8 @@
  * state the same way.
  */
 
+import { formatXbzz } from './browsing-credit.js';
+
 const FUND_ETHSWARM_URL = 'https://fund.ethswarm.org/';
 const GNOSIS_CHAIN_ID = 100;
 
@@ -60,7 +62,10 @@ export function describeOperationTarget(operation, plans = []) {
     if (size) return `Grow your storage to ${formatStorageSize(size.safeLimitBytes)}`;
     return `Keep your storage ${formatDays(request.days)} longer`;
   }
-  if (request.kind === 'deposit') return 'Top up the chequebook deposit';
+  if (request.kind === 'deposit') {
+    const amount = request.amountPlur ? formatXbzz(request.amountPlur) : null;
+    return amount ? `Add ${amount} xBZZ to the chequebook deposit` : 'Top up the chequebook deposit';
+  }
   return '';
 }
 
@@ -104,9 +109,11 @@ export function describeExecuting(operation) {
 export function describeDone(operation) {
   const kind = operation?.request?.kind;
   if (kind === 'deposit') {
-    return operation?.result?.alreadyFull
-      ? 'The chequebook deposit is already full.'
-      : 'The chequebook deposit is topped up. Uploads can pay for bandwidth again.';
+    if (operation?.result?.alreadyFull) return 'The chequebook deposit is already full.';
+    const amount = operation?.request?.amountPlur ? formatXbzz(operation.request.amountPlur) : null;
+    return amount
+      ? `Added ${amount} xBZZ to the chequebook deposit. It pays for faster downloads and for uploads.`
+      : 'The chequebook deposit is topped up. Uploads and faster downloads can pay for bandwidth again.';
   }
   if (kind === 'extend') return 'Your storage is extended.';
   if (operation?.result?.slow) {
