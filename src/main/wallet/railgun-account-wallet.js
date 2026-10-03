@@ -2,6 +2,7 @@
  * generation store, coverage, journal and opaque engine receipt before exposing
  * Kohaku reads. The returned view stays valid only while all evidence is current.
  */
+const accounts = new WeakMap();
 const fs = require('fs'),
   path = require('path');
 const { createHash } = require('crypto');
@@ -174,15 +175,42 @@ async function openRailgunAccountWallet({
     };
     lifetime.addEventListener('abort', onAbort, { once: true });
     if (lifetime.aborted) throw fail();
-    return Object.freeze({
+    const account = Object.freeze({
       view,
       close,
       signal: lifetime,
       generationId: generation.id,
     });
+    accounts.set(account, {
+      identity,
+      enrollment,
+      coordinator,
+      current() {
+        phase.assertCurrent();
+        check(!lifetime.aborted);
+        assertRailgunIdentity(identity, handle);
+        getRailgunAccountPublicIdentity(coordinator, enrollment);
+        return runner.readOwned(checked.value.receipt, journal);
+      },
+    });
+    return account;
   } catch (error) {
     await close();
     throw error;
   }
 }
-module.exports = { openRailgunAccountWallet, getRailgunAccountWalletPolicy };
+function readRailgunAccountOwnedNotes(account, { identity, enrollment, coordinator }) {
+  const entry = accounts.get(account);
+  check(
+    entry &&
+      entry.identity === identity &&
+      entry.enrollment === enrollment &&
+      entry.coordinator === coordinator
+  );
+  return entry.current();
+}
+module.exports = {
+  openRailgunAccountWallet,
+  getRailgunAccountWalletPolicy,
+  readRailgunAccountOwnedNotes,
+};

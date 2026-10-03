@@ -43,6 +43,7 @@ const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const {
   openRailgunAccountWallet,
   getRailgunAccountWalletPolicy,
+  readRailgunAccountOwnedNotes,
 } = require('./railgun-account-wallet');
 let scope, options, directory, generation, events, state;
 beforeEach(() => {
@@ -144,6 +145,7 @@ beforeEach(() => {
   };
   mockCreateJournal.mockImplementation(async () => mockJournal);
   mockRunner = {
+    readOwned: jest.fn(() => Object.freeze({ ownedPoi: [], checkpointHash: '6'.repeat(64) })),
     assertScan: jest.fn(),
     run: jest.fn(async () => {
       events.push('scan');
@@ -372,3 +374,36 @@ test.each(['generationId', 'sourceId', 'publicId'])(
     expect(getRailgunAccountWalletPolicy(options)).not.toBe(options.policy);
   }
 );
+
+test('owned-note reads require the genuine opened wallet and exact account/coordinator owners', async () => {
+  const wallet = await openRailgunAccountWallet(options);
+  const owners = {
+    identity: mockIdentity,
+    enrollment: mockEnrollment,
+    coordinator: options.coordinator,
+  };
+  expect(readRailgunAccountOwnedNotes(wallet, owners).ownedPoi).toEqual([]);
+  expect(mockRunner.readOwned).toHaveBeenCalled();
+  expect(() => readRailgunAccountOwnedNotes({ ...wallet }, owners)).toThrow();
+  for (const key of ['identity', 'enrollment', 'coordinator'])
+    expect(() => readRailgunAccountOwnedNotes(wallet, { ...owners, [key]: {} })).toThrow();
+  await wallet.close();
+  expect(() => readRailgunAccountOwnedNotes(wallet, owners)).toThrow();
+});
+test('owned-note reads recheck public generation and runner journal freshness', async () => {
+  const wallet = await openRailgunAccountWallet(options);
+  const owners = {
+    identity: mockIdentity,
+    enrollment: mockEnrollment,
+    coordinator: options.coordinator,
+  };
+  mockAssertPublic.mockImplementationOnce(() => {
+    throw Error('generation changed');
+  });
+  expect(() => readRailgunAccountOwnedNotes(wallet, owners)).toThrow('generation changed');
+  mockRunner.readOwned.mockImplementationOnce(() => {
+    throw Error('checkpoint changed');
+  });
+  expect(() => readRailgunAccountOwnedNotes(wallet, owners)).toThrow('checkpoint changed');
+  await wallet.close();
+});

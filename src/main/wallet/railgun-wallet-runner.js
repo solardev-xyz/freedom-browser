@@ -4,6 +4,7 @@
  */
 const assert = require('assert/strict');
 const { normalizeRailgunWalletRead } = require('./railgun-wallet-read');
+const { normalizeRailgunOwnedPoiRecords } = require('./railgun-owned-poi-records');
 const { isRailgunWalletJournal } = require('./railgun-wallet-journal');
 const instances = new WeakSet();
 const {
@@ -61,6 +62,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
         Object.fromEntries(['scannedLeaves', ...kinds].map((name) => [name, result[name]]))
       );
       const read = normalizeRailgunWalletRead(result, coverage);
+      const ownedPoi = normalizeRailgunOwnedPoiRecords(result.ownedPoi, read, snapshot.checkpoint);
       if (descriptor) {
         assert.equal(read.instanceId, descriptor.instanceId);
         currentIdentity();
@@ -71,6 +73,7 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
       const receipt = Object.freeze({});
       receipts.set(receipt, {
         read,
+        ownedPoi,
         session: walletSession,
         walletId,
         checkpoint: checkpointHash(snapshot.checkpoint),
@@ -96,7 +99,16 @@ function createRailgunWalletRunner({ runJob, inventory, policy, identity }) {
     const readiness = journal.assertReceipt(receipt);
     return Object.freeze({ ...saved.read, readiness });
   }
-  const instance = Object.freeze({ run, assertScan, read });
+  function readOwned(receipt, journal) {
+    const observed = read(receipt, journal);
+    const saved = receipts.get(receipt);
+    return Object.freeze({
+      read: observed,
+      ownedPoi: saved.ownedPoi,
+      checkpointHash: saved.checkpoint,
+    });
+  }
+  const instance = Object.freeze({ run, assertScan, read, readOwned });
   instances.add(instance);
   return instance;
 }

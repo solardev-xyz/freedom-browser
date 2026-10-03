@@ -396,6 +396,7 @@ async function main() {
     'src/main/wallet/railgun-wallet-storage.js',
     'src/main/wallet/railgun-wallet-scan.js',
     'src/main/wallet/railgun-wallet-records.js',
+    'src/main/wallet/railgun-owned-poi-records.js',
     'scripts/railgun-coordinated-electron.js',
     'scripts/fixtures/railgun-coordinated-electron-job.js',
     'src/main/wallet/railgun-event-projector.js',

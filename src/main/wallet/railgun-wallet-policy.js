@@ -13,6 +13,7 @@ const sources = [
   'railgun-wallet-run',
   'railgun-wallet-scan',
   'railgun-wallet-records',
+  'railgun-owned-poi-records',
   'railgun-wallet-coverage',
   'railgun-wallet-coverage-store',
   'railgun-wallet-state',

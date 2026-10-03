@@ -89,6 +89,8 @@ async function run(inputText, { request, signal, guardReport }) {
     ...require(path.join(root, 'utils/encryption/aes')),
     ...require(path.join(root, 'note/memo')),
     ...require(path.join(root, 'utils/bytes')),
+    ...require(path.join(root, 'poi/blinded-commitment')),
+    ...require(path.join(root, 'poi/global-tree-position')),
   };
   const result = await require('../../src/main/wallet/railgun-wallet-scan').scanRailgunWallet({
     wallet,

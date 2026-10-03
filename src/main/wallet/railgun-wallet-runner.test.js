@@ -46,6 +46,7 @@ function setup() {
     guards: { attempts: 0, hooks: ['a'], canaries: 1 },
     instanceId: '0zk1' + 'q'.repeat(123),
     received: [],
+    ownedPoi: [],
     sent: [],
     scannedLeaves: 0,
     expectedReceived: [],

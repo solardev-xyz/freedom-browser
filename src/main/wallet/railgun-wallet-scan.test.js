@@ -61,6 +61,7 @@ test('an empty completed public history produces no spendable grant or invented 
     quarantine: [],
     unrecoverableSent: [],
     received: [],
+    ownedPoi: [],
     sent: [],
     spendableGranted: false,
   });

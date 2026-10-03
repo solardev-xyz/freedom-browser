@@ -109,13 +109,15 @@ async function scanRailgunWallet({ wallet, tree, checkpoint, runtime, signal, re
     readCommitment: (number, position) => tree.getCommitment(number, position),
     tokenResolver: resolver,
   };
-  await validateRailgunWalletRecords({
+  const validated = await validateRailgunWalletRecords({
     ...common,
     txos,
     expectedReceived,
     readNullifier: (nullifier, number) => tree.getNullifierTxid(nullifier, number),
     nullifyingKey: wallet.nullifyingKey,
     getNullifier: runtime.TransactNote.getNullifier,
+    projectOwnedPoi: (txo, leaf) =>
+      require('./railgun-owned-poi-records').projectRailgunOwnedPoiRecord(txo, leaf, runtime),
   });
   await validateRailgunSentRecords({ ...common, sent, expectedSent });
   active();
@@ -131,6 +133,7 @@ async function scanRailgunWallet({ wallet, tree, checkpoint, runtime, signal, re
   });
   return {
     instanceId: wallet.getAddress(),
+    ownedPoi: validated.ownedPoi,
     scannedLeaves: total,
     expectedReceived,
     expectedSent,

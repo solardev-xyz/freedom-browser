@@ -107,6 +107,7 @@ async function validateRailgunWalletRecords({
   nullifyingKey,
   getNullifier,
   tokenResolver,
+  projectOwnedPoi,
 }) {
   tokenResolver.assertComplete();
   assert.ok(Array.isArray(txos) && txos.length <= 10000);
@@ -122,6 +123,7 @@ async function validateRailgunWalletRecords({
   );
   assert.equal(expected.size, expectedReceived.length);
   const accepted = [],
+    ownedPoi = [],
     seen = new Set();
   for (const txo of txos) {
     const { tree, position } = txo;
@@ -153,11 +155,13 @@ async function validateRailgunWalletRecords({
     );
     assert.ok(expected.has(id), 'Unexpected recovered wallet note');
     accepted.push(txo);
+    if (projectOwnedPoi) ownedPoi.push(projectOwnedPoi(txo, leaf));
   }
   assert.equal(accepted.length, expected.size, 'Missing authenticated wallet note');
   tokenResolver.assertComplete();
   return Object.freeze({
     accepted: Object.freeze(accepted),
+    ownedPoi: Object.freeze(ownedPoi),
   });
 }
 async function inspectRailgunTransact({

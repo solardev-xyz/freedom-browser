@@ -74,5 +74,5 @@ test('local wallet job and host validation dependencies are pinned or cross expl
     'railgun-kohaku-read',
   ])
     walk(require.resolve('./' + root));
-  expect(visited.size).toBe(15);
+  expect(visited.size).toBe(16);
 });

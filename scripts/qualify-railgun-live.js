@@ -101,6 +101,7 @@ async function main() {
     ...new Set([
       ...qualifiedSources,
       'scripts/qualify-railgun-live.js',
+      'src/main/wallet/railgun-owned-poi-records.js',
       'src/main/networks/private-rpc.js',
       'src/main/networks/wallet-tor-transport.js',
       'src/main/tor-manager.js',
