@@ -43,8 +43,10 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     pins.wrappedNative
   );
   const leaf = ShieldNoteERC20.getShieldNoteHash(note.notePublicKey, note.tokenHash, note.value);
+  const position = input.checkpointOnly ? 10245 : 0;
   let merkleRoot = leaf;
-  for (let i = 0; i < 16; i++) merkleRoot = poseidon([merkleRoot, 0n]);
+  for (let i = 0; i < 16; i++)
+    merkleRoot = poseidon((position >> i) & 1 ? [0n, merkleRoot] : [merkleRoot, 0n]);
   const viewingKeyPair = { privateKey: viewingKey, pubkey: viewingPublicKey };
   const wallet = {
     getUTXOMerkletree: () => ({
@@ -53,7 +55,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
         leaf: hex(leaf).slice(2),
         root: hex(merkleRoot).slice(2),
         elements: Array(16).fill(hex(0n).slice(2)),
-        indices: hex(0n).slice(2),
+        indices: hex(BigInt(position)).slice(2),
       }),
     }),
     getSpendingKeyPair: async () => ({ pubkey: publicKey }),
@@ -81,7 +83,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     { type: 0, id: pins.chainId },
     note.tokenData,
     0,
-    [{ note, tree: 0, position: 0 }],
+    [{ note, tree: 0, position }],
     outputs,
     { contract: '0x' + '0'.repeat(40), parameters: hex(0n) }
   );
@@ -174,7 +176,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     assert.equal(reply.id, 1);
     const signature = reply.value;
     const start = performance.now();
-    const prepared = {
+    let prepared = {
       witness: txRequest,
       transaction,
       publicPreparation: {
@@ -183,6 +185,71 @@ exports.run = async function run(text, { request, signal, guardReport }) {
         expectedHash: payload.expectedHash,
       },
     };
+    const instanceId = imp('key-derivation/bech32').encodeAddress(addressKeys);
+    const descriptor = {
+      walletId: '1'.repeat(64),
+      instanceId,
+      spendingPublicKey: input.spendingPublicKey.map((v) => v.slice(2)),
+    };
+    const capsule = {
+      version: 1,
+      walletId: descriptor.walletId,
+      engineSha256: require('../../src/main/wallet/railgun-engine-manifest.json').sha256,
+      selection: {
+        kind: expected.kind,
+        tree: 0,
+        position,
+        recipient: unshield ? recipient : instanceId,
+      },
+      preparation: {
+        ...prepared.publicPreparation,
+        recipient: unshield ? recipient : instanceId,
+        amount: note.value.toString(),
+      },
+      noteHash: hex(leaf),
+      pathElements: Array(16).fill(hex(0n)),
+    };
+    const restoredWallet = {
+      ...wallet,
+      getAddress: () => instanceId,
+      TXOs: async () => [{ tree: 0, position, spendtxid: false, note: { ...note, hash: leaf } }],
+      tokenDataGetter: {
+        getTokenDataFromHash: async (_v, _c, hash) => {
+          assert.equal(hash.replace(/^0x/, ''), note.tokenHash.replace(/^0x/, ''));
+          return note.tokenData;
+        },
+      },
+    };
+    const scan = {
+      instanceId,
+      received: [
+        {
+          tree: 0,
+          position,
+          hash: hex(leaf).slice(2),
+          value: note.value.toString(),
+          spentTxid: false,
+        },
+      ],
+      ownedPoi: [{ id: `0:${position}`, hash: hex(leaf), nullifier: expected.nullifier }],
+    };
+    prepared =
+      await require('../../src/main/wallet/railgun-private-reconstruct').reconstructRailgunPrivateWitness(
+        {
+          archive,
+          wallet: restoredWallet,
+          descriptor,
+          scan,
+          capsule: JSON.parse(JSON.stringify(capsule)),
+          signal,
+        }
+      );
+    assert.deepEqual(prepared.witness.privateInputs, txRequest.privateInputs);
+    assert.deepEqual(prepared.witness.publicInputs, txRequest.publicInputs);
+    if (input.checkpointOnly) {
+      await request(JSON.stringify({ id: 2, method: 'checkpoint', value: capsule }));
+      throw Error('Injected stop before proving');
+    }
     const proofResult = await privateProver.prove(prepared, signature);
     assert.equal(proofResult.independentlyVerified, false);
     const finalTransaction = proofResult.transaction;
@@ -243,6 +310,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
               verified: true,
               wrongMessageSignatureRefused: true,
               wrongSignatureRefusedBeforeProving: true,
+              publicCapsuleReconstructedWitness: true,
               proofElapsedMs: Math.round(performance.now() - start),
               guards: guardReport(),
               finalTransaction,
