@@ -42,6 +42,9 @@ exports.qualify = async function qualify({
   let negative = true,
     poiCalls = 0,
     preflightCalls = 0,
+    poiContexts = 0,
+    preflightContexts = 0,
+    preflightChecks = 0,
     keyReplies = 0,
     checkedBeforeKey = false;
   const eoaCalls = { contexts: 0, journals: 0, requests: 0 };
@@ -53,6 +56,7 @@ exports.qualify = async function qualify({
   const poiSources = new WeakMap(),
     preflights = new WeakMap();
   poiModule.openRailgunPrivateWindowPoi = ({ window }) => {
+    poiContexts++;
     current();
     const data = wallet.assertRailgunAccountPrivateWindow(window, account, owners);
     const source = {
@@ -100,6 +104,7 @@ exports.qualify = async function qualify({
     return stored.observation;
   };
   preflightModule.createRailgunPrivatePreflight = ({ input }) => {
+    preflightContexts++;
     current();
     const lifetime = new AbortController();
     const source = {
@@ -127,6 +132,8 @@ exports.qualify = async function qualify({
     return source;
   };
   preflightModule.assertRailgunPrivatePreflight = (source, receipt, actual) => {
+    preflightChecks++;
+    current();
     assert.equal(actual, enrollment);
     const stored = preflights.get(source);
     assert.equal(stored.receipt, receipt);
@@ -201,7 +208,15 @@ exports.qualify = async function qualify({
       stored.provedTransaction,
       stored.capsule.preparation.expected
     );
-    const counters = () => ({ poiCalls, preflightCalls, keyReplies, ...eoaCalls });
+    const counters = () => ({
+      poiCalls,
+      preflightCalls,
+      keyReplies,
+      poiContexts,
+      preflightContexts,
+      preflightChecks,
+      ...eoaCalls,
+    });
     const before = counters();
     const durableBefore = {
       reservations: await reservations.inspect(),
@@ -249,6 +264,17 @@ exports.qualify = async function qualify({
     assert.throws(() => claim(result.completion.receipt, {}, enrollment));
     await account.close();
     let submission;
+    const privateState = async () => {
+      let value;
+      await reservations.withSigningRecovery(async (records, context) => {
+        context.assertCurrent();
+        const entry = records.find((record) => record.entry.id === result.holdId)?.entry;
+        assert.ok(entry);
+        value = { entry, stored: await capsules.get(entry.id) };
+      });
+      return value;
+    };
+    const privateBeforeSubmission = await privateState();
     if (process.env.FREEDOM_RAILGUN_PRIVATE_SUBMISSION === '1') {
       submission = await require('./railgun-enrolled-submission').qualify({
         identity,
@@ -263,7 +289,9 @@ exports.qualify = async function qualify({
             stored.capsule.preparation.expected
           ).digest,
         networkModule,
+        readGateCounters: counters,
       });
+      assert.deepEqual(await privateState(), privateBeforeSubmission);
     } else {
       const completion = claim(result.completion.receipt, identity, enrollment);
       const completed = completion.assertCurrent();
@@ -303,7 +331,7 @@ exports.qualify = async function qualify({
       completionSurvivesWalletClose: true,
       completionMatchesExclusiveRecovery: true,
       completionUnforgeableAndSingleClaim: true,
-      ...(submission ? { submission } : {}),
+      ...(submission ? { submission, submissionPreservesPrivateSigningState: true } : {}),
       livePoiCalls: 0,
       submissions: 0,
     });

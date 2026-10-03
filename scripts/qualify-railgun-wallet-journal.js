@@ -55,7 +55,20 @@ async function main() {
         ['railgun-private-transfer', 'railgun-token-unshield'].includes(transactControllerKind)
     );
     assert.equal(process.env.FREEDOM_RAILGUN_PRIVATE_OPERATION, undefined);
-    assert.equal(process.env.FREEDOM_RAILGUN_PRIVATE_SUBMISSION, undefined);
+    assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_PRIVATE_SUBMISSION));
+  }
+  if (process.env.FREEDOM_RAILGUN_PRIVATE_SUBMISSION !== undefined) {
+    assert.equal(process.env.FREEDOM_RAILGUN_PRIVATE_SUBMISSION, '1');
+    assert.ok(
+      transactControllerKind ||
+        ['railgun-private-transfer', 'railgun-token-unshield'].includes(
+          process.env.FREEDOM_RAILGUN_PRIVATE_OPERATION
+        )
+    );
+  }
+  if (process.env.FREEDOM_RAILGUN_SIMULATE_LOST_ACK !== undefined) {
+    assert.equal(process.env.FREEDOM_RAILGUN_SIMULATE_LOST_ACK, '1');
+    assert.equal(process.env.FREEDOM_RAILGUN_PRIVATE_SUBMISSION, '1');
   }
   if (stagingQualification) assert.ok(composition === 'enrolled' && proverArchive);
   let stagingGuard = false,

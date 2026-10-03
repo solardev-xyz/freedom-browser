@@ -17,6 +17,7 @@ exports.qualify = async function qualify({
   owner,
   expected,
   networkModule,
+  readGateCounters,
 }) {
   assert.equal(used, false);
   used = true;
@@ -30,6 +31,38 @@ exports.qualify = async function qualify({
   const rpc = require('../../src/main/networks/private-rpc');
   const originalRpc = rpc.createPrivateRpc;
   const originalNetwork = networkModule.getPrivateTransactionNetwork;
+  const signerModule = require('../../src/main/wallet/signers');
+  const originalSigner = signerModule.getSigner;
+  const activity = {
+    contexts: 0,
+    requests: 0,
+    checks: 0,
+    signerFactories: 0,
+    addressReads: 0,
+    signatures: 0,
+  };
+  const methods = Object.create(null);
+  const responses = Object.freeze({
+    eth_getCode: '0x',
+    eth_getBalance: '0x100000000000000',
+    eth_getTransactionCount: '0x0',
+    eth_gasPrice: '0x64',
+    eth_estimateGas: '0x100000',
+    eth_call: '0x',
+  });
+  const unexpectedRpcAttempts = () =>
+    Object.entries(methods).reduce(
+      (sum, [method, count]) =>
+        sum + (method === 'eth_sendRawTransaction' || Object.hasOwn(responses, method) ? 0 : count),
+      0
+    );
+  const snapshot = () => ({
+    ...activity,
+    methods: { ...methods },
+    sends,
+    reviews,
+    gates: readGateCounters(),
+  });
   const names = [
     'private-transaction-network',
     'railgun-private-submission',
@@ -44,13 +77,36 @@ exports.qualify = async function qualify({
     // Both controllers must capture this fixture's bounded sources, never a
     // previously loaded instance with different network/preflight closures.
     for (const [, entry] of cached.slice(1)) assert.equal(entry, undefined);
+    signerModule.getSigner = (index) => {
+      activity.signerFactories++;
+      current();
+      assert.equal(index, 0);
+      const signer = originalSigner(index);
+      return Object.freeze({
+        async getAddress() {
+          activity.addressReads++;
+          current();
+          return signer.getAddress();
+        },
+        async signTransaction(transaction) {
+          activity.signatures++;
+          current();
+          assert.equal(activity.signatures, 1);
+          return signer.signTransaction(transaction);
+        },
+      });
+    };
     rpc.createPrivateRpc = (handle, role) => {
+      activity.contexts++;
       current();
       const context = getPrivacyContext(handle);
       assert.equal(role, 'transaction-rpc');
       assert.equal(context.subject.principal, owner);
+      assert.equal(context.subject.chainId, 11155111);
+      assert.equal(context.profileId, getPrivacyContext(enrollment.getContext('engine')).profileId);
       sourceHandle = handle;
       const assertActive = () => {
+        activity.checks++;
         current();
         getPrivacyContext(handle);
       };
@@ -59,6 +115,8 @@ exports.qualify = async function qualify({
         assertActive,
         ready: async () => assertActive(),
         request: async (method, params, validate) => {
+          activity.requests++;
+          methods[method] = (methods[method] ?? 0) + 1;
           if (method === 'eth_sendRawTransaction') sends++;
           assertActive();
           let result;
@@ -87,14 +145,6 @@ exports.qualify = async function qualify({
             if (uncertain) throw Error('Simulated transport lost acknowledgment');
             result = sentHash;
           } else {
-            const responses = {
-              eth_getCode: '0x',
-              eth_getBalance: '0x100000000000000',
-              eth_getTransactionCount: '0x0',
-              eth_gasPrice: '0x64',
-              eth_estimateGas: '0x100000',
-              eth_call: '0x',
-            };
             assert.ok(Object.hasOwn(responses, method), method);
             result = responses[method];
           }
@@ -127,19 +177,21 @@ exports.qualify = async function qualify({
       },
     };
     const result = await submit(options);
+    // An unsupported call caught inside production must still fail qualification.
+    assert.equal(unexpectedRpcAttempts(), 0);
     assert.ok(sentHash);
     if (uncertain) {
       assert.equal(result.transactionHash, sentHash);
       assert.equal(result.submissionStatus, 'unknown');
     } else assert.equal(result.hash?.toLowerCase(), sentHash);
     assert.equal(sends, 1);
+    assert.equal(activity.signatures, 1);
     assert.equal(reviews, 1);
     assert.equal(journalBeforeTransport, true);
     assert.ok(sourceHandle);
-    const reviewed = reviews;
+    const beforeReuse = snapshot();
     assert.deepEqual(await submit(options), { status: 'recovery-required', stage: 'completion' });
-    assert.equal(reviews, reviewed);
-    assert.equal(sends, 1);
+    assert.deepEqual(snapshot(), beforeReuse);
     const reopened = createPrivacyScope({
       profileId: getPrivacyContext(enrollment.getContext('engine')).profileId,
       signal: AbortSignal.any([identity.signal, enrollment.signal]),
@@ -168,6 +220,11 @@ exports.qualify = async function qualify({
       productionSubmissionController: true,
       productionTransactionService: true,
       realVaultEoaSigning: true,
+      actualEoaSignatures: activity.signatures,
+      unexpectedRpcAttempts: unexpectedRpcAttempts(),
+      simulatedRpcActivity: { ...activity, methods: { ...methods } },
+      completionReuseNoAcquisitionOrSigning: true,
+      privatePreflightEvidenceSimulated: true,
       encryptedJournalBeforeSimulatedTransport: true,
       completionReuseRefused: true,
       simulatedRawTransactionSends: sends,
@@ -182,6 +239,7 @@ exports.qualify = async function qualify({
     active = false;
     rpc.createPrivateRpc = originalRpc;
     networkModule.getPrivateTransactionNetwork = originalNetwork;
+    signerModule.getSigner = originalSigner;
     for (const [filename, entry] of cached) {
       if (entry) require.cache[filename] = entry;
       else delete require.cache[filename];
