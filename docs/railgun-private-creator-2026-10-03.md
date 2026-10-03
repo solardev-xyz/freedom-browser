@@ -79,4 +79,32 @@ and replay behavior remain unchanged for ordinary callers.
 Fifty-five root/account-TXID/journal tests pass, including same-root store-identity
 replacement refusal; lint is clean. Codex independently approved the mode and
 flagged the lifecycle-write distinction above. No live request was made. The
-account-wide handoff reservation and wallet replacement controller remain next.
+wallet replacement controller remains next.
+
+## Account-wide handoff exclusion
+
+A genuine current wallet can reserve its account directory for a phase handoff
+before the first await. The reservation survives closing the wallet and blocks
+ordinary wallet, TXID and recovery claims during the gaps between phases. Only
+the exact opaque token and enrollment may enter an active-wallet or
+checkpoint-only TXID phase; the token never bypasses an existing phase owner.
+Recovery claims, stale tokens, copied tokens and a different enrollment for the
+same directory refuse.
+
+Phase and reservation releases are separate, identity-checked and idempotent.
+Cancellation does not unlock the directory automatically. Failed opening retains
+its phase until work/worker drain and leaves reservation ownership with staging.
+After successful replacement, releasing the reservation leaves the new wallet's
+ordinary phase exclusion intact. Staging must explicitly release only after its
+own cleanup; the complete wallet/TXID/wallet staging controller is still next.
+
+All 167 phase/account/enrollment/reservation tests pass across five suites; lint
+is clean. The Codex reviewer approved the implementation and delayed-worker
+failure cases. No renderer capability, service endpoint or dependency was added.
+
+The [enrolled Electron regression](qualification/railgun-handoff-exclusion-enrolled-2026-10-03.json)
+also passes all nineteen existing scan/restore/recovery cases with 110 matching
+source hashes, synthetic public history and zero live acquisition/submissions.
+It confirms existing enrolled flows still work after the phase changes; the new
+reservation's failure/race behavior is covered by the focused tests above. It
+does not exercise a complete Transact witness-staging or spending controller.

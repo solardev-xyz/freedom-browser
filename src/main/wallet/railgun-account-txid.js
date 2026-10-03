@@ -45,14 +45,16 @@ async function openRailgunAccountTxid({
   coordinator,
   create = false,
   checkpointOnly = false,
+  handoff,
 }) {
   check(typeof create === 'boolean' && typeof checkpointOnly === 'boolean');
   check(!checkpointOnly || !create);
+  check(handoff === undefined || checkpointOnly);
   const publicPolicy = getRailgunPublicPolicy(archive),
     publicIdentity = getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
     policy = getRailgunTxidPolicy(archive),
     binding = railgunTxidBinding(enrollment.binding),
-    phase = claimRailgunAccountPhase(enrollment, 'txid');
+    phase = claimRailgunAccountPhase(enrollment, 'txid', handoff);
   let scope, opened, runner, journal, roots, services, work, onAbort;
   const watched = [];
   let closed = false,

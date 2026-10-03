@@ -559,3 +559,47 @@ test('checkpoint-only diagnostics cannot silently adopt changed store metadata w
   await expect(value.inspect()).rejects.toThrow();
   expect(events).toEqual([]);
 });
+
+test('handoff requires checkpoint-only mode before touching public stores', async () => {
+  await expect(open({ create: false, handoff: {} })).rejects.toThrow();
+  expect(mockOpen).not.toHaveBeenCalled();
+  expect(mockKey).not.toHaveBeenCalled();
+});
+
+test('a failed handoff opening drains its worker but leaves reservation ownership with staging', async () => {
+  existingCheckpoint();
+  const wallet = claimRailgunAccountPhase(mockEnrollment, 'wallet'),
+    handoff = wallet.reserveHandoff();
+  wallet.release();
+  let entered,
+    settled = false;
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  mockRoots.acquire.mockImplementation(async () => {
+    entered();
+    throw Error('root refused');
+  });
+  mockSession.close.mockImplementation(() => {});
+  const opening = open({ create: false, checkpointOnly: true, handoff: handoff.token });
+  const observed = opening.catch((error) => {
+    settled = true;
+    return error;
+  });
+  try {
+    await ready;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet', handoff.token)).toThrow();
+    finishWorker();
+    expect(await observed).toBeInstanceOf(Error);
+    handoff.assertCurrent();
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+    const next = claimRailgunAccountPhase(mockEnrollment, 'wallet', handoff.token);
+    next.release();
+  } finally {
+    finishWorker();
+    await observed;
+    handoff.release();
+  }
+});

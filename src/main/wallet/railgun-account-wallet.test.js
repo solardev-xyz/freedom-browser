@@ -944,3 +944,64 @@ test('a handler cannot release the phase or leak rejection from an unobserved cr
   await new Promise((resolve) => setImmediate(resolve));
   await opened.close();
 });
+
+test('only the genuine current account can reserve a handoff that survives its closure', async () => {
+  const { reserveRailgunAccountWalletHandoff: reserve } = require('./railgun-account-wallet');
+  const opened = await openRailgunAccountWallet(options);
+  expect(() => reserve({ ...opened }, options)).toThrow();
+  for (const key of ['identity', 'enrollment', 'coordinator'])
+    expect(() => reserve(opened, { ...options, [key]: {} })).toThrow();
+  const handoff = reserve(opened, options);
+  expect(() => reserve(opened, options)).toThrow();
+  await opened.close();
+  expect(() => reserve(opened, options)).toThrow();
+  expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid')).toThrow();
+  const phase = claimRailgunAccountPhase(mockEnrollment, 'txid', handoff.token);
+  phase.release();
+  handoff.release();
+});
+test.each(['new', 'pending', 'advance'])('handoff cannot open wallet in %s mode', async (mode) => {
+  await expect(openRailgunAccountWallet({ ...options, mode, handoff: {} })).rejects.toThrow();
+  expect(mockOpenStore).not.toHaveBeenCalled();
+  expect(mockEnrollment.catalog.begin).not.toHaveBeenCalled();
+});
+
+test('failed replacement wallet drains before phase release and cannot release the staging reservation', async () => {
+  const original = claimRailgunAccountPhase(mockEnrollment, 'wallet'),
+    handoff = original.reserveHandoff();
+  original.release();
+  let entered,
+    finish,
+    settled = false;
+  const ready = new Promise((resolve) => {
+    entered = resolve;
+  });
+  mockSession.closed = new Promise((resolve) => {
+    finish = resolve;
+  });
+  mockJournal.revalidate.mockImplementation(async () => {
+    entered();
+    throw Error('restoration refused');
+  });
+  const opening = openRailgunAccountWallet({ ...options, handoff: handoff.token });
+  const observed = opening.catch((error) => {
+    settled = true;
+    return error;
+  });
+  try {
+    await ready;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'txid', handoff.token)).toThrow();
+    finish();
+    expect(await observed).toBeInstanceOf(Error);
+    handoff.assertCurrent();
+    expect(() => claimRailgunAccountPhase(mockEnrollment, 'wallet')).toThrow();
+    const next = claimRailgunAccountPhase(mockEnrollment, 'wallet', handoff.token);
+    next.release();
+  } finally {
+    finish();
+    await observed;
+    handoff.release();
+  }
+});

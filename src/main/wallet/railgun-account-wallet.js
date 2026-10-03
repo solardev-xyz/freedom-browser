@@ -64,18 +64,20 @@ async function openRailgunAccountWallet({
   coordinator,
   policy: expectedPolicy,
   mode = 'active',
+  handoff,
 }) {
   check(isRailgunAccountEnrollment(enrollment));
   const policy = getRailgunAccountWalletPolicy({ archive, coordinator, enrollment });
   check(expectedPolicy === undefined || expectedPolicy === policy);
   check(['active', 'advance', 'new', 'pending'].includes(mode));
+  check(handoff === undefined || mode === 'active');
   const handle = enrollment.getContext('engine'),
     descriptor = assertRailgunIdentity(identity, handle),
     walletId = descriptor.walletId;
   check(walletId === enrollment.descriptor.walletId);
   assertRailgunScanCoordinator(coordinator, handle);
   const runner = createRailgunAccountRunner({ identity, archive, policy });
-  const phase = claimRailgunAccountPhase(enrollment, 'wallet');
+  const phase = claimRailgunAccountPhase(enrollment, 'wallet', handoff);
   let generation,
     candidate,
     walletSession,
@@ -427,6 +429,10 @@ async function openRailgunAccountWallet({
       coordinator,
       current,
       restoreCurrent,
+      reserveHandoff() {
+        current();
+        return phase.reserveHandoff();
+      },
     });
     return account;
   } catch (error) {
@@ -449,6 +455,9 @@ function readRailgunAccountOwnedNotes(account, owners) {
 }
 function restoreRailgunAccountWallet(account, owners) {
   return owned(account, owners).restoreCurrent();
+}
+function reserveRailgunAccountWalletHandoff(account, owners) {
+  return owned(account, owners).reserveHandoff();
 }
 function prepareRailgunAccountPrivateIntent(account, owners, request) {
   check(request !== undefined);
@@ -507,6 +516,7 @@ module.exports = {
   getRailgunAccountWalletPolicy,
   readRailgunAccountOwnedNotes,
   restoreRailgunAccountWallet,
+  reserveRailgunAccountWalletHandoff,
   prepareRailgunAccountPrivateIntent,
   operateRailgunAccountPrivateIntent,
   assertRailgunAccountPrivateWindow,

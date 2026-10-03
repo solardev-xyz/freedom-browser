@@ -413,6 +413,7 @@ async function main() {
     'src/main/wallet/railgun-public-policy.js',
     'scripts/qualify-railgun-wallet-journal.js',
     'src/main/wallet/railgun-account-wallet.js',
+    'src/main/wallet/railgun-private-creator.js',
     'src/main/wallet/railgun-wallet-policy.js',
     'src/main/wallet/railgun-account-store.js',
     'src/main/wallet/railgun-account-enrollment.js',
