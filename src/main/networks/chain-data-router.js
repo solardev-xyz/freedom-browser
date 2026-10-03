@@ -60,6 +60,24 @@ const adaptiveSourceState = new Map();
 const myotisSlots = new Map();
 const colibriInFlight = new Set();
 const colibriInFlightByRoute = new Map();
+// What each RPC endpoint can serve for a range-capped log scan (callers that
+// pass rangeCapOf, i.e. the bundled Ant node's eth_getLogs through its bridge):
+// `${chainId} ${url}` -> { refusedFrom, capUntil, coolUntil }. refusedFrom is
+// the smallest block span the endpoint refused, null while none was, and
+// counts until capUntil; coolUntil keeps an endpoint that failed for its own
+// reasons out of these scans for a while. Process-local like the adaptive
+// state: nothing is saved, and a cap is relearned with one refusal.
+const logRangeState = new Map();
+// How long a learned cap holds. After that the endpoint is asked for wider
+// spans again, so a provider that raises its limit is noticed.
+const LOG_RANGE_CAP_TTL_MS = 30 * 60_000;
+// How long a log scan leaves out an endpoint that hung, refused the
+// connection, throttled or failed some other way that does not depend on the
+// requested range.
+const LOG_SCAN_COOLDOWN_MS = 30_000;
+// Quorum rounds per log scan: the first, and one with the endpoints left
+// after the first round's failures were taken out.
+const LOG_SCAN_QUORUM_ROUNDS = 2;
 
 class SourceUnavailableError extends Error {
   constructor(message, failureKind = null) {
@@ -285,6 +303,102 @@ function clearAdaptiveRoutingForTest() {
   myotisSlots.clear();
   colibriInFlight.clear();
   colibriInFlightByRoute.clear();
+  logRangeState.clear();
+}
+
+function blockNumberOf(value) {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]+$/i.test(value)) return null;
+  const number = Number.parseInt(value, 16);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+// The block span an eth_getLogs filter covers (both ends inclusive), or null
+// when either end is a tag (`latest`) or missing: such a query is never
+// filtered or learned from.
+function logQuerySpan(method, params) {
+  if (method !== 'eth_getLogs') return null;
+  const from = blockNumberOf(params?.[0]?.fromBlock);
+  const to = blockNumberOf(params?.[0]?.toBlock);
+  return from === null || to === null || to < from ? null : to - from + 1;
+}
+
+const logRangeKey = (chainId, url) => `${Number(chainId)} ${url}`;
+
+// The widest span an endpoint is expected to serve right now: 0 while it
+// cools down, Infinity while no cap is known.
+function servableLogSpan(chainId, url, now) {
+  const entry = logRangeState.get(logRangeKey(chainId, url));
+  if (!entry) return Infinity;
+  if (entry.coolUntil > now) return 0;
+  return entry.refusedFrom === null || entry.capUntil <= now ? Infinity : entry.refusedFrom - 1;
+}
+
+// The widest span `m` endpoints can serve together: what a quorum can still
+// verify. 0 when fewer than `m` endpoints can serve any span now.
+function quorumLogSpan(chainId, urls, m, now) {
+  const spans = urls.map((url) => servableLogSpan(chainId, url, now)).sort((a, b) => b - a);
+  return spans.length >= m ? spans[m - 1] : 0;
+}
+
+// An answer ends a cooldown, and an answer at or above an expired cap clears
+// it: the provider raised its limit.
+function noteLogRangeAnswer(chainId, url, span) {
+  const key = logRangeKey(chainId, url);
+  const entry = logRangeState.get(key);
+  if (!entry) return;
+  if (entry.refusedFrom === null || span >= entry.refusedFrom) {
+    logRangeState.delete(key);
+    return;
+  }
+  entry.coolUntil = 0;
+}
+
+// Learn from one endpoint's failed log query. A cap the reply names, or a
+// range limit or upstream query timeout without one, bounds the span it is
+// asked for. A failure that does not depend on the range (a hang, refused
+// connection, throttle, missing method, lagging node) cools it down instead.
+// Anything else (a reply that may be a throttle or a result-count cap) is not
+// learned from.
+function noteLogRangeFailure(chainId, url, span, error, { capOf, rank }, now) {
+  const key = logRangeKey(chainId, url);
+  const entry = logRangeState.get(key) || { refusedFrom: null, capUntil: 0, coolUntil: 0 };
+  let cap;
+  try {
+    cap = capOf(error);
+  } catch {
+    cap = null;
+  }
+  let errorRank;
+  try {
+    errorRank = Number(rank?.(error));
+  } catch {
+    errorRank = ERROR_RANK.ENDPOINT;
+  }
+  const clientTimeout = failureKind(error) === 'timeout';
+  let refusedFrom = null;
+  if (Number.isSafeInteger(cap) && cap > 0) refusedFrom = cap + 1;
+  else if (!clientTimeout && errorRank >= ERROR_RANK.TIMEOUT) refusedFrom = span;
+  if (refusedFrom !== null) {
+    entry.refusedFrom =
+      entry.refusedFrom === null || entry.capUntil <= now
+        ? refusedFrom
+        : Math.min(entry.refusedFrom, refusedFrom);
+    entry.capUntil = now + LOG_RANGE_CAP_TTL_MS;
+  } else if (clientTimeout || !(errorRank > ERROR_RANK.ENDPOINT)) {
+    entry.coolUntil = now + LOG_SCAN_COOLDOWN_MS;
+  } else {
+    return;
+  }
+  logRangeState.set(key, entry);
+}
+
+// What a range-capped log scan gets when no quorum can serve its span: a
+// range limit naming the widest span one can, so the caller (Ant) narrows
+// its window to it. Ranked REQUEST by the bridge, so it ends the request.
+function logRangeRefusal(span) {
+  const error = new Error(`query exceeds max block range ${span}`);
+  error.code = -32005;
+  return error;
 }
 
 function isReadMethod(method) {
@@ -778,28 +892,34 @@ function colibriTrust(chainId) {
   };
 }
 
-async function requestQuorum(
+// One quorum round: ask `urls` and settle on the first m that agree.
+function requestQuorumRound(
   chainId,
   method,
   params,
   {
+    urls,
     includeTrust = false,
     allowDirectFallback = false,
     deadlineMs = null,
     keeper = createErrorKeeper(null),
-  } = {}
+    quorumTimeoutMs = null,
+    logRange = null,
+  }
 ) {
   const network = registry.getNetwork(chainId) || {};
   const quorum = network.quorum || {};
   const k = Math.max(1, Number(quorum.k) || 3);
   const m = Math.max(1, Math.min(k, Number(quorum.m) || 2));
   const configuredTimeoutMs = Math.max(500, Number(quorum.timeoutMs) || 5000);
-  const timeoutMs = deadlineMs
-    ? Math.min(configuredTimeoutMs, deadlineMs)
+  // A background caller (Ant's log scans) may widen the budget; it is never
+  // narrowed below the configured timeout, and an interactive deadline below
+  // that still applies.
+  const budgetMs = Number.isFinite(quorumTimeoutMs)
+    ? Math.max(configuredTimeoutMs, quorumTimeoutMs)
     : configuredTimeoutMs;
+  const timeoutMs = deadlineMs && deadlineMs < configuredTimeoutMs ? deadlineMs : budgetMs;
   const endpointTimeoutMs = allowDirectFallback ? configuredTimeoutMs : timeoutMs;
-  const urls = registry.getEndpoints(chainId, 'rpc').slice(0, k);
-  if (urls.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
 
   return new Promise((resolve, reject) => {
     const controllers = urls.map(() => new AbortController());
@@ -824,6 +944,9 @@ async function requestQuorum(
     const succeed = (group) => {
       if (finished) return;
       finish();
+      if (logRange) {
+        for (const url of fulfilledUrls) noteLogRangeAnswer(chainId, url, logRange.span);
+      }
       if (!includeTrust) {
         resolve(group.value);
         return;
@@ -853,8 +976,18 @@ async function requestQuorum(
         const cut = new Error(`RPC query timeout after ${timeoutMs}ms`);
         cut.failureKind = 'timeout';
         keeper.note(cut);
+        if (logRange) {
+          urls.forEach((url, index) => {
+            if (!answered[index]) {
+              noteLogRangeFailure(chainId, url, logRange.span, cut, logRange, Date.now());
+            }
+          });
+        }
       }
       finish();
+      if (logRange) {
+        for (const url of fulfilledUrls) noteLogRangeAnswer(chainId, url, logRange.span);
+      }
       const capacityFailures = errors.filter(isCapacityFailure).length;
       const timedOut = errors.some((error) => failureKind(error) === 'timeout');
       const error = new SourceUnavailableError(
@@ -933,12 +1066,64 @@ async function requestQuorum(
           pending -= 1;
           errors.push(error);
           keeper.note(error);
+          if (logRange) {
+            noteLogRangeFailure(chainId, url, logRange.span, error, logRange, Date.now());
+          }
           if (failureKind(error) !== 'timeout') answered[index] = true;
           rejectIfImpossible();
         }
       );
     });
   });
+}
+
+async function requestQuorum(chainId, method, params, options = {}) {
+  const network = registry.getNetwork(chainId) || {};
+  const k = Math.max(1, Number(network.quorum?.k) || 3);
+  const m = Math.max(1, Math.min(k, Number(network.quorum?.m) || 2));
+  const endpoints = registry.getEndpoints(chainId, 'rpc');
+  const { logRange = null, keeper = createErrorKeeper(null) } = options;
+  const askQuorum = (urls) =>
+    requestQuorumRound(chainId, method, params, { ...options, keeper, urls });
+
+  if (!logRange) {
+    const urls = endpoints.slice(0, k);
+    if (urls.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
+    return askQuorum(urls);
+  }
+
+  // A range-capped log scan asks the first k endpoints able to serve its span.
+  // A round whose members failed has just taken them out (capped or cooling);
+  // if another quorum can serve the same span, it is asked straight away.
+  // When none can, the caller is told the widest span a quorum can still
+  // verify, so it narrows to it instead of giving up (one full-range endpoint
+  // down shrinks the scan to windows the capped ones serve). Only when no
+  // quorum can serve any span does the caller get no quorum.
+  const noQuorum = (lastError) => {
+    const servable = quorumLogSpan(chainId, endpoints, m, Date.now());
+    if (servable > 0 && servable < logRange.span) {
+      const refusal = logRangeRefusal(servable);
+      keeper.note(refusal);
+      return refusal;
+    }
+    return lastError || new SourceUnavailableError(`No RPC quorum available for ${method}`);
+  };
+  let asked = null;
+  let lastError = null;
+  for (let round = 1; round <= LOG_SCAN_QUORUM_ROUNDS; round += 1) {
+    const now = Date.now();
+    const urls = endpoints
+      .filter((url) => servableLogSpan(chainId, url, now) >= logRange.span)
+      .slice(0, k);
+    if (urls.length < m || (asked && urls.every((url) => asked.includes(url)))) break;
+    try {
+      return await askQuorum(urls);
+    } catch (err) {
+      asked = urls;
+      lastError = err;
+    }
+  }
+  throw noQuorum(lastError);
 }
 
 function directResponse(chainId, url, result, includeTrust, evidence = null) {
@@ -1066,6 +1251,8 @@ async function requestSource(
     signal,
     background = false,
     directTimeoutMs = null,
+    quorumTimeoutMs = null,
+    logRange = null,
   } = {}
 ) {
   if (source === 'myotis') {
@@ -1085,6 +1272,8 @@ async function requestSource(
       allowDirectFallback,
       deadlineMs,
       keeper,
+      quorumTimeoutMs,
+      logRange,
     });
   }
   if (source === 'direct') {
@@ -1111,10 +1300,20 @@ async function request(
     signal,
     background = false,
     directTimeoutMs = null,
+    // Widens the quorum tier's budget for background work (never narrows it).
+    quorumTimeoutMs = null,
+    // Restricts the network's read order to these sources, in that order's
+    // sequence (Ant's log scans: the RPC quorum only).
+    sources = null,
     // Optional error -> ERROR_RANK classifier. When set, the most useful
     // failure across every tier and retry is kept and reported, and a
     // REQUEST-ranked one ends the request (see createErrorKeeper).
     rankError = null,
+    // Optional error -> block-range cap the endpoint named (a number), or
+    // null. With rankError, it makes an eth_getLogs over a numeric block
+    // range a range-capped log scan: the quorum learns each endpoint's cap
+    // and asks only endpoints that can serve the span (see logRangeState).
+    rangeCapOf = null,
   } = {}
 ) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
@@ -1122,8 +1321,17 @@ async function request(
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
   const params = normalizeParams(method, rawParams);
   const supportsMyotis = myotis.NETWORKS?.has(Number(chainId)) === true;
-  const order = network.access?.readOrder ||
+  const configuredOrder =
+    network.access?.readOrder ||
     (supportsMyotis ? DEFAULT_READ_ORDER : DEFAULT_NON_MYOTIS_READ_ORDER);
+  const order = Array.isArray(sources)
+    ? configuredOrder.filter((source) => sources.includes(source))
+    : configuredOrder;
+  const span =
+    typeof rangeCapOf === 'function' && typeof rankError === 'function'
+      ? logQuerySpan(method, params)
+      : null;
+  const logRange = span === null ? null : { span, capOf: rangeCapOf, rank: rankError };
   // Only a page-driven read (an app supplies its routing context) trades
   // verification for interactive latency. Wallet-internal reads have no user
   // watching a frame and keep the chain's configured timeout.
@@ -1150,6 +1358,8 @@ async function request(
         signal,
         background,
         directTimeoutMs,
+        quorumTimeoutMs,
+        logRange: source === 'quorum' ? logRange : null,
         includeTrust,
         routeKey,
         directFallback: source === 'direct' ? directFallback : null,
@@ -1300,5 +1510,7 @@ module.exports = {
   requestRpcUrl,
   SourceUnavailableError,
   ERROR_RANK,
+  LOG_RANGE_CAP_TTL_MS,
+  LOG_SCAN_COOLDOWN_MS,
   clearAdaptiveRoutingForTest,
 };

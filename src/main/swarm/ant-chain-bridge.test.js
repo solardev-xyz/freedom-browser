@@ -5,6 +5,7 @@ const {
   startAntChainBridge,
   antShrinksLogScanOn,
   rankLogScanError,
+  logScanRangeCap,
   antErrorReply,
   LOG_SCAN_ERROR_RANK,
 } = require('./ant-chain-bridge');
@@ -139,13 +140,15 @@ test('range-limit and timeout failures keep wording Ant shrinks its log scan on'
   expect(antShrinks(timedOut.body.error.message)).toBe(true);
 });
 
-test('Ant reads are background work and wide log scans get a longer direct budget', async () => {
+test('Ant reads are background work, and only the RPC quorum answers its log scans', async () => {
   await post(bridge.url, rpc('eth_getLogs', [{}]));
   expect(router.request).toHaveBeenLastCalledWith(100, 'eth_getLogs', [{}], {
     signal: expect.any(AbortSignal),
     background: true,
-    directTimeoutMs: 60000,
+    sources: ['quorum'],
+    quorumTimeoutMs: 30000,
     rankError: rankLogScanError,
+    rangeCapOf: logScanRangeCap,
   });
   // Other reads are not ranked: Ant does not adapt them to the error.
   await post(bridge.url, rpc('eth_blockNumber', []));
@@ -308,6 +311,49 @@ test('an endpoint-dependent failure reaches Ant without wording it would halve o
   expect(antErrorReply('eth_call', throttle).message).toBe(
     'Chain request failed: rate limit exceeded'
   );
+});
+
+// The block-range cap the router learns per endpoint (#484). Measured
+// wordings first; a cap on results or logs, a throttle, a lagging endpoint or
+// a reply without a JSON-RPC code names no block range.
+test.each([
+  ['publicnode gateway', -32701, 'exceed maximum block range: 50000', 50000],
+  [
+    'Nethermind (publicnode backend, Colibri RPC)',
+    -32602,
+    'Block range 50000 exceeds the maximum of 10000 blocks per logs request. Use a narrower fromBlock/toBlock range or increase Receipt.MaxBlockDepth.',
+    10000,
+  ],
+  ['dRPC free plan', 35, 'ranges over 10000 blocks are not supported on free plan', 10000],
+  [
+    'Colibri gnosis1 (Alchemy-style)',
+    -32600,
+    'You can make eth_getLogs requests with up to a 10000 block range. Based on your parameters, this block range should work: [0x1, 0x2]',
+    10000,
+  ],
+  ['max block range', -32005, 'query exceeds max block range 50000', 50000],
+  [
+    'Alchemy response size',
+    -32602,
+    'Log response size exceeded. You can make eth_getLogs requests with up to a 2K block range',
+    2000,
+  ],
+  ['QuickNode', -32602, 'eth_getLogs is limited to a 10,000 range', 10000],
+  ['QuickNode blocks', -32602, 'eth_getLogs is limited to a 10,000 blocks range', 10000],
+  ['no number', -32602, 'block range is too wide', null],
+  ['log count', -32005, 'query exceeds limit of 10000 logs', null],
+  ['result count', -32005, 'query returned more than 10000 results', null],
+  ['throttle naming a range', -32005, 'rate limit: 10 block-range requests per second', null],
+  [
+    'endpoint behind head',
+    -32000,
+    'block range extends beyond current head block: requested 0x2000, head 0x1000',
+    null,
+  ],
+  ['no JSON-RPC code', undefined, 'exceed maximum block range: 50000', null],
+])('reads the block-range cap in a %s reply', (_name, code, message, cap) => {
+  const error = Object.assign(new Error(message), code === undefined ? {} : { code });
+  expect(logScanRangeCap(error)).toBe(cap);
 });
 
 test("Ant's shrink needles match v0.5.56 is_range_limit_error", () => {
