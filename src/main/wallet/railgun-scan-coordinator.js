@@ -6,6 +6,7 @@
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createRailgunScanJournal, sameRangeContent } = require('./railgun-scan-journal');
 const owners = new WeakSet();
+const instances = new WeakMap();
 const snapshotReads = new Set(['get', 'getMany', 'open', 'next', 'nextMany', 'seek', 'end']);
 const freeze = (value) => {
   if (value && typeof value === 'object') {
@@ -340,7 +341,7 @@ async function createRailgunScanCoordinator({
     // Public source consistency only; never a wallet, chain-trust or POI grant.
     return snapshot.checkpoint;
   }
-  return Object.freeze({
+  const instance = Object.freeze({
     advance,
     withPublicSnapshot,
     assertSnapshot,
@@ -349,5 +350,16 @@ async function createRailgunScanCoordinator({
     close,
     signal: scope.signal,
   });
+  instances.set(instance, handle);
+  return instance;
 }
-module.exports = { createRailgunScanCoordinator };
+function assertRailgunScanCoordinator(instance, expectedHandle) {
+  const handle = instances.get(instance);
+  check(handle && !instance.signal.aborted);
+  const actual = getPrivacyContext(handle),
+    expected = getPrivacyContext(expectedHandle);
+  check(actual.profileId === expected.profileId);
+  for (const key of ['kind', 'principal', 'protocol', 'deployment', 'chainId'])
+    check(actual.subject[key] === expected.subject[key]);
+}
+module.exports = { createRailgunScanCoordinator, assertRailgunScanCoordinator };

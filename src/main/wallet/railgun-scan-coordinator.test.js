@@ -127,6 +127,24 @@ afterEach(async () => {
   for (const entry of instances) await close(entry);
 });
 const next = (to) => ({ to, anchor: { number: 100, hash: hash(101) } });
+test('coordinator authority refuses clones, foreign accounts/profiles and closed instances', async () => {
+  const { assertRailgunScanCoordinator: attest } = require('./railgun-scan-coordinator');
+  const { coordinator } = await open(true),
+    handle = scope.getContext({ ...subject, role: 'engine' });
+  expect(() => attest(coordinator, handle)).not.toThrow();
+  expect(() => attest({ ...coordinator }, handle)).toThrow();
+  expect(() =>
+    attest(coordinator, scope.getContext({ ...subject, principal: 'foreign', role: 'engine' }))
+  ).toThrow();
+  const other = createPrivacyScope({ profileId: 'foreign', signal: new AbortController().signal });
+  try {
+    expect(() => attest(coordinator, other.getContext({ ...subject, role: 'engine' }))).toThrow();
+  } finally {
+    other.close();
+  }
+  coordinator.close();
+  expect(() => attest(coordinator, handle)).toThrow();
+});
 test('durably coordinates successive ranges, translates child IDs and revalidates after reopen/provider change', async () => {
   const apply = jest.fn(async (_range, { dispatch }) => {
     expect(JSON.parse(await dispatch(request(1))).id).toBe(1);

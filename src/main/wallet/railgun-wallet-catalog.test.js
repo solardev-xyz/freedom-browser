@@ -137,8 +137,11 @@ test('forged journal and living previous generation cannot publish', async () =>
   const second = await c.begin(policy);
   mockGenerationOpen = true;
   await expect(c.publish(second, journal(second))).rejects.toThrow();
-  const cold = await open(false);
-  expect(cold.activeFor(policy).directory).toBe(first.directory);
+  expect(c.activeFor(policy).directory).toBe(first.directory);
+  expect((await c.inspect()).pending.id).toBe(second.id);
+  mockGenerationOpen = false;
+  await c.publish(second, journal(second));
+  expect(c.activeFor(policy).directory).toBe(second.directory);
 });
 test('development retention cap bounds abandoned caches without deleting files', async () => {
   const c = await open();

@@ -248,6 +248,7 @@ async function createRailgunWalletCatalog({
       check(ready.status === 'wallet-scanned-unverified' && ready.spendableGranted === false);
       return { id: token.id, policy: token.policy, storeId: identity.storeId };
     }
+    attest(); // Expected refusal (e.g. a living old view) must not close the catalog.
     await update((old) => {
       check(old.pending?.id === token.id);
       return { ...old, active: attest(), pending: null };
