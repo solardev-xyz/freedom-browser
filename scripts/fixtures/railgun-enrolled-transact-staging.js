@@ -5,9 +5,12 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
   const wallet = require('../../src/main/wallet/railgun-account-wallet');
   const servicesModule = require('../../src/main/wallet/railgun-public-services');
   const originalFactory = servicesModule.createRailgunPublicServices;
-  const consumers = ['railgun-txid-root', 'railgun-account-txid', 'railgun-transact-staging'].map(
-    (name) => require.resolve('../../src/main/wallet/' + name)
-  );
+  const consumers = [
+    'railgun-txid-root',
+    'railgun-account-txid',
+    'railgun-transact-staging',
+    'railgun-transact-provenance',
+  ].map((name) => require.resolve('../../src/main/wallet/' + name));
   consumers.forEach((file) => assert.equal(require.cache[file], undefined));
   const { enrollment } = owners;
   const context = getPrivacyContext(enrollment.getContext('engine'));
@@ -20,7 +23,8 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
     staged,
     payload,
     window,
-    creatorReceipt;
+    provenance,
+    provenanceReceipt;
   const started = performance.now();
   try {
     const baseline = wallet.readRailgunAccountOwnedNotes(account, owners);
@@ -111,6 +115,10 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
       stageRailgunTransactInput,
       assertRailgunTransactStaging,
     } = require('../../src/main/wallet/railgun-transact-staging');
+    const {
+      openRailgunTransactProvenance,
+      assertRailgunTransactProvenance,
+    } = require('../../src/main/wallet/railgun-transact-provenance');
     servicesModule.createRailgunPublicServices = originalFactory;
     txid = await openRailgunAccountTxid({
       enrollment,
@@ -156,42 +164,49 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
             assertRailgunTransactStaging(staged.receipt, staged.account, owners, request, window),
             evidence
           );
-          const captured = await wallet.readRailgunAccountPrivateCreator(
-            window,
-            staged.account,
-            owners
-          );
-          creatorReceipt = captured.receipt;
-          const creator = wallet.assertRailgunAccountPrivateCreator(
-            creatorReceipt,
-            window,
-            staged.account,
-            owners
-          );
-          counts.creators++;
-          assert.equal(creator.eventSourceAuthenticated, true);
-          assert.equal(creator.transactionDigest, offer.transactionDigest);
-          assert.equal(creator.creator.transactionHash, '0x' + payload.row.txid);
-          assert.equal(creator.creator.transactionIndex, 0);
-          assert.equal(creator.creator.blockNumber, payload.row.blockNumber);
-          const verified =
-            await require('../../src/main/wallet/railgun-note-provenance').verifyRailgunNoteProvenance(
-              {
-                handle: enrollment.getContext('engine', 'note-provenance'),
-                archive,
-                state: evidence.state,
-                note: creator.note,
-                noteWitness: evidence.noteWitness,
-                events: creator.events,
-                signal,
-              }
+          try {
+            provenance = await openRailgunTransactProvenance({
+              stagingReceipt: staged.receipt,
+              account: staged.account,
+              owners,
+              request,
+              window,
+              signal,
+            });
+            const acquired = await provenance.acquireRoot();
+            provenanceReceipt = acquired.receipt;
+            const verified = assertRailgunTransactProvenance(
+              provenance,
+              provenanceReceipt,
+              staged.account,
+              owners,
+              window,
+              20000
             );
-          assert.equal(verified.pathVerified, true);
-          assert.equal(verified.utilityExitObserved, true);
-          assert.equal(verified.suppliedCreatorEventsMatched, true);
-          assert.equal(verified.coverage.boundParamsChecked, false);
-          assert.equal(verified.spendingEnabled, false);
-          counts.verifications++;
+            assert.equal(verified.transactionDigest, offer.transactionDigest);
+            assert.equal(verified.creatorTransactionIndex, 0);
+            assert.equal(verified.creatorBlockHash, '0x' + (31).toString(16).padStart(64, '0'));
+            assert.equal(verified.pathVerified, true);
+            assert.equal(verified.creatorSourceAuthenticated, true);
+            assert.equal(verified.boundParamsChecked, false);
+            assert.equal(verified.spendingEnabled, false);
+            assert.equal(verified.root.root, payload.state.root);
+            assert.equal(verified.root.index, 0);
+            assert.throws(() =>
+              require('../../src/main/wallet/railgun-transact-staging').claimRailgunTransactStaging(
+                staged.receipt,
+                staged.account,
+                owners,
+                request,
+                window
+              )
+            );
+            assert.throws(() => provenance.acquireRoot());
+            counts.creators++;
+            counts.verifications++;
+          } finally {
+            await provenance?.close();
+          }
           return { status: 'refused' };
         },
       }
@@ -201,14 +216,14 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
     assert.equal(counts.creators, 1);
     assert.equal(counts.verifications, 1);
     assert.throws(() =>
-      wallet.assertRailgunAccountPrivateCreator(creatorReceipt, window, staged.account, owners)
+      assertRailgunTransactProvenance(provenance, provenanceReceipt, staged.account, owners, window)
     );
     assert.throws(() =>
       assertRailgunTransactStaging(staged.receipt, staged.account, owners, request, window)
     );
     await staged.account.close();
     staged.close();
-    assert.equal(instances.length, 4);
+    assert.equal(instances.length, 5);
     assert.ok(instances.every((service) => service.signal.aborted));
     return {
       elapsedMs: Math.round(performance.now() - started),
@@ -222,6 +237,10 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
       detachedPathVerifiedInWindow: true,
       detachedUtilityExitObserved: true,
       windowReceiptsRevoked: true,
+      composedOperationReceipt: true,
+      stagingReuseRefused: true,
+      rootReacquisitionRefused: true,
+      signingMarginCheckedMs: 20000,
       boundParamsChecked: false,
       globalTxidCompleteness: false,
       spendingEnabled: false,
@@ -229,6 +248,7 @@ exports.qualify = async ({ account, owners, archive, proverArchive, artifactDire
   } finally {
     try {
       const closed = await Promise.allSettled([
+        Promise.resolve().then(() => provenance?.close()),
         Promise.resolve().then(async () => {
           task?.close();
           if (task) await task.closed;

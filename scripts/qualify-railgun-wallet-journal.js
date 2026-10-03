@@ -563,6 +563,7 @@ async function main() {
     'scripts/fixtures/railgun-enrolled-transact-staging.js',
     ...[
       'railgun-transact-staging',
+      'railgun-transact-provenance',
       'railgun-account-txid',
       'railgun-note-provenance',
       'railgun-note-provenance-job',

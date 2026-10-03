@@ -220,7 +220,7 @@ async function stage(
       return evidence;
     };
     current();
-    receipts.set(receipt, { account: reopened, owners, request, current });
+    receipts.set(receipt, { account: reopened, owners, request, current, signal: scope.signal });
     succeeded = true;
     return Object.freeze({
       status: 'staged',
@@ -269,6 +269,38 @@ exports.assertRailgunTransactStaging = (receipt, account, owners, request, windo
       assert.equal(entry.owners[key], owners[key]);
     assert.deepEqual(entry.request, request);
     return entry.current(window);
+  } catch {
+    throw fail();
+  }
+};
+// Consumption precedes all asynchronous provenance work. A failed or cancelled
+// attempt cannot move the same staging evidence to another operation window.
+exports.claimRailgunTransactStaging = (receipt, account, owners, request, window) => {
+  try {
+    const evidence = exports.assertRailgunTransactStaging(
+      receipt,
+      account,
+      owners,
+      request,
+      window
+    );
+    assert.ok(window);
+    const entry = receipts.get(receipt);
+    assert.ok(!entry.claimed);
+    const windowData = assertRailgunAccountPrivateWindow(window, account, entry.owners);
+    entry.claimed = true;
+    const assertCurrent = (minimumRemainingMs = 0) => {
+      assert.equal(
+        assertRailgunAccountPrivateWindow(window, account, entry.owners, minimumRemainingMs),
+        windowData
+      );
+      assert.equal(entry.current(window), evidence);
+      return evidence;
+    };
+    return Object.freeze({
+      assertCurrent,
+      signal: AbortSignal.any([entry.signal, windowData.signal]),
+    });
   } catch {
     throw fail();
   }

@@ -44,6 +44,7 @@ const { findRailgunNoteTxidWitness } = require('./railgun-txid-note-witness');
 const {
   stageRailgunTransactInput,
   assertRailgunTransactStaging,
+  claimRailgunTransactStaging,
 } = require('./railgun-transact-staging');
 const pins = require('./railgun-shield-pins.json');
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
@@ -442,3 +443,45 @@ test.each(['kind', 'recipient', 'tree', 'position', 'checkpoint'])(
     ).toThrow();
   }
 );
+
+test('staging is consumed once synchronously and its claim stays bound to the exact window', async () => {
+  const result = await stage();
+  const evidence = assertRailgunTransactStaging(
+    result.receipt,
+    mockNew,
+    options.owners,
+    options.request
+  );
+  const window = {},
+    data = {
+      owned: mockFresh,
+      selection: evidence.baseline.selection,
+      checkpointHash: evidence.baseline.checkpointHash,
+      signal: caller.signal,
+    };
+  mockWindow.mockImplementation((value) => {
+    if (value !== window) throw Error('window');
+    return data;
+  });
+  expect(() =>
+    claimRailgunTransactStaging(result.receipt, mockNew, options.owners, options.request, {})
+  ).toThrow();
+  const claim = claimRailgunTransactStaging(
+    result.receipt,
+    mockNew,
+    options.owners,
+    options.request,
+    window
+  );
+  expect(claim.assertCurrent(20000)).toBe(evidence);
+  expect(mockWindow).toHaveBeenCalledWith(window, mockNew, options.owners, 20000);
+  expect(() =>
+    claimRailgunTransactStaging(result.receipt, mockNew, options.owners, options.request, window)
+  ).toThrow();
+  mockWindow.mockReturnValue({ ...data });
+  expect(() => claim.assertCurrent()).toThrow();
+  mockWindow.mockReturnValue(data);
+  result.close();
+  expect(claim.signal.aborted).toBe(true);
+  expect(() => claim.assertCurrent()).toThrow();
+});
