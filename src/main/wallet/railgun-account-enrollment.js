@@ -14,6 +14,7 @@ const { assertRailgunIdentity } = require('./railgun-identity');
 const { createPrivacyStorage, getPrivacyStoragePath } = require('./privacy-storage');
 const { createPrivacyProfileGuard } = require('./privacy-profile-guard');
 const { createRailgunWalletCatalog } = require('./railgun-wallet-catalog');
+const { isRailgunPublicCatalog } = require('./railgun-public-catalog');
 const owners = new Set(),
   instances = new WeakSet(),
   RECORD = 'railgun-account-enrollment-v1';
@@ -231,6 +232,18 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     // Trusted host composition only. Callers must not retain copies of these
     // borrowed buffers; a worker must own/wipe any explicitly copied key.
     withPublicKeys: (use) => withKeys(['source-ledger', 'public-store', 'scan-journal'], null, use),
+    withPublicCatalogKey: (use) => withKeys(['public-catalog'], null, use),
+    async withPublicGenerationKeys(publicCatalog, id, use) {
+      active();
+      check(
+        isRailgunPublicCatalog(publicCatalog) &&
+          publicCatalog.binding === binding &&
+          publicCatalog.directory === accountDirectory
+      );
+      const generation = publicCatalog.selected(id);
+      directory(generation.directory);
+      return withKeys(['source-ledger', 'public-store', 'scan-journal'], id, use);
+    },
     async withGenerationKeys(id, use) {
       active();
       check(typeof id === 'string' && /^[0-9a-f]{64}$/.test(id));

@@ -481,3 +481,21 @@ test('source retention is opaque, ledger-bound, exclusive and limited to the cal
     expect(() => readRailgunSourceRetention(token, digest)).toThrow();
   });
 });
+test('read-only upgrade inspection uses the retained policy, includes pending work and leaves bytes unchanged', async () => {
+  const { readRailgunScanUpgradeHeight } = require('./railgun-scan-journal');
+  const policy = 'd'.repeat(64),
+    journal = await open({ policy, create: true });
+  options.directory = fs.realpathSync(options.directory);
+  await journal.prepare(range(), source);
+  await expect(readRailgunScanUpgradeHeight(options)).rejects.toMatchObject({
+    code: 'RAILGUN_SCAN_BUSY',
+  });
+  journal.close();
+  const before = fs.readFileSync(options.filename);
+  expect(await readRailgunScanUpgradeHeight(options)).toBe(10);
+  expect(fs.readFileSync(options.filename)).toEqual(before);
+  await expect(
+    readRailgunScanUpgradeHeight({ ...options, binding: 'f'.repeat(64) })
+  ).rejects.toThrow();
+  expect(fs.readFileSync(options.filename)).toEqual(before);
+});

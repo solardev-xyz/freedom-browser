@@ -5,6 +5,7 @@ const fs = require('fs'),
   assert = require('assert/strict'),
   { createHash } = require('crypto');
 const { acquireProfileLock, releaseProfileLock } = require('../src/main/profile-lock');
+const { getPrivacyStoragePath } = require('../src/main/wallet/privacy-storage');
 let qualificationLock;
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 async function main() {
@@ -248,7 +249,9 @@ async function main() {
     coordinator,
     publicAccount,
     crashPhase = null;
-  async function open(create) {
+  const advancePublic = (range) =>
+    publicAccount ? publicAccount.advance(range) : coordinator.advance(range);
+  async function open(create, mode) {
     scope = createPrivacyScope({
       profileId: accountProfileId ?? 'coordinated-public-history',
       signal: accountParent?.signal ?? new AbortController().signal,
@@ -261,6 +264,7 @@ async function main() {
           enrollment,
           archive: accountArchive,
           create,
+          ...(mode ? { mode } : {}),
         });
       coordinator = publicAccount.coordinator;
     } else {
@@ -347,7 +351,7 @@ async function main() {
   }
   async function close() {
     await publicAccount?.close();
-    catalog?.close();
+    if (!enrollment) catalog?.close();
     coordinator?.close();
     source?.close();
     ledger?.close();
@@ -357,6 +361,7 @@ async function main() {
   }
   const sources = [
     'src/main/wallet/railgun-account-public.js',
+    'src/main/wallet/railgun-public-catalog.js',
     'src/main/wallet/railgun-store-owners.js',
     'src/main/wallet/railgun-public-job.js',
     'src/main/wallet/railgun-public-run.js',
@@ -453,13 +458,78 @@ async function main() {
   const { createRailgunWalletCatalog } = require('../src/main/wallet/railgun-wallet-catalog');
   let walletSession, walletJournal, catalog, generation, walletDirectory;
   const retainedDirectories = [];
+  const legacyHashes = new Map();
   try {
+    if (enrollment) {
+      const { openRailgunAccountStore } = require('../src/main/wallet/railgun-account-store');
+      const sourceStore = await openRailgunAccountStore({
+        enrollment,
+        kind: 'source',
+        create: true,
+      });
+      let legacyPublic, legacySource, legacyCoordinator;
+      try {
+        legacyPublic = await openRailgunAccountStore({ enrollment, kind: 'public', create: true });
+        const engineHandle = enrollment.getContext('engine');
+        const legacyJobs = require('../src/main/wallet/railgun-public-run').createRailgunPublicJobs(
+          {
+            handle: engineHandle,
+            archive: accountArchive,
+          }
+        );
+        legacySource = createRailgunScanSource({
+          handle: enrollment.getContext('protocol-rpc'),
+          ledger: sourceStore.ledger,
+          projectRange: legacyJobs.project,
+        });
+        legacyCoordinator = await enrollment.withPublicKeys((keys) =>
+          createRailgunScanCoordinator({
+            handle: engineHandle,
+            storeSession: legacyPublic.session,
+            source: legacySource,
+            journalStorage: {
+              directory: enrollment.directory,
+              key: keys['scan-journal'],
+              binding: enrollment.binding,
+              policy: 'e'.repeat(64),
+              create: true,
+              profileGuard: enrollment.profileGuard,
+            },
+            applyRange: legacyJobs.apply,
+          })
+        );
+        await legacyCoordinator.advance({ to: 10, anchor: capture.report.anchor });
+      } finally {
+        legacyCoordinator?.close();
+        legacySource?.close();
+        sourceStore.ledger.close();
+        legacyPublic?.session.close();
+        await Promise.all([sourceStore.session.closed, legacyPublic?.session.closed]);
+      }
+      for (const name of fs
+        .readdirSync(enrollment.directory)
+        .filter((name) => name.endsWith('.sqlite') || name.endsWith('.json')))
+        legacyHashes.set(name, sha(fs.readFileSync(path.join(enrollment.directory, name))));
+      const marker = path.join(directory, 'profile', 'wallet-privacy-inventory.json');
+      const markerBefore = fs.readFileSync(marker);
+      const height = await enrollment.withPublicKeys((keys) =>
+        require('../src/main/wallet/railgun-scan-journal').readRailgunScanUpgradeHeight({
+          handle: enrollment.getContext('storage', 'railgun-scan-v1'),
+          directory: enrollment.directory,
+          key: keys['scan-journal'],
+          binding: enrollment.binding,
+          profileGuard: enrollment.profileGuard,
+        })
+      );
+      assert.equal(height, 10);
+      assert.deepEqual(fs.readFileSync(marker), markerBefore);
+    }
     await open(true);
     let previousEvidence;
     for (const stage of [10, 20, 30]) {
       if (enrollment && stage === 30) {
         failPublicCommit = true;
-        await assert.rejects(coordinator.advance({ to: stage, anchor: capture.report.anchor }));
+        await assert.rejects(advancePublic({ to: stage, anchor: capture.report.anchor }));
         assert.equal(failPublicCommit, false);
         assert.equal(applications.at(-1).interrupted, true);
         await close();
@@ -477,7 +547,7 @@ async function main() {
           recoveredThrough: recovered.to.number,
         });
       } else if (stage !== 20 || accountIdentity)
-        await coordinator.advance({ to: stage, anchor: capture.report.anchor });
+        await advancePublic({ to: stage, anchor: capture.report.anchor });
       if (previousEvidence) assert.throws(() => coordinator.assertSnapshot(previousEvidence));
       for (const attempt of accountIdentity
         ? stage === 30
@@ -684,7 +754,7 @@ async function main() {
           continue;
         }
         if (attempt === 'stale-public') {
-          await coordinator.advance({ to: 20, anchor: capture.report.anchor });
+          await advancePublic({ to: 20, anchor: capture.report.anchor });
           await assert.rejects(walletJournal.complete(pending, evidence));
           assert.throws(() => walletJournal.assertReady());
           runs.push({ stage, attempt, refused: true, publicAdvancedTo: 20 });
@@ -824,7 +894,7 @@ async function main() {
         restored: true,
         observedAmount: '2700',
       });
-      await coordinator.advance({ to: 40, anchor: capture.report.anchor });
+      await advancePublic({ to: 40, anchor: capture.report.anchor });
       failWalletBatch = true;
       await assert.rejects(openWallet('advance'));
       assert.equal(failWalletBatch, false);
@@ -896,8 +966,103 @@ async function main() {
         retiredDirectoriesRetained: true,
         observedAmount: '2700',
       });
+      const previousPublicId = publicAccount.generationId;
+      const previousPublicDirectory = path.join(
+        enrollment.directory,
+        'railgun-public-' + previousPublicId
+      );
+      const retainedFiles = fs
+        .readdirSync(previousPublicDirectory)
+        .filter(
+          (name) => name.endsWith('.json') || name === 'source.sqlite' || name === 'public.sqlite'
+        );
+      await close();
+      const retainedHashes = Object.fromEntries(
+        retainedFiles.map((name) => [
+          name,
+          createHash('sha256')
+            .update(fs.readFileSync(path.join(previousPublicDirectory, name)))
+            .digest('hex'),
+        ])
+      );
+      await open(false, 'new');
+      const candidatePublicId = publicAccount.generationId;
+      assert.notEqual(candidatePublicId, previousPublicId);
+      await advancePublic({ to: 10, anchor: capture.report.anchor });
+      await assert.rejects(openWallet('new')); // Candidate below the durable floor has no wallet authority.
+      await close();
+      await open(false, 'pending');
+      assert.equal(publicAccount.generationId, candidatePublicId);
+      await coordinator.recover();
+      assert.equal(coordinator.inspect().to.number, 10);
+      await advancePublic({ to: 20, anchor: capture.report.anchor });
+      await advancePublic({ to: 30, anchor: capture.report.anchor });
+      // Finish the journal but intentionally omit catalog publication, then cold resume.
+      await coordinator.advance({ to: 40, anchor: capture.report.anchor });
+      await close();
+      await open(false, 'pending');
+      await publicAccount.publish();
+      assert.equal(coordinator.inspect().to.number, 40);
+      await assert.rejects(openWallet('active')); // Public identities changed even though policy did not.
+      const rebuiltPublicWallet = await openWallet('new');
+      try {
+        assert.equal((await rebuiltPublicWallet.view.balance())[0].amount, 2700n);
+        assert.equal((await rebuiltPublicWallet.view.status()).to.number, 40);
+      } finally {
+        await rebuiltPublicWallet.close();
+      }
+      for (const [name, hash] of Object.entries(retainedHashes))
+        assert.equal(
+          createHash('sha256')
+            .update(fs.readFileSync(path.join(previousPublicDirectory, name)))
+            .digest('hex'),
+          hash
+        );
+      enrollment.profileGuard.assert(path.join(previousPublicDirectory, 'source.sqlite'));
+      runs.push({
+        attempt: 'interrupted-public-generation-rebuild',
+        belowFloorWalletRefused: true,
+        pendingResumedThrough: 10,
+        completeBeforePublicationRecovered: true,
+        oldWalletRefusedAfterCutover: true,
+        oldPublicFilesUnchanged: true,
+        observedAmount: '2700',
+        recoveredThrough: 40,
+      });
+      await close();
+      await open(false);
+      await coordinator.recover();
+      const restoredPublicWallet = await openWallet('active');
+      try {
+        assert.equal((await restoredPublicWallet.view.balance())[0].amount, 2700n);
+      } finally {
+        await restoredPublicWallet.close();
+      }
+      runs.push({
+        attempt: 'public-generation-cold-restore',
+        observedAmount: '2700',
+        recoveredThrough: 40,
+      });
     }
-    assert.equal(applications.length, enrollment ? 5 : 3);
+    if (enrollment) {
+      const walletCatalogFile = getPrivacyStoragePath(
+        enrollment.getContext('storage', 'railgun-wallet-catalog-v1:' + walletId),
+        enrollment.directory
+      );
+      for (const [name, hash] of legacyHashes) {
+        // The existing wallet catalog legitimately changes during wallet rebuilds.
+        if (path.join(enrollment.directory, name) === walletCatalogFile) continue;
+        assert.equal(sha(fs.readFileSync(path.join(enrollment.directory, name))), hash);
+      }
+      runs.push({
+        attempt: 'legacy-public-policy-upgrade',
+        oldPolicy: 'e'.repeat(64),
+        authenticatedHeight: 10,
+        readOnlyInspectionPreservedInventory: true,
+        legacySourcePublicJournalUnchanged: true,
+      });
+    }
+    assert.equal(applications.length, enrollment ? 10 : 3);
     if (accountIdentity) {
       const handle = scope.getContext({ ...subject, role: 'engine' });
       walletSession = startRailgunSessionWorker({

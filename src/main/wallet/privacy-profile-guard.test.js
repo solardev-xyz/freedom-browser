@@ -115,6 +115,9 @@ test.each([
   'source.sqlite',
   'public.sqlite',
   'a'.repeat(64) + '.json',
+  'railgun-public-' + 'b'.repeat(64) + '/source.sqlite',
+  'railgun-public-' + 'b'.repeat(64) + '/public.sqlite',
+  'railgun-public-' + 'b'.repeat(64) + '/' + 'c'.repeat(64) + '.json',
   'railgun-cache-' + 'b'.repeat(64) + '/wallet.sqlite',
   'railgun-cache-' + 'b'.repeat(64) + '/' + 'c'.repeat(64) + '.json',
 ])('Railgun nested inventory retains and requires %s', (name) => {
@@ -140,6 +143,8 @@ test.each([
   'source.sqlite-wal',
   'railgun-cache-' + 'b'.repeat(64) + '/other.sqlite',
   'railgun-cache-short/wallet.sqlite',
+  'railgun-public-' + 'b'.repeat(64) + '/wallet.sqlite',
+  'railgun-public-short/public.sqlite',
   'nested/' + 'c'.repeat(64) + '.json',
 ])('Railgun inventory refuses unrelated nested path %s', (name) => {
   const inventory = guard(),

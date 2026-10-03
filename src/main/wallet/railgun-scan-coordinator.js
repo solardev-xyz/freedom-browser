@@ -342,6 +342,12 @@ async function createRailgunScanCoordinator({
     return snapshot.checkpoint;
   }
   const instance = Object.freeze({
+    identity: Object.freeze({
+      directory: journalStorage.directory,
+      policy: journalStorage.policy,
+      binding: journalStorage.binding,
+      ledgerId: source.ledgerId,
+    }),
     advance,
     withPublicSnapshot,
     assertSnapshot,

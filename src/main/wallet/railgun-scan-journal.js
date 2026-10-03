@@ -450,7 +450,34 @@ async function createRailgunScanJournal({
     close,
   });
 }
+// Read-only upgrade inspection. Authenticate the retained journal using its own
+// recorded policy without opening workers, changing leases or granting readiness.
+function assertRailgunScanDirectoryClosed(directory) {
+  for (const filename of owners)
+    if (path.dirname(filename) === directory) throw fail('RAILGUN_SCAN_BUSY');
+}
+async function readRailgunScanUpgradeHeight({ handle, directory, key, binding, profileGuard }) {
+  const context = getPrivacyContext(handle);
+  check(
+    context.subject.role === 'storage' &&
+      context.subject.protocol === 'railgun' &&
+      context.subject.operation === 'railgun-scan-v1'
+  );
+  check(fs.realpathSync(directory) === directory && digest(binding));
+  assertRailgunScanDirectoryClosed(directory);
+  const storage = createPrivacyStorage({ handle, directory, key, profileGuard });
+  const text = await storage.get(RECORD_KEY);
+  check(typeof text === 'string' && Buffer.byteLength(text) <= MAX_RECORD);
+  const metadata = JSON.parse(text);
+  check(digest(metadata.policy) && digest(metadata.storeId) && digest(metadata.ledgerId));
+  const value = unpack(text, binding, metadata.storeId, metadata.ledgerId, metadata.policy);
+  getPrivacyContext(handle);
+  assertRailgunScanDirectoryClosed(directory);
+  return Math.max(value.checkpoint?.to.number ?? -1, value.pending?.to.number ?? -1);
+}
 module.exports = {
+  assertRailgunScanDirectoryClosed,
+  readRailgunScanUpgradeHeight,
   createRailgunScanJournal,
   RECORD_KEY,
   scanState,

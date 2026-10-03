@@ -11,7 +11,12 @@ jest.mock('./railgun-public-policy', () => ({ getRailgunPublicPolicy: () => 'a'.
 jest.mock('./railgun-public-run', () => ({ createRailgunPublicJobs: () => mockJobs }));
 jest.mock('./railgun-scan-source', () => ({
   createRailgunScanSource: (options) => {
-    mockSource = { ...options, close: jest.fn(), signal: options.ledger.signal };
+    mockSource = {
+      ...options,
+      ledgerId: '1'.repeat(64),
+      close: jest.fn(),
+      signal: options.ledger.signal,
+    };
     return mockSource;
   },
 }));
@@ -59,7 +64,9 @@ beforeEach(() => {
         role,
         ...(operation ? { operation } : {}),
       }),
-    profileGuard: { assert: jest.fn() },
+    profileGuard: { assert: jest.fn(), remember: jest.fn() },
+    withPublicCatalogKey: async (use) => use({ 'public-catalog': Buffer.alloc(32, 6) }),
+    withPublicGenerationKeys: async (_catalog, _id, use) => mockEnrollment.withPublicKeys(use),
     withPublicKeys: async (use) => {
       const key = Buffer.alloc(32, 5);
       try {
@@ -73,8 +80,8 @@ beforeEach(() => {
     mockEnrollment.getContext('storage', 'railgun-scan-v1'),
     directory
   );
-  mockOpen.mockImplementation(async ({ kind, create }) => {
-    const filename = path.join(directory, kind + '.sqlite');
+  mockOpen.mockImplementation(async ({ kind, create, generationId }) => {
+    const filename = path.join(directory, 'railgun-public-' + generationId, kind + '.sqlite');
     if (create) fs.writeFileSync(filename, 'fixture');
     const controller = new AbortController();
     controllers.push(controller);
@@ -106,10 +113,24 @@ beforeEach(() => {
   mockJobs = { project: jest.fn(async () => ({})), apply: jest.fn(async () => ({})) };
   mockCreateCoordinator = jest.fn(async (options) => {
     coordinatorOptions = options;
+    journalPath = getPrivacyStoragePath(
+      mockEnrollment.getContext('storage', 'railgun-scan-v1'),
+      options.journalStorage.directory
+    );
     fs.writeFileSync(journalPath, 'fixture');
     const controller = new AbortController();
     controllers.push(controller);
+    const plan = {
+      to: { number: 10, hash: '0x' + 'a'.repeat(64) },
+      source: { ledgerId: '1'.repeat(64) },
+      state: { storeId: '2'.repeat(64) },
+    };
     const coordinator = {
+      identity: { ...options.journalStorage, ledgerId: '1'.repeat(64) },
+      advance: async () => ({ to: plan.to }),
+      inspect: () => ({ to: plan.to }),
+      withPublicSnapshot: async (run) => ({ value: await run(), evidence: {} }),
+      assertSnapshot: () => plan,
       signal: controller.signal,
       close: () => {
         controller.abort();
@@ -124,11 +145,12 @@ afterEach(async () => {
   await Promise.all(opened.map((v) => v.close()));
   scope.close();
 });
-async function open(create = false) {
+async function open(create = false, mode) {
   const result = await openRailgunAccountPublic({
     enrollment: mockEnrollment,
     archive: '/engine.asar',
     create,
+    ...(mode ? { mode } : {}),
   });
   opened.push(result);
   return result;
@@ -146,6 +168,7 @@ test('initializes only absent components, pins journal policy and attests only i
     create: true,
   });
   expect(coordinatorOptions.journalStorage.key.every((v) => v === 0)).toBe(true);
+  await first.publish();
   expect(assertRailgunAccountPublic(first.coordinator, mockEnrollment, first.policy)).toBe(
     first.policy
   );
@@ -173,13 +196,10 @@ test.each(['source', 'public'])(
     expect(stores.every((v) => v.session.signal.aborted)).toBe(true);
   }
 );
-test('partial initialization resumes existing stores and never replaces them', async () => {
+test('legacy partial root initialization refuses without replacing retained source', async () => {
   fs.writeFileSync(path.join(mockEnrollment.directory, 'source.sqlite'), 'retained');
-  await open(true);
-  expect(mockOpen.mock.calls.map(([v]) => [v.kind, v.create])).toEqual([
-    ['source', false],
-    ['public', true],
-  ]);
+  await expect(open(true)).rejects.toThrow();
+  expect(mockOpen).not.toHaveBeenCalled();
   expect(fs.readFileSync(path.join(mockEnrollment.directory, 'source.sqlite'), 'utf8')).toBe(
     'retained'
   );
@@ -209,7 +229,7 @@ test('closure drains a still-finishing job before releasing the account owner', 
   await project;
   await close;
   expect(stores.every((v) => v.session.signal.aborted)).toBe(true);
-  await open();
+  await open(false, 'pending');
 });
 test.each([0, 1])(
   'worker %s revocation closes the other worker and coordinator automatically',
@@ -249,5 +269,28 @@ test('revocation during store opening drains a late worker before releasing owne
   await expect(opening).rejects.toThrow();
   expect(stores.every((v) => v.session.signal.aborted)).toBe(true);
   mockOpen.mockImplementation(original);
-  await open(true);
+  await open(false, 'pending');
+});
+test('pending publication recovers through a snapshot without requiring prior inspect readiness', async () => {
+  const value = await open(true);
+  value.coordinator.inspect = () => {
+    throw Error('not recovered');
+  };
+  await value.publish();
+  expect(assertRailgunAccountPublic(value.coordinator, mockEnrollment)).toBe(value.policy);
+});
+test('catalog write failure immediately revokes the public lifetime and both workers', async () => {
+  const value = await open(true);
+  await value.publish();
+  const rename = jest.spyOn(fs, 'renameSync').mockImplementation(() => {
+    throw Error('disk');
+  });
+  try {
+    await expect(mockSource.beforeAcquire({ to: 20 })).rejects.toThrow();
+  } finally {
+    rename.mockRestore();
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(value.signal.aborted).toBe(true);
+  expect(stores.every((v) => v.session.signal.aborted)).toBe(true);
 });

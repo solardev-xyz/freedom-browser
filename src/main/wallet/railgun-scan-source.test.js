@@ -29,8 +29,8 @@ const input = () => ({
   anchor: { number: 100, hash: hash(101) },
   storeId: 'a'.repeat(64),
 });
-function open() {
-  const source = createRailgunScanSource({ handle, ledger, projectRange });
+function open(options = {}) {
+  const source = createRailgunScanSource({ handle, ledger, projectRange, ...options });
   sources.push(source);
   return source;
 }
@@ -239,4 +239,44 @@ test('profile lock cancels a silent planner without awaiting its callback', asyn
   await started;
   scope.close();
   await expect(pending).rejects.toThrow();
+});
+
+test('durable target hook runs after canonical validation and before staging; refusal preserves ledger', async () => {
+  let protectedTarget = false;
+  const stage = ledger.stage.getMockImplementation();
+  ledger.stage.mockImplementation(async (...args) => {
+    expect(protectedTarget).toBe(true);
+    return stage(...args);
+  });
+  const source = open({
+    beforeAcquire: async (range) => {
+      expect(range).toEqual(input());
+      expect(rpc.request).toHaveBeenCalled();
+      expect(ledger.stage).not.toHaveBeenCalled();
+      protectedTarget = true;
+    },
+  });
+  await source.acquire(input());
+  expect(ledger.stage).toHaveBeenCalledTimes(1);
+});
+test('invalid input and canonical mismatch cannot raise the durable acquisition floor', async () => {
+  const beforeAcquire = jest.fn();
+  const source = open({ beforeAcquire });
+  await expect(source.acquire({ ...input(), to: 100001 })).rejects.toThrow();
+  expect(beforeAcquire).not.toHaveBeenCalled();
+  await expect(
+    source.acquire({ ...input(), anchor: { number: 100, hash: hash(999) } })
+  ).rejects.toThrow();
+  expect(beforeAcquire).not.toHaveBeenCalled();
+  expect(ledger.stage).not.toHaveBeenCalled();
+});
+test('failure to persist the floor refuses before acquiring or staging logs', async () => {
+  const source = open({
+    beforeAcquire: async () => {
+      throw Error('disk');
+    },
+  });
+  await expect(source.acquire(input())).rejects.toThrow();
+  expect(ledger.stage).not.toHaveBeenCalled();
+  expect(rpc.request.mock.calls.some(([method]) => method === 'eth_getLogs')).toBe(false);
 });

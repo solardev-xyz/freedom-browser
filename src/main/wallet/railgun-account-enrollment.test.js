@@ -255,3 +255,40 @@ test('moved profile requires recovery instead of deriving a fresh empty slot', a
   await expect(open()).rejects.toMatchObject({ code: 'PRIVATE_PROFILE_MOVED' });
   await expect(open(true)).rejects.toMatchObject({ code: 'PRIVATE_PROFILE_MOVED' });
 });
+test('public generation keys are catalog-bound, separated from legacy keys and wiped after use', async () => {
+  const entry = await open(true);
+  const { createRailgunPublicCatalog } = require('./railgun-public-catalog');
+  const catalog = await entry.withPublicCatalogKey((keys) =>
+    createRailgunPublicCatalog({
+      handle: entry.getContext('storage', 'railgun-public-catalog-v1'),
+      directory: entry.directory,
+      binding: entry.binding,
+      key: keys['public-catalog'],
+      create: true,
+      profileGuard: entry.profileGuard,
+    })
+  );
+  const first = await catalog.begin('2'.repeat(64));
+  let legacy, firstKeys, borrowed;
+  await entry.withPublicKeys((keys) => {
+    legacy = Object.values(keys).map((k) => k.toString('hex'));
+  });
+  await entry.withPublicGenerationKeys(catalog, first.id, (keys) => {
+    borrowed = Object.values(keys);
+    firstKeys = borrowed.map((k) => k.toString('hex'));
+  });
+  expect(borrowed.every((k) => k.every((v) => v === 0))).toBe(true);
+  expect(new Set([...legacy, ...firstKeys]).size).toBe(6);
+  await expect(
+    entry.withPublicGenerationKeys({ ...catalog }, first.id, () => {})
+  ).rejects.toThrow();
+  const second = await catalog.begin('3'.repeat(64));
+  await expect(entry.withPublicGenerationKeys(catalog, first.id, () => {})).rejects.toThrow();
+  await entry.withPublicGenerationKeys(catalog, second.id, (keys) => {
+    expect(new Set([...firstKeys, ...Object.values(keys).map((k) => k.toString('hex'))]).size).toBe(
+      6
+    );
+  });
+  entry.close();
+  expect(catalog.signal.aborted).toBe(true);
+});

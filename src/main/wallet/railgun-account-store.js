@@ -38,13 +38,14 @@ async function openRailgunAccountStore({
   enrollment,
   kind,
   generationId,
+  publicCatalog,
   create = false,
   expectedStoreId,
 }) {
   check(isRailgunAccountEnrollment(enrollment));
   check(typeof create === 'boolean' && ['source', 'public', 'wallet'].includes(kind));
   check(
-    kind === 'wallet'
+    kind === 'wallet' || publicCatalog !== undefined
       ? typeof generationId === 'string' && /^[0-9a-f]{64}$/.test(generationId)
       : generationId === undefined
   );
@@ -53,12 +54,15 @@ async function openRailgunAccountStore({
       (typeof expectedStoreId === 'string' && /^[0-9a-f]{64}$/.test(expectedStoreId))
   );
   check(!create || expectedStoreId === undefined);
+  check(publicCatalog === undefined || kind !== 'wallet');
   const handle = enrollment.getContext('engine');
   realDirectory(enrollment.directory);
   const directory =
     kind === 'wallet'
       ? path.join(enrollment.directory, 'railgun-cache-' + generationId)
-      : enrollment.directory;
+      : publicCatalog
+        ? path.join(enrollment.directory, 'railgun-public-' + generationId)
+        : enrollment.directory;
   realDirectory(directory);
   const filename = path.join(directory, kind + '.sqlite');
   const release = claimRailgunAccountStore(filename);
@@ -114,12 +118,12 @@ async function openRailgunAccountStore({
     active();
     let generation;
     const selectedGeneration = async () => {
-      const current = await enrollment.catalog.inspect();
+      const current = await (publicCatalog ?? enrollment.catalog).inspect();
       const selected = current.active?.id === generationId ? current.active : current.pending;
       check(selected?.id === generationId);
       return selected;
     };
-    if (kind === 'wallet') {
+    if (kind === 'wallet' || publicCatalog) {
       generation = await selectedGeneration();
       check(!create || generation.storeId === undefined);
     }
@@ -157,7 +161,8 @@ async function openRailgunAccountStore({
     if (expectedStoreId !== undefined) check(storeId === expectedStoreId);
     if (generation) {
       check(JSON.stringify(await selectedGeneration()) === JSON.stringify(generation));
-      if (generation.storeId !== undefined) check(storeId === generation.storeId);
+      const expected = kind === 'source' ? generation.ledgerId : generation.storeId;
+      if (expected !== undefined) check(storeId === expected);
     }
     active();
     enrollment.profileGuard.remember(filename);
@@ -166,7 +171,9 @@ async function openRailgunAccountStore({
   try {
     const result = await (kind === 'wallet'
       ? enrollment.withGenerationKeys(generationId, use)
-      : enrollment.withPublicKeys(use));
+      : publicCatalog
+        ? enrollment.withPublicGenerationKeys(publicCatalog, generationId, use)
+        : enrollment.withPublicKeys(use));
     active();
     worker.closed.then(release);
     return result;

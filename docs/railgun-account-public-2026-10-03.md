@@ -1,5 +1,7 @@
 # Enrolled Railgun public scanning — October 3, 2026
 
+Later October 3 work closes the inventory, wallet-retirement and public-generation availability gaps described below; see [public generation recovery](railgun-public-generations-2026-10-03.md). The measurements here remain tied to their recorded source revisions.
+
 Main now composes an enrolled source ledger, public store, policy-bound scan
 journal and authenticated public planner/apply jobs. The wallet entry requires
 this composition's live coordinator for the same account binding and public

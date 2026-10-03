@@ -53,6 +53,9 @@ test('public job and host transport dependency closure is pinned with explicit i
       'railgun-session-worker',
       'railgun-account-store',
       'railgun-account-enrollment',
+      'railgun-store-owners',
+      'railgun-account-public',
+      'railgun-public-catalog',
     ].map((name) => require.resolve('./' + name))
   );
   const visited = new Set();
@@ -73,5 +76,5 @@ test('public job and host transport dependency closure is pinned with explicit i
   walk(require.resolve('./railgun-scan-source'));
   walk(require.resolve('./railgun-source-ledger'));
   walk(require.resolve('./railgun-account-public'));
-  expect(visited.size).toBe(13);
+  expect(visited.size).toBe(12);
 });

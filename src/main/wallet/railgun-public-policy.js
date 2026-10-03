@@ -20,7 +20,6 @@ const SOURCES = Object.freeze([
   'railgun-scan-coordinator.js',
   'railgun-scan-source.js',
   'railgun-source-ledger.js',
-  'railgun-account-public.js',
 ]);
 function getRailgunPublicPolicy(archive) {
   verifyRailgunEngineRuntime(archive);

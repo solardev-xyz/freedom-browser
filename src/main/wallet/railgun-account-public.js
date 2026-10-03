@@ -13,6 +13,10 @@ const {
   assertRailgunScanCoordinator,
 } = require('./railgun-scan-coordinator');
 const { getPrivacyStoragePath } = require('./privacy-storage');
+const { createRailgunPublicCatalog } = require('./railgun-public-catalog');
+const { readRailgunScanUpgradeHeight } = require('./railgun-scan-journal');
+const { assertRailgunSessionDirectoryClosed } = require('./railgun-session-worker');
+const { assertRailgunAccountStoreDirectoryClosed } = require('./railgun-store-owners');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const owners = new Map(),
   coordinators = new WeakMap();
@@ -33,8 +37,14 @@ function exists(filename) {
     throw error;
   }
 }
-async function openRailgunAccountPublic({ enrollment, archive, create = false }) {
+async function openRailgunAccountPublic({
+  enrollment,
+  archive,
+  create = false,
+  mode = create ? 'new' : 'active',
+}) {
   check(isRailgunAccountEnrollment(enrollment) && typeof create === 'boolean');
+  check(['new', 'pending', 'active'].includes(mode));
   const handle = enrollment.getContext('engine'),
     context = getPrivacyContext(handle);
   const policy = getRailgunPublicPolicy(archive);
@@ -53,7 +63,7 @@ async function openRailgunAccountPublic({ enrollment, archive, create = false })
   const engineHandle = scope.getContext(subject),
     rpcHandle = scope.getContext({ ...subject, role: 'protocol-rpc' });
   owners.set(enrollment.directory, owner);
-  let sourceStore, publicStore, source, coordinator, onAbort;
+  let sourceStore, publicStore, source, coordinator, onAbort, catalog, generation, candidate;
   const pending = new Set();
   const watched = [];
   const active = () => {
@@ -84,6 +94,7 @@ async function openRailgunAccountPublic({ enrollment, archive, create = false })
     // An opener already in flight may have returned its worker during draining.
     stop();
     await Promise.all([sourceStore?.session.closed, publicStore?.session.closed]);
+    catalog?.close();
     if (owners.get(enrollment.directory) === owner) owners.delete(enrollment.directory);
   }
   onAbort = () => {
@@ -96,12 +107,72 @@ async function openRailgunAccountPublic({ enrollment, archive, create = false })
   };
   watch(scope.signal);
   try {
+    const catalogHandle = scope.getContext({
+      ...subject,
+      role: 'storage',
+      operation: 'railgun-public-catalog-v1',
+    });
+    const catalogFile = getPrivacyStoragePath(catalogHandle, enrollment.directory);
+    enrollment.profileGuard.assert(catalogFile);
+    const initializeCatalog = !exists(catalogFile);
+    check(!initializeCatalog || create);
+    let initialHeight = -1;
+    if (initializeCatalog) {
+      assertRailgunAccountStoreDirectoryClosed(enrollment.directory);
+      assertRailgunSessionDirectoryClosed(enrollment.directory);
+      const legacyHandle = scope.getContext({
+        ...subject,
+        role: 'storage',
+        operation: 'railgun-scan-v1',
+      });
+      const legacyFile = getPrivacyStoragePath(legacyHandle, enrollment.directory);
+      enrollment.profileGuard.assert(legacyFile);
+      if (exists(legacyFile)) {
+        initialHeight = await enrollment.withPublicKeys((keys) =>
+          readRailgunScanUpgradeHeight({
+            handle: legacyHandle,
+            directory: enrollment.directory,
+            key: keys['scan-journal'],
+            binding: enrollment.binding,
+            profileGuard: enrollment.profileGuard,
+          })
+        );
+      } else {
+        check(
+          !exists(path.join(enrollment.directory, 'source.sqlite')) &&
+            !exists(path.join(enrollment.directory, 'public.sqlite'))
+        );
+      }
+    }
+    catalog = await enrollment.withPublicCatalogKey((keys) =>
+      createRailgunPublicCatalog({
+        handle: catalogHandle,
+        directory: enrollment.directory,
+        key: keys['public-catalog'],
+        binding: enrollment.binding,
+        create: initializeCatalog,
+        initialHeight,
+        profileGuard: enrollment.profileGuard,
+      })
+    );
+    active();
+    watch(catalog.signal);
+    if (mode === 'new') candidate = generation = await catalog.begin(policy);
+    else if (mode === 'pending') candidate = generation = catalog.resume();
+    else generation = catalog.activeFor(policy);
+    check(generation && generation.policy === policy);
     const open = async (kind) => {
-      const filename = path.join(enrollment.directory, kind + '.sqlite');
+      const filename = path.join(generation.directory, kind + '.sqlite');
       enrollment.profileGuard.assert(filename);
       const present = exists(filename);
-      check(present || create);
-      return openRailgunAccountStore({ enrollment, kind, create: !present });
+      check(present || candidate);
+      return openRailgunAccountStore({
+        enrollment,
+        kind,
+        generationId: generation.id,
+        publicCatalog: catalog,
+        create: !present,
+      });
     };
     await track(async () => {
       sourceStore = await open('source');
@@ -118,10 +189,10 @@ async function openRailgunAccountPublic({ enrollment, archive, create = false })
       role: 'storage',
       operation: 'railgun-scan-v1',
     });
-    const journalFile = getPrivacyStoragePath(journalHandle, enrollment.directory);
+    const journalFile = getPrivacyStoragePath(journalHandle, generation.directory);
     enrollment.profileGuard.assert(journalFile);
     const initializeJournal = !exists(journalFile);
-    check(!initializeJournal || create);
+    check(!initializeJournal || candidate);
     if (initializeJournal) {
       sourceStore.ledger.assertEmpty();
       // The whole-store digest counts every record, including unknown namespaces.
@@ -133,16 +204,17 @@ async function openRailgunAccountPublic({ enrollment, archive, create = false })
     source = createRailgunScanSource({
       handle: rpcHandle,
       ledger: sourceStore.ledger,
+      beforeAcquire: ({ to }) => catalog.protect(generation.id, to),
       projectRange: (...args) => track(() => jobs.project(...args)),
     });
     await track(async () => {
-      coordinator = await enrollment.withPublicKeys((keys) =>
+      coordinator = await enrollment.withPublicGenerationKeys(catalog, generation.id, (keys) =>
         createRailgunScanCoordinator({
           handle: engineHandle,
           storeSession: publicStore.session,
           source,
           journalStorage: {
-            directory: enrollment.directory,
+            directory: generation.directory,
             key: keys['scan-journal'],
             binding: enrollment.binding,
             policy,
@@ -158,11 +230,34 @@ async function openRailgunAccountPublic({ enrollment, archive, create = false })
     coordinators.set(coordinator, {
       binding: enrollment.binding,
       policy,
+      catalog,
+      generationId: generation.id,
       sourceId: sourceStore.storeId,
       publicId: publicStore.storeId,
     });
     watch(coordinator.signal);
-    return Object.freeze({ coordinator, policy, close, signal: scope.signal });
+    const publish = async () => {
+      active();
+      if (!candidate) return;
+      const snapshot = await coordinator.withPublicSnapshot(() => undefined);
+      await catalog.publish(candidate, coordinator, snapshot.evidence);
+      candidate = null;
+    };
+    return Object.freeze({
+      coordinator,
+      policy,
+      generationId: generation.id,
+      close,
+      signal: scope.signal,
+      publish: () => track(publish),
+      async advance(range) {
+        return track(async () => {
+          const result = await coordinator.advance(range);
+          if (candidate && result.to.number >= catalog.inspect().highWater) await publish();
+          return result;
+        });
+      },
+    });
   } catch (error) {
     await close();
     throw error;
@@ -173,6 +268,7 @@ function assertRailgunAccountPublic(coordinator, enrollment, policy) {
   const entry = coordinators.get(coordinator);
   check(entry && entry.binding === enrollment.binding);
   check(policy === undefined || entry.policy === policy);
+  entry.catalog.assertActive(entry.generationId, entry.policy);
   assertRailgunScanCoordinator(coordinator, enrollment.getContext('engine'));
   return entry.policy;
 }

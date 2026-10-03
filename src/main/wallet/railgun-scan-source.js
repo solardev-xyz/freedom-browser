@@ -94,7 +94,8 @@ function normalizeLogs(values, from, to) {
   check(blocks.size <= 512);
   return { logs: freeze(result), blocks };
 }
-function createRailgunScanSource({ handle, ledger, projectRange }) {
+function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }) {
+  check(beforeAcquire === undefined || typeof beforeAcquire === 'function');
   const context = getPrivacyContext(handle),
     subject = context.subject;
   check(
@@ -237,6 +238,10 @@ function createRailgunScanSource({ handle, ledger, projectRange }) {
     const deadline = setTimeout(close, MAX_RANGE_MS);
     try {
       const before = await canonical();
+      if (beforeAcquire) {
+        await beforeAcquire(range);
+        active();
+      }
       const { logs, blocks } = normalizeLogs(
         await read('eth_getLogs', [
           { address: PROXY, fromBlock: tag(range.from), toBlock: tag(range.to) },
