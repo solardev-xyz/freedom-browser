@@ -335,3 +335,43 @@ test('asynchronous worker revocation closes the composition even while idle', as
   const phase = claimRailgunAccountPhase(mockEnrollment, 'wallet');
   phase.release();
 });
+test('coverage uses the public snapshot source and rechecks its evidence before returning diagnostics', async () => {
+  const value = await open();
+  await value.advance();
+  const plan = {
+    source: { ledgerId: 'b'.repeat(64), ledgerSha256: '9'.repeat(64) },
+    to: { number: 10 },
+  };
+  const visit = jest.fn(),
+    evidence = {};
+  mockCoordinator.withPublicSnapshot = jest.fn(async (run) => ({
+    value: await run({ checkpoint: plan, visitSource: visit, signal: scope.signal }),
+    evidence,
+  }));
+  mockCoordinator.assertSnapshot = jest.fn((token) => {
+    expect(token).toBe(evidence);
+    return plan;
+  });
+  const coverage = {
+    txid: { ...state.checkpoint.state },
+    source: plan.source,
+    checkedCount: 1,
+    globalTxidCompleteness: false,
+    spendingEnabled: false,
+  };
+  const original = mockRunner.run.getMockImplementation();
+  mockRunner.run.mockImplementation(async (mode, payload, source) => {
+    if (mode !== 'coverage') return original(mode, payload);
+    expect(source).toEqual({ visit, signal: scope.signal });
+    expect(payload.plan).toBe(plan);
+    return { value: { coverage }, receipt: {} };
+  });
+  mockRunner.assertResult.mockReturnValue({ coverage });
+  expect(await value.cover()).toBe(coverage);
+  expect(mockCoordinator.assertSnapshot).toHaveBeenCalledTimes(1);
+  mockCoordinator.assertSnapshot.mockImplementationOnce(() => {
+    throw Error('stale source');
+  });
+  await expect(value.cover()).rejects.toThrow('stale source');
+  expect(value.signal.aborted).toBe(true);
+});

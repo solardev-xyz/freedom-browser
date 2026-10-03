@@ -10,6 +10,7 @@ const QUALIFIED_THROUGH = 11829346;
 const SOURCES = Object.freeze([
   'railgun-public-policy.js',
   'railgun-public-run.js',
+  'railgun-source-feed.js',
   'railgun-public-job.js',
   'railgun-event-projector.js',
   'railgun-public-records.js',

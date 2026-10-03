@@ -59,6 +59,10 @@ beforeEach(() => {
       for (const value of staged) await visitor(value);
       return { count: staged.length };
     }),
+    visitThrough: jest.fn(async (_sha, visitor) => {
+      for (const value of staged) await visitor(value);
+      return { count: staged.length };
+    }),
   };
   createPrivateRpc.mockImplementation((handle, _role, { signal }) => {
     const lifetime = AbortSignal.any([getPrivacyContext(handle).signal, signal]);
@@ -87,6 +91,34 @@ afterEach(() => {
   sources.forEach((s) => s.close());
   scope.close();
   jest.restoreAllMocks();
+});
+test('snapshot source visiting pins a fresh registered prefix and permits later header refresh', async () => {
+  const source = open(),
+    result = await source.acquire(input()),
+    seen = [];
+  await expect(source.visitSnapshot(result.plan, {}, () => {})).rejects.toThrow();
+  const visited = await source.visitSnapshot(result.plan, result.evidence, (log) => {
+    seen.push(log);
+    now += MAX_AGE_MS + 1;
+  });
+  expect(visited.count).toBe(1);
+  expect(seen).toEqual(result.logs);
+  expect(ledger.visitThrough).toHaveBeenCalledWith(
+    result.plan.source.ledgerSha256,
+    expect.any(Function)
+  );
+  expect(() => source.assertSource(result.plan, result.evidence)).toThrow();
+  const fresh = await source.refresh(result.plan, result.evidence);
+  expect(() => source.assertSource(result.plan, fresh)).not.toThrow();
+});
+test('expired snapshot evidence and revoked visitors cannot provide source coverage', async () => {
+  const source = open(),
+    result = await source.acquire(input());
+  now += MAX_AGE_MS + 1;
+  await expect(source.visitSnapshot(result.plan, result.evidence, () => {})).rejects.toThrow();
+  expect(ledger.visitThrough).not.toHaveBeenCalled();
+  const fresh = await source.refresh(result.plan, result.evidence);
+  await expect(source.visitSnapshot(result.plan, fresh, () => scope.close())).rejects.toThrow();
 });
 test('acquires only public proxy history, checks headers and registers exact unverified provenance', async () => {
   const source = open(),

@@ -9,6 +9,7 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const { startRailgunProcess } = require('./railgun-process');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
 const inventory = require('./railgun-engine-manifest.json').inventory.sha256;
+const { createFeed } = require('./railgun-source-feed');
 const fail = () =>
   Object.assign(new Error('Railgun TXID job unavailable'), { code: 'RAILGUN_TXID_JOB_REFUSED' });
 const check = (v) => {
@@ -65,9 +66,18 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
     session.close();
   };
   scope.signal.addEventListener('abort', close, { once: true });
-  async function run(mode, payload) {
+  async function run(mode, payload, source) {
     active();
-    check(!busy && ['inspect', 'project', 'apply', 'witness'].includes(mode));
+    check(!busy && ['inspect', 'project', 'apply', 'witness', 'coverage'].includes(mode));
+    check(
+      mode === 'coverage'
+        ? source &&
+            typeof source.visit === 'function' &&
+            source.signal instanceof AbortSignal &&
+            !source.signal.aborted
+        : source === undefined
+    );
+    const runSignal = source ? AbortSignal.any([scope.signal, source.signal]) : scope.signal;
     const text = JSON.stringify(payload);
     check(typeof text === 'string' && Buffer.byteLength(text) <= 2 * 1024 * 1024 - 128);
     payload = JSON.parse(text);
@@ -76,6 +86,9 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
       supplied = false,
       result,
       storageBusy = false,
+      reading = false,
+      eof = false,
+      feed,
       transaction = null;
     const keyAllowed = (key) => {
       check(typeof key === 'string' && key.length <= 5500);
@@ -87,6 +100,7 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
       );
     };
     try {
+      if (source) feed = createFeed(source.visit, runSignal);
       task = startRailgunProcess({
         handle: scope.getContext({ ...subject, operation: 'txid-' + mode }),
         archive,
@@ -95,24 +109,37 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
         startupMs: 120000,
         lifetimeMs: 180000,
         broker: {
-          signal: scope.signal,
+          signal: runSignal,
           async dispatch(wire) {
             active();
+            check(!runSignal.aborted);
             check(typeof wire === 'string' && Buffer.byteLength(wire) <= 2 * 1024 * 1024);
             const message = JSON.parse(wire);
-            check(message?.id === ++sequence && !result && !storageBusy);
+            check(message?.id === ++sequence && !result && !storageBusy && !reading);
             if (message.method === 'input') {
               check(!supplied && Object.keys(message).length === 2);
               supplied = true;
               return JSON.stringify({ id: message.id, value: payload });
             }
             check(supplied);
+            if (message.method === 'sourceNext') {
+              check(mode === 'coverage' && !eof && Object.keys(message).length === 2);
+              reading = true;
+              try {
+                const logs = await feed.next();
+                eof = logs === null;
+                return JSON.stringify({ id: message.id, value: logs });
+              } finally {
+                reading = false;
+              }
+            }
             if (message.method === 'result') {
               check(
                 Object.keys(message).length === 3 &&
                   message.value?.guards?.attempts === 0 &&
                   message.value.inventory === inventory &&
-                  transaction === null
+                  transaction === null &&
+                  (mode !== 'coverage' || eof)
               );
               result = message.value;
               return JSON.stringify({ id: message.id, value: null });
@@ -168,7 +195,9 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
       task.close();
       const drained = await task.closed;
       check(drained.code === 'RAILGUN_PROCESS_CLOSED');
+      if (feed) await feed.done;
       active();
+      check(!runSignal.aborted);
       const observed = await session.inspectWalletState();
       session.assertFresh(observed);
       const value = freeze(JSON.parse(JSON.stringify(result))),
@@ -187,6 +216,8 @@ function createRailgunTxidRunner({ handle, archive, session, filename, binding, 
     } finally {
       task?.close();
       if (task) await task.closed;
+      feed?.close();
+      if (feed) await feed.done.catch(() => {});
       task = null;
       busy = false;
     }

@@ -236,3 +236,72 @@ test('a public-store filename or unbranded worker is refused before dispatch is 
     ).toThrow();
   expect(claim).not.toHaveBeenCalled();
 });
+test('coverage reads the complete bounded source before producing a branded result', async () => {
+  const visit = jest.fn(async (visitor) => {
+    await visitor({ public: 1 });
+    await visitor({ public: 2 });
+  });
+  mockRun = async ({ broker }) => {
+    await broker.dispatch(JSON.stringify({ id: 1, method: 'input' }));
+    expect(
+      JSON.parse(await broker.dispatch(JSON.stringify({ id: 2, method: 'sourceNext' }))).value
+    ).toEqual([{ public: 1 }, { public: 2 }]);
+    expect(
+      JSON.parse(await broker.dispatch(JSON.stringify({ id: 3, method: 'sourceNext' }))).value
+    ).toBeNull();
+    await broker.dispatch(
+      JSON.stringify({
+        id: 4,
+        method: 'result',
+        value: { coverage: { checkedCount: 1 }, guards: { attempts: 0 }, inventory },
+      })
+    );
+  };
+  const payload = { state: {}, plan: {} };
+  const result = await runner.run('coverage', payload, { visit, signal: scope.signal });
+  expect(runner.assertResult(result.receipt, 'coverage', payload).coverage.checkedCount).toBe(1);
+  expect(visit).toHaveBeenCalledTimes(1);
+  expect(dispatch).not.toHaveBeenCalled();
+});
+test.each(['early-result', 'txBegin', 'late-ledger-failure'])(
+  'coverage refuses %s and drains the source producer',
+  async (mode) => {
+    let finished = false;
+    const visit = async (visitor) => {
+      try {
+        await visitor({ public: 1 });
+        if (mode === 'late-ledger-failure') throw Error('ledger integrity');
+      } finally {
+        finished = true;
+      }
+    };
+    mockRun = async ({ broker }) => {
+      await broker.dispatch(JSON.stringify({ id: 1, method: 'input' }));
+      if (mode === 'early-result')
+        await broker.dispatch(
+          JSON.stringify({ id: 2, method: 'result', value: { guards: { attempts: 0 }, inventory } })
+        );
+      else
+        await broker.dispatch(
+          JSON.stringify({
+            id: 2,
+            method: mode === 'txBegin' ? 'txBegin' : 'sourceNext',
+            ...(mode === 'txBegin' ? { args: {} } : {}),
+          })
+        );
+    };
+    await expect(runner.run('coverage', {}, { visit, signal: scope.signal })).rejects.toThrow();
+    expect(finished).toBe(true);
+    expect(session.close).toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  }
+);
+test('non-coverage jobs cannot request the source or receive a source capability', async () => {
+  const source = { visit: async () => {}, signal: scope.signal };
+  await expect(runner.run('inspect', {}, source)).rejects.toThrow();
+  mockRun = async ({ broker }) => {
+    await broker.dispatch(JSON.stringify({ id: 1, method: 'input' }));
+    await broker.dispatch(JSON.stringify({ id: 2, method: 'sourceNext' }));
+  };
+  await expect(runner.run('inspect', {})).rejects.toThrow();
+});

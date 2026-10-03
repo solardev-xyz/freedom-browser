@@ -86,6 +86,21 @@ test('a pending page can be replayed against its unchanged base without writes d
   expect(initial.count).toBe(0);
   expect(first.state.count).toBe(5);
 });
+test('record inspection recomputes the row digest and transaction hashes before coverage can use it', async () => {
+  const p = create(),
+    db = store(),
+    input = rows(1);
+  db.apply(await p.append(p.empty(), input, db.read));
+  const text = await db.read('txid:row:0'),
+    record = JSON.parse(text);
+  expect(p.inspectRecord(text)).toEqual(record);
+  expect(Object.isFrozen(p.inspectRecord(text).row)).toBe(true);
+  for (const field of ['leaf', 'railgunTxid', 'rowSha256']) {
+    expect(() => p.inspectRecord(JSON.stringify({ ...record, [field]: '0'.repeat(64) }))).toThrow();
+  }
+  record.row.timestamp++;
+  expect(() => p.inspectRecord(JSON.stringify(record))).toThrow();
+});
 test('unknown verification breaks, malformed records, duplicate rows and duplicate txids refuse', async () => {
   const p = create(),
     db = store(),

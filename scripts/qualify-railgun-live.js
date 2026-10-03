@@ -301,6 +301,15 @@ async function main() {
         txid = await bounded(() => openTxid(false));
         assert.deepEqual((await txid.inspect()).checkpoint, final.checkpoint);
         report.txid.coldReopens++;
+        const coverageStarted = Date.now();
+        report.txid.coverage = await bounded(() => txid.cover());
+        report.txid.coverageElapsedMs = Date.now() - coverageStarted;
+        report.txid.independentEventCoverage =
+          report.txid.coverage.discrepancy === null &&
+          report.txid.coverage.checkedCount === report.txid.coverage.rowsWithinBoundary;
+        report.txid.allMirroredRowsCovered =
+          report.txid.independentEventCoverage &&
+          report.txid.coverage.uncheckedBeyondBoundary === 0;
         await bounded(() => txid.close());
         txid = null;
         report.txid.completed = true;

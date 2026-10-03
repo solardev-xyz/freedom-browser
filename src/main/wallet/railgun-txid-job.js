@@ -10,7 +10,7 @@ const { promisify } = require('util');
 async function run(text, { request, signal, guardReport }) {
   const input = JSON.parse(text);
   assert.deepEqual(Object.keys(input).sort(), ['archive', 'mode']);
-  assert.ok(['project', 'apply', 'witness', 'inspect'].includes(input.mode));
+  assert.ok(['project', 'apply', 'witness', 'inspect', 'coverage'].includes(input.mode));
   const archive = require('./railgun-engine-runtime').verifyRailgunEngineRuntime(input.archive);
   const r = createRequire(path.join(archive, 'package.json')),
     root = path.dirname(r.resolve('@railgun-community/engine'));
@@ -66,6 +66,23 @@ async function run(text, { request, signal, guardReport }) {
   if (input.mode === 'inspect') {
     assert.deepEqual(Object.keys(payload), []);
     value = { state: current, initialized: stored !== null };
+  } else if (input.mode === 'coverage') {
+    assert.deepEqual(Object.keys(payload).sort(), ['plan', 'state']);
+    assert.deepEqual(current, payload.state);
+    const ethers = r('ethers');
+    const abi = new ethers.Interface(require(path.join(root, 'abi/V2.1/RailgunSmartWallet.json')));
+    value = {
+      coverage: await require('./railgun-txid-coverage').compareRailgunTxidCoverage({
+        state: current,
+        plan: payload.plan,
+        read,
+        inspectRecord: projection.inspectRecord,
+        nextBatch: () => call({ method: 'sourceNext' }),
+        abi,
+        ethers,
+        qualifiedThrough: require('./railgun-public-policy').QUALIFIED_THROUGH,
+      }),
+    };
   } else if (input.mode === 'witness') {
     assert.deepEqual(Object.keys(payload).sort(), ['state', 'txid']);
     assert.deepEqual(current, payload.state);

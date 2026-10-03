@@ -261,6 +261,7 @@ async function createRailgunScanCoordinator({
         signal = AbortSignal.any([scope.signal, window.signal]),
         pending = new Set();
       let accepting = true,
+        sourceVisited = false,
         localId = 0,
         failed = false,
         timer,
@@ -305,13 +306,38 @@ async function createRailgunScanCoordinator({
           reject(fail());
         }, 180000);
       });
+      const visitSource = (visitor) => {
+        let promise;
+        try {
+          active();
+          check(accepting && !signal.aborted && !sourceVisited && typeof visitor === 'function');
+          sourceVisited = true;
+          promise = source.visitSnapshot(plan, evidence, async (log) => {
+            check(accepting && !signal.aborted);
+            await visitor(log);
+            check(accepting && !signal.aborted);
+          });
+        } catch (error) {
+          close();
+          return Promise.reject(error);
+        }
+        pending.add(promise);
+        promise.then(
+          () => pending.delete(promise),
+          () => {
+            failed = true;
+            pending.delete(promise);
+          }
+        );
+        return promise;
+      };
       let value;
       try {
         // The trusted runner must observe its utility process exit before it
         // resolves. Returning also revokes its broker; leaked cursors prevent
         // the whole-store observation below from completing.
         value = await Promise.race([
-          Promise.resolve().then(() => run({ checkpoint, dispatch, signal })),
+          Promise.resolve().then(() => run({ checkpoint, dispatch, visitSource, signal })),
           cancelled,
         ]);
         accepting = false;
@@ -322,6 +348,7 @@ async function createRailgunScanCoordinator({
         clearTimeout(timer);
         signal.removeEventListener('abort', abort);
         window.abort();
+        await Promise.allSettled([...pending]);
       }
       active();
       const refreshed = await source.refresh(plan, evidence),

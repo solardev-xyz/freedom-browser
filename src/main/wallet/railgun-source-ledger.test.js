@@ -27,6 +27,43 @@ async function open(create) {
   ledgers.push(ledger);
   return ledger;
 }
+test('authenticated digest visits select only the retained prefix and survive cold reopening', async () => {
+  const first = await open(true);
+  const reference = await first.stage(range(), values);
+  const next = [{ blockNumber: 15, data: 'tail' }];
+  await first.stage(range(11, 20, next), next);
+  const seen = [];
+  expect((await first.visitThrough(reference.ledgerSha256, (log) => seen.push(log))).count).toBe(2);
+  expect(seen).toEqual(values);
+  first.close();
+  await first.closed;
+  const cold = await open(false),
+    replay = [];
+  await cold.visitThrough(reference.ledgerSha256, (log) => replay.push(log));
+  expect(replay).toEqual(values);
+  await expect(cold.visitThrough('f'.repeat(64), () => {})).rejects.toThrow();
+  expect(cold.signal.aborted).toBe(true);
+});
+test('digest visiting excludes other ledger work until its visitor drains', async () => {
+  const ledger = await open(true),
+    reference = await ledger.stage(range(), values);
+  let finish, started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const reading = ledger.visitThrough(reference.ledgerSha256, async () => {
+    started();
+    await gate;
+  });
+  await ready;
+  await expect(ledger.nextAfter(reference.ledgerSha256)).rejects.toThrow();
+  ledger.close();
+  finish();
+  await expect(reading).rejects.toThrow();
+});
 async function suppliedWorker(binding = railgunSourceBinding(options.binding)) {
   const worker = startRailgunSessionWorker({
     handle: scope.getContext({

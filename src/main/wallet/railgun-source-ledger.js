@@ -280,6 +280,44 @@ async function createRailgunSourceLedger({
       busy = false;
     }
   }
+  async function visitRecords(target, visitor) {
+    let previous = initial(),
+      count = 0,
+      bytes = 0;
+    for (let index = 0; index <= target.index; index++) {
+      const record = await get(rangeKey(index));
+      check(
+        exact(record, ['index', 'providersSha256', 'range', 'previous', 'sha256']) &&
+          digest(record.providersSha256) &&
+          record.index === index &&
+          record.previous === previous.sha256 &&
+          record.sha256 === hash(record.previous + '\n' + JSON.stringify(record.range))
+      );
+      check(
+        record.range.from === previous.to + 1 && record.range.previousHash === previous.blockHash
+      );
+      const logDigest = createHash('sha256');
+      for (let n = 0; n < record.range.logs.count; n++) {
+        const value = await get(logKey(index, n));
+        check(value);
+        const text = JSON.stringify(value) + '\n';
+        logDigest.update(text);
+        bytes += Buffer.byteLength(text);
+        count++;
+        check(count <= 100000 && bytes <= 128 * 1024 * 1024);
+        await visitor(value);
+        active();
+      }
+      check(logDigest.digest('hex') === record.range.logs.sha256);
+      previous = {
+        sha256: record.sha256,
+        to: record.range.to.number,
+        blockHash: record.range.to.hash,
+      };
+    }
+    check(previous.sha256 === target.sha256);
+    return Object.freeze({ count, bytes });
+  }
   async function visit(reference, visitor) {
     active();
     check(!busy && typeof visitor === 'function');
@@ -287,42 +325,32 @@ async function createRailgunSourceLedger({
     check(target);
     busy = true;
     try {
-      let previous = initial(),
-        count = 0,
-        bytes = 0;
-      for (let index = 0; index <= target.index; index++) {
+      return await visitRecords(target, visitor);
+    } catch {
+      close();
+      throw fail();
+    } finally {
+      busy = false;
+    }
+  }
+  async function visitThrough(sha256, visitor) {
+    active();
+    check(!busy && digest(sha256) && typeof visitor === 'function');
+    busy = true;
+    try {
+      let previous = initial().sha256;
+      for (let index = 0; index < meta.count; index++) {
         const record = await get(rangeKey(index));
         check(
-          exact(record, ['index', 'providersSha256', 'range', 'previous', 'sha256']) &&
-            digest(record.providersSha256) &&
+          record &&
             record.index === index &&
-            record.previous === previous.sha256 &&
+            record.previous === previous &&
             record.sha256 === hash(record.previous + '\n' + JSON.stringify(record.range))
         );
-        check(
-          record.range.from === previous.to + 1 && record.range.previousHash === previous.blockHash
-        );
-        const logDigest = createHash('sha256');
-        for (let n = 0; n < record.range.logs.count; n++) {
-          const value = await get(logKey(index, n));
-          check(value);
-          const text = JSON.stringify(value) + '\n';
-          logDigest.update(text);
-          bytes += Buffer.byteLength(text);
-          count++;
-          check(count <= 100000 && bytes <= 128 * 1024 * 1024);
-          await visitor(value);
-          active();
-        }
-        check(logDigest.digest('hex') === record.range.logs.sha256);
-        previous = {
-          sha256: record.sha256,
-          to: record.range.to.number,
-          blockHash: record.range.to.hash,
-        };
+        if (record.sha256 === sha256) return await visitRecords(record, visitor);
+        previous = record.sha256;
       }
-      check(previous.sha256 === reference.ledgerSha256);
-      return Object.freeze({ count, bytes });
+      throw fail();
     } catch {
       close();
       throw fail();
@@ -432,6 +460,7 @@ async function createRailgunSourceLedger({
   return Object.freeze({
     stage,
     visit,
+    visitThrough,
     retain,
     nextAfter,
     close,

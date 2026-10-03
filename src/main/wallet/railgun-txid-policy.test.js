@@ -61,5 +61,5 @@ test('TXID computation, persistence and service validators have a closed policy 
     'railgun-txid-root',
   ])
     walk(require.resolve('./' + name));
-  expect(visited.size).toBe(10);
+  expect(visited.size).toBe(15);
 });

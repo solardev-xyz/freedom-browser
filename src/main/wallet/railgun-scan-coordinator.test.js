@@ -6,11 +6,11 @@ const { createPrivateRpc } = require('../networks/private-rpc');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { startRailgunSessionWorker } = require('./railgun-session-worker');
 const { createRailgunSourceLedger } = require('./railgun-source-ledger');
-const { createRailgunScanSource } = require('./railgun-scan-source');
+const { createRailgunScanSource, PROXY } = require('./railgun-scan-source');
 const { createRailgunScanCoordinator } = require('./railgun-scan-coordinator');
 const { emptyPublicState } = require('./railgun-public-records');
 const hash = (n) => '0x' + n.toString(16).padStart(64, '0');
-let scope, directory, instances, providerHost, sourceUnavailable;
+let scope, directory, instances, providerHost, sourceUnavailable, sourceLogs;
 const subject = {
   kind: 'private-account',
   principal: 'fixture',
@@ -98,6 +98,7 @@ beforeEach(() => {
   instances = [];
   providerHost = 'first.example';
   sourceUnavailable = false;
+  sourceLogs = [];
   createPrivateRpc.mockImplementation((handle, _role, { signal }) => {
     const lifetime = AbortSignal.any([getPrivacyContext(handle).signal, signal]);
     return {
@@ -109,7 +110,7 @@ beforeEach(() => {
       },
       request: async (method, params) => {
         if (sourceUnavailable) throw Error('source unavailable');
-        if (method === 'eth_getLogs') return { result: [] };
+        if (method === 'eth_getLogs') return { result: sourceLogs };
         const number = params[0] === 'finalized' ? 100 : Number(BigInt(params[0]));
         return {
           result: {
@@ -363,6 +364,79 @@ test('snapshot rechecks source headers after its read callback', async () => {
     entry.coordinator.withPublicSnapshot(async () => {
       sourceUnavailable = true;
       return 'must not publish';
+    })
+  ).rejects.toThrow();
+});
+const sourceLog = () => ({
+  address: PROXY,
+  blockNumber: '0x5',
+  blockHash: hash(6),
+  transactionHash: hash(33),
+  transactionIndex: '0x0',
+  logIndex: '0x1',
+  removed: false,
+  topics: [hash(22)],
+  data: '0x0102',
+});
+test('snapshot owns one authenticated source visit and revokes leaked source readers', async () => {
+  sourceLogs = [sourceLog()];
+  const entry = await open(true);
+  await entry.coordinator.advance(next(10));
+  let leaked;
+  const result = await entry.coordinator.withPublicSnapshot(async ({ visitSource }) => {
+    leaked = visitSource;
+    const seen = [];
+    const visited = await visitSource((log) => seen.push(log));
+    expect(visited.count).toBe(1);
+    expect(seen[0].blockNumber).toBe(5);
+    return seen.length;
+  });
+  expect(result.value).toBe(1);
+  expect(entry.coordinator.assertSnapshot(result.evidence).to.number).toBe(10);
+  await expect(leaked(() => {})).rejects.toThrow();
+  expect(() => entry.coordinator.assertSnapshot(result.evidence)).toThrow();
+});
+test('snapshot cancellation waits for its source visitor to drain before rejecting', async () => {
+  sourceLogs = [sourceLog()];
+  const entry = await open(true);
+  await entry.coordinator.advance(next(10));
+  let finish,
+    started,
+    settled = false;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const running = entry.coordinator.withPublicSnapshot(({ visitSource }) =>
+    visitSource(async () => {
+      started();
+      await gate;
+    })
+  );
+  running.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+  await ready;
+  scope.close();
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  finish();
+  await expect(running).rejects.toThrow();
+});
+test('a second source visit within the same snapshot refuses the complete window', async () => {
+  const entry = await open(true);
+  await entry.coordinator.advance(next(10));
+  await expect(
+    entry.coordinator.withPublicSnapshot(async ({ visitSource }) => {
+      await visitSource(() => {});
+      await visitSource(() => {});
     })
   ).rejects.toThrow();
 });

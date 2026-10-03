@@ -76,5 +76,5 @@ test('public job and host transport dependency closure is pinned with explicit i
   walk(require.resolve('./railgun-scan-source'));
   walk(require.resolve('./railgun-source-ledger'));
   walk(require.resolve('./railgun-account-public'));
-  expect(visited.size).toBe(12);
+  expect(visited.size).toBe(13);
 });

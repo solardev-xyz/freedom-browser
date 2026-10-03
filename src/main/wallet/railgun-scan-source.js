@@ -371,10 +371,36 @@ function createRailgunScanSource({ handle, ledger, projectRange, beforeAcquire }
         JSON.stringify(normalizePlan(plan)) === observation.plan
     );
   }
+  async function visitSnapshot(input, evidence, visitor) {
+    active();
+    check(!busy && typeof visitor === 'function' && typeof ledger.visitThrough === 'function');
+    const plan = normalizePlan(input);
+    assertSource(plan, evidence);
+    const observation = observations.get(evidence);
+    busy = true;
+    try {
+      const result = await ledger.visitThrough(plan.source.ledgerSha256, async (log) => {
+        active();
+        await visitor(log);
+        active();
+      });
+      active();
+      // Pin the authenticated prefix during the visit. The coordinator refreshes
+      // canonical headers afterwards; a long read does not reuse an aged grant.
+      check(observations.get(evidence) === observation);
+      return result;
+    } catch {
+      close();
+      throw fail();
+    } finally {
+      busy = false;
+    }
+  }
   return Object.freeze({
     acquire,
     refresh,
     assertSource,
+    visitSnapshot,
     close,
     signal: rpc.signal,
     ledgerId,

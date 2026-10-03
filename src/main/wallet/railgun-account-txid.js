@@ -135,6 +135,35 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
       serviceLatestIndex,
     });
   }
+  async function cover() {
+    await restore();
+    const current = await journal.readState();
+    check(current.checkpoint && !current.pending);
+    let payload;
+    const checked = await coordinator.withPublicSnapshot((snapshot) => {
+      payload = { state: current.checkpoint.state, plan: snapshot.checkpoint };
+      return runner.run('coverage', payload, {
+        visit: snapshot.visitSource,
+        signal: snapshot.signal,
+      });
+    });
+    active();
+    const plan = coordinator.assertSnapshot(checked.evidence);
+    check(JSON.stringify(plan) === JSON.stringify(payload.plan));
+    const value = runner.assertResult(checked.value.receipt, 'coverage', payload);
+    check(
+      value.coverage.txid.count === current.checkpoint.state.count &&
+        value.coverage.txid.root === current.checkpoint.state.root &&
+        value.coverage.txid.transcript === current.checkpoint.state.transcript
+    );
+    check(
+      value.coverage.source.ledgerId === publicIdentity.sourceId &&
+        value.coverage.source.ledgerSha256 === plan.source.ledgerSha256
+    );
+    // Diagnostic evidence only. A later operation must independently bind its
+    // note, membership witness, fresh root and required-list POI before spending.
+    return value.coverage;
+  }
   async function exclusive(run) {
     active();
     check(!work);
@@ -244,6 +273,7 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
       policy,
       publicIdentity,
       advance: () => exclusive(advance),
+      cover: () => exclusive(cover),
       inspect: () => exclusive(diagnostic),
     });
   } catch (error) {

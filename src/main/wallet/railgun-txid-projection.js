@@ -214,6 +214,19 @@ function createRailgunTxidProjection({ hashPair, transactionHash, verificationHa
     writes.set('txid:state', JSON.stringify(next));
     return freeze({ state: next, writes: [...writes].map(([key, value]) => ({ key, value })) });
   }
+  function inspectRecord(recordText) {
+    check(typeof recordText === 'string' && Buffer.byteLength(recordText) <= 16384);
+    const record = JSON.parse(recordText);
+    check(shape(record, ['row', 'leaf', 'railgunTxid', 'rowSha256']));
+    row(record.row);
+    const hashed = transactionHash(record.row);
+    check(
+      hashed.railgunTxid === record.railgunTxid &&
+        hashed.hash === record.leaf &&
+        record.rowSha256 === sha(JSON.stringify(record.row))
+    );
+    return freeze(record);
+  }
   async function witness(input, txid, read) {
     const current = state(JSON.parse(JSON.stringify(input)));
     check(current.count > 0 && field(txid) && typeof read === 'function');
@@ -222,17 +235,8 @@ function createRailgunTxidProjection({ hashPair, transactionHash, verificationHa
     const index = Number(position);
     check(index < current.count);
     const recordText = await read(`txid:row:${index}`);
-    check(typeof recordText === 'string' && Buffer.byteLength(recordText) <= 16384);
-    const record = JSON.parse(recordText);
-    check(shape(record, ['row', 'leaf', 'railgunTxid', 'rowSha256']));
-    row(record.row);
-    const hashed = transactionHash(record.row);
-    check(
-      record.railgunTxid === txid &&
-        hashed.railgunTxid === txid &&
-        hashed.hash === record.leaf &&
-        record.rowSha256 === sha(JSON.stringify(record.row))
-    );
+    const record = inspectRecord(recordText);
+    check(record.railgunTxid === txid);
     let node = record.leaf,
       cursor = index;
     const elements = [];
@@ -264,6 +268,7 @@ function createRailgunTxidProjection({ hashPair, transactionHash, verificationHa
     empty,
     append,
     witness,
+    inspectRecord,
     inspect: (value) => freeze(state(JSON.parse(JSON.stringify(value)))),
   });
 }

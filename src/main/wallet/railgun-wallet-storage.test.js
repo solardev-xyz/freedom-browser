@@ -41,7 +41,7 @@ test('keeps public and derived streams separate and remaps only the enclosing re
   expect(JSON.parse(walletDispatch.mock.calls[0][0]).id).toBe(1);
   router.assertIdle();
 });
-test.each(['batch', 'clear', 'txBegin', 'txRead', 'rpc'])(
+test.each(['batch', 'clear', 'txBegin', 'txRead', 'rpc', 'sourceNext', 'visitSource'])(
   'rejects %s on the public channel before dispatch',
   async (method) => {
     await expect(call('public', method, {})).rejects.toThrow();
@@ -49,7 +49,7 @@ test.each(['batch', 'clear', 'txBegin', 'txRead', 'rpc'])(
     expect(router.signal.aborted).toBe(true);
   }
 );
-test.each(['clear', 'txBegin', 'txRead', 'rpc'])(
+test.each(['clear', 'txBegin', 'txRead', 'rpc', 'sourceNext', 'visitSource'])(
   'rejects %s on the wallet channel',
   async (method) => {
     await expect(call('wallet', method, {})).rejects.toThrow();
