@@ -44,6 +44,7 @@ const {
   getFeeQuote,
   broadcastRawTransaction,
   clearAdaptiveRoutingForTest,
+  ERROR_RANK,
 } = require('./chain-data-router');
 const originalFetch = global.fetch;
 
@@ -1279,6 +1280,83 @@ describe('Ant bridge cancellation', () => {
     }
   });
 
+  test('sources restricts the read order, keeping its sequence', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'colibri', 'quorum', 'direct'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+      role === 'prover' ? ['https://prover.example'] : ['https://a.example', 'https://b.example']
+    );
+    mockRequestViaColibri.mockResolvedValue(['colibri']);
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: ['rpc'] }) }));
+    await expect(
+      request(100, 'eth_getLogs', [{}], { sources: ['direct', 'quorum'] })
+    ).resolves.toMatchObject({ result: ['rpc'], source: 'quorum' });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    await expect(request(100, 'eth_getLogs', [{}], { sources: ['quorum'] })).resolves.toMatchObject(
+      { source: 'quorum' }
+    );
+    await expect(request(100, 'eth_getLogs', [{}], { sources: [] })).rejects.toThrow(
+      /^All chain sources failed/
+    );
+  });
+
+  test('quorumTimeoutMs widens the quorum budget, never narrows it below the configured one', async () => {
+    jest.useFakeTimers();
+    try {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['quorum'] },
+        quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      });
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example']);
+      global.fetch.mockImplementation(
+        (_url, { signal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () =>
+              reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            );
+          })
+      );
+      const wide = request(100, 'eth_getLogs', [{}], { quorumTimeoutMs: 30000 });
+      const settled = jest.fn();
+      wide.then(settled, settled);
+      await jest.advanceTimersByTimeAsync(29000);
+      expect(settled).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(settled).toHaveBeenCalled();
+
+      const narrow = request(100, 'eth_getLogs', [{}], { quorumTimeoutMs: 10 });
+      const narrowSettled = jest.fn();
+      narrow.then(narrowSettled, narrowSettled);
+      await jest.advanceTimersByTimeAsync(4000);
+      expect(narrowSettled).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(narrowSettled).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('without rangeCapOf a refused log range is not learned or routed around', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['quorum'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockReturnValue(THREE_RPCS);
+    global.fetch = jest.fn(async (url) => ({
+      ok: true,
+      json: async () =>
+        url === 'https://c.example'
+          ? { error: { code: -32701, message: 'exceed maximum block range: 50000' } }
+          : { result: [] },
+    }));
+    const wide = [{ fromBlock: '0x1', toBlock: '0x1000000' }];
+    await request(100, 'eth_getLogs', wide, { rankError: () => ERROR_RANK.REQUEST });
+    await request(100, 'eth_getLogs', wide, { rankError: () => ERROR_RANK.REQUEST });
+    // c is still asked: only a caller that names caps (Ant's bridge) learns them.
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([...THREE_RPCS, ...THREE_RPCS]);
+  });
   // The Ant log-scan error rule (rankError) is exercised as a tier x error
   // class x arrival order matrix in src/main/swarm/ant-log-scan-routing.test.js.
   // These pin that callers without rankError (wallet/app reads, broadcasts)
