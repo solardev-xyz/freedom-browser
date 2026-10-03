@@ -344,6 +344,7 @@ async function main() {
         walletId,
         create,
       }));
+    if (enrollment) return;
     if (create) generation = await catalog.begin(policy);
     else if ((await catalog.inspect()).pending) generation = await catalog.resume();
     else generation = null;
@@ -441,7 +442,7 @@ async function main() {
     createRailgunWalletCoverageStore,
   } = require('../src/main/wallet/railgun-wallet-coverage-store');
   const { createRailgunWalletJournal } = require('../src/main/wallet/railgun-wallet-journal');
-  const policy = enrollment
+  let policy = enrollment
     ? require('../src/main/wallet/railgun-wallet-policy').getRailgunWalletPolicy(accountArchive)
     : sha('wallet-policy-fixture-v1\0' + JSON.stringify(sourceSha256));
   const runner = accountIdentity
@@ -548,6 +549,12 @@ async function main() {
         });
       } else if (stage !== 20 || accountIdentity)
         await advancePublic({ to: stage, anchor: capture.report.anchor });
+      if (enrollment) {
+        policy = require('../src/main/wallet/railgun-account-wallet').getRailgunAccountWalletPolicy(
+          { archive: accountArchive, enrollment, coordinator }
+        );
+        if (stage === 10) await catalog.begin(policy);
+      }
       if (previousEvidence) assert.throws(() => coordinator.assertSnapshot(previousEvidence));
       for (const attempt of accountIdentity
         ? stage === 30
@@ -966,6 +973,18 @@ async function main() {
         retiredDirectoriesRetained: true,
         observedAmount: '2700',
       });
+      failPublication = true;
+      await assert.rejects(openWallet('new'), /Injected publication interruption/);
+      assert.equal(failPublication, false);
+      const stranded = (await catalog.inspect()).pending;
+      const strandedDirectory = path.join(enrollment.directory, 'railgun-cache-' + stranded.id);
+      const strandedHashes = Object.fromEntries(
+        fs
+          .readdirSync(strandedDirectory)
+          .filter((name) => name.endsWith('.json') || name === 'wallet.sqlite')
+          .map((name) => [name, sha(fs.readFileSync(path.join(strandedDirectory, name)))])
+      );
+      const previousWalletPolicy = policy;
       const previousPublicId = publicAccount.generationId;
       const previousPublicDirectory = path.join(
         enrollment.directory,
@@ -1003,7 +1022,14 @@ async function main() {
       await open(false, 'pending');
       await publicAccount.publish();
       assert.equal(coordinator.inspect().to.number, 40);
-      await assert.rejects(openWallet('active')); // Public identities changed even though policy did not.
+      policy = require('../src/main/wallet/railgun-account-wallet').getRailgunAccountWalletPolicy({
+        archive: accountArchive,
+        enrollment,
+        coordinator,
+      });
+      assert.notEqual(policy, previousWalletPolicy);
+      await assert.rejects(openWallet('active'));
+      await assert.rejects(openWallet('pending'));
       const rebuiltPublicWallet = await openWallet('new');
       try {
         assert.equal((await rebuiltPublicWallet.view.balance())[0].amount, 2700n);
@@ -1011,6 +1037,8 @@ async function main() {
       } finally {
         await rebuiltPublicWallet.close();
       }
+      for (const [name, hash] of Object.entries(strandedHashes))
+        assert.equal(sha(fs.readFileSync(path.join(strandedDirectory, name))), hash);
       for (const [name, hash] of Object.entries(retainedHashes))
         assert.equal(
           createHash('sha256')
@@ -1025,6 +1053,9 @@ async function main() {
         pendingResumedThrough: 10,
         completeBeforePublicationRecovered: true,
         oldWalletRefusedAfterCutover: true,
+        strandedPendingRefusedAfterCutover: true,
+        strandedPendingFilesUnchanged: true,
+        effectiveWalletPolicyChanged: true,
         oldPublicFilesUnchanged: true,
         observedAmount: '2700',
         recoveredThrough: 40,
@@ -1032,6 +1063,14 @@ async function main() {
       await close();
       await open(false);
       await coordinator.recover();
+      assert.equal(
+        require('../src/main/wallet/railgun-account-wallet').getRailgunAccountWalletPolicy({
+          archive: accountArchive,
+          enrollment,
+          coordinator,
+        }),
+        policy
+      );
       const restoredPublicWallet = await openWallet('active');
       try {
         assert.equal((await restoredPublicWallet.view.balance())[0].amount, 2700n);

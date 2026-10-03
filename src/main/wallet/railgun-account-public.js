@@ -272,4 +272,13 @@ function assertRailgunAccountPublic(coordinator, enrollment, policy) {
   assertRailgunScanCoordinator(coordinator, enrollment.getContext('engine'));
   return entry.policy;
 }
-module.exports = { openRailgunAccountPublic, assertRailgunAccountPublic };
+function getRailgunAccountPublicIdentity(coordinator, enrollment, policy) {
+  assertRailgunAccountPublic(coordinator, enrollment, policy);
+  const { generationId, sourceId, publicId } = coordinators.get(coordinator);
+  return Object.freeze({ generationId, sourceId, publicId });
+}
+module.exports = {
+  openRailgunAccountPublic,
+  assertRailgunAccountPublic,
+  getRailgunAccountPublicIdentity,
+};

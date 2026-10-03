@@ -1,5 +1,7 @@
 # Railgun public generation recovery — October 3, 2026
 
+**Follow-up:** [Wallet/public generation binding](railgun-wallet-public-binding-2026-10-03.md) now rejects both active and pending old wallet caches by effective policy before opening their stores. It also qualifies replacement of an interrupted wallet candidate across public cutover. The original evidence below remains tied to its recorded revision.
+
 Railgun can now rebuild public scan state after a policy change without replacing
 its previous ledger, cache or journal. Each public generation has its own source
 ledger, public store and policy-bound journal under `railgun-public-<id>/`, with

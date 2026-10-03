@@ -4,6 +4,7 @@
  */
 const fs = require('fs'),
   path = require('path');
+const { createHash } = require('crypto');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { assertRailgunIdentity } = require('./railgun-identity');
 const { openRailgunAccountStore } = require('./railgun-account-store');
@@ -14,7 +15,7 @@ const { getPrivacyStoragePath } = require('./privacy-storage');
 const { createRailgunKohakuRead } = require('./railgun-kohaku-read');
 const { assertRailgunScanCoordinator } = require('./railgun-scan-coordinator');
 const { getRailgunWalletPolicy } = require('./railgun-wallet-policy');
-const { assertRailgunAccountPublic } = require('./railgun-account-public');
+const { getRailgunAccountPublicIdentity } = require('./railgun-account-public');
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const fail = () =>
   Object.assign(new Error('Railgun wallet requires recovery'), {
@@ -33,6 +34,24 @@ function exists(filename) {
     throw error;
   }
 }
+function getRailgunAccountWalletPolicy({ archive, coordinator, enrollment }) {
+  const identity = getRailgunAccountPublicIdentity(
+    coordinator,
+    enrollment,
+    getRailgunPublicPolicy(archive)
+  );
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        'freedom:railgun:account-wallet-policy-v1',
+        getRailgunWalletPolicy(archive),
+        identity.generationId,
+        identity.sourceId,
+        identity.publicId,
+      ])
+    )
+    .digest('hex');
+}
 async function openRailgunAccountWallet({
   identity,
   enrollment,
@@ -42,7 +61,7 @@ async function openRailgunAccountWallet({
   mode = 'active',
 }) {
   check(isRailgunAccountEnrollment(enrollment));
-  const policy = getRailgunWalletPolicy(archive);
+  const policy = getRailgunAccountWalletPolicy({ archive, coordinator, enrollment });
   check(expectedPolicy === undefined || expectedPolicy === policy);
   check(['active', 'advance', 'new', 'pending'].includes(mode));
   const handle = enrollment.getContext('engine'),
@@ -50,7 +69,6 @@ async function openRailgunAccountWallet({
     walletId = descriptor.walletId;
   check(walletId === enrollment.descriptor.walletId);
   assertRailgunScanCoordinator(coordinator, handle);
-  assertRailgunAccountPublic(coordinator, enrollment, getRailgunPublicPolicy(archive));
   const runner = createRailgunAccountRunner({ identity, archive, policy });
   let generation, candidate, walletSession, coverageStore, journal, scan, lifetime, onAbort;
   const close = async () => {
@@ -164,4 +182,4 @@ async function openRailgunAccountWallet({
     throw error;
   }
 }
-module.exports = { openRailgunAccountWallet };
+module.exports = { openRailgunAccountWallet, getRailgunAccountWalletPolicy };

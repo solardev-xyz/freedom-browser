@@ -5,7 +5,7 @@ const mockOpenStore = jest.fn(),
 const mockAssertCoordinator = jest.fn();
 const mockAssertPublic = jest.fn();
 jest.mock('./railgun-account-public', () => ({
-  assertRailgunAccountPublic: (...args) => mockAssertPublic(...args),
+  getRailgunAccountPublicIdentity: (...args) => mockAssertPublic(...args),
 }));
 jest.mock('./railgun-public-policy', () => ({ getRailgunPublicPolicy: () => 'a'.repeat(64) }));
 jest.mock('./railgun-scan-coordinator', () => ({
@@ -39,10 +39,18 @@ const fs = require('fs'),
   path = require('path');
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { getPrivacyStoragePath } = require('./privacy-storage');
-const { openRailgunAccountWallet } = require('./railgun-account-wallet');
+const {
+  openRailgunAccountWallet,
+  getRailgunAccountWalletPolicy,
+} = require('./railgun-account-wallet');
 let scope, options, directory, generation, events, state;
 beforeEach(() => {
   jest.clearAllMocks();
+  mockAssertPublic.mockImplementation(() => ({
+    generationId: 'a'.repeat(64),
+    sourceId: 'b'.repeat(64),
+    publicId: 'c'.repeat(64),
+  }));
   events = [];
   directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-account-wallet-')));
   generation = { id: '1'.repeat(64), policy: '2'.repeat(64), storeId: '3'.repeat(64), directory };
@@ -156,6 +164,7 @@ beforeEach(() => {
       assertSnapshot: () => ({}),
     },
   };
+  generation.policy = options.policy = getRailgunAccountWalletPolicy(options);
 });
 afterEach(async () => {
   mockSession.close();
@@ -304,3 +313,35 @@ test('snapshot revocation waits for the actual runner after closing the storage 
   await rejected;
   expect(mockRead).not.toHaveBeenCalled();
 });
+
+test('public generation cutover changes wallet policy and permits replacing the stranded pending candidate', async () => {
+  const oldPolicy = options.policy;
+  mockEnrollment.catalog.inspect.mockResolvedValue({ pending: { ...generation } });
+  mockAssertPublic.mockImplementation(() => ({
+    generationId: 'd'.repeat(64),
+    sourceId: 'e'.repeat(64),
+    publicId: 'f'.repeat(64),
+  }));
+  const nextPolicy = getRailgunAccountWalletPolicy(options);
+  expect(nextPolicy).not.toBe(oldPolicy);
+  await expect(
+    openRailgunAccountWallet({ ...options, policy: undefined, mode: 'pending' })
+  ).rejects.toThrow();
+  expect(mockOpenStore).not.toHaveBeenCalled();
+  generation.policy = options.policy = nextPolicy;
+  const opened = await openRailgunAccountWallet({ ...options, mode: 'new' });
+  expect(mockEnrollment.catalog.begin).toHaveBeenCalledWith(nextPolicy);
+  await opened.close();
+});
+test.each(['generationId', 'sourceId', 'publicId'])(
+  'wallet policy binds authenticated public %s',
+  (field) => {
+    mockAssertPublic.mockImplementation(() => ({
+      generationId: 'a'.repeat(64),
+      sourceId: 'b'.repeat(64),
+      publicId: 'c'.repeat(64),
+      [field]: 'f'.repeat(64),
+    }));
+    expect(getRailgunAccountWalletPolicy(options)).not.toBe(options.policy);
+  }
+);

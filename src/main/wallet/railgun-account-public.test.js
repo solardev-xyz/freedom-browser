@@ -34,6 +34,7 @@ const { getPrivacyStoragePath } = require('./privacy-storage');
 const {
   openRailgunAccountPublic,
   assertRailgunAccountPublic,
+  getRailgunAccountPublicIdentity,
 } = require('./railgun-account-public');
 let scope, stores, controllers, opened, metadata, publicRecords, coordinatorOptions, journalPath;
 beforeEach(() => {
@@ -168,7 +169,16 @@ test('initializes only absent components, pins journal policy and attests only i
     create: true,
   });
   expect(coordinatorOptions.journalStorage.key.every((v) => v === 0)).toBe(true);
+  expect(() => getRailgunAccountPublicIdentity(first.coordinator, mockEnrollment)).toThrow();
   await first.publish();
+  const identity = getRailgunAccountPublicIdentity(first.coordinator, mockEnrollment);
+  expect(identity).toEqual({
+    generationId: first.generationId,
+    sourceId: '1'.repeat(64),
+    publicId: '2'.repeat(64),
+  });
+  expect(Object.isFrozen(identity)).toBe(true);
+  expect(() => getRailgunAccountPublicIdentity({ ...first.coordinator }, mockEnrollment)).toThrow();
   expect(assertRailgunAccountPublic(first.coordinator, mockEnrollment, first.policy)).toBe(
     first.policy
   );
@@ -178,8 +188,10 @@ test('initializes only absent components, pins journal policy and attests only i
   ).toThrow();
   await expect(open(true)).rejects.toThrow();
   await first.close();
+  expect(() => getRailgunAccountPublicIdentity(first.coordinator, mockEnrollment)).toThrow();
   expect(() => assertRailgunAccountPublic(first.coordinator, mockEnrollment)).toThrow();
   const second = await open();
+  expect(getRailgunAccountPublicIdentity(second.coordinator, mockEnrollment)).toEqual(identity);
   expect(coordinatorOptions.journalStorage.create).toBe(false);
   await first.close();
   await expect(open()).rejects.toThrow();
