@@ -2,7 +2,8 @@
 
 The dedicated disposable Railgun account now holds 0.01 Sepolia ETH transferred
 from the existing PPv2 qualification account. The first 0.001 ETH shield was subsequently acknowledged by the RPC;
-its receipt matches the prepared note, with finalized recovery still pending.
+its receipt matches the prepared note and the subsequent wallet scan recovers
+one asset at the finalized checkpoint (the expected Shield note).
 The PPv2 vault and prior protocol history remain intact. Its October 1 balance
 is historical; this transfer spends 0.01 ETH plus gas from that balance.
 The transfer publicly links the PPv2 test EOA to the Railgun funding EOA.
@@ -68,8 +69,16 @@ It used the genuine vault signer and live Tor through the qualification Arti
 endpoint shim. Expected note value is
 0.0009975 WETH after the 0.0000025 ETH protocol fee. A subsequent local, unpublished recovery run observed inclusion at block 11,834,494 with ten
 confirmations and matched the exact Shield at tree 0, position 10,245. Net value
-and fee matched with no deviation. Finality and wallet note recovery remain
-pending; this receipt alone does not authorize spending.
+and fee matched with no deviation. [Finality run `d`](qualification/railgun-shield-live-finality-2026-10-03.json)
+subsequently resolved the matched outcome at 97 confirmations, with the
+finalized checkpoint at block 11,834,513.
+[The subsequent wallet scan](qualification/railgun-shield-wallet-recovery-2026-10-03.json)
+advanced the same public generation to that checkpoint, reconstructed 10,246
+commitments and recovered one asset. The report records the aggregate asset count;
+it does not report the token, amount or wallet generation ID. Nullifier and
+unshield totals were unchanged. All 4,230 mirrored TXID rows still matched
+public events with the known omission retained. Live owned-note POI remains
+the next check; these observations do not authorize spending.
 The legacy `broadcastSource: direct` field identifies the selected RPC route,
 not a Tor bypass; the qualification transport metadata describes the actual
 HTTP/TLS-over-Arti path. See [the signing/recovery design](railgun-shield-submission-2026-10-03.md).

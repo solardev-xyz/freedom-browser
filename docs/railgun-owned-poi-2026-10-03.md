@@ -77,9 +77,10 @@ per-dependency policy checks. Claude reviewed the projection, lifetime compositi
 and public-vector qualifier.
 
 The wallet cache policy changes, requiring a retained new wallet generation;
-the public-history policy is unchanged. The first funded Shield is already
-included and matched. Its finalized public scan, new wallet generation and
-owned-note POI qualification are the next live checks. The live harness pins
+the public-history policy is unchanged. The first funded Shield is now
+finalized and explicitly reconciled. Its subsequent public and wallet
+scan recovers one asset; see [the funded results](railgun-funded-qualification-2026-10-03.md).
+The live owned-note POI qualification remains the next check. The live harness pins
 the completed scan report, rechecks its current source hashes and exact public
 generation/anchor/store state, then matches the recovered note to the finalized
 shield journal. `passed` denotes a completed read pipeline; `poi.allValid` requires
