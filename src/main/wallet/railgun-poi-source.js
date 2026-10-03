@@ -15,6 +15,7 @@ const {
 } = require('./railgun-poi-records');
 const POI_URL = 'https://ppoi.fdi.network';
 const MAX_AGE_MS = 60000;
+const ACQUIRE_TIMEOUT_MS = 45000;
 const sources = new WeakMap();
 const fail = () =>
   Object.assign(new Error('Railgun POI source unavailable'), {
@@ -56,7 +57,9 @@ function createRailgunPoiSource({ handle, notes: input }) {
   const receipts = new WeakMap();
   let busy = false,
     closed = false,
-    sequence = 0;
+    sequence = 0,
+    acquisitionStarted,
+    acquisitionBudget;
   const close = () => {
     if (closed) return;
     closed = true;
@@ -73,6 +76,8 @@ function createRailgunPoiSource({ handle, notes: input }) {
   };
   async function request(method, params) {
     active();
+    const now = performance.now();
+    check(now >= acquisitionStarted && now - acquisitionStarted < acquisitionBudget);
     const id = randomUUID();
     const response = await transport.request(scopedHandle, POI_URL, {
       method: 'POST',
@@ -89,9 +94,13 @@ function createRailgunPoiSource({ handle, notes: input }) {
         },
       }),
       signal: scope.signal,
-      timeoutMs: 45000,
+      timeoutMs: Math.max(1, Math.floor(acquisitionBudget - (now - acquisitionStarted))),
     });
     active();
+    check(
+      performance.now() >= acquisitionStarted &&
+        performance.now() - acquisitionStarted < acquisitionBudget
+    );
     check(
       response.status === 200 && Buffer.isBuffer(response.body) && response.body.length <= 32768
     );
@@ -107,11 +116,17 @@ function createRailgunPoiSource({ handle, notes: input }) {
     );
     return value.result;
   }
-  async function acquire() {
+  async function acquire({ timeoutMs = ACQUIRE_TIMEOUT_MS } = {}) {
     active();
+    check(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= ACQUIRE_TIMEOUT_MS);
     check(!busy);
     busy = true;
     const current = ++sequence;
+    acquisitionStarted = performance.now();
+    acquisitionBudget = timeoutMs;
+    const started = acquisitionStarted;
+    const timer = setTimeout(close, acquisitionBudget);
+    timer.unref?.();
     try {
       const statuses = normalizePoiStatuses(
         await request('ppoi_pois_per_list', {
@@ -167,17 +182,23 @@ function createRailgunPoiSource({ handle, notes: input }) {
         spendingEnabled: false,
       });
       const receipt = Object.freeze({});
-      receipts.set(receipt, { sequence: current, at: performance.now(), observation });
+      receipts.set(receipt, { sequence: current, at: started, observation });
       return Object.freeze({ receipt, observation });
     } catch {
       close();
       throw fail();
     } finally {
+      clearTimeout(timer);
       busy = false;
     }
   }
-  function assertResult(receipt) {
+  function assertResult(receipt, minimumRemainingMs = 0) {
     active();
+    check(
+      Number.isSafeInteger(minimumRemainingMs) &&
+        minimumRemainingMs >= 0 &&
+        minimumRemainingMs < MAX_AGE_MS
+    );
     const entry = receipts.get(receipt),
       now = performance.now();
     check(
@@ -185,7 +206,7 @@ function createRailgunPoiSource({ handle, notes: input }) {
         !busy &&
         entry.sequence === sequence &&
         now >= entry.at &&
-        now - entry.at < MAX_AGE_MS
+        now - entry.at + minimumRemainingMs < MAX_AGE_MS
     );
     return entry.observation;
   }
@@ -205,4 +226,4 @@ function assertRailgunPoiSource(source, handle) {
   );
   return entry.notes;
 }
-module.exports = { createRailgunPoiSource, assertRailgunPoiSource, MAX_AGE_MS };
+module.exports = { createRailgunPoiSource, assertRailgunPoiSource, MAX_AGE_MS, ACQUIRE_TIMEOUT_MS };

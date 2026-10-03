@@ -1,5 +1,6 @@
 let mockWallet, mockIdentity, mockEnrollment, mockCoordinator, mockSnapshot, mockObservation;
 let mockSource, mockSourceArgs, mockStaleSource, mockStaleMembership;
+let mockWindow, mockWindowData, mockBusy, mockWindowController;
 jest.mock('./railgun-account-wallet', () => ({
   readRailgunAccountOwnedNotes: (wallet, owners) => {
     if (
@@ -7,10 +8,24 @@ jest.mock('./railgun-account-wallet', () => ({
       owners.identity !== mockIdentity ||
       owners.enrollment !== mockEnrollment ||
       owners.coordinator !== mockCoordinator ||
-      mockWallet.signal.aborted
+      mockWallet.signal.aborted ||
+      mockBusy
     )
       throw Error('wrong owner');
     return mockSnapshot;
+  },
+  assertRailgunAccountPrivateWindow: (window, wallet, owners, margin = 0) => {
+    if (
+      window !== mockWindow ||
+      wallet !== mockWallet ||
+      owners.identity !== mockIdentity ||
+      owners.enrollment !== mockEnrollment ||
+      owners.coordinator !== mockCoordinator ||
+      mockWindowData.signal.aborted ||
+      performance.now() + margin >= mockWindowData.deadline
+    )
+      throw Error('window refused');
+    return mockWindowData;
   },
 }));
 jest.mock('./railgun-poi-source', () => ({
@@ -30,6 +45,8 @@ const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-c
 const {
   openRailgunAccountPoi: open,
   assertRailgunAccountPoi: attest,
+  openRailgunPrivateWindowPoi: openWindow,
+  assertRailgunPrivateWindowPoi: attestWindow,
 } = require('./railgun-account-poi');
 let scope, controller, args;
 beforeEach(() => {
@@ -39,6 +56,7 @@ beforeEach(() => {
   mockWallet = { signal: scope.signal };
   mockIdentity = { signal: scope.signal };
   mockCoordinator = {};
+  mockBusy = false;
   mockEnrollment = {
     binding: 'a'.repeat(64),
     signal: scope.signal,
@@ -95,8 +113,167 @@ beforeEach(() => {
     archive: '/fixture.asar',
     noteIds: ['0:1'],
   };
+  mockWindow = Object.freeze({});
+  mockWindowController = new AbortController();
+  Object.assign(mockSnapshot.read.received[0], { tree: 0, position: 1 });
+  mockSnapshot.ownedPoi[0].hash = '0x' + '3'.repeat(64);
+  mockWindowData = Object.freeze({
+    owned: mockSnapshot,
+    selection: { tree: 0, position: 1 },
+    signal: mockWindowController.signal,
+    deadline: performance.now() + 175000,
+  });
 });
 afterEach(() => scope.close());
+test('a caller cannot mutate the diagnostic selected list to skip later ownership checks', async () => {
+  const operation = open(args),
+    result = await operation.acquire();
+  args.noteIds.length = 0;
+  mockSnapshot = { ...mockSnapshot, ownedPoi: [{ ...mockSnapshot.ownedPoi[0] }] };
+  expect(() => operation.assertResult(result.receipt)).toThrow();
+  operation.close();
+});
+test('window POI uses the captured input while ordinary owned reads are busy and keeps distinct receipt brands', async () => {
+  const diagnostic = open(args),
+    diagnosticResult = await diagnostic.acquire();
+  mockBusy = true;
+  const operation = openWindow({ ...args, window: mockWindow, noteIds: ['0:999'] });
+  const result = await operation.acquire();
+  expect(attestWindow(operation, result.receipt, mockWallet, args, mockWindow, 1000)).toMatchObject(
+    {
+      membershipVerified: true,
+      spendingEnabled: false,
+      txidProvenanceVerified: false,
+      input: {
+        id: '0:1',
+        tree: 0,
+        position: 1,
+        type: 'Shield',
+        checkpointHash: mockSnapshot.checkpointHash,
+        nullifier: mockSnapshot.ownedPoi[0].nullifier,
+        blindedCommitment: mockSnapshot.ownedPoi[0].blindedCommitment,
+      },
+    }
+  );
+  expect(mockSourceArgs.notes).toEqual([
+    { blindedCommitment: mockSnapshot.ownedPoi[0].blindedCommitment, type: 'Shield' },
+  ]);
+  expect(() => attest(operation, result.receipt, mockWallet, args)).toThrow();
+  expect(() =>
+    attestWindow(diagnostic, diagnosticResult.receipt, mockWallet, args, mockWindow)
+  ).toThrow();
+  expect(() => attestWindow(operation, result.receipt, mockWallet, args, {})).toThrow();
+  expect(() => attestWindow(operation, {}, mockWallet, args, mockWindow)).toThrow();
+  expect(() => attestWindow(operation, result.receipt, {}, args, mockWindow)).toThrow();
+  expect(mockSource.assertResult).toHaveBeenCalledWith(expect.any(Object), 1000);
+  expect(mockVerify.mock.calls.at(-1)[0].timeoutMs).toBeGreaterThan(0);
+  expect(mockVerify.mock.calls.at(-1)[0].timeoutMs).toBeLessThanOrEqual(45000);
+  mockWindowController.abort();
+  expect(() => operation.assertResult(result.receipt)).toThrow();
+  operation.close();
+  diagnostic.close();
+});
+test('separate window attempts receive separate POI circuit scopes even for the same selected input', () => {
+  const first = openWindow({ ...args, window: mockWindow });
+  const a = getPrivacyContext(mockSourceArgs.handle);
+  const second = openWindow({ ...args, window: mockWindow });
+  const b = getPrivacyContext(mockSourceArgs.handle);
+  expect(a.subject.operation).not.toBe(b.subject.operation);
+  expect(a.isolationToken).not.toBe(b.isolationToken);
+  first.close();
+  second.close();
+});
+test('negative root acceptance is an advisory refusal without a membership worker', async () => {
+  mockObservation.rootsAccepted = false;
+  const operation = openWindow({ ...args, window: mockWindow });
+  const result = await operation.acquire();
+  expect(result.observation.membershipVerified).toBe(false);
+  expect(result.status).toBe('refused');
+  expect(result.receipt).toBeUndefined();
+  expect(() => attestWindow(operation, result.receipt, mockWallet, args, mockWindow)).toThrow();
+  expect(mockVerify).not.toHaveBeenCalled();
+  operation.close();
+});
+test.each(['Missing', 'ShieldBlocked', 'ProofSubmitted'])(
+  'non-qualifying window status %s returns no receipt',
+  async (status) => {
+    mockObservation.statuses = [{ status }];
+    const operation = openWindow({ ...args, window: mockWindow });
+    const result = await operation.acquire();
+    expect(result.status).toBe('refused');
+    expect(result.receipt).toBeUndefined();
+    expect(mockVerify).not.toHaveBeenCalled();
+    operation.close();
+  }
+);
+test('controller budget bounds a stuck window status request and source request options', async () => {
+  jest.useFakeTimers();
+  try {
+    const operation = openWindow({ ...args, window: mockWindow });
+    mockSource.acquire.mockImplementation(({ timeoutMs }) => {
+      expect(timeoutMs).toBe(1200);
+      const signal = getPrivacyContext(mockSourceArgs.handle).signal;
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(Error('transport aborted')), { once: true });
+      });
+    });
+    const refused = expect(operation.acquire({ timeoutMs: 1200 })).rejects.toThrow(
+      'transport aborted'
+    );
+    await jest.advanceTimersByTimeAsync(1200);
+    await refused;
+    expect(operation.signal.aborted).toBe(true);
+    expect(mockVerify).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+test('window acquisition deadline aborts membership but waits for its observed drain', async () => {
+  jest.useFakeTimers();
+  let release;
+  try {
+    const operation = openWindow({ ...args, window: mockWindow });
+    mockVerify.mockImplementation(async ({ handle }) => {
+      const signal = getPrivacyContext(handle).signal;
+      await new Promise((resolve) => {
+        release = resolve;
+      });
+      expect(signal.aborted).toBe(true);
+      throw Error('membership aborted and drained');
+    });
+    let settled = false;
+    const pending = operation
+      .acquire()
+      .catch((error) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(release).toBeDefined();
+    await jest.advanceTimersByTimeAsync(45000);
+    expect(operation.signal.aborted).toBe(true);
+    expect(settled).toBe(false);
+    release();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(settled).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+test.each(['owner', 'window', 'position', 'spent', 'prelaunch'])(
+  'window input %s refuses before source construction',
+  (mode) => {
+    const input = { ...args, window: mockWindow };
+    if (mode === 'owner') input.identity = {};
+    if (mode === 'window') input.window = {};
+    if (mode === 'position') mockWindowData.selection.position = 999;
+    if (mode === 'spent') mockSnapshot.read.received[0].spentTxid = 'spent';
+    if (mode === 'prelaunch') mockSnapshot.ownedPoi[0].blockNumber = 0;
+    mockSourceArgs = undefined;
+    expect(() => openWindow(input)).toThrow();
+    expect(mockSourceArgs).toBeUndefined();
+  }
+);
 test('queries only selected owned commitments in a snapshot-bound private account context', async () => {
   mockSnapshot.ownedPoi.push({
     id: '0:2',

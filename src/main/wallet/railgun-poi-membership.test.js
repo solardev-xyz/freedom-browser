@@ -116,6 +116,30 @@ test('negative/missing service results never start a membership utility', async 
   await expect(run(observed.receipt)).rejects.toThrow();
   expect(mockStart).not.toHaveBeenCalled();
 });
+test('a window can only shorten the membership worker budget and margin inherits source age', async () => {
+  const observed = await source.acquire();
+  const checked = await verifyRailgunPoiMembership({
+    handle,
+    source,
+    receipt: observed.receipt,
+    archive: '/fixture/engine.asar',
+    timeoutMs: 1234,
+  });
+  expect(mockStart.mock.calls[0][0]).toMatchObject({ startupMs: 1234, lifetimeMs: 1234 });
+  expect(assertRailgunPoiMembership(checked.receipt, handle, 1000)).toBe(checked.observation);
+  for (const timeoutMs of [0, -1, 0.5, 180001, NaN])
+    await expect(
+      verifyRailgunPoiMembership({
+        handle,
+        source,
+        receipt: observed.receipt,
+        archive: '/fixture/engine.asar',
+        timeoutMs,
+      })
+    ).rejects.toThrow();
+  expect(() => assertRailgunPoiMembership(checked.receipt, handle, 60000)).toThrow();
+  expect(mockStart).toHaveBeenCalledTimes(1);
+});
 test.each(['proof', 'inventory', 'egress', 'sequence'])(
   'bad utility %s cannot issue evidence',
   async (mode) => {

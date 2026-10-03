@@ -15,7 +15,14 @@ const fail = () =>
 const check = (v) => {
   if (!v) throw fail();
 };
-async function verifyRailgunPoiMembership({ handle, source, receipt, archive }) {
+async function verifyRailgunPoiMembership({
+  handle,
+  source,
+  receipt,
+  archive,
+  timeoutMs = 180000,
+}) {
+  check(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 180000);
   const notes = assertRailgunPoiSource(source, handle);
   const observation = source.assertResult(receipt);
   check(
@@ -31,8 +38,8 @@ async function verifyRailgunPoiMembership({ handle, source, receipt, archive }) 
       handle,
       filename: require.resolve('./railgun-poi-job'),
       input: JSON.stringify({ archive }),
-      startupMs: 120000,
-      lifetimeMs: 180000,
+      startupMs: Math.min(120000, timeoutMs),
+      lifetimeMs: timeoutMs,
       broker: {
         signal: source.signal,
         async dispatch(wire) {
@@ -79,12 +86,12 @@ async function verifyRailgunPoiMembership({ handle, source, receipt, archive }) 
     if (task) await task.closed;
   }
 }
-function assertRailgunPoiMembership(receipt, handle) {
+function assertRailgunPoiMembership(receipt, handle, minimumRemainingMs = 0) {
   const entry = receipts.get(receipt);
   check(entry);
   getPrivacyContext(entry.handle);
   assertRailgunPoiSource(entry.source, handle);
-  check(entry.source.assertResult(entry.receipt) === entry.observation);
+  check(entry.source.assertResult(entry.receipt, minimumRemainingMs) === entry.observation);
   return entry.verified;
 }
 module.exports = { verifyRailgunPoiMembership, assertRailgunPoiMembership };

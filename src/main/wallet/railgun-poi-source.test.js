@@ -178,6 +178,63 @@ test('receipts expire, reject clock rollback, and are tied to this client', asyn
   client.close();
   expect(() => client.assertResult(result.receipt)).toThrow();
 });
+test('receipt freshness starts before the first status request and enforces remaining margins', async () => {
+  let now = 100;
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  const normal = mockRequest.getMockImplementation();
+  mockRequest.mockImplementation(async (...args) => {
+    now += 5000;
+    return normal(...args);
+  });
+  const client = open(),
+    result = await client.acquire();
+  expect(now).toBe(20100);
+  now = 40100;
+  expect(client.assertResult(result.receipt, 19999)).toBe(result.observation);
+  expect(() => client.assertResult(result.receipt, 20000)).toThrow();
+  for (const margin of [-1, 0.5, 60000, NaN])
+    expect(() => client.assertResult(result.receipt, margin)).toThrow();
+});
+test('one 45-second acquisition budget covers all requests, not 45 seconds per reply', async () => {
+  let now = 100;
+  jest.spyOn(performance, 'now').mockImplementation(() => now);
+  const normal = mockRequest.getMockImplementation();
+  mockRequest.mockImplementation(async (...args) => {
+    now += 15000;
+    return normal(...args);
+  });
+  await expect(open().acquire()).rejects.toThrow();
+  expect(mockRequest).toHaveBeenCalledTimes(3);
+  expect(mockRequest.mock.calls.map((v) => v[2].timeoutMs)).toEqual([45000, 30000, 15000]);
+  expect(source.signal.aborted).toBe(true);
+});
+test('the total deadline aborts a stalled transport and clears its lifetime', async () => {
+  jest.useFakeTimers();
+  try {
+    mockRequest.mockImplementation(
+      (_h, _u, { signal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(Error('aborted')), { once: true });
+        })
+    );
+    const pending = open().acquire();
+    const refused = expect(pending).rejects.toThrow('Railgun POI source unavailable');
+    await jest.advanceTimersByTimeAsync(45000);
+    await refused;
+    expect(source.signal.aborted).toBe(true);
+    expect(mockClose).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+test('a caller can shorten but never extend the whole acquisition budget', async () => {
+  const client = open();
+  for (const timeoutMs of [0, -1, 0.5, 45001, NaN])
+    await expect(client.acquire({ timeoutMs })).rejects.toThrow();
+  expect(mockRequest).not.toHaveBeenCalled();
+  await client.acquire({ timeoutMs: 1234 });
+  expect(mockRequest.mock.calls.every((v) => v[2].timeoutMs <= 1234)).toBe(true);
+});
 test('public sync, wrong chain, unscoped operations and stronger requirements are refused before I/O', () => {
   for (const change of [
     { kind: 'service' },
