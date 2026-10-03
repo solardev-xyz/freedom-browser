@@ -472,3 +472,90 @@ test('empty TXID journal cannot issue a note witness', async () => {
   await expect(account.witnessNote({ type: 'Transact' })).rejects.toThrow();
   expect(mockRunner.run.mock.calls.some(([mode]) => mode === 'note-witness')).toBe(false);
 });
+
+function existingCheckpoint() {
+  state = {
+    checkpoint: { state: { count: 1, root: '0'.repeat(64), after: 'existing' } },
+    pending: null,
+  };
+  fs.writeFileSync(path.join(directory, 'txid-' + 'e'.repeat(64) + '.sqlite'), 'existing');
+  fs.writeFileSync(
+    getPrivacyStoragePath(
+      mockEnrollment.getContext('storage', 'railgun-txid-v1:' + 'e'.repeat(64)),
+      directory
+    ),
+    'existing'
+  );
+}
+test('checkpoint-only opening revalidates existing root evidence without creating or replaying', async () => {
+  existingCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  expect(events).toEqual(['root', 'inspect', 'revalidate']);
+  expect(mockOpen.mock.calls[0][0].create).toBe(false);
+  expect(mockCreateJournal.mock.calls[0][0].create).toBe(false);
+  expect((await value.inspect()).checkpoint).toEqual(state.checkpoint);
+  expect(mockJournal.resume).not.toHaveBeenCalled();
+  expect(mockJournal.prepare).not.toHaveBeenCalled();
+  expect(mockJournal.complete).not.toHaveBeenCalled();
+});
+test.each(['missing', 'pending', 'empty', 'capacity'])(
+  'checkpoint-only %s state refuses before service acquisition or replay',
+  async (mode) => {
+    existingCheckpoint();
+    if (mode === 'missing') state.checkpoint = null;
+    if (mode === 'pending') state.pending = { work: { expected: state.checkpoint.state } };
+    if (mode === 'empty') state.checkpoint.state.count = 0;
+    if (mode === 'capacity') state.checkpoint.state.count = 8001;
+    await expect(open({ create: false, checkpointOnly: true })).rejects.toMatchObject({
+      code: 'RAILGUN_ACCOUNT_TXID_REFUSED',
+    });
+    expect(mockRoots.acquire).not.toHaveBeenCalled();
+    expect(mockRunner.run).not.toHaveBeenCalled();
+    expect(mockJournal.resume).not.toHaveBeenCalled();
+    expect(mockJournal.complete).not.toHaveBeenCalled();
+    const phase = claimRailgunAccountPhase(mockEnrollment, 'wallet');
+    phase.release();
+  }
+);
+test('checkpoint-only mode refuses advance without fetching a page or modifying the journal', async () => {
+  existingCheckpoint();
+  const value = await open({ create: false, checkpointOnly: true });
+  events.length = 0;
+  await expect(value.advance()).rejects.toThrow();
+  expect(events).toEqual([]);
+  expect(mockServices.latestTxid).not.toHaveBeenCalled();
+  expect(mockServices.txidPage).not.toHaveBeenCalled();
+  expect(mockJournal.prepare).not.toHaveBeenCalled();
+});
+test.each(['pending', 'checkpoint'])(
+  'checkpoint-only witness refuses newly %s state before refreshing or computing',
+  async (mode) => {
+    existingCheckpoint();
+    const value = await open({ create: false, checkpointOnly: true });
+    if (mode === 'pending') state.pending = { work: { expected: state.checkpoint.state } };
+    else state.checkpoint.state.root = '1'.repeat(64);
+    events.length = 0;
+    mockRoots.acquire.mockClear();
+    mockRunner.run.mockClear();
+    await expect(value.witness('0'.repeat(64))).rejects.toThrow();
+    expect(events).toEqual([]);
+    expect(mockRoots.acquire).not.toHaveBeenCalled();
+    expect(mockRunner.run).not.toHaveBeenCalled();
+  }
+);
+test('checkpoint-only mode requires existing files and rejects incompatible creation options', async () => {
+  await expect(open({ create: false, checkpointOnly: true })).rejects.toThrow();
+  await expect(open({ create: true, checkpointOnly: true })).rejects.toThrow();
+  await expect(open({ checkpointOnly: 'true' })).rejects.toThrow();
+  expect(mockOpen).not.toHaveBeenCalled();
+});
+
+test('checkpoint-only diagnostics cannot silently adopt changed store metadata with the same root', async () => {
+  existingCheckpoint();
+  state.checkpoint.store = { identity: 'original' };
+  const value = await open({ create: false, checkpointOnly: true });
+  state.checkpoint.store.identity = 'replacement';
+  events.length = 0;
+  await expect(value.inspect()).rejects.toThrow();
+  expect(events).toEqual([]);
+});

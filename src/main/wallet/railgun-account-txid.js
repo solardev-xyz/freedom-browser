@@ -39,8 +39,15 @@ function exists(filename) {
     throw error;
   }
 }
-async function openRailgunAccountTxid({ enrollment, archive, coordinator, create = false }) {
-  check(typeof create === 'boolean');
+async function openRailgunAccountTxid({
+  enrollment,
+  archive,
+  coordinator,
+  create = false,
+  checkpointOnly = false,
+}) {
+  check(typeof create === 'boolean' && typeof checkpointOnly === 'boolean');
+  check(!checkpointOnly || !create);
   const publicPolicy = getRailgunPublicPolicy(archive),
     publicIdentity = getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
     policy = getRailgunTxidPolicy(archive),
@@ -50,6 +57,7 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
   const watched = [];
   let closed = false,
     draining,
+    capturedCheckpoint,
     serviceLatestIndex = null;
   const active = () => {
     check(!closed && !scope.signal.aborted);
@@ -87,9 +95,26 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
     const applied = await runner.run('apply', payload);
     await journal.complete(token, applied.receipt, root);
   }
+  function assertCheckpoint(current) {
+    if (checkpointOnly) {
+      // Staging may revalidate public service acceptance, but must never turn
+      // missing/pending state into an implicit repair or advance operation.
+      check(
+        current.checkpoint &&
+          !current.pending &&
+          Number.isSafeInteger(current.checkpoint.state?.count) &&
+          current.checkpoint.state.count > 0 &&
+          current.checkpoint.state.count <= 8000
+      );
+      const serialized = JSON.stringify(current.checkpoint);
+      check(capturedCheckpoint === undefined || capturedCheckpoint === serialized);
+      capturedCheckpoint = serialized;
+    }
+  }
   async function restore() {
     const current = await journal.readState();
     active();
+    assertCheckpoint(current);
     if (current.pending) {
       const payload = current.pending.work;
       const receipt = await validate(payload.expected);
@@ -104,6 +129,7 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
     active();
   }
   async function advance() {
+    check(!checkpointOnly);
     // Opening already recovered the journal. Every successful page is complete;
     // a page failure closes this lifetime and requires another opening.
     const inspected = await runner.run('inspect', {}),
@@ -133,6 +159,8 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
   }
   async function diagnostic() {
     const value = await journal.readState();
+    active();
+    assertCheckpoint(value);
     return Object.freeze({
       ...value,
       capacityReached: value.checkpoint?.state.count === 8000,
@@ -142,6 +170,7 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
   async function cover() {
     await restore();
     const current = await journal.readState();
+    assertCheckpoint(current);
     check(current.checkpoint && !current.pending);
     let payload;
     const checked = await coordinator.withPublicSnapshot((snapshot) => {
@@ -172,6 +201,7 @@ async function openRailgunAccountTxid({ enrollment, archive, coordinator, create
     await restore();
     const current = await journal.readState();
     active();
+    assertCheckpoint(current);
     check(current.checkpoint && !current.pending);
     const payload = { state: current.checkpoint.state, ...input };
     const computed = await runner.run(mode, payload);

@@ -65,3 +65,18 @@ root/POI evidence and remaining-time margins before signing.
 The collector and receipt remain in the existing main-owned wallet boundary; no
 renderer channel, dependency or top-level package responsibility changes. Parsing
 and lifetime enforcement stay with the existing source and account services.
+
+## Existing-checkpoint TXID staging prerequisite
+
+`openRailgunAccountTxid` now supports explicit `checkpointOnly:true` with
+`create:false`. It requires a nonempty existing checkpoint under the current
+policy, rejects pending work before root acquisition or replay, pins the whole
+checkpoint across later reads, and refuses `advance()` before fetching a page.
+Ordinary public root revalidation remains required. This is not storage-write-free:
+journal opening still renews lease/generation/sequence metadata. Default recovery
+and replay behavior remain unchanged for ordinary callers.
+
+Fifty-five root/account-TXID/journal tests pass, including same-root store-identity
+replacement refusal; lint is clean. Codex independently approved the mode and
+flagged the lifecycle-write distinction above. No live request was made. The
+account-wide handoff reservation and wallet replacement controller remain next.
