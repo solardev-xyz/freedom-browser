@@ -7,12 +7,15 @@ const fs = require('fs'),
 const { randomBytes } = require('crypto');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const { createPrivacyStorage, getPrivacyStoragePath } = require('./privacy-storage');
+const { assertRailgunSessionDirectoryClosed } = require('./railgun-session-worker');
+const { assertRailgunAccountStoreDirectoryClosed } = require('./railgun-store-owners');
 const {
   isRailgunWalletJournal,
   assertRailgunWalletGenerationClosed,
 } = require('./railgun-wallet-journal');
 const RECORD = 'railgun-wallet-catalog-v1',
   owners = new Set();
+const MAX_RETIRED = 64;
 const fail = () =>
   Object.assign(new Error('Railgun wallet catalog unavailable'), {
     code: 'RAILGUN_WALLET_CATALOG_REFUSED',
@@ -81,7 +84,7 @@ async function createRailgunWalletCatalog({
     return Object.freeze({ ...v });
   }
   function decode(text) {
-    check(typeof text === 'string' && Buffer.byteLength(text) <= 4096);
+    check(typeof text === 'string' && Buffer.byteLength(text) <= 16384);
     const v = JSON.parse(text);
     check(
       exact(v, [
@@ -93,13 +96,22 @@ async function createRailgunWalletCatalog({
         'active',
         'pending',
         'generations',
+        ...(v.version === 2 ? ['retired'] : []),
       ]) &&
-        v.version === 1 &&
+        [1, 2].includes(v.version) &&
         v.walletId === walletId &&
         v.binding === binding &&
         digest(v.lease) &&
         Number.isSafeInteger(v.sequence) &&
         v.sequence >= 0
+    );
+    const retired = v.version === 1 ? [] : v.retired;
+    check(
+      Array.isArray(retired) &&
+        retired.length <= MAX_RETIRED &&
+        retired.every(digest) &&
+        new Set(retired).size === retired.length &&
+        retired.every((id) => !v.generations.includes(id))
     );
     check(
       Array.isArray(v.generations) &&
@@ -108,11 +120,19 @@ async function createRailgunWalletCatalog({
         new Set(v.generations).size === v.generations.length
     );
     for (const value of [v.active, v.pending]) if (value) check(v.generations.includes(value.id));
-    return { ...v, active: generation(v.active, true), pending: generation(v.pending) };
+    return {
+      ...v,
+      version: 2,
+      retired,
+      active: generation(v.active, true),
+      pending: generation(v.pending),
+    };
   }
   function encode(v) {
     check(v.sequence < Number.MAX_SAFE_INTEGER);
-    return JSON.stringify(v);
+    const text = JSON.stringify(v);
+    check(Buffer.byteLength(text) <= 16384);
+    return text;
   }
   async function update(change) {
     active();
@@ -174,7 +194,7 @@ async function createRailgunWalletCatalog({
       const old =
         text === null
           ? {
-              version: 1,
+              version: 2,
               walletId,
               binding,
               lease,
@@ -182,6 +202,7 @@ async function createRailgunWalletCatalog({
               active: null,
               pending: null,
               generations: [],
+              retired: [],
             }
           : decode(text);
       current = { ...old, lease, sequence: old.sequence + 1 };
@@ -193,7 +214,11 @@ async function createRailgunWalletCatalog({
     throw fail();
   }
   async function begin(policy) {
+    active();
+    check(!busy);
     check(digest(policy));
+    if (current.generations.length >= 8)
+      throw Object.assign(fail(), { code: 'RAILGUN_WALLET_CATALOG_CAPACITY' });
     const next = { id: randomBytes(32).toString('hex'), policy };
     await update((old) => {
       check(old.generations.length < 8);
@@ -207,7 +232,7 @@ async function createRailgunWalletCatalog({
       throw fail();
     }
   }
-  async function inspect() {
+  async function inspectState() {
     active();
     check(!busy);
     busy = true;
@@ -215,13 +240,73 @@ async function createRailgunWalletCatalog({
       const value = decode(await storage.get(RECORD));
       active();
       check(value.lease === lease && value.sequence === current.sequence);
-      return Object.freeze({ active: value.active, pending: value.pending });
+      return value;
     } catch {
       close();
       throw fail();
     } finally {
       busy = false;
     }
+  }
+  async function inspect() {
+    const value = await inspectState();
+    return Object.freeze({ active: value.active, pending: value.pending });
+  }
+  async function inspectRetention() {
+    const value = await inspectState();
+    return Object.freeze({
+      inactive: Object.freeze(
+        value.generations.filter((id) => id !== value.active?.id && id !== value.pending?.id)
+      ),
+      retired: Object.freeze([...value.retired]),
+      retiredLimit: MAX_RETIRED,
+      listed: value.generations.length,
+    });
+  }
+  async function retireInactive() {
+    const observed = await inspectState();
+    active();
+    check(!busy && observed.sequence === current.sequence);
+    const inactive = observed.generations.filter(
+      (id) => id !== observed.active?.id && id !== observed.pending?.id
+    );
+    if (!inactive.length) return Object.freeze([]);
+    if (observed.retired.length >= MAX_RETIRED)
+      throw Object.assign(fail(), { code: 'RAILGUN_WALLET_RETIRED_CAPACITY' });
+    const ids = inactive.slice(0, MAX_RETIRED - observed.retired.length);
+    const attest = () => {
+      for (const id of ids) {
+        const location = folder(id);
+        assertRailgunAccountStoreDirectoryClosed(location);
+        profileGuard?.assert(path.join(location, 'wallet.sqlite'));
+        try {
+          const stat = fs.lstatSync(location);
+          check(
+            stat.isDirectory() && !stat.isSymbolicLink() && fs.realpathSync(location) === location
+          );
+        } catch (error) {
+          // An authenticated candidate can have been recorded before mkdir.
+          // Missing inventoried files already refuse above; retain the id anyway.
+          if (error.code === 'ENOENT') continue;
+          throw error;
+        }
+        assertRailgunWalletGenerationClosed(location);
+        assertRailgunSessionDirectoryClosed(location);
+      }
+    };
+    attest();
+    await update((old) => {
+      check(old.sequence === observed.sequence);
+      for (const id of ids)
+        check(id !== old.active?.id && id !== old.pending?.id && old.generations.includes(id));
+      attest();
+      return {
+        ...old,
+        generations: old.generations.filter((id) => !ids.includes(id)),
+        retired: [...old.retired, ...ids],
+      };
+    });
+    return Object.freeze(ids);
   }
   async function resume() {
     const value = await inspect();
@@ -265,6 +350,8 @@ async function createRailgunWalletCatalog({
     begin,
     resume,
     inspect,
+    inspectRetention,
+    retireInactive,
     publish,
     close,
     signal: scope.signal,

@@ -69,6 +69,8 @@ async function openRailgunAccountWallet({
       // This runtime cannot complete an obsolete-policy candidate. Preserve
       // its directory via catalog.begin, while allowing a reviewed rebuild.
       check(!pending || pending.policy !== policy);
+      if ((await enrollment.catalog.inspectRetention()).listed === 8)
+        await enrollment.catalog.retireInactive();
       candidate = generation = await enrollment.catalog.begin(policy);
     } else if (mode === 'pending') candidate = generation = await enrollment.catalog.resume();
     else generation = enrollment.catalog.activeFor(policy);

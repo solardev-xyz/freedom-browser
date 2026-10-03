@@ -369,4 +369,13 @@ function assertRailgunSessionWorker(session, { handle, filename, binding }) {
   for (const key of ['kind', 'principal', 'protocol', 'deployment', 'chainId'])
     if (actual.subject[key] !== expected.subject[key]) throw fail();
 }
-module.exports = { startRailgunSessionWorker, assertRailgunSessionWorker };
+function assertRailgunSessionDirectoryClosed(directory) {
+  for (const filename of owners)
+    if (path.dirname(filename) === directory)
+      throw Object.assign(fail(), { code: 'RAILGUN_SESSION_DIRECTORY_BUSY' });
+}
+module.exports = {
+  startRailgunSessionWorker,
+  assertRailgunSessionWorker,
+  assertRailgunSessionDirectoryClosed,
+};

@@ -12,7 +12,7 @@ const { randomBytes } = require('crypto');
 const { isRailgunAccountEnrollment } = require('./railgun-account-enrollment');
 const { startRailgunSessionWorker } = require('./railgun-session-worker');
 const { createRailgunSourceLedger, railgunSourceBinding } = require('./railgun-source-ledger');
-const owners = new Set();
+const { claimRailgunAccountStore } = require('./railgun-store-owners');
 const fail = () =>
   Object.assign(new Error('Railgun account store requires recovery'), {
     code: 'RAILGUN_ACCOUNT_STORE_REFUSED',
@@ -61,8 +61,7 @@ async function openRailgunAccountStore({
       : enrollment.directory;
   realDirectory(directory);
   const filename = path.join(directory, kind + '.sqlite');
-  check(!owners.has(filename));
-  owners.add(filename);
+  const release = claimRailgunAccountStore(filename);
   let worker, ledger;
   const active = () => {
     check(!enrollment.signal.aborted);
@@ -169,13 +168,13 @@ async function openRailgunAccountStore({
       ? enrollment.withGenerationKeys(generationId, use)
       : enrollment.withPublicKeys(use));
     active();
-    worker.closed.then(() => owners.delete(filename));
+    worker.closed.then(release);
     return result;
   } catch (error) {
     ledger?.close();
     worker?.close();
     if (worker) await worker.closed;
-    owners.delete(filename);
+    release();
     throw error;
   }
 }

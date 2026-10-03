@@ -357,6 +357,7 @@ async function main() {
   }
   const sources = [
     'src/main/wallet/railgun-account-public.js',
+    'src/main/wallet/railgun-store-owners.js',
     'src/main/wallet/railgun-public-job.js',
     'src/main/wallet/railgun-public-run.js',
     'src/main/wallet/railgun-public-policy.js',
@@ -869,6 +870,30 @@ async function main() {
         oldDirectoryRetained: true,
         pendingRefused: true,
         newGenerationPublished: true,
+        observedAmount: '2700',
+      });
+      for (let n = 0; n < 12; n++) {
+        const rebuilt = await openWallet('new');
+        try {
+          assert.equal((await rebuilt.view.balance())[0].amount, 2700n);
+          assert.equal((await rebuilt.view.status()).to.number, 40);
+        } finally {
+          await rebuilt.close();
+        }
+      }
+      const retention = await catalog.inspectRetention();
+      assert.ok(retention.retired.length >= 8 && retention.listed <= 8);
+      for (const id of retention.retired)
+        assert.ok(
+          fs.statSync(path.join(enrollment.directory, 'railgun-cache-' + id)).isDirectory()
+        );
+      enrollment.profileGuard.assert(path.join(enrollment.directory, 'source.sqlite'));
+      runs.push({
+        attempt: 'successive-cache-rebuilds',
+        rebuilds: 12,
+        retiredGenerations: retention.retired.length,
+        listedGenerations: retention.listed,
+        retiredDirectoriesRetained: true,
         observedAmount: '2700',
       });
     }

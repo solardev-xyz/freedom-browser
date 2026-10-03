@@ -65,6 +65,11 @@ beforeEach(() => {
     profileGuard: { assert: jest.fn() },
     withGenerationKeys: (_id, use) => use({ 'wallet-journal': Buffer.alloc(32, 5) }),
     catalog: {
+      inspectRetention: jest.fn(async () => ({ listed: 2 })),
+      retireInactive: jest.fn(async () => {
+        events.push('retire');
+        return [];
+      }),
       inspect: jest.fn(async () => ({ pending: null })),
       activeFor: jest.fn(() => generation),
       begin: jest.fn(async () => ({ ...generation, storeId: undefined })),
@@ -163,6 +168,13 @@ test('foreign or obsolete enrolled public authority refuses before opening any w
   });
   await expect(openRailgunAccountWallet(options)).rejects.toThrow('public binding');
   expect(mockOpenStore).not.toHaveBeenCalled();
+});
+test('new generation retires only when the listed-generation slots are full', async () => {
+  mockEnrollment.catalog.inspectRetention.mockResolvedValue({ listed: 8 });
+  const result = await openRailgunAccountWallet({ ...options, mode: 'new' });
+  expect(mockEnrollment.catalog.retireInactive).toHaveBeenCalledTimes(1);
+  expect(events.indexOf('retire')).toBeLessThan(events.indexOf('prepare'));
+  await result.close();
 });
 test('active restoration authenticates the expected store before journal construction and revalidation', async () => {
   const opened = await openRailgunAccountWallet(options);
