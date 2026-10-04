@@ -1,7 +1,7 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks]]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -193,6 +193,10 @@ const sources = [
   'src/main/wallet/railgun-own-poi-proof.test.js',
   'src/main/wallet/railgun-own-poi-checks.js',
   'src/main/wallet/railgun-own-poi-checks.test.js',
+  'src/main/wallet/railgun-poi-submit-data.js',
+  'src/main/wallet/railgun-poi-submit-data.test.js',
+  'src/main/wallet/railgun-poi-intent-store.js',
+  'src/main/wallet/railgun-poi-intent-store.test.js',
   'src/main/wallet/railgun-poi-root.js',
   'src/main/wallet/railgun-poi-root.test.js',
   'src/main/wallet/railgun-own-poi-prove-job.js',
@@ -234,7 +238,10 @@ async function main() {
     process.argv.slice(2);
   assert.ok([5, 7, 8].includes(process.argv.length));
   const checksMode = process.argv.length === 8;
-  if (checksMode) assert.equal(checksFlag, 'checks');
+  if (checksMode) assert.ok(['checks', 'intents'].includes(checksFlag));
+  const intentsMode = checksFlag === 'intents';
+  const intentRuns = [];
+  let intentStore;
   const proofMode = process.argv.length >= 7;
   if (proofMode) assert.ok(path.isAbsolute(proverArchive) && path.isAbsolute(artifactDirectory));
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive) && !fs.existsSync(directory));
@@ -2054,6 +2061,97 @@ async function main() {
       assert.equal(checksGuards.reports, 14);
       assert.equal(checksGuards.attempts, 0);
     }
+    let retainedIntent;
+    const intentActivity = () =>
+      copy({
+        checksRoots,
+        checksJobs,
+        checksForbiddenJobs,
+        proofJobs,
+        poiMethods,
+        publicMethods,
+        rpcMethods,
+        jobs,
+        setupKeyJobs,
+        forbiddenKeyJobs,
+        unexpectedTransport,
+        unexpectedRpc,
+        transportCreates,
+        transportCloses,
+      });
+    if (intentsMode) {
+      phase = 'poi-intent-storage';
+      const initialActivity = intentActivity();
+      const initialJournal = await journal.readSnapshot();
+      intentStore = await enrollment.openPoiIntents();
+      assert.equal(await enrollment.openPoiIntents(), intentStore);
+      assert.deepEqual(await intentStore.list(), []);
+      const prepare = (proof) =>
+        intentStore.prepare({
+          proof,
+          coordinator: publicAccount.coordinator,
+          signal: enrollment.signal,
+        });
+      for (const [label, value] of [
+        ['forged-proof', {}],
+        ['copied-proof', copy(savedProof)],
+      ]) {
+        assert.equal((await prepare(value)).status, 'refused');
+        assert.deepEqual(await intentStore.list(), []);
+        intentRuns.push({ mode: label, refused: true, noWrite: true });
+      }
+      const prepared = await prepare(savedProof);
+      assert.equal(prepared.status, 'prepared', 'intent stage ' + prepared.stage);
+      assert.equal(prepared.disclosureEnabled, false);
+      assert.equal(prepared.spendingEnabled, false);
+      assert.equal(prepared.revision, 1);
+      retainedIntent = await intentStore.get(prepared.capsuleDigest);
+      assert.deepEqual(retainedIntent.payload, savedProof.payload);
+      assert.equal(retainedIntent.payloadSha256, savedProof.payloadSha256);
+      assert.equal(retainedIntent.state, 'prepared');
+      assert.ok(Object.isFrozen(retainedIntent.payload.proof.pi_b[0]));
+      intentRuns.push({ mode: 'genuine-proof-prepared', retained: true, revision: 1 });
+      assert.deepEqual(await prepare(savedProof), prepared);
+      assert.deepEqual(await intentStore.inspect(), {
+        records: 1,
+        sequence: 1,
+        capacity: 32,
+        reservedTransitions: 3,
+        freeTransitions: 124,
+      });
+      intentRuns.push({ mode: 'identical-proof-no-write', revision: 1 });
+      const { getPrivacyStoragePath } = require('../src/main/wallet/privacy-storage');
+      const file = getPrivacyStoragePath(
+        enrollment.getContext(
+          'storage',
+          'railgun-poi-intents-v1:' + enrollment.descriptor.walletId
+        ),
+        enrollment.directory
+      );
+      const ciphertext = fs.readFileSync(file, 'utf8');
+      assert.equal(JSON.parse(ciphertext).version, 1);
+      for (const privateValue of [
+        retainedIntent.capsuleDigest,
+        retainedIntent.bindingDigest,
+        retainedIntent.selector.nullifier,
+        retainedIntent.selector.noteHash,
+        retainedIntent.payload.proof.pi_a[0],
+        retainedIntent.payloadSha256,
+      ])
+        assert.equal(ciphertext.includes(privateValue), false);
+      intentStore.close();
+      await intentStore.closed;
+      intentStore = await enrollment.openPoiIntents();
+      assert.deepEqual(await intentStore.get(prepared.capsuleDigest), retainedIntent);
+      assert.equal((await prepare(retainedIntent)).status, 'refused');
+      intentRuns.push({
+        mode: 'encrypted-store-reopen',
+        retained: true,
+        restoredDataRefused: true,
+      });
+      assert.deepEqual(await journal.readSnapshot(), initialJournal);
+      assert.deepEqual(intentActivity(), initialActivity);
+    }
     phase = 'final-journal-drift';
     mode = 'valid';
     onRoot = async () => {
@@ -2116,6 +2214,37 @@ async function main() {
     assert.equal(transportCreates, transportCloses);
     assert.equal(jobs.membership, jobs.membershipExit);
     assert.equal(jobs.selector, jobs.selectorExit);
+    if (intentsMode) {
+      const initialActivity = intentActivity();
+      intentStore.close();
+      await intentStore.closed;
+      await publicAccount.close();
+      publicAccount = undefined;
+      enrollment.close();
+      enrollment = await openRailgunAccountEnrollment({ identity });
+      publicAccount = await openRailgunAccountPublic({ enrollment, archive });
+      intentStore = await enrollment.openPoiIntents();
+      assert.deepEqual(await intentStore.get(retainedIntent.capsuleDigest), retainedIntent);
+      for (const proof of [retainedIntent, savedProof])
+        assert.equal(
+          (
+            await intentStore.prepare({
+              proof,
+              coordinator: publicAccount.coordinator,
+              signal: enrollment.signal,
+            })
+          ).status,
+          'refused'
+        );
+      intentRuns.push({
+        mode: 'enrollment-reopen',
+        retained: true,
+        restoredDataRefused: true,
+        oldOwnerProofRefused: true,
+      });
+      assert.deepEqual(intentActivity(), initialActivity);
+      assert.equal(intentRuns.length, 6);
+    }
     assert.deepEqual(hashes(), before);
     const report = {
       fixture: 'synthetic-enrolled-own-poi-membership',
@@ -2127,6 +2256,8 @@ async function main() {
       proofRuns,
       proofJobs,
       checksMode,
+      intentsMode,
+      intentRuns,
       checksRuns,
       checksRoots,
       checksJobs,
@@ -2188,6 +2319,7 @@ async function main() {
   } finally {
     // Stop work, drain actual resources, then unconditionally restore fixture seams.
     operationsController.abort();
+    intentStore?.close();
     for (const release of checksReleases) release.resolve();
     for (const value of checksResults) value.close();
     for (const release of recoveryReleases) release.resolve();
@@ -2200,6 +2332,7 @@ async function main() {
       const operations = await Promise.allSettled([...pendingOperations]);
       const drained = await Promise.allSettled([
         ...[...checksResults].map((value) => value.closed),
+        ...(intentStore ? [intentStore.closed] : []),
         ...(task ? [task.closed] : []),
         ...(heldTask ? [heldTask.closed] : []),
         ...(txid ? [txid.close()] : []),

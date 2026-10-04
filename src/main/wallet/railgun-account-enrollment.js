@@ -17,6 +17,7 @@ const { createRailgunWalletCatalog } = require('./railgun-wallet-catalog');
 const { isRailgunPublicCatalog } = require('./railgun-public-catalog');
 const { createRailgunPrivateReservations } = require('./railgun-private-reservations');
 const { createRailgunPrivateCapsuleStore } = require('./railgun-private-capsule-store');
+const { createRailgunPoiIntentStore } = require('./railgun-poi-intent-store');
 const owners = new Set(),
   instances = new WeakSet(),
   RECORD = 'railgun-account-enrollment-v1';
@@ -104,7 +105,9 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     reservations,
     openingReservations,
     capsules,
-    openingCapsules;
+    openingCapsules,
+    poiIntents,
+    openingPoiIntents;
   const borrowed = new Set();
   let closed = false;
   function close() {
@@ -114,6 +117,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     borrowed.forEach((key) => key.fill(0));
     catalog?.close();
     capsules?.close();
+    poiIntents?.close();
     reservations?.close();
     scope.close();
     owners.delete(file);
@@ -379,6 +383,78 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
       openingCapsules = false;
     }
   }
+  async function openPoiIntents() {
+    active();
+    if (poiIntents && !poiIntents.signal.aborted) return poiIntents;
+    check(!openingPoiIntents);
+    openingPoiIntents = true;
+    let key;
+    try {
+      if (poiIntents) await poiIntents.closed;
+      active();
+      const intentHandle = scope.getContext({
+        ...subject,
+        operation: 'railgun-poi-intents-v1:' + descriptor.walletId,
+      });
+      const target = getPrivacyStoragePath(intentHandle, accountDirectory);
+      regularFileIfPresent(target);
+      guard.assert(target);
+      const floorRecord = 'railgun-poi-intents-floor-v1';
+      const decodeFloor = (text) => {
+        if (text === null) return null;
+        const value = JSON.parse(text);
+        check(
+          value &&
+            Object.keys(value).sort().join(',') === 'binding,sequence,version' &&
+            value.version === 1 &&
+            value.binding === binding &&
+            Number.isSafeInteger(value.sequence) &&
+            value.sequence >= 0 &&
+            value.sequence <= 128
+        );
+        return value.sequence;
+      };
+      const readFloor = async () => {
+        active();
+        const value = state(await manifest.get(RECORD));
+        active();
+        check(value.status === 'active');
+        const result = decodeFloor(await manifest.get(floorRecord));
+        active();
+        return result;
+      };
+      const advanceFloor = async (sequence) => {
+        active();
+        check(Number.isSafeInteger(sequence) && sequence >= 0 && sequence <= 128);
+        await manifest.update(floorRecord, (text) => {
+          active();
+          check(sequence >= (decodeFloor(text) ?? 0));
+          return JSON.stringify({ version: 1, binding, sequence });
+        });
+        active();
+      };
+      key = derive('poi-intents');
+      borrowed.add(key);
+      poiIntents = await createRailgunPoiIntentStore({
+        enrollment: instance,
+        handle: intentHandle,
+        directory: accountDirectory,
+        key,
+        binding,
+        walletId: descriptor.walletId,
+        profileGuard: guard,
+        create: !fs.existsSync(target),
+        readFloor,
+        advanceFloor,
+      });
+      active();
+      return poiIntents;
+    } finally {
+      key?.fill(0);
+      borrowed.delete(key);
+      openingPoiIntents = false;
+    }
+  }
   const instance = Object.freeze({
     descriptor,
     binding,
@@ -389,6 +465,7 @@ async function openRailgunAccountEnrollment({ identity, create = false }) {
     close,
     openReservations,
     openPrivateCapsules,
+    openPoiIntents,
     // Trusted host composition only. Callers must not retain copies of these
     // borrowed buffers; a worker must own/wipe any explicitly copied key.
     withPublicKeys: (use) => withKeys(['source-ledger', 'public-store', 'scan-journal'], null, use),

@@ -2,7 +2,16 @@ const fs = require('fs'),
   os = require('os'),
   path = require('path');
 const { createHash } = require('crypto');
-let mockProfile, mockParent, mockIdentity, mockVault, mockMnemonic;
+let mockProfile, mockParent, mockIdentity, mockVault, mockMnemonic, mockPoiFactoryHook;
+jest.mock('./railgun-poi-intent-store', () => {
+  const actual = jest.requireActual('./railgun-poi-intent-store');
+  return {
+    createRailgunPoiIntentStore: (options) =>
+      mockPoiFactoryHook
+        ? mockPoiFactoryHook(options, actual.createRailgunPoiIntentStore)
+        : actual.createRailgunPoiIntentStore(options),
+  };
+});
 const mockCoordinators = new WeakSet();
 jest.mock('./railgun-scan-coordinator', () => ({
   assertRailgunScanCoordinator: (v) => {
@@ -48,6 +57,7 @@ function bind(index = 0) {
 }
 beforeEach(() => {
   enrollments = [];
+  mockPoiFactoryHook = undefined;
   mockProfile = {
     id: 'fixture',
     userDataDir: fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-enrollment-'))),
@@ -606,4 +616,225 @@ test('direct signing without the enrollment-owned capsule permit is refused', as
     })
   ).rejects.toThrow();
   expect(reservations.signal.aborted).toBe(true);
+});
+
+const poiIntentFile = (entry) =>
+  require('./privacy-storage').getPrivacyStoragePath(
+    entry.getContext('storage', 'railgun-poi-intents-v1:' + entry.descriptor.walletId),
+    entry.directory
+  );
+const emptyPoiIntents = {
+  records: 0,
+  sequence: 0,
+  capacity: 32,
+  reservedTransitions: 0,
+  freeTransitions: 128,
+};
+function deferredPoi() {
+  let resolve;
+  const promise = new Promise((done) => (resolve = done));
+  return { promise, resolve };
+}
+test('POI intent storage opens lazily in one separate encrypted inventoried file', async () => {
+  const entry = await open(true),
+    previousInventory = inventory(),
+    file = poiIntentFile(entry);
+  expect(fs.existsSync(file)).toBe(false);
+  const pending = entry.openPoiIntents();
+  await expect(entry.openPoiIntents()).rejects.toThrow();
+  const store = await pending;
+  expect(await entry.openPoiIntents()).toBe(store);
+  expect(await store.inspect()).toEqual(emptyPoiIntents);
+  expect(await store.list()).toEqual([]);
+  expect(inventory()).toHaveLength(previousInventory.length + 1);
+  expect(inventory().filter((name) => !previousInventory.includes(name))).toEqual([
+    path.relative(mockProfile.userDataDir, file),
+  ]);
+  expect(fs.existsSync(reservationFile(entry))).toBe(false);
+  expect(fs.existsSync(capsuleFile(entry))).toBe(false);
+  const bytes = fs.readFileSync(file, 'utf8'),
+    encrypted = JSON.parse(bytes);
+  expect(Object.keys(encrypted).sort()).toEqual(['ciphertext', 'iv', 'tag', 'version']);
+  for (const privateText of [mockMnemonic, 'public-fixture', 'entries', entry.binding])
+    expect(bytes).not.toContain(privateText);
+  expect(inventory()).toHaveLength(previousInventory.length + 1);
+});
+test.each(['close', 'vault-lock'])(
+  'POI intent store revokes on %s, drains and reopens retained empty state',
+  async (reason) => {
+    const entry = await open(true),
+      store = await entry.openPoiIntents(),
+      file = poiIntentFile(entry),
+      files = inventory();
+    if (reason === 'close') entry.close();
+    else mockVault.abort();
+    expect(store.signal.aborted).toBe(true);
+    await expect(store.inspect()).rejects.toThrow();
+    await expect(entry.openPoiIntents()).rejects.toThrow();
+    await store.closed;
+    expect(fs.existsSync(file)).toBe(true);
+    if (reason === 'vault-lock') {
+      mockParent.close();
+      bind();
+    }
+    const cold = await open(),
+      restored = await cold.openPoiIntents();
+    expect(restored).not.toBe(store);
+    expect(await restored.inspect()).toEqual(emptyPoiIntents);
+    expect(inventory()).toEqual(files);
+  }
+);
+test('missing POI intent file refuses enrollment reopen without recreating it', async () => {
+  const entry = await open(true),
+    store = await entry.openPoiIntents(),
+    file = poiIntentFile(entry);
+  entry.close();
+  await store.closed;
+  fs.renameSync(file, file + '.retained');
+  await expect(open()).rejects.toMatchObject({ code: 'PRIVATE_PROFILE_STORE_MISSING' });
+  expect(fs.existsSync(file)).toBe(false);
+  expect(fs.existsSync(file + '.retained')).toBe(true);
+});
+test('POI initialization file survives an interrupted manifest floor write and restart', async () => {
+  const entry = await open(true),
+    file = poiIntentFile(entry),
+    rename = fs.renameSync.bind(fs);
+  let armed = true;
+  jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    if (armed && /wallet-railgun-accounts\/[0-9a-f]{64}\.json$/.test(to)) {
+      armed = false;
+      throw Error('POI floor interrupted');
+    }
+    return rename(from, to);
+  });
+  await expect(entry.openPoiIntents()).rejects.toMatchObject({
+    code: 'RAILGUN_POI_INTENT_STORE_REFUSED',
+  });
+  expect(armed).toBe(false);
+  expect(fs.existsSync(file)).toBe(true);
+  expect(inventory()).toContain(path.relative(mockProfile.userDataDir, file));
+  entry.close();
+  const cold = await open(),
+    store = await cold.openPoiIntents();
+  expect(await store.inspect()).toEqual(emptyPoiIntents);
+  expect(await store.list()).toEqual([]);
+});
+test.each(['close', 'vault-lock'])(
+  'POI initialization retains its owner and wipes its borrowed key during %s',
+  async (reason) => {
+    const entry = await open(true),
+      entered = deferredPoi(),
+      release = deferredPoi();
+    let key,
+      lateFloorCalls = 0;
+    mockPoiFactoryHook = (options, create) => {
+      mockPoiFactoryHook = undefined;
+      key = options.key;
+      return create({
+        ...options,
+        async advanceFloor(sequence) {
+          entered.resolve();
+          await release.promise;
+          lateFloorCalls++;
+          return options.advanceFloor(sequence);
+        },
+      });
+    };
+    const pending = entry.openPoiIntents(),
+      settled = pending.then(
+        (value) => ({ value }),
+        (error) => ({ error })
+      );
+    try {
+      await Promise.race([
+        entered.promise,
+        settled.then(() => {
+          throw Error('POI initialization settled before held floor');
+        }),
+      ]);
+      expect(key.some((byte) => byte !== 0)).toBe(true);
+      if (reason === 'close') entry.close();
+      else mockVault.abort();
+      expect(key.every((byte) => byte === 0)).toBe(true);
+      if (reason === 'vault-lock') {
+        mockParent.close();
+        bind();
+      }
+      const cold = await open(),
+        manifest = path.join(
+          mockProfile.userDataDir,
+          inventory().find((name) => !name.includes('/account-'))
+        ),
+        before = fs.readFileSync(manifest);
+      await expect(cold.openPoiIntents()).rejects.toMatchObject({
+        code: 'RAILGUN_POI_INTENT_STORE_REFUSED',
+      });
+      expect(lateFloorCalls).toBe(0);
+      release.resolve();
+      expect((await settled).error).toMatchObject({ code: 'RAILGUN_POI_INTENT_STORE_REFUSED' });
+      expect(lateFloorCalls).toBe(1);
+      expect(fs.readFileSync(manifest)).toEqual(before);
+      expect(await (await cold.openPoiIntents()).inspect()).toEqual(emptyPoiIntents);
+    } finally {
+      entry.close();
+      release.resolve();
+      await settled;
+      mockPoiFactoryHook = undefined;
+    }
+  }
+);
+test('cold enrollment and POI store opening do not import proof, recovery or membership controllers', async () => {
+  const forbidden = [
+    './railgun-own-poi-proof',
+    './railgun-own-operation',
+    './railgun-own-poi-checks',
+    './railgun-own-poi-membership',
+    './railgun-own-poi-binding',
+  ];
+  const loaded = [],
+    parent = mockParent;
+  for (const name of forbidden)
+    jest.doMock(name, () => {
+      loaded.push(name);
+      throw Error('Unexpected controller import');
+    });
+  try {
+    await jest.isolateModulesAsync(async () => {
+      // The outer hook's actual factory belongs to the outer privacy-context
+      // and enrollment registries. This cold load must use one isolated graph.
+      jest.dontMock('./railgun-poi-intent-store');
+      const { createPrivacyScope: createScope } = require('../networks/privacy-context');
+      mockParent = createScope({
+        profileId: createHash('sha256')
+          .update(JSON.stringify([mockProfile.id, mockProfile.userDataDir]))
+          .digest('hex'),
+        signal: mockVault.signal,
+      });
+      let entry,
+        store;
+      try {
+        const { openRailgunAccountEnrollment: openCold } = require('./railgun-account-enrollment');
+        entry = await openCold({ identity: mockIdentity, create: true });
+        store = await entry.openPoiIntents();
+        expect(await store.inspect()).toEqual(emptyPoiIntents);
+        expect(loaded).toEqual([]);
+      } finally {
+        entry?.close();
+        if (store) await store.closed;
+        mockParent.close();
+      }
+    });
+  } finally {
+    mockParent = parent;
+    jest.doMock('./railgun-poi-intent-store', () => {
+      const actual = jest.requireActual('./railgun-poi-intent-store');
+      return {
+        createRailgunPoiIntentStore: (options) =>
+          mockPoiFactoryHook
+            ? mockPoiFactoryHook(options, actual.createRailgunPoiIntentStore)
+            : actual.createRailgunPoiIntentStore(options),
+      };
+    });
+    for (const name of forbidden) jest.dontMock(name);
+  }
 });
