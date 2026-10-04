@@ -1405,7 +1405,7 @@ describe('Agent UI', () => {
     } });
     ctx.elements['agent-toggle-btn'].dispatch('click');
     await flush();
-    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')).toHaveLength(2);
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')).toHaveLength(1);
     expect(ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[0].children[0].textContent).toBe('One');
     ctx.elements['agent-model-menu-search'].value = 'two';
     ctx.elements['agent-model-menu-search'].dispatch('input');
@@ -1413,7 +1413,44 @@ describe('Agent UI', () => {
     ctx.elements['agent-model-menu-list'].children.find((item) => item.className === 'agent-model-row').children[1].dispatch('click');
     await flush();
     expect(ctx.electronAPI.setAgentProviderPreferences).toHaveBeenCalledWith('openai', { favoriteModelIds: ['one', 'two'] });
+    ctx.elements['agent-model-menu-search'].value = '';
+    ctx.elements['agent-model-menu-search'].dispatch('input');
+    expect(ctx.elements['agent-model-menu-list'].children[0].getAttribute('aria-expanded')).toBe('false');
+    expect(ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row')).toHaveLength(2);
+  });
 
+  test('provider groups start collapsed, expand independently and retain their state through search', async () => {
+    const connections = [
+      { kind: 'hosted', providerId: 'openai', modelId: 'one', favoriteModelIds: ['one'] },
+      { kind: 'ollama', providerId: 'ollama', modelId: 'local', modelIds: ['local'], favoriteModelIds: [] },
+    ];
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: { configured: true, ...connections[0], connections } }),
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [{
+        providerId: 'openai', name: 'OpenAI', models: [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }],
+      }] }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    const children = () => ctx.elements['agent-model-menu-list'].children;
+    const headers = () => children().filter((item) => item.className === 'agent-model-group-label');
+    const names = () => children().filter((item) => item.className === 'agent-model-row').map((row) => row.children[0].children[0].textContent);
+    expect(headers().map((header) => header.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
+    expect(names()).toEqual(['One']);
+    headers()[0].dispatch('click', { stopPropagation() {} });
+    expect(names()).toEqual(['One', 'Two']);
+    expect(headers()[1].getAttribute('aria-expanded')).toBe('false');
+    headers()[0].dispatch('click', { stopPropagation() {} });
+    headers()[1].dispatch('click', { stopPropagation() {} });
+    expect(names()).toEqual(['One', 'local']);
+    ctx.elements['agent-model-menu-search'].value = 'two';
+    ctx.elements['agent-model-menu-search'].dispatch('input');
+    expect(names()).toEqual(['Two']);
+    expect(headers()[0].getAttribute('aria-expanded')).toBe('true');
+    ctx.elements['agent-model-menu-search'].value = '';
+    ctx.elements['agent-model-menu-search'].dispatch('input');
+    expect(names()).toEqual(['One', 'local']);
+    expect(headers().map((header) => header.getAttribute('aria-expanded'))).toEqual(['false', 'true']);
   });
 
   test('switching providers clears typed credentials and a failed refresh keeps models', async () => {
@@ -4327,7 +4364,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
     expect(ctx.elements['agent-model-menu'].hidden).toBe(true);
     const rows = ctx.elements['agent-model-menu-list'].children.filter((item) => item.className === 'agent-model-row');
-    expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);
+    expect(rows.map((row) => row.children[0].children[0].textContent)).toEqual(['qwen3:8b']);
     expect(ctx.elements['agent-provider-save'].textContent).toBe('Save connection');
     expect(ctx.elements['agent-sidebar-back'].hidden).toBe(false);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.textContent)).toEqual(['qwen3:8b', 'llama3.2:3b']);

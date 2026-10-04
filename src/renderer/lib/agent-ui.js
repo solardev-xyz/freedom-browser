@@ -92,6 +92,7 @@ let setWorkspaceNavigationEditable = () => {};
 let providerCatalog = [];
 let providerCatalogPromise = null;
 let providerStatus = null;
+const expandedModelProviders = new Set();
 let providerReady = false;
 let providerLoginPending = false;
 let choosingProviderMethod = false;
@@ -1789,6 +1790,7 @@ function renderConnectedProviders() {
 
 function renderModelMenu() {
   const models = configuredModels();
+  const searching = Boolean(elements.modelMenuSearch.value.trim());
   const groups = new Map();
   for (const model of models) {
     if (!groups.has(model.providerId)) groups.set(model.providerId, []);
@@ -1796,11 +1798,31 @@ function renderModelMenu() {
   }
   const content = [];
   for (const [providerId, providerModels] of groups) {
-    const label = document.createElement('div');
+    const expanded = searching || expandedModelProviders.has(providerId);
+    const label = document.createElement('button');
+    label.type = 'button';
     label.className = 'agent-model-group-label';
-    label.textContent = providerName(providerId);
+    label.setAttribute('aria-expanded', String(expanded));
+    label.disabled = searching;
+    const title = document.createElement('span');
+    title.textContent = providerName(providerId);
+    const chevron = document.createElement('span');
+    chevron.className = 'agent-model-group-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+    label.appendChild(title);
+    label.appendChild(chevron);
+    label.addEventListener('click', (event) => {
+      // Replacing this header would otherwise look like an outside click.
+      event.stopPropagation();
+      if (expandedModelProviders.has(providerId)) expandedModelProviders.delete(providerId);
+      else expandedModelProviders.add(providerId);
+      renderModelMenu();
+      elements.modelMenuList.querySelector(`[data-provider-id="${providerId}"]`)?.focus();
+    });
+    label.dataset.providerId = providerId;
     content.push(label);
-    for (const model of providerModels) {
+    for (const model of providerModels.filter((model) => expanded || model.favorite)) {
       const option = document.createElement('button');
       option.type = 'button';
       option.className = 'agent-model-option';

@@ -2330,12 +2330,44 @@ body.agent-first-mode .agent-turn-outcome-copy strong {
 }
 
 .agent-model-group-label {
-  padding: 6px 8px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
   color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  text-align: left;
   font-size: 9px;
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.agent-model-group-label:not(:disabled):hover {
+  background: var(--agent-hover-08);
+}
+
+.agent-model-group-label:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.agent-model-group-chevron {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.agent-model-group-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.agent-model-group-label[aria-expanded='true'] .agent-model-group-chevron {
+  transform: rotate(90deg);
 }
 
 .agent-model-option,

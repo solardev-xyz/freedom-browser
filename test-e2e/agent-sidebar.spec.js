@@ -28,6 +28,52 @@ const test = baseTest.extend({
 
 const repositoryRoot = path.resolve(__dirname, '..');
 
+test('model picker collapses providers while keeping favorites and searchable models in both themes', async ({ electronApp, window }, testInfo) => {
+  await electronApp.evaluate((_electron, root) => {
+    const require = process.getBuiltinModule('module').createRequire(`${root}/package.json`);
+    const { AgentProviderResolver } = require(root + '/src/main/agent/provider-resolver');
+    AgentProviderResolver.prototype.getStatus = () => ({
+      configured: true, providerId: 'openai', modelId: 'favorite',
+      connections: [
+        { kind: 'hosted', providerId: 'openai', modelId: 'favorite', favoriteModelIds: ['favorite'] },
+        { kind: 'ollama', providerId: 'ollama', modelId: 'qwen3:8b', modelIds: ['qwen3:8b'], favoriteModelIds: [] },
+      ],
+    });
+    AgentProviderResolver.prototype.getCatalog = async () => [{
+      providerId: 'openai', name: 'OpenAI', models: [
+        { id: 'favorite', name: 'Favorite model' }, { id: 'another', name: 'Another model' },
+      ],
+    }];
+  }, repositoryRoot);
+  await window.reload();
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-model-menu-button').click();
+  const menu = window.locator('#agent-model-menu');
+  const openai = menu.getByRole('button', { name: 'OpenAI · API', exact: true });
+  const ollama = menu.getByRole('button', { name: /Ollama/ });
+  const search = window.locator('#agent-model-menu-search');
+  for (const theme of ['dark', 'light']) {
+    await window.evaluate(value => document.documentElement.dataset.theme = value, theme);
+    await expect(openai).toHaveAttribute('aria-expanded', 'false');
+    await expect(menu.getByRole('menuitemradio', { name: /Favorite model/ })).toBeVisible();
+    await expect(menu.getByRole('menuitemradio', { name: 'Another model' })).toHaveCount(0);
+    await expect(menu.getByRole('menuitemradio', { name: 'qwen3:8b' })).toHaveCount(0);
+    await menu.screenshot({ path: testInfo.outputPath(`models-${theme}-collapsed.png`) });
+    await openai.focus();
+    await window.keyboard.press('Enter');
+    await expect(openai).toBeFocused();
+    await expect(menu.getByRole('menuitemradio', { name: 'Another model' })).toBeVisible();
+    await expect(ollama).toHaveAttribute('aria-expanded', 'false');
+    await menu.screenshot({ path: testInfo.outputPath(`models-${theme}-expanded.png`) });
+    await window.keyboard.press('Space');
+    await search.fill('Another');
+    await expect(menu.getByRole('menuitemradio', { name: 'Another model' })).toBeVisible();
+    await search.fill('');
+    await expect(openai).toHaveAttribute('aria-expanded', 'false');
+    await expect(menu.getByRole('menuitemradio', { name: 'Another model' })).toHaveCount(0);
+  }
+});
+
 test('ChatGPT browser sign-in supports cancellation and a private callback fallback in both themes', async ({ electronApp, window }, testInfo) => {
   // Exercise the real IPC/store/UI without opening an external browser or using
   // real credentials. Native Pi OAuth and refresh are tested at the HTTP boundary.
