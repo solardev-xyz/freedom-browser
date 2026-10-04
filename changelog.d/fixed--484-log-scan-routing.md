@@ -1,0 +1,1 @@
+- The Swarm node's start-up scan of a wallet's history only takes results that two independent sources agree on, so a custom Gnosis setup needs at least two RPC endpoints for it ([#484](https://github.com/solardev-xyz/freedom-browser/issues/484))
