@@ -616,3 +616,69 @@ module.exports.preflightRailgunOwnTransactPoiMembership = async (options) => {
     return Object.freeze({ status: 'refused', stage: 'context' });
   }
 };
+
+// Sole internal consumer: the Transact selector host. Direct completed data,
+// never an adoptable diagnostic or a live source/root/consent receipt.
+module.exports.captureRailgunOwnTransactPoiMembershipInput = async (options) => {
+  let stage = 'context';
+  try {
+    assert.ok(options && typeof options === 'object' && !Array.isArray(options));
+    assert.deepEqual(
+      Object.keys(options)
+        .filter((key) => key !== 'timeoutMs')
+        .sort(),
+      ['archive', 'coordinator', 'enrollment', 'selector', 'signal']
+    );
+    const { enrollment, coordinator, signal, timeoutMs = 300000 } = options;
+    assert.ok(isRailgunAccountEnrollment(enrollment));
+    assert.ok(signal instanceof AbortSignal && !signal.aborted);
+    assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300000);
+    const archive = verifyRailgunEngineRuntime(options.archive);
+    const publicPolicy = getRailgunPublicPolicy(archive);
+    const txidPolicy = getRailgunTxidPolicy(archive);
+    const identity = freeze(
+      JSON.parse(
+        JSON.stringify(getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy))
+      )
+    );
+    const destination = getRailgunAccountPublicDestination(coordinator, enrollment, publicPolicy);
+    const parent = enrollment.getContext('engine');
+    const started = performance.now(),
+      deadline = started + timeoutMs;
+    const current = () => {
+      getPrivacyContext(parent);
+      assert.ok(!signal.aborted && !enrollment.signal.aborted && !coordinator.signal.aborted);
+      assert.ok(performance.now() >= started && performance.now() < deadline);
+      assert.deepEqual(
+        getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
+        identity
+      );
+      assertRailgunAccountPublicDestination(coordinator, enrollment, destination, publicPolicy);
+    };
+    current();
+    stage = 'preflight';
+    const result = await captureRailgunOwnWitness(
+      { enrollment, coordinator, archive, selector: options.selector, signal, timeoutMs },
+      true,
+      true,
+      true,
+      undefined,
+      true
+    );
+    // Preserve genuine bounded source failure before a later local-currency check.
+    if (result.status !== 'captured') return result;
+    stage = 'completion';
+    // The core's cleanup has settled. Its own scope is intentionally closed;
+    // use the outer owners/deadline, not a renewed canonical-source claim.
+    current();
+    assert.equal(result.publicPolicy, publicPolicy);
+    assert.equal(result.txidPolicy, txidPolicy);
+    assert.deepEqual(result.publicIdentity, identity);
+    assert.deepEqual(result.creatorProvenance.publicIdentity, identity);
+    assert.equal(result.creatorProvenance.txidPolicy, txidPolicy);
+    assert.equal(result.observations.archiveAnchorChecked, true);
+    return freeze(result);
+  } catch {
+    return Object.freeze({ status: 'refused', stage });
+  }
+};

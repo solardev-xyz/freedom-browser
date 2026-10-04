@@ -27,6 +27,13 @@ let lock,
   phase = 'setup';
 const sources = [
   'scripts/fixtures/railgun-own-poi-membership-input-job.js',
+  'src/main/wallet/railgun-poi-transact-selector.js',
+  'src/main/wallet/railgun-poi-transact-selector-data.js',
+  'src/main/wallet/railgun-poi-transact-selector-job.js',
+  'src/main/wallet/railgun-poi-transact-selector.test.js',
+  'src/main/wallet/railgun-poi-transact-selector-data.test.js',
+  'src/main/wallet/railgun-poi-transact-selector-job.test.js',
+  'src/main/wallet/railgun-process.test.js',
   'src/main/wallet/railgun-poi-source-capture.js',
   'src/main/wallet/railgun-poi-source-evidence.js',
   'src/main/wallet/railgun-poi-creator.js',
@@ -196,6 +203,8 @@ async function main() {
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive));
   assert.ok(['transfer', 'unshield'].includes(kind));
   assert.ok(['self', 'foreign'].includes(senderKind));
+  const selectorQualification = process.env.FREEDOM_RAILGUN_TRANSACT_SELECTOR === '1';
+  assert.ok([undefined, '1'].includes(process.env.FREEDOM_RAILGUN_TRANSACT_SELECTOR));
   fs.mkdirSync(directory, { mode: 0o700 });
   const profile = require('../src/main/profile-resolver').initializeProfile(app, {
     env: { FREEDOM_TEST_USER_DATA: path.join(directory, 'profile') },
@@ -378,7 +387,13 @@ async function main() {
   const processModule = require('../src/main/wallet/railgun-process');
   const originalStart = processModule.startRailgunProcess;
   const jobs = {};
-  let jobFault = 'healthy';
+  let jobFault = 'healthy',
+    corruptSelectorKey = false,
+    selectorKeyReplies = 0,
+    selectorResults = 0,
+    selectorTimingStart;
+  const selectorKeyBuffers = [],
+    selectorKeyTimings = [];
   processModule.startRailgunProcess = (options) => {
     const name = path.basename(options.filename);
     const counts = (jobs[name] ||= {
@@ -417,6 +432,42 @@ async function main() {
               assert.equal(guards.attempts, 0);
               counts.guardReports++;
             }
+          }
+          if (name === 'railgun-poi-transact-selector-job.js' && message.method === 'result') {
+            assert.equal(message.value.type, 'Transact');
+            assert.equal(message.value.blindedCommitment, payload.blindedCommitment);
+            selectorResults++;
+          }
+          if (name === 'railgun-poi-transact-selector-job.js' && message.method === 'key') {
+            assert.deepEqual(Object.keys(message).sort(), [
+              'id',
+              'inputSha256',
+              'method',
+              'purpose',
+            ]);
+            assert.equal(message.id, 1);
+            assert.equal(message.purpose, 'poi-transact-selector');
+            assert.deepEqual(
+              phaseTimings.slice(selectorTimingStart).map((entry) => entry.name),
+              ['source', 'mirror-open', 'own-verifier', 'creator-verifier', 'recapture']
+            );
+            assert.ok(phaseTimings.slice(selectorTimingStart).every((entry) => entry.completed));
+            const requestedAt = performance.now();
+            const reply = options.broker.dispatch(wire);
+            return Promise.resolve(reply).then((bytes) => {
+              assert.ok(bytes instanceof Uint8Array && bytes.byteLength === 32);
+              selectorKeyReplies++;
+              selectorKeyBuffers.push(bytes);
+              selectorKeyTimings.push({
+                spawnCallToRequestMs: Math.round(requestedAt - jobStarted),
+                requestToReplyMs: Math.round(performance.now() - requestedAt),
+                configuredJobLifetimeMs: options.lifetimeMs,
+              });
+              // Disposable fixture only: unchanged bound input reaches actual
+              // reconstruction with a deliberately incorrect viewing key.
+              if (corruptSelectorKey) bytes.fill(0);
+              return bytes;
+            });
           }
           return options.broker.dispatch(wire);
         },
@@ -1141,6 +1192,149 @@ async function main() {
     rejectValidation = null;
     await checkedCapture();
     runs.push({ mode: phase, refused: true, followingCaptureSucceeded: true });
+    const selectorRuns = [];
+    if (selectorQualification) {
+      const {
+        deriveRailgunOwnTransactPoiSelector,
+      } = require('../src/main/wallet/railgun-poi-transact-selector');
+      if (!foreignIdentity)
+        foreignIdentity = await openRailgunIdentity({ archive, accountIndex: 1 });
+      const durableSnapshot = async () => {
+        const currentReservations = await enrollment.openReservations();
+        const currentCapsules = await enrollment.openPrivateCapsules();
+        const entries = [];
+        await currentReservations.withSigningRecovery(async (records, context) => {
+          for (const { entry, receipt } of records) {
+            context.assertCurrent();
+            entries.push({ entry, stored: await currentCapsules.readSigned(receipt) });
+          }
+          context.assertCurrent();
+        });
+        return { entries, journal: await journal.readSnapshot() };
+      };
+      const checkedSelector = async (
+        mode,
+        { wrongIdentity = false, badKey = false, badRoot = false } = {}
+      ) => {
+        phase = mode;
+        const beforeDurable = await durableSnapshot(),
+          beforeServices = { ...serviceMethods },
+          beforeKeys = selectorKeyReplies,
+          beforeResults = selectorResults,
+          beforeJobs = JSON.parse(JSON.stringify(jobs)),
+          beforeMaintenance = { ...sourceMaintenance },
+          beforeRpc = rpcSnapshot(),
+          timingStart = phaseTimings.length;
+        assert.equal(preflightActive, false);
+        preflightActive = true;
+        selectorTimingStart = timingStart;
+        corruptSelectorKey = badKey;
+        rejectRoot = badRoot;
+        const began = performance.now();
+        let result;
+        try {
+          result = await deriveRailgunOwnTransactPoiSelector({
+            identity: wrongIdentity ? foreignIdentity : identity,
+            enrollment,
+            coordinator: publicAccount.coordinator,
+            archive,
+            selector,
+            signal: enrollment.signal,
+          });
+        } finally {
+          preflightActive = false;
+          corruptSelectorKey = false;
+          rejectRoot = false;
+        }
+        const refused = wrongIdentity || badKey || badRoot;
+        assert.equal(result.status, refused ? 'refused' : 'derived');
+        if (refused)
+          assert.equal(
+            result.stage,
+            wrongIdentity ? 'context' : badRoot ? 'preflight:txid' : 'recovery:callback'
+          );
+        for (const [name, value] of Object.entries(result)) {
+          assert.ok(['status', 'stage'].includes(name) || typeof value === 'boolean');
+          assert.ok(
+            !['blindedCommitment', 'bindingDigest', 'inputSha256', 'capture', 'selector'].includes(
+              name
+            )
+          );
+        }
+        if (!refused) {
+          for (const name of ['selectorDerived', 'receiverMatched', 'utilityExitObserved'])
+            assert.equal(result[name], true);
+          for (const name of [
+            'sourceAuthenticated',
+            'currentFinalityVerified',
+            'txidRootAccepted',
+            'membershipAuthenticated',
+            'disclosureEnabled',
+            'spendingEnabled',
+          ])
+            assert.equal(result[name], false);
+        }
+        const expectedKeys = wrongIdentity || badRoot ? 0 : 1;
+        assert.equal(selectorKeyReplies - beforeKeys, expectedKeys);
+        assert.equal(selectorResults - beforeResults, refused ? 0 : 1);
+        assert.ok(
+          selectorKeyBuffers.every(
+            (key) => key.byteLength === 32 && key.every((byte) => byte === 0)
+          )
+        );
+        const rootPairs = wrongIdentity ? 0 : badRoot ? 1 : 4;
+        assert.deepEqual(serviceMethods, {
+          latest: beforeServices.latest + rootPairs,
+          validate: beforeServices.validate + rootPairs,
+          page: beforeServices.page,
+        });
+        if (!wrongIdentity) assertCaptureRpc(beforeRpc, true);
+        else if (wrongIdentity) assert.deepEqual(rpcSnapshot(), beforeRpc);
+        assert.deepEqual(sourceMaintenance, beforeMaintenance);
+        assert.deepEqual(await durableSnapshot(), beforeDurable);
+        for (const [name, counts] of Object.entries(jobs)) {
+          assert.equal(counts.starts, counts.exits);
+          const prior = beforeJobs[name] || { keyHandoffs: 0, starts: 0 };
+          if (name === 'railgun-poi-transact-selector-job.js') {
+            assert.equal(counts.starts - prior.starts, expectedKeys);
+            assert.equal(counts.keyHandoffs - prior.keyHandoffs, expectedKeys);
+          } else assert.equal(counts.keyHandoffs, prior.keyHandoffs);
+        }
+        selectorRuns.push({
+          mode,
+          refused,
+          elapsedMs: Math.round(performance.now() - began),
+          viewingKeyReplies: expectedKeys,
+          selectorMatchedInBroker: !refused,
+          wrongKeyRejectedAtDerivedIdentityCheck: badKey,
+          allChildrenExited: true,
+          keyBuffersWiped: true,
+          durableStateUnchanged: true,
+          rootPairs,
+          phaseTimings: phaseTimings.slice(timingStart),
+          ownedListCalls: 0,
+        });
+      };
+      await checkedSelector('selector-healthy');
+      await checkedSelector('selector-wrong-identity', { wrongIdentity: true });
+      await checkedSelector('selector-corrupt-viewing-key', { badKey: true });
+      await checkedSelector('selector-after-corrupt-key');
+      await checkedSelector('selector-root-refusal', { badRoot: true });
+      await checkedSelector('selector-after-root-refusal');
+      assert.equal(selectorKeyReplies, 4);
+      assert.equal(selectorResults, 3);
+      assert.deepEqual(
+        selectorRuns.map((run) => run.mode),
+        [
+          'selector-healthy',
+          'selector-wrong-identity',
+          'selector-corrupt-viewing-key',
+          'selector-after-corrupt-key',
+          'selector-root-refusal',
+          'selector-after-root-refusal',
+        ]
+      );
+    }
     phase = 'unresolved-sibling';
     await journal.begin(hex(101), 4);
     await refusedCapture(selector, 'capture:journal');
@@ -1179,7 +1373,12 @@ async function main() {
           phaseTimings,
           captureEvidence,
           membershipAdmitted: false,
-          viewingKeyReleases: 0,
+          viewingKeyReleases: selectorKeyReplies,
+          selectorQualification,
+          selectorRuns,
+          selectorKeyTimings,
+          selectorDiagnosticOmitsLinkableValues: selectorQualification,
+          selectorExpectedValueComparedPrivately: selectorQualification,
           creatorProvenanceInternalOnly: true,
           publicTxidPairsPerSuccessfulCapture: 4,
           foreignSenderUsesDifferentAccountOfSamePublicMnemonic: senderKind === 'foreign',

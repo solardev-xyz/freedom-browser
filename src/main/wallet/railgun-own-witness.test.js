@@ -90,6 +90,7 @@ const {
   preflightRailgunOwnPoiCompleted: poiCompleted,
   preflightRailgunOwnPoiForSubmission: poiSubmission,
   preflightRailgunOwnTransactPoiMembership: poiTransact,
+  captureRailgunOwnTransactPoiMembershipInput: transactInput,
 } = require('./railgun-own-witness');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const copy = (v) => JSON.parse(JSON.stringify(v));
@@ -1656,5 +1657,101 @@ describe('Transact membership final admission and cleanup', () => {
       if (['source', 'own', 'creator'].includes(at)) expect(mockRootCreate).not.toHaveBeenCalled();
       if (at !== 'recapture') expect(mockCapture).not.toHaveBeenCalled();
     }
+  );
+});
+
+describe('direct historical Transact selector input producer', () => {
+  beforeEach(async () => {
+    await setupTransact();
+  });
+  test('returns detached historical facts only after normal source/root closure', async () => {
+    const result = await transactInput(options);
+    expect(result.status).toBe('captured');
+    expect(mockSource.close).toHaveBeenCalledTimes(1);
+    expect(mockRoots.close).toHaveBeenCalledTimes(1);
+    expect(Object.isFrozen(result.capture.capsule)).toBe(true);
+    expect(result.creatorProvenance.noteWitness).toEqual(creatorNoteWitness);
+    expect(result.sourceAuthenticated).toBe(false);
+    expect(result.currentFinalityVerified).toBe(false);
+    expect(result.disclosureEnabled).toBe(false);
+    expect(scope.signal.aborted).toBe(false);
+  });
+  test.each(['caller', 'owner', 'generation', 'destination', 'expiry', 'throw'])(
+    'refuses %s occurring in final source cleanup after core success',
+    async (kind) => {
+      if (kind === 'expiry') jest.useFakeTimers();
+      const original = mockSource.close.getMockImplementation();
+      mockSource.close.mockImplementation(() => {
+        original?.();
+        if (kind === 'caller') caller.abort();
+        if (kind === 'owner') scope.close();
+        if (kind === 'generation')
+          mockPublicIdentity = { ...mockPublicIdentity, generationId: '9'.repeat(64) };
+        if (kind === 'destination') mockDestination = Object.freeze({});
+        if (kind === 'expiry') jest.advanceTimersByTime(300000);
+        if (kind === 'throw') throw Error('PRIVATE cleanup');
+      });
+      const result = await transactInput(options);
+      expect(result.status).toBe('refused');
+      expect(result.capture).toBeUndefined();
+      expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    }
+  );
+  test('cancelled pending mirror close drains before historical refusal', async () => {
+    const entered = deferredGate(),
+      gate = deferredGate();
+    txid.close.mockImplementation(async () => {
+      entered.resolve();
+      await gate.promise;
+    });
+    let settled = false;
+    const pending = transactInput(options).then((value) => {
+      settled = true;
+      return value;
+    });
+    await entered.promise;
+    caller.abort();
+    try {
+      await Promise.resolve();
+      expect(settled).toBe(false);
+    } finally {
+      gate.resolve();
+    }
+    expect((await pending).status).toBe('refused');
+    expect(mockVerify).not.toHaveBeenCalled();
+  });
+  test('preserves bounded genuine source refusal even if caller revokes afterward', async () => {
+    const sourceOutcome = Object.freeze({ fatal: false, reason: 'cancelled', rpcFailure: null });
+    mockPoiTransactCapture.mockImplementation(async () => {
+      caller.abort();
+      return { status: 'refused', stage: 'snapshot', sourceOutcome };
+    });
+    const result = await transactInput(options);
+    expect(result.status).toBe('refused');
+    expect(result.sourceOutcome).toBe(sourceOutcome);
+  });
+  test.each(['completion', 'creator', 'witness', 'sourceDestination', 'observed', 'transport'])(
+    'producer accepts no external %s authority',
+    async (key) => {
+      expect(await transactInput({ ...options, [key]: {} })).toEqual({
+        status: 'refused',
+        stage: 'context',
+      });
+      expect(mockSelectorCapture).not.toHaveBeenCalled();
+    }
+  );
+});
+
+test('witness exports fixed historical producer with no claim, registration or adoption surface', () => {
+  expect(Object.keys(require('./railgun-own-witness')).sort()).toEqual(
+    [
+      'captureRailgunOwnTransactPoiMembershipInput',
+      'captureRailgunOwnWitness',
+      'preflightRailgunOwnPoi',
+      'preflightRailgunOwnPoiCompleted',
+      'preflightRailgunOwnPoiForSubmission',
+      'preflightRailgunOwnTransactPoiMembership',
+      'preflightRailgunOwnTransaction',
+    ].sort()
   );
 });

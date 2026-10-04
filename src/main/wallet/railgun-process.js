@@ -62,6 +62,10 @@ function startRailgunProcess({
           (context.subject.role === 'engine' &&
             context.subject.operation === 'poi-prove' &&
             filename === require.resolve('./railgun-own-poi-prove-job')) ||
+          (context.subject.kind === 'private-account' &&
+            context.subject.role === 'engine' &&
+            context.subject.operation === 'poi-transact-selector' &&
+            filename === require.resolve('./railgun-poi-transact-selector-job')) ||
           (context.subject.role === 'engine' &&
             context.subject.operation === 'poi-output-recover' &&
             filename === require.resolve('./railgun-poi-output-recover-job')) ||

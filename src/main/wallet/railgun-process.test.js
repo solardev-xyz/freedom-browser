@@ -475,6 +475,7 @@ test.each([
   ['engine', 'private-prepare', './railgun-private-prepare-job'],
   ['engine', 'poi-prove', './railgun-own-poi-prove-job'],
   ['engine', 'poi-output-recover', './railgun-poi-output-recover-job'],
+  ['engine', 'poi-transact-selector', './railgun-poi-transact-selector-job'],
   ['engine', 'private-operate', './railgun-private-operate-job'],
   ['engine', 'private-receive', './railgun-private-receive-job'],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
@@ -625,4 +626,39 @@ test('a 32-byte view over a larger backing buffer is never copied to a child', a
   expect(backing[0]).toBe(9);
   child.emit('exit', 1);
   expect((await task.closed).code).toBe('RAILGUN_PROCESS_FAILED');
+});
+
+test.each([
+  ['kind', 'service'],
+  ['role', 'prover'],
+  ['role', 'keystore'],
+  ['operation', 'poi-output-recover'],
+  ['protocol', 'ppv2'],
+  ['deployment', 'mainnet'],
+  ['chainId', 1],
+  ['filename', './railgun-own-selector-job'],
+  ['filename', './railgun-poi-output-recover-job'],
+])('Transact selector binary admission binds exact %s=%s', (field, value) => {
+  const subject = {
+    kind: 'private-account',
+    principal: 'railgun:0',
+    protocol: 'railgun',
+    deployment: 'sepolia',
+    chainId: 11155111,
+    role: 'engine',
+    operation: 'poi-transact-selector',
+  };
+  if (field !== 'filename') subject[field] = value;
+  expect(() =>
+    startRailgunProcess({
+      handle: scope.getContext(subject),
+      filename: require.resolve(
+        field === 'filename' ? value : './railgun-poi-transact-selector-job'
+      ),
+      input: '{}',
+      binaryKey: true,
+      broker: { signal: scope.signal, dispatch: async () => new Uint8Array(32) },
+    })
+  ).toThrow();
+  expect(mockFork).not.toHaveBeenCalled();
 });
