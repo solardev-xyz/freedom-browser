@@ -1,7 +1,7 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation]]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -197,6 +197,7 @@ const sources = [
   'src/main/wallet/railgun-poi-submit-data.test.js',
   'src/main/wallet/railgun-poi-intent-store.js',
   'src/main/wallet/railgun-poi-intent-store.test.js',
+  'scripts/fixtures/railgun-retained-history-job.js',
   'src/main/wallet/railgun-poi-cold-validation.js',
   'src/main/wallet/railgun-poi-cold-validation.test.js',
   'src/main/wallet/railgun-poi-output-recovery.js',
@@ -247,9 +248,17 @@ async function main() {
   assert.ok([5, 7, 8].includes(process.argv.length));
   const checksMode = process.argv.length === 8;
   if (checksMode)
-    assert.ok(['checks', 'intents', 'output-recovery', 'cold-validation'].includes(checksFlag));
+    assert.ok(
+      ['checks', 'intents', 'output-recovery', 'cold-validation', 'retained-history'].includes(
+        checksFlag
+      )
+    );
   const outputRecoveryMode = checksFlag === 'output-recovery';
-  const coldValidationMode = checksFlag === 'cold-validation';
+  const retainedHistoryMode = checksFlag === 'retained-history';
+  const coldValidationMode = checksFlag === 'cold-validation' || retainedHistoryMode;
+  let laterMirror,
+    mirrorAdvanced = false;
+  const mirrorState = () => (mirrorAdvanced ? laterMirror.state : payload.state);
   const intentsMode = checksFlag === 'intents' || outputRecoveryMode || coldValidationMode;
   const coldValidationRuns = [],
     coldValidationVerifierTimings = [],
@@ -277,6 +286,9 @@ async function main() {
       mirrorInspectExit: 0,
       mirrorWitness: 0,
       mirrorWitnessExit: 0,
+      mirrorHistorical: 0,
+      mirrorHistoricalExit: 0,
+      historicalSubstitutions: 0,
       publicPlan: 0,
       publicPlanExit: 0,
       viewing: 0,
@@ -734,9 +746,20 @@ async function main() {
         refuseOutputUtility();
       if (outputMirror) {
         const input = JSON.parse(options.input);
-        if (!['inspect', 'witness'].includes(input.mode)) refuseOutputUtility();
+        if (
+          !['inspect', 'witness', ...(retainedHistoryMode ? ['historical-root'] : [])].includes(
+            input.mode
+          )
+        )
+          refuseOutputUtility();
         outputMirrorMode = input.mode;
-        outputRecoveryJobs[outputMirrorMode === 'inspect' ? 'mirrorInspect' : 'mirrorWitness']++;
+        outputRecoveryJobs[
+          outputMirrorMode === 'inspect'
+            ? 'mirrorInspect'
+            : outputMirrorMode === 'witness'
+              ? 'mirrorWitness'
+              : 'mirrorHistorical'
+        ]++;
         assert.deepEqual(input, { archive, mode: outputMirrorMode });
         assert.equal(options.archive, archive);
         assert.equal(options.startupMs, 120000);
@@ -873,7 +896,13 @@ async function main() {
       const mirrorKeys =
         outputMirrorMode === 'inspect'
           ? ['txid:state']
-          : ['txid:state', 'txid:lookup:' + outputRecoveryTxid, 'txid:row:0'];
+          : [
+              'txid:state',
+              ...(outputMirrorMode === 'historical-root' ? ['txid:row:0'] : []),
+              'txid:lookup:' + outputRecoveryTxid,
+              'txid:row:0',
+              ...(mirrorAdvanced ? ['txid:node:0:1'] : []),
+            ];
       patched = {
         ...options,
         broker: {
@@ -905,7 +934,9 @@ async function main() {
                   decoded.value,
                   outputMirrorMode === 'inspect'
                     ? {}
-                    : { state: payload.state, txid: outputRecoveryTxid }
+                    : outputMirrorMode === 'historical-root'
+                      ? { state: mirrorState(), index: 0 }
+                      : { state: mirrorState(), txid: outputRecoveryTxid }
                 );
                 outputRecoveryMirrorBroker.admitted++;
                 return reply;
@@ -925,10 +956,19 @@ async function main() {
               assert.equal(message.id, mirrorKeys.length + 2);
               assert.deepEqual(Object.keys(message).sort(), ['id', 'method', 'value']);
               if (outputMirrorMode === 'inspect') {
-                assert.deepEqual(message.value.state, payload.state);
+                assert.deepEqual(message.value.state, mirrorState());
                 assert.equal(message.value.initialized, true);
+              } else if (outputMirrorMode === 'historical-root') {
+                const h = message.value.historicalRoot;
+                assert.equal(h.index, 0);
+                assert.equal(h.checkpointIndex, 1);
+                assert.equal(h.root, payload.state.root);
+                assert.equal(h.root, savedProof.payload.txidMerkleroot);
+                assert.equal(h.checkpointRoot, laterMirror.state.root);
+                assert.notEqual(h.root, h.checkpointRoot);
+                assert.equal(h.transcript, laterMirror.state.transcript);
               } else {
-                assert.equal(payload.state.count, 1);
+                assert.equal(mirrorState().count, mirrorAdvanced ? 2 : 1);
                 assert.equal(message.value.witness.index, 0);
                 assert.equal(message.value.witness.railgunTxid, outputRecoveryTxid);
                 assert.deepEqual(message.value.witness.row, payload.row);
@@ -1027,6 +1067,14 @@ async function main() {
               message.value.output.blindedCommitmentsOut[0] = previous === hex(1) ? hex(2) : hex(1);
               assert.notEqual(message.value.output.blindedCommitmentsOut[0], previous);
               outputRecoveryJobs.resultSubstitutions++;
+            }
+            if (
+              outputMirrorMode === 'historical-root' &&
+              outputRecoveryFault === 'substituted-history-root'
+            ) {
+              const h = message.value.historicalRoot;
+              h.root = h.root === hex(1).slice(2) ? hex(2).slice(2) : hex(1).slice(2);
+              outputRecoveryJobs.historicalSubstitutions++;
             }
             const reply = await originalBroker.dispatch(JSON.stringify(message));
             if (recoveringOutput) outputRecoveryJobs.resultAdmissions++;
@@ -1283,7 +1331,11 @@ async function main() {
       if (outputPublicPlan) outputRecoveryJobs.publicPlanExit++;
       if (outputMirror)
         outputRecoveryJobs[
-          outputMirrorMode === 'inspect' ? 'mirrorInspectExit' : 'mirrorWitnessExit'
+          outputMirrorMode === 'inspect'
+            ? 'mirrorInspectExit'
+            : outputMirrorMode === 'witness'
+              ? 'mirrorWitnessExit'
+              : 'mirrorHistoricalExit'
         ]++;
       if (outputRecoveryActive && recoveringOutput) {
         outputRecoveryJobs.viewingExit++;
@@ -1416,23 +1468,33 @@ async function main() {
       async latestTxid() {
         publicMethods.latest++;
         active();
-        return { index: payload.state.count - 1, root: payload.state.root };
+        return { index: mirrorState().count - 1, root: mirrorState().root };
       },
       async validateTxidRoot(point) {
         publicMethods.validate++;
         active();
+        // During retained validation every observation must target the current
+        // checkpoint. The old root is accepted only while setup advances it.
+        if (outputRecoveryActive && mirrorAdvanced)
+          assert.deepEqual(point, {
+            tree: 0,
+            index: laterMirror.state.count - 1,
+            root: laterMirror.state.root,
+          });
         assert.deepEqual(point, {
           tree: 0,
-          index: payload.state.count - 1,
-          root: payload.state.root,
+          index: point.index === 0 ? 0 : mirrorState().count - 1,
+          root: point.index === 0 ? payload.state.root : mirrorState().root,
         });
         return true;
       },
       async txidPage(after) {
         publicMethods.page++;
         active();
-        assert.equal(after, '0x00');
-        return { transactions: [payload.row] };
+        if (after === '0x00') return { transactions: [payload.row] };
+        assert.ok(retainedHistoryMode && mirrorAdvanced);
+        assert.equal(after, payload.state.after);
+        return { transactions: [laterMirror.row] };
       },
     };
   };
@@ -1463,7 +1525,10 @@ async function main() {
     assertRailgunOwnPoiChecks,
   } = require('../src/main/wallet/railgun-own-poi-checks');
   const { recoverRailgunPoiOutput } = require('../src/main/wallet/railgun-poi-output-recovery');
-  const { validateRailgunRetainedPoi } = require('../src/main/wallet/railgun-poi-cold-validation');
+  const {
+    validateRailgunRetainedPoi,
+    validateRailgunRetainedPoiHistory,
+  } = require('../src/main/wallet/railgun-poi-cold-validation');
   const runs = [],
     recoveryRuns = [];
   try {
@@ -2736,6 +2801,44 @@ async function main() {
       assert.deepEqual(intentActivity(), initialActivity);
       assert.equal(intentRuns.length, 6);
     };
+    if (retainedHistoryMode) {
+      phase = 'retained-history-later-mirror';
+      task = processModule.startRailgunProcess({
+        handle: enrollment.getContext('engine'),
+        filename: require.resolve('./fixtures/railgun-retained-history-job'),
+        input: JSON.stringify({ archive, row: payload.row }),
+        lifetimeMs: 60000,
+        broker: {
+          signal: enrollment.signal,
+          async dispatch(wire) {
+            assert.equal(laterMirror, undefined);
+            const message = JSON.parse(wire);
+            assert.equal(message.id, 1);
+            assert.equal(message.method, 'result');
+            assert.deepEqual(message.value.first, payload.state);
+            assert.equal(message.value.guards.attempts, 0);
+            assert.equal(message.value.state.count, 2);
+            assert.notEqual(message.value.state.root, savedProof.payload.txidMerkleroot);
+            laterMirror = message.value;
+            return JSON.stringify({ id: 1, value: null });
+          },
+        },
+      });
+      await task.ready;
+      task.close();
+      assert.equal((await task.closed).code, 'RAILGUN_PROCESS_CLOSED');
+      task = undefined;
+      mirrorAdvanced = true;
+      txid = await openRailgunAccountTxid({
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        archive,
+      });
+      await txid.advance();
+      assert.deepEqual((await txid.inspect()).checkpoint.state, laterMirror.state);
+      await txid.close();
+      txid = undefined;
+    }
     if (outputRecoveryMode || coldValidationMode) {
       phase = (coldValidationMode ? 'cold-validation' : 'output-recovery') + '-enrollment-reopen';
       await reopenPreparedIntent();
@@ -2750,6 +2853,8 @@ async function main() {
             outputRecoveryRuns.length + coldValidationRuns.length === 0
           ),
           invalidSnark = coldValidationMode && fault === 'invalid-snark',
+          historyFault = fault === 'substituted-history-root',
+          historyReached = retainedHistoryMode && !invalidSnark,
           substituted = fault === 'substituted-output',
           beforeActivity = intentActivity(),
           beforeJournal = await journal.readSnapshot(),
@@ -2765,7 +2870,13 @@ async function main() {
           beforeVerifierGuards = coldValidationGuards.reports;
         outputRecoveryActive = true;
         coldValidationActive = coldValidationMode;
-        const work = (coldValidationMode ? validateRailgunRetainedPoi : recoverRailgunPoiOutput)({
+        const work = (
+          retainedHistoryMode
+            ? validateRailgunRetainedPoiHistory
+            : coldValidationMode
+              ? validateRailgunRetainedPoi
+              : recoverRailgunPoiOutput
+        )({
           ...(coldValidationMode ? { proverArchive, artifactDirectory } : {}),
           identity,
           enrollment,
@@ -2789,6 +2900,7 @@ async function main() {
             (recovered.status !== 'refused' || recovered.stage !== 'recovery:callback')) ||
           (!substituted &&
             !invalidSnark &&
+            !historyFault &&
             recovered.status !== (coldValidationMode ? 'validated' : 'matched')) ||
           (invalidSnark && (recovered.status !== 'refused' || recovered.stage !== 'verify'))
         )
@@ -2800,7 +2912,9 @@ async function main() {
               jobs: delta(outputRecoveryJobs, beforeJobs),
             }) + '\n'
           );
-        if (invalidSnark) {
+        if (historyFault) {
+          assert.deepEqual(recovered, { status: 'refused', stage: 'txid-history' });
+        } else if (invalidSnark) {
           assert.deepEqual(recovered, { status: 'refused', stage: 'verify' });
         } else if (substituted) {
           assert.equal(viewing, 1);
@@ -2826,6 +2940,15 @@ async function main() {
               assert.equal(recovered[flag], false);
           } else
             assert.equal(recovered.recoveryInputSha256, viewing ? outputRecoveryInputDigest : null);
+          if (retainedHistoryMode) {
+            for (const flag of [
+              'historicalRootMatchesLocalMirror',
+              'ownTxidIncludedBySavedIndex',
+              'localMirrorCheckpointMatched',
+            ])
+              assert.equal(recovered[flag], true);
+            assert.equal(recovered.globalTxidCompleteness, false);
+          }
           assert.equal(recovered.outputMatched, true);
           assert.equal(recovered.viewingKeyReleases, viewing);
           assert.equal(recovered.viewingUtilityExitObserved, !!viewing);
@@ -2842,14 +2965,17 @@ async function main() {
         }
         const jobDelta = delta(outputRecoveryJobs, beforeJobs);
         assert.deepEqual(jobDelta, {
-          ownSelector: 1,
-          ownSelectorExit: 1,
+          ownSelector: 1 + Number(historyReached),
+          ownSelectorExit: 1 + Number(historyReached),
           ownTxid: 1,
           ownTxidExit: 1,
-          mirrorInspect: 2,
-          mirrorInspectExit: 2,
-          mirrorWitness: 1,
-          mirrorWitnessExit: 1,
+          mirrorInspect: 2 + 3 * Number(historyReached),
+          mirrorInspectExit: 2 + 3 * Number(historyReached),
+          mirrorWitness: 1 + Number(historyReached),
+          mirrorWitnessExit: 1 + Number(historyReached),
+          mirrorHistorical: Number(historyReached),
+          mirrorHistoricalExit: Number(historyReached),
+          historicalSubstitutions: Number(historyFault),
           publicPlan: coldPublicRestore,
           publicPlanExit: coldPublicRestore,
           viewing,
@@ -2863,11 +2989,11 @@ async function main() {
         });
         const mirrorBrokerDelta = delta(outputRecoveryMirrorBroker, beforeMirrorBroker);
         assert.deepEqual(mirrorBrokerDelta, {
-          attempted: 11,
-          admitted: 11,
-          input: 3,
-          get: 5,
-          result: 3,
+          attempted: 11 + Number(mirrorAdvanced) + 22 * Number(historyReached),
+          admitted: 11 + Number(mirrorAdvanced) + 22 * Number(historyReached),
+          input: 3 + 5 * Number(historyReached),
+          get: 5 + Number(mirrorAdvanced) + 12 * Number(historyReached),
+          result: 3 + 5 * Number(historyReached),
           forbidden: 0,
         });
         const publicBrokerDelta = delta(outputRecoveryPublicBroker, beforePublicBroker);
@@ -2895,7 +3021,10 @@ async function main() {
           assert.ok(timing.keyReplyAfterMs <= timing.resultAfterMs);
           assert.ok(timing.resultAfterMs <= timing.elapsedMs);
         }
-        assert.equal(outputRecoveryGuards.reports - beforeGuards, 5 + viewing + coldPublicRestore);
+        assert.equal(
+          outputRecoveryGuards.reports - beforeGuards,
+          5 + viewing + coldPublicRestore + 6 * Number(historyReached)
+        );
         assert.equal(outputRecoveryGuards.attempts, 0);
         assert.deepEqual(await intentStore.get(retainedIntent.capsuleDigest), retainedIntent);
         assert.deepEqual(await journal.readSnapshot(), beforeJournal);
@@ -2907,7 +3036,11 @@ async function main() {
             assert.deepEqual(afterActivity[key], beforeActivity[key]);
         const publicDelta = delta(afterActivity.publicMethods, beforeActivity.publicMethods),
           chainDelta = delta(afterActivity.rpcMethods, beforeActivity.rpcMethods);
-        assert.deepEqual(publicDelta, { latest: 3, validate: 3, page: 0 });
+        assert.deepEqual(publicDelta, {
+          latest: 3 + 3 * Number(historyReached),
+          validate: 3 + 3 * Number(historyReached),
+          page: 0,
+        });
         assert.deepEqual(chainDelta, {
           eth_getTransactionReceipt: 1,
           eth_getBlockByNumber: 22 + 12 * coldPublicRestore,
@@ -2951,23 +3084,36 @@ async function main() {
         (coldValidationMode ? coldValidationRuns : outputRecoveryRuns).push({
           mode: fault,
           status: recovered.status,
-          ...(invalidSnark
-            ? { stage: recovered.stage, invalidSnarkInputRefusedWithoutResult: true }
-            : substituted
-              ? { stage: recovered.stage, validFieldSubstitutionRefused: true }
-              : {
-                  preparedPayloadDigestMatched: true,
-                  recoveryInputDigestMatched: !!viewing,
-                }),
+          ...(historyFault
+            ? { stage: recovered.stage, differentValidHistoricalRootRefused: true }
+            : invalidSnark
+              ? { stage: recovered.stage, invalidSnarkInputRefusedWithoutResult: true }
+              : substituted
+                ? { stage: recovered.stage, validFieldSubstitutionRefused: true }
+                : {
+                    preparedPayloadDigestMatched: true,
+                    recoveryInputDigestMatched: !!viewing,
+                  }),
           enrollmentReopened: true,
           exactRevisionRetained: true,
           viewingKeyReleases: viewing,
           viewingUtilityExitObserved: !!viewing,
-          outputMatched: !substituted && !invalidSnark,
+          outputMatched: !substituted && !invalidSnark && !historyFault,
           ...(coldValidationMode ? { outputStageCompletedBeforeVerifier: true } : {}),
           journalUnchanged: true,
           healthyRecapture: true,
           noPreparedRecordMutation: true,
+          ...(retainedHistoryMode
+            ? {
+                historicalRootMatchesLocalMirror: historyReached && !historyFault,
+                ownTxidIncludedBySavedIndex: historyReached && !historyFault,
+                localMirrorCheckpointMatched: historyReached && !historyFault,
+                historicalRootDiffersFromCurrentRoot: true,
+                savedIndex: 0,
+                currentCheckpointIndex: 1,
+                globalTxidCompleteness: false,
+              }
+            : {}),
           activityObservationSeams: [
             'utility process starts and exits',
             'TXID utility input/get/result broker',
@@ -3007,7 +3153,14 @@ async function main() {
           spendingEnabled: false,
         });
       };
-      if (coldValidationMode) {
+      if (retainedHistoryMode) {
+        await exerciseOutputRecovery('substituted-history-root');
+        await exerciseOutputRecovery('healthy-after-refusal');
+        assert.deepEqual(
+          coldValidationRuns.map((run) => run.mode),
+          ['substituted-history-root', 'healthy-after-refusal']
+        );
+      } else if (coldValidationMode) {
         await exerciseOutputRecovery('invalid-snark');
         await exerciseOutputRecovery('healthy-after-refusal');
         assert.deepEqual(
@@ -3098,6 +3251,7 @@ async function main() {
       intentRuns,
       outputRecoveryMode,
       coldValidationMode,
+      retainedHistoryMode,
       coldValidationRuns,
       coldValidationVerifierJobs,
       coldValidationVerifierTimings,

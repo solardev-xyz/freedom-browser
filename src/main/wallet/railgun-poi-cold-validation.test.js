@@ -64,7 +64,14 @@ jest.mock('./railgun-poi-output-recovery', () => ({
 jest.mock('./railgun-poi-verifier', () => ({
   verifyRailgunPoiPayload: jest.fn((options) => mock.verify(options)),
 }));
+jest.mock('./railgun-txid-policy', () => ({
+  getRailgunTxidPolicy: jest.fn(() => mock.txidPolicy),
+}));
+jest.mock('./railgun-account-txid', () => ({
+  openRailgunAccountTxid: jest.fn((options) => mock.openTxid(options)),
+}));
 jest.mock('./railgun-own-operation', () => ({
+  captureRailgunOwnOperationSelector: jest.fn((options) => mock.selector(options)),
   withRailgunOwnOperationRecovery: jest.fn(async (options, use) => {
     const { claimRailgunAccountPhase } = jest.requireActual('./railgun-account-phase');
     let phase;
@@ -144,7 +151,12 @@ const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const { recoverRailgunPoiOutput } = require('./railgun-poi-output-recovery');
 const { verifyRailgunPoiPayload } = require('./railgun-poi-verifier');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
-const { validateRailgunRetainedPoi } = require('./railgun-poi-cold-validation');
+const {
+  validateRailgunRetainedPoi,
+  validateRailgunRetainedPoiHistory,
+} = require('./railgun-poi-cold-validation');
+const { openRailgunAccountTxid } = require('./railgun-account-txid');
+const { captureRailgunOwnOperationSelector } = require('./railgun-own-operation');
 const hex = (n) => BigInt(n).toString(16).padStart(64, '0');
 const prefixed = (n) => '0x' + hex(n);
 const copy = (value) => JSON.parse(JSON.stringify(value));
@@ -392,6 +404,7 @@ test.each([false, true])(
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.keys(require('./railgun-poi-cold-validation'))).toEqual([
       'validateRailgunRetainedPoi',
+      'validateRailgunRetainedPoiHistory',
     ]);
     expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(1);
     expect(mock.store.get).toHaveBeenCalledTimes(5);
@@ -981,4 +994,806 @@ test('post-final reread cancellation does not close the shared enrollment-owned 
   });
   expect(await run()).toEqual({ status: 'refused', stage: 'final-account' });
   expect(mock.store.close).not.toHaveBeenCalled();
+});
+
+// New historical composition keeps real structural normalizers and account
+// phases. Utility cryptography and authenticated mirror ownership are mocked.
+const runHistory = (input = options) => {
+  const work = validateRailgunRetainedPoiHistory(input);
+  operations.push(work);
+  return work;
+};
+function configureHistory(unshield = false) {
+  configure(unshield);
+  mock.txidPolicy = hex(80);
+  mock.capture.provedTransaction = {
+    chainId: 11155111,
+    to: mock.capture.provedTransaction.to,
+    value: '0',
+    data: mock.capture.provedTransaction.input,
+  };
+  const row = sample(unshield).row;
+  const { transaction, expected } =
+    require('./railgun-transact-intent').extractRailgunTransactIntent(
+      mock.capture.provedTransaction
+    );
+  const bindingDigest = createHash('sha256')
+    .update('freedom:railgun:own-selector-v1\0')
+    .update(JSON.stringify(transaction))
+    .digest('hex');
+  mock.derived = {
+    inputSha256: sha({
+      archive: options.archive,
+      facts: {
+        nullifiers: [expected.nullifier],
+        commitments: [expected.commitment],
+        boundParamsHash: expected.boundParamsHash,
+      },
+      bindingDigest,
+    }),
+    bindingDigest,
+    railgunTxid: hex(9),
+    selectorDerived: true,
+    accountAuthenticated: false,
+    pathVerified: false,
+    sourceAuthenticated: false,
+    rootAccepted: false,
+    currentCanonicalityVerified: false,
+    finalityVerified: false,
+    rowMetadataAuthenticated: false,
+    poiVerified: false,
+    globalTxidCompleteness: false,
+    spendingEnabled: false,
+    utilityExitObserved: true,
+  };
+  mock.state = {
+    version: 1,
+    count: 5,
+    root: hex(81),
+    transcript: hex(82),
+    after: row.graphID,
+    verificationHash: row.verificationHash,
+    branches: Array(16).fill(hex(83)),
+    breaks: [],
+  };
+  mock.checkpoint = {
+    state: mock.state,
+    store: { schema: 'wallet-store-v1', storeId: hex(84), count: 20, bytes: 5000, sha256: hex(85) },
+    validation: { index: 4, root: mock.state.root, accepted: true },
+  };
+  mock.witness = {
+    row,
+    leaf: hex(86),
+    railgunTxid: mock.derived.railgunTxid,
+    rowSha256: sha(row),
+    index: 2,
+    elements: Array(16).fill(hex(87)),
+    root: mock.state.root,
+    checkpointIndex: 4,
+    transcript: mock.state.transcript,
+    continuity: require('./railgun-txid-omissions').classifyRailgunTxidContinuity(4, []),
+    globalTxidCompleteness: false,
+  };
+  mock.historical = {
+    version: 1,
+    tree: 0,
+    index: mock.entry.payload.txidMerklerootIndex,
+    root: mock.entry.payload.txidMerkleroot,
+    checkpointIndex: 4,
+    checkpointRoot: mock.state.root,
+    transcript: mock.state.transcript,
+    localPrefixComputed: true,
+    globalTxidCompleteness: false,
+    ownershipVerified: false,
+    eventCoverageVerified: false,
+    rootAccepted: false,
+    spendingEnabled: false,
+  };
+  mock.selector = jest.fn(async () => {
+    const phase = claimRailgunAccountPhase(mock.enrollment, 'recovery');
+    try {
+      mock.events.push('selector');
+      await mock.selectorWork();
+      return { status: 'captured', capture: copy(mock.capture), derived: copy(mock.derived) };
+    } finally {
+      phase.release();
+      mock.events.push('selector-close');
+    }
+  });
+  mock.selectorWork = jest.fn(async () => {});
+  mock.opening = jest.fn(async () => {});
+  mock.mirrorDrain = jest.fn(async () => {});
+  mock.inspect = jest.fn(async () => ({ checkpoint: copy(mock.checkpoint), pending: null }));
+  mock.witnessRead = jest.fn(async () => ({
+    witness: copy(mock.witness),
+    ownershipVerified: false,
+    eventCoverageVerified: false,
+    rootAccepted: false,
+    spendingEnabled: false,
+  }));
+  mock.historyRead = jest.fn(async () => copy(mock.historical));
+  mock.openTxid = jest.fn(async () => {
+    const phase = claimRailgunAccountPhase(mock.enrollment, 'txid');
+    const aborted = new AbortController();
+    const pending = new Set();
+    let closing;
+    const read = (name, handler) =>
+      jest.fn((...args) => {
+        mock.events.push(name);
+        const work = Promise.resolve().then(() => handler(...args));
+        pending.add(work);
+        work.then(
+          () => pending.delete(work),
+          () => pending.delete(work)
+        );
+        return work;
+      });
+    mock.txid = {
+      policy: mock.txidPolicy,
+      publicIdentity: copy(mock.publicIdentity),
+      signal: aborted.signal,
+      inspect: read('mirror-inspect', (...args) => mock.inspect(...args)),
+      witness: read('mirror-witness', (...args) => mock.witnessRead(...args)),
+      historicalRoot: read('mirror-history', (...args) => mock.historyRead(...args)),
+      advance: jest.fn(() => {
+        throw Error('unexpected mirror repair');
+      }),
+      cover: jest.fn(() => {
+        throw Error('unexpected full mirror source coverage');
+      }),
+      close: jest.fn(() => {
+        aborted.abort();
+        if (!closing)
+          closing = (async () => {
+            await Promise.allSettled([...pending]);
+            await mock.mirrorDrain();
+            phase.release();
+            mock.events.push('mirror-close');
+          })();
+        return closing;
+      }),
+    };
+    mock.events.push('mirror-open');
+    try {
+      await mock.opening();
+      return mock.txid;
+    } catch (error) {
+      await mock.txid.close();
+      throw error;
+    }
+  });
+}
+
+describe('retained historical TXID root composition', () => {
+  beforeEach(() => configureHistory());
+  afterEach(() => {
+    if (mock.txid) {
+      expect(mock.txid.advance).not.toHaveBeenCalled();
+      expect(mock.txid.cover).not.toHaveBeenCalled();
+    }
+  });
+
+  test.each([false, true])('binds retained %s root to the fresh local prefix', async (unshield) => {
+    configureHistory(unshield);
+    const result = await runHistory();
+    expect(result).toMatchObject({
+      status: 'validated',
+      capsuleDigest: mock.entry.capsuleDigest,
+      revision: mock.entry.revision,
+      payloadSha256: mock.entry.payloadSha256,
+      outputMatched: true,
+      proofVerified: true,
+      independentlyVerified: true,
+      verifierExitObserved: true,
+      historicalRootMatchesLocalMirror: true,
+      ownTxidIncludedBySavedIndex: true,
+      localMirrorCheckpointMatched: true,
+      viewingKeyReleases: unshield ? 0 : 1,
+      rootAccepted: false,
+      originalRootsAccepted: false,
+      originalTxidRootCanonical: false,
+      globalTxidCompleteness: false,
+      currentNoteEligibility: false,
+      sourceAuthenticated: false,
+      membershipAuthenticated: false,
+      spendingEnabled: false,
+      disclosureEnabled: false,
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(mock.output).toHaveBeenCalledTimes(1);
+    expect(mock.verify).toHaveBeenCalledTimes(1);
+    expect(captureRailgunOwnOperationSelector).toHaveBeenCalledTimes(1);
+    expect(captureRailgunOwnOperationSelector.mock.calls[0][0]).toMatchObject({
+      enrollment: mock.enrollment,
+      archive: options.archive,
+      selector: mock.entry.selector,
+      timeoutMs: 45000,
+    });
+    expect(openRailgunAccountTxid).toHaveBeenCalledWith({
+      enrollment: mock.enrollment,
+      coordinator: mock.coordinator,
+      archive: options.archive,
+      create: false,
+      checkpointOnly: true,
+    });
+    expect(mock.txid.witness).toHaveBeenCalledWith(mock.derived.railgunTxid);
+    expect(mock.txid.historicalRoot).toHaveBeenCalledWith(3);
+    expect(mock.txid.historicalRoot.mock.calls[0]).toHaveLength(1);
+    expect(mock.historical.root).not.toBe(mock.state.root);
+    expect(mock.events.indexOf('mirror-open')).toBeGreaterThan(
+      mock.events.indexOf('selector-close')
+    );
+    expect(mock.events.indexOf('final-open')).toBeGreaterThan(mock.events.indexOf('mirror-close'));
+    expect(mock.inspect).toHaveBeenCalledTimes(2);
+    expect(mock.txid.close).toHaveBeenCalled();
+    expect(mock.store.get).toHaveBeenCalledTimes(7);
+  });
+
+  test.each([
+    'mode',
+    'stageA',
+    'receipt',
+    'root',
+    'index',
+    'witness',
+    'txid',
+    'selector',
+    'openTxid',
+  ])('rejects caller %s override without reading private records', async (key) => {
+    expect(await runHistory({ ...options, [key]: {} })).toEqual({
+      status: 'refused',
+      stage: 'context',
+    });
+    expect(mock.store.get).not.toHaveBeenCalled();
+    expect(mock.selector).not.toHaveBeenCalled();
+    expect(mock.openTxid).not.toHaveBeenCalled();
+  });
+  test.each([0, -1, 0.5, NaN, Infinity, 540001])(
+    'rejects history timeout %p',
+    async (timeoutMs) => {
+      expect(await runHistory({ ...options, timeoutMs })).toEqual({
+        status: 'refused',
+        stage: 'context',
+      });
+      expect(mock.output).not.toHaveBeenCalled();
+    }
+  );
+  test('Stage A never opens or derives the new mirror phase', async () => {
+    expect((await run()).status).toBe('validated');
+    expect(mock.selector).not.toHaveBeenCalled();
+    expect(mock.openTxid).not.toHaveBeenCalled();
+  });
+
+  test.each([4, 5, 6, 7].flatMap((read) => ['revision', 'payload'].map((kind) => [read, kind])))(
+    'new reread %i refuses changed %s',
+    async (read, kind) => {
+      mock.read.mockImplementation(async (n) =>
+        n === read ? rewrite(mock.entry, kind) : freeze(copy(mock.entry))
+      );
+      expect((await runHistory()).status).toBe('refused');
+      if (read === 4) expect(mock.openTxid).not.toHaveBeenCalled();
+      if (read <= 5) expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['capsuleDigest', 'bindingDigest', 'selector'])(
+    'fresh selector capture must retain %s',
+    async (key) => {
+      mock.selector.mockImplementation(async () => {
+        const capture = copy(mock.capture);
+        capture[key] = key === 'selector' ? { ...capture.selector, position: 7 } : hex(99);
+        return { status: 'captured', capture, derived: copy(mock.derived) };
+      });
+      expect((await runHistory()).status).toBe('refused');
+      expect(mock.openTxid).not.toHaveBeenCalled();
+    }
+  );
+  test.each([
+    ['railgunTxid', '0x' + hex(9)],
+    ['railgunTxid', 'f'.repeat(64)],
+    ['bindingDigest', hex(99)],
+    ['inputSha256', 'not-a-digest'],
+    ['selectorDerived', false],
+    ['utilityExitObserved', false],
+    ...[
+      'accountAuthenticated',
+      'pathVerified',
+      'sourceAuthenticated',
+      'rootAccepted',
+      'currentCanonicalityVerified',
+      'finalityVerified',
+      'rowMetadataAuthenticated',
+      'poiVerified',
+      'globalTxidCompleteness',
+      'spendingEnabled',
+    ].map((key) => [key, true]),
+  ])('refuses derived selector %s=%p', async (key, value) => {
+    mock.derived[key] = value;
+    expect((await runHistory()).status).toBe('refused');
+    if (key !== 'railgunTxid' || value.startsWith('0x'))
+      expect(mock.openTxid).not.toHaveBeenCalled();
+  });
+  test('selector refusal cannot start a mirror', async () => {
+    mock.selector.mockResolvedValue({ status: 'refused', stage: 'selector' });
+    expect((await runHistory()).status).toBe('refused');
+    expect(mock.openTxid).not.toHaveBeenCalled();
+  });
+  test('missing current-policy mirror refuses without repair or fallback', async () => {
+    mock.opening.mockRejectedValue(Error('PRIVATE mirror unavailable'));
+    expect((await runHistory()).status).toBe('refused');
+    expect(mock.inspect).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    'pending',
+    'missing',
+    'count-zero',
+    'count-too-large',
+    'saved-at-count',
+    'saved-8000',
+  ])('refuses %s before witness or prefix work', async (fault) => {
+    if (fault === 'saved-at-count' || fault === 'saved-8000') {
+      mock.entry.payload = {
+        ...mock.entry.payload,
+        txidMerklerootIndex: fault === 'saved-at-count' ? 5 : 8000,
+      };
+      mock.entry.payloadSha256 = sha(mock.entry.payload);
+      mock.outputResult.payloadSha256 = mock.entry.payloadSha256;
+      mock.verified.payloadSha256 = mock.entry.payloadSha256;
+    } else {
+      mock.inspect.mockImplementation(async () => ({
+        checkpoint:
+          fault === 'missing'
+            ? null
+            : {
+                ...copy(mock.checkpoint),
+                state: {
+                  ...copy(mock.state),
+                  count: fault === 'count-zero' ? 0 : fault === 'count-too-large' ? 8001 : 5,
+                },
+              },
+        pending: fault === 'pending' ? { prepared: true } : null,
+      }));
+    }
+    expect((await runHistory()).status).toBe('refused');
+    expect(mock.witnessRead).not.toHaveBeenCalled();
+    expect(mock.historyRead).not.toHaveBeenCalled();
+  });
+  test('own TXID must occur no later than the retained root index', async () => {
+    mock.witness.index = 4;
+    expect((await runHistory()).status).toBe('refused');
+    expect(mock.historyRead).not.toHaveBeenCalled();
+  });
+  test('own TXID exactly at retained index is admitted', async () => {
+    mock.witness.index = 3;
+    expect((await runHistory()).status).toBe('validated');
+  });
+  test.each([
+    ['railgunTxid', hex(99)],
+    ['checkpointIndex', 3],
+    ['transcript', hex(99)],
+    ['root', hex(99)],
+    ['rowSha256', hex(99)],
+    ['globalTxidCompleteness', true],
+  ])('rejects fresh witness %s drift', async (key, value) => {
+    mock.witness[key] = value;
+    expect((await runHistory()).status).toBe('refused');
+    expect(mock.historyRead).not.toHaveBeenCalled();
+  });
+  test.each([
+    ['version', 2],
+    ['tree', 1],
+    ['index', 2],
+    ['root', hex(99)],
+    ['checkpointIndex', 3],
+    ['checkpointRoot', hex(99)],
+    ['transcript', hex(99)],
+    ['localPrefixComputed', false],
+    ...[
+      'globalTxidCompleteness',
+      'ownershipVerified',
+      'eventCoverageVerified',
+      'rootAccepted',
+      'spendingEnabled',
+    ].map((key) => [key, true]),
+    ['extra', true],
+  ])('rejects historical facts %s=%p', async (key, value) => {
+    mock.historical[key] = value;
+    expect((await runHistory()).status).toBe('refused');
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+  });
+  test.each(['pending', 'state', 'store', 'validation'])(
+    'pins the entire before/after mirror checkpoint: %s',
+    async (field) => {
+      mock.inspect.mockImplementation(async () => {
+        const value = { checkpoint: copy(mock.checkpoint), pending: null };
+        if (mock.inspect.mock.calls.length === 2) {
+          if (field === 'pending') value.pending = { page: true };
+          else value.checkpoint[field] = { changed: true };
+        }
+        return value;
+      });
+      expect((await runHistory()).status).toBe('refused');
+      expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    }
+  );
+
+  for (const boundary of [
+    'selectorWork',
+    'opening',
+    'inspect',
+    'witnessRead',
+    'historyRead',
+    'mirrorDrain',
+  ]) {
+    test.each([
+      'identity',
+      'enrollment',
+      'coordinator',
+      'store',
+      'identity-binding',
+      'generation',
+      'policy',
+    ])('revokes %s after awaited ' + boundary, async (source) => {
+      const original = mock[boundary].getMockImplementation();
+      mock[boundary].mockImplementationOnce(async (...args) => {
+        const value = await original(...args);
+        if (source === 'identity-binding') mock.identityCurrent = false;
+        else if (source === 'generation') mock.publicIdentity.generationId = hex(99);
+        else if (source === 'policy') mock.txidPolicy = hex(99);
+        else mock[source + 'Abort'].abort();
+        return value;
+      });
+      expect((await runHistory()).status).toBe('refused');
+      expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    });
+  }
+  test.each(['policy', 'publicIdentity'])(
+    'refuses opened mirror with unrelated %s',
+    async (field) => {
+      mock.opening.mockImplementation(async () => {
+        mock.txid[field] =
+          field === 'policy' ? hex(99) : { ...mock.publicIdentity, sourceId: hex(99) };
+      });
+      expect((await runHistory()).status).toBe('refused');
+      expect(mock.inspect).not.toHaveBeenCalled();
+    }
+  );
+  test.each([
+    'bindingDigest',
+    'capsuleDigest',
+    'selector',
+    'facts',
+    'submitter',
+    'capsule',
+    'provedTransaction',
+    'intent',
+    'projection',
+  ])('refuses stable capture drift across the mirror: %s', async (key) => {
+    mock.mirrorDrain.mockImplementation(async () => {
+      if (key === 'selector') mock.capture.selector.position++;
+      else if (typeof mock.capture[key] === 'string') mock.capture[key] = hex(99);
+      else mock.capture[key] = { changed: true };
+    });
+    expect((await runHistory()).status).toBe('refused');
+  });
+  test('allows archival between selector capture and final recovery with unchanged stable content', async () => {
+    mock.mirrorDrain.mockImplementation(async () => {
+      mock.capture.record = {
+        ...mock.capture.record,
+        archivedAt: 1,
+        finalized: { blockHash: prefixed(50) },
+      };
+    });
+    expect((await runHistory()).status).toBe('validated');
+  });
+  test('refuses anchor drift between the two explicit final captures', async () => {
+    mock.mirrorDrain.mockImplementation(async () => {
+      mock.capture.record = {
+        ...mock.capture.record,
+        archivedAt: 1,
+        finalized: { blockHash: prefixed(50) },
+      };
+    });
+    mock.reattest.mockImplementation(async () => {
+      const capture = copy(mock.capture);
+      capture.record.finalized.blockHash = prefixed(99);
+      return capture;
+    });
+    expect((await runHistory()).status).toBe('refused');
+  });
+  test.each([
+    ['history', 'stage-a'],
+    ['stage-a', 'history'],
+    ['history', 'history'],
+  ])(
+    'shared owner prevents %s -> %s overlap without disturbing the first',
+    async (first, second) => {
+      const gate = deferred();
+      mock.output.mockImplementationOnce(async () => {
+        await gate.promise;
+        return copy(mock.outputResult);
+      });
+      const initial = first === 'history' ? runHistory() : run();
+      await until(() => mock.output.mock.calls.length === 1);
+      expect(await (second === 'history' ? runHistory() : run())).toEqual({
+        status: 'refused',
+        stage: 'context',
+      });
+      gate.resolve();
+      expect((await initial).status).toBe('validated');
+      expect((await runHistory()).status).toBe('validated');
+    }
+  );
+  test('same-directory reopened enrollment cannot bypass the shared history owner', async () => {
+    const gate = deferred();
+    mock.opening.mockImplementationOnce(async () => {
+      await gate.promise;
+    });
+    const pending = runHistory();
+    await until(() => mock.opening.mock.calls.length === 1);
+    const reopened = { ...mock.enrollment };
+    mock.enrollments.add(reopened);
+    expect(await run({ ...options, enrollment: reopened })).toEqual({
+      status: 'refused',
+      stage: 'context',
+    });
+    expect(await runHistory({ ...options, enrollment: reopened })).toEqual({
+      status: 'refused',
+      stage: 'context',
+    });
+    gate.resolve();
+    expect((await pending).status).toBe('validated');
+  });
+  test.each(['success', 'rejection'])(
+    'cancelled late open %s retains ownership until handle/rejection drains',
+    async (outcome) => {
+      const gate = deferred();
+      mock.opening.mockImplementationOnce(async () => {
+        await gate.promise;
+        if (outcome === 'rejection') throw Error('PRIVATE opening failure');
+      });
+      let settled = false;
+      const pending = runHistory().then((value) => {
+        settled = true;
+        return value;
+      });
+      await until(() => mock.opening.mock.calls.length === 1);
+      mock.caller.abort();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      expect(mock.txid.close).not.toHaveBeenCalled();
+      expect(() => claimRailgunAccountPhase(mock.enrollment, 'wallet')).toThrow();
+      expect(await run(freshOptions())).toEqual({ status: 'refused', stage: 'context' });
+      expect(await runHistory(freshOptions())).toEqual({ status: 'refused', stage: 'context' });
+      gate.resolve();
+      expect((await pending).status).toBe('refused');
+      expect(mock.inspect).not.toHaveBeenCalled();
+      expect(mock.txid.close).toHaveBeenCalled();
+      const phase = claimRailgunAccountPhase(mock.enrollment, 'wallet');
+      phase.release();
+      expect((await runHistory(freshOptions())).status).toBe('validated');
+    }
+  );
+  test.each(['selectorWork', 'inspect', 'witnessRead', 'historyRead', 'mirrorDrain'])(
+    'retains owner and phase through ignored %s cancellation',
+    async (boundary) => {
+      const gate = deferred();
+      const original = mock[boundary].getMockImplementation();
+      mock[boundary].mockImplementationOnce(async (...args) => {
+        const value = await original(...args);
+        await gate.promise;
+        return value;
+      });
+      let settled = false;
+      const pending = runHistory().then((value) => {
+        settled = true;
+        return value;
+      });
+      await until(() => mock[boundary].mock.calls.length === 1);
+      mock.caller.abort();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      expect(() => claimRailgunAccountPhase(mock.enrollment, 'wallet')).toThrow();
+      expect(await run(freshOptions())).toEqual({ status: 'refused', stage: 'context' });
+      expect(await runHistory(freshOptions())).toEqual({ status: 'refused', stage: 'context' });
+      gate.resolve();
+      expect((await pending).status).toBe('refused');
+      const phase = claimRailgunAccountPhase(mock.enrollment, 'wallet');
+      phase.release();
+      expect((await runHistory(freshOptions())).status).toBe('validated');
+    }
+  );
+  test('completed prefix cannot bypass a still-pending mirror process exit', async () => {
+    const gate = deferred();
+    mock.mirrorDrain.mockImplementationOnce(async () => {
+      await gate.promise;
+    });
+    const pending = runHistory();
+    await until(() => mock.mirrorDrain.mock.calls.length === 1);
+    expect(mock.historyRead).toHaveBeenCalledTimes(1);
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+    gate.resolve();
+    expect((await pending).status).toBe('validated');
+  });
+  test('ordinary phase contention refuses rather than evicting the existing owner', async () => {
+    let phase;
+    mock.selector.mockImplementation(async () => {
+      phase = claimRailgunAccountPhase(mock.enrollment, 'wallet');
+      return { status: 'captured', capture: copy(mock.capture), derived: copy(mock.derived) };
+    });
+    try {
+      expect((await runHistory()).status).toBe('refused');
+      phase.assertCurrent();
+      expect(mock.inspect).not.toHaveBeenCalled();
+    } finally {
+      phase?.release();
+    }
+  });
+
+  test('default history budget preserves 240/35/45/180/15 second stage ceilings', async () => {
+    expect((await runHistory()).status).toBe('validated');
+    expect(mock.output.mock.calls[0][0].timeoutMs).toBe(240000);
+    expect(mock.verify.mock.calls[0][0].timeoutMs).toBe(35000);
+    expect(mock.selector.mock.calls[0][0].timeoutMs).toBe(45000);
+    expect(withRailgunOwnOperationRecovery.mock.calls[0][0].timeoutMs).toBe(15000);
+  });
+  test.each([1, 274999, 275000])(
+    'budget %i preserves all later-stage reserves',
+    async (timeoutMs) => {
+      expect((await runHistory({ ...options, timeoutMs })).status).toBe('refused');
+      expect(mock.output).not.toHaveBeenCalled();
+    }
+  );
+  test('positive remaining output budget is admitted above the 275-second reserve', async () => {
+    expect((await runHistory({ ...options, timeoutMs: 275001 })).status).toBe('validated');
+    expect(mock.output.mock.calls[0][0].timeoutMs).toBe(1);
+  });
+  test('smaller overall cap reduces output without extending Stage A maximum', async () => {
+    expect((await runHistory({ ...options, timeoutMs: 300000 })).status).toBe('validated');
+    expect(mock.output.mock.calls[0][0].timeoutMs).toBe(25000);
+    expect(await run({ ...options, timeoutMs: 300001 })).toEqual({
+      status: 'refused',
+      stage: 'context',
+    });
+  });
+  test('late output cannot renew verification or consume downstream reserves', async () => {
+    mock.output.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(35000);
+      return copy(mock.outputResult);
+    });
+    expect((await runHistory({ ...options, timeoutMs: 300000 })).status).toBe('validated');
+    expect(mock.verify.mock.calls[0][0].timeoutMs).toBe(25000);
+  });
+  test('exhausted selector reserve prevents fresh selector startup', async () => {
+    mock.verify.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(105000);
+      return copy(mock.verified);
+    });
+    expect((await runHistory({ ...options, timeoutMs: 300000 })).status).toBe('refused');
+    expect(mock.selector).not.toHaveBeenCalled();
+    expect(mock.openTxid).not.toHaveBeenCalled();
+  });
+  test('mirror timer expires pending open, waits for late success, and never starts inspection', async () => {
+    const gate = deferred();
+    mock.opening.mockImplementationOnce(async () => {
+      await gate.promise;
+    });
+    let settled = false;
+    const pending = runHistory().then((value) => {
+      settled = true;
+      return value;
+    });
+    await until(() => mock.opening.mock.calls.length === 1);
+    await jest.advanceTimersByTimeAsync(180000);
+    expect(settled).toBe(false);
+    expect(await run()).toEqual({ status: 'refused', stage: 'context' });
+    gate.resolve();
+    expect((await pending).status).toBe('refused');
+    expect(mock.inspect).not.toHaveBeenCalled();
+    expect(mock.txid.close).toHaveBeenCalled();
+  });
+  test('mirror work shares one 180-second clock across witness and historical root', async () => {
+    mock.witnessRead.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(100000);
+      return {
+        witness: copy(mock.witness),
+        ownershipVerified: false,
+        eventCoverageVerified: false,
+        rootAccepted: false,
+        spendingEnabled: false,
+      };
+    });
+    mock.historyRead.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(80000);
+      return copy(mock.historical);
+    });
+    expect((await runHistory()).status).toBe('refused');
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(mock.txid.close).toHaveBeenCalled();
+  });
+  test('the original total cap shortens mirror work after prior stages consumed time', async () => {
+    mock.selectorWork.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(200000);
+    });
+    mock.historyRead.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(85000);
+      return copy(mock.historical);
+    });
+    expect((await runHistory({ ...options, timeoutMs: 300000 })).status).toBe('refused');
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+  });
+  test('caller option mutation cannot replace captured mirror dependencies or deadline', async () => {
+    const gate = deferred(),
+      supplied = { ...options };
+    mock.selectorWork.mockImplementationOnce(async () => {
+      await gate.promise;
+    });
+    const pending = runHistory(supplied);
+    await until(() => mock.selectorWork.mock.calls.length === 1);
+    supplied.archive = '/forged';
+    supplied.enrollment = {};
+    supplied.coordinator = {};
+    supplied.capsuleDigest = hex(99);
+    supplied.timeoutMs = 1;
+    supplied.signal = new AbortController().signal;
+    gate.resolve();
+    expect((await pending).status).toBe('validated');
+    expect(openRailgunAccountTxid).toHaveBeenCalledWith({
+      enrollment: options.enrollment,
+      coordinator: options.coordinator,
+      archive: options.archive,
+      create: false,
+      checkpointOnly: true,
+    });
+  });
+  test('unshield marker must identify the freshly derived own transaction', async () => {
+    configureHistory(true);
+    mock.derived.railgunTxid = hex(10);
+    expect((await runHistory()).status).toBe('refused');
+    expect(mock.openTxid).not.toHaveBeenCalled();
+  });
+  test('detaches mutable selector capture before the later mirror phase', async () => {
+    const captured = {
+      status: 'captured',
+      capture: copy(mock.capture),
+      derived: copy(mock.derived),
+    };
+    mock.selector.mockResolvedValue(captured);
+    mock.mirrorDrain.mockImplementation(async () => {
+      captured.capture.projection = { changed: true };
+      mock.capture.projection = { changed: true };
+    });
+    expect((await runHistory()).status).toBe('refused');
+  });
+  test('detaches the whole first checkpoint before a mutable inspect result changes', async () => {
+    const inspected = { checkpoint: copy(mock.checkpoint), pending: null };
+    mock.inspect.mockImplementation(async () => inspected);
+    mock.historyRead.mockImplementation(async () => {
+      inspected.checkpoint.store.sha256 = hex(99);
+      return copy(mock.historical);
+    });
+    expect((await runHistory()).status).toBe('refused');
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+  });
+  test.each(['reattest', 'recoveryPost', 'post-final-read'])(
+    'rechecks TXID policy at the final %s boundary',
+    async (boundary) => {
+      if (boundary === 'post-final-read') {
+        mock.read.mockImplementation(async (n) => {
+          if (n === 7) mock.txidPolicy = hex(99);
+          return freeze(copy(mock.entry));
+        });
+      } else {
+        const original = mock[boundary].getMockImplementation();
+        mock[boundary].mockImplementation(async (...args) => {
+          const value = await original(...args);
+          mock.txidPolicy = hex(99);
+          return value;
+        });
+      }
+      expect((await runHistory()).status).toBe('refused');
+    }
+  );
 });

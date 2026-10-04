@@ -1,0 +1,27 @@
+## October 4 continuation: local Railgun TXID history and durable write recovery
+
+**Funded Shield, finalized reconciliation and wallet recovery are complete; funded private transfer/unshield remains unfinished.** The recovered 0.0009975 WETH note remains unreserved and unspent. PPv2 history/vault are intact. [The preceding summary](https://github.com/solardev-xyz/freedom-browser/blob/4cb7806f105ce8b115347bab35e83b813d869fd5/docs/privacy-progress-history-2026-10-04-cold.md) preserves retained-proof validation and links the earlier work; the roadmap below is retained.
+
+**Local historical roots:** [The guarded TXID reader](https://github.com/solardev-xyz/freedom-browser/blob/4cb7806f105ce8b115347bab35e83b813d869fd5/docs/railgun-txid-historical-root-2026-10-04.md) now reconstructs the mirror root at a saved index. It authenticates the boundary leaf against the current checkpoint, then combines completed left subtrees with pinned empty right subtrees. The utility receives only the current checkpoint and index, never the expected historical root. The account reader returns exact immutable facts, with no reusable receipt or disclosure/spending authority. It is not yet composed with the retained-proof controller.
+
+The new mode permits only input/get/result broker operations, no writes, source visitation or binary key. All TXID modes now immediately revoke their runner/session on broker refusal, check lifetime after borrowed storage/source replies, and retain pending dispatches until they drain. A later valid message cannot rescue a rejected attempt. Refusal/cancellation requires account reopen; it does not undo an already committed atomic write.
+
+**Evidence:** All 273 focused tests pass across six suites; lint is clean. In-memory controls fail when the latch, pending-dispatch drain or post-storage cancellation check is removed. A separate temporary control distinguishes post-feed checks; it is outside suite counts.
+
+Three offline native qualifications pass with current hashes:
+- Historical prefixes: 4,230 captured public rows, 21 saved append checkpoints, five corruption refusals and five healthy reopens; 46 hashes. Actual encrypted bytes remain unchanged by historical reads. 167 child exits and 162 successful guard reports record 14,742 canary checks with zero prohibited attempts; failed children provide no guard report. The run takes 55.024 s.
+- Durable journal: 23 hashes. Refusal after staging leaves the old store unchanged; refusal after commit but before acknowledgement leaves the complete new store. Both retain pending journal data and the old checkpoint. Reopen applies once or replays with an unchanged full store snapshot, then completes without duplication. Earlier before/after-apply interruption cases remain covered.
+- Event coverage: 79 hashes. The changed runner still compares 4,214 rows / 4,103 transactions within the captured boundary, retaining the known omission and 16 unchecked rows beyond it. Cold restore, stale/forged receipts, changed transcript and late source failure remain covered.
+
+**Limits and compatibility:** Prefix equality means local mirror consistency, not historical publication, canonical chain completeness or current service acceptance. Account opening still performs existing current-root checks; the native fixtures use captured public data, disposable fixture keys and controlled root receipts, with no live service or funded account. Prefix native evidence covers worker/runner computation, while the account wrapper is unit-tested. Guard instrumentation is not OS-wide egress isolation; worker reopen is not a full browser restart.
+
+The projection/job/runner changes select a new TXID policy and separate encrypted mirror/journal/key domain. Old files remain retained under the eight-policy limit. Checkpoint-only reads refuse until a current-policy mirror exists; no automatic migration or live funded-profile rebuild occurred. Public generation and binary pins are unchanged. Source/membership/root/disclosure/spending authority remains absent. 
+
+**Main and regression:** Main remains synchronized at `f2274ee6`, including the prior manual bundled-node refresh. The frozen regression passes 10,959 tests / 33 skipped across 471 suites in 380.629 s (native access; existing OpenLV exclusion). Claude and Codex reviewed code, tests, native evidence and claims; this is engineering review, not an independent security audit. Earlier reports remain historical.
+
+**Next:** Bind local historical-root consistency into retained-proof validation using fresh account/mirror evidence, separately qualify authorized original-root observations, then implement one-use handoff with durable attempted/uncertain-response/status recovery. Funded private operations, second spend, broader recovery/provenance, platform qualification and UI remain open; the roadmap retains the full backlog.
+
+**Live disclosure remains pending:** Owned/output-note queries to `https://ppoi.fdi.network`, proof-specific root checks and live nullifier preflight remain blocked pending authorization. Blinded selectors can link interest to the public deposit despite Tor; roots can reveal correlated timing. The gas payer remains publicly linked to Shield funding. No live query, private spend or POI submission occurred in this continuation.
+
+[Roadmap](https://github.com/solardev-xyz/freedom-browser/blob/4cb7806f105ce8b115347bab35e83b813d869fd5/research/privacy-roadmap.md). Research issue #475 and draft PR #476 track the same work.
+
