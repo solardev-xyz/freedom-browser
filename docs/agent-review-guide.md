@@ -1,7 +1,7 @@
 # Freedom Agent: feature review guide
 
 Target: `feature/freedom-automation-kernel` → `main`.
-Prepared September 29, 2026. This is a review of an unreleased feature, not a
+Prepared September 29, updated October 4, 2026. This is a review of an unreleased feature, not a
 claim that every provider, operating system or deployment path is qualified.
 
 ## What the branch delivers
@@ -11,7 +11,9 @@ user's connected model provider. One conversation can research in browser tabs,
 use website-provided WebMCP tools, work in a managed workspace or an explicitly
 attached local project, build and preview an app, and publish approved content
 to Swarm. Background helpers share existing capabilities through bounded scopes;
-the user still interacts with one main agent.
+the user still interacts with one main agent. Pi is pinned to 1.0.2. Main and helper
+sessions can use sandboxed codemode scripts through their existing scoped tools;
+remote MCP services have independent connection management in the composer + menu.
 
 The UI includes provider/model discovery, searchable model selection, permission
 controls, approvals, live activity and helper cards, durable conversations,
@@ -33,6 +35,7 @@ current implementation contract.
 | --- | --- | --- |
 | Product behavior and deliberate limits | [Active roadmap](../research/freedom-agent-cli-roadmap.md), this guide | Does the shipped scope match the user-facing claims? Are unqualified paths explicit? |
 | Runtime and orchestration | `src/main/agent/runtime.js`, `freedom-agent-service.js`, `pi-session-factory.js`; [subagents](agent-subagents.md) | Are turns, steering, Stop, provider changes and helper ownership coherent? Can late work escape its original run? |
+| Codemode and connected services | `pi-codemode.js`, `mcp-connections.js`, `pi-mcp-tools.js`; [integration boundaries](agent-codemode-mcp.md) | Do nested calls retain scope, approvals, Stop and partial-effect receipts? Are OAuth credentials isolated and service responses untrusted? |
 | Browser authority | `src/main/automation/origin-scoped-controller.js`, `automation-controller.js`, adapters; [WebMCP](webmcp-agent.md) | Are tab/frame ownership, origin, freshness and approval checked at dispatch? Are page-provided descriptions treated as untrusted? |
 | Project and command authority | `src/main/agent/managed-workspace-controller.js`, `external-project-access.js`, `workspace-execution/`; [existing projects](agent-existing-projects.md), [access review](agent-access-review.md) | Can read-only access expand accidentally? Are executable/network grants bounded? Do partial edits remain visible after Stop? |
 | Git, recovery and persistence | `external-project-git.js`, `managed-workspace-history.js`, `session-history-store.js`; [viewers/recovery](agent-project-viewer.md) | Are unrelated files/staging preserved? Can uncertain operations be replayed? Are persisted receipts distinguished from current evidence? |
@@ -60,7 +63,13 @@ The automation job passed all 84 tests. The Agent job passed 81 tests and one
 wallet approval test on retry; retain that test-reliability caveat. The final
 local unit run passed 7,898 tests (129 skipped). Mac mini qualification passed
 91 focused tests plus seven recovery probes with Node 24 and locked dependencies.
-Subsequent review-status edits are documentation only.
+Those results describe the September baseline, not the newer provider,
+codemode or MCP additions. The October 4 Pi 1.0.2 run passed 8,181 tests (129
+skipped), lint and four disposable Electron scenarios covering ChatGPT/Meta
+sign-in, existing-chat MCP management, native codemode and ASAR worker/WASM
+execution. A bounded native output-flood probe also passed. Human smoke tests
+confirmed MCP and autonomous codemode/delegation use. September's Claude review
+does not cover these later changes; current PR checks must qualify the pushed head.
 
 The following manual checks remain explicitly unconfirmed and were not selected
 for this preparation pass:
@@ -88,6 +97,13 @@ Useful reviewer smoke tests, in disposable projects:
    that stopped work stays stopped and historical claims stay distinguishable
    from fresh inspection.
 
+7. In an existing chat, open **+ → Connected services**, add a test MCP endpoint,
+   invoke a tool and inspect its approval. Decline once, then explicitly retry.
+   Check reconnect, disconnect, and preservation of the current chat/draft.
+8. Ask for a source-only architecture/accessibility review without mentioning
+   codemode. Check recorded tool-script usage and helper counts, then Stop a
+   helper and reopen the conversation to inspect its saved receipt.
+
 ## Intentionally outside this PR preparation
 
 Windows/Linux containment qualification remains deferred by user choice. macOS
@@ -101,3 +117,6 @@ retention and consolidation, broader scripted-download support, expanded WebMCP
 schemas, additional helper models/roles/nesting/remote placement and Jev workers
 remain backlog. Full access mode is not being introduced. See the active roadmap
 for bounds rather than interpreting this list as implementation authorization.
+
+Broader deferred-tool loading, image generation, model routing/classifiers and
+Pi Durable evaluation are also deferred by user choice (October 4).

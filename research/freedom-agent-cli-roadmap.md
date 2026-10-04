@@ -8,11 +8,31 @@ Planning basis: current Freedom mainline, current product requirements, and fres
 
 Older Pi research and the `feature/local-agent-pi` prototype are non-normative historical material. They are not implementation baselines, migration dependencies, or prerequisites for this roadmap. Individual ideas or code may be reconsidered later only if they still fit the architecture and pass current evaluation.
 
-## Current working status — 2026-10-02
+## Current working status — 2026-10-04
 
-### Codemode and connected MCP services — experimental, 2026-10-02
+### Pi 1.0.2 qualification and PR refresh — 2026-10-04
 
-Implemented on `experiment/agent-codemode-mcp` (branched from `6de3fa57`):
+Freedom now pins Pi **1.0.2**, with the resolved Pi packages locked at 1.0.2.
+Upstream removed its bundled shrinkwrap, so npm hoists more of the dependency
+tree; Freedom's package-lock remains authoritative. The ASAR qualification now
+resolves dependencies through their owning packages rather than assuming a
+nested installation directory. No additional provider, permission mode, model
+routing or ambient project configuration is enabled.
+
+- Verified the new runaway codemode output guard through Freedom's native adapter.
+- Full local suite: **8,181 passed / 129 skipped** across **387 passed / 10 skipped suites**; lint and diff checks pass.
+- Four disposable Electron checks pass: ChatGPT callback/cancellation, Meta sign-in/cancellation, existing-chat MCP management plus native codemode, and worker/WASM execution from an ASAR archive. Auth uses fixtures; these checks do not claim live provider or full packaged-app qualification.
+- User smoke confirmed autonomous main-agent codemode use together with an accessibility helper on an ordinary project-review request. The transcript does not independently establish parallel read execution or helper codemode use; runtime tests cover those mechanisms.
+- The codemode/MCP experimental work is integrated into `feature/freedom-automation-kernel` for draft PR #457. The PR stays draft; September's independent review predates these additions.
+
+**Deferred by user choice:** broader deferred-tool loading, image generation,
+Jev/classifiers and model routing, and Pi Durable assessment. Preserve these as
+optional research, not near-term tasks or prerequisites. No new major capability
+is selected; focus next on review readiness and rounding off the current flows.
+
+### Codemode and connected MCP services — delivered, 2026-10-04
+
+Implemented on `experiment/agent-codemode-mcp` (branched from `6de3fa57`) and integrated into the feature branch:
 
 - Pi's native QuickJS codemode tool on the main agent and all helper modes, alongside ordinary tools. Both receive guidance to choose it without an explicit user request when batching or filtering helps. Nested calls retain Freedom approvals, cancellation and activity. Known project/attachment readers can overlap; browser calls and writes execute in order. Background helpers provide isolated parallel browser work. Native classifier/image globals remain disabled.
 - Expanded helper cards show recorded tool-script counts alongside nested tool calls, including failed/stopped scripts and cumulative follow-up usage; counts survive conversation history.
@@ -21,7 +41,7 @@ Implemented on `experiment/agent-codemode-mcp` (branched from `6de3fa57`):
 - Service management is separate from model settings and available in existing chats. The connections list and add-service form are separate screens; returning preserves the conversation and draft.
 - Every MCP invocation or resource request receives an explicit approval for the service and arguments. Server annotations do not grant authority; MCP servers cannot request local files, shell commands, model sampling, or ambient credentials.
 - No filesystem extension/config discovery, no new dependencies, and no requirement for another model account. Website WebMCP remains separate and unchanged.
-- Helper codemode validation (2026-10-04): **8,176 unit tests passed / 134 skipped**, lint clean. Native Pi tests cover foreground/background scripts, scoped tool availability, parallel reads, current scope on follow-up, approval refusal, partial-edit receipts and queued-action cancellation. Natural model choice remains a user smoke check.
+- Helper codemode validation (2026-10-04): **8,176 unit tests passed / 134 skipped**, lint clean. Native Pi tests cover foreground/background scripts, scoped tool availability, parallel reads, current scope on follow-up, approval refusal, partial-edit receipts and queued-action cancellation. A subsequent user smoke confirmed autonomous main-agent use; helper selection remains model-dependent.
 - Initial validation: **8,178 unit tests passed / 129 skipped**, lint clean; native Pi/HTTP/OAuth integration (including cancellation, refusal, non-replayed failures and partial script effects); Electron UI in both themes; native worker plus WebAssembly execution from an ASAR archive. Full packaged-app and third-party authenticated-service qualification remain pending.
 
 Follow-ups, deliberately outside this first slice: local stdio servers; API-key/custom-header authentication and pre-registered OAuth clients; richer MCP resource/media UI; service-specific read-only approval policies; delegated MCP access; broader concurrency beyond the verified read-only tool set; durable codemode store recovery; Jev/model routing. Freedom acting as an external MCP **server** and CLI packaging remain deferred—the implemented feature is an MCP **client**.
@@ -82,14 +102,10 @@ extensions are not loaded by this upgrade.
   Live ChatGPT and Meta authorization and live Muse inference remain user smoke
   tests; no account credentials or paid inference were used for qualification.
 
-**Next discussion, separate from this upgrade:** evaluate codemode over only
-Freedom-owned tools (nested action receipts, cancellation and approvals); generic
-MCP connections (distinct from our existing website WebMCP, with explicit server,
-credential and process/network permissions); optional Jev classification through
-an already-connected provider; and model routing constrained by connected models,
-privacy settings and cost visibility. Ordinary Agent must still work with one
-ChatGPT, API-key or local-model connection. These are research/design follow-ups,
-not enabled capabilities or a prerequisite for the current feature.
+**Follow-up disposition (2026-10-04):** codemode and generic MCP connections are
+now delivered above. Jev, model routing, image generation, broader deferred-tool
+loading and Pi Durable remain deferred by user choice. Ordinary Agent continues
+to work with one ChatGPT, API-key or local-model connection.
 
 ### Pre-PR stabilization — 2026-09-29
 

@@ -187,6 +187,9 @@ test('native Pi codemode and MCP preserve approval, OAuth, cancellation, ordered
     const failed = await run('await tools.probe({}); throw new Error("after write");');
     assert.equal(failed.isError, true); assert.equal(writes, 3);
     assert.equal(failed.details.calls[0].status, 'ok');
+    const flooded = await run('for (let i = 0; i < 100001; i++) text("x");');
+    assert.equal(flooded.isError, true);
+    assert.match(JSON.stringify(flooded), /output.*limit|too many.*output|output.*exceed/i);
     const stopScript = new AbortController();
     setTimeout(() => stopScript.abort(), 30);
     const stopped = await run('while (true) {}', stopScript.signal);

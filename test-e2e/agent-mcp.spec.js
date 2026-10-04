@@ -121,9 +121,15 @@ test('codemode worker and WebAssembly run from an Electron ASAR archive', async 
   const asar = require('@electron/asar');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-codemode-asar-'));
   const source = path.join(directory, 'source');
-  const dependencies = path.join(repositoryRoot, 'node_modules/@earendil-works/pi-coding-agent/node_modules');
+  // Pi no longer bundles a shrinkwrap; npm may hoist or nest its dependencies.
+  const { createRequire } = require('module');
+  let resolver = createRequire(path.join(repositoryRoot, 'node_modules/@earendil-works/pi-coding-agent/package.json'));
   for (const name of ['@earendil-works/pi-codemode', 'quickjs-wasi']) {
-    fs.cpSync(path.join(dependencies, name), path.join(source, 'node_modules', name), { recursive: true });
+    const directory = resolver.resolve.paths(name).map(base => path.join(base, name))
+      .find(candidate => fs.existsSync(path.join(candidate, 'package.json')));
+    if (!directory) throw new Error('Missing Pi dependency: ' + name);
+    fs.cpSync(directory, path.join(source, 'node_modules', name), { recursive: true });
+    resolver = createRequire(path.join(directory, 'package.json'));
   }
   fs.writeFileSync(path.join(source, 'entry.cjs'), `module.exports = async () => {
     const { CodemodeSandbox } = await import('@earendil-works/pi-codemode');
