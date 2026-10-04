@@ -12,6 +12,7 @@ const { verifyRailgunNoteProvenance } = require('../src/main/wallet/railgun-note
 const sources = [
   'scripts/qualify-railgun-note-provenance.js',
   'scripts/fixtures/railgun-note-provenance-job.js',
+  'src/main/wallet/railgun-note-provenance.test.js',
   ...[
     'railgun-note-provenance',
     'railgun-note-provenance-job',
@@ -100,6 +101,13 @@ async function main() {
     const result = await verify(evidence);
     assert.equal(result.pathVerified, true);
     assert.equal(result.utilityExitObserved, true);
+    for (const flag of [
+      'ownershipVerified',
+      'eventSourceAuthenticated',
+      'rootAccepted',
+      'spendingEnabled',
+    ])
+      assert.equal(result[flag], false);
     runs.push({ mode: 'valid', result });
     for (const mode of [
       'sibling',
