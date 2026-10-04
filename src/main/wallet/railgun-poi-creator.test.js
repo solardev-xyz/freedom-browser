@@ -282,3 +282,238 @@ test('late unrelated commitment gap refuses an earlier valid selection', async (
   await expect(collect(f.options)).rejects.toThrow();
   expect(f.visited()).toBe(2);
 });
+
+const collectTransact = require('./railgun-poi-creator').collectRailgunPoiTransactCreator;
+function transactFixture() {
+  const f = fixture(false);
+  const selected = {
+    ...f.logs[0],
+    ...abi.encodeEventLog('Transact', [0, 1, [f.options.capsule.noteHash], [f.transactCipher[1]]]),
+  };
+  const nullified = {
+    ...selected,
+    logIndex: 4,
+    ...abi.encodeEventLog('Nullified', [0, [hex(700)]]),
+  };
+  const shield = {
+    ...selected,
+    blockNumber: 289,
+    blockHash: hex(289),
+    transactionHash: hex(90),
+    transactionIndex: 0,
+    logIndex: 0,
+    ...abi.encodeEventLog('Shield', [0, 0, [f.preimages[0]], [f.ciphers[0]], [0]]),
+  };
+  f.logs.splice(0, f.logs.length, shield, nullified, selected);
+  return { ...f, selected, nullified, shield };
+}
+test('fixed Transact collector binds complete 1x1 group and ciphertext from one full visit', async () => {
+  const f = transactFixture();
+  const result = await collectTransact(f.options);
+  expect(result.transaction).toEqual({
+    note: {
+      type: 'Transact',
+      txid: hex(100),
+      hash: f.options.capsule.noteHash,
+      tree: 0,
+      position: 1,
+      blockNumber: 290,
+    },
+    events: [
+      { name: 'Nullified', logIndex: 4, tree: 0, values: [hex(700)] },
+      { name: 'Transact', logIndex: 5, tree: 0, start: 1, hashes: [f.options.capsule.noteHash] },
+    ],
+    logsSha256: require('crypto')
+      .createHash('sha256')
+      .update(JSON.stringify([f.nullified, f.selected]))
+      .digest('hex'),
+  });
+  expect(result.creator.ciphertext).toEqual(f.transactCipher[1]);
+  expect(result.origin).toMatchObject({
+    transactionHash: hex(100),
+    transactionIndex: 4,
+    logIndex: 5,
+    startPosition: 1,
+    outputOffset: 0,
+  });
+  expect(f.options.visit).toHaveBeenCalledTimes(1);
+  expect(f.visited()).toBe(3);
+  expect(Object.isFrozen(result.transaction.events[1].hashes)).toBe(true);
+  expect(Object.isFrozen(result.transaction.note)).toBe(true);
+  for (const key of [
+    'sourceAuthenticated',
+    'ownershipAuthenticated',
+    'currentCanonicalityVerified',
+    'txidMembershipVerified',
+    'disclosureEnabled',
+    'spendingEnabled',
+  ])
+    expect(result[key]).toBe(false);
+  expect((await collect(f.options)).transaction).toBeUndefined();
+});
+test.each([
+  'missing-nullifier',
+  'two-nullifiers',
+  'two-outputs',
+  'unshield',
+  'wrong-order',
+  'wrong-hash',
+  'wrong-index',
+  'noncanonical',
+  'late-selected-extra',
+  'reappearing-group',
+])('fixed Transact creator refuses %s without truncating the source visit', async (fault) => {
+  const f = transactFixture();
+  if (fault === 'missing-nullifier') f.logs.splice(1, 1);
+  if (fault === 'two-nullifiers')
+    Object.assign(f.nullified, abi.encodeEventLog('Nullified', [0, [hex(700), hex(701)]]));
+  if (fault === 'two-outputs') {
+    Object.assign(
+      f.selected,
+      abi.encodeEventLog('Transact', [
+        0,
+        1,
+        [f.options.capsule.noteHash, hex(701)],
+        [f.transactCipher[1], f.transactCipher[0]],
+      ])
+    );
+    f.options.checkpoint.state.trees[0].length = 3;
+    f.options.checkpoint.state.commitments.count = 3;
+  }
+  if (fault === 'unshield')
+    f.logs.splice(2, 0, {
+      ...f.selected,
+      logIndex: 5,
+      ...abi.encodeEventLog('Unshield', [
+        '0x' + '12'.repeat(20),
+        [0, pins.wrappedNative, 0],
+        998,
+        2,
+      ]),
+    });
+  if (fault === 'unshield') f.selected.logIndex = 6;
+  if (fault === 'wrong-order') {
+    f.selected.logIndex = 3;
+    f.logs.splice(1, 2, f.selected, f.nullified);
+  }
+  if (fault === 'wrong-hash') f.nullified.transactionHash = hex(999);
+  if (fault === 'wrong-index') f.nullified.transactionIndex = 3;
+  if (fault === 'noncanonical') f.nullified.data += '00'.repeat(32);
+  if (fault === 'late-selected-extra')
+    f.logs.push({
+      ...f.selected,
+      logIndex: 6,
+      ...abi.encodeEventLog('Nullified', [0, [hex(702)]]),
+    });
+  if (fault === 'reappearing-group') {
+    f.logs.push({
+      ...f.selected,
+      transactionHash: hex(998),
+      transactionIndex: 5,
+      logIndex: 6,
+      topics: [hex(900)],
+      data: '0x',
+    });
+    f.logs.push({ ...f.nullified, transactionIndex: 6, logIndex: 7 });
+  }
+  const count = f.logs.length;
+  await expect(collectTransact(f.options)).rejects.toMatchObject({
+    code: 'RAILGUN_POI_CREATOR_REFUSED',
+  });
+  expect(f.visited()).toBe(count);
+});
+test('fixed Transact creator refuses Shield while the legacy collector remains compatible', async () => {
+  const f = fixture();
+  expect((await collect(f.options)).creator.type).toBe('Shield');
+  await expect(collectTransact(f.options)).rejects.toMatchObject({
+    code: 'RAILGUN_POI_CREATOR_REFUSED',
+  });
+});
+test.each(['suffix-authentication', 'semantic', 'cancellation'])(
+  'fixed Transact creator waits for complete suffix after %s',
+  async (fault) => {
+    const f = transactFixture();
+    let finish,
+      entered,
+      settled = false;
+    const gate = new Promise((resolve) => {
+      finish = resolve;
+    });
+    const ready = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const original = f.options.visit.getMockImplementation();
+    f.options.visit.mockImplementation(async (visitor) => {
+      const totals = await original(visitor);
+      entered();
+      await gate;
+      if (fault === 'suffix-authentication') throw Error('private MAC failure');
+      return totals;
+    });
+    if (fault === 'semantic') f.nullified.topics = [hex(900)];
+    const pending = collectTransact(f.options).then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    try {
+      await ready;
+      if (fault === 'cancellation')
+        f.options.assertCurrent.mockImplementation(() => {
+          throw Error('revoked');
+        });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      finish();
+      expect(await pending).toMatchObject({ error: { code: 'RAILGUN_POI_CREATOR_REFUSED' } });
+    } finally {
+      finish();
+      await pending;
+    }
+  }
+);
+
+test.each([
+  [0, 3520, 4096, true],
+  [1760, 1760, 4096, true],
+  [0, 3521, 4128, false],
+  [1761, 1760, 4128, false],
+  [256, 256, 1088, true],
+])(
+  'fixed Transact route bounds canonical ABI bytes with annotation=%s memo=%s',
+  async (annotationBytes, memoBytes, encodedBytes, accepted) => {
+    const f = transactFixture();
+    const ciphertext = {
+      ...f.transactCipher[1],
+      annotationData: '0x' + 'ab'.repeat(annotationBytes),
+      memo: '0x' + 'cd'.repeat(memoBytes),
+    };
+    Object.assign(
+      f.selected,
+      abi.encodeEventLog('Transact', [0, 1, [f.options.capsule.noteHash], [ciphertext]])
+    );
+    expect((f.selected.data.length - 2) / 2).toBe(encodedBytes);
+    // Every input is canonical ABI, including the first aligned word above the
+    // 4 KiB route cap. This tests the bound, not malformed trailing bytes.
+    const decoded = abi.parseLog(f.selected);
+    expect(abi.encodeEventLog(decoded.fragment, decoded.args)).toEqual({
+      data: f.selected.data,
+      topics: f.selected.topics,
+    });
+    if (accepted) {
+      const result = await collectTransact(f.options);
+      expect(result.creator.ciphertext.annotationData).toBe(ciphertext.annotationData);
+      expect(result.creator.ciphertext.memo).toBe(ciphertext.memo);
+    } else {
+      await expect(collectTransact(f.options)).rejects.toMatchObject({
+        code: 'RAILGUN_POI_CREATOR_REFUSED',
+      });
+    }
+    expect(f.visited()).toBe(f.logs.length);
+  }
+);

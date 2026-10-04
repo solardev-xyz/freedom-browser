@@ -189,3 +189,36 @@ test.each([
     code: 'RAILGUN_PRIVATE_CREATOR_REFUSED',
   });
 });
+
+test('shared creator event normalizer preserves legacy three-event gross-unshield interpretation', async () => {
+  const { normalizeRailgunPrivateCreatorEvents } = require('./railgun-private-creator');
+  const f = fixture();
+  f.logs[1].logIndex = 3;
+  f.logs.splice(
+    1,
+    0,
+    f.log('Unshield', ['0x' + '1'.repeat(40), [0, pins.wrappedNative, 0], 998, 2], 2)
+  );
+  const parsed = normalizeRailgunPrivateCreatorEvents(f.logs);
+  expect(parsed).toEqual((await collectRailgunPrivateCreator(f.options)).events);
+  expect(parsed[1].value).toBe('1000');
+  parsed[0].values[0] = hex(999);
+  expect(normalizeRailgunPrivateCreatorEvents(f.logs)[0].values).toEqual([hex(30)]);
+});
+test.each([
+  'trailing-bytes',
+  'duplicate-output',
+  'cipher-count',
+  'empty-nullifiers',
+  'unknown-topic',
+])('shared creator event normalizer refuses %s canonical ambiguity', (fault) => {
+  const { normalizeRailgunPrivateCreatorEvents } = require('./railgun-private-creator');
+  const f = fixture();
+  if (fault === 'trailing-bytes') f.logs[0].data += '00'.repeat(32);
+  if (fault === 'duplicate-output')
+    f.logs[1] = f.log('Transact', [0, 10, [hex(20), hex(20)], [ciphertext, ciphertext]], 2);
+  if (fault === 'cipher-count') f.logs[1] = f.log('Transact', [0, 10, [hex(20)], []], 2);
+  if (fault === 'empty-nullifiers') f.logs[0] = f.log('Nullified', [0, []], 1);
+  if (fault === 'unknown-topic') f.logs[0].topics = [hex(999)];
+  expect(() => normalizeRailgunPrivateCreatorEvents(f.logs)).toThrow();
+});

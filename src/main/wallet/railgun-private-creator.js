@@ -18,6 +18,58 @@ const freeze = (v) => {
   }
   return v;
 };
+function normalizeRailgunPrivateCreatorEvents(logs) {
+  assert.ok(Array.isArray(logs) && logs.length >= 2 && logs.length <= 3);
+  assert.ok(
+    logs.reduce((bytes, log) => bytes + Buffer.byteLength(JSON.stringify(log)), 0) <= 32768
+  );
+  return logs.map((log) => {
+    const event = abi.parseLog(log);
+    assert.ok(event);
+    assert.deepEqual(abi.encodeEventLog(event.fragment, event.args), {
+      data: log.data,
+      topics: log.topics,
+    });
+    const args = event.args;
+    if (event.name === 'Nullified') {
+      assert.ok(args.nullifier.length >= 1 && args.nullifier.length <= 13);
+      return {
+        name: event.name,
+        logIndex: log.logIndex,
+        tree: Number(args.treeNumber),
+        values: [...args.nullifier],
+      };
+    }
+    if (event.name === 'Transact') {
+      assert.ok(args.treeNumber < 65536n && args.startPosition < 65536n);
+      assert.ok(
+        args.hash.length >= 1 &&
+          args.hash.length <= 13 &&
+          new Set(args.hash).size === args.hash.length &&
+          args.hash.length === args.ciphertext.length &&
+          args.startPosition + BigInt(args.hash.length) <= 65536n
+      );
+      return {
+        name: event.name,
+        logIndex: log.logIndex,
+        tree: Number(args.treeNumber),
+        start: Number(args.startPosition),
+        hashes: [...args.hash],
+      };
+    }
+    assert.equal(event.name, 'Unshield');
+    assert.ok(args.token.tokenType <= 2n && args.amount + args.fee < 1n << 120n);
+    return {
+      name: event.name,
+      logIndex: log.logIndex,
+      to: args.to.toLowerCase(),
+      token: args.token.tokenAddress.toLowerCase(),
+      type: Number(args.token.tokenType),
+      subID: args.token.tokenSubID.toString(),
+      value: (args.amount + args.fee).toString(),
+    };
+  });
+}
 async function collectRailgunPrivateCreator({ note, checkpoint, visit, assertCurrent }) {
   assert.ok(typeof visit === 'function' && typeof assertCurrent === 'function');
   const selected = JSON.parse(JSON.stringify(note));
@@ -111,52 +163,7 @@ async function collectRailgunPrivateCreator({ note, checkpoint, visit, assertCur
   assertCurrent();
   assert.deepEqual(visited, { count, bytes });
   assert.ok(!failure && logs.length >= 2 && logs.length <= 3);
-  const events = logs.map((log) => {
-    const event = abi.parseLog(log);
-    assert.ok(event);
-    assert.deepEqual(abi.encodeEventLog(event.fragment, event.args), {
-      data: log.data,
-      topics: log.topics,
-    });
-    const args = event.args;
-    if (event.name === 'Nullified') {
-      assert.ok(args.nullifier.length >= 1 && args.nullifier.length <= 13);
-      return {
-        name: event.name,
-        logIndex: log.logIndex,
-        tree: Number(args.treeNumber),
-        values: [...args.nullifier],
-      };
-    }
-    if (event.name === 'Transact') {
-      assert.ok(args.treeNumber < 65536n && args.startPosition < 65536n);
-      assert.ok(
-        args.hash.length >= 1 &&
-          args.hash.length <= 13 &&
-          new Set(args.hash).size === args.hash.length &&
-          args.hash.length === args.ciphertext.length &&
-          args.startPosition + BigInt(args.hash.length) <= 65536n
-      );
-      return {
-        name: event.name,
-        logIndex: log.logIndex,
-        tree: Number(args.treeNumber),
-        start: Number(args.startPosition),
-        hashes: [...args.hash],
-      };
-    }
-    assert.equal(event.name, 'Unshield');
-    assert.ok(args.token.tokenType <= 2n && args.amount + args.fee < 1n << 120n);
-    return {
-      name: event.name,
-      logIndex: log.logIndex,
-      to: args.to.toLowerCase(),
-      token: args.token.tokenAddress.toLowerCase(),
-      type: Number(args.token.tokenType),
-      subID: args.token.tokenSubID.toString(),
-      value: (args.amount + args.fee).toString(),
-    };
-  });
+  const events = normalizeRailgunPrivateCreatorEvents(logs);
   assert.equal(events[0].name, 'Nullified');
   assert.equal(events.at(-1).name, 'Transact');
   if (events.length === 3) assert.equal(events[1].name, 'Unshield');
@@ -196,3 +203,6 @@ exports.collectRailgunPrivateCreator = async (options) => {
     });
   }
 };
+
+// Pure ABI normalization only; callers must authenticate the complete log group.
+exports.normalizeRailgunPrivateCreatorEvents = normalizeRailgunPrivateCreatorEvents;

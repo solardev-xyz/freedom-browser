@@ -4,22 +4,20 @@
  */
 const assert = require('assert/strict');
 const { collectRailgunOwnSource } = require('./railgun-own-source');
-const { collectRailgunPoiCreator } = require('./railgun-poi-creator');
+const {
+  collectRailgunPoiCreator,
+  collectRailgunPoiTransactCreator,
+} = require('./railgun-poi-creator');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
 const { railgunTransactIntentBinding } = require('./railgun-transact-intent');
 const fail = () =>
   Object.assign(new Error('Railgun POI source evidence unavailable'), {
     code: 'RAILGUN_POI_SOURCE_EVIDENCE_REFUSED',
   });
-async function collect({
-  capsule,
-  record,
-  transaction,
-  receipt,
-  checkpoint,
-  visit,
-  assertCurrent,
-}) {
+async function collect(
+  { capsule, record, transaction, receipt, checkpoint, visit, assertCurrent },
+  transact = false
+) {
   assert.ok(typeof visit === 'function' && typeof assertCurrent === 'function');
   const text = JSON.stringify({ capsule, record, transaction, receipt, checkpoint });
   assert.ok(Buffer.byteLength(text) <= 192 * 1024);
@@ -45,7 +43,10 @@ async function collect({
   // These collectors register synchronously, before their first await. Observe
   // both promises immediately, including refusal before visitor registration.
   const settled = Promise.allSettled([
-    collectRailgunPoiCreator({ ...common, capsule: input.capsule }),
+    (transact ? collectRailgunPoiTransactCreator : collectRailgunPoiCreator)({
+      ...common,
+      capsule: input.capsule,
+    }),
     collectRailgunOwnSource({
       ...common,
       record: input.record,
@@ -93,6 +94,14 @@ async function collect({
 exports.collectRailgunPoiSourceEvidence = async (options) => {
   try {
     return await collect(options);
+  } catch {
+    throw fail();
+  }
+};
+
+exports.collectRailgunPoiTransactSourceEvidence = async (options) => {
+  try {
+    return await collect(options, true);
   } catch {
     throw fail();
   }

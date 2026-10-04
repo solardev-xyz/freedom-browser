@@ -1,7 +1,9 @@
-const mockCreator = jest.fn(),
+const mockTransactCreator = jest.fn(),
+  mockCreator = jest.fn(),
   mockOwn = jest.fn();
 jest.mock('./railgun-poi-creator', () => ({
   collectRailgunPoiCreator: (...args) => mockCreator(...args),
+  collectRailgunPoiTransactCreator: (...args) => mockTransactCreator(...args),
 }));
 jest.mock('./railgun-own-source', () => ({
   collectRailgunOwnSource: (...args) => mockOwn(...args),
@@ -35,6 +37,7 @@ beforeEach(() => {
       });
     };
   mockCreator.mockImplementation(collector(0));
+  mockTransactCreator.mockImplementation(collector(0));
   mockOwn.mockImplementation(collector(1));
   options = {
     ...sample(),
@@ -161,4 +164,54 @@ test('mismatched capsule/record binding refuses before either collector starts',
   expect(mockCreator).not.toHaveBeenCalled();
   expect(mockOwn).not.toHaveBeenCalled();
   expect(options.visit).not.toHaveBeenCalled();
+});
+
+const collectTransact =
+  require('./railgun-poi-source-evidence').collectRailgunPoiTransactSourceEvidence;
+test('fixed Transact source evidence selects its full-group collector in exactly one shared visit', async () => {
+  const value = await collectTransact(options);
+  expect(mockTransactCreator).toHaveBeenCalledTimes(1);
+  expect(mockCreator).not.toHaveBeenCalled();
+  expect(mockOwn).toHaveBeenCalledTimes(1);
+  expect(options.visit).toHaveBeenCalledTimes(1);
+  expect(seen).toEqual([
+    [0, 1, 2],
+    [0, 1, 2],
+  ]);
+  expect(value).toMatchObject({
+    sourceAuthenticated: false,
+    disclosureEnabled: false,
+    spendingEnabled: false,
+  });
+});
+test.each(['early-0', 'early-1', 'semantic-0', 'semantic-1', 'resource-0', 'resource-1'])(
+  'fixed Transact source evidence drains/refuses %s without legacy fallback',
+  async (fault) => {
+    mode = fault;
+    await expect(collectTransact(options)).rejects.toMatchObject({
+      code: 'RAILGUN_POI_SOURCE_EVIDENCE_REFUSED',
+    });
+    expect(mockCreator).not.toHaveBeenCalled();
+    if (fault.startsWith('early')) expect(options.visit).not.toHaveBeenCalled();
+    if (fault.startsWith('semantic')) {
+      expect(ended).toBe(true);
+      expect(seen).toEqual([
+        [0, 1, 2],
+        [0, 1, 2],
+      ]);
+    }
+  }
+);
+test('fixed Transact source evidence cannot return after a late authenticated-prefix failure', async () => {
+  options.visit.mockImplementation(async (fn) => {
+    for (let i = 0; i < 3; i++) await fn(i);
+    throw Error('private suffix corruption');
+  });
+  await expect(collectTransact(options)).rejects.toMatchObject({
+    code: 'RAILGUN_POI_SOURCE_EVIDENCE_REFUSED',
+  });
+  expect(seen).toEqual([
+    [0, 1, 2],
+    [0, 1, 2],
+  ]);
 });

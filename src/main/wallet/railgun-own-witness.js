@@ -10,6 +10,7 @@ const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const { getRailgunTxidPolicy } = require('./railgun-txid-policy');
 const {
   getRailgunAccountPublicIdentity,
+  getRailgunAccountPublicDestination,
   assertRailgunAccountPublicDestination,
 } = require('./railgun-account-public');
 const {
@@ -17,7 +18,11 @@ const {
   captureRailgunOwnOperationSelector,
 } = require('./railgun-own-operation');
 const { openRailgunAccountTxid } = require('./railgun-account-txid');
-const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
+const {
+  normalizeRailgunTxidWitness,
+  normalizeRailgunNoteTxidWitness,
+} = require('./railgun-txid-note-witness');
+const { verifyRailgunNoteProvenance } = require('./railgun-note-provenance');
 const { observeRailgunOwnReceipt } = require('./railgun-own-receipt');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { captureRailgunOwnSource, assertRailgunOwnSource } = require('./railgun-own-source-capture');
@@ -25,6 +30,7 @@ const { verifyRailgunOwnTxid } = require('./railgun-own-txid-verifier');
 const {
   captureRailgunPoiSource,
   captureRailgunPoiSourceCompleted,
+  captureRailgunPoiSourceForTransactMembership,
   assertRailgunPoiSource,
 } = require('./railgun-poi-source-capture');
 const { POI_LAUNCH_BLOCK } = require('./railgun-owned-poi-records');
@@ -42,10 +48,14 @@ async function captureRailgunOwnWitness(
   preflight = false,
   poi = false,
   completed = false,
-  submission
+  submission,
+  transactMembership = false
 ) {
   let stage = 'context',
     timer,
+    tailTimer,
+    tailDeadline = Infinity,
+    stageDeadline = Infinity,
     txid,
     source,
     roots,
@@ -79,6 +89,8 @@ async function captureRailgunOwnWitness(
       parent = enrollment.getContext('engine'),
       started = performance.now(),
       deadline = started + timeoutMs;
+    if (transactMembership)
+      sourceDestination = getRailgunAccountPublicDestination(coordinator, enrollment, publicPolicy);
     const lifetime = AbortSignal.any([
       signal,
       enrollment.signal,
@@ -87,7 +99,15 @@ async function captureRailgunOwnWitness(
     ]);
     const current = () => {
       getPrivacyContext(parent);
-      assert.ok(!lifetime.aborted && performance.now() >= started && performance.now() < deadline);
+      assert.ok(
+        !lifetime.aborted &&
+          performance.now() >= started &&
+          performance.now() < Math.min(deadline, tailDeadline, stageDeadline)
+      );
+      // The real canonical timestamp, not time since snapshot return, decides
+      // whether the retained source remains current throughout the tail.
+      if (transactMembership && source)
+        assertRailgunPoiSource(source.receipt, enrollment, coordinator);
       assert.deepEqual(
         getRailgunAccountPublicIdentity(coordinator, enrollment, publicPolicy),
         publicIdentity
@@ -103,6 +123,25 @@ async function captureRailgunOwnWitness(
     const remaining = (max) => {
       current();
       return Math.max(1, Math.min(max, Math.floor(deadline - performance.now())));
+    };
+    const tailStage = async (cap, reserve, use) => {
+      current();
+      const budget = Math.min(
+        cap,
+        Math.floor(Math.min(deadline, tailDeadline) - performance.now()) - reserve
+      );
+      assert.ok(budget > 0);
+      stageDeadline = performance.now() + budget;
+      const stageTimer = setTimeout(() => controller.abort(), budget);
+      stageTimer.unref?.();
+      try {
+        const value = await use(budget);
+        current();
+        return value;
+      } finally {
+        clearTimeout(stageTimer);
+        stageDeadline = Infinity;
+      }
     };
     const stop = () => {
       txid?.close().catch(() => {});
@@ -125,7 +164,13 @@ async function captureRailgunOwnWitness(
         throw Error('capture refused');
       }
       const derived = first.derived;
-      let chain, sourceObservation, verified, rootReceipt, rootObservation;
+      let chain,
+        sourceObservation,
+        verified,
+        rootReceipt,
+        rootObservation,
+        creatorNoteWitness,
+        creatorVerification;
       if (submission) {
         assertRailgunOwnPoiCapture(first.capture, submission.capture);
         chain = submission.observation;
@@ -133,11 +178,13 @@ async function captureRailgunOwnWitness(
         assert.equal(chain.transaction.hash, first.capture.projection.hash);
         assert.equal(chain.receipt.transactionHash, first.capture.projection.hash);
       }
-      const captureSource = completed
-        ? captureRailgunPoiSourceCompleted
-        : poi
-          ? captureRailgunPoiSource
-          : captureRailgunOwnSource;
+      const captureSource = transactMembership
+        ? captureRailgunPoiSourceForTransactMembership
+        : completed
+          ? captureRailgunPoiSourceCompleted
+          : poi
+            ? captureRailgunPoiSource
+            : captureRailgunOwnSource;
       const assertSource = poi ? assertRailgunPoiSource : assertRailgunOwnSource;
       if (preflight && !submission) {
         stage = 'receipt';
@@ -154,69 +201,14 @@ async function captureRailgunOwnWitness(
         }
         chain = observed.observation;
       }
-      stage = 'txid';
-      // Retain even a late-opened session and drain it in finally. Cancellation
-      // never races away from storage/worker completion or releases its phase.
-      txid = await openRailgunAccountTxid({
-        enrollment,
-        coordinator,
-        archive,
-        create: false,
-        checkpointOnly: true,
-        signal: lifetime,
-      });
-      current();
-      assert.equal(txid.policy, txidPolicy);
-      assert.deepEqual(txid.publicIdentity, publicIdentity);
-      const before = await txid.inspect();
-      current();
-      assert.ok(before.checkpoint && !before.pending);
-      stage = before.capacityReached ? 'txid-capacity' : 'txid-behind';
-      assert.match(before.checkpoint.state.after, /^0x[0-9a-f]{192}$/);
-      assert.ok(
-        BigInt('0x' + before.checkpoint.state.after.slice(2, 66)) >=
-          BigInt(first.capture.projection.blockNumber)
-      );
-      stage = 'txid-witness';
-      const state = freeze(JSON.parse(JSON.stringify(before.checkpoint.state)));
-      const found = await txid.witness(derived.railgunTxid);
-      current();
-      const witness = normalizeRailgunTxidWitness(found.witness, state, derived.railgunTxid);
-      const after = await txid.inspect();
-      current();
-      assert.equal(after.pending, null);
-      assert.deepEqual(after.checkpoint, before.checkpoint);
-      stage = 'txid-close';
-      await txid.close();
-      txid = undefined;
-      current();
-      if (preflight) {
-        stage = 'txid-verify';
-        // A separate phase lease survives cancellation until this verifier
-        // actually exits. The TXID session cannot drain an external utility.
-        verificationPhase = claimRailgunAccountPhase(enrollment, 'recovery');
-        verified = await verifyRailgunOwnTxid({
-          handle: enrollment.getContext('engine', 'own-txid-proof'),
-          archive,
-          state,
-          witness,
-          evidence: {
-            capsule: first.capture.capsule,
-            record: first.capture.record,
-            transaction: chain.transaction,
-            receipt: chain.receipt,
-            row: witness.row,
-          },
-          signal: lifetime,
-          timeoutMs: remaining(30000),
-        });
-        current();
-        verificationPhase.assertCurrent();
-        verificationPhase.release();
-        verificationPhase = undefined;
-      }
-      if (preflight) {
+      const readSource = async () => {
         stage = 'source';
+        let sourceBudget = remaining(180000);
+        if (transactMembership) {
+          sourceBudget = Math.min(180000, Math.floor(deadline - performance.now()) - 55000);
+          assert.ok(sourceBudget > 0);
+          sourceBudget += 55000; // Scope includes the tail; snapshot reserves it.
+        }
         const capturedSource = await captureSource({
           enrollment,
           coordinator,
@@ -225,7 +217,7 @@ async function captureRailgunOwnWitness(
           transaction: chain.transaction,
           receipt: chain.receipt,
           signal: lifetime,
-          timeoutMs: remaining(180000),
+          timeoutMs: sourceBudget,
           ...(completed ? { destination: sourceDestination } : {}),
         });
         if (completed && capturedSource.status !== 'captured') {
@@ -234,45 +226,215 @@ async function captureRailgunOwnWitness(
           throw Error('source refused');
         }
         source = capturedSource;
+        if (transactMembership) {
+          tailDeadline = Math.min(deadline, performance.now() + 55000);
+          tailTimer = setTimeout(
+            () => controller.abort(),
+            Math.max(1, Math.floor(tailDeadline - performance.now()))
+          );
+          tailTimer.unref?.();
+        }
         current();
         sourceObservation = assertSource(source.receipt, enrollment, coordinator);
         assert.deepEqual(
           (poi ? sourceObservation.own : sourceObservation).suppliedOutcome,
           first.capture.projection.railgun.transact
         );
-        stage = 'root';
-        rootScope = createPrivacyScope({
-          profileId: getPrivacyContext(parent).profileId,
-          signal: lifetime,
-          isCurrent: () => {
-            current();
-            return true;
-          },
+      };
+      if (transactMembership) {
+        await readSource();
+        stage = 'creator-source';
+        const captured = sourceObservation.creator;
+        assert.equal(captured.creator.type, 'Transact');
+        assert.ok(captured.origin.blockNumber >= POI_LAUNCH_BLOCK);
+        assert.deepEqual(captured.transaction.note, {
+          type: 'Transact',
+          txid: captured.origin.transactionHash,
+          hash: first.capture.capsule.noteHash,
+          tree: first.capture.capsule.selection.tree,
+          position: first.capture.capsule.selection.position,
+          blockNumber: captured.origin.blockNumber,
         });
-        roots = createRailgunTxidRootSource(
-          rootScope.getContext({
-            kind: 'service',
-            principal: 'railgun-public-sync',
-            protocol: 'railgun',
-            deployment: 'sepolia',
-            chainId: 11155111,
-            role: 'public-services',
-          })
+        assert.deepEqual(
+          captured.transaction.events.map((event) => event.name),
+          ['Nullified', 'Transact']
         );
-        rootReceipt = await roots.acquire({ index: state.count - 1, root: state.root });
+        assert.equal(captured.transaction.events[0].values.length, 1);
+        assert.equal(captured.transaction.events[1].hashes.length, 1);
         current();
-        rootObservation = roots.assertRoot(rootReceipt, {
-          index: state.count - 1,
-          root: state.root,
+      }
+      const readMirror = async () => {
+        stage = 'txid';
+        // Retain even a late-opened session and drain it in finally. Cancellation
+        // never races away from storage/worker completion or releases its phase.
+        txid = await openRailgunAccountTxid({
+          enrollment,
+          coordinator,
+          archive,
+          create: false,
+          checkpointOnly: true,
+          signal: lifetime,
+        });
+        current();
+        assert.equal(txid.policy, txidPolicy);
+        assert.deepEqual(txid.publicIdentity, publicIdentity);
+        const inspected = await txid.inspect();
+        const before = transactMembership
+          ? freeze(JSON.parse(JSON.stringify(inspected)))
+          : inspected;
+        current();
+        assert.ok(before.checkpoint && !before.pending);
+        stage = before.capacityReached ? 'txid-capacity' : 'txid-behind';
+        assert.match(before.checkpoint.state.after, /^0x[0-9a-f]{192}$/);
+        assert.ok(
+          BigInt('0x' + before.checkpoint.state.after.slice(2, 66)) >=
+            BigInt(first.capture.projection.blockNumber)
+        );
+        stage = 'txid-witness';
+        const state = freeze(JSON.parse(JSON.stringify(before.checkpoint.state)));
+        const found = await txid.witness(derived.railgunTxid);
+        current();
+        const witness = normalizeRailgunTxidWitness(found.witness, state, derived.railgunTxid);
+        if (transactMembership) {
+          stage = 'creator-txid-witness';
+          const captured = sourceObservation.creator;
+          const foundCreator = await txid.witnessNote(captured.transaction.note);
+          current();
+          creatorNoteWitness = normalizeRailgunNoteTxidWitness(
+            foundCreator.noteWitness,
+            state,
+            captured.transaction.note
+          );
+          const creatorWitness = creatorNoteWitness.witness;
+          const creatorRow = creatorWitness.row;
+          assert.equal(creatorRow.unshield, undefined);
+          assert.equal(creatorRow.nullifiers.length, 1);
+          assert.equal(creatorRow.commitments.length, 1);
+          assert.equal(creatorNoteWitness.outputIndex, 0);
+          assert.equal(creatorRow.commitments[0], captured.creator.hash);
+          assert.equal(creatorRow.utxoTreeOut, captured.creator.tree);
+          assert.equal(creatorRow.utxoBatchStartPositionOut, captured.creator.position);
+          assert.equal(creatorRow.blockNumber, captured.origin.blockNumber);
+          assert.equal('0x' + creatorRow.txid, captured.origin.transactionHash);
+          assert.match(creatorRow.graphID, /^0x[0-9a-f]{192}$/);
+          assert.equal(
+            BigInt('0x' + creatorRow.graphID.slice(66, 130)),
+            BigInt(captured.origin.transactionIndex)
+          );
+          assert.ok(creatorWitness.index < witness.index);
+        }
+        const after = await txid.inspect();
+        current();
+        assert.equal(after.pending, null);
+        assert.deepEqual(after.checkpoint, before.checkpoint);
+        stage = 'txid-close';
+        await txid.close();
+        txid = undefined;
+        current();
+        return { state, witness };
+      };
+      const { state, witness } = transactMembership
+        ? await tailStage(20000, 14000, readMirror)
+        : await readMirror();
+      if (preflight) {
+        const verifyOwn = async (budget) => {
+          stage = 'txid-verify';
+          // A separate phase lease survives cancellation until this verifier
+          // actually exits. The TXID session cannot drain an external utility.
+          verificationPhase = claimRailgunAccountPhase(enrollment, 'recovery');
+          verified = await verifyRailgunOwnTxid({
+            handle: enrollment.getContext('engine', 'own-txid-proof'),
+            archive,
+            state,
+            witness,
+            evidence: {
+              capsule: first.capture.capsule,
+              record: first.capture.record,
+              transaction: chain.transaction,
+              receipt: chain.receipt,
+              row: witness.row,
+            },
+            signal: lifetime,
+            timeoutMs: budget,
+          });
+          current();
+          verificationPhase.assertCurrent();
+          verificationPhase.release();
+          verificationPhase = undefined;
+        };
+        if (transactMembership) await tailStage(10000, 13000, verifyOwn);
+        else await verifyOwn(remaining(30000));
+      }
+      if (transactMembership) {
+        stage = 'creator-verify';
+        await tailStage(10000, 12000, async (budget) => {
+          verificationPhase = claimRailgunAccountPhase(enrollment, 'recovery');
+          creatorVerification = await verifyRailgunNoteProvenance({
+            handle: enrollment.getContext('engine', 'note-provenance'),
+            archive,
+            state,
+            note: sourceObservation.creator.transaction.note,
+            noteWitness: creatorNoteWitness,
+            events: sourceObservation.creator.transaction.events,
+            signal: lifetime,
+            timeoutMs: budget,
+          });
+          current();
+          verificationPhase.assertCurrent();
+          assert.equal(creatorVerification.utilityExitObserved, true);
+          assert.equal(creatorVerification.pathVerified, true);
+          assert.equal(creatorVerification.suppliedCreatorEventsMatched, true);
+          assert.equal(creatorVerification.coverage.matchedRows, 1);
+          assert.equal(creatorVerification.coverage.knownOmissions, 0);
+          assert.equal(creatorVerification.coverage.boundParamsChecked, false);
+          assert.equal(creatorVerification.coverage.globalTxidCompleteness, false);
+          verificationPhase.release();
+          verificationPhase = undefined;
         });
       }
+      if (preflight) {
+        if (!transactMembership) await readSource();
+        const acquireRoot = async () => {
+          stage = 'root';
+          rootScope = createPrivacyScope({
+            profileId: getPrivacyContext(parent).profileId,
+            signal: lifetime,
+            isCurrent: () => {
+              current();
+              return true;
+            },
+          });
+          roots = createRailgunTxidRootSource(
+            rootScope.getContext({
+              kind: 'service',
+              principal: 'railgun-public-sync',
+              protocol: 'railgun',
+              deployment: 'sepolia',
+              chainId: 11155111,
+              role: 'public-services',
+            })
+          );
+          rootReceipt = await roots.acquire({ index: state.count - 1, root: state.root });
+          current();
+          rootObservation = roots.assertRoot(rootReceipt, {
+            index: state.count - 1,
+            root: state.root,
+          });
+        };
+        if (transactMembership) await tailStage(10000, 7000, acquireRoot);
+        else await acquireRoot();
+      }
       stage = 'recapture';
-      const latest = await captureRailgunOwnOperation({
-        enrollment,
-        selector: selected,
-        signal: lifetime,
-        timeoutMs: remaining(45000),
-      });
+      const recapture = (budget) =>
+        captureRailgunOwnOperation({
+          enrollment,
+          selector: selected,
+          signal: lifetime,
+          timeoutMs: budget,
+        });
+      const latest = transactMembership
+        ? await tailStage(10000, 2000, recapture)
+        : await recapture(remaining(45000));
       current();
       if (latest.status !== 'captured') {
         stage = 'recapture:' + latest.stage;
@@ -291,6 +453,7 @@ async function captureRailgunOwnWitness(
       ]) {
         assert.deepEqual(latest.capture[key], first.capture[key]);
       }
+      if (transactMembership) assertRailgunOwnPoiCapture(latest.capture, first.capture);
       stage = 'row';
       const { row } = witness,
         { projection, intent } = latest.capture;
@@ -341,6 +504,7 @@ async function captureRailgunOwnWitness(
               anchor.number === finalArchive.number &&
               anchor.hash === finalArchive.hash
           );
+        if (transactMembership) assert.equal(archiveAnchorChecked, true);
         observations = {
           chain,
           source: sourceObservation,
@@ -354,6 +518,24 @@ async function captureRailgunOwnWitness(
       }
       return freeze({
         status: 'captured',
+        ...(transactMembership
+          ? {
+              creatorProvenance: {
+                note: sourceObservation.creator.transaction.note,
+                noteWitness: creatorNoteWitness,
+                verification: creatorVerification,
+                origin: sourceObservation.creator.origin,
+                logsSha256: sourceObservation.creator.transaction.logsSha256,
+                checkpointHash: sourceObservation.checkpointHash,
+                txidPolicy,
+                publicIdentity,
+                boundParamsChecked: false,
+                globalTxidCompleteness: false,
+                disclosureEnabled: false,
+                spendingEnabled: false,
+              },
+            }
+          : {}),
         ...(observations ? { observations } : {}),
         ...(poi
           ? {
@@ -398,6 +580,7 @@ async function captureRailgunOwnWitness(
     return Object.freeze({ status: 'refused', stage, ...(sourceOutcome ? { sourceOutcome } : {}) });
   } finally {
     clearTimeout(timer);
+    clearTimeout(tailTimer);
     controller.abort();
     verificationPhase?.release();
     source?.close();
@@ -414,4 +597,22 @@ module.exports = {
   // Only output recovery's fixed submission branch supplies this private data.
   preflightRailgunOwnPoiForSubmission: (options, input) =>
     captureRailgunOwnWitness(options, true, true, true, input || {}),
+};
+
+// Fixed internal consumer path for future Transact input membership. No source
+// destination or observed data is accepted from its caller; legacy exports never
+// enable the creator branch.
+module.exports.preflightRailgunOwnTransactPoiMembership = async (options) => {
+  try {
+    assert.ok(options && typeof options === 'object' && !Array.isArray(options));
+    assert.deepEqual(
+      Object.keys(options)
+        .filter((key) => key !== 'timeoutMs')
+        .sort(),
+      ['archive', 'coordinator', 'enrollment', 'selector', 'signal']
+    );
+    return await captureRailgunOwnWitness(options, true, true, true, undefined, true);
+  } catch {
+    return Object.freeze({ status: 'refused', stage: 'context' });
+  }
 };

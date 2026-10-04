@@ -1,6 +1,9 @@
 /** Public synthetic crypto only. Derives the public mnemonic's viewing key,
  * never a spending private key. Association material goes only to fixture-host
  * memory; no account, spending-proof or production key-handoff authority.
+ * Optional Transact creators are SDK-encrypted 1x1 self/foreign transfers from
+ * Shield position 0 to receiver position 1, followed by the selected own spend.
+ * Both serialized transactions use dummy proofs, never a valid chain spend.
  */
 const assert = require('assert/strict');
 const path = require('path');
@@ -9,36 +12,54 @@ const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 exports.run = async (text, { request, signal, guardReport }) => {
   assert.ok(typeof text === 'string' && Buffer.byteLength(text) <= 65536);
   const input = JSON.parse(text);
-  assert.deepEqual(Object.keys(input).sort(), [
-    'archive',
-    'descriptor',
-    'kind',
-    'recipient',
-    'row',
-  ]);
-  assert.ok(['transfer', 'unshield'].includes(input.kind));
-  const supplied = input.descriptor;
-  assert.deepEqual(Object.keys(supplied).sort(), [
-    'accountIndex',
-    'instanceId',
-    'masterPublicKey',
-    'spendingPublicKey',
-    'viewingPublicKey',
-    'walletId',
-  ]);
-  assert.ok(
-    Number.isInteger(supplied.accountIndex) &&
-      supplied.accountIndex >= 0 &&
-      supplied.accountIndex <= 65535
+  const creatorKind = input.creatorKind ?? 'Shield';
+  const senderKind = input.senderKind ?? 'self';
+  assert.ok(['Shield', 'Transact'].includes(creatorKind));
+  assert.ok(['self', 'foreign'].includes(senderKind));
+  assert.ok(creatorKind === 'Transact' || senderKind === 'self');
+  const transact = creatorKind === 'Transact';
+  assert.deepEqual(
+    Object.keys(input).sort(),
+    [
+      'archive',
+      'descriptor',
+      'kind',
+      'recipient',
+      'row',
+      ...(Object.hasOwn(input, 'creatorKind') ? ['creatorKind'] : []),
+      ...(Object.hasOwn(input, 'senderKind') ? ['senderKind'] : []),
+      ...(transact ? ['creatorRow'] : []),
+      ...(senderKind === 'foreign' ? ['senderDescriptor'] : []),
+    ].sort()
   );
-  assert.ok(Array.isArray(supplied.spendingPublicKey) && supplied.spendingPublicKey.length === 2);
-  for (const value of [
-    ...supplied.spendingPublicKey,
-    supplied.masterPublicKey,
-    supplied.viewingPublicKey,
-    supplied.walletId,
-  ])
-    assert.match(value, /^[0-9a-f]{64}$/);
+  assert.ok(['transfer', 'unshield'].includes(input.kind));
+  const validateDescriptor = (value) => {
+    assert.deepEqual(Object.keys(value).sort(), [
+      'accountIndex',
+      'instanceId',
+      'masterPublicKey',
+      'spendingPublicKey',
+      'viewingPublicKey',
+      'walletId',
+    ]);
+    assert.ok(
+      Number.isInteger(value.accountIndex) && value.accountIndex >= 0 && value.accountIndex <= 65535
+    );
+    assert.ok(Array.isArray(value.spendingPublicKey) && value.spendingPublicKey.length === 2);
+    for (const field of [
+      ...value.spendingPublicKey,
+      value.masterPublicKey,
+      value.viewingPublicKey,
+      value.walletId,
+    ])
+      assert.match(field, /^[0-9a-f]{64}$/);
+  };
+  const supplied = input.descriptor;
+  validateDescriptor(supplied);
+  if (senderKind === 'foreign') {
+    validateDescriptor(input.senderDescriptor);
+    assert.notEqual(input.senderDescriptor.accountIndex, supplied.accountIndex);
+  }
   const active = () => assert.ok(signal instanceof AbortSignal && !signal.aborted);
   active();
   const archive =
@@ -62,11 +83,12 @@ exports.run = async (text, { request, signal, guardReport }) => {
   const seed = require('@scure/bip39').mnemonicToSeedSync(
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
   );
-  let viewingKey;
+  let viewingKey, foreignViewingKey;
   const shieldKey = Buffer.alloc(32, 8);
   const wipe = () => {
     seed.fill(0);
     viewingKey?.fill(0);
+    foreignViewingKey?.fill(0);
     shieldKey.fill(0);
   };
   signal.addEventListener('abort', wipe, { once: true });
@@ -76,6 +98,12 @@ exports.run = async (text, { request, signal, guardReport }) => {
       seed,
       `m/420'/1984'/0'/0'/${supplied.accountIndex}'`
     );
+    if (senderKind === 'foreign')
+      foreignViewingKey =
+        require('../../src/main/identity/railgun-key-derivation').deriveRailgunKey(
+          seed,
+          `m/420'/1984'/0'/0'/${input.senderDescriptor.accountIndex}'`
+        );
     seed.fill(0);
     const publicKey = supplied.spendingPublicKey.map((v) => BigInt('0x' + v));
     const viewingPublicKey = await getPublicViewingKey(viewingKey);
@@ -109,41 +137,189 @@ exports.run = async (text, { request, signal, guardReport }) => {
     const nullifyingKey = poseidon([BigInt('0x' + viewingKey.toString('hex'))]);
     assert.equal(viewWallet.getNullifyingKey(), nullifyingKey);
     const addressKeys = { masterPublicKey: viewWallet.masterPublicKey, viewingPublicKey };
+    let sender = { addressKeys, publicKey, nullifyingKey, viewingKeyPair };
+    if (senderKind === 'foreign') {
+      const foreign = input.senderDescriptor;
+      const foreignPublicKey = foreign.spendingPublicKey.map((v) => BigInt('0x' + v));
+      const foreignViewingPublicKey = await getPublicViewingKey(foreignViewingKey);
+      active();
+      const pair = { privateKey: foreignViewingKey, pubkey: foreignViewingPublicKey };
+      const foreignWallet = new ViewOnlyWallet(
+        foreign.walletId,
+        denied,
+        pair,
+        foreignPublicKey,
+        undefined,
+        denied
+      );
+      assert.deepEqual(
+        {
+          accountIndex: foreign.accountIndex,
+          instanceId: foreignWallet.getAddress(),
+          masterPublicKey: hex(foreignWallet.masterPublicKey).slice(2),
+          spendingPublicKey: foreignPublicKey.map((v) => hex(v).slice(2)),
+          viewingPublicKey: Buffer.from(foreignViewingPublicKey).toString('hex'),
+          walletId: ViewOnlyWallet.generateID(foreignWallet.generateShareableViewingKey()),
+        },
+        foreign
+      );
+      const foreignNullifyingKey = poseidon([BigInt('0x' + foreignViewingKey.toString('hex'))]);
+      assert.equal(foreignWallet.getNullifyingKey(), foreignNullifyingKey);
+      assert.notEqual(foreignWallet.masterPublicKey, viewWallet.masterPublicKey);
+      assert.notDeepEqual(foreignViewingPublicKey, viewingPublicKey);
+      assert.notDeepEqual(foreignPublicKey, publicKey);
+      sender = {
+        addressKeys: {
+          masterPublicKey: foreignWallet.masterPublicKey,
+          viewingPublicKey: foreignViewingPublicKey,
+        },
+        publicKey: foreignPublicKey,
+        nullifyingKey: foreignNullifyingKey,
+        viewingKeyPair: pair,
+      };
+    }
     imp('wallet/wallet-info').default.setWalletSource('freedom');
-    const note = new ShieldNoteERC20(
-      addressKeys.masterPublicKey,
+    let note = new ShieldNoteERC20(
+      sender.addressKeys.masterPublicKey,
       '02'.repeat(16),
       1000n,
       pins.wrappedNative
     );
-    const noteHash = hex(
+    let noteHash = hex(
       ShieldNoteERC20.getShieldNoteHash(note.notePublicKey, note.tokenHash, note.value)
     );
-    const pathElements = require('../../src/main/wallet/railgun-public-records')
+    let pathElements = require('../../src/main/wallet/railgun-public-records')
       .ZERO_NODES.slice(0, 16)
       .map((v) => '0x' + v);
     let merkleRoot = BigInt(noteHash);
     for (const sibling of pathElements) merkleRoot = poseidon([merkleRoot, BigInt(sibling)]);
-    const wallet = {
+    const walletFor = (party, leaf, elements, root, index) => ({
       getUTXOMerkletree: () => ({
-        getRoot: async () => hex(merkleRoot).slice(2),
+        getRoot: async () => hex(root).slice(2),
         getMerkleProof: async (tree, position) => {
           assert.equal(tree, 0);
-          assert.equal(position, 0);
+          assert.equal(position, index);
           return {
-            leaf: noteHash.slice(2),
-            root: hex(merkleRoot).slice(2),
-            elements: pathElements.map((v) => v.slice(2)),
-            indices: hex(0).slice(2),
+            leaf: leaf.slice(2),
+            root: hex(root).slice(2),
+            elements: elements.map((v) => v.slice(2)),
+            indices: hex(index).slice(2),
           };
         },
       }),
-      getSpendingKeyPair: async () => ({ pubkey: publicKey }),
-      getNullifyingKey: () => nullifyingKey,
-      getViewingKeyPair: () => viewingKeyPair,
-      viewingKeyPair,
-      addressKeys,
-    };
+      getSpendingKeyPair: async () => ({ pubkey: party.publicKey }),
+      getNullifyingKey: () => party.nullifyingKey,
+      getViewingKeyPair: () => party.viewingKeyPair,
+      viewingKeyPair: party.viewingKeyPair,
+      addressKeys: party.addressKeys,
+    });
+    let creator, priorShield, creatorRow, creatorTransaction;
+    const position = transact ? 1 : 0;
+    if (transact) {
+      assert.equal(input.creatorRow.unshield, undefined);
+      assert.ok(input.creatorRow.blockNumber <= input.row.blockNumber);
+      const shieldHash = noteHash;
+      const encryptedShield = await note.serialize(shieldKey, sender.addressKeys.viewingPublicKey);
+      active();
+      priorShield = {
+        type: 'Shield',
+        tree: 0,
+        position: 0,
+        preimage: {
+          npk: hex(note.notePublicKey),
+          value: '1000',
+          token: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
+        },
+        ciphertext: encryptedShield.ciphertext,
+      };
+      const received = TransactNote.createTransfer(
+        addressKeys,
+        sender.addressKeys,
+        note.value,
+        note.tokenData,
+        senderKind === 'foreign',
+        0,
+        undefined
+      );
+      assert.equal(received.receiverAddressData.masterPublicKey, addressKeys.masterPublicKey);
+      assert.equal(received.senderAddressData.masterPublicKey, sender.addressKeys.masterPublicKey);
+      const builder = new Transaction(
+        { type: 0, id: pins.chainId },
+        note.tokenData,
+        0,
+        [{ note, tree: 0, position: 0 }],
+        [received],
+        { contract: '0x' + '0'.repeat(40), parameters: hex(0) }
+      );
+      const creatorRequest = await builder.generateTransactionRequest(
+        walletFor(sender, noteHash, pathElements, merkleRoot, 0),
+        'V2_PoseidonMerkle',
+        '',
+        { minGasPrice: 0n }
+      );
+      active();
+      const cp = creatorRequest.publicInputs;
+      assert.deepEqual(cp.nullifiers, [TransactNote.getNullifier(sender.nullifyingKey, 0)]);
+      assert.deepEqual(cp.commitmentsOut, [received.hash]);
+      assert.equal(cp.merkleRoot, merkleRoot);
+      assert.deepEqual(creatorRequest.privateInputs.pathElements, [pathElements.map(BigInt)]);
+      assert.deepEqual(creatorRequest.privateInputs.leavesIndices, [0n]);
+      const dummyCreator = await builder.generateDummyProvedTransaction(
+        new Prover({
+          assertArtifactExists: (inputs, outputs) => {
+            assert.equal(inputs, 1);
+            assert.equal(outputs, 1);
+          },
+        }),
+        creatorRequest
+      );
+      active();
+      creatorTransaction = {
+        chainId: pins.chainId,
+        to: pins.proxy,
+        value: '0',
+        data: new Interface([TRANSACT_ABI]).encodeFunctionData('transact', [[dummyCreator]]),
+      };
+      const decodedCreator = extractRailgunTransactIntent(creatorTransaction);
+      assert.deepEqual(decodedCreator.intent, creatorTransaction);
+      assert.equal(decodedCreator.expected.boundParamsHash, hex(cp.boundParamsHash));
+      assert.equal(decodedCreator.expected.commitment, hex(received.hash));
+      assert.equal(decodedCreator.expected.nullifier, hex(cp.nullifiers[0]));
+      assert.equal(creatorRequest.boundParams.commitmentCiphertext.length, 1);
+      creator = {
+        type: 'Transact',
+        tree: 0,
+        position,
+        hash: hex(received.hash),
+        ciphertext: JSON.parse(JSON.stringify(creatorRequest.boundParams.commitmentCiphertext[0])),
+      };
+      creatorRow = {
+        ...input.creatorRow,
+        nullifiers: [hex(cp.nullifiers[0])],
+        commitments: [hex(cp.commitmentsOut[0])],
+        boundParamsHash: hex(cp.boundParamsHash),
+        utxoTreeIn: 0,
+        utxoTreeOut: 0,
+        utxoBatchStartPositionOut: 1,
+      };
+      note = received;
+      noteHash = hex(note.hash);
+      pathElements = [shieldHash, ...pathElements.slice(1)];
+      merkleRoot = BigInt(noteHash);
+      for (let level = 0; level < 16; level++)
+        merkleRoot = poseidon(
+          (position & (1 << level)) === 0
+            ? [merkleRoot, BigInt(pathElements[level])]
+            : [BigInt(pathElements[level]), merkleRoot]
+        );
+    }
+    const wallet = walletFor(
+      { addressKeys, publicKey, nullifyingKey, viewingKeyPair },
+      noteHash,
+      pathElements,
+      merkleRoot,
+      position
+    );
     const unshield = input.kind === 'unshield';
     if (unshield) assert.match(input.recipient, /^0x[0-9a-f]{40}$/);
     else assert.equal(input.recipient, descriptor.instanceId);
@@ -164,7 +340,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
       { type: 0, id: pins.chainId },
       note.tokenData,
       0,
-      [{ note, tree: 0, position: 0 }],
+      [{ note, tree: 0, position }],
       outputs,
       { contract: '0x' + '0'.repeat(40), parameters: hex(0) }
     );
@@ -183,10 +359,11 @@ exports.run = async (text, { request, signal, guardReport }) => {
     const pub = txRequest.publicInputs;
     assert.equal(pub.nullifiers.length, 1);
     assert.equal(pub.commitmentsOut.length, 1);
-    assert.equal(pub.nullifiers[0], TransactNote.getNullifier(nullifyingKey, 0));
+    assert.equal(pub.nullifiers[0], TransactNote.getNullifier(nullifyingKey, position));
+    if (transact) assert.notEqual(pub.nullifiers[0], BigInt(creatorRow.nullifiers[0]));
     assert.equal(pub.merkleRoot, merkleRoot);
     assert.deepEqual(txRequest.privateInputs.pathElements, [pathElements.map(BigInt)]);
-    assert.deepEqual(txRequest.privateInputs.leavesIndices, [0n]);
+    assert.deepEqual(txRequest.privateInputs.leavesIndices, [BigInt(position)]);
     // Only SDK zero-proof serialization. No spend prover, artifacts or signature.
     const dummy = await transactionBuilder.generateDummyProvedTransaction(
       new Prover({
@@ -216,7 +393,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
       version: 1,
       walletId: descriptor.walletId,
       engineSha256: require('../../src/main/wallet/railgun-engine-manifest.json').sha256,
-      selection: { kind: decoded.expected.kind, tree: 0, position: 0, recipient: input.recipient },
+      selection: { kind: decoded.expected.kind, tree: 0, position, recipient: input.recipient },
       preparation: {
         transaction: decoded.intent,
         expected: decoded.expected,
@@ -227,19 +404,21 @@ exports.run = async (text, { request, signal, guardReport }) => {
       noteHash,
       pathElements,
     };
-    const encrypted = await note.serialize(shieldKey, viewingPublicKey);
-    active();
-    const creator = {
-      type: 'Shield',
-      tree: 0,
-      position: 0,
-      preimage: {
-        npk: hex(note.notePublicKey),
-        value: '1000',
-        token: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
-      },
-      ciphertext: encrypted.ciphertext,
-    };
+    if (!transact) {
+      const encrypted = await note.serialize(shieldKey, viewingPublicKey);
+      active();
+      creator = {
+        type: 'Shield',
+        tree: 0,
+        position: 0,
+        preimage: {
+          npk: hex(note.notePublicKey),
+          value: '1000',
+          token: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
+        },
+        ciphertext: encrypted.ciphertext,
+      };
+    }
     // Reconstruct within this job; never return these private fields to main.
     const recovered =
       await require('../../src/main/wallet/railgun-poi-reconstruct').reconstructRailgunPoiNotes({
@@ -273,11 +452,11 @@ exports.run = async (text, { request, signal, guardReport }) => {
       boundParamsHash: hex(pub.boundParamsHash),
       utxoTreeIn: 0,
       utxoTreeOut: unshield ? 99999 : 0,
-      utxoBatchStartPositionOut: unshield ? 99999 : 1,
+      utxoBatchStartPositionOut: unshield ? 99999 : position + 1,
     };
     if (unshield) {
       row.unshield = {
-        tokenData: creator.preimage.token,
+        tokenData: { tokenType: 0, tokenAddress: pins.wrappedNative, tokenSubID: hex(0) },
         toAddress: input.recipient,
         value: '1000',
       };
@@ -287,29 +466,81 @@ exports.run = async (text, { request, signal, guardReport }) => {
       );
     } else assert.equal(row.unshield, undefined);
     let projection;
-    await require('./railgun-own-preflight-job').run(JSON.stringify({ archive, row }), {
-      signal,
-      guardReport,
-      request: async (wire) => {
-        assert.equal(projection, undefined);
-        const message = JSON.parse(wire);
-        assert.equal(message.id, 1);
-        assert.equal(message.method, 'result');
-        projection = message.value;
-        assert.equal(projection.guards.attempts, 0);
-        assert.deepEqual(projection.row.commitments, row.commitments);
-        assert.deepEqual(projection.row.nullifiers, row.nullifiers);
-        assert.equal(projection.row.boundParamsHash, row.boundParamsHash);
-        return JSON.stringify({ id: 1, value: null });
-      },
-    });
+    if (transact) {
+      const { createRailgunTransactionWithHash, calculateRailgunTransactionVerificationHash } = imp(
+        'transaction/railgun-txid'
+      );
+      const txids =
+        require('../../src/main/wallet/railgun-txid-projection').createRailgunTxidProjection({
+          hashPair: (a, b) => poseidonHex([a, b]),
+          transactionHash: createRailgunTransactionWithHash,
+          verificationHash: calculateRailgunTransactionVerificationHash,
+          zeroNodes: require('../../src/main/wallet/railgun-public-records').ZERO_NODES,
+        });
+      creatorRow.verificationHash = calculateRailgunTransactionVerificationHash(
+        undefined,
+        creatorRow.nullifiers[0]
+      );
+      row.verificationHash = calculateRailgunTransactionVerificationHash(
+        creatorRow.verificationHash,
+        row.nullifiers[0]
+      );
+      const values = new Map();
+      const read = async (key) => values.get(key) ?? null;
+      const appended = await txids.append(txids.empty(), [creatorRow, row], read);
+      for (const { key, value } of appended.writes) values.set(key, value);
+      assert.equal(appended.state.count, 2);
+      assert.deepEqual(appended.state.breaks, []);
+      const creatorWitness =
+        await require('../../src/main/wallet/railgun-txid-note-witness').findRailgunNoteTxidWitness(
+          {
+            state: appended.state,
+            note: {
+              type: 'Transact',
+              txid: '0x' + creatorRow.txid,
+              hash: noteHash,
+              tree: 0,
+              position,
+              blockNumber: creatorRow.blockNumber,
+            },
+            read,
+            projection: txids,
+          }
+        );
+      assert.equal(creatorWitness.witness.index, 0);
+      assert.equal(creatorWitness.outputIndex, 0);
+      assert.equal(creatorWitness.witness.checkpointIndex, 1);
+      const ownRecord = txids.inspectRecord(await read('txid:row:1'));
+      const ownWitness = await txids.witness(appended.state, ownRecord.railgunTxid, read);
+      assert.equal(ownWitness.index, 1);
+      assert.equal(ownWitness.checkpointIndex, 1);
+      assert.equal(ownWitness.root, creatorWitness.witness.root);
+      projection = { row, state: appended.state };
+    } else {
+      await require('./railgun-own-preflight-job').run(JSON.stringify({ archive, row }), {
+        signal,
+        guardReport,
+        request: async (wire) => {
+          assert.equal(projection, undefined);
+          const message = JSON.parse(wire);
+          assert.equal(message.id, 1);
+          assert.equal(message.method, 'result');
+          projection = message.value;
+          assert.equal(projection.guards.attempts, 0);
+          assert.deepEqual(projection.row.commitments, row.commitments);
+          assert.deepEqual(projection.row.nullifiers, row.nullifiers);
+          assert.equal(projection.row.boundParamsHash, row.boundParamsHash);
+          return JSON.stringify({ id: 1, value: null });
+        },
+      });
+    }
     assert.ok(projection);
     const blindedCommitment = imp(
       'poi/blinded-commitment'
     ).BlindedCommitment.getForShieldOrTransact(
       noteHash,
       note.notePublicKey,
-      imp('poi/global-tree-position').getGlobalTreePosition(0, 0)
+      imp('poi/global-tree-position').getGlobalTreePosition(0, position)
     );
     const elements = Array.from({ length: 16 }, (_, i) => hex(i + 31).slice(2));
     const index = 5;
@@ -327,9 +558,9 @@ exports.run = async (text, { request, signal, guardReport }) => {
     const owned =
       require('../../src/main/wallet/railgun-owned-poi-records').projectRailgunOwnedPoiRecord(
         {
-          commitmentType: 'ShieldCommitment',
+          commitmentType: transact ? 'TransactCommitmentV2' : 'ShieldCommitment',
           tree: 0,
-          position: 0,
+          position,
           note: {
             notePublicKey: note.notePublicKey,
             tokenHash: note.tokenHash,
@@ -340,13 +571,13 @@ exports.run = async (text, { request, signal, guardReport }) => {
           nullifier: hex(pub.nullifiers[0]),
         },
         {
-          commitmentType: 'ShieldCommitment',
+          commitmentType: transact ? 'TransactCommitmentV2' : 'ShieldCommitment',
           utxoTree: 0,
-          utxoIndex: 0,
+          utxoIndex: position,
           hash: noteHash,
-          preImage: { npk: hex(note.notePublicKey) },
-          txid: hex(705),
-          blockNumber: 5944700,
+          ...(!transact ? { preImage: { npk: hex(note.notePublicKey) } } : {}),
+          txid: transact ? creatorRow.txid : hex(705),
+          blockNumber: transact ? creatorRow.blockNumber : 5944700,
         },
         {
           TransactNote,
@@ -356,9 +587,10 @@ exports.run = async (text, { request, signal, guardReport }) => {
         hex(pub.nullifiers[0])
       );
     assert.equal(owned.blindedCommitment, blindedCommitment);
+    assert.equal(owned.type, creatorKind);
     require('../../src/main/wallet/railgun-poi-records').verifyPoiMembership(
       [proof],
-      [{ blindedCommitment, type: 'Shield' }],
+      [{ blindedCommitment, type: creatorKind }],
       (a, b) => poseidonHex([a, b])
     );
     active();
@@ -379,6 +611,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
         transaction,
         pathElements,
         expectedHash,
+        ...(transact ? { priorShield, creatorRow, creatorTransaction } : {}),
       },
     });
     assert.ok(Buffer.byteLength(wire) <= 32768);

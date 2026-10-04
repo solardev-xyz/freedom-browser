@@ -10,7 +10,10 @@ const {
   assertRailgunAccountPublicDestination,
 } = require('./railgun-account-public');
 const { getRailgunCompletedSnapshotOutcome } = require('./railgun-scan-coordinator');
-const { collectRailgunPoiSourceEvidence } = require('./railgun-poi-source-evidence');
+const {
+  collectRailgunPoiSourceEvidence,
+  collectRailgunPoiTransactSourceEvidence,
+} = require('./railgun-poi-source-evidence');
 const { checkpointHash } = require('./railgun-wallet-coverage');
 const receipts = new WeakMap();
 const captures = new WeakSet();
@@ -27,13 +30,19 @@ async function capture(
     transaction,
     receipt,
     signal,
-    timeoutMs = 45000,
+    timeoutMs,
     destination,
   },
-  completed = false
+  completed = false,
+  transact = false
 ) {
   assert.ok(signal instanceof AbortSignal && !signal.aborted);
-  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 180000);
+  if (timeoutMs === undefined) timeoutMs = transact ? 235000 : 45000;
+  assert.ok(
+    Number.isSafeInteger(timeoutMs) &&
+      timeoutMs > (transact ? 55000 : 0) &&
+      timeoutMs <= (transact ? 235000 : 180000)
+  );
   const policy = assertRailgunAccountPublic(coordinator, enrollment);
   const publicIdentity = getRailgunAccountPublicIdentity(coordinator, enrollment, policy);
   if (completed)
@@ -91,7 +100,10 @@ async function capture(
           current();
           assert.ok(!window.signal.aborted);
         };
-        const value = await collectRailgunPoiSourceEvidence({
+        const collect = transact
+          ? collectRailgunPoiTransactSourceEvidence
+          : collectRailgunPoiSourceEvidence;
+        const value = await collect({
           ...supplied,
           checkpoint: window.checkpoint,
           visit: window.visitSource,
@@ -109,7 +121,10 @@ async function capture(
     let snapshot;
     try {
       if (completed) {
-        const remaining = Math.floor(deadline - performance.now());
+        const remaining = Math.min(
+          180000,
+          Math.floor(deadline - performance.now()) - (transact ? 55000 : 0)
+        );
         assert.ok(remaining > 0);
         snapshot = await coordinator.withCompletedPublicSnapshot(
           { destination, signal: scope.signal, timeoutMs: remaining },
@@ -195,5 +210,15 @@ exports.assertRailgunPoiSource = (receipt, enrollment, coordinator) => {
     return entry.assertCurrent();
   } catch {
     throw fail();
+  }
+};
+
+// Same completed snapshot and exact destination; only this fixed variant retains
+// its capture scope for the bounded creator tail after snapshot acquisition.
+exports.captureRailgunPoiSourceForTransactMembership = async (options) => {
+  try {
+    return await capture(options, true, true);
+  } catch {
+    return Object.freeze({ status: 'refused', stage: 'context' });
   }
 };

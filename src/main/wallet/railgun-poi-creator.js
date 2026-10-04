@@ -8,6 +8,7 @@ const { Interface } = require('ethers');
 const { SHIELD_EVENT } = require('./railgun-shield-receipt');
 const { PRIVATE_EVENTS } = require('./railgun-transact-receipt');
 const { normalizeRailgunPrivateCapsule } = require('./railgun-private-capsule');
+const { normalizeRailgunPrivateCreatorEvents } = require('./railgun-private-creator');
 const { checkpointHash } = require('./railgun-wallet-coverage');
 const pins = require('./railgun-shield-pins.json');
 const abi = new Interface([SHIELD_EVENT, ...PRIVATE_EVENTS]);
@@ -23,7 +24,7 @@ const freeze = (v) => {
   }
   return v;
 };
-async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }) {
+async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }, transact = false) {
   assert.ok(typeof visit === 'function' && typeof assertCurrent === 'function');
   const text = JSON.stringify({ capsule: supplied, checkpoint });
   assert.ok(Buffer.byteLength(text) <= 128 * 1024);
@@ -36,8 +37,11 @@ async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }) 
     bytes = 0,
     previous,
     failed = false,
-    selected;
+    selected,
+    group,
+    selectedGroup;
   const lengths = [];
+  const transactionHashes = new Set();
   assertCurrent();
   const visited = await visit((log) => {
     count++;
@@ -83,6 +87,37 @@ async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }) 
           log.topics.length <= 4 &&
           log.topics.every(hash)
       );
+      if (transact) {
+        if (
+          !group ||
+          group.hash !== log.transactionHash ||
+          group.block !== log.blockNumber ||
+          group.index !== log.transactionIndex
+        ) {
+          // Reappearance of the selected transaction is an inconsistent group,
+          // even if a later event does not contain the selected output.
+          assert.ok(!selected || log.transactionHash !== selected.origin.transactionHash);
+          group = {
+            hash: log.transactionHash,
+            block: log.blockNumber,
+            index: log.transactionIndex,
+            logs: [],
+            bytes: 0,
+            overflow: false,
+            repeated: transactionHashes.has(log.transactionHash),
+          };
+          transactionHashes.add(log.transactionHash);
+        }
+        group.bytes += Buffer.byteLength(JSON.stringify(log));
+        if (
+          group.logs.length >= 3 ||
+          group.bytes > 32768 ||
+          typeof log.data !== 'string' ||
+          log.data.length > 8194
+        )
+          group.overflow = true;
+        if (!group.overflow) group.logs.push(JSON.parse(JSON.stringify(log)));
+      }
       if (!topics.includes(log.topics[0])) return;
       assert.equal(log.topics.length, 1);
       assert.ok(
@@ -160,6 +195,7 @@ async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }) 
           },
         };
       }
+      if (transact) selectedGroup = group;
       selected = {
         creator,
         origin: {
@@ -186,8 +222,40 @@ async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }) 
     lengths,
     input.checkpoint.state.trees.map((t) => t.length)
   );
+  let transaction;
+  if (transact) {
+    assert.equal(selected.creator.type, 'Transact');
+    assert.ok(
+      selectedGroup &&
+        !selectedGroup.overflow &&
+        !selectedGroup.repeated &&
+        selectedGroup.logs.length === 2
+    );
+    const events = normalizeRailgunPrivateCreatorEvents(selectedGroup.logs);
+    assert.equal(events[0].name, 'Nullified');
+    assert.equal(events[1].name, 'Transact');
+    assert.equal(events[0].values.length, 1);
+    assert.equal(events[1].hashes.length, 1);
+    assert.equal(events[1].tree, tree);
+    assert.equal(events[1].start, position);
+    assert.equal(events[1].hashes[0], capsule.noteHash);
+    assert.equal(events[1].logIndex, selected.origin.logIndex);
+    transaction = {
+      note: {
+        type: 'Transact',
+        txid: selected.origin.transactionHash,
+        hash: capsule.noteHash,
+        tree,
+        position,
+        blockNumber: selected.origin.blockNumber,
+      },
+      events,
+      logsSha256: createHash('sha256').update(JSON.stringify(selectedGroup.logs)).digest('hex'),
+    };
+  }
   return freeze({
     ...selected,
+    ...(transaction ? { transaction } : {}),
     noteHash: capsule.noteHash,
     checkpointHash: checkpointDigest,
     source: {
@@ -207,6 +275,17 @@ async function collect({ capsule: supplied, checkpoint, visit, assertCurrent }) 
 exports.collectRailgunPoiCreator = async (options) => {
   try {
     return await collect(options);
+  } catch {
+    throw Object.assign(new Error('Railgun POI creator unavailable'), {
+      code: 'RAILGUN_POI_CREATOR_REFUSED',
+    });
+  }
+};
+
+// Fixed internal variant for post-spend Transact membership provenance only.
+exports.collectRailgunPoiTransactCreator = async (options) => {
+  try {
+    return await collect(options, true);
   } catch {
     throw Object.assign(new Error('Railgun POI creator unavailable'), {
       code: 'RAILGUN_POI_CREATOR_REFUSED',
