@@ -1,7 +1,7 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history]]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -251,17 +251,27 @@ async function main() {
   const checksMode = process.argv.length === 8;
   if (checksMode)
     assert.ok(
-      ['checks', 'intents', 'output-recovery', 'cold-validation', 'retained-history'].includes(
-        checksFlag
-      )
+      [
+        'checks',
+        'intents',
+        'output-recovery',
+        'cold-validation',
+        'retained-history',
+        'attempts',
+      ].includes(checksFlag)
     );
+  const attemptMode = checksFlag === 'attempts';
+  const attemptRuns = [];
+  const attemptWork = { utilities: 0, utilityKeyHandoffs: 0 };
+  let attemptActive = false;
   const outputRecoveryMode = checksFlag === 'output-recovery';
   const retainedHistoryMode = checksFlag === 'retained-history';
   const coldValidationMode = checksFlag === 'cold-validation' || retainedHistoryMode;
   let laterMirror,
     mirrorAdvanced = false;
   const mirrorState = () => (mirrorAdvanced ? laterMirror.state : payload.state);
-  const intentsMode = checksFlag === 'intents' || outputRecoveryMode || coldValidationMode;
+  const intentsMode =
+    checksFlag === 'intents' || outputRecoveryMode || coldValidationMode || attemptMode;
   const coldValidationRuns = [],
     coldValidationVerifierTimings = [],
     coldValidationVerifierJobs = {
@@ -675,6 +685,11 @@ async function main() {
   originals.rpc = rpcModule.createPrivateRpc;
   originals.services = serviceModule.createRailgunPublicServices;
   processModule.startRailgunProcess = (options) => {
+    if (attemptActive) {
+      attemptWork.utilities++;
+      if (options.binaryKey) attemptWork.utilityKeyHandoffs++;
+      throw Error('Unexpected durable-attempt utility');
+    }
     const recoveringOutput =
       options.filename === require.resolve('../src/main/wallet/railgun-poi-output-recover-job');
     const coldVerifying =
@@ -2803,6 +2818,142 @@ async function main() {
       assert.deepEqual(intentActivity(), initialActivity);
       assert.equal(intentRuns.length, 6);
     };
+    if (attemptMode) {
+      phase = 'poi-durable-attempt';
+      attemptActive = true;
+      const preparedBaseline = copy(retainedIntent);
+      const beforeActivity = intentActivity();
+      const beforeJournal = await journal.readSnapshot();
+      const beforeGuards = copy({ outputRecoveryJobs, coldValidationVerifierJobs });
+      const begin = (changes = {}) =>
+        intentStore.beginAttempt({
+          capsuleDigest: preparedBaseline.capsuleDigest,
+          expectedRevision: preparedBaseline.revision,
+          expectedPayloadSha256: preparedBaseline.payloadSha256,
+          signal: enrollment.signal,
+          ...changes,
+        });
+      for (const [label, changes] of [
+        ['stale-revision', { expectedRevision: preparedBaseline.revision + 1 }],
+        ['stale-payload', { expectedPayloadSha256: hex(1).slice(2) }],
+      ]) {
+        assert.equal((await begin(changes)).status, 'refused');
+        assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), preparedBaseline);
+        attemptRuns.push({ mode: label, refused: true, noWrite: true });
+      }
+      const beforeClock = Date.now();
+      // Deliberately discard completion. Recovery below reads only durable state.
+      await begin();
+      const afterClock = Date.now();
+      const attempted = await intentStore.get(preparedBaseline.capsuleDigest);
+      assert.equal(attempted.state, 'attempted');
+      assert.deepEqual(
+        { ...attempted, state: 'prepared', attempt: undefined },
+        {
+          ...preparedBaseline,
+          attempt: undefined,
+        }
+      );
+      assert.ok(
+        attempted.attempt.attemptedAt >= beforeClock && attempted.attempt.attemptedAt <= afterClock
+      );
+      const {
+        normalizeRailgunPoiSubmission,
+      } = require('../src/main/wallet/railgun-poi-submit-data');
+      const submission = normalizeRailgunPoiSubmission(attempted.attempt.submission);
+      assert.deepEqual(submission, attempted.attempt.submission);
+      assert.deepEqual(submission.payload, preparedBaseline.payload);
+      assert.equal(submission.payloadSha256, preparedBaseline.payloadSha256);
+      assert.equal(submission.requestId, attempted.attempt.attemptedAt);
+      assert.ok(Object.isFrozen(attempted.attempt.submission.payload.proof.pi_b[0]));
+      assert.deepEqual(await intentStore.inspect(), {
+        records: 1,
+        sequence: 2,
+        capacity: 32,
+        reservedTransitions: 2,
+        freeTransitions: 124,
+      });
+      attemptRuns.push({
+        mode: 'durable-attempt-completion-discarded',
+        canonicalSubmissionRetained: true,
+        originalPreparationRevisionRetained: true,
+        requestIdAllocatedOnce: true,
+        sequence: 2,
+        remainingReservedTransitions: 2,
+        disclosureEnabled: false,
+        spendingEnabled: false,
+      });
+      const { assertRailgunOwnPoiProof } = require('../src/main/wallet/railgun-own-poi-proof');
+      // This must be BEFORE enrollment reopen: a revoked old proof would refuse
+      // at the registry boundary and would not exercise the attempted-state guard.
+      assertRailgunOwnPoiProof(savedProof, enrollment, publicAccount.coordinator);
+      const reprepare = await intentStore.prepare({
+        proof: savedProof,
+        coordinator: publicAccount.coordinator,
+        signal: enrollment.signal,
+      });
+      assert.equal(reprepare.status, 'refused');
+      assert.equal(reprepare.stage, 'persist');
+      assertRailgunOwnPoiProof(savedProof, enrollment, publicAccount.coordinator);
+      assert.equal((await begin()).status, 'refused');
+      assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), attempted);
+      attemptRuns.push({
+        mode: 'current-proof-and-duplicate-attempt-refused',
+        genuineProofStillCurrent: true,
+        noWrite: true,
+      });
+      const refuseConsumers = async (when) => {
+        for (const [label, validate] of [
+          ['output', recoverRailgunPoiOutput],
+          ['cold-proof', validateRailgunRetainedPoi],
+          ['cold-history', validateRailgunRetainedPoiHistory],
+        ]) {
+          const result = await validate({
+            identity,
+            enrollment,
+            coordinator: publicAccount.coordinator,
+            archive,
+            capsuleDigest: preparedBaseline.capsuleDigest,
+            signal: enrollment.signal,
+            ...(label === 'output' ? {} : { proverArchive, artifactDirectory }),
+          });
+          assert.deepEqual(result, { status: 'refused', stage: 'stored' });
+          assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), attempted);
+          assert.deepEqual(intentActivity(), beforeActivity);
+          assert.deepEqual({ outputRecoveryJobs, coldValidationVerifierJobs }, beforeGuards);
+          attemptRuns.push({
+            mode: when + '-' + label,
+            refusedAtStoredGate: true,
+            additionalQueries: 0,
+            additionalUtilities: 0,
+            additionalUtilityKeyHandoffs: 0,
+          });
+        }
+      };
+      await refuseConsumers('before-reopen');
+      // Keep the earlier prepared baseline separate. The generic reopen helper
+      // now checks this exact persisted attempted entry, not a reconstructed body.
+      retainedIntent = attempted;
+      await reopenPreparedIntent();
+      assert.deepEqual(await intentStore.get(preparedBaseline.capsuleDigest), attempted);
+      assert.equal((await begin()).status, 'refused');
+      await refuseConsumers('after-reopen');
+      assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+      assert.deepEqual(intentActivity(), beforeActivity);
+      assert.deepEqual({ outputRecoveryJobs, coldValidationVerifierJobs }, beforeGuards);
+      attemptRuns.push({
+        mode: 'cold-attempt-recovery',
+        exactEnvelopeAndTimestampRetained: true,
+        preparedRevisionUnchanged: true,
+        journalUnchanged: true,
+        automaticRetry: false,
+        liveQueries: 0,
+        submissions: 0,
+      });
+      assert.equal(attemptRuns.length, 11);
+      assert.deepEqual(attemptWork, { utilities: 0, utilityKeyHandoffs: 0 });
+      attemptActive = false;
+    }
     if (retainedHistoryMode) {
       phase = 'retained-history-later-mirror';
       task = processModule.startRailgunProcess({
@@ -3237,7 +3388,8 @@ async function main() {
     assert.equal(transportCreates, transportCloses);
     assert.equal(jobs.membership, jobs.membershipExit);
     assert.equal(jobs.selector, jobs.selectorExit);
-    if (intentsMode && !outputRecoveryMode && !coldValidationMode) await reopenPreparedIntent();
+    if (intentsMode && !outputRecoveryMode && !coldValidationMode && !attemptMode)
+      await reopenPreparedIntent();
     assert.deepEqual(hashes(), before);
     const report = {
       fixture: 'synthetic-enrolled-own-poi-membership',
@@ -3254,6 +3406,9 @@ async function main() {
       outputRecoveryMode,
       coldValidationMode,
       retainedHistoryMode,
+      attemptMode,
+      attemptRuns,
+      attemptWork,
       coldValidationRuns,
       coldValidationVerifierJobs,
       coldValidationVerifierTimings,

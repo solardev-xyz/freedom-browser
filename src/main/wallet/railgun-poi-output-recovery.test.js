@@ -1342,3 +1342,30 @@ test.each([2, 3, 4, 5])(
     expect(mock.store.signal.aborted).toBe(false);
   }
 );
+
+test.each([false, true])(
+  'valid attempted %s record refuses before all preflight, key and utility work',
+  async (unshield) => {
+    configure(unshield);
+    const attemptedAt = 1791111111111;
+    const submission = require('./railgun-poi-submit-data').prepareRailgunPoiSubmission({
+      payload: mock.entry.payload,
+      requestId: attemptedAt,
+    });
+    mock.entry = { ...mock.entry, state: 'attempted', attempt: { attemptedAt, submission } };
+    const stored = JSON.stringify(mock.entry);
+    for (let read = 0; read < 2; read++) {
+      // A freshly detached decrypted read has the same refusal, without relying on
+      // object identity or a live proof receipt. Actual reopen is a native fixture.
+      mock.entry = JSON.parse(stored);
+      expect(await run()).toEqual({ status: 'refused', stage: 'stored' });
+    }
+    expect(mock.preflight).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(mock.credential).not.toHaveBeenCalled();
+    expect(mock.store.signal.aborted).toBe(false);
+    expect(JSON.stringify(mock.entry)).toBe(stored);
+  }
+);

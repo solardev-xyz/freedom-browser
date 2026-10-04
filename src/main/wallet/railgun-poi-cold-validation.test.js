@@ -1797,3 +1797,31 @@ describe('retained historical TXID root composition', () => {
     }
   );
 });
+
+test.each([false, true].flatMap((unshield) => [false, true].map((history) => [unshield, history])))(
+  'valid attempted %s record refuses cold validator history=%s before all delegated work',
+  async (unshield, history) => {
+    configureHistory(unshield);
+    const attemptedAt = 1791111111111;
+    const submission = require('./railgun-poi-submit-data').prepareRailgunPoiSubmission({
+      payload: mock.entry.payload,
+      requestId: attemptedAt,
+    });
+    mock.entry = { ...mock.entry, state: 'attempted', attempt: { attemptedAt, submission } };
+    const stored = JSON.stringify(mock.entry);
+    for (let read = 0; read < 2; read++) {
+      mock.entry = JSON.parse(stored);
+      expect(await (history ? runHistory() : run())).toEqual({
+        status: 'refused',
+        stage: 'stored',
+      });
+    }
+    expect(mock.output).not.toHaveBeenCalled();
+    expect(mock.verify).not.toHaveBeenCalled();
+    expect(mock.selector).not.toHaveBeenCalled();
+    expect(mock.openTxid).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    expect(mock.store.signal.aborted).toBe(false);
+    expect(JSON.stringify(mock.entry)).toBe(stored);
+  }
+);
