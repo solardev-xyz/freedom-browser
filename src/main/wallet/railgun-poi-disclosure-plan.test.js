@@ -150,6 +150,7 @@ const { REQUIRED_LIST } = require('./railgun-poi-records');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const {
+  claimRailgunAttemptedPoiOutput: claimAttempted,
   prepareRailgunPoiDisclosurePlan: prepare,
   revalidateRailgunPoiDisclosurePlan: revalidate,
 } = require('./railgun-poi-disclosure-plan');
@@ -164,7 +165,7 @@ const freeze = (value) => {
   }
   return value;
 };
-let options, gates, operations, plans;
+let options, gates, operations, plans, claims;
 const deferred = () => {
   let resolve;
   const promise = new Promise((done) => {
@@ -276,6 +277,7 @@ beforeEach(() => {
   gates = [];
   operations = [];
   plans = [];
+  claims = [];
   mock = {
     caller: new AbortController(),
     identityAbort: new AbortController(),
@@ -346,6 +348,7 @@ afterEach(async () => {
   mock.caller.abort();
   mock.enrollmentAbort.abort();
   for (const plan of plans) plan.close();
+  for (const claim of claims) claim.release();
   for (const gate of gates) gate.resolve();
   await Promise.allSettled(operations);
   await Promise.all(plans.map((plan) => plan.closed));
@@ -481,6 +484,7 @@ test.each([false, true])(
 );
 test('exports preparation, display revalidation and fixed unwired sender without a generic issuer', () => {
   expect(Object.keys(require('./railgun-poi-disclosure-plan')).sort()).toEqual([
+    'claimRailgunAttemptedPoiOutput',
     'prepareRailgunPoiDisclosurePlan',
     'revalidateRailgunPoiDisclosurePlan',
     'submitRailgunRetainedPoi',
@@ -1206,3 +1210,232 @@ test('replacement using old wrapper signal cancels the successor and does not re
   expect(fresh.status).toBe('prepared');
   expect((await recheck(fresh)).summary).toBe(fresh.summary);
 });
+
+const claimOptions = (changes = {}) => ({
+  identity: mock.identity,
+  enrollment: mock.enrollment,
+  coordinator: mock.coordinator,
+  signal: mock.caller.signal,
+  ...changes,
+});
+const claimed = (changes = {}) => {
+  const claim = claimAttempted(claimOptions(changes));
+  claims.push(claim);
+  return claim;
+};
+const CLAIM_REFUSED = {
+  code: 'RAILGUN_POI_DISCLOSURE_PLAN_REFUSED',
+  message: 'Railgun POI disclosure plan unavailable',
+};
+describe('attempted output synchronous directory claim', () => {
+  test('exact frozen return offers exclusion only and opens no store or recovery phase', () => {
+    const claim = claimed();
+    expect(Object.isFrozen(claim)).toBe(true);
+    expect(Object.keys(claim).sort()).toEqual(['assertCurrent', 'release']);
+    expect(claim.assertCurrent()).toBeUndefined();
+    expect(mock.enrollment.openPoiIntents).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+    idle();
+    expect(claim.release()).toBeUndefined();
+    expect(claim.release()).toBeUndefined();
+    expect(() => claim.assertCurrent()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+  });
+  test.each([undefined, null, [], false, 1, 'private'])(
+    'malformed %p claim is sanitized without touching a healthy claim',
+    (value) => {
+      const claim = claimed();
+      expect(() => claimAttempted(value)).toThrow(expect.objectContaining(CLAIM_REFUSED));
+      expect(claim.assertCurrent()).toBeUndefined();
+      expect(mock.enrollment.openPoiIntents).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['identity', 'enrollment', 'coordinator', 'signal', 'extra', 'accessor'])(
+    'invalid %s field cannot replace or release the existing owner',
+    (kind) => {
+      const claim = claimed();
+      const args = claimOptions();
+      const getter = jest.fn(() => mock.identity);
+      if (kind === 'extra') args.directory = mock.enrollment.directory;
+      else if (kind === 'accessor') Object.defineProperty(args, 'identity', { get: getter });
+      else args[kind] = {};
+      expect(() => claimAttempted(args)).toThrow(expect.objectContaining(CLAIM_REFUSED));
+      expect(getter).not.toHaveBeenCalled();
+      expect(claim.assertCurrent()).toBeUndefined();
+      expect(mock.enrollment.openPoiIntents).not.toHaveBeenCalled();
+    }
+  );
+  test('preaborted signal cannot revoke an unrelated idle plan', async () => {
+    const plan = await run();
+    const caller = new AbortController();
+    caller.abort();
+    expect(() => claimed({ signal: caller.signal })).toThrow(
+      expect.objectContaining(CLAIM_REFUSED)
+    );
+    expect(plan.signal.aborted).toBe(false);
+    expect((await recheck(plan)).status).toBe('current');
+  });
+  test('healthy claim excludes plan prepare/revalidate while preserving an idle plan', async () => {
+    const plan = await run();
+    const claim = claimed();
+    const count = mock.enrollment.openPoiIntents.mock.calls.length;
+    expect((await run()).stage).toBe('busy');
+    expect((await recheck(plan)).stage).toBe('busy');
+    expect(plan.signal.aborted).toBe(false);
+    expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(count);
+    expect(() => claimed()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+    expect(claim.assertCurrent()).toBeUndefined();
+    claim.release();
+    expect((await recheck(plan)).status).toBe('current');
+  });
+  test.each(['prepare', 'revalidate'])(
+    'pending %s owner rejects a claim without disturbing its borrowed work',
+    async (kind) => {
+      const plan = kind === 'revalidate' ? await run() : undefined;
+      const gate = deferred();
+      mock.recoveryStart.mockImplementationOnce(async () => {
+        await gate.promise;
+      });
+      const baseline = mock.recoveryStart.mock.calls.length;
+      const pending = kind === 'prepare' ? run() : recheck(plan);
+      await until(() => mock.recoveryStart.mock.calls.length > baseline);
+      expect(() => claimed()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+      if (plan) expect(plan.signal.aborted).toBe(false);
+      gate.resolve();
+      expect((await pending).status).toBe(kind === 'prepare' ? 'prepared' : 'current');
+      expect(claimed().assertCurrent()).toBeUndefined();
+    }
+  );
+  test.each([
+    'caller',
+    'identity',
+    'enrollment',
+    'coordinator',
+    'directory',
+    'descriptor',
+    'policy',
+    'generation',
+  ])(
+    '%s invalidation makes assertion stale but never automatically releases exclusion',
+    async (kind) => {
+      const signal = new AbortController();
+      const claim = claimed({ signal: signal.signal });
+      const before = {
+        directory: mock.enrollment.directory,
+        descriptor: copy(mock.identity.descriptor),
+        policy: mock.policy,
+        publicIdentity: copy(mock.publicIdentity),
+      };
+      if (kind === 'caller') signal.abort();
+      if (kind === 'identity') mock.identityCurrent = false;
+      if (kind === 'enrollment') mock.enrollmentAbort.abort();
+      if (kind === 'coordinator') mock.coordinatorAbort.abort();
+      if (kind === 'directory') mock.enrollment.directory += '-changed';
+      if (kind === 'descriptor') mock.identity.descriptor.accountIndex++;
+      if (kind === 'policy') mock.policy = { ...mock.policy, version: 2 };
+      if (kind === 'generation') mock.publicIdentity.generationId = hex(999);
+      expect(() => claim.assertCurrent()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+      if (!['enrollment', 'coordinator'].includes(kind)) {
+        mock.identityCurrent = true;
+        mock.enrollment.directory = before.directory;
+        mock.identity.descriptor = before.descriptor;
+        mock.policy = before.policy;
+        mock.publicIdentity = before.publicIdentity;
+        expect(() => claimed({ signal: new AbortController().signal })).toThrow(
+          expect.objectContaining(CLAIM_REFUSED)
+        );
+        claim.release();
+        expect(claimed({ signal: new AbortController().signal }).assertCurrent()).toBeUndefined();
+      }
+    }
+  );
+  test('release is idempotent, invokes no abort callbacks, and cannot remove a successor', () => {
+    const signal = new AbortController();
+    const listener = jest.fn();
+    signal.signal.addEventListener('abort', listener);
+    const first = claimed({ signal: signal.signal });
+    first.release();
+    const second = claimed();
+    first.release();
+    signal.abort();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(second.assertCurrent()).toBeUndefined();
+    expect(() => claimed()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+  });
+  test('closing and expiring unrelated plans cannot unlock a live diagnostic token', async () => {
+    const plan = await run();
+    const claim = claimed({ signal: new AbortController().signal });
+    plan.close();
+    await plan.closed;
+    await jest.advanceTimersByTimeAsync(120001);
+    expect(claim.assertCurrent()).toBeUndefined();
+    expect(() => claimed()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+    claim.release();
+    expect((await run()).status).toBe('prepared');
+  });
+  test('nested synchronous owner admission cannot be overwritten by outer validation', () => {
+    const identity = require('./railgun-identity').assertRailgunIdentity;
+    const original = identity.getMockImplementation();
+    let inner;
+    identity.mockImplementationOnce((...args) => {
+      inner = claimed();
+      return original(...args);
+    });
+    expect(() => claimed()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+    expect(inner.assertCurrent()).toBeUndefined();
+    expect(() => claimed()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+    inner.release();
+    expect(claimed().assertCurrent()).toBeUndefined();
+  });
+  test('reentrant release and successor during assertion cannot rescue the stale claim', () => {
+    const first = claimed();
+    const identity = require('./railgun-identity').assertRailgunIdentity;
+    const original = identity.getMockImplementation();
+    let successor;
+    identity.mockImplementationOnce((...args) => {
+      first.release();
+      successor = claimed();
+      return original(...args);
+    });
+    expect(() => first.assertCurrent()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+    first.release();
+    expect(successor.assertCurrent()).toBeUndefined();
+    expect(() => claimed()).toThrow(expect.objectContaining(CLAIM_REFUSED));
+  });
+  test('exact same-directory enrollment aliases still share exclusion', () => {
+    const first = claimed();
+    const alias = { ...mock.enrollment };
+    mock.enrollments.add(alias);
+    expect(() => claimed({ enrollment: alias })).toThrow(expect.objectContaining(CLAIM_REFUSED));
+    expect(first.assertCurrent()).toBeUndefined();
+    first.release();
+    expect(claimed({ enrollment: alias }).assertCurrent()).toBeUndefined();
+  });
+});
+
+test.each(['output-first', 'plan-first'])(
+  'cold module import order %s has no eager reverse dependency or authority work',
+  (order) => {
+    const forbidden = [
+      './railgun-poi-cold-validation',
+      './railgun-own-receipt',
+      '../networks/wallet-tor-transport',
+    ].map((name) => require.resolve(name));
+    jest.isolateModules(() => {
+      let output, plan;
+      if (order === 'output-first') {
+        output = require('./railgun-poi-output-recovery');
+        expect(require.cache[require.resolve('./railgun-poi-disclosure-plan')]).toBeUndefined();
+        plan = require('./railgun-poi-disclosure-plan');
+      } else {
+        plan = require('./railgun-poi-disclosure-plan');
+        expect(require.cache[require.resolve('./railgun-poi-output-recovery')]).toBeUndefined();
+        output = require('./railgun-poi-output-recovery');
+      }
+      expect(typeof plan.claimRailgunAttemptedPoiOutput).toBe('function');
+      expect(typeof output.recoverRailgunAttemptedPoiOutput).toBe('function');
+      for (const file of forbidden) expect(require.cache[file]).toBeUndefined();
+    });
+    expect(mock.enrollment.openPoiIntents).not.toHaveBeenCalled();
+    expect(withRailgunOwnOperationRecovery).not.toHaveBeenCalled();
+  }
+);

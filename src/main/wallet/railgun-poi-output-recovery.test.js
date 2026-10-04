@@ -11,7 +11,7 @@ jest.mock('./railgun-identity', () => ({
       identity.signal.aborted ||
       !mock.identityCurrent ||
       context.subject.role !== 'engine' ||
-      context.subject.operation !== 'poi-output-recover' ||
+      ![null, 'poi-output-recover'].includes(context.subject.operation) ||
       context.subject.principal !== 'railgun:0' ||
       context.subject.chainId !== 11155111 ||
       context.subject.protocol !== 'railgun' ||
@@ -32,6 +32,17 @@ jest.mock('./railgun-public-policy', () => ({
   },
 }));
 jest.mock('./railgun-account-public', () => ({
+  assertRailgunAccountPublic: (coordinator, enrollment, policy) => {
+    if (
+      coordinator !== mock.coordinator ||
+      enrollment !== mock.enrollment ||
+      coordinator.signal.aborted ||
+      !mock.publicCurrent ||
+      (policy !== undefined && policy !== 'fixture-policy')
+    )
+      throw Error('registered policy');
+    return 'fixture-policy';
+  },
   getRailgunAccountPublicDestination: (coordinator, enrollment, policy) => {
     if (
       coordinator !== mock.coordinator ||
@@ -186,6 +197,7 @@ const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
 const { normalizeRailgunPoiOutputRecoveryInput } = require('./railgun-poi-output-recovery-data');
 const { REQUIRED_LIST } = require('./railgun-poi-records');
 const {
+  recoverRailgunAttemptedPoiOutput,
   recoverRailgunPoiOutput,
   recoverRailgunPoiOutputCompleted,
   recoverRailgunPoiOutputForSubmission,
@@ -202,7 +214,7 @@ const hex = (n) => BigInt(n).toString(16).padStart(64, '0');
 const prefixed = (n) => '0x' + hex(n);
 const copy = (v) => JSON.parse(JSON.stringify(v));
 const sha = (v) => createHash('sha256').update(v).digest('hex');
-let options, gates, operations;
+let options, gates, operations, claims;
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((yes, no) => {
@@ -373,6 +385,7 @@ beforeEach(() => {
   jest.useFakeTimers();
   gates = [];
   operations = [];
+  claims = [];
   mock = {
     destination: Object.freeze({}),
     caller: new AbortController(),
@@ -404,6 +417,12 @@ beforeEach(() => {
   mock.identity = { signal: mock.identityAbort.signal };
   mock.coordinator = { signal: mock.coordinatorAbort.signal };
   mock.store = {
+    prepare: jest.fn(() => {
+      throw Error('unexpected prepare');
+    }),
+    beginAttempt: jest.fn(() => {
+      throw Error('unexpected attempt');
+    }),
     signal: mock.storeAbort.signal,
     get: jest.fn(async () => {
       mock.events.push('store-get');
@@ -467,6 +486,9 @@ afterEach(async () => {
   for (const gate of gates) gate.resolve();
   for (const task of mock.tasks) task.exit();
   await Promise.allSettled(operations);
+  for (const claim of claims) claim.release();
+  expect(mock.store.prepare).not.toHaveBeenCalled();
+  expect(mock.store.beginAttempt).not.toHaveBeenCalled();
   mock.scope.close();
   jest.restoreAllMocks();
   jest.useRealTimers();
@@ -1693,4 +1715,468 @@ describe('fixed submission output core', () => {
     expect(preflightRailgunOwnPoi).toHaveBeenCalledTimes(1);
     expect(preflightRailgunOwnPoiForSubmission).not.toHaveBeenCalled();
   });
+});
+
+const attemptRecord = () => {
+  const attemptedAt = 1791111111111;
+  const submission = require('./railgun-poi-submit-data').prepareRailgunPoiSubmission({
+    payload: mock.entry.payload,
+    requestId: attemptedAt,
+  });
+  mock.entry = copy({ ...mock.entry, state: 'attempted', attempt: { attemptedAt, submission } });
+};
+const runAttempted = (input = options) => {
+  const work = recoverRailgunAttemptedPoiOutput(input);
+  operations.push(work);
+  return work;
+};
+const sharedClaim = (changes = {}) => {
+  const claim = require('./railgun-poi-disclosure-plan').claimRailgunAttemptedPoiOutput({
+    identity: mock.identity,
+    enrollment: mock.enrollment,
+    coordinator: mock.coordinator,
+    signal: new AbortController().signal,
+    ...changes,
+  });
+  claims.push(claim);
+  return claim;
+};
+describe('attempted-only retained output recovery', () => {
+  beforeEach(() => attemptRecord());
+  test.each([false, true])(
+    'matches fresh %s output and preserves exact attempted state without authority',
+    async (unshield) => {
+      configure(unshield);
+      attemptRecord();
+      const entry = JSON.stringify(mock.entry);
+      const result = await runAttempted();
+      expect(result).toEqual({
+        status: 'matched',
+        recordState: 'attempted',
+        attemptBodySha256: mock.entry.attempt.submission.bodySha256,
+        capsuleDigest: options.capsuleDigest,
+        revision: 1,
+        payloadSha256: mock.entry.payloadSha256,
+        recoveryInputSha256: unshield ? null : sha(mock.task.options.input),
+        preflightDurationMs: 0,
+        viewingKeyReleases: Number(!unshield),
+        viewingUtilityExitObserved: !unshield,
+        outputMatched: true,
+        proofVerified: false,
+        originalInputReconstructed: false,
+        originalRootsAccepted: false,
+        membershipAuthenticated: false,
+        sourceAuthenticated: false,
+        disclosureEnabled: false,
+        spendingEnabled: false,
+        submissionAccepted: false,
+        attemptOutcomeKnown: false,
+        eligibilityEstablished: false,
+        retryEnabled: false,
+      });
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(JSON.stringify(mock.entry)).toBe(entry);
+      expect(mock.enrollment.openPoiIntents).toHaveBeenCalledWith({ existingOnly: true });
+      expect(preflightRailgunOwnPoiCompleted).toHaveBeenCalledTimes(1);
+      expect(preflightRailgunOwnPoiCompleted.mock.calls[0][0].sourceDestination).toBe(
+        mock.destination
+      );
+      expect(preflightRailgunOwnPoi).not.toHaveBeenCalled();
+      expect(preflightRailgunOwnPoiForSubmission).not.toHaveBeenCalled();
+      expect(withRailgunViewingCredential).toHaveBeenCalledTimes(Number(!unshield));
+      expect(mock.borrowed.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+      expect(mock.copies.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+      if (!unshield) {
+        expect(mock.events).toContain('job-exit');
+        expect(mock.task.options.input).not.toContain('"blindedCommitmentsOut"');
+        expect(mock.task.options.input).not.toContain('"payload"');
+        expect(mock.task.options.input).not.toContain(JSON.stringify(mock.entry.payload.proof));
+      }
+      expect(sharedClaim().assertCurrent()).toBeUndefined();
+    }
+  );
+  test.each(['prepared', 'missing', 'unknown'])(
+    '%s state refuses before preflight and releases its temporary shared claim',
+    async (state) => {
+      if (state === 'missing') mock.entry = null;
+      else mock.entry.state = state;
+      expect(await runAttempted()).toEqual({ status: 'refused', stage: 'stored' });
+      expect(mock.preflight).not.toHaveBeenCalled();
+      expect(startRailgunProcess).not.toHaveBeenCalled();
+      expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+      expect(sharedClaim().assertCurrent()).toBeUndefined();
+    }
+  );
+  test.each([
+    'sourceDestination',
+    'reader',
+    'observation',
+    'entry',
+    'payload',
+    'selector',
+    'state',
+    'transport',
+    'review',
+    'approved',
+    'proverArchive',
+    'artifactDirectory',
+  ])('%s caller override is refused before storage and cannot grant access', async (key) => {
+    expect((await runAttempted({ ...options, [key]: {} })).status).toBe('refused');
+    expect(mock.enrollment.openPoiIntents).not.toHaveBeenCalled();
+    expect(mock.preflight).not.toHaveBeenCalled();
+    expect(sharedClaim().assertCurrent()).toBeUndefined();
+  });
+  test.each([
+    'id',
+    'body',
+    'body-sha',
+    'payload-sha',
+    'payload',
+    'endpoint',
+    'extra',
+    'missing',
+    'revision',
+  ])('invalid attempted %s binding refuses before preflight', async (field) => {
+    const attempt = mock.entry.attempt;
+    if (field === 'id') attempt.attemptedAt++;
+    if (field === 'body') attempt.submission.body += ' ';
+    if (field === 'body-sha') attempt.submission.bodySha256 = hex(999);
+    if (field === 'payload-sha') attempt.submission.payloadSha256 = hex(999);
+    if (field === 'payload') {
+      changePayload((payload) => {
+        payload.proof.pi_a[0] = '9';
+      });
+    }
+    if (field === 'endpoint') attempt.submission.endpoint = 'https://different.invalid';
+    if (field === 'extra') attempt.extra = true;
+    if (field === 'missing') mock.entry.attempt = undefined;
+    if (field === 'revision') mock.entry.revision = 0;
+    expect(await runAttempted()).toEqual({ status: 'refused', stage: 'stored' });
+    expect(mock.preflight).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(sharedClaim().assertCurrent()).toBeUndefined();
+  });
+  test.each([false, true])(
+    'coherently wrong %s retained output still fails independent reconstruction',
+    async (unshield) => {
+      configure(unshield);
+      changePayload((payload) => {
+        if (unshield) payload.railgunTxidIfHasUnshield = prefixed(999);
+        else payload.blindedCommitmentsOut = [prefixed(999)];
+      });
+      attemptRecord();
+      const original = JSON.stringify(mock.entry);
+      expect((await runAttempted()).status).toBe('refused');
+      expect(mock.preflight).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(mock.entry)).toBe(original);
+      expect(withRailgunViewingCredential).toHaveBeenCalledTimes(Number(!unshield));
+    }
+  );
+  test.each([2, 3, 4, 5])(
+    'readback %i detects a coherently replaced canonical attempt envelope',
+    async (at) => {
+      let count = 0;
+      mock.store.get.mockImplementation(async () => {
+        if (++count === at) {
+          const attemptedAt = mock.entry.attempt.attemptedAt + 1;
+          mock.entry.attempt = copy({
+            attemptedAt,
+            submission: require('./railgun-poi-submit-data').prepareRailgunPoiSubmission({
+              payload: mock.entry.payload,
+              requestId: attemptedAt,
+            }),
+          });
+        }
+        return copy(mock.entry);
+      });
+      expect((await runAttempted()).status).toBe('refused');
+      expect(count).toBe(at);
+      expect(sharedClaim().assertCurrent()).toBeUndefined();
+    }
+  );
+  test.each(['prepared', 'completed', 'submission'])(
+    '%s route continues to reject attempted entries before any preflight',
+    async (route) => {
+      let work;
+      if (route === 'prepared') work = run();
+      else if (route === 'completed') work = runCompleted();
+      else {
+        work = recoverRailgunPoiOutputForSubmission(
+          { ...options, sourceDestination: mock.destination },
+          { entry: copy(mock.entry), capture: copy(mock.capture), observation: {} }
+        );
+        operations.push(work);
+      }
+      expect(await work).toEqual({ status: 'refused', stage: 'stored' });
+      expect(mock.preflight).not.toHaveBeenCalled();
+      expect(startRailgunProcess).not.toHaveBeenCalled();
+      expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+    }
+  );
+  test.each(['destination', 'generation'])(
+    'fresh %s replacement during completed preflight prevents viewing admission',
+    async (field) => {
+      mock.preflight.mockImplementationOnce(async () => {
+        if (field === 'destination') mock.destination = Object.freeze({});
+        else mock.publicIdentity.generationId = hex(999);
+        return copy(mock.fresh);
+      });
+      expect((await runAttempted()).status).toBe('refused');
+      expect(startRailgunProcess).not.toHaveBeenCalled();
+      expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+      expect(sharedClaim().assertCurrent()).toBeUndefined();
+    }
+  );
+  test('original attempted diagnostic deadline expires during held store open and still drains', async () => {
+    const gate = deferred();
+    mock.enrollment.openPoiIntents.mockImplementationOnce(async () => {
+      await gate.promise;
+      return mock.store;
+    });
+    let settled = false;
+    const pending = runAttempted().then((result) => {
+      settled = true;
+      return result;
+    });
+    await waitFor(() => mock.enrollment.openPoiIntents.mock.calls.length === 1);
+    await jest.advanceTimersByTimeAsync(240000);
+    expect(settled).toBe(false);
+    expect(() => sharedClaim()).toThrow();
+    gate.resolve();
+    expect((await pending).status).toBe('refused');
+    expect(mock.preflight).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(sharedClaim().assertCurrent()).toBeUndefined();
+  });
+  test('another genuine shared owner maps to exact busy without source diagnostic or later work', async () => {
+    const claim = sharedClaim();
+    expect(await runAttempted()).toEqual({ status: 'refused', stage: 'busy' });
+    expect(mock.enrollment.openPoiIntents).not.toHaveBeenCalled();
+    expect(mock.preflight).not.toHaveBeenCalled();
+    expect(withRailgunViewingCredential).not.toHaveBeenCalled();
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(claim.assertCurrent()).toBeUndefined();
+    claim.release();
+    expect((await runAttempted()).status).toBe('matched');
+  });
+  test.each(['open', 'preflight', 'final-read', 'post-recovery'])(
+    'cancelled %s borrowed work retains shared exclusion until complete drain',
+    async (point) => {
+      const gate = deferred(),
+        entered = deferred();
+      const hold = async () => {
+        entered.resolve();
+        await gate.promise;
+      };
+      if (point === 'open')
+        mock.enrollment.openPoiIntents.mockImplementationOnce(async () => {
+          await hold();
+          return mock.store;
+        });
+      if (point === 'preflight')
+        mock.preflight.mockImplementationOnce(async () => {
+          await hold();
+          return copy(mock.fresh);
+        });
+      if (point === 'post-recovery') mock.recoveryPost.mockImplementationOnce(hold);
+      if (point === 'final-read') {
+        const original = mock.store.get.getMockImplementation();
+        mock.store.get.mockImplementation(async (...args) => {
+          if (mock.events.includes('window-close')) await hold();
+          return original(...args);
+        });
+      }
+      let settled = false;
+      const pending = runAttempted().then((value) => {
+        settled = true;
+        return value;
+      });
+      await entered.promise;
+      mock.caller.abort();
+      for (let tick = 0; tick < 30; tick++) await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(() => sharedClaim()).toThrow();
+      expect(
+        await runAttempted({
+          ...options,
+          capsuleDigest: hex(999),
+          signal: new AbortController().signal,
+        })
+      ).toEqual({ status: 'refused', stage: 'busy' });
+      gate.resolve();
+      expect((await pending).status).toBe('refused');
+      const successor = sharedClaim();
+      expect(successor.assertCurrent()).toBeUndefined();
+      successor.release();
+      mock.store.get.mockImplementation(async () => copy(mock.entry));
+      expect(
+        (await runAttempted({ ...options, signal: new AbortController().signal })).status
+      ).toBe('matched');
+    }
+  );
+  test.each(['derivation', 'pre-key-reattest', 'credential-reattest'])(
+    'utility exit alone cannot release shared exclusion while %s is borrowed',
+    async (point) => {
+      const gate = deferred(),
+        entered = deferred();
+      if (point === 'derivation') {
+        const original = mock.credential.getMockImplementation();
+        mock.credential.mockImplementationOnce(async (use) => {
+          entered.resolve();
+          await gate.promise;
+          return original(use);
+        });
+      } else {
+        let reads = 0;
+        mock.reattest.mockImplementation(async () => {
+          if (++reads === (point === 'pre-key-reattest' ? 2 : 3)) {
+            entered.resolve();
+            await gate.promise;
+          }
+          return copy(mock.capture);
+        });
+      }
+      let settled = false;
+      const pending = runAttempted().then((result) => {
+        settled = true;
+        return result;
+      });
+      await entered.promise;
+      mock.caller.abort();
+      await waitFor(() => mock.events.includes('job-exit'));
+      for (let tick = 0; tick < 30; tick++) await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(mock.phase).toBe(true);
+      expect(() => sharedClaim()).toThrow();
+      gate.resolve();
+      expect((await pending).status).toBe('refused');
+      expect(mock.phase).toBe(false);
+      expect(mock.copies).toHaveLength(0);
+      expect(sharedClaim().assertCurrent()).toBeUndefined();
+    }
+  );
+  test('late genuine fatal source refusal survives cancellation while shared ownership drains', async () => {
+    const gate = deferred();
+    const sourceOutcome = Object.freeze({ fatal: true, reason: 'fatal', rpcFailure: 'response' });
+    mock.preflight.mockImplementationOnce(async () => {
+      await gate.promise;
+      return { status: 'refused', stage: 'source:snapshot', sourceOutcome };
+    });
+    const pending = runAttempted();
+    await waitFor(() => mock.preflight.mock.calls.length === 1);
+    mock.caller.abort();
+    expect(() => sharedClaim()).toThrow();
+    gate.resolve();
+    expect(await pending).toEqual({
+      status: 'refused',
+      stage: 'preflight:source:snapshot',
+      sourceOutcome,
+    });
+    expect(startRailgunProcess).not.toHaveBeenCalled();
+    expect(sharedClaim().assertCurrent()).toBeUndefined();
+  });
+  test('prepared and submission-only routes never double-claim beneath a sender owner', async () => {
+    configure();
+    const claim = sharedClaim();
+    expect((await run()).status).toBe('matched');
+    expect((await runCompleted()).status).toBe('matched');
+    const work = recoverRailgunPoiOutputForSubmission(
+      { ...options, sourceDestination: mock.destination },
+      { entry: copy(mock.entry), capture: copy(mock.capture), observation: {} }
+    );
+    operations.push(work);
+    expect((await work).status).toBe('matched');
+    expect(claim.assertCurrent()).toBeUndefined();
+  });
+});
+
+test('non-contention claim failure still maps exact busy and fabricates no source outcome', async () => {
+  attemptRecord();
+  const authority = require('./railgun-identity').assertRailgunIdentity;
+  const original = authority.getMockImplementation();
+  authority.mockImplementationOnce(original).mockImplementationOnce(() => {
+    mock.identityCurrent = false;
+    throw Object.assign(Error('PRIVATE owner changed'), { sourceOutcome: { fatal: true } });
+  });
+  expect(await runAttempted()).toEqual({ status: 'refused', stage: 'busy' });
+  expect(mock.enrollment.openPoiIntents).not.toHaveBeenCalled();
+  expect(mock.preflight).not.toHaveBeenCalled();
+  expect(startRailgunProcess).not.toHaveBeenCalled();
+  mock.identityCurrent = true;
+  expect(sharedClaim().assertCurrent()).toBeUndefined();
+});
+test('local output-owner contention releases only the new shared claim and preserves existing work', async () => {
+  const gate = deferred();
+  mock.preflight.mockImplementationOnce(async () => {
+    await gate.promise;
+    return copy(mock.fresh);
+  });
+  const pending = run();
+  await waitFor(() => mock.preflight.mock.calls.length === 1);
+  expect(await runAttempted()).toEqual({ status: 'refused', stage: 'context' });
+  const claim = sharedClaim();
+  expect(claim.assertCurrent()).toBeUndefined();
+  claim.release();
+  expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(1);
+  gate.resolve();
+  expect((await pending).status).toBe('matched');
+});
+describe.each(['prepared', 'attempted'])('%s cleanup exception drain', (route) => {
+  test.each(['throw-close', 'reject-closed'])(
+    '%s still drains a borrowed credential and wipes every key copy before release',
+    async (failure) => {
+      if (route === 'attempted') attemptRecord();
+      const gate = deferred(),
+        entered = deferred();
+      const original = mock.credential.getMockImplementation();
+      mock.credential.mockImplementationOnce(async (use) =>
+        original(async (loan) => {
+          const bytes = await use(loan);
+          // The actual host copy exists, but the credential loan has not returned.
+          mock.pendingKeyCopy = bytes;
+          entered.resolve();
+          await gate.promise;
+          return bytes;
+        })
+      );
+      mock.scenario = async (job, task) => {
+        const borrowed = sendKey(job);
+        borrowed.catch(() => {});
+        await entered.promise;
+        if (failure === 'throw-close') {
+          const close = task.close.getMockImplementation();
+          // First close is the abort listener; only the explicit cleanup call
+          // throws, so the mock never manufactures an uncaught EventTarget error.
+          task.close.mockImplementationOnce(close).mockImplementation(() => {
+            throw Error('close failure');
+          });
+        } else {
+          task.closed = Promise.reject(Error('closed failure'));
+          task.closed.catch(() => {});
+        }
+        // Supervisor completion races with its still-borrowed key request.
+        return {};
+      };
+      let settled = false;
+      const pending = (route === 'attempted' ? runAttempted() : run()).then((result) => {
+        settled = true;
+        return result;
+      });
+      await entered.promise;
+      await waitFor(() => mock.task.close.mock.calls.length >= 1);
+      for (let tick = 0; tick < 30; tick++) await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(mock.phase).toBe(true);
+      expect(mock.pendingKeyCopy.some((byte) => byte !== 0)).toBe(true);
+      expect(mock.borrowed[0].some((byte) => byte !== 0)).toBe(true);
+      if (route === 'attempted') expect(() => sharedClaim()).toThrow();
+      else expect((await run()).status).toBe('refused');
+      gate.resolve();
+      expect((await pending).status).toBe('refused');
+      expect(mock.phase).toBe(false);
+      expect(mock.pendingKeyCopy.every((byte) => byte === 0)).toBe(true);
+      expect(mock.borrowed.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+      expect(sharedClaim().assertCurrent()).toBeUndefined();
+    }
+  );
 });

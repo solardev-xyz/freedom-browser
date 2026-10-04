@@ -1330,6 +1330,11 @@ test('fixed sender and submission cores remain unwired outside their explicit pr
   visit(root);
   for (const [name, expected] of [
     ['submitRailgunRetainedPoi', ['main/wallet/railgun-poi-disclosure-plan.js']],
+    ['recoverRailgunAttemptedPoiOutput', ['main/wallet/railgun-poi-output-recovery.js']],
+    [
+      'claimRailgunAttemptedPoiOutput',
+      ['main/wallet/railgun-poi-disclosure-plan.js', 'main/wallet/railgun-poi-output-recovery.js'],
+    ],
     [
       'validateRailgunRetainedPoiForSubmission',
       ['main/wallet/railgun-poi-cold-validation.js', 'main/wallet/railgun-poi-disclosure-plan.js'],
@@ -1350,3 +1355,77 @@ test('fixed sender and submission cores remain unwired outside their explicit pr
     expect(actual).toEqual([...expected].sort());
   }
 });
+
+test.each(['before-attempt', 'pending-post', 'transport-closed'])(
+  'attempted diagnostic refuses during sender %s without store work or disturbing original owner',
+  async (point) => {
+    const plan = await freshPlan(),
+      gate = deferred();
+    if (point === 'before-attempt')
+      mock.review.mockImplementationOnce(async () => {
+        await gate.promise;
+        return true;
+      });
+    if (point === 'pending-post') {
+      const post = mock.post.getMockImplementation();
+      mock.post.mockImplementationOnce(async (...args) => {
+        await gate.promise;
+        return post(...args);
+      });
+    }
+    if (point === 'transport-closed') mock.transportClosed = gate.promise;
+    let settled = false;
+    const pending = send(plan).then((result) => {
+      settled = true;
+      return result;
+    });
+    await until(() =>
+      point === 'before-attempt'
+        ? mock.review.mock.calls.length === 1
+        : point === 'pending-post'
+          ? mock.post.mock.calls.length === 1
+          : mock.transport?.close.mock.calls.length > 0
+    );
+    for (let tick = 0; tick < 30; tick++) await Promise.resolve();
+    expect(mock.entry.state).toBe(point === 'before-attempt' ? 'prepared' : 'attempted');
+    const opens = mock.enrollment.openPoiIntents.mock.calls.length;
+    const reads = mock.store.get.mock.calls.length;
+    const queries = mock.network.request.mock.calls.length;
+    const { recoverRailgunAttemptedPoiOutput } = require('./railgun-poi-output-recovery');
+    for (const enrollment of [mock.enrollment, { ...mock.enrollment }]) {
+      mock.enrollments.add(enrollment);
+      const diagnostic = recoverRailgunAttemptedPoiOutput({
+        identity: mock.identity,
+        enrollment,
+        coordinator: mock.coordinator,
+        archive: mock.archive,
+        capsuleDigest: mock.entry.capsuleDigest,
+        signal: new AbortController().signal,
+      });
+      operations.push(diagnostic);
+      expect(await diagnostic).toEqual({ status: 'refused', stage: 'busy' });
+    }
+    expect(mock.enrollment.openPoiIntents).toHaveBeenCalledTimes(opens);
+    expect(mock.store.get).toHaveBeenCalledTimes(reads);
+    expect(mock.network.request).toHaveBeenCalledTimes(queries);
+    expect(mock.validate).toHaveBeenCalledTimes(point === 'before-attempt' ? 0 : 1);
+    expect(settled).toBe(false);
+    expect(plan.signal.aborted).toBe(false);
+    gate.resolve();
+    expect((await pending).status).toBe('recovery-required');
+    expect(mock.post).toHaveBeenCalledTimes(1);
+    // A fresh claimant after sender cleanup proves the diagnostic did not
+    // release/reacquire or poison the original sender's shared token.
+    const claim = require('./railgun-poi-disclosure-plan').claimRailgunAttemptedPoiOutput({
+      identity: mock.identity,
+      enrollment: mock.enrollment,
+      coordinator: mock.coordinator,
+      signal: new AbortController().signal,
+    });
+    try {
+      expect(claim.assertCurrent()).toBeUndefined();
+    } finally {
+      claim.release();
+    }
+  }
+);

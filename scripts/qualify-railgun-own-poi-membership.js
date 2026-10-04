@@ -3,7 +3,7 @@
  * spend proof/signature. No external transport or owned-note disclosure.
  * Real private RPC and destination/budget identities use simulated registry,
  * Tor endpoint and transport. Chain-ID handshakes are included in wire counts.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts|plans|submission]]
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY [checks|intents|output-recovery|cold-validation|retained-history|attempts|plans|submission|attempted-output]]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -269,6 +269,7 @@ async function main() {
         'attempts',
         'plans',
         'submission',
+        'attempted-output',
       ].includes(checksFlag)
     );
   const planMode = checksFlag === 'plans';
@@ -276,7 +277,10 @@ async function main() {
     planResults = [];
   const planWork = { utilities: 0, utilityKeyHandoffs: 0 };
   let planActive = false;
-  const attemptMode = checksFlag === 'attempts';
+  const attemptedOutputMode = checksFlag === 'attempted-output';
+  const attemptedOutputRuns = [];
+  let attemptedOutputValidations = 0;
+  const attemptMode = checksFlag === 'attempts' || attemptedOutputMode;
   const attemptRuns = [];
   const attemptWork = { utilities: 0, utilityKeyHandoffs: 0 };
   let attemptActive = false;
@@ -3015,6 +3019,194 @@ async function main() {
         transportCreates,
         transportCloses,
       });
+    const exerciseAttemptedOutput = async (fault = 'healthy') => {
+      phase = 'attempted-output-' + fault;
+      const {
+        recoverRailgunAttemptedPoiOutput,
+      } = require('../src/main/wallet/railgun-poi-output-recovery');
+      const baseline = await intentStore.get(retainedIntent.capsuleDigest);
+      const beforeStore = await intentStore.inspect();
+      const beforeJournal = await journal.readSnapshot();
+      const beforeActivity = intentActivity();
+      const beforeJobs = copy(outputRecoveryJobs);
+      const beforeMaintenance = copy(sourceMaintenance);
+      const beforeVerifier = copy(coldValidationVerifierJobs);
+      const beforePost = copy(submissionWire);
+      const beforeMirrorBroker = copy(outputRecoveryMirrorBroker);
+      const beforePublicBroker = copy(outputRecoveryPublicBroker);
+      const beforeGuards = outputRecoveryGuards.reports;
+      const delta = (a, b) =>
+        Object.fromEntries(Object.keys(a).map((key) => [key, a[key] - b[key]]));
+      outputRecoveryFault = fault;
+      outputPublicPlanAdmitted = false;
+      outputRecoveryInputDigest = undefined;
+      outputRecoveryTxid = undefined;
+      outputRecoveryActive = true;
+      const work = recoverRailgunAttemptedPoiOutput({
+        identity,
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        archive,
+        capsuleDigest: retainedIntent.capsuleDigest,
+        signal: operationsController.signal,
+      });
+      pendingOperations.add(work);
+      let value;
+      try {
+        value = await work;
+      } finally {
+        await work.catch(() => {});
+        pendingOperations.delete(work);
+        outputRecoveryActive = false;
+      }
+      const afterActivity = intentActivity();
+      assert.deepEqual(await intentStore.get(retainedIntent.capsuleDigest), baseline);
+      assert.deepEqual(await intentStore.inspect(), beforeStore);
+      assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+      assert.deepEqual(coldValidationVerifierJobs, beforeVerifier);
+      assert.deepEqual(submissionWire, beforePost);
+      for (const key of Object.keys(beforeActivity))
+        if (!['publicMethods', 'rpcMethods'].includes(key))
+          assert.deepEqual(afterActivity[key], beforeActivity[key]);
+      const maintenance = delta(sourceMaintenance, beforeMaintenance);
+      assert.deepEqual(maintenance, { stages: 0, retains: 0, beforeAcquire: 0, applies: 0 });
+      const chainCalls = delta(afterActivity.rpcMethods, beforeActivity.rpcMethods);
+      const serviceCalls = delta(afterActivity.publicMethods, beforeActivity.publicMethods);
+      const jobCalls = delta(outputRecoveryJobs, beforeJobs);
+      const mirrorBroker = delta(outputRecoveryMirrorBroker, beforeMirrorBroker);
+      const publicBroker = delta(outputRecoveryPublicBroker, beforePublicBroker);
+      const guardReports = outputRecoveryGuards.reports - beforeGuards;
+      assert.equal(outputRecoveryGuards.attempts, 0);
+      const prepared = baseline.state === 'prepared';
+      if (prepared) {
+        assert.deepEqual(value, { status: 'refused', stage: 'stored' });
+        assert.deepEqual(afterActivity, beforeActivity);
+        assert.deepEqual(outputRecoveryJobs, beforeJobs);
+        assert.deepEqual(outputRecoveryMirrorBroker, beforeMirrorBroker);
+        assert.deepEqual(outputRecoveryPublicBroker, beforePublicBroker);
+        assert.equal(guardReports, 0);
+      } else {
+        attemptedOutputValidations++;
+        const substituted = fault === 'substituted-output';
+        const viewing = Number(kind === 'transfer');
+        if (substituted) assert.deepEqual(value, { status: 'refused', stage: 'recovery:callback' });
+        else {
+          assert.equal(value.status, 'matched');
+          assert.equal(value.recordState, 'attempted');
+          assert.equal(value.capsuleDigest, baseline.capsuleDigest);
+          assert.equal(value.revision, baseline.revision);
+          assert.equal(value.payloadSha256, baseline.payloadSha256);
+          assert.equal(value.attemptBodySha256, baseline.attempt.submission.bodySha256);
+          assert.equal(value.outputMatched, true);
+          assert.equal(value.recoveryInputSha256, viewing ? outputRecoveryInputDigest : null);
+          assert.equal(value.viewingKeyReleases, viewing);
+          assert.equal(value.viewingUtilityExitObserved, !!viewing);
+          for (const flag of [
+            'proofVerified',
+            'originalInputReconstructed',
+            'originalRootsAccepted',
+            'membershipAuthenticated',
+            'sourceAuthenticated',
+            'disclosureEnabled',
+            'spendingEnabled',
+            'submissionAccepted',
+            'retryEnabled',
+            'eligibilityEstablished',
+            'attemptOutcomeKnown',
+          ])
+            assert.equal(value[flag], false);
+        }
+        assert.deepEqual(chainCalls, {
+          eth_chainId: attemptedOutputValidations === 1 ? 2 : 1,
+          eth_getTransactionReceipt: 1,
+          eth_getBlockByNumber: 34,
+          eth_blockNumber: 2,
+          eth_getTransactionByHash: 1,
+          eth_getLogs: 1,
+        });
+        assert.deepEqual(serviceCalls, { latest: 3, validate: 3, page: 0 });
+        assert.deepEqual(jobCalls, {
+          ownSelector: 1,
+          ownSelectorExit: 1,
+          ownTxid: 1,
+          ownTxidExit: 1,
+          mirrorInspect: 2,
+          mirrorInspectExit: 2,
+          mirrorWitness: 1,
+          mirrorWitnessExit: 1,
+          mirrorHistorical: 0,
+          mirrorHistoricalExit: 0,
+          historicalSubstitutions: 0,
+          publicPlan: 1,
+          publicPlanExit: 1,
+          viewing,
+          viewingExit: viewing,
+          keyRequests: viewing,
+          keyReplies: viewing,
+          resultMessages: viewing,
+          resultAdmissions: substituted ? 0 : viewing,
+          resultSubstitutions: Number(substituted),
+          unexpected: 0,
+        });
+        assert.deepEqual(mirrorBroker, {
+          attempted: 11 + Number(mirrorAdvanced),
+          admitted: 11 + Number(mirrorAdvanced),
+          input: 3,
+          get: 5 + Number(mirrorAdvanced),
+          result: 3,
+          forbidden: 0,
+        });
+        assert.deepEqual(publicBroker, {
+          attempted: 3,
+          admitted: 3,
+          sourceNext: 2,
+          jobResult: 1,
+          forbidden: 0,
+        });
+        assert.equal(guardReports, 6 + viewing);
+        assert.ok(outputRecoveryReplies.every((bytes) => bytes.every((v) => v === 0)));
+      }
+      // Prove release even after the final unshield match, without sending a
+      // query or relying on another operation accidentally exercising the map.
+      const {
+        claimRailgunAttemptedPoiOutput,
+      } = require('../src/main/wallet/railgun-poi-disclosure-plan');
+      const nextClaim = claimRailgunAttemptedPoiOutput({
+        identity,
+        enrollment,
+        coordinator: publicAccount.coordinator,
+        signal: operationsController.signal,
+      });
+      try {
+        nextClaim.assertCurrent();
+      } finally {
+        nextClaim.release();
+      }
+      attemptedOutputRuns.push({
+        mode: prepared ? 'prepared-refused' : fault,
+        status: value.status,
+        ...(value.status === 'refused' ? { stage: value.stage } : {}),
+        chainCalls,
+        serviceCalls,
+        jobCalls,
+        sourceMaintenance: maintenance,
+        recordAndReservesUnchanged: true,
+        recordState: baseline.state,
+        sharedClaimReleased: true,
+        mirrorBroker,
+        publicBroker,
+        guardReports,
+        logicalStoreUnchanged: true,
+        journalUnchanged: true,
+        submittedProofReverified: false,
+        submissionAccepted: false,
+        eligibilityEstablished: false,
+        attemptOutcomeKnown: false,
+        retryEnabled: false,
+        liveQueries: 0,
+        liveSubmissions: 0,
+      });
+    };
     if (intentsMode) {
       phase = 'poi-intent-storage';
       const initialActivity = intentActivity();
@@ -3303,6 +3495,7 @@ async function main() {
       planActive = false;
     }
     if (attemptMode) {
+      if (attemptedOutputMode) await exerciseAttemptedOutput();
       phase = 'poi-durable-attempt';
       attemptActive = true;
       const preparedBaseline = copy(retainedIntent);
@@ -3437,6 +3630,13 @@ async function main() {
       assert.equal(attemptRuns.length, 11);
       assert.deepEqual(attemptWork, { utilities: 0, utilityKeyHandoffs: 0 });
       attemptActive = false;
+      if (attemptedOutputMode) {
+        await exerciseAttemptedOutput();
+        if (kind === 'transfer') {
+          await exerciseAttemptedOutput('substituted-output');
+          await exerciseAttemptedOutput('healthy-after-refusal');
+        }
+      }
     }
     if (retainedHistoryMode) {
       phase = 'retained-history-later-mirror';
@@ -3974,6 +4174,38 @@ async function main() {
             // the deliberately held close barrier, not merely its entry tick.
             await new Promise((resolve) => setTimeout(resolve, 200));
             assert.equal(senderSettled, false);
+            const beforeAttemptedRecord = await intentStore.get(preparedBaseline.capsuleDigest);
+            const beforeAttemptedJournal = await journal.readSnapshot();
+            const beforeAttemptedWire = copy(submissionWire);
+            const beforeAttemptedVerifier = copy(coldValidationVerifierJobs);
+            const beforeAttemptedBusy = intentActivity();
+            const beforeAttemptedJobs = copy(outputRecoveryJobs);
+            const beforeAttemptedMaintenance = copy(sourceMaintenance);
+            const beforeAttemptedClients = rpcClientCreates;
+            const {
+              recoverRailgunAttemptedPoiOutput,
+            } = require('../src/main/wallet/railgun-poi-output-recovery');
+            const busyOutput = await recoverRailgunAttemptedPoiOutput({
+              identity,
+              enrollment,
+              coordinator: publicAccount.coordinator,
+              archive,
+              capsuleDigest: preparedBaseline.capsuleDigest,
+              signal: operationsController.signal,
+            });
+            assert.deepEqual(busyOutput, { status: 'refused', stage: 'busy' });
+            assert.deepEqual(intentActivity(), beforeAttemptedBusy);
+            assert.deepEqual(
+              await intentStore.get(preparedBaseline.capsuleDigest),
+              beforeAttemptedRecord
+            );
+            assert.deepEqual(await journal.readSnapshot(), beforeAttemptedJournal);
+            assert.deepEqual(submissionWire, beforeAttemptedWire);
+            assert.deepEqual(coldValidationVerifierJobs, beforeAttemptedVerifier);
+            assert.deepEqual(outputRecoveryJobs, beforeAttemptedJobs);
+            assert.deepEqual(sourceMaintenance, beforeAttemptedMaintenance);
+            assert.equal(rpcClientCreates, beforeAttemptedClients);
+            assert.equal(senderSettled, false);
             let unexpectedLease;
             try {
               assert.throws(() => {
@@ -4104,6 +4336,7 @@ async function main() {
           wire,
           exactDurableBodyBeforePost: mode === 'accept',
           heldPostDrainRetainsPlanExclusion: mode === 'accept',
+          attemptedOutputRefusedDuringPostDrain: mode === 'accept',
           separateRootAndPostIsolationCredentials: mode === 'accept',
           overlappingRootRequests: mode === 'accept',
           fixtureRootStoreReadsSerialized: mode === 'accept',
@@ -4146,6 +4379,8 @@ async function main() {
         durableAttemptRetained: true,
         additionalQueries: 0,
       });
+      retainedIntent = attempted;
+      await exerciseAttemptedOutput();
     }
     phase = 'final-journal-drift';
     mode = 'valid';
@@ -4211,6 +4446,18 @@ async function main() {
     assert.equal(jobs.selector, jobs.selectorExit);
     if (intentsMode && !outputRecoveryMode && !coldValidationMode && !attemptMode && !planMode)
       await reopenPreparedIntent();
+    assert.deepEqual(
+      attemptedOutputRuns.map((run) => run.mode),
+      attemptedOutputMode
+        ? [
+            'prepared-refused',
+            'healthy',
+            ...(kind === 'transfer' ? ['substituted-output', 'healthy-after-refusal'] : []),
+          ]
+        : submissionMode
+          ? ['healthy']
+          : []
+    );
     assert.deepEqual(hashes(), before);
     const report = {
       fixture: 'synthetic-enrolled-own-poi-membership',
@@ -4234,6 +4481,8 @@ async function main() {
       planRuns,
       planWork,
       attemptMode,
+      attemptedOutputMode,
+      attemptedOutputRuns,
       attemptRuns,
       attemptWork,
       coldValidationRuns,

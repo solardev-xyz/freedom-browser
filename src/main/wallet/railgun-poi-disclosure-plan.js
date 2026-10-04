@@ -108,20 +108,10 @@ function context(identity, enrollment, coordinator) {
     subject: snapshot(parent.subject),
   };
 }
-function current(state, deadline) {
-  assert.ok(!state.revoked && !state.controller.signal.aborted);
-  const now = performance.now();
-  assert.ok(
-    Number.isFinite(now) &&
-      now >= state.lastNow &&
-      (state.promoted || now < state.expiresAt) &&
-      now < deadline
-  );
-  state.lastNow = now;
-  const b = state.bindings;
+function assertBindings(b, directory) {
   for (const signal of [b.identity.signal, b.enrollment.signal, b.coordinator.signal])
     assert.ok(!signal.aborted);
-  assert.equal(b.enrollment.directory, state.directory);
+  assert.equal(b.enrollment.directory, directory);
   const parent = getPrivacyContext(b.handle);
   assert.equal(parent.profileId, b.profileId);
   assert.equal(parent.generation, b.generation);
@@ -134,7 +124,87 @@ function current(state, deadline) {
     getRailgunAccountPublicIdentity(b.coordinator, b.enrollment, b.policy),
     b.publicIdentity
   );
+}
+function current(state, deadline) {
+  assert.ok(!state.revoked && !state.controller.signal.aborted);
+  const now = performance.now();
+  assert.ok(
+    Number.isFinite(now) &&
+      now >= state.lastNow &&
+      (state.promoted || now < state.expiresAt) &&
+      now < deadline
+  );
+  state.lastNow = now;
+  assertBindings(state.bindings, state.directory);
   if (state.store) assert.ok(!state.store.signal.aborted);
+}
+// This claim excludes the sender/plan operations and attempted output only.
+// Legacy Stage A/history/ordinary diagnostics retain their existing overlap
+// except for the output module's local owner map. This is not consent authority.
+const attemptedClaimFailure = () =>
+  Object.assign(new Error('Railgun POI disclosure plan unavailable'), {
+    code: 'RAILGUN_POI_DISCLOSURE_PLAN_REFUSED',
+  });
+// A separate closure retains only this small state; release clears owner data.
+function attemptedClaimFacade(state) {
+  const assertCurrent = () => {
+    try {
+      assert.ok(!state.released);
+      for (const signal of state.signals) assert.ok(!signal.aborted);
+      assert.equal(operations.get(state.directory), state.token);
+      assertBindings(state.bindings, state.directory);
+      // Genuine owner checks can synchronously invoke integration code. A
+      // reentrant release or cancellation cannot rescue the current assertion.
+      assert.ok(!state.released);
+      for (const signal of state.signals) assert.ok(!signal.aborted);
+      assert.equal(operations.get(state.directory), state.token);
+    } catch {
+      throw attemptedClaimFailure();
+    }
+  };
+  const release = () => {
+    if (state.released) return;
+    state.released = true;
+    if (operations.get(state.directory) === state.token) operations.delete(state.directory);
+    state.bindings = null;
+    state.signals = null;
+    state.directory = null;
+    state.token = null;
+  };
+  return Object.freeze({ assertCurrent, release });
+}
+function claimRailgunAttemptedPoiOutput(input) {
+  try {
+    const { identity, enrollment, coordinator, signal } = options(input, [
+      'identity',
+      'enrollment',
+      'coordinator',
+      'signal',
+    ]);
+    assert.ok(signal instanceof AbortSignal && !signal.aborted);
+    const bindings = context(identity, enrollment, coordinator);
+    const directory = enrollment.directory;
+    const signals = [
+      signal,
+      identity.signal,
+      enrollment.signal,
+      coordinator.signal,
+      getPrivacyContext(bindings.handle).signal,
+    ];
+    for (const ownerSignal of signals)
+      assert.ok(ownerSignal instanceof AbortSignal && !ownerSignal.aborted);
+    assertBindings(bindings, directory);
+    for (const ownerSignal of signals) assert.ok(!ownerSignal.aborted);
+    // No await or external callback between this final check and installation.
+    // A nested claimant admitted during owner validation must remain the owner.
+    assert.ok(!operations.has(directory));
+    const state = { bindings, directory, signals, token: {}, released: false };
+    const facade = attemptedClaimFacade(state);
+    operations.set(directory, state.token);
+    return facade;
+  } catch {
+    throw attemptedClaimFailure();
+  }
 }
 function operationKind(capture, payload) {
   const kind = capture.capsule.selection.kind;
@@ -911,4 +981,5 @@ module.exports = {
   prepareRailgunPoiDisclosurePlan,
   revalidateRailgunPoiDisclosurePlan,
   submitRailgunRetainedPoi,
+  claimRailgunAttemptedPoiOutput,
 };

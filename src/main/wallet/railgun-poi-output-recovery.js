@@ -1,6 +1,7 @@
 /** Rebind retained POI output data after enrollment restart. Diagnostic only:
  * transfer releases one viewing credential per call, unshield releases none.
- * No proof registry restoration, old-root acceptance, sender or production caller.
+ * No proof registry restoration, old-root acceptance or consent. The fixed
+ * attempted route rebinds output after reopen without resolving or retrying POST.
  */
 const assert = require('assert/strict');
 const { createHash } = require('crypto');
@@ -9,6 +10,7 @@ const { assertRailgunIdentity, withRailgunViewingCredential } = require('./railg
 const { getRailgunPublicPolicy } = require('./railgun-public-policy');
 const {
   getRailgunAccountPublicIdentity,
+  getRailgunAccountPublicDestination,
   assertRailgunAccountPublicDestination,
 } = require('./railgun-account-public');
 const { verifyRailgunEngineRuntime } = require('./railgun-engine-runtime');
@@ -20,6 +22,7 @@ const {
 const { withRailgunOwnOperationRecovery } = require('./railgun-own-operation');
 const { assertRailgunOwnPoiCapture } = require('./railgun-own-poi-binding');
 const { normalizeRailgunPoiPayload } = require('./railgun-poi-payload');
+const { normalizeRailgunPoiSubmission } = require('./railgun-poi-submit-data');
 const { normalizeRailgunPoiShieldInput } = require('./railgun-poi-shield-selector-data');
 const { matchRailgunOwnTxid } = require('./railgun-own-txid');
 const { normalizeRailgunTxidWitness } = require('./railgun-txid-note-witness');
@@ -42,6 +45,13 @@ const shape = (v, keys) => {
   assert.ok(v && typeof v === 'object' && !Array.isArray(v));
   assert.deepEqual(Object.keys(v).sort(), [...keys].sort());
 };
+const freeze = (value) => {
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(freeze);
+    Object.freeze(value);
+  }
+  return value;
+};
 const fail = () =>
   Object.assign(new Error('Railgun POI output recovery unavailable'), {
     code: 'RAILGUN_POI_OUTPUT_RECOVERY_REFUSED',
@@ -54,11 +64,12 @@ function guards(value) {
   assert.equal(new Set(value.hooks).size, value.hooks.length);
   assert.equal(value.canaries, value.hooks.length);
 }
-async function recover(options = {}, completed = false, submission) {
+async function recover(options = {}, completed = false, submission, attempted = false) {
   let stage = 'context',
     timer,
     directory,
     sourceOutcome,
+    sharedClaim,
     store;
   const owner = {},
     controller = new AbortController();
@@ -71,7 +82,7 @@ async function recover(options = {}, completed = false, submission) {
       'archive',
       'capsuleDigest',
       'signal',
-      ...(completed ? ['sourceDestination'] : []),
+      ...(completed && !attempted ? ['sourceDestination'] : []),
       ...(Object.hasOwn(options, 'timeoutMs') ? ['timeoutMs'] : []),
     ]);
     const {
@@ -80,7 +91,7 @@ async function recover(options = {}, completed = false, submission) {
       coordinator,
       capsuleDigest,
       signal,
-      sourceDestination,
+      sourceDestination: suppliedDestination,
       timeoutMs = TOTAL_MS,
     } = options;
     if (submission) {
@@ -110,8 +121,23 @@ async function recover(options = {}, completed = false, submission) {
       controller.signal,
     ]);
     directory = enrollment.directory;
+    if (attempted) {
+      stage = 'busy';
+      // Lazy import: ordinary/submission output must not claim again beneath
+      // the sender, or eagerly load the sender's dependency closure.
+      sharedClaim = require('./railgun-poi-disclosure-plan').claimRailgunAttemptedPoiOutput({
+        identity,
+        enrollment,
+        coordinator,
+        signal: lifetime,
+      });
+      stage = 'context';
+    }
     assert.ok(!owners.has(directory));
     owners.set(directory, owner);
+    const sourceDestination = attempted
+      ? getRailgunAccountPublicDestination(coordinator, enrollment, policy)
+      : suppliedDestination;
     const current = (margin = 0) => {
       assert.ok(Number.isSafeInteger(margin) && margin >= 0 && margin < POST_MS);
       const now = performance.now();
@@ -122,6 +148,7 @@ async function recover(options = {}, completed = false, submission) {
           now + margin < activeDeadline
       );
       assert.equal(owners.get(directory), owner);
+      sharedClaim?.assertCurrent();
       assert.deepEqual(assertRailgunIdentity(identity, handle), descriptor);
       assert.deepEqual(
         getRailgunAccountPublicIdentity(coordinator, enrollment, policy),
@@ -143,13 +170,27 @@ async function recover(options = {}, completed = false, submission) {
     store = await enrollment.openPoiIntents({ existingOnly: true });
     current();
     store.signal.addEventListener('abort', stop, { once: true });
-    const entry = await store.get(capsuleDigest);
+    const loaded = await store.get(capsuleDigest);
     current();
+    // Attempt data is detached before later awaits. The encrypted record does
+    // not persist the sender's validation result: fresh on-chain output binding
+    // remains mandatory even if this same request was previously transmitted.
+    const entry = attempted ? freeze(JSON.parse(JSON.stringify(loaded))) : loaded;
     if (submission) assert.deepEqual(entry, submission.entry);
-    assert.ok(entry && entry.state === 'prepared');
+    assert.ok(entry && entry.state === (attempted ? 'attempted' : 'prepared'));
     assert.equal(entry.capsuleDigest, capsuleDigest);
     const payload = normalizeRailgunPoiPayload(entry.payload);
     assert.equal(sha(JSON.stringify(payload)), entry.payloadSha256);
+    let attemptBodySha256;
+    if (attempted) {
+      shape(entry.attempt, ['attemptedAt', 'submission']);
+      const attempt = normalizeRailgunPoiSubmission(entry.attempt.submission);
+      assert.equal(attempt.requestId, entry.attempt.attemptedAt);
+      assert.deepEqual(attempt.payload, payload);
+      assert.equal(attempt.payloadSha256, entry.payloadSha256);
+      assert.ok(Number.isSafeInteger(entry.revision) && entry.revision >= 1);
+      attemptBodySha256 = attempt.bodySha256;
+    }
     const storedText = JSON.stringify(entry);
     const readCurrent = async () => {
       current();
@@ -395,13 +436,22 @@ async function recover(options = {}, completed = false, submission) {
             jobCurrent();
             output = result;
           } finally {
-            stopped = true;
-            clearTimeout(earlyTimer);
-            jobController.abort();
-            task?.close();
-            if (task) await task.closed;
-            while (pending.size) await Promise.allSettled([...pending]);
-            keyCopy?.fill(0);
+            try {
+              stopped = true;
+              clearTimeout(earlyTimer);
+              jobController.abort();
+              task?.close();
+            } finally {
+              try {
+                if (task) await task.closed;
+              } finally {
+                try {
+                  while (pending.size) await Promise.allSettled([...pending]);
+                } finally {
+                  keyCopy?.fill(0);
+                }
+              }
+            }
           }
         }
         await readCurrent();
@@ -422,6 +472,16 @@ async function recover(options = {}, completed = false, submission) {
     current();
     return Object.freeze({
       status: 'matched',
+      ...(attempted
+        ? {
+            recordState: 'attempted',
+            attemptBodySha256,
+            eligibilityEstablished: false,
+            attemptOutcomeKnown: false,
+            submissionAccepted: false,
+            retryEnabled: false,
+          }
+        : {}),
       capsuleDigest,
       revision: entry.revision,
       payloadSha256: entry.payloadSha256,
@@ -441,15 +501,25 @@ async function recover(options = {}, completed = false, submission) {
   } catch {
     return Object.freeze({ status: 'refused', stage, ...(sourceOutcome ? { sourceOutcome } : {}) });
   } finally {
-    clearTimeout(timer);
-    controller.abort();
-    store?.signal.removeEventListener('abort', stop);
-    if (owners.get(directory) === owner) owners.delete(directory);
+    try {
+      clearTimeout(timer);
+      controller.abort();
+      store?.signal.removeEventListener('abort', stop);
+    } finally {
+      try {
+        if (owners.get(directory) === owner) owners.delete(directory);
+      } finally {
+        // Cancellation does not unlock the sender while borrowed work drains.
+        sharedClaim?.release();
+      }
+    }
   }
 }
 module.exports = {
   recoverRailgunPoiOutput: (options) => recover(options),
   recoverRailgunPoiOutputCompleted: (options) => recover(options, true),
+  // Fixed diagnostic only; no caller destination, observation or state override.
+  recoverRailgunAttemptedPoiOutput: (options) => recover(options, true, undefined, true),
   // Sole production caller: the retained submission validator. Receipt data
   // is an invocation-local second argument, never a public options override.
   recoverRailgunPoiOutputForSubmission: (options, input) => recover(options, true, input || {}),
