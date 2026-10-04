@@ -1,4 +1,4 @@
-/** Witness-free 1x1 transaction verification. This process receives only public
+/** Witness-free bounded transaction verification. This process receives only public
  * calldata/intent and authenticated artifacts; no key or storage broker.
  */
 const assert = require('assert/strict');
@@ -20,6 +20,12 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     input.transaction,
     input.expected
   );
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      checked.kind
+    )
+  );
+  const partial = checked.kind === 'railgun-partial-unshield';
   const [[tx]] = new Interface([TRANSACT_ABI]).decodeFunctionData(
     'transact',
     input.transaction.data
@@ -55,15 +61,16 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     artifacts = await require('./railgun-artifacts').loadRailgunArtifacts({
       handle,
       directory: input.artifactDirectory,
-      variant: '01x01',
+      variant: partial ? '01x02' : '01x01',
     });
     assert.ok(!signal.aborted);
     const publicSignals = [
       checked.merkleRoot,
       checked.boundParamsHash,
       checked.nullifier,
-      checked.commitment,
+      ...(partial ? [checked.changeCommitment, checked.unshieldCommitment] : [checked.commitment]),
     ].map(BigInt);
+    assert.equal(artifacts.vkey.nPublic, publicSignals.length);
     assert.equal(await serial.verify(artifacts.vkey, publicSignals, proof), true);
     assert.ok(!signal.aborted);
     const guards = guardReport();

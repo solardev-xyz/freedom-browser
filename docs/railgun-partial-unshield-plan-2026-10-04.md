@@ -1,14 +1,18 @@
 # Bounded partial WETH unshield and change spending
 
-**Status: structural records implemented; partial spending remains unavailable.**
+**Status: structural records and utility-level native cryptography implemented;
+main partial spending remains unavailable.**
 The bounded model now has a distinct `railgun-partial-unshield` kind and version-2
 capsule. Preparation and selection bind recovered input value, gross withdrawal
 and change separately. Public policy accepts only the exact one-input/two-output
 shape. These checks do not prove encrypted-output ownership or conservation.
-Existing operation, signing, recovery and POI entry points still refuse this new
-kind; reservations and the public EOA journal remain legacy-only. Actual 01x02
-preparation/proving, combined POI, authenticated change recovery and the second
-spend remain to be implemented and qualified. This is not evidence of deployed
+The [native cryptographic checkpoint](railgun-partial-crypto-2026-10-04.md)
+qualifies production change construction, 01x02 proving, independent verification
+and original-ciphertext recovery using a stored signature and synthetic scan.
+Main operation, account, signing, submission and POI entry points still refuse
+this new kind; reservations and the public EOA journal remain legacy-only.
+Combined POI, authenticated change ingestion and the second spend remain to be
+implemented and qualified. This is not evidence of deployed
 contract acceptance, a funded partial transaction or live service eligibility.
 
 ## Complete target
@@ -74,11 +78,13 @@ unavailable until the connected qualification passes, including the second spend
    Partial selection now reports recovered V and expected C separately, with
    `inputValueVerified` and `outputConservationVerified` both false. Preserve the
    legacy full-input meaning and reject all other shapes.
-2. **Prepare, sign, prove and reconstruct the exact intent.** Update
+2. **Prepare, sign, prove and reconstruct the exact intent (utility path qualified).** Update
    `railgun-private-witness.js`, `railgun-private-reconstruct.js`,
    `railgun-private-prover.js`, `railgun-private-verify-job.js`, and
    `railgun-spend-sign-job.js`. The signer must check the final unshield commitment
-   and sign all five ordered public inputs. `railgun-private-preflight.js` must
+   and sign all five ordered public inputs. These utility paths now pass native
+   qualification using a synthetic account/scan; main admission remains closed.
+   The outstanding `railgun-private-preflight.js` change must
    select 01x02 and match anchored `getVerificationKey(1, 2)` before nullifier
    disclosure/signing. Preserve the one-use key/signature and utility boundaries.
    Recovery decrypts persisted change and reconstructs the original calldata,

@@ -21,8 +21,15 @@ async function createRailgunPrivateProver({
   artifactDirectory,
   spendingPublicKey,
   signal,
+  intentKind,
 }) {
   assert.ok(signal instanceof AbortSignal && !signal.aborted);
+  const legacyKinds = ['railgun-private-transfer', 'railgun-token-unshield'];
+  assert.ok(
+    intentKind === undefined || [...legacyKinds, 'railgun-partial-unshield'].includes(intentKind)
+  );
+  const partial = intentKind === 'railgun-partial-unshield',
+    outputCount = partial ? 2 : 1;
   assert.ok(
     Array.isArray(spendingPublicKey) &&
       spendingPublicKey.length === 2 &&
@@ -63,18 +70,18 @@ async function createRailgunPrivateProver({
     artifacts = await require('./railgun-artifacts').loadRailgunArtifacts({
       handle,
       directory: artifactDirectory,
-      variant: '01x01',
+      variant: partial ? '01x02' : '01x01',
     });
     active();
     const prover = new Prover({
       assertArtifactExists: (inputs, outputs) => {
         assert.equal(inputs, 1);
-        assert.equal(outputs, 1);
+        assert.equal(outputs, outputCount);
       },
       getArtifacts: async (pub) => {
         active();
         assert.equal(pub.nullifiers.length, 1);
-        assert.equal(pub.commitmentsOut.length, 1);
+        assert.equal(pub.commitmentsOut.length, outputCount);
         return artifacts;
       },
     });
@@ -89,10 +96,18 @@ async function createRailgunPrivateProver({
         const intent = Object.freeze({ ...publicPreparation.transaction });
         const expected = Object.freeze({ ...publicPreparation.expected });
         const checked = validateRailgunPrivateSigningIntent(intent, expected);
+        assert.ok(
+          intentKind === undefined
+            ? legacyKinds.includes(checked.kind)
+            : checked.kind === intentKind
+        );
+        const commitments = partial
+          ? [checked.changeCommitment, checked.unshieldCommitment]
+          : [checked.commitment];
         const pub = witness.publicInputs;
         assert.deepEqual(
           [pub.merkleRoot, pub.boundParamsHash, ...pub.nullifiers, ...pub.commitmentsOut].map(hex),
-          [checked.merkleRoot, checked.boundParamsHash, checked.nullifier, checked.commitment]
+          [checked.merkleRoot, checked.boundParamsHash, checked.nullifier, ...commitments]
         );
         const message = poseidon([
           pub.merkleRoot,

@@ -10,6 +10,7 @@ const FIELD = 218882428718392752222464057452572750885483644004160343436982041865
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 exports.runControls = async (args, prove, rejectRetargeted) => {
   const { capsule, wallet, archive, descriptor } = args;
+  const partial = capsule.selection.kind === 'railgun-partial-unshield';
   const imp = (name) =>
     require(path.join(archive, 'node_modules/@railgun-community/engine/dist', name));
   const { TransactNote } = imp('note/transact-note'),
@@ -27,75 +28,154 @@ exports.runControls = async (args, prove, rejectRetargeted) => {
     expected.boundParamsHash = hex(
       BigInt(keccak256(AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [tx[4]]))) % FIELD
     );
-    expected.commitment = tx[3][0];
+    if (partial) {
+      expected.changeCommitment = tx[3][0];
+      expected.unshieldCommitment = tx[3][1];
+    } else expected.commitment = tx[3][0];
     value.preparation.expectedHash = hex(
       poseidon(
         [
           expected.merkleRoot,
           expected.boundParamsHash,
           expected.nullifier,
-          expected.commitment,
+          ...(partial
+            ? [expected.changeCommitment, expected.unshieldCommitment]
+            : [expected.commitment]),
         ].map(BigInt)
       )
     );
     value.preparation.transaction.data = abi.encodeFunctionData('transact', [[tx]]);
     return value;
   };
-  let foreign;
-  if (capsule.selection.kind === 'railgun-private-transfer') {
+  let foreign, wrongChange, wrongAnnotation;
+  let sameViewingForeignDecrypted = false;
+  if (capsule.selection.kind === 'railgun-private-transfer' || partial) {
     imp('wallet/wallet-info').default.setWalletSource('freedom');
     const [txo] = await wallet.TXOs(),
       { note } = txo;
     const foreignKey = Buffer.alloc(32, 9);
     let viewingPublicKey;
     try {
-      viewingPublicKey = await imp('utils/keys-utils').getPublicViewingKey(foreignKey);
+      viewingPublicKey = partial
+        ? wallet.addressKeys.viewingPublicKey
+        : await imp('utils/keys-utils').getPublicViewingKey(foreignKey);
     } finally {
       foreignKey.fill(0);
     }
-    const foreignAddress = {
-      masterPublicKey: wallet.addressKeys.masterPublicKey + 1n,
-      viewingPublicKey,
-    };
-    const output = TransactNote.createTransfer(
-      foreignAddress,
-      wallet.addressKeys,
-      note.value,
-      note.tokenData,
-      false,
-      0,
-      undefined
-    );
-    const chain = { type: 0, id: 11155111 };
-    const tx = new Transaction(chain, note.tokenData, 0, [txo], [output], {
-      contract: '0x' + '0'.repeat(40),
-      parameters: hex(0n),
-    });
-    const request = await tx.generateTransactionRequest(
-      {
-        ...wallet,
-        getUTXOMerkletree: () => ({
-          getRoot: async () => capsule.preparation.expected.merkleRoot.slice(2),
-          getMerkleProof: async () => ({
-            leaf: capsule.noteHash.slice(2),
-            root: capsule.preparation.expected.merkleRoot.slice(2),
-            elements: capsule.pathElements.map((v) => v.slice(2)),
-            indices: hex(BigInt(capsule.selection.position)).slice(2),
+    const createOutput = async (receiver, value) => {
+      const output = TransactNote.createTransfer(
+        receiver,
+        wallet.addressKeys,
+        value,
+        note.tokenData,
+        partial,
+        partial ? imp('models/formatted-types').OutputType.Change : 0,
+        undefined
+      );
+      const tx = new Transaction({ type: 0, id: 11155111 }, note.tokenData, 0, [txo], [output], {
+        contract: '0x' + '0'.repeat(40),
+        parameters: hex(0n),
+      });
+      if (partial)
+        tx.addUnshieldData(
+          {
+            tokenData: note.tokenData,
+            toAddress: capsule.selection.recipient,
+            allowOverride: false,
+          },
+          BigInt(capsule.preparation.unshieldAmount)
+        );
+      const request = await tx.generateTransactionRequest(
+        {
+          ...wallet,
+          getUTXOMerkletree: () => ({
+            getRoot: async () => capsule.preparation.expected.merkleRoot.slice(2),
+            getMerkleProof: async () => ({
+              leaf: capsule.noteHash.slice(2),
+              root: capsule.preparation.expected.merkleRoot.slice(2),
+              elements: capsule.pathElements.map((v) => v.slice(2)),
+              indices: hex(BigInt(capsule.selection.position)).slice(2),
+            }),
           }),
-        }),
-        getSpendingKeyPair: async () => ({
-          pubkey: descriptor.spendingPublicKey.map((v) => BigInt('0x' + v)),
-        }),
-        getViewingKeyPair: () => wallet.viewingKeyPair,
-      },
-      'V2_PoseidonMerkle',
-      '',
-      { minGasPrice: 0n }
+          getSpendingKeyPair: async () => ({
+            pubkey: descriptor.spendingPublicKey.map((v) => BigInt('0x' + v)),
+          }),
+          getViewingKeyPair: () => wallet.viewingKeyPair,
+        },
+        'V2_PoseidonMerkle',
+        '',
+        { minGasPrice: 0n }
+      );
+      return changed((value) => {
+        value[3][0] = hex(request.publicInputs.commitmentsOut[0]);
+        value[4][6] = request.boundParams.commitmentCiphertext;
+      });
+    };
+    const amount = partial ? BigInt(capsule.preparation.changeAmount) : note.value;
+    foreign = await createOutput(
+      { masterPublicKey: wallet.addressKeys.masterPublicKey + 1n, viewingPublicKey },
+      amount
     );
-    foreign = changed((value) => {
-      value[3][0] = hex(request.publicInputs.commitmentsOut[0]);
-      value[4][6] = request.boundParams.commitmentCiphertext;
-    });
+    if (partial) {
+      wrongChange = await createOutput(wallet.addressKeys, amount + 1n);
+      const { Memo } = imp('note/memo');
+      const annotation = Memo.createEncryptedNoteAnnotationDataV2(
+        imp('models/formatted-types').OutputType.Transfer,
+        imp('models/transaction-constants').MEMO_SENDER_RANDOM_NULL,
+        'freedom',
+        wallet.viewingKeyPair.privateKey
+      );
+      wrongAnnotation = changed((tx) => {
+        tx[4][6][0][3] = '0x' + annotation.replace(/^0x/, '');
+      });
+      const [[foreignTx]] = abi.decodeFunctionData(
+        'transact',
+        foreign.preparation.transaction.data
+      );
+      const bundle = foreignTx.boundParams.commitmentCiphertext[0];
+      const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex');
+      const shared = await imp('utils/keys-utils').getSharedSymmetricKey(
+        wallet.viewingKeyPair.privateKey,
+        sender
+      );
+      assert.ok(shared);
+      try {
+        const decrypted = await TransactNote.decrypt(
+          'V2_PoseidonMerkle',
+          { type: 0, id: 11155111 },
+          wallet.addressKeys,
+          {
+            iv: bundle.ciphertext[0].slice(2, 34),
+            tag: bundle.ciphertext[0].slice(34),
+            data: bundle.ciphertext.slice(1).map((v) => v.slice(2)),
+          },
+          shared,
+          bundle.memo,
+          bundle.annotationData,
+          wallet.viewingKeyPair.privateKey,
+          Buffer.from(bundle.blindedReceiverViewingKey.slice(2), 'hex'),
+          sender,
+          false,
+          false,
+          wallet.tokenDataGetter,
+          undefined,
+          undefined
+        );
+        assert.equal(decrypted.value, amount);
+        assert.equal(decrypted.tokenHash, note.tokenHash);
+        assert.equal(
+          imp('note/shield-note').ShieldNote.getNotePublicKey(
+            wallet.addressKeys.masterPublicKey,
+            decrypted.random
+          ),
+          decrypted.notePublicKey
+        );
+        assert.notEqual(hex(decrypted.hash), foreign.preparation.expected.changeCommitment);
+        sameViewingForeignDecrypted = true;
+      } finally {
+        shared.fill(0);
+      }
+    }
   }
   const { ByteUtils } = imp('utils/bytes');
   const { AES } = imp('utils/encryption/aes');
@@ -156,12 +236,15 @@ exports.runControls = async (args, prove, rejectRetargeted) => {
         v[4][6][0][0][1] = hex(BigInt(v[4][6][0][0][1]) ^ 1n);
       });
       await reject('ciphertext', { capsule: cipher });
-      await reject('foreign-output-ciphertext', { capsule: foreign });
+      await reject(partial ? 'foreign-same-viewing-change' : 'foreign-output-ciphertext', {
+        capsule: foreign,
+      });
       const commitment = changed((v) => {
         v[3][0] = hex(BigInt(v[3][0]) ^ 1n);
       });
       await reject('output-commitment', { capsule: commitment });
-    } else {
+    }
+    if (!foreign || partial) {
       const badRecipient = copy();
       badRecipient.selection.recipient = '0x' + '34'.repeat(20);
       await reject('structural-unshield-recipient', { capsule: badRecipient });
@@ -169,8 +252,12 @@ exports.runControls = async (args, prove, rejectRetargeted) => {
       const [txo] = await wallet.TXOs();
       const retargeted = changed((tx) => {
         tx[5][0] = hex(BigInt(recipient));
-        tx[3][0] = hex(
-          imp('note/note-util').getNoteHash(recipient, txo.note.tokenData, txo.note.value)
+        tx[3][partial ? 1 : 0] = hex(
+          imp('note/note-util').getNoteHash(
+            recipient,
+            txo.note.tokenData,
+            partial ? BigInt(capsule.preparation.unshieldAmount) : txo.note.value
+          )
         );
       });
       retargeted.selection.recipient = retargeted.preparation.recipient = recipient;
@@ -181,6 +268,52 @@ exports.runControls = async (args, prove, rejectRetargeted) => {
       });
       await rejectRetargeted(validButUnauthorized);
       refused.push('consistent-retargeting-signature');
+    }
+    let absentMemoAccepted = false;
+    if (partial) {
+      // Normalize these coherently rebound wire mutations before testing ownership.
+      const normalize =
+        require('../../src/main/wallet/railgun-private-capsule').normalizeRailgunPrivateCapsule;
+      for (const [name, value] of [
+        ['change-value', wrongChange],
+        ['annotation', wrongAnnotation],
+      ]) {
+        normalize(value);
+        await reject(name, { capsule: value });
+      }
+      const swapped = changed((tx) => {
+        tx[3] = [tx[3][1], tx[3][0]];
+      });
+      normalize(swapped);
+      await reject('swapped-commitments', { capsule: swapped });
+      const badPreimage = changed((tx) => {
+        tx[5][2] += 1n;
+      });
+      await reject('unshield-preimage', { capsule: badPreimage });
+      const wrongKey = Buffer.alloc(32, 9);
+      try {
+        await reject('viewing-key', {
+          wallet: { ...wallet, viewingKeyPair: { ...wallet.viewingKeyPair, privateKey: wrongKey } },
+        });
+      } finally {
+        wrongKey.fill(0);
+      }
+      const [[originalTx]] = abi.decodeFunctionData(
+        'transact',
+        capsule.preparation.transaction.data
+      );
+      assert.equal(originalTx.boundParams.commitmentCiphertext[0].memo, '0x');
+      assert.equal(
+        imp('note/memo').Memo.decryptNoteAnnotationData(
+          originalTx.boundParams.commitmentCiphertext[0].annotationData,
+          wallet.viewingKeyPair.privateKey
+        ).outputType,
+        imp('models/formatted-types').OutputType.Change
+      );
+      // SDK undefined memo round-trips to the exact empty ABI bytes, without a rewrite.
+      const noMemo = await reconstructRailgunPrivateWitness(args);
+      assert.deepEqual(noMemo.publicPreparation.transaction, capsule.preparation.transaction);
+      absentMemoAccepted = true;
     }
     const restored = await reconstructRailgunPrivateWitness(args);
     let reachedProver = false;
@@ -206,6 +339,7 @@ exports.runControls = async (args, prove, rejectRetargeted) => {
       proved,
       controls: {
         refused,
+        ...(partial ? { sameViewingForeignDecrypted, absentMemoAccepted } : {}),
         freshPreparationCalls: forbiddenCalls,
         forbiddenHooks: hooks.map(([, name]) => name),
       },

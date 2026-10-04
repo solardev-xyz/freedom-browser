@@ -1,5 +1,11 @@
 # Railgun partial-unshield structural checkpoint — October 4, 2026
 
+**Historical checkpoint `12ac9de4`.** The later
+[native cryptographic work](railgun-partial-crypto-2026-10-04.md) enables partial
+signing and reconstruction inside guarded utilities. Their refusal checks and
+guard-removal evidence below describe this earlier checkpoint. Main account,
+signing, operation, reservation, submission and POI admission remain closed.
+
 Partial withdrawal now has an explicit bounded data model, without enabling a
 partial spend. The remaining implementation is tracked in the
 [complete partial-unshield plan](railgun-partial-unshield-plan-2026-10-04.md).

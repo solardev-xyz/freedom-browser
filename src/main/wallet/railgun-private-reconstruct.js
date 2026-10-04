@@ -1,4 +1,4 @@
-/** Utility-only reconstruction of the exact original 1x1 intent. Input secrets
+/** Utility-only reconstruction of the exact original bounded intent. Input secrets
  * come from the restored viewing wallet and output secrets from its ciphertext.
  * Never re-encrypt an output or ask the SDK to generate a new transaction request.
  */
@@ -20,10 +20,8 @@ async function reconstructRailgunPrivateWitness({
   const active = () => assert.ok(signal instanceof AbortSignal && !signal.aborted);
   active();
   const capsule = normalizeRailgunPrivateCapsule(input);
-  assert.equal(capsule.version, 1);
-  assert.ok(
-    ['railgun-private-transfer', 'railgun-token-unshield'].includes(capsule.selection.kind)
-  );
+  const partial = capsule.selection.kind === 'railgun-partial-unshield';
+  assert.equal(capsule.version, partial ? 2 : 1);
   const { selection, preparation, noteHash, pathElements } = capsule;
   assert.equal(capsule.walletId, descriptor.walletId);
   assert.equal(wallet.getAddress(), descriptor.instanceId);
@@ -42,6 +40,7 @@ async function reconstructRailgunPrivateWitness({
     items.filter((v) => v.tree === selection.tree && v.position === selection.position);
   const txos = matching(await wallet.TXOs(version, chain)),
     reads = matching(scan.received);
+  active();
   assert.equal(txos.length, 1);
   assert.equal(reads.length, 1);
   const txo = txos[0],
@@ -52,7 +51,7 @@ async function reconstructRailgunPrivateWitness({
   assert.equal(hex(note.hash), noteHash);
   assert.equal(read.hash, noteHash.slice(2));
   assert.equal(read.value, note.value.toString());
-  assert.equal(note.value.toString(), preparation.amount);
+  assert.equal(note.value.toString(), partial ? preparation.inputAmount : preparation.amount);
   assert.equal(note.tokenData.tokenType, 0);
   assert.equal(note.tokenData.tokenAddress.toLowerCase(), pins.wrappedNative);
   assert.equal(BigInt(note.tokenData.tokenSubID), 0n);
@@ -95,6 +94,16 @@ async function reconstructRailgunPrivateWitness({
     'transact',
     preparation.transaction.data
   );
+  const unshieldAmount = partial ? BigInt(preparation.unshieldAmount) : note.value;
+  const changeAmount = partial ? note.value - unshieldAmount : note.value;
+  if (partial) {
+    assert.ok(unshieldAmount > 0n && changeAmount > 0n);
+    assert.equal(changeAmount.toString(), preparation.changeAmount);
+    assert.equal(
+      imp('note/note-util').getNoteHash(selection.recipient, note.tokenData, unshieldAmount),
+      BigInt(expected.unshieldCommitment)
+    );
+  }
   let outputNpk;
   if (selection.kind === 'railgun-token-unshield') {
     outputNpk = BigInt(selection.recipient);
@@ -103,7 +112,7 @@ async function reconstructRailgunPrivateWitness({
       BigInt(expected.commitment)
     );
   } else {
-    assert.equal(selection.recipient, descriptor.instanceId);
+    if (!partial) assert.equal(selection.recipient, descriptor.instanceId);
     const bundle = decoded.boundParams.commitmentCiphertext[0];
     const sender = Buffer.from(bundle.blindedSenderViewingKey.slice(2), 'hex');
     const receiver = Buffer.from(bundle.blindedReceiverViewingKey.slice(2), 'hex');
@@ -113,6 +122,7 @@ async function reconstructRailgunPrivateWitness({
     );
     assert.ok(symmetric);
     try {
+      active();
       const output = await TransactNote.decrypt(
         version,
         chain,
@@ -134,9 +144,33 @@ async function reconstructRailgunPrivateWitness({
         undefined,
         undefined
       );
-      assert.equal(output.value, note.value);
+      active();
+      assert.equal(output.value, changeAmount);
       assert.equal(output.tokenHash, note.tokenHash);
-      assert.equal(output.hash, BigInt(expected.commitment));
+      assert.equal(output.hash, BigInt(partial ? expected.changeCommitment : expected.commitment));
+      if (partial) {
+        assert.equal(
+          output.notePublicKey,
+          imp('note/shield-note').ShieldNote.getNotePublicKey(
+            wallet.addressKeys.masterPublicKey,
+            output.random
+          )
+        );
+        assert.equal(output.tokenData.tokenType, 0);
+        assert.equal(output.tokenData.tokenAddress.toLowerCase(), pins.wrappedNative);
+        assert.equal(BigInt(output.tokenData.tokenSubID), 0n);
+        assert.equal(bundle.memo, '0x');
+        assert.equal(output.memoText, undefined);
+        const annotation = imp('note/memo').Memo.decryptNoteAnnotationData(
+          bundle.annotationData,
+          wallet.viewingKeyPair.privateKey
+        );
+        assert.equal(annotation?.outputType, imp('models/formatted-types').OutputType.Change);
+        assert.equal(
+          annotation.senderRandom,
+          imp('models/transaction-constants').MEMO_SENDER_RANDOM_NULL
+        );
+      }
       assert.equal(
         TransactNote.getHash(output.notePublicKey, output.tokenHash, output.value),
         output.hash
@@ -150,7 +184,9 @@ async function reconstructRailgunPrivateWitness({
     merkleRoot: BigInt(expected.merkleRoot),
     boundParamsHash: BigInt(expected.boundParamsHash),
     nullifiers: [BigInt(expected.nullifier)],
-    commitmentsOut: [BigInt(expected.commitment)],
+    commitmentsOut: partial
+      ? [BigInt(expected.changeCommitment), BigInt(expected.unshieldCommitment)]
+      : [BigInt(expected.commitment)],
   };
   assert.equal(
     hex(poseidon([pub.merkleRoot, pub.boundParamsHash, ...pub.nullifiers, ...pub.commitmentsOut])),
@@ -162,9 +198,9 @@ async function reconstructRailgunPrivateWitness({
     valueIn: [note.value],
     pathElements: [pathElements.map(BigInt)],
     leavesIndices: [BigInt(selection.position)],
-    valueOut: [note.value],
+    valueOut: partial ? [changeAmount, unshieldAmount] : [note.value],
     publicKey,
-    npkOut: [outputNpk],
+    npkOut: partial ? [outputNpk, BigInt(selection.recipient)] : [outputNpk],
     nullifyingKey,
   };
   const boundParams = decoded.boundParams;
@@ -187,7 +223,7 @@ async function reconstructRailgunPrivateWitness({
         proof: Prover.formatProof(proof),
         merkleRoot: expected.merkleRoot,
         nullifiers: [expected.nullifier],
-        commitments: [expected.commitment],
+        commitments: pub.commitmentsOut.map(hex),
         boundParams,
         unshieldPreimage: decoded.unshieldPreimage,
       };

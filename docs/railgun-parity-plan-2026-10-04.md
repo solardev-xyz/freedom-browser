@@ -42,7 +42,12 @@ against the shared facade at that checkpoint (13,736 regression tests).
 The [partial-unshield structural checkpoint](railgun-partial-structure-2026-10-04.md)
 adds the bounded version-2 model while refusing partial admission. Six fresh
 native runs preserve the existing private/public flows; the current frozen
-regression passes 13,872 tests. Earlier counts belong to their recorded sources.
+regression at that checkpoint passes 13,872 tests. The later
+[native partial proof and recovery](railgun-partial-crypto-2026-10-04.md)
+qualifies 01x02 cryptography and stored-signature reconstruction with a synthetic
+account/scan, and requalifies the six existing wallet flows. Its current frozen
+regression passes 13,949 tests. Main partial admission remains closed; earlier
+counts belong to their recorded sources.
 
 ## Next technical work
 
@@ -57,9 +62,10 @@ regression passes 13,872 tests. Earlier counts belong to their recorded sources.
 2. **Add partial withdrawal with authenticated change.** PPv2 already has
    withdrawal/change recovery and second-spend evidence. Railgun's current
    operation admission remains limited to full-note spends. The new structural
-   records express partial withdrawal, but enabling it still requires coordinated
-   proof shape, amount conservation, output decryption,
-   reservation, receipt matching and post-transaction POI handling. Do not merely
+   records express partial withdrawal, and native utility qualification now covers
+   proof shape, amount conservation, change decryption and cold reconstruction.
+   Enabling it still requires deployed verifier checks, reservation integration,
+   receipt matching, normal change ingestion and post-transaction POI. Do not merely
    relax the commitment-count check. Received-input support is a prerequisite,
    not evidence that this larger flow is implemented. The `01x02` artifacts are
    already pinned in `railgun-artifacts.js`; the missing work is integration.

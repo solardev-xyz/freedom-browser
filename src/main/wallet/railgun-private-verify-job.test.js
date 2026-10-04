@@ -46,6 +46,7 @@ beforeEach(() => {
   };
   encode();
   checked = {
+    kind: 'railgun-private-transfer',
     merkleRoot: hex(11),
     boundParamsHash: hex(14),
     nullifier: hex(12),
@@ -127,6 +128,74 @@ test('refuses extra key-bearing input or mismatched intent before loading artifa
   matchRailgunPrivateProvedTransaction.mockImplementationOnce(() => {
     throw Error('intent');
   });
+  await expect(invoke()).rejects.toThrow();
+  expect(loadRailgunArtifacts).not.toHaveBeenCalled();
+  expect(mockVerify).not.toHaveBeenCalled();
+});
+
+function partial() {
+  const {
+    createRailgunPartialCapsuleData,
+  } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
+  const fixture = createRailgunPartialCapsuleData();
+  input.intent = fixture.capsule.preparation.transaction;
+  input.expected = fixture.capsule.preparation.expected;
+  fixture.inner.proof = {
+    a: { x: 1, y: 2 },
+    b: { x: [3, 4], y: [5, 6] },
+    c: { x: 7, y: 8 },
+  };
+  input.transaction = { ...input.intent, data: fixture.encode() };
+  matchRailgunPrivateProvedTransaction.mockImplementationOnce(
+    jest.requireActual('./railgun-private-intent').matchRailgunPrivateProvedTransaction
+  );
+  artifacts.vkey.nPublic = 5;
+  return fixture;
+}
+test('real partial intent selects pinned 01x02 and independently verifies all five ordered signals', async () => {
+  partial();
+  await invoke();
+  expect(loadRailgunArtifacts.mock.calls[0][0].variant).toBe('01x02');
+  const expected = input.expected;
+  expect(mockVerify.mock.calls[0][1]).toEqual(
+    [
+      expected.merkleRoot,
+      expected.boundParamsHash,
+      expected.nullifier,
+      expected.changeCommitment,
+      expected.unshieldCommitment,
+    ].map(BigInt)
+  );
+  expect(context.request).toHaveBeenCalledTimes(1);
+  expect([...artifacts.wasm, ...artifacts.zkey]).toEqual(Array(5).fill(0));
+});
+test('a partial proof cannot use a one-output verification key', async () => {
+  partial();
+  artifacts.vkey.nPublic = 4;
+  await expect(invoke()).rejects.toThrow();
+  expect(mockVerify).not.toHaveBeenCalled();
+  expect(context.request).not.toHaveBeenCalled();
+  expect([...artifacts.wasm, ...artifacts.zkey]).toEqual(Array(5).fill(0));
+});
+test.each(['root', 'nullifier', 'change', 'unshield', 'bound', 'swapped'])(
+  'partial final %s mutation refuses before artifact loading',
+  async (mode) => {
+    const fixture = partial();
+    if (mode === 'root') fixture.inner.merkleRoot = hex(9);
+    if (mode === 'nullifier') fixture.inner.nullifiers[0] = hex(9);
+    if (mode === 'change') fixture.inner.commitments[0] = hex(9);
+    if (mode === 'unshield') fixture.inner.commitments[1] = hex(9);
+    if (mode === 'bound') fixture.inner.boundParams.commitmentCiphertext[0].memo = '0x1122';
+    if (mode === 'swapped') fixture.inner.commitments.reverse();
+    input.transaction.data = fixture.encode();
+    await expect(invoke()).rejects.toThrow();
+    expect(loadRailgunArtifacts).not.toHaveBeenCalled();
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(context.request).not.toHaveBeenCalled();
+  }
+);
+test('unknown verification kind refuses before artifacts', async () => {
+  checked.kind = 'railgun-unknown';
   await expect(invoke()).rejects.toThrow();
   expect(loadRailgunArtifacts).not.toHaveBeenCalled();
   expect(mockVerify).not.toHaveBeenCalled();

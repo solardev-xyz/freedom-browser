@@ -191,16 +191,92 @@ test('refuses a wrong result acknowledgement after wiping', async () => {
   expect([...bytes]).toEqual(Array(32).fill(0));
 });
 
-test('real partial signing-intent normalization cannot reach runtime hashing or key request', async () => {
+function realPartial(change) {
   const {
     createRailgunPartialCapsuleData,
   } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
-  const { preparation } = createRailgunPartialCapsuleData().capsule;
+  const fixture = createRailgunPartialCapsuleData();
+  change?.(fixture);
+  const { preparation } = fixture.capsule;
+  preparation.transaction.data = fixture.encode();
   input.transaction = preparation.transaction;
   input.expected = preparation.expected;
+  input.expectedHash = preparation.expectedHash;
   validateRailgunPrivateSigningIntent.mockImplementationOnce(
     jest.requireActual('./railgun-private-intent').validateRailgunPrivateSigningIntent
   );
+  return preparation;
+}
+test('real partial intent hashes the final unshield preimage and signs all five ordered inputs', async () => {
+  const preparation = realPartial();
+  await invoke();
+  expect(mockNoteHash).toHaveBeenCalledWith(
+    preparation.recipient,
+    {
+      tokenType: 0,
+      tokenAddress: require('./railgun-shield-pins.json').wrappedNative,
+      tokenSubID: '0',
+    },
+    400n
+  );
+  expect(mockPoseidon).toHaveBeenCalledWith(
+    [
+      preparation.expected.merkleRoot,
+      preparation.expected.boundParamsHash,
+      preparation.expected.nullifier,
+      preparation.expected.changeCommitment,
+      preparation.expected.unshieldCommitment,
+    ].map(BigInt)
+  );
+  expect(context.requestKey).toHaveBeenCalledTimes(1);
+  expect(mockSign).toHaveBeenCalledTimes(1);
+  expect([...bytes]).toEqual(Array(32).fill(0));
+});
+test.each(['change instead of unshield', 'wrong preimage', 'wrong message'])(
+  'partial %s refuses before the spending key',
+  async (mode) => {
+    realPartial();
+    if (mode === 'change instead of unshield') mockNoteHash.mockReturnValue(3n);
+    if (mode === 'wrong preimage') mockNoteHash.mockReturnValue(9n);
+    if (mode === 'wrong message') input.expectedHash = hex(8);
+    await expect(invoke()).rejects.toThrow();
+    expect(context.requestKey).not.toHaveBeenCalled();
+    expect(context.request).not.toHaveBeenCalled();
+    expect(mockSign).not.toHaveBeenCalled();
+  }
+);
+test.each(['recipient', 'amount', 'swapped commitments'])(
+  'coherently retargeted partial %s cannot keep the old unshield commitment',
+  async (mode) => {
+    realPartial((fixture) => {
+      const expected = fixture.capsule.preparation.expected;
+      if (mode === 'recipient') {
+        expected.recipient = '0x' + '34'.repeat(20);
+        fixture.inner.unshieldPreimage.npk = '0x' + '0'.repeat(24) + '34'.repeat(20);
+      }
+      if (mode === 'amount') {
+        expected.unshieldAmount = '401';
+        fixture.inner.unshieldPreimage.value = 401;
+      }
+      if (mode === 'swapped commitments') {
+        fixture.inner.commitments.reverse();
+        [expected.changeCommitment, expected.unshieldCommitment] = [
+          expected.unshieldCommitment,
+          expected.changeCommitment,
+        ];
+      }
+    });
+    if (mode !== 'swapped commitments') mockNoteHash.mockReturnValue(9n);
+    await expect(invoke()).rejects.toThrow();
+    // Structural policy passed; independent preimage hashing caused refusal.
+    expect(mockNoteHash).toHaveBeenCalledTimes(1);
+    expect(context.requestKey).not.toHaveBeenCalled();
+    expect(mockSign).not.toHaveBeenCalled();
+    expect(context.request).not.toHaveBeenCalled();
+  }
+);
+test('unknown signing kind refuses before runtime or key admission', async () => {
+  checked.kind = 'railgun-unknown';
   await expect(invoke()).rejects.toThrow();
   expect(require('./railgun-engine-runtime').verifyRailgunEngineRuntime).not.toHaveBeenCalled();
   expect(mockPoseidon).not.toHaveBeenCalled();

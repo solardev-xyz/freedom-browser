@@ -1,6 +1,6 @@
 /** Offline Electron qualification of real SDK preparation, the separate binary
- * key signer, real 1x1 proofs and a fresh witness-free verifier. Public synthetic
- * fixtures only. Usage: electron script ENGINE_ASAR PROVER_ASAR ARTIFACTS NEW_DIR
+ * key signer, real 1x1/1x2 proofs and a fresh witness-free verifier. Public synthetic
+ * fixtures only. Usage: electron script ENGINE_ASAR PROVER_ASAR ARTIFACTS NEW_DIR [partial]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -9,8 +9,9 @@ const fs = require('fs'),
 const { createHash } = require('crypto');
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 async function main() {
-  const [archive, proverArchive, artifactDirectory, directory] = process.argv.slice(2);
-  assert.equal(process.argv.length, 6);
+  const [archive, proverArchive, artifactDirectory, directory, mode] = process.argv.slice(2);
+  assert.ok(process.argv.length === 6 || (process.argv.length === 7 && mode === 'partial'));
+  const kinds = mode === 'partial' ? ['partial'] : ['transfer', 'unshield'];
   for (const p of [archive, proverArchive, artifactDirectory, directory])
     assert.ok(path.isAbsolute(p));
   assert.ok(!fs.existsSync(directory));
@@ -35,6 +36,7 @@ async function main() {
     'src/main/wallet/railgun-spend-sign-job.js',
     'src/main/wallet/railgun-private-verify-job.js',
     'src/main/wallet/railgun-private-prover.js',
+    'src/main/wallet/railgun-private-witness.js',
     'src/main/wallet/railgun-private-capsule.js',
     'src/main/wallet/railgun-private-reconstruct.js',
     'src/main/wallet/railgun-private-preparation.js',
@@ -92,7 +94,17 @@ async function main() {
     runs = [],
     coldRecovery = [],
     refused = [];
-  let captured;
+  const dispatches = new Set();
+  const track = (use) => (wire) => {
+    const work = Promise.resolve().then(() => use(wire));
+    dispatches.add(work);
+    work.then(
+      () => dispatches.delete(work),
+      () => dispatches.delete(work)
+    );
+    return work;
+  };
+  let captured, storageKey;
   async function sign(payload, refusal) {
     let sequence = 0,
       value,
@@ -109,7 +121,7 @@ async function main() {
       rssMb: 512,
       broker: {
         signal: scope.signal,
-        dispatch: async (wire) => {
+        dispatch: track(async (wire) => {
           const message = JSON.parse(wire);
           assert.equal(message.id, ++sequence);
           if (message.id === 1) {
@@ -125,7 +137,7 @@ async function main() {
           assert.equal(message.method, 'result');
           value = message.value;
           return JSON.stringify({ id: 2, value: null });
-        },
+        }),
       },
     });
     tasks.add(task);
@@ -190,14 +202,14 @@ async function main() {
       lifetimeMs: 60000,
       broker: {
         signal: scope.signal,
-        dispatch: async (wire) => {
+        dispatch: track(async (wire) => {
           const message = JSON.parse(wire);
           assert.equal(result, undefined);
           assert.equal(message.id, 1);
           assert.equal(message.method, 'result');
           result = message.value;
           return JSON.stringify({ id: 1, value: null });
-        },
+        }),
       },
     });
     tasks.add(task);
@@ -231,7 +243,7 @@ async function main() {
     }
   }
   try {
-    for (const kind of ['transfer', 'unshield']) {
+    for (const kind of kinds) {
       let sequence = 0,
         result;
       const start = performance.now();
@@ -251,7 +263,7 @@ async function main() {
         rssMb: 768,
         broker: {
           signal: scope.signal,
-          dispatch: async (wire) => {
+          dispatch: track(async (wire) => {
             const message = JSON.parse(wire);
             assert.equal(message.id, ++sequence);
             if (message.id < 3) {
@@ -263,7 +275,7 @@ async function main() {
             assert.equal(message.method, 'result');
             result = message.value;
             return JSON.stringify({ id: 3, value: null });
-          },
+          }),
         },
       });
       tasks.add(task);
@@ -277,15 +289,73 @@ async function main() {
       assert.equal(result.wrongMessageSignatureRefused, true);
       assert.equal(result.wrongSignatureRefusedBeforeProving, true);
       assert.equal(result.publicCapsuleReconstructedWitness, true);
+      assert.equal(result.productionWitnessUsed, kind === 'partial');
+      assert.equal(result.artifactVariant, kind === 'partial' ? '01x02' : '01x01');
+      assert.equal(result.publicSignalCount, kind === 'partial' ? 5 : 4);
+      assert.equal(result.oneUseProverRefused, true);
+      assert.equal(result.legacyArtifactBindingRefused, kind === 'partial');
       assert.equal(result.guards.attempts, 0);
       const independent = await verify(result);
       const zeroProofRefused = await verify({ ...result, finalTransaction: result.intent }, true);
+      const signalMutations = [];
+      if (kind === 'partial') {
+        const { Interface, AbiCoder, keccak256 } = require('ethers');
+        const { TRANSACT_ABI, BOUND_PARAMS } = require('../src/main/wallet/railgun-private-policy');
+        const abi = new Interface([TRANSACT_ABI]);
+        const field =
+          21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+        for (const fieldName of [
+          'merkleRoot',
+          'boundParamsHash',
+          'nullifier',
+          'changeCommitment',
+          'unshieldCommitment',
+          'commitment-order',
+        ]) {
+          const changed = structuredClone(result);
+          for (const name of ['intent', 'finalTransaction']) {
+            const tx = abi.decodeFunctionData('transact', changed[name].data)[0][0].toArray(true);
+            if (fieldName === 'merkleRoot') tx[1] = hex(BigInt(tx[1]) + 1n);
+            else if (fieldName === 'nullifier') tx[2][0] = hex(BigInt(tx[2][0]) + 1n);
+            else if (fieldName === 'changeCommitment') tx[3][0] = hex(BigInt(tx[3][0]) + 1n);
+            else if (fieldName === 'unshieldCommitment') tx[3][1] = hex(BigInt(tx[3][1]) + 1n);
+            else if (fieldName === 'commitment-order') tx[3] = [tx[3][1], tx[3][0]];
+            else tx[4][6][0][4] = '0x1234'; // Memo changes the bound-parameters hash.
+            changed[name].data = abi.encodeFunctionData('transact', [[tx]]);
+            changed.expected.merkleRoot = tx[1];
+            changed.expected.nullifier = tx[2][0];
+            changed.expected.changeCommitment = tx[3][0];
+            changed.expected.unshieldCommitment = tx[3][1];
+            changed.expected.boundParamsHash = hex(
+              BigInt(keccak256(AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [tx[4]]))) % field
+            );
+          }
+          matchRailgunPrivateProvedTransaction(
+            changed.intent,
+            changed.finalTransaction,
+            changed.expected
+          );
+          if (fieldName === 'commitment-order') {
+            assert.equal(changed.expected.changeCommitment, result.expected.unshieldCommitment);
+            assert.equal(changed.expected.unshieldCommitment, result.expected.changeCommitment);
+            assert.notEqual(changed.expected.changeCommitment, result.expected.changeCommitment);
+          } else assert.notEqual(changed.expected[fieldName], result.expected[fieldName]);
+          await verify(changed, true);
+          signalMutations.push(fieldName);
+        }
+      }
       runs.push({
         kind,
         verified: true,
         wrongMessageSignatureRefused: true,
         wrongSignatureRefusedBeforeProving: true,
         publicCapsuleReconstructedWitness: true,
+        productionWitnessUsed: result.productionWitnessUsed,
+        artifactVariant: result.artifactVariant,
+        publicSignalCount: result.publicSignalCount,
+        oneUseProverRefused: result.oneUseProverRefused,
+        legacyArtifactBindingRefused: result.legacyArtifactBindingRefused,
+        signalMutationsRefused: signalMutations,
         zeroProofRefused,
         independent,
         guards: result.guards,
@@ -300,17 +370,22 @@ async function main() {
       digestRailgunPrivateCapsule,
     } = require('../src/main/wallet/railgun-private-capsule');
     const { createPrivacyStorage } = require('../src/main/wallet/privacy-storage');
+    storageKey = Buffer.alloc(32, 71);
     const storageArgs = {
       handle: context('storage', 'synthetic-public-capsules'),
       directory,
-      key: Buffer.alloc(32, 71),
+      key: storageKey,
     };
-    for (const [kind, persistSignature] of [
-      ['transfer', true],
-      ['unshield', true],
-      ['transfer', false],
-      ['unshield', false],
-    ]) {
+    const recoveryCases =
+      mode === 'partial'
+        ? [['partial', true]]
+        : [
+            ['transfer', true],
+            ['unshield', true],
+            ['transfer', false],
+            ['unshield', false],
+          ];
+    for (const [kind, persistSignature] of recoveryCases) {
       let capsule,
         signature,
         payload,
@@ -332,7 +407,7 @@ async function main() {
         lifetimeMs: 180000,
         broker: {
           signal: scope.signal,
-          async dispatch(wire) {
+          dispatch: track(async (wire) => {
             const message = JSON.parse(wire);
             assert.equal(message.id, ++sequence);
             if (sequence === 1) {
@@ -352,7 +427,7 @@ async function main() {
             // A has emitted no proof. Kill it while its checkpoint request awaits.
             task.close();
             return JSON.stringify({ id: 2, value: null });
-          },
+          }),
         },
       });
       tasks.add(task);
@@ -394,14 +469,14 @@ async function main() {
         lifetimeMs: 180000,
         broker: {
           signal: scope.signal,
-          async dispatch(wire) {
+          dispatch: track(async (wire) => {
             const message = JSON.parse(wire);
             assert.equal(result, undefined);
             assert.equal(message.id, 1);
             assert.equal(message.method, 'result');
             result = message.value;
             return JSON.stringify({ id: 1, value: null });
-          },
+          }),
         },
       });
       tasks.add(task);
@@ -412,7 +487,23 @@ async function main() {
       assert.equal(resumed.code, 'RAILGUN_PROCESS_CLOSED');
       assert.equal(result.storedSignatureUsed, true);
       assert.equal(result.controls.freshPreparationCalls, 0);
-      assert.equal(result.controls.refused.length, kind === 'transfer' ? 12 : 11);
+      if (kind !== 'partial')
+        assert.equal(result.controls.refused.length, kind === 'transfer' ? 12 : 11);
+      else {
+        for (const name of [
+          'foreign-same-viewing-change',
+          'change-value',
+          'annotation',
+          'ciphertext',
+          'unshield-preimage',
+          'swapped-commitments',
+          'consistent-retargeting-signature',
+        ])
+          assert.ok(result.controls.refused.includes(name));
+        assert.equal(result.controls.sameViewingForeignDecrypted, true);
+        assert.equal(result.controls.absentMemoAccepted, true);
+        assert.equal(signatures.length - recoverySignaturesBefore, 0);
+      }
       assert.equal(result.guards.attempts, 0);
       assert.deepEqual(result.intent, capsule.preparation.transaction);
       assert.deepEqual(result.expected, capsule.preparation.expected);
@@ -422,7 +513,10 @@ async function main() {
         path.join(engine, 'transaction/railgun-txid')
       ).getRailgunTransactionIDFromBigInts(
         [BigInt(expected.nullifier)],
-        [BigInt(expected.commitment)],
+        (kind === 'partial'
+          ? [expected.changeCommitment, expected.unshieldCommitment]
+          : [expected.commitment]
+        ).map(BigInt),
         BigInt(expected.boundParamsHash)
       );
       assert.equal(result.railgunTxid, hex(originalTxid));
@@ -460,6 +554,9 @@ async function main() {
       hostChange: 'transactionDigest',
     });
     await sign(captured, { name: 'host-refuses-key-request-message', hostChange: 'expectedHash' });
+    await Promise.allSettled([...dispatches]);
+    assert.equal(dispatches.size, 0);
+    assert.equal(tasks.size, 0);
     assert.deepEqual(hashes(), sourceSha256);
     fs.writeFileSync(
       path.join(directory, 'report.json'),
@@ -467,7 +564,16 @@ async function main() {
         {
           observedAt: new Date().toISOString(),
           sourceSha256,
+          mode: mode || 'legacy',
           syntheticNotes: true,
+          syntheticScanAndOwnership: true,
+          productionPartialAdmissionEnabled: false,
+          deployedVerifierEqualityQualified: false,
+          changeIngestionQualified: false,
+          changeSpendEligibilityQualified: false,
+          twoSpendLifecycleQualified: false,
+          utilityExitsObserved: true,
+          admittedBrokerCallbacksDrained: true,
           accountsOpened: 0,
           preparationReceivedSpendingPrivateKey: false,
           networkRequests: 0,
@@ -489,9 +595,11 @@ async function main() {
       { flag: 'wx', mode: 0o600 }
     );
   } finally {
-    for (const task of tasks) task.close();
-    await Promise.all([...tasks].map((task) => task.closed));
     scope.close();
+    for (const task of tasks) task.close();
+    await Promise.allSettled([...dispatches]);
+    await Promise.all([...tasks].map((task) => task.closed));
+    storageKey?.fill(0);
   }
 }
 main().then(

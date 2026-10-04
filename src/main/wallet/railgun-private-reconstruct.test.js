@@ -5,7 +5,7 @@ const {
 } = require('../../../scripts/fixtures/railgun-partial-capsule-data');
 jest.mock('./railgun-engine-runtime', () => ({ verifyRailgunEngineRuntime: jest.fn() }));
 
-test('normalized partial v2 capsule refuses before runtime, wallet or note access', async () => {
+test('unsupported capsule version refuses before runtime, wallet or note access', async () => {
   const capsule = normalizeRailgunPrivateCapsule(createRailgunPartialCapsuleData().capsule);
   const wallet = { getAddress: jest.fn(), TXOs: jest.fn(), getNullifyingKey: jest.fn() };
   await expect(
@@ -14,7 +14,7 @@ test('normalized partial v2 capsule refuses before runtime, wallet or note acces
       wallet,
       descriptor: { walletId: capsule.walletId },
       scan: {},
-      capsule,
+      capsule: { ...capsule, version: 3 },
       signal: new AbortController().signal,
     })
   ).rejects.toThrow();

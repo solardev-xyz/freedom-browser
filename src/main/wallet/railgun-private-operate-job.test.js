@@ -13,6 +13,13 @@ jest.mock('./railgun-private-reconstruct', () => ({
   reconstructRailgunPrivateWitness: (...args) => mockReconstruct(...args),
 }));
 const { run } = require('./railgun-private-operate-job');
+const { Interface } = require('ethers');
+const { TRANSACT_ABI } = require('./railgun-private-policy');
+const boundOf = (capsule) =>
+  new Interface([TRANSACT_ABI]).decodeFunctionData(
+    'transact',
+    capsule.preparation.transaction.data
+  )[0][0].boundParams;
 let input, restored, prepared, reconstructed, prover;
 beforeEach(() => {
   jest.resetAllMocks();
@@ -33,6 +40,7 @@ beforeEach(() => {
     witness: {
       privateInputs: { secret: true, pathElements: [capsule.pathElements.map(BigInt)] },
       publicInputs: { root: 1n },
+      boundParams: boundOf(capsule),
     },
     transaction: { secret: true },
     publicPreparation: capsule.preparation,
@@ -120,4 +128,82 @@ test('public-input reconstruction mismatch refuses before offering', async () =>
   await expect(run(JSON.stringify(input), {})).rejects.toThrow();
   expect(restored.exchangePrivateIntent).not.toHaveBeenCalled();
   expect(prover.close).toHaveBeenCalled();
+});
+
+test('partial binds prover kind and emits v2 only after private/public/ciphertext reconstruction equivalence', async () => {
+  const capsule =
+    require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData()
+      .capsule;
+  input.privateIntent = capsule.selection;
+  prepared.publicPreparation = capsule.preparation;
+  prepared.witness.boundParams =
+    require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData().inner.boundParams;
+  reconstructed = {
+    ...prepared,
+    witness: { ...prepared.witness, boundParams: boundOf(capsule) },
+  };
+  mockReconstruct.mockResolvedValue(reconstructed);
+  restored.exchangePrivateIntent.mockImplementation(async ({ capsule: received }) => {
+    expect(received.version).toBe(2);
+    expect(received.preparation).toEqual(capsule.preparation);
+    expect(mockProver).toHaveBeenCalledWith(
+      expect.objectContaining({ intentKind: 'railgun-partial-unshield' })
+    );
+    expect(mockProver.mock.invocationCallOrder[0]).toBeLessThan(
+      mockPrepare.mock.invocationCallOrder[0]
+    );
+    return { status: 'signed', signature: { test: true } };
+  });
+  const value = await run(JSON.stringify(input), {});
+  expect(value.privateOperation.status).toBe('proved');
+  expect(prover.prove).toHaveBeenCalledWith(reconstructed, { test: true });
+  expect(prover.close).toHaveBeenCalledTimes(1);
+});
+test('retained ciphertext mismatch refuses before any signature exchange', async () => {
+  const bound = prepared.witness.boundParams.toObject(true);
+  bound.adaptParams = '0x' + '01'.repeat(32);
+  mockReconstruct.mockResolvedValue({
+    ...reconstructed,
+    witness: { ...prepared.witness, boundParams: bound },
+  });
+  await expect(run(JSON.stringify(input), {})).rejects.toThrow();
+  expect(restored.exchangePrivateIntent).not.toHaveBeenCalled();
+  expect(prover.prove).not.toHaveBeenCalled();
+  expect(prover.close).toHaveBeenCalledTimes(1);
+});
+test('cancellation during reconstruction prevents signature exchange and closes loaded artifacts', async () => {
+  const controller = new AbortController();
+  restored.signal = controller.signal;
+  mockReconstruct.mockImplementation(async () => {
+    controller.abort();
+    return reconstructed;
+  });
+  await expect(run(JSON.stringify(input), {})).rejects.toThrow();
+  expect(restored.exchangePrivateIntent).not.toHaveBeenCalled();
+  expect(prover.prove).not.toHaveBeenCalled();
+  expect(prover.close).toHaveBeenCalledTimes(1);
+});
+test('legacy operation explicitly binds its original prover kind', async () => {
+  await run(JSON.stringify(input), {});
+  expect(mockProver).toHaveBeenCalledWith(
+    expect.objectContaining({ intentKind: input.privateIntent.kind })
+  );
+  expect(mockReconstruct.mock.calls[0][0].capsule.version).toBe(1);
+});
+
+test('different reconstructed ciphertext refuses before signature even when public witness inputs agree', async () => {
+  const f =
+    require('../../../scripts/fixtures/railgun-partial-capsule-data').createRailgunPartialCapsuleData();
+  input.privateIntent = f.capsule.selection;
+  prepared.publicPreparation = f.capsule.preparation;
+  prepared.witness.boundParams = boundOf(f.capsule);
+  f.inner.boundParams.commitmentCiphertext[0].ciphertext[0] = '0x' + '99'.repeat(32);
+  mockReconstruct.mockResolvedValue({
+    ...prepared,
+    witness: { ...prepared.witness, boundParams: f.inner.boundParams },
+  });
+  await expect(run(JSON.stringify(input), {})).rejects.toThrow();
+  expect(restored.exchangePrivateIntent).not.toHaveBeenCalled();
+  expect(prover.prove).not.toHaveBeenCalled();
+  expect(prover.close).toHaveBeenCalledTimes(1);
 });

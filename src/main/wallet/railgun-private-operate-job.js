@@ -3,6 +3,8 @@
  * a normal result, so the host can re-attest the read-only wallet window.
  */
 const assert = require('assert/strict');
+const { AbiCoder } = require('ethers');
+const { BOUND_PARAMS } = require('./railgun-private-policy');
 exports.run = async (inputText, context) => {
   const input = JSON.parse(inputText);
   assert.equal(input.restore, true);
@@ -19,6 +21,7 @@ exports.run = async (inputText, context) => {
       let prover;
       try {
         prover = await require('./railgun-private-prover').createRailgunPrivateProver({
+          intentKind: input.privateIntent.kind,
           archive: restored.archive,
           proverArchive: input.privateOperation.proverArchive,
           artifactDirectory: input.privateOperation.artifactDirectory,
@@ -34,7 +37,7 @@ exports.run = async (inputText, context) => {
         );
         assert.equal(selected.length, 1);
         const capsule = require('./railgun-private-capsule').normalizeRailgunPrivateCapsule({
-          version: 1,
+          version: input.privateIntent.kind === 'railgun-partial-unshield' ? 2 : 1,
           walletId: restored.descriptor.walletId,
           engineSha256: require('./railgun-engine-manifest.json').sha256,
           selection: input.privateIntent,
@@ -53,6 +56,14 @@ exports.run = async (inputText, context) => {
           });
         assert.deepEqual(reconstructed.witness.privateInputs, prepared.witness.privateInputs);
         assert.deepEqual(reconstructed.witness.publicInputs, prepared.witness.publicInputs);
+        // Decoded ethers tuples and SDK objects have different representations.
+        // Compare their exact ABI bytes, including the original ciphertext.
+        const coder = AbiCoder.defaultAbiCoder();
+        assert.equal(
+          coder.encode([BOUND_PARAMS], [reconstructed.witness.boundParams]),
+          coder.encode([BOUND_PARAMS], [prepared.witness.boundParams])
+        );
+        assert.ok(!restored.signal.aborted);
         const response = await restored.exchangePrivateIntent({
           preparation: prepared.publicPreparation,
           capsule,

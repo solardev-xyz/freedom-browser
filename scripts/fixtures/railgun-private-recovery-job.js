@@ -74,6 +74,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
         proverArchive: input.proverArchive,
         artifactDirectory: input.artifactDirectory,
         spendingPublicKey: input.spendingPublicKey,
+        intentKind: input.capsule.selection.kind,
         signal,
       });
     const { prepared, proved, controls } =
@@ -88,6 +89,7 @@ exports.run = async (text, { request, signal, guardReport }) => {
                 proverArchive: input.proverArchive,
                 artifactDirectory: input.artifactDirectory,
                 spendingPublicKey: input.spendingPublicKey,
+                intentKind: input.capsule.selection.kind,
                 signal,
               }
             );

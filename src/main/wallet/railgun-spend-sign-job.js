@@ -21,7 +21,12 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
   ]);
   assert.ok(!signal.aborted);
   const checked = validateRailgunPrivateSigningIntent(input.transaction, input.expected);
-  assert.ok(['railgun-private-transfer', 'railgun-token-unshield'].includes(checked.kind));
+  assert.ok(
+    ['railgun-private-transfer', 'railgun-token-unshield', 'railgun-partial-unshield'].includes(
+      checked.kind
+    )
+  );
+  const partial = checked.kind === 'railgun-partial-unshield';
   assert.ok(field(input.expectedHash));
   assert.ok(
     Array.isArray(input.spendingPublicKey) &&
@@ -35,7 +40,7 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
   const { getPublicSpendingKey, signEDDSA, verifyEDDSA } = require(
     path.join(root, 'utils/keys-utils')
   );
-  if (checked.kind === 'railgun-token-unshield') {
+  if (partial || checked.kind === 'railgun-token-unshield') {
     const { getNoteHash } = require(path.join(root, 'note/note-util'));
     assert.equal(
       hex(
@@ -46,16 +51,21 @@ exports.run = async function run(text, { request, requestKey, signal, guardRepor
             tokenAddress: pins.wrappedNative,
             tokenSubID: '0',
           },
-          BigInt(checked.amount)
+          BigInt(partial ? checked.unshieldAmount : checked.amount)
         )
       ),
-      checked.commitment
+      partial ? checked.unshieldCommitment : checked.commitment
     );
   }
   // Match the SDK HardwareWallet connector's exact public-input order. Never
   // sign a caller digest without reconstructing it from the checked transaction.
   const message = poseidon(
-    [checked.merkleRoot, checked.boundParamsHash, checked.nullifier, checked.commitment].map(BigInt)
+    [
+      checked.merkleRoot,
+      checked.boundParamsHash,
+      checked.nullifier,
+      ...(partial ? [checked.changeCommitment, checked.unshieldCommitment] : [checked.commitment]),
+    ].map(BigInt)
   );
   assert.equal(hex(message), input.expectedHash);
   assert.equal(guardReport().attempts, 0);

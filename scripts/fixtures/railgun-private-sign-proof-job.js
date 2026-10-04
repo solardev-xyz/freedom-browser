@@ -7,7 +7,7 @@ const pins = require('../../src/main/wallet/railgun-shield-pins.json');
 const hex = (n) => '0x' + n.toString(16).padStart(64, '0');
 exports.run = async function run(text, { request, signal, guardReport }) {
   const input = JSON.parse(text);
-  assert.ok(['transfer', 'unshield'].includes(input.kind));
+  assert.ok(['transfer', 'unshield', 'partial'].includes(input.kind));
   const archive =
     require('../../src/main/wallet/railgun-engine-runtime').verifyRailgunEngineRuntime(
       input.archive
@@ -65,7 +65,14 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     addressKeys,
   };
   imp('wallet/wallet-info').default.setWalletSource('freedom');
-  const unshield = input.kind === 'unshield';
+  const partial = input.kind === 'partial';
+  const unshield = input.kind === 'unshield' || partial;
+  const intentKind = partial
+    ? 'railgun-partial-unshield'
+    : unshield
+      ? 'railgun-token-unshield'
+      : 'railgun-private-transfer';
+  const outputCount = partial ? 2 : 1;
   const outputs = unshield
     ? []
     : [
@@ -79,7 +86,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
           undefined
         ),
       ];
-  const transaction = new Transaction(
+  let transaction = new Transaction(
     { type: 0, id: pins.chainId },
     note.tokenData,
     0,
@@ -88,7 +95,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     { contract: '0x' + '0'.repeat(40), parameters: hex(0n) }
   );
   const recipient = '0x' + '12'.repeat(20);
-  if (unshield)
+  if (unshield && !partial)
     transaction.addUnshieldData(
       { tokenData: note.tokenData, toAddress: recipient, allowOverride: false },
       note.value
@@ -105,109 +112,13 @@ exports.run = async function run(text, { request, signal, guardReport }) {
     chainId: pins.chainId,
     role: 'artifacts',
   });
-  let artifacts, privateProver, rejectedProver;
+  let artifacts, privateProver, rejectedProver, legacyProver;
   try {
-    const txRequest = await transaction.generateTransactionRequest(
-      wallet,
-      'V2_PoseidonMerkle',
-      '',
-      { minGasPrice: 0n }
-    );
-    const proverArchive =
-      require('../../src/main/wallet/railgun-prover-runtime').verifyRailgunProverRuntime(
-        input.proverArchive
-      );
-    artifacts = await require('../../src/main/wallet/railgun-artifacts').loadRailgunArtifacts({
-      handle,
-      directory: input.artifactDirectory,
-      variant: '01x01',
-    });
-    const prover = new Prover({
-      assertArtifactExists: (i, o) => {
-        assert.equal(i, 1);
-        assert.equal(o, 1);
-      },
-      getArtifacts: async (pub) => {
-        assert.equal(pub.nullifiers.length, 1);
-        assert.equal(pub.commitmentsOut.length, 1);
-        return artifacts;
-      },
-    });
-    prover.setSnarkJSGroth16(require(path.join(proverArchive, 'serial-prover.cjs')));
-    const openPrivateProver = () =>
-      require('../../src/main/wallet/railgun-private-prover').createRailgunPrivateProver({
-        archive,
-        proverArchive,
-        artifactDirectory: input.artifactDirectory,
-        spendingPublicKey: input.spendingPublicKey,
-        signal,
-      });
-    privateProver = await openPrivateProver();
-    const dummy = await transaction.generateDummyProvedTransaction(prover, txRequest);
-    const expected = {
-      kind: unshield ? 'railgun-token-unshield' : 'railgun-private-transfer',
-      tree: 0,
-      merkleRoot: hex(txRequest.publicInputs.merkleRoot),
-      nullifier: hex(txRequest.publicInputs.nullifiers[0]),
-      commitment: hex(txRequest.publicInputs.commitmentsOut[0]),
-      boundParamsHash: hex(txRequest.publicInputs.boundParamsHash),
-      ...(unshield ? { recipient, amount: note.value.toString() } : {}),
-    };
-    const intent = {
-      chainId: pins.chainId,
-      to: pins.proxy,
-      value: '0',
-      data: abi.encodeFunctionData('transact', [[dummy]]),
-    };
-    const messageHash = (pub) =>
-      hex(
-        poseidon([pub.merkleRoot, pub.boundParamsHash, ...pub.nullifiers, ...pub.commitmentsOut])
-      );
-    const payload = {
-      archive,
-      transaction: intent,
-      expected,
-      expectedHash: messageHash(txRequest.publicInputs),
-      spendingPublicKey: input.spendingPublicKey,
-    };
-    const reply = JSON.parse(
-      await request(JSON.stringify({ id: 1, method: 'sign', value: payload }))
-    );
-    assert.equal(reply.id, 1);
-    const signature = reply.value;
-    const start = performance.now();
-    let prepared = {
-      witness: txRequest,
-      transaction,
-      publicPreparation: {
-        transaction: intent,
-        expected,
-        expectedHash: payload.expectedHash,
-      },
-    };
     const instanceId = imp('key-derivation/bech32').encodeAddress(addressKeys);
     const descriptor = {
       walletId: '1'.repeat(64),
       instanceId,
       spendingPublicKey: input.spendingPublicKey.map((v) => v.slice(2)),
-    };
-    const capsule = {
-      version: 1,
-      walletId: descriptor.walletId,
-      engineSha256: require('../../src/main/wallet/railgun-engine-manifest.json').sha256,
-      selection: {
-        kind: expected.kind,
-        tree: 0,
-        position,
-        recipient: unshield ? recipient : instanceId,
-      },
-      preparation: {
-        ...prepared.publicPreparation,
-        recipient: unshield ? recipient : instanceId,
-        amount: note.value.toString(),
-      },
-      noteHash: hex(leaf),
-      pathElements: Array(16).fill(hex(0n)),
     };
     const restoredWallet = {
       ...wallet,
@@ -231,8 +142,140 @@ exports.run = async function run(text, { request, signal, guardReport }) {
           spentTxid: false,
         },
       ],
-      ownedPoi: [{ id: `0:${position}`, hash: hex(leaf), nullifier: expected.nullifier }],
+      ownedPoi: [
+        {
+          id: `0:${position}`,
+          hash: hex(leaf),
+          nullifier: hex(TransactNote.getNullifier(nullifyingKey, position)),
+        },
+      ],
     };
+    const selection = {
+      kind: intentKind,
+      tree: 0,
+      position,
+      recipient: unshield ? recipient : instanceId,
+      ...(partial ? { unshieldAmount: '400' } : {}),
+    };
+    let original;
+    if (partial) {
+      original =
+        await require('../../src/main/wallet/railgun-private-witness').prepareRailgunPrivateWitness(
+          {
+            archive,
+            wallet: restoredWallet,
+            descriptor,
+            scan,
+            selection,
+            signal,
+            tree: wallet.getUTXOMerkletree(),
+            checkpoint: {
+              state: { trees: [{ tree: 0, root: hex(merkleRoot), length: position + 1 }] },
+            },
+          }
+        );
+      transaction = original.transaction;
+      assert.deepEqual(original.witness.privateInputs.valueIn, [1000n]);
+      assert.deepEqual(original.witness.privateInputs.valueOut, [600n, 400n]);
+      assert.equal(original.witness.publicInputs.commitmentsOut.length, 2);
+    }
+    const txRequest = partial
+      ? original.witness
+      : await transaction.generateTransactionRequest(wallet, 'V2_PoseidonMerkle', '', {
+          minGasPrice: 0n,
+        });
+    const proverArchive =
+      require('../../src/main/wallet/railgun-prover-runtime').verifyRailgunProverRuntime(
+        input.proverArchive
+      );
+    artifacts = await require('../../src/main/wallet/railgun-artifacts').loadRailgunArtifacts({
+      handle,
+      directory: input.artifactDirectory,
+      variant: partial ? '01x02' : '01x01',
+    });
+    const prover = new Prover({
+      assertArtifactExists: (i, o) => {
+        assert.equal(i, 1);
+        assert.equal(o, outputCount);
+      },
+      getArtifacts: async (pub) => {
+        assert.equal(pub.nullifiers.length, 1);
+        assert.equal(pub.commitmentsOut.length, outputCount);
+        return artifacts;
+      },
+    });
+    prover.setSnarkJSGroth16(require(path.join(proverArchive, 'serial-prover.cjs')));
+    const openPrivateProver = () =>
+      require('../../src/main/wallet/railgun-private-prover').createRailgunPrivateProver({
+        archive,
+        proverArchive,
+        artifactDirectory: input.artifactDirectory,
+        spendingPublicKey: input.spendingPublicKey,
+        ...(partial ? { intentKind } : {}),
+        signal,
+      });
+    privateProver = await openPrivateProver();
+    const dummy = partial
+      ? abi.decodeFunctionData('transact', original.publicPreparation.transaction.data)[0][0]
+      : await transaction.generateDummyProvedTransaction(prover, txRequest);
+    const expected = partial
+      ? original.publicPreparation.expected
+      : {
+          kind: unshield ? 'railgun-token-unshield' : 'railgun-private-transfer',
+          tree: 0,
+          merkleRoot: hex(txRequest.publicInputs.merkleRoot),
+          nullifier: hex(txRequest.publicInputs.nullifiers[0]),
+          commitment: hex(txRequest.publicInputs.commitmentsOut[0]),
+          boundParamsHash: hex(txRequest.publicInputs.boundParamsHash),
+          ...(unshield ? { recipient, amount: note.value.toString() } : {}),
+        };
+    const intent = partial
+      ? original.publicPreparation.transaction
+      : {
+          chainId: pins.chainId,
+          to: pins.proxy,
+          value: '0',
+          data: abi.encodeFunctionData('transact', [[dummy]]),
+        };
+    const messageHash = (pub) =>
+      hex(
+        poseidon([pub.merkleRoot, pub.boundParamsHash, ...pub.nullifiers, ...pub.commitmentsOut])
+      );
+    const payload = {
+      archive,
+      transaction: intent,
+      expected,
+      expectedHash: messageHash(txRequest.publicInputs),
+      spendingPublicKey: input.spendingPublicKey,
+    };
+    const start = performance.now();
+    let prepared = partial
+      ? original
+      : {
+          witness: txRequest,
+          transaction,
+          publicPreparation: {
+            transaction: intent,
+            expected,
+            expectedHash: payload.expectedHash,
+          },
+        };
+    const capsule =
+      require('../../src/main/wallet/railgun-private-capsule').normalizeRailgunPrivateCapsule({
+        version: partial ? 2 : 1,
+        walletId: descriptor.walletId,
+        engineSha256: require('../../src/main/wallet/railgun-engine-manifest.json').sha256,
+        selection,
+        preparation: partial
+          ? prepared.publicPreparation
+          : {
+              ...prepared.publicPreparation,
+              recipient: selection.recipient,
+              amount: note.value.toString(),
+            },
+        noteHash: hex(leaf),
+        pathElements: Array(16).fill(hex(0n)),
+      });
     prepared =
       await require('../../src/main/wallet/railgun-private-reconstruct').reconstructRailgunPrivateWitness(
         {
@@ -246,24 +289,67 @@ exports.run = async function run(text, { request, signal, guardReport }) {
       );
     assert.deepEqual(prepared.witness.privateInputs, txRequest.privateInputs);
     assert.deepEqual(prepared.witness.publicInputs, txRequest.publicInputs);
+    const { AbiCoder } = require('ethers');
+    const { BOUND_PARAMS } = require('../../src/main/wallet/railgun-private-policy');
+    assert.equal(
+      AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [prepared.witness.boundParams]),
+      AbiCoder.defaultAbiCoder().encode([BOUND_PARAMS], [txRequest.boundParams])
+    );
+    // Do not ask B for a signature until reconstruction matches the original witness.
+    const reply = JSON.parse(
+      await request(JSON.stringify({ id: 1, method: 'sign', value: payload }))
+    );
+    assert.equal(reply.id, 1);
+    const signature = reply.value;
     if (input.checkpointOnly) {
       await request(JSON.stringify({ id: 2, method: 'checkpoint', value: capsule }));
       throw Error('Injected stop before proving');
     }
+    let legacyArtifactBindingRefused = false;
+    if (partial) {
+      legacyProver =
+        await require('../../src/main/wallet/railgun-private-prover').createRailgunPrivateProver({
+          archive,
+          proverArchive,
+          artifactDirectory: input.artifactDirectory,
+          spendingPublicKey: input.spendingPublicKey,
+          signal,
+        });
+      let reached = false;
+      await assert.rejects(() =>
+        legacyProver.prove(
+          {
+            ...prepared,
+            transaction: {
+              generateProvedTransaction() {
+                reached = true;
+                throw Error('Legacy circuit admitted partial');
+              },
+            },
+          },
+          signature
+        )
+      );
+      assert.equal(reached, false);
+      legacyArtifactBindingRefused = true;
+    }
     const proofResult = await privateProver.prove(prepared, signature);
+    await assert.rejects(() => privateProver.prove(prepared, signature));
     assert.equal(proofResult.independentlyVerified, false);
     const finalTransaction = proofResult.transaction;
     matchRailgunPrivateProvedTransaction(intent, finalTransaction, expected);
     // Ask a new B to sign a different root, then try that otherwise valid
     // signature with the original private witness. It must fail the circuit.
     const changedRoot = txRequest.publicInputs.merkleRoot + 1n;
+    const changedDummy = abi.decodeFunctionData('transact', intent.data)[0][0].toArray(true);
+    changedDummy[1] = hex(changedRoot);
     const changed = {
       ...payload,
       expected: { ...expected, merkleRoot: hex(changedRoot) },
       expectedHash: messageHash({ ...txRequest.publicInputs, merkleRoot: changedRoot }),
       transaction: {
         ...intent,
-        data: abi.encodeFunctionData('transact', [[{ ...dummy, merkleRoot: hex(changedRoot) }]]),
+        data: abi.encodeFunctionData('transact', [[changedDummy]]),
       },
     };
     const wrongReply = JSON.parse(
@@ -311,6 +397,11 @@ exports.run = async function run(text, { request, signal, guardReport }) {
               wrongMessageSignatureRefused: true,
               wrongSignatureRefusedBeforeProving: true,
               publicCapsuleReconstructedWitness: true,
+              productionWitnessUsed: partial,
+              artifactVariant: partial ? '01x02' : '01x01',
+              publicSignalCount: outputCount + 3,
+              oneUseProverRefused: true,
+              legacyArtifactBindingRefused,
               proofElapsedMs: Math.round(performance.now() - start),
               guards: guardReport(),
               finalTransaction,
@@ -325,6 +416,7 @@ exports.run = async function run(text, { request, signal, guardReport }) {
   } finally {
     privateProver?.close();
     rejectedProver?.close();
+    legacyProver?.close();
     viewingKey.fill(0);
     artifacts?.wasm.fill(0);
     artifacts?.zkey.fill(0);

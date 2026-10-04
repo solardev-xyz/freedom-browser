@@ -50,13 +50,14 @@ const {
 const { createRailgunPrivateProver } = require('./railgun-private-prover');
 const hex = (n) => '0x' + BigInt(n).toString(16).padStart(64, '0');
 let controller, artifacts, prepared, signature, helpers;
-async function open() {
+async function open(intentKind) {
   const helper = await createRailgunPrivateProver({
     archive: '/fixture/engine.asar',
     proverArchive: '/fixture/prover.asar',
     artifactDirectory: '/fixture/artifacts',
     spendingPublicKey: [hex(8), hex(9)],
     signal: controller.signal,
+    ...(intentKind === undefined ? {} : { intentKind }),
   });
   helpers.push(helper);
   return helper;
@@ -70,6 +71,7 @@ beforeEach(() => {
   mockVerify.mockReturnValue(true);
   mockPoseidon.mockReturnValue(5n);
   validateRailgunPrivateSigningIntent.mockReturnValue({
+    kind: 'railgun-private-transfer',
     merkleRoot: hex(1),
     boundParamsHash: hex(2),
     nullifier: hex(3),
@@ -90,7 +92,7 @@ beforeEach(() => {
     },
     publicPreparation: {
       transaction: { to: 'target', data: 'intent' },
-      expected: { kind: 'test' },
+      expected: { kind: 'railgun-private-transfer' },
       expectedHash: hex(5),
     },
   };
@@ -150,7 +152,7 @@ test('intent is copied before proving yields, preventing late result substitutio
   expect(matchRailgunPrivateProvedTransaction).toHaveBeenCalledWith(
     { to: 'target', data: 'intent' },
     result.transaction,
-    { kind: 'test' }
+    { kind: 'railgun-private-transfer' }
   );
 });
 test('revocation after proving refuses a public result', async () => {
@@ -178,3 +180,97 @@ test('a changed final intent is refused even after the SDK returns a proof', asy
   });
   await expect(helper.prove(prepared, signature)).rejects.toThrow('different intent');
 });
+
+function partial() {
+  prepared.publicPreparation.expected = { kind: 'railgun-partial-unshield' };
+  prepared.witness.publicInputs.commitmentsOut = [4n, 6n];
+  validateRailgunPrivateSigningIntent.mockReturnValue({
+    kind: 'railgun-partial-unshield',
+    merkleRoot: hex(1),
+    boundParamsHash: hex(2),
+    nullifier: hex(3),
+    changeCommitment: hex(4),
+    unshieldCommitment: hex(6),
+  });
+  prepared.transaction.generateProvedTransaction.mockImplementation(async (_version, prover) => {
+    prover.options.assertArtifactExists(1, 2);
+    expect(() => prover.options.assertArtifactExists(1, 1)).toThrow();
+    expect(() => prover.options.assertArtifactExists(2, 2)).toThrow();
+    await expect(
+      prover.options.getArtifacts({ ...prepared.witness.publicInputs, commitmentsOut: [4n] })
+    ).rejects.toThrow();
+    expect(await prover.options.getArtifacts(prepared.witness.publicInputs)).toBe(artifacts);
+    return {};
+  });
+}
+test('explicit partial intent selects 01x02 and binds the signature to both ordered outputs', async () => {
+  partial();
+  const helper = await open('railgun-partial-unshield');
+  expect(mockLoad.mock.calls[0][0].variant).toBe('01x02');
+  expect(mockVerify).not.toHaveBeenCalled();
+  await helper.prove(prepared, signature);
+  expect(mockPoseidon).toHaveBeenCalledWith([1n, 2n, 3n, 4n, 6n]);
+  expect(mockVerify).toHaveBeenCalledTimes(1);
+  expect(prepared.transaction.generateProvedTransaction).toHaveBeenCalledTimes(1);
+  expect([...artifacts.wasm, ...artifacts.zkey]).toEqual(Array(8).fill(0));
+  await expect(helper.prove(prepared, signature)).rejects.toThrow();
+});
+test('a signature valid only for a four-input message cannot prove partial', async () => {
+  partial();
+  mockPoseidon.mockImplementation((values) => BigInt(values.length));
+  mockVerify.mockImplementation((message) => message === 4n);
+  const helper = await open('railgun-partial-unshield');
+  await expect(helper.prove(prepared, signature)).rejects.toThrow();
+  expect(mockVerify).toHaveBeenCalledWith(5n, { R8: [10n, 11n], S: 12n }, [8n, 9n]);
+  expect(prepared.transaction.generateProvedTransaction).not.toHaveBeenCalled();
+  expect([...artifacts.wasm, ...artifacts.zkey]).toEqual(Array(8).fill(0));
+});
+test.each([undefined, 'railgun-private-transfer', 'railgun-token-unshield'])(
+  'legacy constructor binding %s cannot prove partial',
+  async (intentKind) => {
+    partial();
+    const helper = await open(intentKind);
+    expect(mockLoad.mock.calls[0][0].variant).toBe('01x01');
+    await expect(helper.prove(prepared, signature)).rejects.toThrow();
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(prepared.transaction.generateProvedTransaction).not.toHaveBeenCalled();
+    expect([...artifacts.wasm, ...artifacts.zkey]).toEqual(Array(8).fill(0));
+  }
+);
+test.each(['railgun-partial-unshield', 'railgun-token-unshield'])(
+  'explicit %s binding cannot silently accept a transfer',
+  async (intentKind) => {
+    const helper = await open(intentKind);
+    await expect(helper.prove(prepared, signature)).rejects.toThrow();
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(prepared.transaction.generateProvedTransaction).not.toHaveBeenCalled();
+  }
+);
+test.each([null, '', '01x02', 'railgun-unknown', 2])(
+  'unknown intent kind %s refuses before artifact admission',
+  async (kind) => {
+    await expect(open(kind)).rejects.toThrow();
+    expect(mockLoad).not.toHaveBeenCalled();
+    expect(mockSet).not.toHaveBeenCalled();
+  }
+);
+test.each(['root', 'bound', 'nullifier', 'change', 'unshield', 'swapped', 'missing', 'extra'])(
+  'partial %s public-input mutation refuses before signature verification and proving',
+  async (mode) => {
+    partial();
+    const helper = await open('railgun-partial-unshield');
+    const pub = prepared.witness.publicInputs;
+    if (mode === 'root') pub.merkleRoot++;
+    if (mode === 'bound') pub.boundParamsHash++;
+    if (mode === 'nullifier') pub.nullifiers[0]++;
+    if (mode === 'change') pub.commitmentsOut[0]++;
+    if (mode === 'unshield') pub.commitmentsOut[1]++;
+    if (mode === 'swapped') pub.commitmentsOut.reverse();
+    if (mode === 'missing') pub.commitmentsOut.pop();
+    if (mode === 'extra') pub.nullifiers.push(7n);
+    await expect(helper.prove(prepared, signature)).rejects.toThrow();
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(prepared.transaction.generateProvedTransaction).not.toHaveBeenCalled();
+    expect([...artifacts.wasm, ...artifacts.zkey]).toEqual(Array(8).fill(0));
+  }
+);
