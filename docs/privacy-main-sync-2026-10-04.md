@@ -1,5 +1,41 @@
 # Privacy branch main synchronization — October 4, 2026
 
+## Event-loop watchdog continuation
+
+Main `05d91b18` was merged without conflicts in `76bb135f`, after the enrolled
+source milestone `14615558`. It adds event-loop stall detection, chain activity
+attribution, suspend/resume handling and an opt-in startup smoke command. The
+activity wrapper forwards router arguments unchanged, including privacy contexts,
+and records chain/method/source/timing without request parameters or endpoints.
+Claude reviewed the merge integration and preservation of early private routing.
+
+The wrapper nevertheless exposed private balance read method/timing in local
+stall diagnostics. A narrow follow-up now bypasses activity recording whenever
+request options carry a `privacyContext` property, including inherited or invalid
+markers. It checks presence without evaluating an accessor ahead of the router.
+The original call still receives the same arguments and `this`; results and
+errors propagate unchanged. This conservatively omits diagnostics even when the
+marker is explicitly null. Ordinary calls without the marker retain diagnostics.
+Railgun private RPC does not pass through this wrapper. Broadcast diagnostics
+remain enabled deliberately: even permit-bearing submissions record only
+`eth_sendRawTransaction`, source and elapsed time, never the transaction or permit.
+This follow-up limits private read diagnostics; it does not suppress broadcast timing.
+
+The merged watchdog/activity/router/private-balance suites passed 114 tests
+before the follow-up. The follow-up adds four privacy cases; all 118 tests pass
+in 0.755 seconds, and lint is clean.
+Ant 0.5.56, freedom-ipfs 0.4.3, Myotis 0.1.12 and libradicle 0.7.1 were explicitly
+reinstalled again after this merge, the Myotis supervisor rebuilt, and matching
+Arti 2.6.0/static-sqlite retained. Binary checks pass. The package change only
+adds a script; lockfile and dependency/binary pins are unchanged. No npm dependency
+reinstall or upstream pin bump was needed.
+
+The source milestone's 11,858-test full regression is tied to `14615558` and
+predates this watchdog merge. No merged file intersects its five native source
+inventories or the public/TXID policy inputs. The next RPC prerequisite will run
+a full regression of the combined tree; no live startup smoke or funded-profile
+operation was run for this synchronization.
+
 ## Colibri worker continuation
 
 Main `f9a13854` brings Colibri verification into per-chain workers, deadline
