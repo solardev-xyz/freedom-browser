@@ -30,11 +30,12 @@ const COLIBRI_UNSUPPORTED = new Set([
   'eth_uninstallFilter',
 ]);
 const DIRECT_ONLY_METHODS = new Set([...COLIBRI_UNSUPPORTED, 'web3_clientVersion', 'web3_sha3']);
-// Methods never routed to Colibri, whoever asks. Its WASM verifier runs
-// synchronously on the main thread: verifying a wide eth_getLogs range froze
-// the whole browser for 20-30 s, and it answers a range the RPC refuses with
-// only the most recent blocks' logs, marked verified. That reaches Ant's log
-// scans and any connected page's window.ethereum eth_getLogs alike.
+// Methods never routed to Colibri, whoever asks. It answers an eth_getLogs
+// range the RPC refuses with only the most recent blocks' logs, marked
+// verified (#496). That reaches Ant's log scans and any connected page's
+// window.ethereum eth_getLogs alike. (Verification itself no longer blocks the
+// browser: it runs in a worker thread since #495, where a wide range used to
+// freeze the main process for 20-30 s.)
 const COLIBRI_EXCLUDED_METHODS = new Set(['eth_getLogs']);
 READ_METHODS.add('web3_clientVersion');
 READ_METHODS.add('web3_sha3');
@@ -665,7 +666,12 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   }
   // Keep the WASM-backed verifier lazy; most startup paths do not need it.
   const { requestViaColibri } = require('../ens/colibri-resolver');
-  const requestPromise = Promise.resolve().then(() => requestViaColibri(chainId, method, params));
+  // A prover call is never left unbounded: without a fall-through budget it
+  // still has to settle inside the chain's configured timeout.
+  const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
+  const requestPromise = Promise.resolve().then(() =>
+    requestViaColibri(chainId, method, params, { deadlineMs: budgetMs })
+  );
   colibriInFlight.add(requestPromise);
   colibriInFlightByRoute.set(inFlightKey, routeInFlight + 1);
   const release = () => {
@@ -674,17 +680,12 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
     if (remaining > 0) colibriInFlightByRoute.set(inFlightKey, remaining);
     else colibriInFlightByRoute.delete(inFlightKey);
   };
-  // A timed-out WASM/prover operation cannot currently be cancelled. Keep it
-  // tracked until it really settles so repeated page calls cannot accumulate
-  // unbounded background work.
+  // Verification runs in Colibri's worker thread. Past the deadline the worker
+  // host terminates a worker still busy verifying (and, later, one merely
+  // still waiting on the prover), so the request settles; keep it tracked
+  // until then so repeated page calls cannot accumulate background work.
   requestPromise.then(release, release);
-  // A prover call is never left unbounded: without a fall-through budget it
-  // still has to settle inside the chain's configured timeout.
-  return withSourceDeadline(
-    requestPromise,
-    'Colibri',
-    deadlineMs || configuredSourceTimeoutMs(chainId)
-  );
+  return withSourceDeadline(requestPromise, 'Colibri', budgetMs);
 }
 
 async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {

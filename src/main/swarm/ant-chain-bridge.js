@@ -138,12 +138,11 @@ function sanitizeErrorMessage(message) {
 
 // Router options for Ant's eth_getLogs (window-halving) scans.
 //
-// Never Colibri. Its WASM verifier runs synchronously on the main thread, and
-// verifying Ant's startup scans (e.g. the node's BZZ transfers since the token's
-// deployment) froze the whole browser for 20-30 s at a time. It also
-// answers a range its RPC refuses ("Block range 32059916 exceeds the maximum
-// of 10000 blocks") with only the most recent blocks' logs, so Ant would read
-// a whole-history scan as empty instead of halving its window.
+// Never Colibri. It answers a range its RPC refuses ("Block range 32059916
+// exceeds the maximum of 10000 blocks") with only the most recent blocks'
+// logs, so Ant would read a whole-history scan as empty instead of halving its
+// window (#496). Before #495 moved verification into a worker thread, verifying
+// these startup scans also froze the whole browser for 20-30 s at a time.
 const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
   directTimeoutMs: LOG_SCAN_DIRECT_TIMEOUT_MS,
   rankError: rankLogScanError,

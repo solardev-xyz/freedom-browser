@@ -21,10 +21,13 @@ chain module issues, and forwards the original params and JSON-RPC id. Reads
 follow the network's configured policy (default Myotis → Colibri → RPC quorum
 → direct RPC), with one exception: `eth_getLogs` never reaches Colibri, for
 Ant or any other caller (the router's `COLIBRI_EXCLUDED_METHODS`; the bridge
-also passes `excludeSources: ['colibri']` for its log scans). Colibri's WASM
-verifier runs synchronously on the main thread, so verifying a wide log range
-froze the whole browser for 20-30 s, and it answers a range its RPC refuses
-with only the latest blocks' logs, marked verified. Ant's log scans therefore
+also passes `excludeSources: ['colibri']` for its log scans). Colibri answers
+a range its RPC refuses with only the latest blocks' logs, marked verified
+([#496](https://github.com/solardev-xyz/freedom-browser/issues/496)). (Its
+verification used to run on the main thread too, where a wide log range froze
+the whole browser for 20-30 s; since
+[#495](https://github.com/solardev-xyz/freedom-browser/issues/495) it runs in a
+worker thread.) Ant's log scans therefore
 go Myotis (which does not serve logs) → quorum → direct. A page's
 `eth_getLogs` therefore comes back `verified: true` when RPC quorum agrees and
 `verified: false` only when it falls through to direct RPC. Ant's reads

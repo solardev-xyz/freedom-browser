@@ -112,10 +112,14 @@ describe('colibri-runtime disables the native addon before the package loads', (
     }
   });
 
-  test('colibri-resolver reaches the package only through colibri-runtime', () => {
-    const source = fs.readFileSync(path.join(__dirname, 'colibri-resolver.js'), 'utf8');
-    expect(source).toContain("require('./colibri-runtime')");
-    expect(source).not.toContain("require('@corpus-core/colibri-stateless')");
+  test('the Colibri worker reaches the package only through colibri-runtime', () => {
+    // Since #495 the router/ENS client lives in colibri-worker.js (a worker
+    // thread); colibri-resolver only talks to it and must not load either.
+    const worker = fs.readFileSync(path.join(__dirname, 'colibri-worker.js'), 'utf8');
+    expect(worker).toContain("require('./colibri-runtime')");
+    expect(worker).not.toContain("require('@corpus-core/colibri-stateless')");
+    const resolver = fs.readFileSync(path.join(__dirname, 'colibri-resolver.js'), 'utf8');
+    expect(resolver).not.toMatch(/require\(['"](?:\.\/colibri-runtime|@corpus-core\/colibri-stateless)['"]\)/);
   });
 
   test('no shipped module reaches the package except colibri-runtime', () => {

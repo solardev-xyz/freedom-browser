@@ -1,5 +1,38 @@
 # Privacy branch main synchronization — October 4, 2026
 
+## Colibri worker continuation
+
+Main `f9a13854` brings Colibri verification into per-chain workers, deadline
+propagation, atomic temporary-file storage and orphan cleanup. Two localized
+formatting-context conflicts in the router and its tests were resolved by keeping
+main's new comment, deadline argument and deadline checks, alongside the feature
+branch's early private-context delegation. Claude compared the resolution against
+both parents. Private reads still return through the narrow private balance route
+before ordinary source selection; they cannot fall through to Colibri.
+
+The eight router/private-balance/Colibri/Ant suites pass 274 tests in 1.544 seconds;
+lint is clean. The dependency lockfile and binary pins are unchanged. Ant 0.5.56
+(all configured targets), freedom-ipfs 0.4.3 (host addon), Myotis 0.1.12 (official
+artifacts, ABI 32 validation) and libradicle 0.7.1 (host, checksum verified) were
+explicitly reinstalled. The Myotis supervisor was rebuilt. Existing Arti 2.6.0
+reports the matching version and static-sqlite support, so its unchanged build was
+retained under the bundled-binaries playbook. `npm run check-binaries` passes for
+mac-arm64. No npm dependency reinstall or upstream pin upgrade was needed.
+
+The receipt milestone was committed as `9571b0b8` before this merge. None of the
+merged files intersects its eight source inventories; all hashes still match.
+Its full regression of 11,812 tests remains explicitly pre-merge evidence. Separate
+merged-tree [transfer](qualification/railgun-receipt-destination-merged-transfer-2026-10-04.json)
+and [unshield](qualification/railgun-receipt-destination-merged-unshield-2026-10-04.json)
+receipt reruns each pass nine existing and seven prepared-reader groups with 146
+matching hashes in 2,138/2,004 ms. Their chain, registry and transport are simulated.
+Public/TXID policy inputs are unchanged by the merge. The merged full regression
+passes 11,837 tests / 33 skipped across 478 passing suites in 398.493 seconds
+(native access; existing OpenLV exclusion). Source and tests remained frozen
+during this run; fixture timings overlap verification and are not latency guarantees.
+
+## Earlier log-routing synchronization
+
 Main `f2274ee6` was merged into the feature branch in `fb11336f`. Its log-routing
 fix excludes Colibri for every ordinary `eth_getLogs` request and lets the Ant
 bridge exclude it explicitly. Two formatting-context conflicts in the shared

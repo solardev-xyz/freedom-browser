@@ -328,7 +328,7 @@ describe('tier x error class', () => {
   });
 });
 
-// Colibri verifies on the main thread, so Ant's scans skip it whatever it
+// Colibri truncates wide ranges (#496), so Ant's scans skip it whatever it
 // would have answered; with every RPC refusing, Ant gets nothing to act on.
 describe('Colibri', () => {
   test.each(['range', 'timeoutReply', 'endpoint', 'hang', 'success'])(
