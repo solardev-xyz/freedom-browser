@@ -40,7 +40,10 @@ jest.mock('./railgun-account-public', () => ({
       throw Error('public owner');
     return mock.publicIdentity;
   },
-  getRailgunAccountPublicDestination: () => mock.destination,
+  getRailgunAccountPublicDestination: () => {
+    mock.sourceReads++;
+    return mock.destination;
+  },
   assertRailgunAccountPublicDestination: (_c, _e, value) => {
     if (value !== mock.destination) throw Error('source replaced');
     return value;
@@ -55,10 +58,20 @@ jest.mock('./railgun-private-operation', () => ({
 jest.mock('./railgun-private-submission', () => ({
   submitRailgunPrivateTransaction: (...args) => mock.submit(...args),
 }));
+jest.mock('../identity-manager', () => ({
+  WALLET_TYPES: { MNEMONIC: 'mnemonic' },
+  getWalletRecord: (index) => {
+    if (index !== 0) throw Error('index');
+    return mock.walletRecord;
+  },
+}));
+jest.mock('./railgun-shield-operation', () => ({
+  openRailgunShieldOperation: (...args) => mock.openShield(...args),
+}));
 jest.mock('./signers', () => ({
   getSigner: (index) => {
     if (index !== 0) throw Error('signer index');
-    return { getAddress: () => mock.getAddress() };
+    return mock.getSigner();
   },
 }));
 jest.mock('../networks/network-registry', () => ({
@@ -102,7 +115,11 @@ jest.mock('../networks/private-rpc', () => ({
 }));
 const { createPrivacyScope } = require('../networks/privacy-context');
 const { claimRailgunAccountPhase } = require('./railgun-account-phase');
-const { createRailgunKohakuPlugin } = require('./railgun-kohaku-plugin');
+const {
+  createRailgunKohakuPlugin,
+  assertRailgunKohakuPublicPlugin,
+  submitRailgunKohakuPublicOperation,
+} = require('./railgun-kohaku-plugin');
 const { createRailgunKohakuBroadcaster } = require('./railgun-kohaku-broadcaster');
 const pins = require('./railgun-shield-pins.json');
 const refusal = { code: 'RAILGUN_KOHAKU_REFUSED', message: 'Railgun Kohaku operation unavailable' };
@@ -158,9 +175,40 @@ function completion() {
     close: jest.fn(() => controller.abort()),
   };
 }
+function shieldController({ holdDrain = false } = {}) {
+  const controller = new AbortController(),
+    drain = deferred();
+  const value = {
+    signal: controller.signal,
+    closed: drain.promise,
+    close: jest.fn(() => {
+      controller.abort();
+      if (!holdDrain) drain.resolve();
+    }),
+    release: () => drain.resolve(),
+    submit: jest.fn(async (args) => {
+      try {
+        return await mock.shieldSubmit(args);
+      } finally {
+        value.close();
+      }
+    }),
+  };
+  return value;
+}
+function publicPlugin(overrides = {}) {
+  const { proverArchive: _prover, artifactDirectory: _artifacts, ...base } = options;
+  const plugin = createRailgunKohakuPlugin({ ...base, mode: 'public', ...overrides });
+  plugins.push(plugin);
+  return plugin;
+}
+function nativeAmount(value = 100000000000000n) {
+  return { asset: { __type: 'native' }, amount: value };
+}
 beforeEach(() => {
   mock = {
     events: [],
+    sourceReads: 0,
     accounts: new WeakSet(),
     phases: new WeakMap(),
     clients: new WeakMap(),
@@ -201,7 +249,7 @@ beforeEach(() => {
   };
   caller = new AbortController();
   scope = createPrivacyScope({ profileId: 'kohaku-test', signal: new AbortController().signal });
-  const descriptor = { walletId: 'wallet' };
+  const descriptor = { walletId: 'wallet', instanceId: '0zk-self' };
   mock.identity = { descriptor, signal: scope.signal };
   mock.coordinator = { signal: scope.signal };
   mock.enrollment = {
@@ -220,6 +268,22 @@ beforeEach(() => {
   };
   account = makeAccount();
   mock.getAddress = jest.fn(async () => '0x' + '1'.repeat(40));
+  mock.getSigner = jest.fn(() => ({
+    getAddress: () => mock.getAddress(),
+    signTransaction: jest.fn(),
+  }));
+  mock.walletRecord = { index: 0, type: 'mnemonic', address: '0x' + '1'.repeat(40) };
+  mock.shieldSubmit = jest.fn(async ({ review }) => {
+    const approved = await review({ operation: 'railgun-native-shield' });
+    if (!approved) throw Error('Shield review refused');
+    return Object.freeze({ hash: '0x' + '8'.repeat(64) });
+  });
+  mock.openShield = jest.fn(async () => {
+    const phase = claimRailgunAccountPhase(mock.enrollment, 'recovery');
+    phase.release();
+    mock.shield = shieldController();
+    return mock.shield;
+  });
   mock.stage = jest.fn(async ({ account: old }) => {
     mock.events.push('stage');
     await old.close();
@@ -1156,3 +1220,596 @@ test('successful review releases its reservation before genuine Transact staging
     phase.release();
   }
 });
+
+test('public lane exposes only native Shield preparation and separate genuine submit helper', async () => {
+  const plugin = publicPlugin();
+  expect(Object.keys(plugin).sort()).toEqual(
+    [
+      'instanceId',
+      'balance',
+      'notes',
+      'prepareShield',
+      'status',
+      'signal',
+      'closed',
+      'close',
+    ].sort()
+  );
+  expect(() => assertRailgunKohakuPublicPlugin(plugin)).not.toThrow();
+  expect(() => createRailgunKohakuBroadcaster(plugin)).toThrow(refusal.message);
+  expect(() => assertRailgunKohakuPublicPlugin({ ...plugin })).toThrow(refusal.message);
+  const op = await plugin.prepareShield(nativeAmount());
+  expect(op).toEqual({ __type: 'publicOperation' });
+  expect(Object.isFrozen(op)).toBe(true);
+  expect(plugin.status()).toMatchObject({
+    state: 'prepared',
+    recoveryRequired: false,
+    accountOpen: false,
+  });
+  await expect(plugin.balance()).rejects.toMatchObject(refusal);
+  await expect(plugin.notes()).rejects.toMatchObject(refusal);
+  expect(mock.sourceReads).toBe(0);
+  expect(mock.stage).not.toHaveBeenCalled();
+  expect(mock.prove).not.toHaveBeenCalled();
+  expect(mock.submit).not.toHaveBeenCalled();
+});
+test.each(['proverArchive', 'artifactDirectory'])(
+  'public configuration refuses even explicitly undefined %s',
+  (key) => {
+    expect(() => publicPlugin({ [key]: undefined })).toThrow(refusal.message);
+    expect(mock.openShield).not.toHaveBeenCalled();
+    expect(mock.getSigner).not.toHaveBeenCalled();
+  }
+);
+test.each([
+  { asset: { __type: 'erc20', contract: pins.wrappedNative }, amount: 1n },
+  { asset: { __type: 'native', contract: pins.wrappedNative }, amount: 1n },
+  { asset: { __type: 'native' }, amount: 0n },
+  { asset: { __type: 'native' }, amount: -1n },
+  { asset: { __type: 'native' }, amount: 10000000000000001n },
+  { asset: { __type: 'native' }, amount: '1' },
+  { asset: { __type: 'native' }, amount: 1 },
+  { asset: { __type: 'native' }, amount: 1n, noteId: '0:1' },
+])('public Shield strict native amount refuses %p before review', async (value) => {
+  const plugin = publicPlugin();
+  await expect(plugin.prepareShield(value)).rejects.toMatchObject(refusal);
+  expect(options.reviewPreparation).not.toHaveBeenCalled();
+  expect(mock.openShield).not.toHaveBeenCalled();
+  expect(mock.getSigner).not.toHaveBeenCalled();
+});
+test.each([null, '0zk-foreign', {}, '0x' + '1'.repeat(40)])(
+  'foreign or invalid Shield recipient %p refuses',
+  async (to) => {
+    await expect(publicPlugin().prepareShield(nativeAmount(), to)).rejects.toMatchObject(refusal);
+    expect(options.reviewPreparation).not.toHaveBeenCalled();
+    expect(mock.openShield).not.toHaveBeenCalled();
+  }
+);
+test.each([1n, 10000000000000000n])(
+  'public native boundary %s preserves integer fee and exact self recipient',
+  async (value) => {
+    const plugin = publicPlugin();
+    await plugin.prepareShield(nativeAmount(value), mock.identity.descriptor.instanceId);
+    const summary = options.reviewPreparation.mock.calls[0][0];
+    expect(summary.amount).toBe(String(value));
+    expect(summary.protocolFee).toBe(String((value * 25n) / 10000n));
+    expect(summary.noteValue).toBe(String(value - (value * 25n) / 10000n));
+  }
+);
+test.each([
+  null,
+  {},
+  { index: 1, type: 'mnemonic', address: '0x' + '1'.repeat(40) },
+  { index: 0, type: 'ledger', address: '0x' + '1'.repeat(40) },
+  { index: 0, type: 'remote', address: '0x' + '1'.repeat(40) },
+  { index: 0, type: 'safe', address: '0x' + '1'.repeat(40) },
+  { index: 0, type: 'mnemonic', address: null },
+  { index: 0, type: 'mnemonic', address: '0x' + '0'.repeat(40) },
+])('metadata-only funding refusal has no signer fallback: %p', async (record) => {
+  mock.walletRecord = record;
+  const plugin = publicPlugin();
+  await expect(plugin.prepareShield(nativeAmount())).rejects.toMatchObject(refusal);
+  expect(options.reviewPreparation).not.toHaveBeenCalled();
+  expect(mock.getSigner).not.toHaveBeenCalled();
+  expect(mock.getAddress).not.toHaveBeenCalled();
+  expect(mock.openShield).not.toHaveBeenCalled();
+  await plugin.closed;
+});
+test('first review discloses exact preview destinations/simulation without deriving funding address', async () => {
+  options.reviewPreparation.mockImplementation(async (summary) => {
+    expect(mock.getSigner).not.toHaveBeenCalled();
+    expect(mock.getAddress).not.toHaveBeenCalled();
+    expect(mock.openShield).not.toHaveBeenCalled();
+    expect(account.close).not.toHaveBeenCalled();
+    expect(mock.sourceReads).toBe(0);
+    expect(mock.constraints).toHaveLength(2);
+    expect(summary).toMatchObject({
+      purpose: 'railgun-public-shield-preparation',
+      operation: 'railgun-native-shield',
+      funding: { index: 0, type: 'mnemonic', address: mock.walletRecord.address },
+      recipient: '0zk-self',
+      destinations: { protocolRpc: mock.rpcUrl, transactionRpc: mock.rpcUrl },
+      permitsSimulation: true,
+      permitsSigning: false,
+      broadcastsTransaction: false,
+      sourceQueries: false,
+      poiQueries: false,
+      viewingKeyVerification: true,
+      privateSpendSigning: false,
+      broadcastSimulationBeforeTransactionReview: true,
+    });
+    expect(summary.exposures.transactionRpc).toEqual(
+      expect.arrayContaining([
+        'eth_estimateGas',
+        'eth_call',
+        'encrypted-note',
+        'relay-adapt-shield-calldata',
+      ])
+    );
+    expect(Object.isFrozen(summary.funding)).toBe(true);
+    return true;
+  });
+  const plugin = publicPlugin();
+  const op = await plugin.prepareShield(nativeAmount());
+  expect(mock.getSigner).not.toHaveBeenCalled();
+  const call = mock.openShield.mock.calls[0][0];
+  expect(call).toMatchObject({
+    identity: mock.identity,
+    enrollment: mock.enrollment,
+    amount: '100000000000000',
+    owner: mock.walletRecord.address,
+    destinationConstraints: {
+      protocol: mock.constraints[0].result.constraint,
+      transaction: mock.constraints[1].result.constraint,
+    },
+  });
+  expect(call.signal).toBe(plugin.signal);
+  expect(mock.constraints.every(({ result }) => !result.signal.aborted)).toBe(true);
+  expect((await submitRailgunKohakuPublicOperation(plugin, op)).hash).toBe('0x' + '8'.repeat(64));
+  expect(mock.getSigner).toHaveBeenCalledTimes(1);
+  expect(mock.sourceReads).toBe(0);
+  await plugin.closed;
+});
+test.each(['deny', 'throw', 'late-approval'])(
+  'first review %s permits zero Shield jobs/signers and retains handoff through original callback',
+  async (mode) => {
+    const phase = claimRailgunAccountPhase(mock.enrollment, 'wallet');
+    mock.phases.set(account, phase);
+    const original = account.close;
+    account.close = jest.fn(async () => {
+      await original();
+      phase.release();
+    });
+    const gate = deferred();
+    const plugin = publicPlugin({ reviewPreparation: () => gate.promise });
+    const work = plugin.prepareShield(nativeAmount());
+    work.catch(() => {});
+    try {
+      await tick();
+      if (mode === 'late-approval') {
+        caller.abort();
+        await account.close();
+        let accidental;
+        try {
+          expect(() => {
+            accidental = claimRailgunAccountPhase(mock.enrollment, 'recovery');
+          }).toThrow(expect.objectContaining({ code: 'RAILGUN_ACCOUNT_PHASE_BUSY' }));
+        } finally {
+          accidental?.release();
+        }
+        gate.resolve(true);
+      } else if (mode === 'throw') gate.reject(Error('private review detail'));
+      else gate.resolve(false);
+      await expect(work).rejects.toMatchObject(refusal);
+      await plugin.closed;
+      expect(mock.openShield).not.toHaveBeenCalled();
+      expect(mock.getSigner).not.toHaveBeenCalled();
+      expect(plugin.status().recoveryRequired).toBe(false);
+      const recovered = claimRailgunAccountPhase(mock.enrollment, 'recovery');
+      recovered.release();
+    } finally {
+      gate.resolve(false);
+      plugin.close();
+      phase.release();
+    }
+  }
+);
+test('approved public review keeps real handoff through awaited account close then synchronously enters recovery host', async () => {
+  const phase = claimRailgunAccountPhase(mock.enrollment, 'wallet');
+  mock.phases.set(account, phase);
+  const worker = deferred(),
+    original = account.close;
+  account.close = jest.fn(async () => {
+    await original();
+    phase.release();
+    await worker.promise;
+  });
+  const plugin = publicPlugin();
+  const work = plugin.prepareShield(nativeAmount());
+  try {
+    await tick();
+    expect(mock.openShield).not.toHaveBeenCalled();
+    let accidental;
+    try {
+      expect(() => {
+        accidental = claimRailgunAccountPhase(mock.enrollment, 'recovery');
+      }).toThrow(expect.objectContaining({ code: 'RAILGUN_ACCOUNT_PHASE_BUSY' }));
+    } finally {
+      accidental?.release();
+    }
+    worker.resolve();
+    await expect(work).resolves.toEqual({ __type: 'publicOperation' });
+    expect(mock.openShield).toHaveBeenCalledTimes(1);
+  } finally {
+    worker.resolve();
+    plugin.close();
+    await plugin.closed;
+    phase.release();
+  }
+});
+test.each(['address', 'index', 'type', 'endpoint', 'generation', 'recipient'])(
+  'changed %s during first review refuses before account handoff/Shield jobs',
+  async (change) => {
+    options.reviewPreparation.mockImplementation(async () => {
+      if (change === 'address') mock.walletRecord.address = '0x' + '2'.repeat(40);
+      if (change === 'index') mock.walletRecord.index = 1;
+      if (change === 'type') mock.walletRecord.type = 'ledger';
+      if (change === 'endpoint') mock.rpcUrl += '/same-host-other-path';
+      if (change === 'generation') mock.publicIdentity.generationId = 'other';
+      if (change === 'recipient') mock.identity.descriptor.instanceId = '0zk-changed';
+      return true;
+    });
+    const plugin = publicPlugin();
+    await expect(plugin.prepareShield(nativeAmount())).rejects.toMatchObject(refusal);
+    expect(mock.openShield).not.toHaveBeenCalled();
+    expect(mock.getSigner).not.toHaveBeenCalled();
+    await plugin.closed;
+  }
+);
+test('public tokens reject forgery/copy/private tokens and consume synchronously once', async () => {
+  const plugin = publicPlugin(),
+    op = await plugin.prepareShield(nativeAmount());
+  for (const token of [
+    {},
+    { ...op },
+    JSON.parse(JSON.stringify(op)),
+    { __type: 'privateOperation' },
+  ])
+    await expect(submitRailgunKohakuPublicOperation(plugin, token)).rejects.toMatchObject(refusal);
+  expect(mock.shield.submit).not.toHaveBeenCalled();
+  const gate = deferred();
+  mock.shieldSubmit.mockReturnValue(gate.promise);
+  const sent = submitRailgunKohakuPublicOperation(plugin, op);
+  await expect(submitRailgunKohakuPublicOperation(plugin, op)).rejects.toMatchObject(refusal);
+  gate.resolve({ hash: '0x' + '8'.repeat(64) });
+  await sent;
+  await plugin.closed;
+  expect(mock.shield.submit).toHaveBeenCalledTimes(1);
+});
+test.each(['prepared', 'broadcasting'])(
+  'public monotonic deadline remains enforced while %s even without timer dispatch',
+  async (when) => {
+    let now = 100;
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
+    options.reviewPreparation.mockImplementation(async () => {
+      now = 200;
+      return true;
+    });
+    const plugin = publicPlugin(),
+      op = await plugin.prepareShield(nativeAmount());
+    expect(mock.constraints.map(({ deadline }) => deadline)).toEqual([120100, 120100]);
+    if (when === 'prepared') {
+      now = 120100;
+      await expect(submitRailgunKohakuPublicOperation(plugin, op)).rejects.toMatchObject(refusal);
+      expect(mock.getSigner).not.toHaveBeenCalled();
+      expect(mock.shield.submit).not.toHaveBeenCalled();
+    } else {
+      mock.shieldSubmit.mockImplementation(async ({ review }) => {
+        now = 120100;
+        await review({});
+      });
+      await expect(submitRailgunKohakuPublicOperation(plugin, op)).rejects.toMatchObject(refusal);
+      expect(options.reviewTransaction).not.toHaveBeenCalled();
+    }
+    await plugin.closed;
+  }
+);
+test('public prepared expiry has no private capsule recovery claim and closes idle controller', async () => {
+  jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+  try {
+    const plugin = publicPlugin();
+    await plugin.prepareShield(nativeAmount());
+    jest.advanceTimersByTime(120000);
+    await plugin.closed;
+    expect(mock.shield.close).toHaveBeenCalled();
+    expect(plugin.status()).toMatchObject({ state: 'closed', recoveryRequired: false });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+test('cancelled opening adopts late Shield controller and waits its separate drain before owner release', async () => {
+  const open = deferred();
+  mock.openShield.mockReturnValue(open.promise);
+  const plugin = publicPlugin(),
+    work = plugin.prepareShield(nativeAmount());
+  work.catch(() => {});
+  let closed = false;
+  plugin.closed.then(() => {
+    closed = true;
+  });
+  await tick();
+  caller.abort();
+  const late = shieldController({ holdDrain: true });
+  open.resolve(late);
+  await expect(work).rejects.toMatchObject(refusal);
+  expect(late.close).toHaveBeenCalled();
+  expect(closed).toBe(false);
+  expect(() =>
+    publicPlugin({ account: makeAccount(), signal: new AbortController().signal })
+  ).toThrow(refusal.message);
+  late.release();
+  await plugin.closed;
+  expect(
+    publicPlugin({ account: makeAccount(), signal: new AbortController().signal })
+  ).toBeDefined();
+});
+test('failed opening keeps owner until original opening cleanup settles', async () => {
+  const open = deferred();
+  mock.openShield.mockReturnValue(open.promise);
+  const plugin = publicPlugin(),
+    work = plugin.prepareShield(nativeAmount());
+  work.catch(() => {});
+  await tick();
+  caller.abort();
+  await tick();
+  expect(() =>
+    publicPlugin({ account: makeAccount(), signal: new AbortController().signal })
+  ).toThrow(refusal.message);
+  open.reject(Error('private failed cleanup'));
+  await expect(work).rejects.toMatchObject(refusal);
+  await plugin.closed;
+});
+test.each(['acknowledged', 'PRIVATE_BROADCAST_UNCERTAIN', 'PRIVATE_SUBMISSION_UNRESOLVED'])(
+  'genuine %s controller outcome survives late closure while its drain retains owner',
+  async (kind) => {
+    const inner = shieldController({ holdDrain: true });
+    mock.openShield.mockResolvedValue(inner);
+    const plugin = publicPlugin(),
+      op = await plugin.prepareShield(nativeAmount());
+    const result = Object.freeze({ hash: '0x' + '8'.repeat(64) });
+    const error = Object.assign(Error('journal outcome'), {
+      code: kind,
+      transactionHash: result.hash,
+    });
+    mock.shieldSubmit.mockImplementation(async () => {
+      caller.abort();
+      if (kind !== 'acknowledged') throw error;
+      return result;
+    });
+    const sent = submitRailgunKohakuPublicOperation(plugin, op);
+    if (kind === 'acknowledged') expect(await sent).toBe(result);
+    else await expect(sent).rejects.toBe(error);
+    expect(plugin.status().recoveryRequired).toBe(true);
+    expect(() =>
+      publicPlugin({ account: makeAccount(), signal: new AbortController().signal })
+    ).toThrow(refusal.message);
+    inner.release();
+    await plugin.closed;
+  }
+);
+test('untrusted signer-factory error cannot fabricate journal uncertainty', async () => {
+  const plugin = publicPlugin(),
+    op = await plugin.prepareShield(nativeAmount());
+  mock.getSigner.mockImplementation(() => {
+    throw Object.assign(Error('secret'), {
+      code: 'PRIVATE_BROADCAST_UNCERTAIN',
+      transactionHash: 'forged',
+    });
+  });
+  await expect(submitRailgunKohakuPublicOperation(plugin, op)).rejects.toMatchObject(refusal);
+  expect(mock.shield.submit).not.toHaveBeenCalled();
+  await plugin.closed;
+});
+
+test('public descriptor instanceId remains available after account handoff while balance and notes refuse', async () => {
+  const plugin = publicPlugin();
+  expect(await plugin.instanceId()).toBe('0zk-self');
+  await plugin.prepareShield(nativeAmount());
+  expect(await plugin.instanceId()).toBe('0zk-self');
+  expect(account.view.instanceId).not.toHaveBeenCalled();
+  await expect(plugin.balance()).rejects.toMatchObject(refusal);
+  await expect(plugin.notes()).rejects.toMatchObject(refusal);
+  mock.identity.descriptor.instanceId = '0zk-other';
+  await expect(plugin.instanceId()).rejects.toMatchObject(refusal);
+  plugin.close();
+  await plugin.closed;
+  await expect(plugin.instanceId()).rejects.toMatchObject(refusal);
+});
+test.each(['account-close', 'controller-open'])(
+  'public preparation cancellation settles outward before held %s drains without releasing ownership',
+  async (held) => {
+    const gate = deferred();
+    if (held === 'account-close') {
+      const original = account.close;
+      account.close = jest.fn(async () => {
+        await original();
+        await gate.promise;
+      });
+    } else mock.openShield.mockReturnValue(gate.promise);
+    const plugin = publicPlugin(),
+      work = plugin.prepareShield(nativeAmount());
+    const refused = expect(work).rejects.toMatchObject(refusal);
+    let closed = false;
+    plugin.closed.then(() => {
+      closed = true;
+    });
+    await tick();
+    caller.abort();
+    await refused;
+    expect(closed).toBe(false);
+    expect(() =>
+      publicPlugin({ account: makeAccount(), signal: new AbortController().signal })
+    ).toThrow(refusal.message);
+    if (held === 'account-close') gate.resolve();
+    else gate.resolve(shieldController());
+    await plugin.closed;
+    if (held === 'account-close') expect(mock.openShield).not.toHaveBeenCalled();
+    expect(mock.getSigner).not.toHaveBeenCalled();
+  }
+);
+
+test('public token from a closed predecessor cannot submit through a fresh instance', async () => {
+  const first = publicPlugin(),
+    stale = await first.prepareShield(nativeAmount());
+  first.close();
+  await first.closed;
+  const next = publicPlugin({ account: makeAccount() }),
+    currentToken = await next.prepareShield(nativeAmount());
+  await expect(submitRailgunKohakuPublicOperation(next, stale)).rejects.toMatchObject(refusal);
+  expect(mock.shield.submit).not.toHaveBeenCalled();
+  await submitRailgunKohakuPublicOperation(next, currentToken);
+  await next.closed;
+});
+test.each(['endpoint', 'funding', 'constraint'])(
+  'changed %s while public token waits refuses before signer/controller submit',
+  async (change) => {
+    const plugin = publicPlugin(),
+      op = await plugin.prepareShield(nativeAmount());
+    if (change === 'endpoint') mock.rpcUrl += '/changed-path';
+    if (change === 'funding') mock.walletRecord.address = '0x' + '2'.repeat(40);
+    if (change === 'constraint') mock.constraints[0].result.close();
+    await expect(submitRailgunKohakuPublicOperation(plugin, op)).rejects.toMatchObject(refusal);
+    expect(mock.getSigner).not.toHaveBeenCalled();
+    expect(mock.shield.submit).not.toHaveBeenCalled();
+    await plugin.closed;
+  }
+);
+test('public rejected controller barrier revokes admission and never releases uncertain cleanup owner', async () => {
+  const drain = deferred(),
+    inner = shieldController({ holdDrain: true });
+  inner.closed = drain.promise;
+  mock.openShield.mockResolvedValue(inner);
+  const plugin = publicPlugin();
+  await plugin.prepareShield(nativeAmount());
+  let settled = false;
+  plugin.closed.then(() => {
+    settled = true;
+  });
+  drain.reject(Error('private cleanup reason'));
+  await tick();
+  expect(plugin.signal.aborted).toBe(true);
+  expect(settled).toBe(false);
+  expect(() => publicPlugin({ account: makeAccount() })).toThrow(refusal.message);
+});
+test('late controller close failure preserves account exclusion without masking an outward prepare refusal', async () => {
+  const open = deferred(),
+    inner = shieldController();
+  inner.close = jest.fn(() => {
+    throw Error('private close reason');
+  });
+  mock.openShield.mockReturnValue(open.promise);
+  const plugin = publicPlugin(),
+    work = plugin.prepareShield(nativeAmount());
+  const refused = expect(work).rejects.toMatchObject(refusal);
+  await tick();
+  caller.abort();
+  await refused;
+  open.resolve(inner);
+  await tick();
+  inner.release();
+  await tick();
+  expect(() =>
+    publicPlugin({ account: makeAccount(), signal: new AbortController().signal })
+  ).toThrow(refusal.message);
+});
+test('a direct phase contender acquired on account close causes zero-job refusal, never an unprotected continuation', async () => {
+  const phase = claimRailgunAccountPhase(mock.enrollment, 'wallet');
+  mock.phases.set(account, phase);
+  const original = account.close;
+  account.close = jest.fn(async () => {
+    await original();
+    phase.release();
+  });
+  let contender;
+  mock.openShield.mockImplementation(async () => {
+    // The released handoff permits a real competing owner; the host must fail.
+    contender = claimRailgunAccountPhase(mock.enrollment, 'txid');
+    claimRailgunAccountPhase(mock.enrollment, 'recovery');
+    throw Error('must not reach utility');
+  });
+  const plugin = publicPlugin();
+  try {
+    await expect(plugin.prepareShield(nativeAmount())).rejects.toMatchObject(refusal);
+    expect(mock.getSigner).not.toHaveBeenCalled();
+    await plugin.closed;
+    let accidental;
+    try {
+      expect(() => {
+        accidental = claimRailgunAccountPhase(mock.enrollment, 'recovery');
+      }).toThrow(expect.objectContaining({ code: 'RAILGUN_ACCOUNT_PHASE_BUSY' }));
+    } finally {
+      accidental?.release();
+    }
+  } finally {
+    contender?.release();
+    phase.release();
+  }
+});
+test('held public transaction review may settle outward while original controller drain retains owner', async () => {
+  const inner = shieldController({ holdDrain: true });
+  mock.openShield.mockResolvedValue(inner);
+  const reviewGate = deferred();
+  options.reviewTransaction.mockReturnValue(reviewGate.promise);
+  let originalReview;
+  mock.shieldSubmit.mockImplementation(async ({ review }) => {
+    originalReview = review({ operation: 'railgun-native-shield' });
+    originalReview.catch(() => {});
+    await new Promise((resolve) =>
+      caller.signal.addEventListener('abort', resolve, { once: true })
+    );
+    throw Error('sanitized controller cancellation');
+  });
+  const plugin = publicPlugin(),
+    op = await plugin.prepareShield(nativeAmount());
+  const sent = submitRailgunKohakuPublicOperation(plugin, op);
+  const refused = expect(sent).rejects.toMatchObject(refusal);
+  await tick();
+  caller.abort();
+  await refused;
+  expect(() =>
+    publicPlugin({ account: makeAccount(), signal: new AbortController().signal })
+  ).toThrow(refusal.message);
+  reviewGate.resolve(true);
+  await expect(originalReview).rejects.toBeDefined();
+  inner.release();
+  await plugin.closed;
+});
+
+test.each(['review-expiry', 'token-expiry', 'wall-regression'])(
+  'public outer wall clock %s refuses with monotonic clock fixed and no timer dispatch',
+  async (mode) => {
+    let wall = 1000000;
+    jest.spyOn(Date, 'now').mockImplementation(() => wall);
+    jest.spyOn(performance, 'now').mockReturnValue(100);
+    if (mode === 'review-expiry')
+      options.reviewPreparation.mockImplementation(async () => {
+        wall += 120000;
+        return true;
+      });
+    const plugin = publicPlugin();
+    if (mode === 'review-expiry') {
+      await expect(plugin.prepareShield(nativeAmount())).rejects.toMatchObject(refusal);
+      expect(mock.openShield).not.toHaveBeenCalled();
+    } else {
+      const token = await plugin.prepareShield(nativeAmount());
+      wall = mode === 'token-expiry' ? 1120000 : 999999;
+      await expect(submitRailgunKohakuPublicOperation(plugin, token)).rejects.toMatchObject(
+        refusal
+      );
+      expect(mock.shield.submit).not.toHaveBeenCalled();
+    }
+    expect(mock.getSigner).not.toHaveBeenCalled();
+    expect(plugin.signal.aborted).toBe(true);
+    await plugin.closed;
+  }
+);

@@ -41,11 +41,11 @@ amount convention. Use explicit input/gross/change fields in the new schema.
 The files under `tmp/privacy-research-oct2/railgun-artifacts/` were read and hashed;
 these values match the 01x02 entries in `railgun-artifacts.js`:
 
-| File | Bytes | SHA-256 |
-| --- | ---: | --- |
+| File         |   Bytes | SHA-256                                                            |
+| ------------ | ------: | ------------------------------------------------------------------ |
 | `01x02.wasm` | 3007613 | `6ce87ddb4e33cff9564338a8b1f58047b22809e5d198f243c777d1aa4eaaa1e3` |
 | `01x02.zkey` | 6121318 | `8ef8e7abcfb5e60fb593d4d961657465f498435a0835adef05acc09534d7557b` |
-| `01x02.vkey` | 3256 | `9369fa6ad3d7a1becf4b10cf4bd6a7eb83725cfb5cf75a08b191c5bc2cd479f4` |
+| `01x02.vkey` |    3256 | `9369fa6ad3d7a1becf4b10cf4bd6a7eb83725cfb5cf75a08b191c5bc2cd479f4` |
 
 The VKey declares five public inputs. Engine source gives their expected order:
 root, bound-parameters hash, nullifier, change commitment, unshield commitment.
@@ -75,9 +75,12 @@ unavailable until the connected qualification passes, including the second spend
    disclosure/signing. Preserve the one-use key/signature and utility boundaries.
    Recovery decrypts persisted change and reconstructs the original calldata,
    conservation and signature message; it never creates fresh output randomness.
+   If reusing `railgun-private-receive-job.js`, replace its full-input amount and
+   single-output assumptions with the exact authenticated change shape; do not
+   treat the requested withdrawal amount as the expected change-note value.
 3. **Recover both outcomes and their TXID.** Extend `railgun-transact-receipt.js`,
    `railgun-transact-resolution.js`, `railgun-own-selector.js`,
-   `railgun-own-selector-job.js`, `railgun-own-txid.js`, and
+   `railgun-own-selector-job.js`, `railgun-own-source.js`, `railgun-own-txid.js`, and
    `railgun-own-txid-job.js`. Bind unshield recipient/token/gross/net/fee plus
    the exact change commitment/ciphertext/location. Replace the new shape's
    exclusive shielded-or-unshield interpretation with both outcomes. Its TXID
@@ -89,6 +92,11 @@ unavailable until the connected qualification passes, including the second spend
    operation/submission/staging bindings together.
    Recover balances through an authenticated checkpoint and wallet scan, never
    directly from the receipt matcher.
+   `railgun-own-source.js` currently requires exactly two selected proxy logs
+   at initial selection, collection and completion. Version those checks together
+   for the exact additional three-event group, while preserving byte bounds and
+   exact receipt/source log equality. Re-measure traffic and deadline reserves;
+   an additional event does not automatically justify larger request budgets.
 4. **Produce and retain the combined POI.** Update `railgun-poi-reconstruct.js`,
    `railgun-poi-witness.js`, `railgun-own-poi-proof-data.js`, and
    `railgun-poi-payload.js`. A partial proof contains one blinded change output
@@ -137,11 +145,11 @@ Keep legacy reads/recovery and mixed legacy/new stores covered by regressions.
 Derive allowed payload shape from the authenticated capsule version and kind,
 never from caller payload shape or a globally relaxed exclusivity check:
 
-| Capsule | Blinded outputs | Unshield marker |
-| --- | ---: | --- |
-| v1 transfer | 1 | zero |
-| v1 full unshield | 0 | own TXID |
-| New partial shape | 1 | own TXID |
+| Capsule           | Blinded outputs | Unshield marker |
+| ----------------- | --------------: | --------------- |
+| v1 transfer       |               1 | zero            |
+| v1 full unshield  |               0 | own TXID        |
+| New partial shape |               1 | own TXID        |
 
 Continue refusing zero outputs with a zero marker. Re-normalizing existing
 attempted records must preserve exactly their previous bytes and digests.

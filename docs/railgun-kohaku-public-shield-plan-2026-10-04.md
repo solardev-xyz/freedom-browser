@@ -1,15 +1,13 @@
 # Railgun Kohaku public Shield implementation plan — October 4, 2026
 
-The **public facade remains unimplemented**. The lower-level
-[Shield lifecycle prerequisites](railgun-shield-prerequisites-2026-10-04.md) now
-have focused and controlled native qualification; that is not yet a public Shield
-capability. The implementation gaps below describe the original plan, with those
-completed prerequisites called out. The current [Kohaku facade](../src/main/wallet/railgun-kohaku-plugin.js)
-offers read and private-operation modes. Its
-[private broadcaster](../src/main/wallet/railgun-kohaku-broadcaster.js) deliberately
-does not accept public Shield operations. Implementation stays in the existing
-main-process wallet boundary; renderer/IPC integration and user-facing UX remain
-separate work.
+The [public facade and separate submitter are now implemented](railgun-kohaku-public-integration-2026-10-04.md),
+with three controlled native cases covering acknowledgment, lost response and
+held-review cancellation. The [Shield lifecycle prerequisites](railgun-shield-prerequisites-2026-10-04.md)
+remain the underlying controllers. The sections below preserve the bounded design
+requirements; the linked implementation report records actual behavior and limits.
+The private broadcaster deliberately refuses public Shield operations. All work
+stays in the existing main-process wallet boundary; renderer/IPC integration and
+user-facing UX remain separate. This is not live qualification.
 
 ## Compatibility and initial scope
 
@@ -64,11 +62,11 @@ and mainnet are outside this slice.
   provides a local precedent for issued, single-use public operations, not a reason
   to bypass Railgun's own controller.
 
-## Required implementation gaps
+## Implementation requirements and completion
 
 1. **Propagate reviewed destinations — controllers implemented.** The Shield
    operation and recovery now accept optional caller lifetime and genuine
-   destination constraints. The remaining facade must issue and own these;
+   destination constraints. The facade now issues and owns these;
    pass the protocol restriction through every permitted preflight attempt and
    permanently bind the transaction restriction to its transaction handle. The
    preflight already accepts `destinationConstraint`. Use the genuine
@@ -84,7 +82,7 @@ and mainnet are outside this slice.
    cleanup failures. Operation-level `closed` observes owned work and review/signer
    callbacks. A child or callback that ignores cancellation retains ownership.
    Neither `rpc.release()` nor such a logical barrier proves physical socket drain.
-3. **Use the shared account phase — hosts implemented, facade pending.** An adopted
+3. **Use the shared account phase — hosts and facade implemented.** An adopted
    [account wallet](../src/main/wallet/railgun-account-wallet.js) already holds the
    [wallet phase](../src/main/wallet/railgun-account-phase.js). Close and await it
    before Shield jobs. Preparation and receiver verification now claim the shared
@@ -108,8 +106,8 @@ and mainnet are outside this slice.
    transaction RPC receives the funding EOA, amount and exact RelayAdapt Shield
    calldata, including the encrypted note, through `eth_estimateGas` and `eth_call`
    before the later transaction review. Approving this first review permits those
-   simulations, not signing or sending. This is a proposed review boundary, not a
-   property of today's controller. Already-admitted work in the adopted account
+   simulations, not signing or sending. The facade now enforces this first boundary; the lower-level
+   controller alone still has only its transaction review. Already-admitted work in the adopted account
    has its own drain obligation; a review callback or facade flag cannot establish
    zero traffic or release that work's phase. Then use the existing transaction
    review for exact calldata, gas, balance and nonce. Public preparation needs an
@@ -130,7 +128,7 @@ can remain without adding source-coordinator queries to this lane.
 The planned API is `mode: 'public'` on the existing instance, with
 `prepareShield({ asset: { __type: 'native' }, amount }, ownInstanceId?)` and a
 separate `createRailgunKohakuPublicSubmitter(plugin).submit(operation)`. This is
-not implemented yet. Preserve read/private modes, require the engine archive and
+implemented. Preserve read/private modes, require the engine archive and
 two reviewers, and reject private-prover/artifact configuration in public mode.
 
 Do not copy private preparation's pre-review `getSigner(0).getAddress()` call:
@@ -225,3 +223,10 @@ it must not claim a physical transport barrier that the underlying API lacks.
 This plan does not itself establish compatibility or runtime success. Completed
 prerequisite evidence is linked above; the public facade and its composed native
 qualification remain open.
+
+The implemented public transaction-review phase retains facade directory exclusion,
+but no shared account phase: Shield workers have already drained and released it.
+Generic wallet/recovery entry points may proceed. A native cancellation control
+opens a genuine contender wallet and proves that a second facade still cannot
+adopt it until the original callback drains. This does not inherit the private
+lane's signing-recovery exclusion or attest physical network drainage.

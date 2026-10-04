@@ -36,15 +36,21 @@ with the real controllers/provers/signers but simulated POI, preflight and RPC
 authority. The merged regression passes 13,496 tests. The original read-only
 instance remains read-only; no generic Host or user-facing activation is added.
 
+The [public Shield milestone](railgun-kohaku-public-integration-2026-10-04.md)
+adds three controlled public-flow runs and requalifies the five private cases
+against the current shared facade. The current frozen regression passes 13,736
+tests; earlier regression/native counts above belong to their recorded checkpoint.
+
 ## Next technical work
 
-1. **Connect the separate public Shield lane.** The
-   [bounded implementation plan](railgun-kohaku-public-shield-plan-2026-10-04.md)
-   reuses native ETH-to-WETH preparation, receiver verification, submission and
-   recovery. [Host cancellation/phase ownership and reviewed destination binding](railgun-shield-prerequisites-2026-10-04.md)
-   now pass focused and controlled native qualification. Next expose a genuine
-   public-operation token, preparation disclosure review and separate main-owned
-   submitter. The private broadcaster must not accept Shield.
+1. **Public Shield lane — implemented with controlled native qualification.**
+   The [public instance and separate submitter](railgun-kohaku-public-integration-2026-10-04.md)
+   issue genuine one-use public tokens, review simulation disclosure before keys
+   or RPC admission, and retain reviewed destination restrictions. Acknowledged,
+   lost-response and held-review cancellation cases pass with genuine hosts,
+   preflight, vault signer and journals, but synthetic RPC. The private broadcaster
+   refuses Shield. Live public-facade qualification and cold resolution/note
+   ingestion through this facade remain distinct from these tests.
 2. **Add partial withdrawal with authenticated change.** PPv2 already has
    withdrawal/change recovery and second-spend evidence. Railgun's current
    one-output policy cannot express the equivalent partial withdrawal. Extending

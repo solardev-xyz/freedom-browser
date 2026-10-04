@@ -33,8 +33,25 @@ async function main() {
   app.dock?.hide();
   await app.whenReady();
   const kohakuMode = process.env.FREEDOM_RAILGUN_KOHAKU;
+  const publicShield = kohakuMode === 'public-shield';
+  if (publicShield) {
+    assert.equal(composition, 'enrolled');
+    assert.equal(proverArchive, undefined);
+    assert.equal(artifactDirectory, undefined);
+    assert.ok(path.isAbsolute(process.env.FREEDOM_RAILGUN_SHIELD_BYTECODES));
+    assert.ok(
+      ['acknowledged', 'lost-response', 'review-cancelled'].includes(
+        process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE
+      )
+    );
+    assert.equal(process.env.FREEDOM_RAILGUN_KOHAKU_LOST_ACK, undefined);
+    assert.equal(process.env.FREEDOM_RAILGUN_KOHAKU_CANCEL_TRANSACTION_REVIEW, undefined);
+  } else {
+    assert.equal(process.env.FREEDOM_RAILGUN_SHIELD_BYTECODES, undefined);
+    assert.equal(process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE, undefined);
+  }
   if (kohakuMode) {
-    assert.ok(composition === 'enrolled' && proverArchive);
+    assert.ok(composition === 'enrolled' && (publicShield || proverArchive));
     for (const name of [
       'FREEDOM_RAILGUN_PRIVATE_OPERATION',
       'FREEDOM_RAILGUN_PRIVATE_SUBMISSION',
@@ -48,7 +65,12 @@ async function main() {
     assert.equal(process.env.FREEDOM_RAILGUN_KOHAKU_CANCEL_TRANSACTION_REVIEW, undefined);
   }
   const kohaku = kohakuMode
-    ? require('./fixtures/railgun-kohaku-integration').install(kohakuMode)
+    ? publicShield
+      ? require('./fixtures/railgun-kohaku-public-integration').install(
+          process.env.FREEDOM_RAILGUN_SHIELD_BYTECODES,
+          process.env.FREEDOM_RAILGUN_KOHAKU_PUBLIC_CASE
+        )
+      : require('./fixtures/railgun-kohaku-integration').install(kohakuMode)
     : null;
   let kohakuQualification;
   let accountIdentity, accountParent, accountProfileId, enrollment;
@@ -505,9 +527,22 @@ async function main() {
     'scripts/qualify-railgun-wallet-journal.js',
     ...(kohaku
       ? [
-          'scripts/fixtures/railgun-kohaku-integration.js',
+          publicShield
+            ? 'scripts/fixtures/railgun-kohaku-public-integration.js'
+            : 'scripts/fixtures/railgun-kohaku-integration.js',
           'src/main/wallet/railgun-kohaku-plugin.js',
           'src/main/wallet/railgun-kohaku-broadcaster.js',
+        ]
+      : []),
+    ...(publicShield
+      ? [
+          'src/main/wallet/railgun-kohaku-public-submitter.js',
+          'src/main/identity-manager.js',
+          'src/main/profile-paths.js',
+          ...Object.keys(
+            require('../docs/qualification/railgun-shield-prerequisites-2026-10-04.json')
+              .sourceSha256
+          ),
         ]
       : []),
     'src/main/wallet/railgun-account-wallet.js',
@@ -1908,6 +1943,7 @@ async function main() {
         });
       try {
         kohakuQualification = await kohaku.qualify({
+          outputDirectory: directory,
           account,
           owners: { identity: accountIdentity, enrollment, coordinator },
           archive: accountArchive,
@@ -2033,6 +2069,7 @@ async function main() {
           privateOperationJobs,
           productionPrivateOperation,
           ...(kohaku ? { kohakuQualification } : {}),
+          ...(publicShield ? { sourceInventoryIsExecutionCoverage: false } : {}),
           cancelledViewingProcess,
           cancelledViewingMessages: accountIdentity ? cancelledViewingMessages : null,
           viewingKeyTransferCancelled: accountIdentity ? cancelledViewingProcessClosed : null,

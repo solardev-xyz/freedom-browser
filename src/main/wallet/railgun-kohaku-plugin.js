@@ -1,4 +1,4 @@
-/** Main-only Kohaku private lane. Adoption transfers account lifecycle ownership.
+/** Main-only Kohaku capability-selected lanes. Adoption transfers account lifecycle ownership.
  * This is not a generic Kohaku Host, UI consent issuer or live activation route.
  * Trusted review adapters must settle after abort: exclusion waits for them.
  */
@@ -20,6 +20,8 @@ const { selectRailgunPrivatePreparation } = require('./railgun-private-preparati
 const { stageRailgunTransactInput } = require('./railgun-transact-staging');
 const { proveRailgunAccountPrivateOperation } = require('./railgun-private-operation');
 const { submitRailgunPrivateTransaction } = require('./railgun-private-submission');
+const { openRailgunShieldOperation } = require('./railgun-shield-operation');
+const { shieldAmount } = require('./railgun-shield-policy');
 const { createPrivacyScope, getPrivacyContext } = require('../networks/privacy-context');
 const {
   createPrivateRpc,
@@ -32,7 +34,8 @@ const pins = require('./railgun-shield-pins.json');
 const instances = new WeakMap(),
   ownersByDirectory = new Map();
 const REVIEW_MS = 30000,
-  PREPARE_MS = 540000;
+  PREPARE_MS = 540000,
+  PUBLIC_MS = 120000;
 const fail = () =>
   Object.assign(new Error('Railgun Kohaku operation unavailable'), {
     code: 'RAILGUN_KOHAKU_REFUSED',
@@ -59,6 +62,16 @@ function configuredRpc() {
     sources: registry.getEndpointSources(pins.chainId, 'rpc'),
     endpoints: registry.getEndpoints(pins.chainId, 'rpc'),
   });
+}
+function fundingRecord() {
+  // Public mnemonic metadata only. Never derive an address before review.
+  const { getWalletRecord, WALLET_TYPES } = require('../identity-manager');
+  const record = getWalletRecord(0);
+  assert.ok(record && record.index === 0 && record.type === WALLET_TYPES.MNEMONIC);
+  assert.equal(typeof record.address, 'string');
+  const address = require('ethers').getAddress(record.address).toLowerCase();
+  assert.ok(BigInt(address) > 0n);
+  return Object.freeze({ index: record.index, type: record.type, address });
 }
 function selected(account, owners, request) {
   const owned = readRailgunAccountOwnedNotes(account, owners);
@@ -105,19 +118,28 @@ function create(options) {
   const owners = Object.freeze({ ...options.owners });
   const { identity, enrollment, coordinator } = owners;
   const mode = options.mode === undefined ? 'read' : options.mode;
-  assert.ok(['read', 'private'].includes(mode));
+  assert.ok(['read', 'private', 'public'].includes(mode));
   const signal = options.signal;
   assert.ok(signal instanceof AbortSignal && !signal.aborted);
   assert.ok(isRailgunAccountEnrollment(enrollment));
   const parent = enrollment.getContext('engine');
-  assertRailgunIdentity(identity, parent);
+  const descriptor = assertRailgunIdentity(identity, parent);
+  const publicInstanceId = mode === 'public' ? descriptor.instanceId : null;
+  if (mode === 'public')
+    assert.ok(typeof publicInstanceId === 'string' && publicInstanceId.length > 0);
   assert.equal(identity.descriptor.walletId, enrollment.descriptor.walletId);
   readRailgunAccountOwnedNotes(options.account, owners);
   assert.equal(typeof enrollment.directory, 'string');
   assert.ok(!ownersByDirectory.has(enrollment.directory));
   let resources = { ...options, owners };
-  if (mode === 'private') {
-    for (const key of ['archive', 'proverArchive', 'artifactDirectory'])
+  if (mode !== 'read') {
+    if (mode === 'public')
+      assert.ok(
+        !Object.hasOwn(options, 'proverArchive') && !Object.hasOwn(options, 'artifactDirectory')
+      );
+    for (const key of mode === 'public'
+      ? ['archive']
+      : ['archive', 'proverArchive', 'artifactDirectory'])
       assert.ok(
         typeof options[key] === 'string' &&
           options[key].length <= 4096 &&
@@ -150,6 +172,8 @@ function create(options) {
     recoveryRequired = false,
     operation,
     completion,
+    shield,
+    publicBudget,
     staging,
     preview,
     constraints,
@@ -173,9 +197,11 @@ function create(options) {
     }
     lifetime.removeEventListener('abort', close);
     completion?.signal.removeEventListener('abort', expired);
+    shield?.signal.removeEventListener('abort', close);
     resources =
       operation =
       completion =
+      shield =
       staging =
       preview =
       constraints =
@@ -224,13 +250,14 @@ function create(options) {
   };
   function close() {
     if (closed) return;
+    const preparingPublic = mode === 'public' && busy && state !== 'broadcasting';
     closed = true;
     state = 'closed';
     clearTimeout(timer);
     if (completion) recoveryRequired = true;
-    if (callbackActive) resolvePublicAbort?.();
+    if (callbackActive || preparingPublic) resolvePublicAbort?.();
     controller.abort();
-    for (const resource of [preview, staging, completion, ...(constraints || [])]) {
+    for (const resource of [preview, staging, completion, shield, ...(constraints || [])]) {
       try {
         resource?.close();
       } catch {
@@ -245,9 +272,26 @@ function create(options) {
     close();
   }
   function current() {
+    if (publicBudget) {
+      const now = performance.now(),
+        wall = Date.now();
+      if (
+        !Number.isFinite(now) ||
+        now < publicBudget.last ||
+        now >= publicBudget.deadline ||
+        !Number.isFinite(wall) ||
+        wall < publicBudget.wallStarted ||
+        wall >= publicBudget.wallDeadline
+      ) {
+        close();
+        throw fail();
+      }
+      publicBudget.last = now;
+    }
     assert.ok(!closed && !lifetime.aborted && !controller.signal.aborted && !cleanupFailed);
     assert.equal(ownersByDirectory.get(directory), owner);
-    assertRailgunIdentity(identity, parent);
+    const currentDescriptor = assertRailgunIdentity(identity, parent);
+    if (mode === 'public') assert.equal(currentDescriptor.instanceId, publicInstanceId);
     enrollment.getContext('engine');
     assert.deepEqual(
       structuredClone(getRailgunAccountPublicIdentity(coordinator, enrollment)),
@@ -329,7 +373,7 @@ function create(options) {
         return result;
       })
       .catch(() => {
-        if (completion) close();
+        if (completion || mode === 'public') close();
         throw fail();
       })
       .finally(() => {
@@ -614,6 +658,250 @@ function create(options) {
       return Promise.reject(fail());
     }
   }
+  function prepareShield(amount, to) {
+    try {
+      assert.equal(mode, 'public');
+      shape(amount, ['asset', 'amount']);
+      shape(amount.asset, ['__type']);
+      assert.equal(amount.asset.__type, 'native');
+      assert.equal(typeof amount.amount, 'bigint');
+      const value = shieldAmount(amount.amount.toString());
+      const descriptor = assertRailgunIdentity(identity, parent);
+      const recipient = descriptor.instanceId;
+      assert.ok(typeof recipient === 'string' && recipient.length > 0);
+      assert.ok(to === undefined || to === recipient);
+      return start(async () => {
+        const started = performance.now();
+        const wallStarted = Date.now();
+        publicBudget = {
+          last: started,
+          deadline: started + PUBLIC_MS,
+          wallStarted,
+          wallDeadline: wallStarted + PUBLIC_MS,
+        };
+        timer = setTimeout(close, PUBLIC_MS);
+        timer.unref?.();
+        current();
+        const funding = fundingRecord();
+        const configuration = configuredRpc();
+        preview = createPrivacyScope({
+          profileId: getPrivacyContext(parent).profileId,
+          signal: controller.signal,
+          isCurrent: () => {
+            try {
+              current();
+              return true;
+            } catch {
+              return false;
+            }
+          },
+        });
+        const protocolSubject = { ...getPrivacyContext(parent).subject, role: 'protocol-rpc' };
+        delete protocolSubject.operation;
+        const protocolHandle = preview.getContext(protocolSubject);
+        const protocolRpc = createPrivateRpc(protocolHandle, 'protocol-rpc');
+        const protocolObservation = getPrivateRpcDestination(protocolRpc, protocolHandle);
+        const protocolDetails = getPrivateRpcDestinationDetails(protocolObservation);
+        const transactionHandle = preview.getContext({
+          kind: 'public-address',
+          principal: funding.address,
+          chainId: pins.chainId,
+          role: 'transaction-rpc',
+        });
+        const transactionRpc = createPrivateRpc(transactionHandle, 'transaction-rpc');
+        const transactionObservation = getPrivateRpcDestination(transactionRpc, transactionHandle);
+        const transactionDetails = getPrivateRpcDestinationDetails(transactionObservation);
+        constraints = [];
+        for (const observation of [protocolObservation, transactionObservation]) {
+          const constraint = createPrivateRpcDestinationConstraint({
+            observation,
+            signal: controller.signal,
+            deadline: publicBudget.deadline,
+          });
+          constraints.push(constraint);
+          constraint.signal.addEventListener('abort', close, { once: true });
+        }
+        const destinationConstraints = Object.freeze({
+          protocol: constraints[0].constraint,
+          transaction: constraints[1].constraint,
+        });
+        const guard = () => {
+          current();
+          assert.deepEqual(fundingRecord(), funding);
+          assert.deepEqual(configuredRpc(), configuration);
+          assert.equal(assertRailgunIdentity(identity, parent).instanceId, recipient);
+          assert.ok(constraints.every((constraint) => !constraint.signal.aborted));
+          assert.equal(getPrivateRpcDestination(protocolRpc, protocolHandle), protocolObservation);
+          assert.equal(
+            getPrivateRpcDestination(transactionRpc, transactionHandle),
+            transactionObservation
+          );
+        };
+        reviewedCurrent = guard;
+        const protocolFee = (value * BigInt(pins.shieldFeeBps)) / 10000n;
+        const summary = freeze({
+          purpose: 'railgun-public-shield-preparation',
+          operation: 'railgun-native-shield',
+          chainId: pins.chainId,
+          asset: { __type: 'native' },
+          amount: value.toString(),
+          recipient,
+          funding,
+          wrappedAsset: pins.wrappedNative,
+          shieldFeeBps: pins.shieldFeeBps,
+          protocolFee: protocolFee.toString(),
+          noteValue: (value - protocolFee).toString(),
+          destinations: {
+            protocolRpc: protocolDetails.url,
+            transactionRpc: transactionDetails.url,
+          },
+          exposures: {
+            protocolRpc: [
+              'chain-id',
+              'deployment-code',
+              'proxy-slots',
+              'shield-fee',
+              'token-blocklist',
+              'canonical-block',
+            ],
+            transactionRpc: [
+              'public-funding-address',
+              'native-amount',
+              'relay-adapt-shield-calldata',
+              'encrypted-note',
+              'eth_estimateGas',
+              'eth_call',
+              'code',
+              'balance',
+              'nonce',
+              'fee-estimates',
+            ],
+          },
+          viewingKeyVerification: true,
+          privateSpendSigning: false,
+          poiQueries: false,
+          sourceQueries: false,
+          permitsSimulation: true,
+          permitsSigning: false,
+          broadcastsTransaction: false,
+          broadcastSimulationBeforeTransactionReview: true,
+          rpcAdmissionDestinationPinned: true,
+          chainStateVerified: false,
+          automaticRetry: false,
+        });
+        state = 'reviewing-preparation';
+        guard();
+        reviewHandoff = reserveRailgunAccountWalletHandoff(account, owners);
+        const approved = await runReview(resources.reviewPreparation, summary);
+        guard();
+        assert.equal(approved, true);
+        state = 'preparing';
+        await closeAccount(account);
+        account = null;
+        guard();
+        // Recovery rejects handoff tokens. Release and enter the genuine host
+        // in this same turn; it claims its own phase before starting a utility.
+        reviewHandoff.release();
+        reviewHandoff = null;
+        const opened = await openRailgunShieldOperation({
+          identity,
+          enrollment,
+          archive: resources.archive,
+          amount: value.toString(),
+          owner: funding.address,
+          signal: controller.signal,
+          destinationConstraints,
+        });
+        // Adopt late resources and the never-rejecting logical drain first.
+        shield = opened;
+        try {
+          const barrier = shield.closed;
+          assert.ok(barrier && typeof barrier.then === 'function');
+          track(
+            Promise.resolve(barrier).catch(() => {
+              cleanupFailed = true;
+              close();
+            })
+          );
+        } catch {
+          cleanupFailed = true;
+          close();
+          throw fail();
+        }
+        shield.signal.addEventListener('abort', close, { once: true });
+        if (closed || shield.signal.aborted) {
+          try {
+            shield.close();
+          } catch {
+            cleanupFailed = true;
+          }
+          close();
+        }
+        guard();
+        operation = Object.freeze({ __type: 'publicOperation' });
+        state = 'prepared';
+        return operation;
+      });
+    } catch {
+      return Promise.reject(fail());
+    }
+  }
+  function submitPublic(token) {
+    try {
+      current();
+      assert.equal(mode, 'public');
+      assert.ok(!busy && operation && token === operation && shield && !shield.signal.aborted);
+    } catch {
+      return Promise.reject(fail());
+    }
+    operation = null;
+    busy = true;
+    state = 'broadcasting';
+    let preservedError;
+    const pending = Promise.resolve()
+      .then(async () => {
+        reviewedCurrent();
+        const signer = require('./signers').getSigner(0);
+        reviewedCurrent();
+        try {
+          const outcome = await shield.submit({
+            signer,
+            gasLimit: resources.gasLimit,
+            maxGasFee: resources.maxGasFee,
+            review: async (summary) => {
+              reviewedCurrent();
+              const approved = await runReview(resources.reviewTransaction, summary);
+              reviewedCurrent();
+              return approved === true;
+            },
+          });
+          recoveryRequired = true;
+          return outcome;
+        } catch (error) {
+          // Only the genuine Shield controller's journal outcomes are preserved;
+          // it sanitizes exceptions thrown by the reviewer and signer callbacks.
+          if (
+            ['PRIVATE_BROADCAST_UNCERTAIN', 'PRIVATE_SUBMISSION_UNRESOLVED'].includes(error?.code)
+          ) {
+            preservedError = error;
+            recoveryRequired = true;
+          }
+          throw error;
+        }
+      })
+      .catch((error) => {
+        throw preservedError && error === preservedError ? error : fail();
+      })
+      .finally(() => {
+        close();
+        busy = false;
+        finish();
+      });
+    track(pending);
+    // The controller bounds outward callback cancellation; its separate closed
+    // promise, already tracked, keeps our ownership through original work.
+    return pending;
+  }
   function submit(token) {
     try {
       current();
@@ -662,7 +950,15 @@ function create(options) {
     return publicSettlement(pending, true);
   }
   const plugin = Object.freeze({
-    instanceId: () => read('instanceId', []),
+    instanceId: () => {
+      if (mode !== 'public') return read('instanceId', []);
+      try {
+        current();
+        return Promise.resolve(publicInstanceId);
+      } catch {
+        return Promise.reject(fail());
+      }
+    },
     balance: (assets) => read('balance', [assets]),
     notes: (assets, includeSpent) => read('notes', [assets, includeSpent]),
     ...(mode === 'private'
@@ -671,7 +967,9 @@ function create(options) {
           prepareUnshield: (amount, to, opts) =>
             prepare('railgun-token-unshield', amount, to, opts),
         }
-      : {}),
+      : mode === 'public'
+        ? { prepareShield }
+        : {}),
     status: () =>
       Object.freeze({
         state,
@@ -684,7 +982,7 @@ function create(options) {
     close,
   });
   ownersByDirectory.set(directory, owner);
-  instances.set(plugin, { mode, current, submit });
+  instances.set(plugin, { mode, current, submit, submitPublic });
   lifetime.addEventListener('abort', close, { once: true });
   if (lifetime.aborted) close();
   return plugin;
@@ -706,8 +1004,27 @@ function broadcastRailgunKohakuOperation(plugin, operation) {
     return Promise.reject(fail());
   }
 }
+function assertRailgunKohakuPublicPlugin(plugin) {
+  try {
+    const entry = instances.get(plugin);
+    assert.equal(entry?.mode, 'public');
+    entry.current();
+  } catch {
+    throw fail();
+  }
+}
+function submitRailgunKohakuPublicOperation(plugin, operation) {
+  try {
+    assertRailgunKohakuPublicPlugin(plugin);
+    return instances.get(plugin).submitPublic(operation);
+  } catch {
+    return Promise.reject(fail());
+  }
+}
 module.exports = {
   createRailgunKohakuPlugin,
   assertRailgunKohakuPrivatePlugin,
   broadcastRailgunKohakuOperation,
+  assertRailgunKohakuPublicPlugin,
+  submitRailgunKohakuPublicOperation,
 };

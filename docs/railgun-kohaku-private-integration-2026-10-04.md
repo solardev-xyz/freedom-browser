@@ -5,6 +5,13 @@ and submission controllers through a Kohaku-shaped private operation and
 broadcaster. Five controlled native runs and the merged-tree regression pass.
 This does not establish a live private transfer, unshield or production activation.
 
+**Later October 4 compatibility checkpoint:** the
+[public Shield milestone](railgun-kohaku-public-integration-2026-10-04.md) changes
+the shared facade and qualifier. Its five fresh private compatibility runs are
+the current evidence for those sources; the five reports below remain historical
+for their recorded inventories. No private operation shape or live authority is
+expanded by that public lane.
+
 ## Interface and ownership
 
 `createRailgunKohakuPlugin` adopts a genuine enrolled account and its lifecycle.

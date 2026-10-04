@@ -1,0 +1,33 @@
+{
+  "qualifiedParent": "a9419975f87ca60f48da54a9425ec2643b5efd3a",
+  "workingTreeMilestone": "Railgun Kohaku public Shield",
+  "command": "npm run test:coverage -- --runInBand --forceExit --testPathIgnorePatterns=openlv-protocol.test.js --reporters=default",
+  "exitCode": 0,
+  "tests": {
+    "passed": 13736,
+    "skipped": 33,
+    "total": 13769
+  },
+  "suites": {
+    "passed": 502,
+    "skipped": 5,
+    "total": 507
+  },
+  "elapsedSeconds": 521.36,
+  "nativePermissions": true,
+  "excludedTestPattern": "openlv-protocol.test.js",
+  "forceExit": true,
+  "naturalApplicationHandleDrainQualified": false,
+  "frozenSourceTestConfigFiles": 1494,
+  "beforeAfterManifestSha256": "a514bdd123e6405a54ee35adb286bbabc8d7749406e96a6117a238cdfa4f1b85",
+  "sourceSha256": {
+    "scripts/fixtures/railgun-kohaku-public-integration.js": "65160bd87662e2265e29ff8c9aa8e56189ff31b93d7df7245613cc49b50becd7",
+    "scripts/qualify-railgun-wallet-journal.js": "5d8d2e70d4e99f52536c20b1a71eb965659c0f2f3ac1247c8b697258e82e2a5d",
+    "src/main/wallet/railgun-kohaku-plugin.js": "6169c01527560760ba0ffac3a67aad23111f95c24f498bb62bb5a430063cc7f2",
+    "src/main/wallet/railgun-kohaku-plugin.test.js": "1387f56b67218f563ea0b00668cf544eb923f1ae0bbe6df1a73c6316e491ba33",
+    "src/main/wallet/railgun-kohaku-public-submitter.js": "88b060c4ecfd497a3450695ae8e0abca652ff86f491a650a2297c488aaffcbb6",
+    "src/main/wallet/railgun-kohaku-public-submitter.test.js": "6c601ed9f1156e4e10a46ae9c6b8f87775a392c1ab81dbcd5c277ea383e424c6"
+  },
+  "nativeQualificationSeparate": true,
+  "liveQualification": false
+}
