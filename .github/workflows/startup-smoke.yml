@@ -1,0 +1,92 @@
+name: Startup smoke (real nodes)
+
+# Real-node startup smoke test (#498): launch the app without
+# FREEDOM_TEST_MODE on a fresh profile with the bundled Ant, Myotis and native
+# IPFS, and fail if the main process is blocked for more than a second during
+# its first 90 s (test-e2e/live/startup-responsiveness.spec.js). It needs the
+# network and the downloaded node binaries, so it runs nightly and on demand —
+# never per pull request, where a slow public RPC or a flaky peer would block
+# merges for reasons unrelated to the change.
+#
+# Locally: `npm run ant:download && xvfb-run -a npm run test:e2e:startup-smoke`.
+
+on:
+  schedule:
+    # Daily, off the hour (GitHub delays on-the-hour schedules the most).
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'How long to poll the main process (s)'
+        type: string
+        default: '90'
+      max_rtt_ms:
+        description: 'Fail above this main-process round trip (ms)'
+        type: string
+        default: '1000'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: startup-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  startup-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Download Ant (antd) binary
+        run: npm run ant:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download IPFS native addon
+        run: npm run ipfs:download
+
+      - name: Download official Myotis addon
+        run: npm run myotis:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYOTIS_DOWNLOAD_TARGET: linux-x64
+
+      - name: Run startup responsiveness smoke (headless)
+        run: xvfb-run -a npm run test:e2e:startup-smoke
+        env:
+          # The npm script sets FREEDOM_STARTUP_SMOKE=1 too; set here as well so
+          # the opt-in doesn't hinge on the script's POSIX env-prefix syntax.
+          FREEDOM_STARTUP_SMOKE: '1'
+          # `inputs.*` is empty on a schedule; the spec's defaults apply then.
+          FREEDOM_STARTUP_SMOKE_SECONDS: ${{ inputs.seconds }}
+          FREEDOM_STARTUP_SMOKE_MAX_RTT_MS: ${{ inputs.max_rtt_ms }}
+
+      - name: Upload report, main.log and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-smoke
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14

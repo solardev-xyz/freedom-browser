@@ -27,6 +27,7 @@
     "test:e2e:live": "playwright test --project=live",
     "test:e2e:packaged": "playwright test --project=packaged --project=packaged-live",
     "test:e2e:onboarding": "playwright test --project=live test-e2e/live/onboarding-identity.spec.js",
+    "test:e2e:startup-smoke": "FREEDOM_STARTUP_SMOKE=1 playwright test --project=live test-e2e/live/startup-responsiveness.spec.js",
     "test:e2e:tor": "FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/tor-onion.spec.js",
     "lint": "eslint .",
     "changelog:assemble": "node scripts/assemble-changelog.js",

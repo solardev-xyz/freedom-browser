@@ -152,6 +152,15 @@ process.on('unhandledRejection', (reason, _promise) => {
   log.error('Unhandled rejection:', reason);
 });
 
+// Main-process event-loop watchdog (#498): logs `[main] event loop blocked N ms`
+// when the loop stalls for 1 s or more, with the chain-data reads that were
+// running. Started this early so a stall during startup is caught too.
+const { describeChainDataActivity } = require('./networks/chain-data-activity');
+const eventLoopWatchdog = require('./event-loop-watchdog').startEventLoopWatchdog({
+  log,
+  describeActivity: describeChainDataActivity,
+});
+
 const { registerShutdownSignalHandlers } = require('./shutdown-signals');
 const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({ app, logger: log });
 const { BrowserWindow, protocol, session } = require('electron');
@@ -317,6 +326,11 @@ const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { registerClientCertificateHandler } = require('./client-certificate');
 const { installTestHarness, registerStubProtocols } = require('./test-harness');
+// Every chain-data caller above holds the router module object and reads
+// `.request` at call time, so wrapping the export here covers all of them.
+require('./networks/chain-data-activity').instrumentChainDataRouter(
+  require('./networks/chain-data-router')
+);
 
 log.info('[profile] Active profile:', {
   id: activeProfile.id,
@@ -326,6 +340,8 @@ log.info('[profile] Active profile:', {
 });
 warnAboutLegacyDevData(activeProfile, { logger: log });
 app.on('will-quit', () => {
+  // Writes out any stalls still folded into the watchdog's pending summary.
+  eventLoopWatchdog.stop();
   unregisterShutdownSignalHandlers();
   profileFocusWatcher.stop();
   if (activeProfileLock) {
@@ -335,6 +351,14 @@ app.on('will-quit', () => {
 });
 
 async function bootstrap() {
+  // A suspended machine is not a blocked loop: don't report the sleep.
+  // 'suspend' opens the window before the machine sleeps, so the sleep gap is
+  // recognised even when the overdue tick beats 'resume' on wake (Windows),
+  // while a real stall around the sleep is still reported (see the watchdog).
+  const { powerMonitor } = require('electron');
+  powerMonitor.on('suspend', () => eventLoopWatchdog.suspend());
+  powerMonitor.on('resume', () => eventLoopWatchdog.reset());
+
   // Carry the injected Swarm identity from the Bee-era bee-data/ into
   // ant-data/. Must run before the Ant node is started below, or antd
   // self-generates a throwaway identity on the empty directory.
