@@ -137,10 +137,14 @@ const RESOURCES = {
 };
 
 // GPL-3.0 §4/§6: the uBlock filters and scriptlets must travel with the
-// licence text. Fixed text, so pinned the same way.
+// licence text. The text never changes, so it is committed under
+// scripts/vendor/ (copied from `sourceUrl`) instead of downloaded on every
+// build: gnu.org is unreachable from CI runners often enough to fail jobs
+// (#502). The sha256 pin still guards the committed copy.
 const GPL_TEXT = {
   file: 'COPYING.GPL-3.0.txt',
   sourceUrl: 'https://www.gnu.org/licenses/gpl-3.0.txt',
+  vendoredPath: path.join(__dirname, 'vendor', 'COPYING.GPL-3.0.txt'),
   sha256: '3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986',
 };
 
@@ -366,6 +370,15 @@ async function fetchPinnedText({ sourceUrl, sha256 }, label, options = {}) {
   return text;
 }
 
+function readVendoredText({ vendoredPath, sha256 }, label) {
+  const text = fs.readFileSync(vendoredPath, 'utf-8');
+  const digest = crypto.createHash('sha256').update(text).digest('hex');
+  if (digest !== sha256) {
+    throw new Error(`${label}: sha256 mismatch: expected ${sha256}, got ${digest}`);
+  }
+  return text;
+}
+
 async function main() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
@@ -408,8 +421,8 @@ async function main() {
   };
   console.log(`${resources.scriptletCount} scriptlets (${RESOURCES.tag})`);
 
-  process.stdout.write('Fetching GPL-3.0 text... ');
-  const gpl = await fetchPinnedText(GPL_TEXT, 'GPL-3.0 text download');
+  process.stdout.write('Copying GPL-3.0 text... ');
+  const gpl = readVendoredText(GPL_TEXT, 'vendored GPL-3.0 text');
   fs.writeFileSync(path.join(OUTPUT_DIR, GPL_TEXT.file), gpl, 'utf-8');
   manifest.licenseFiles = [GPL_TEXT.file];
   console.log('ok');
@@ -442,6 +455,7 @@ module.exports = {
   download,
   fetchList,
   fetchResources,
+  readVendoredText,
   resolveBranchCommit,
   resolveUblockText,
   main,

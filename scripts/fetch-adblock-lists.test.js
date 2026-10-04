@@ -16,14 +16,19 @@ const { PassThrough } = require('stream');
 jest.mock('https');
 
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   CATEGORIES,
   RESOURCES,
+  GPL_TEXT,
   ADBLOCKER_VERSION,
   countRules,
   download,
   fetchList,
   fetchResources,
+  readVendoredText,
   resolveUblockText,
 } = require('./fetch-adblock-lists');
 
@@ -359,5 +364,28 @@ describe('fetchList (uBlock format)', () => {
     });
     expect(source.commit).toBeNull();
     expect(warnings.join('')).toMatch(/unexpected answer/);
+  });
+});
+
+// #502: the GPL text is committed, not downloaded from gnu.org on every build.
+describe('vendored GPL-3.0 text', () => {
+  test('the committed copy matches the pin', () => {
+    const text = readVendoredText(GPL_TEXT, 'vendored GPL-3.0 text');
+    expect(text).toContain('GNU GENERAL PUBLIC LICENSE');
+    expect(text).toContain('Version 3, 29 June 2007');
+    expect(https.get).not.toHaveBeenCalled();
+  });
+
+  test('an edited copy fails loudly', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gpl-'));
+    const edited = path.join(dir, 'COPYING.GPL-3.0.txt');
+    fs.writeFileSync(edited, fs.readFileSync(GPL_TEXT.vendoredPath, 'utf-8') + '\n');
+    try {
+      expect(() => readVendoredText({ ...GPL_TEXT, vendoredPath: edited }, 'GPL')).toThrow(
+        /sha256 mismatch/
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
