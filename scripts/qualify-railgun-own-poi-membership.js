@@ -1,7 +1,7 @@
 /** Offline enrolled post-spend Shield membership. Genuine stores and receipts;
  * synthetic chain/root services, fixture-key service-signature trust, structural
  * spend proof/signature. No external transport or owned-note disclosure.
- * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield
+ * electron script NEW_DIRECTORY ENGINE_ASAR transfer|unshield [PROVER_ASAR ARTIFACT_DIRECTORY]
  */
 const { app } = require('electron');
 const fs = require('fs'),
@@ -186,7 +186,21 @@ const sources = [
   'scripts/fixtures/railgun-own-poi-membership-signature.js',
   'src/main/wallet/railgun-own-poi-membership.js',
   'src/main/wallet/railgun-own-poi-membership.test.js',
+  'src/main/wallet/railgun-own-poi-binding.js',
+  'src/main/wallet/railgun-own-poi-proof-data.js',
+  'src/main/wallet/railgun-own-poi-proof-data.test.js',
+  'src/main/wallet/railgun-own-poi-proof.js',
+  'src/main/wallet/railgun-own-poi-proof.test.js',
+  'src/main/wallet/railgun-own-poi-prove-job.js',
+  'src/main/wallet/railgun-own-poi-prove-job.test.js',
+  'src/main/wallet/railgun-poi-prover.js',
+  'src/main/wallet/railgun-poi-payload.js',
+  'src/main/wallet/railgun-poi-verifier.js',
+  'src/main/wallet/railgun-poi-verify-job.js',
+  'src/main/wallet/railgun-process.test.js',
+  'src/main/wallet/railgun-account-enrollment.test.js',
   'src/main/wallet/railgun-poi-witness.js',
+  'src/main/wallet/railgun-poi-reconstruct.js',
   'src/main/wallet/railgun-poi-witness.test.js',
   'src/main/wallet/railgun-poi-shield-selector.js',
   'src/main/wallet/railgun-poi-shield-selector-data.js',
@@ -212,8 +226,10 @@ const deferred = () => {
   return { promise, resolve };
 };
 async function main() {
-  const [directory, archive, kind] = process.argv.slice(2);
-  assert.equal(process.argv.length, 5);
+  const [directory, archive, kind, proverArchive, artifactDirectory] = process.argv.slice(2);
+  assert.ok([5, 7].includes(process.argv.length));
+  const proofMode = process.argv.length === 7;
+  if (proofMode) assert.ok(path.isAbsolute(proverArchive) && path.isAbsolute(artifactDirectory));
   assert.ok(path.isAbsolute(directory) && path.isAbsolute(archive) && !fs.existsSync(directory));
   assert.ok(['transfer', 'unshield'].includes(kind));
   fs.mkdirSync(directory, { mode: 0o700 });
@@ -276,6 +292,23 @@ async function main() {
     journal;
   let transportCreates = 0,
     transportCloses = 0;
+  let proofFault = 'valid',
+    proofActive = false,
+    proofCaller;
+  const viewingReplies = [],
+    proofRuns = [],
+    proofExits = [];
+  const proofJobs = {
+    viewing: 0,
+    viewingExit: 0,
+    verification: 0,
+    verificationExit: 0,
+    keyReplies: 0,
+    resultMessages: 0,
+    resultAdmissions: 0,
+    maxWireBytes: 0,
+    peakRssBytes: 0,
+  };
   const clients = new Set(),
     results = new Set(),
     pendingOperations = new Set(),
@@ -405,23 +438,131 @@ async function main() {
   originals.rpc = rpcModule.createPrivateRpc;
   originals.services = serviceModule.createRailgunPublicServices;
   processModule.startRailgunProcess = (options) => {
+    const proving =
+      options.filename === require.resolve('../src/main/wallet/railgun-own-poi-prove-job');
+    const verifying =
+      options.filename === require.resolve('../src/main/wallet/railgun-poi-verify-job');
     if (options.binaryKey) {
       if (phase !== 'enrollment') {
-        forbiddenKeyJobs++;
-        throw Error('Operation key release forbidden');
+        if (!(proofMode && proofActive && proving)) {
+          forbiddenKeyJobs++;
+          throw Error('Operation key release forbidden');
+        }
+        const context = getPrivacyContext(options.handle);
+        assert.equal(context.subject.role, 'engine');
+        assert.equal(context.subject.operation, 'poi-prove');
+      } else {
+        setupKeyJobs++;
       }
-      setupKeyJobs++;
+    }
+    if (proving) {
+      assert.ok(proofMode && proofActive && options.binaryKey);
+      assert.equal(options.startupMs, options.lifetimeMs);
+      assert.ok(options.lifetimeMs > 10000 && options.lifetimeMs <= 110000);
+      assert.equal(options.rssMb, 768);
+      proofJobs.viewing++;
+    }
+    if (verifying) {
+      assert.ok(proofMode && proofActive && !options.binaryKey);
+      proofJobs.verification++;
     }
     const membership = options.filename === require.resolve('../src/main/wallet/railgun-poi-job');
     const selectorJob =
       options.filename === require.resolve('../src/main/wallet/railgun-poi-shield-selector-job');
     if (membership) jobs.membership++;
     if (selectorJob) jobs.selector++;
-    const real = originals.start(options);
-    real.closed.then(() => {
+    let real;
+    let patched = options;
+    if (proving) {
+      const originalBroker = options.broker;
+      patched = {
+        ...options,
+        broker: {
+          signal: originalBroker.signal,
+          async dispatch(wire) {
+            proofJobs.maxWireBytes = Math.max(proofJobs.maxWireBytes, Buffer.byteLength(wire));
+            assert.ok(Buffer.byteLength(wire) <= 32768);
+            const message = JSON.parse(wire);
+            if (message.id === 1) {
+              if (proofFault === 'purpose') message.purpose = 'spending-sign';
+              if (proofFault === 'hash') message.inputSha256 = 'f'.repeat(64);
+              if (proofFault === 'extra') message.extra = true;
+              if (proofFault === 'result-before-key') {
+                message.method = 'result';
+                message.value = {};
+              }
+              const reply = await originalBroker.dispatch(JSON.stringify(message));
+              assert.ok(reply instanceof Uint8Array && reply.byteLength === 32);
+              proofJobs.keyReplies++;
+              viewingReplies.push(reply); // Retain only to assert supervisor zeroization.
+              if (proofFault === 'close-after-key') setTimeout(() => real.close(), 10);
+              if (proofFault === 'cancel') setTimeout(() => proofCaller.abort(), 10);
+              return reply;
+            }
+            proofJobs.resultMessages++;
+            if (proofFault === 'double-key')
+              return originalBroker.dispatch(
+                JSON.stringify({
+                  id: 2,
+                  method: 'key',
+                  purpose: 'poi-prove',
+                  inputSha256: 'f'.repeat(64),
+                })
+              );
+            if (proofFault === 'root' || proofFault === 'proof') {
+              if (proofFault === 'root') message.value.payload.txidMerkleroot = hex(17).slice(2);
+              else {
+                // Negation keeps A on the curve; the pairing must reject the proof.
+                const base =
+                  21888242871839275222246405745257275088696311157297823662689037894645226208583n;
+                const y = BigInt(message.value.payload.proof.pi_a[1]);
+                assert.ok(y > 0n && y < base);
+                message.value.payload.proof.pi_a[1] = String(base - y);
+              }
+              message.value.payloadSha256 = sha(
+                JSON.stringify(
+                  require('../src/main/wallet/railgun-poi-payload').normalizeRailgunPoiPayload(
+                    message.value.payload
+                  )
+                )
+              );
+            }
+            const reply = await originalBroker.dispatch(JSON.stringify(message));
+            proofJobs.resultAdmissions++;
+            return reply;
+          },
+        },
+      };
+    }
+    const jobStarted = performance.now();
+    real = originals.start(patched);
+    real.closed.then((exit) => {
       if (membership) jobs.membershipExit++;
       if (selectorJob) jobs.selectorExit++;
+      if (proving) {
+        proofJobs.viewingExit++;
+        proofJobs.peakRssBytes = Math.max(proofJobs.peakRssBytes, exit.peakRssBytes);
+        proofExits.push({
+          cause: exit.code,
+          elapsedMs: Math.round(performance.now() - jobStarted),
+          budgetMs: options.lifetimeMs,
+        });
+      }
+      if (verifying) proofJobs.verificationExit++;
     });
+    if (proving && proofFault === 'early-timeout') {
+      // The actual job completes, but the fixture withholds ready admission.
+      // The production early deadline must close/drain it before store expiry.
+      const ready = real.ready.then(
+        () =>
+          new Promise((_resolve, reject) => {
+            const abort = () => reject(Error('fixture deferred ready aborted'));
+            if (real.signal.aborted) abort();
+            else real.signal.addEventListener('abort', abort, { once: true });
+          })
+      );
+      return Object.freeze({ ...real, ready });
+    }
     if (membership && mode === 'utility-drain') {
       let deferredClose = false;
       return Object.freeze({
@@ -550,6 +691,7 @@ async function main() {
     openRailgunOwnPoiMembership: open,
     assertRailgunOwnPoiMembership: assertMembership,
   } = require('../src/main/wallet/railgun-own-poi-membership');
+  const { proveRailgunOwnPoi } = require('../src/main/wallet/railgun-own-poi-proof');
   const runs = [],
     recoveryRuns = [];
   try {
@@ -576,26 +718,11 @@ async function main() {
     fixture.row.graphID = hex(OWN_BLOCK) + hex(4).slice(2) + hex(0).slice(2);
     const txAbi = new Interface([TRANSACT_ABI]),
       eventAbi = new Interface(PRIVATE_EVENTS);
-    const inner = txAbi
+    const structuralProof = txAbi
       .decodeFunctionData('transact', fixture.transaction.input)[0][0]
-      .toArray(true);
-    if (kind === 'unshield') {
-      inner[5][0] = hex(BigInt(owner));
-      fixture.row.unshield.toAddress = owner;
-      fixture.capsule.selection.recipient = fixture.capsule.preparation.recipient = owner;
-      Object.assign(
-        fixture.receipt.logs[1],
-        eventAbi.encodeEventLog('Unshield', [
-          owner,
-          [0, require('../src/main/wallet/railgun-shield-pins.json').wrappedNative, 0],
-          998,
-          2,
-        ])
-      );
-    } else {
-      fixture.row.utxoTreeOut = 0;
-      fixture.row.utxoBatchStartPositionOut = 1;
-    }
+      .proof.toArray(true);
+    assert.deepEqual(identity.descriptor, enrollment.descriptor);
+    const recipient = kind === 'unshield' ? owner : enrollment.descriptor.instanceId;
     phase = 'fixture-crypto';
     task = processModule.startRailgunProcess({
       handle: enrollment.getContext('engine'),
@@ -603,8 +730,9 @@ async function main() {
       input: JSON.stringify({
         archive,
         row: fixture.row,
-        masterPublicKey: identity.descriptor.masterPublicKey,
-        viewingPublicKey: identity.descriptor.viewingPublicKey,
+        descriptor: enrollment.descriptor,
+        kind,
+        recipient,
       }),
       lifetimeMs: 60000,
       broker: {
@@ -619,11 +747,15 @@ async function main() {
           assert.deepEqual(Object.keys(message.value).sort(), [
             'blindedCommitment',
             'creator',
+            'descriptor',
+            'expectedHash',
             'guards',
             'noteHash',
+            'pathElements',
             'proof',
             'row',
             'state',
+            'transaction',
           ]);
           assert.equal(message.value.guards.attempts, 0);
           payload = message.value;
@@ -635,12 +767,64 @@ async function main() {
     task.close();
     assert.equal((await task.closed).code, 'RAILGUN_PROCESS_CLOSED');
     task = undefined;
-    inner[3] = payload.row.commitments;
-    if (kind === 'transfer')
+    assert.deepEqual(payload.descriptor, identity.descriptor);
+    assert.deepEqual(payload.descriptor, enrollment.descriptor);
+    assert.deepEqual(Object.keys(payload.transaction).sort(), ['chainId', 'data', 'to', 'value']);
+    const intent = extractRailgunTransactIntent(payload.transaction);
+    assert.deepEqual(intent.intent, payload.transaction);
+    assert.equal(
+      intent.expected.kind,
+      kind === 'unshield' ? 'railgun-token-unshield' : 'railgun-private-transfer'
+    );
+    assert.equal(intent.expected.tree, 0);
+    assert.deepEqual(payload.row.nullifiers, [intent.expected.nullifier]);
+    assert.deepEqual(payload.row.commitments, [intent.expected.commitment]);
+    assert.equal(payload.row.boundParamsHash, intent.expected.boundParamsHash);
+    assert.equal(payload.row.blockNumber, OWN_BLOCK);
+    assert.equal(payload.row.graphID, fixture.row.graphID);
+    assert.equal(payload.row.txid, fixture.transaction.hash.slice(2));
+    assert.equal(payload.pathElements.length, 16);
+    assert.deepEqual(
+      payload.pathElements,
+      require('../src/main/wallet/railgun-public-records')
+        .ZERO_NODES.slice(0, 16)
+        .map((v) => '0x' + v)
+    );
+    assert.match(payload.expectedHash, /^0x[0-9a-f]{64}$/);
+    const inner = txAbi
+      .decodeFunctionData('transact', payload.transaction.data)[0][0]
+      .toArray(true);
+    // Preserve only the old structural proof, never its nullifier/ciphertext/bindings.
+    inner[0] = structuralProof;
+    fixture.row = payload.row;
+    Object.assign(fixture.receipt.logs[0], eventAbi.encodeEventLog('Nullified', [0, inner[2]]));
+    if (kind === 'transfer') {
+      assert.equal(payload.row.utxoTreeOut, 0);
+      assert.equal(payload.row.utxoBatchStartPositionOut, 1);
       Object.assign(
         fixture.receipt.logs[1],
         eventAbi.encodeEventLog('Transact', [0, 1, inner[3], inner[4][6]])
       );
+    } else {
+      assert.equal(intent.expected.recipient, owner);
+      assert.equal(intent.expected.amount, '1000');
+      assert.equal(payload.row.utxoTreeOut, 99999);
+      assert.equal(payload.row.utxoBatchStartPositionOut, 99999);
+      assert.deepEqual(payload.row.unshield, {
+        tokenData: payload.creator.preimage.token,
+        toAddress: owner,
+        value: '1000',
+      });
+      Object.assign(
+        fixture.receipt.logs[1],
+        eventAbi.encodeEventLog('Unshield', [
+          owner,
+          [0, require('../src/main/wallet/railgun-shield-pins.json').wrappedNative, 0],
+          998,
+          2,
+        ])
+      );
+    }
     const shieldAbi = new Interface([
       require('../src/main/wallet/railgun-shield-receipt').SHIELD_EVENT,
     ]);
@@ -673,17 +857,28 @@ async function main() {
       data: fixture.transaction.input,
     };
     const decoded = extractRailgunTransactIntent(proved);
+    assert.deepEqual(decoded.intent, payload.transaction);
+    assert.deepEqual(decoded.expected, intent.expected);
     fixture.record.intent = railgunTransactJournalIntent(proved);
     assert.equal(
       inspectRailgunTransactReceipt(fixture.record, fixture.transaction, fixture.receipt).status,
       'matched'
     );
     const capsule = fixture.capsule;
-    capsule.selection.position = 0;
+    capsule.selection = { kind: decoded.expected.kind, tree: 0, position: 0, recipient };
+    capsule.engineSha256 = require('../src/main/wallet/railgun-engine-manifest.json').sha256;
+    capsule.pathElements = payload.pathElements;
+    capsule.preparation.expectedHash = payload.expectedHash;
+    capsule.preparation.recipient = recipient;
+    capsule.preparation.amount = '1000';
     capsule.noteHash = payload.noteHash;
     capsule.walletId = enrollment.descriptor.walletId;
     capsule.preparation.transaction = decoded.intent;
     capsule.preparation.expected = decoded.expected;
+    assert.deepEqual(
+      require('../src/main/wallet/railgun-private-capsule').normalizeRailgunPrivateCapsule(capsule),
+      capsule
+    );
     const reservations = await enrollment.openReservations(),
       capsules = await enrollment.openPrivateCapsules();
     const facts = {
@@ -1177,6 +1372,155 @@ async function main() {
     journal = openJournal();
     publicAccount = await openRailgunAccountPublic({ enrollment, archive });
     await success('healthy-reopen-after-refusals');
+    if (proofMode) {
+      const proofCall = async (member, fault, extra = {}) => {
+        proofFault = fault;
+        proofCaller = new AbortController();
+        proofActive = true;
+        phase = 'proof-' + fault;
+        const beforeJournal = await journal.readSnapshot();
+        const beforeProof = copy(proofJobs);
+        const serviceCounts = () =>
+          copy({ rpcMethods, publicMethods, poiMethods, transportCreates, transportCloses });
+        const beforeServices = serviceCounts();
+        try {
+          const work = proveRailgunOwnPoi({
+            identity,
+            enrollment,
+            coordinator: publicAccount.coordinator,
+            archive,
+            proverArchive,
+            artifactDirectory,
+            membershipReceipt: member.receipt,
+            signal: AbortSignal.any([proofCaller.signal, operationsController.signal]),
+            ...extra,
+          });
+          pendingOperations.add(work);
+          let result;
+          try {
+            result = await work;
+          } finally {
+            pendingOperations.delete(work);
+          }
+          assert.deepEqual(await journal.readSnapshot(), beforeJournal);
+          assert.equal((await capture()).status, 'captured');
+          assert.deepEqual(serviceCounts(), beforeServices);
+          assert.ok(viewingReplies.every((value) => value.every((byte) => byte === 0)));
+          assert.equal(proofJobs.viewing, proofJobs.viewingExit);
+          assert.equal(proofJobs.verification, proofJobs.verificationExit);
+          const delta = Object.fromEntries(
+            ['viewing', 'viewingExit', 'verification', 'verificationExit', 'keyReplies'].map(
+              (key) => [key, proofJobs[key] - beforeProof[key]]
+            )
+          );
+          const entryRefusal = ['forged-receipt', 'consumed-receipt'].includes(fault);
+          const preKeyRefusal = ['purpose', 'hash', 'extra', 'result-before-key'].includes(fault);
+          assert.deepEqual(delta, {
+            viewing: entryRefusal ? 0 : 1,
+            viewingExit: entryRefusal ? 0 : 1,
+            verification: ['valid', 'proof'].includes(fault) ? 1 : 0,
+            verificationExit: ['valid', 'proof'].includes(fault) ? 1 : 0,
+            keyReplies: entryRefusal || preKeyRefusal ? 0 : 1,
+          });
+          if (fault === 'valid') {
+            assert.equal(result.status, 'proved', 'proof stage ' + result.stage);
+            assert.equal(result.separatelyVerified, true);
+            assert.equal(result.utilityExitObserved, true);
+            assert.equal(result.payload.blindedCommitmentsOut.length, kind === 'transfer' ? 1 : 0);
+            assert.equal(result.disclosureEnabled, false);
+            assert.equal(result.spendingEnabled, false);
+          } else {
+            assert.equal(result.status, 'refused');
+            assert.equal(
+              result.stage,
+              entryRefusal
+                ? 'context'
+                : fault === 'proof'
+                  ? 'verify'
+                  : fault === 'cancel'
+                    ? 'recovery'
+                    : 'recovery:callback'
+            );
+          }
+          const resultAdmissions = proofJobs.resultAdmissions - beforeProof.resultAdmissions;
+          assert.equal(
+            resultAdmissions,
+            ['valid', 'proof', 'early-timeout'].includes(fault) ? 1 : 0
+          );
+          const viewingExit = entryRefusal ? undefined : proofExits.at(-1);
+          if (fault === 'early-timeout') {
+            assert.equal(viewingExit.cause, 'RAILGUN_SESSION_REVOKED');
+            // The host timer was armed just before start. Permit only scheduling
+            // precision, not an unrelated early process closure, as the cause.
+            assert.ok(viewingExit.elapsedMs >= viewingExit.budgetMs - 50);
+            assert.ok(viewingExit.elapsedMs < viewingExit.budgetMs + 5000);
+          }
+          proofRuns.push({
+            mode: fault,
+            status: result.status,
+            ...(result.status === 'refused' ? { stage: result.stage } : {}),
+            journalUnchanged: true,
+            healthyCapture: true,
+            exitsObserved: true,
+            viewingRepliesWiped: true,
+            jobs: delta,
+            resultAdmissions,
+            noServiceActivity: true,
+            ...(viewingExit ? { viewingExit } : {}),
+          });
+          return result;
+        } finally {
+          proofActive = false;
+          proofCaller.abort();
+          proofFault = 'valid';
+        }
+      };
+      const proofMembership = async () => {
+        mode = 'valid';
+        const before = counts();
+        const member = await call();
+        assert.equal(member.status, 'verified', 'proof membership ' + member.stage);
+        checkDelta(before, [1, 1, 1, 1], 1);
+        return member;
+      };
+      let member = await proofMembership();
+      try {
+        await proofCall(member, 'forged-receipt', { membershipReceipt: {} });
+        for (const fault of ['purpose', 'hash', 'extra', 'result-before-key'])
+          await proofCall(member, fault);
+        await proofCall(member, 'valid');
+        const before = proofJobs.viewing;
+        await proofCall(member, 'consumed-receipt');
+        assert.equal(proofJobs.viewing, before);
+      } finally {
+        member.close();
+        results.delete(member);
+      }
+      for (const fault of [
+        'root',
+        'proof',
+        'double-key',
+        'close-after-key',
+        'cancel',
+        'early-timeout',
+      ]) {
+        member = await proofMembership();
+        try {
+          await proofCall(member, fault, fault === 'early-timeout' ? { timeoutMs: 70000 } : {});
+        } finally {
+          member.close();
+          results.delete(member);
+        }
+      }
+      assert.equal(proofRuns.length, 13);
+      assert.equal(proofJobs.viewing, 11);
+      assert.equal(proofJobs.viewingExit, 11);
+      assert.equal(proofJobs.keyReplies, 7);
+      assert.equal(proofJobs.verification, 2);
+      assert.equal(proofJobs.verificationExit, 2);
+      assert.ok(proofJobs.peakRssBytes > 0 && proofJobs.peakRssBytes < 768 * 1024 * 1024);
+      assert.ok(proofJobs.maxWireBytes > 0 && proofJobs.maxWireBytes <= 32768);
+    }
     phase = 'final-journal-drift';
     mode = 'valid';
     onRoot = async () => {
@@ -1227,11 +1571,15 @@ async function main() {
         'final-journal-drift',
       ]
     );
-    assert.deepEqual(Object.values(poiMethods), [14, 13, 12, 11]);
-    assert.equal(signature.attempts(), 12);
-    assert.equal(transportCreates, 14);
-    assert.equal(jobs.membership, 10);
-    assert.equal(jobs.selector, 14);
+    const additionalMemberships = proofMode ? 7 : 0;
+    assert.deepEqual(
+      Object.values(poiMethods),
+      [14, 13, 12, 11].map((v) => v + additionalMemberships)
+    );
+    assert.equal(signature.attempts(), 12 + additionalMemberships);
+    assert.equal(transportCreates, 14 + additionalMemberships);
+    assert.equal(jobs.membership, 10 + additionalMemberships);
+    assert.equal(jobs.selector, 14 + additionalMemberships);
     assert.equal(transportCreates, transportCloses);
     assert.equal(jobs.membership, jobs.membershipExit);
     assert.equal(jobs.selector, jobs.selectorExit);
@@ -1243,6 +1591,8 @@ async function main() {
       sourceSha256: before,
       runs,
       recoveryRuns,
+      proofRuns,
+      proofJobs,
       publicPrefixAdvances: advances,
       poiMethods,
       publicMethods,
@@ -1255,6 +1605,19 @@ async function main() {
       genuineSourceAndMembershipReceipts: true,
       genuineResolutionPermit: true,
       realShieldHashAndLocalMembership: true,
+      fixtureDescriptorMatched: true,
+      realPositionNullifier: true,
+      realOutputEncryption: kind === 'transfer',
+      realUnshieldCommitment: kind === 'unshield',
+      realBoundParams: true,
+      fixtureViewingReconstructionChecked: true,
+      fixtureViewingKeyDerivedFromPublicMnemonic: true,
+      fixtureInputSetupViewingDerivations: 1,
+      fixtureSpendingPrivateKeyDerived: false,
+      syntheticInputTree: 0,
+      syntheticInputPosition: 0,
+      selfTransferOnly: kind === 'transfer',
+      productionViewingKeyHandoffQualified: proofMode,
       chainAndRootServicesSimulated: true,
       serviceSignatureTrust: 'fixture-ed25519-key-substitution',
       realRequiredListKeyRejectsFixtureSignatures: true,
@@ -1270,7 +1633,7 @@ async function main() {
     };
     assert.doesNotMatch(
       JSON.stringify(report),
-      /"(?:blindedCommitment|bindingDigest|inputSha256|leaf|capsule|creator|proof|signature|noteHash)"\s*:/
+      /"(?:blindedCommitment|bindingDigest|inputSha256|leaf|capsule|creator|proof|signature|noteHash|descriptor|transaction|pathElements|expectedHash|viewingKey|nullifyingKey|randomsIn|npksOut|valuesOut)"\s*:/
     );
     fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', {
       flag: 'wx',

@@ -60,6 +60,9 @@ function startRailgunProcess({
             context.subject.operation === 'private-prepare' &&
             filename === require.resolve('./railgun-private-prepare-job')) ||
           (context.subject.role === 'engine' &&
+            context.subject.operation === 'poi-prove' &&
+            filename === require.resolve('./railgun-own-poi-prove-job')) ||
+          (context.subject.role === 'engine' &&
             context.subject.operation === 'wallet-viewing' &&
             filename === require.resolve('./railgun-wallet-job')) ||
           (context.subject.role === 'engine' &&

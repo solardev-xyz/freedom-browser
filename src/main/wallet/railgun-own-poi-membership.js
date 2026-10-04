@@ -21,6 +21,7 @@ const {
 } = require('./railgun-poi-membership');
 const { REQUIRED_LIST, normalizePoiProofs } = require('./railgun-poi-records');
 const { POI_LAUNCH_BLOCK } = require('./railgun-owned-poi-records');
+const { assertRailgunOwnPoiCapture: compareCapture } = require('./railgun-own-poi-binding');
 const owners = new Map(),
   receipts = new WeakMap();
 const fail = () =>
@@ -33,27 +34,6 @@ const freeze = (v) => {
     Object.freeze(v);
   }
   return v;
-};
-const compareCapture = (current, baseline) => {
-  for (const key of [
-    'bindingDigest',
-    'selector',
-    'facts',
-    'submitter',
-    'capsule',
-    'capsuleDigest',
-    'provedTransaction',
-    'intent',
-    'projection',
-  ])
-    assert.deepEqual(current[key], baseline[key]);
-  // Routine confirmation/revision refreshes do not change the operation.
-  // A new archive representation or anchor requires its own finality check.
-  const anchor = (record) =>
-    Object.hasOwn(record, 'archivedAt')
-      ? { archived: true, finalized: record.finalized }
-      : { archived: false };
-  assert.deepEqual(anchor(current.record), anchor(baseline.record));
 };
 async function openRailgunOwnPoiMembership(options = {}) {
   let stage = 'context',

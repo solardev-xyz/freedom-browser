@@ -473,6 +473,7 @@ test.each([
   ['keystore', 'spending-sign', './railgun-spend-sign-job'],
   ['engine', 'wallet-viewing', './railgun-wallet-job'],
   ['engine', 'private-prepare', './railgun-private-prepare-job'],
+  ['engine', 'poi-prove', './railgun-own-poi-prove-job'],
   ['engine', 'private-operate', './railgun-private-operate-job'],
   ['engine', 'private-receive', './railgun-private-receive-job'],
   ['engine', 'shield-receive', './railgun-shield-receive-job'],
@@ -559,6 +560,10 @@ test.each([
   ['private-prepare', './railgun-private-receive-job', 'engine'],
   ['private-operate', './railgun-private-prepare-job', 'engine'],
   ['private-prepare', './railgun-private-operate-job', 'engine'],
+  ['poi-prove', './railgun-private-prepare-job', 'engine'],
+  ['private-prepare', './railgun-own-poi-prove-job', 'engine'],
+  ['spending-sign', './railgun-own-poi-prove-job', 'engine'],
+  ['poi-prove', './railgun-own-poi-prove-job', 'prover'],
   ['private-operate', './railgun-spend-sign-job', 'engine'],
   ['spending-sign', './railgun-private-operate-job'],
 ])('refuses binary-key job cross-pairing %s/%s', (operation, filename, role = 'keystore') => {

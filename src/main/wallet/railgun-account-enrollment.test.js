@@ -238,6 +238,10 @@ test('duplicate create, concurrent open, forged identity and foreign generations
     'private-verify'
   );
   expect(() => entry.getContext('prover')).toThrow();
+  expect(getPrivacyContext(entry.getContext('prover', 'poi-verify')).subject.operation).toBe(
+    'poi-verify'
+  );
+  expect(() => entry.getContext('prover', 'poi-prove')).toThrow();
   expect(() => entry.getContext('prover', 'private-sign')).toThrow();
   expect(() => entry.getContext('keystore')).toThrow();
   await expect(open()).rejects.toThrow();
